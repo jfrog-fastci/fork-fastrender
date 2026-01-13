@@ -2309,6 +2309,33 @@ impl<'a> Parser<'a> {
           return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
         };
         match e {
+          x if x == (b'c' as u16) => {
+            // Control escape `\cX` (Annex B).
+            //
+            // In unicode mode, `\c` must be followed by an ASCII letter or it is a syntax error
+            // (unicode-restricted identity escape).
+            let Some(next) = self.peek() else {
+              if self.flags.unicode {
+                return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
+              }
+              return Ok(CharClassItem::Char(b'c' as u16));
+            };
+            if ((b'A' as u16..=b'Z' as u16).contains(&next))
+              || ((b'a' as u16..=b'z' as u16).contains(&next))
+            {
+              self.next(); // consume ControlLetter
+              let upper = if (b'a' as u16..=b'z' as u16).contains(&next) {
+                next - 32
+              } else {
+                next
+              };
+              Ok(CharClassItem::Char((upper % 32) as u16))
+            } else if self.flags.unicode {
+              Err(RegExpSyntaxError { message: "Invalid escape" }.into())
+            } else {
+              Ok(CharClassItem::Char(b'c' as u16))
+            }
+          }
           x if x == (b'd' as u16) => Ok(CharClassItem::Digit { negated: false }),
           x if x == (b'D' as u16) => Ok(CharClassItem::Digit { negated: true }),
           x if x == (b'w' as u16) => Ok(CharClassItem::Word { negated: false }),
@@ -2393,6 +2420,33 @@ impl<'a> Parser<'a> {
       return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
     };
     match e {
+      x if x == (b'c' as u16) => {
+        // Control escape `\cX` (Annex B).
+        //
+        // In unicode mode, `\c` must be followed by an ASCII letter or it is a syntax error
+        // (unicode-restricted identity escape).
+        let Some(next) = self.peek() else {
+          if self.flags.unicode {
+            return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
+          }
+          return Ok(Atom::Literal(b'c' as u16));
+        };
+        if ((b'A' as u16..=b'Z' as u16).contains(&next))
+          || ((b'a' as u16..=b'z' as u16).contains(&next))
+        {
+          self.next(); // consume ControlLetter
+          let upper = if (b'a' as u16..=b'z' as u16).contains(&next) {
+            next - 32
+          } else {
+            next
+          };
+          Ok(Atom::Literal((upper % 32) as u16))
+        } else if self.flags.unicode {
+          Err(RegExpSyntaxError { message: "Invalid escape" }.into())
+        } else {
+          Ok(Atom::Literal(b'c' as u16))
+        }
+      }
       x if x == (b'd' as u16) => {
         let mut items: Vec<CharClassItem> = Vec::new();
         ctx.vec_try_push(&mut items, CharClassItem::Digit { negated: false })?;

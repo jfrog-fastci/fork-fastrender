@@ -479,6 +479,31 @@ fn regexp_unicode_mode_rejects_character_class_escape_ranges() {
 }
 
 #[test]
+fn regexp_control_escape_cx_matches_control_character() {
+  let mut rt = new_runtime();
+
+  assert_eq!(
+    rt.exec_script(r#"new RegExp("\\cA").test("\u0001")"#).unwrap(),
+    Value::Bool(true)
+  );
+
+  assert_eq!(
+    rt.exec_script(r#"new RegExp("[\\cA]").test("\u0001")"#).unwrap(),
+    Value::Bool(true)
+  );
+
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\c", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+
+  let value = rt
+    .exec_script(r#"try { new RegExp("[\\c0]", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
 fn regexp_prototype_source_escapes_slash_and_line_terminators() {
   let mut rt = new_runtime();
 
