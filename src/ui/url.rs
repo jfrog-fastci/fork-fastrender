@@ -207,6 +207,22 @@ pub fn resolve_link_url(base_url: &str, href: &str) -> Option<String> {
   (!absolute.scheme().eq_ignore_ascii_case("javascript")).then(|| absolute.to_string())
 }
 
+/// Compute an HTTP fallback URL for a failed HTTPS navigation.
+///
+/// When `url` parses successfully as a `https://` URL, returns the same URL with the scheme
+/// changed to `http://` while preserving host, port, path, query and fragment.
+///
+/// This is intended for explicit, user-triggered "Try HTTP" actions in the browser chrome. It does
+/// **not** perform any automatic redirects.
+pub fn http_fallback_url_for_failed_https(url: &str) -> Option<String> {
+  let mut parsed = Url::parse(url).ok()?;
+  if !parsed.scheme().eq_ignore_ascii_case("https") {
+    return None;
+  }
+  parsed.set_scheme("http").ok()?;
+  Some(parsed.to_string())
+}
+
 fn looks_like_file_path(input: &str) -> bool {
   input.starts_with('/')
     || input.starts_with("./")
@@ -639,6 +655,7 @@ fn has_explicit_scheme(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::{
+    http_fallback_url_for_failed_https,
     normalize_user_url, omnibox_input_looks_like_url, resolve_link_url, resolve_omnibox_input,
     resolve_omnibox_search_query, sanitize_worker_url_for_ui,
     validate_trusted_chrome_navigation_url_scheme, validate_user_navigation_url_scheme,
@@ -845,6 +862,14 @@ mod tests {
     assert_eq!(
       resolve_link_url("https://example.com/dir/page.html", "javascript:alert(1)"),
       None
+    );
+  }
+
+  #[test]
+  fn http_fallback_preserves_url_components() {
+    assert_eq!(
+      http_fallback_url_for_failed_https("https://example.com/path?x=1#y").as_deref(),
+      Some("http://example.com/path?x=1#y")
     );
   }
 

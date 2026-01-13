@@ -26,9 +26,7 @@ use crate::ui::theme_parsing::{
   format_hex_color, parse_browser_accent_env, parse_hex_color, BrowserTheme as ThemeChoice,
   RgbaColor, ENV_BROWSER_ACCENT,
 };
-use crate::ui::url::{
-  resolve_omnibox_search_query,
-};
+use crate::ui::url::{http_fallback_url_for_failed_https, resolve_omnibox_search_query};
 use crate::ui::url_display;
 use crate::ui::zoom;
 use crate::ui::{icon_button, icon_button_with_id, icon_tinted, spinner, BrowserIcon};
@@ -1474,6 +1472,9 @@ pub fn chrome_ui_with_bookmarks(
         };
 
         let err_msg = error.as_deref().filter(|s| !s.trim().is_empty());
+        let try_http_url =
+          err_msg.and_then(|_| http_fallback_url_for_failed_https(active_url_trim));
+        let show_try_http = try_http_url.is_some();
         let err_t = motion.animate_bool(
           ctx,
           address_bar_id.with("status_badge_error"),
@@ -1494,6 +1495,19 @@ pub fn chrome_ui_with_bookmarks(
         let button_side = ui.spacing().interact_size.y;
         let icon_side = ui.spacing().icon_width;
         let badge_side = icon_side + badge_margin.left + badge_margin.right;
+        let try_http_button_width = if show_try_http {
+          let font_id = egui::TextStyle::Small.resolve(ui.style());
+          let label = "Try HTTP";
+          let text_width = ui.fonts(|f| {
+            f.layout_no_wrap(label.to_string(), font_id, ui.visuals().text_color())
+              .size()
+              .x
+          });
+          // Account for egui's button padding.
+          text_width + ui.spacing().button_padding.x * 2.0
+        } else {
+          0.0
+        };
         let mut right_items = Vec::new();
         if downloads.active_count > 0 {
           right_items.push(50.0);
@@ -1517,6 +1531,9 @@ pub fn chrome_ui_with_bookmarks(
         }
         if err_t > 0.0 {
           right_items.push(badge_side);
+        }
+        if show_try_http {
+          right_items.push(try_http_button_width);
         }
         if omnibox_bookmarks.is_some() {
           right_items.push(button_side);
@@ -1911,6 +1928,55 @@ pub fn chrome_ui_with_bookmarks(
                 .response;
               if let Some(err) = err_msg {
                 let _ = resp.on_hover_text(err);
+              }
+            }
+
+            // HTTPS → HTTP fallback (only shown when the active URL is https:// and the tab has an
+            // error).
+            if let Some(http_url) = try_http_url.as_deref() {
+              let label = "Try HTTP";
+              let tooltip = "Retry this URL over HTTP";
+              let err_fg = ui.visuals().error_fg_color;
+              let try_http_id = address_bar_id.with("try_http");
+              let (_id, rect) = ui.allocate_space(egui::vec2(try_http_button_width, button_side));
+              let mut resp = ui.interact(rect, try_http_id, egui::Sense::click());
+              #[cfg(test)]
+              {
+                store_test_id(ctx, "chrome_try_http_button_id", resp.id);
+                store_test_rect(ctx, "chrome_try_http_button_rect", resp.rect);
+              }
+              resp = resp.on_hover_text(tooltip);
+              resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, label));
+              show_tooltip_on_focus(ui, &resp, tooltip);
+
+              // Paint a small pill button.
+              let bg_alpha = if resp.hovered() || resp.has_focus() { 70 } else { 40 };
+              let err_bg =
+                egui::Color32::from_rgba_unmultiplied(err_fg.r(), err_fg.g(), err_fg.b(), bg_alpha);
+              ui.painter().rect_filled(rect, badge_rounding, err_bg);
+              let font_id = egui::TextStyle::Small.resolve(ui.style());
+              ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                font_id,
+                err_fg,
+              );
+              paint_focus_ring(ui, &resp, focus_ring);
+
+              if resp.clicked() || keyboard_activate(ui, &resp) {
+                let http_url = http_url.to_string();
+                app.chrome.address_bar_text = http_url.clone();
+                app.chrome.address_bar_editing = false;
+                let had_focus = app.chrome.address_bar_has_focus;
+                app.chrome.address_bar_has_focus = false;
+                app.chrome.omnibox.reset();
+
+                actions.push(ChromeAction::NavigateTo(http_url));
+                if had_focus {
+                  actions.push(ChromeAction::AddressBarFocusChanged(false));
+                }
+                resp.surrender_focus();
               }
             }
 
@@ -4714,6 +4780,35 @@ mod tests {
     assert_eq!(app.chrome.address_bar_text, "https://example.com");
     assert!(!app.chrome.address_bar_has_focus);
     assert!(!app.chrome.address_bar_editing);
+  }
+
+  #[test]
+  fn try_http_button_emits_navigate_action_for_failed_https() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
+    tab.error = Some("TLS handshake failed".to_string());
+    app.push_tab(tab, true);
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once so the chrome stores the Try HTTP button rect/id.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+    let try_http_rect = expect_temp_rect(&ctx, "chrome_try_http_button_rect");
+
+    // Frame 1: click the button.
+    begin_frame(&ctx, left_click_at(try_http_rect.center()));
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::NavigateTo(url) if url == "http://example.com/")),
+      "expected ChromeAction::NavigateTo(\"http://example.com/\"), got {actions:?}"
+    );
   }
 
   #[test]
