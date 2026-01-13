@@ -37,6 +37,7 @@ fn appcontainer_token_omits_all_application_packages_group_when_hardened() {
     "FASTR_DISABLE_RENDERER_SANDBOX",
     "FASTR_WINDOWS_RENDERER_SANDBOX",
     "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+    "FASTR_DISABLE_WIN_MITIGATIONS",
     "FASTR_WINDOWS_SANDBOX_INHERIT_ENV",
   ]);
   if !crate::common::windows_sandbox::require_full_windows_sandbox(

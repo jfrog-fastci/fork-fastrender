@@ -446,6 +446,7 @@ fn appcontainer_denies_filesystem_and_network() {
     "FASTR_DISABLE_RENDERER_SANDBOX",
     "FASTR_WINDOWS_RENDERER_SANDBOX",
     "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+    "FASTR_DISABLE_WIN_MITIGATIONS",
     "FASTR_WINDOWS_SANDBOX_INHERIT_ENV",
   ]);
 
@@ -521,6 +522,7 @@ fn job_object_kill_on_close_terminates_child() {
     "FASTR_DISABLE_RENDERER_SANDBOX",
     "FASTR_WINDOWS_RENDERER_SANDBOX",
     "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+    "FASTR_DISABLE_WIN_MITIGATIONS",
   ]);
 
   let exe = std::env::current_exe().expect("current test executable path");

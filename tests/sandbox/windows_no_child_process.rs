@@ -191,6 +191,7 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
     "FASTR_DISABLE_RENDERER_SANDBOX",
     "FASTR_WINDOWS_RENDERER_SANDBOX",
     "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+    "FASTR_DISABLE_WIN_MITIGATIONS",
   ]);
 
   let cmd_exe = cmd_exe_path().expect("determine cmd.exe path");

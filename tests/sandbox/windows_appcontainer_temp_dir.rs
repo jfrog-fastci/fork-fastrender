@@ -86,6 +86,7 @@ fn appcontainer_temp_dir_is_writable() {
       "FASTR_DISABLE_RENDERER_SANDBOX",
       "FASTR_WINDOWS_RENDERER_SANDBOX",
       "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+      "FASTR_DISABLE_WIN_MITIGATIONS",
       "FASTR_WINDOWS_SANDBOX_INHERIT_ENV",
     ]);
     let _temp_guard = crate::common::EnvVarGuard::set("TEMP", forced_parent_temp.path());

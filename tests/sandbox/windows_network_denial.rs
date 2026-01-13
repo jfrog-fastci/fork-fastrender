@@ -34,6 +34,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 const ENV_PORT: &str = "FASTR_TEST_WIN_SANDBOX_NETWORK_PORT";
+const WSAEACCES: i32 = 10013;
 
 /// The well-known capability SID for `internetClient`.
 ///
@@ -339,6 +340,7 @@ fn appcontainer_denies_outbound_tcp_connect() {
       ("FASTR_DISABLE_RENDERER_SANDBOX", None),
       ("FASTR_WINDOWS_RENDERER_SANDBOX", None),
       ("FASTR_ALLOW_UNSANDBOXED_RENDERER", None),
+      ("FASTR_DISABLE_WIN_MITIGATIONS", None),
       (ENV_PORT, Some(port_str.as_str())),
     ]);
     spawn_sandboxed(&exe, &args, &inherit).expect("spawn sandboxed child")
@@ -404,6 +406,11 @@ fn appcontainer_network_denied_child() {
       panic!("SECURITY BUG: AppContainer sandbox allowed TCP connect to {addr}");
     }
     Err(err) => {
+      assert!(
+        err.kind() == io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(WSAEACCES),
+        "expected connect to be denied with PermissionDenied/WSAEACCES(10013), got {err:?} (raw_os_error={:?})",
+        err.raw_os_error()
+      );
       eprintln!(
         "connect to {addr} denied as expected: {err} (kind={:?})",
         err.kind()

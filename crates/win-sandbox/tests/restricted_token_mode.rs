@@ -11,13 +11,13 @@ use win_sandbox::{mitigations, restricted_token, RestrictedToken, SpawnConfig};
 use windows_sys::Win32::Foundation::{
   CloseHandle, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
 };
-use windows_sys::Win32::Security::{
-  GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-  NO_INHERITANCE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, PSID,
-};
 use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
   NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+};
+use windows_sys::Win32::Security::{
+  GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
+  NO_INHERITANCE, PSID, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -194,6 +194,20 @@ fn current_integrity_rid() -> u32 {
 
 #[test]
 fn restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile() {
+  const DISABLE_MITIGATIONS_ENV: &str = "FASTR_DISABLE_WIN_MITIGATIONS";
+  let prev_disable_mitigations = std::env::var_os(DISABLE_MITIGATIONS_ENV);
+  std::env::remove_var(DISABLE_MITIGATIONS_ENV);
+  struct EnvRestore(Option<OsString>);
+  impl Drop for EnvRestore {
+    fn drop(&mut self) {
+      match self.0.take() {
+        Some(value) => std::env::set_var(DISABLE_MITIGATIONS_ENV, value),
+        None => std::env::remove_var(DISABLE_MITIGATIONS_ENV),
+      }
+    }
+  }
+  let _restore = EnvRestore(prev_disable_mitigations);
+
   let depth: u32 = std::env::var(ENV_TEST_DEPTH)
     .ok()
     .and_then(|raw| raw.parse().ok())
