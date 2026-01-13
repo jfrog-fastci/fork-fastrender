@@ -933,6 +933,115 @@ impl<'vm> HirEvaluator<'vm> {
         let v = self.eval_expr(scope, body, *expr)?;
         Err(VmError::Throw(v))
       }
+      hir_js::StmtKind::Try {
+        block,
+        catch,
+        finally_block,
+      } => {
+        // Evaluate the try/catch/finally statement in a nested scope so any roots pushed while
+        // coercing internal errors (TypeError, etc.) don't leak into surrounding statement lists.
+        let mut try_scope = scope.reborrow();
+
+        // 1. Evaluate the try block and capture either:
+        //    - a normal/abrupt Flow, or
+        //    - a catchable thrown value, or
+        //    - an uncatachable VM error (termination/OOM/etc).
+        let mut pending: Result<Flow, VmError> = match self.eval_stmt(&mut try_scope, body, *block) {
+          Ok(flow) => Ok(flow),
+          Err(err) => {
+            // Propagate non-catchable VM errors immediately (no catch/finally semantics).
+            if !(err.is_throw_completion() || matches!(err, VmError::RangeError(_))) {
+              return Err(err);
+            }
+
+            // Coerce internal helper errors into a JS throw value when intrinsics exist, so
+            // `try/catch` can observe them.
+            let err = crate::vm::coerce_error_to_throw(&*self.vm, &mut try_scope, err);
+            if err.thrown_value().is_none() {
+              return Err(err);
+            }
+            Err(err)
+          }
+        };
+
+        // 2. If the try block threw (or produced an internal throw-completion), run the catch
+        //    clause if present.
+        if let (Err(thrown_err), Some(catch_clause)) = (&pending, catch.as_ref()) {
+          if let Some(thrown_value) = thrown_err.thrown_value() {
+            let mut catch_scope = try_scope.reborrow();
+            // Root the thrown value across catch environment creation and binding initialization,
+            // both of which may allocate and trigger GC.
+            catch_scope.push_root(thrown_value)?;
+
+            let outer_env = self.env.lexical_env();
+            let catch_env = catch_scope.env_create(Some(outer_env))?;
+            self.env.set_lexical_env(catch_scope.heap_mut(), catch_env);
+
+            let catch_result = (|| -> Result<Flow, VmError> {
+              if let Some(param_pat_id) = catch_clause.param {
+                let pat = self.get_pat(body, param_pat_id)?;
+                let hir_js::PatKind::Ident(name_id) = pat.kind else {
+                  return Err(VmError::Unimplemented(
+                    "catch parameter pattern (hir-js compiled path)",
+                  ));
+                };
+                let name = self.resolve_name(name_id)?;
+                catch_scope.env_create_mutable_binding(catch_env, name.as_str())?;
+                catch_scope
+                  .heap_mut()
+                  .env_initialize_binding(catch_env, name.as_str(), thrown_value)?;
+              }
+
+              self.eval_stmt(&mut catch_scope, body, catch_clause.body)
+            })();
+
+            // Always restore the outer env, even if catch body throws/returns/etc.
+            self.env.set_lexical_env(catch_scope.heap_mut(), outer_env);
+
+            pending = catch_result;
+          }
+        }
+
+        // 3. Always execute `finally` if present.
+        if let Some(finally_stmt) = finally_block {
+          let mut finally_scope = try_scope.reborrow();
+
+          // Root the pending completion's value (if any) while evaluating `finally`, which may
+          // allocate and trigger GC.
+          let pending_value: Option<Value> = match &pending {
+            Ok(flow) => match flow {
+              Flow::Normal(v) => *v,
+              Flow::Return(v) => Some(*v),
+              Flow::Break(_) | Flow::Continue(_) => None,
+            },
+            Err(err) => err.thrown_value(),
+          };
+          if let Some(v) = pending_value {
+            finally_scope.push_root(v)?;
+          }
+
+          let finally_result = self.eval_stmt(&mut finally_scope, body, *finally_stmt);
+          match finally_result {
+            Ok(Flow::Normal(_)) => {
+              // Normal completion from `finally` does not override the pending completion.
+            }
+            Ok(abrupt) => {
+              // Abrupt completion (return/break/continue) overrides.
+              pending = Ok(abrupt);
+            }
+            Err(err) => {
+              // A throw from `finally` overrides.
+              pending = Err(err);
+            }
+          }
+        }
+
+        // Per spec, empty normal completion becomes `undefined`.
+        match pending {
+          Ok(flow) => Ok(flow.update_empty(Some(Value::Undefined))),
+          Err(err) => Err(err),
+        }
+      }
       hir_js::StmtKind::Labeled { label, body: inner } => {
         let flow = self.eval_stmt(scope, body, *inner)?;
         match flow {
@@ -968,7 +1077,6 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::StmtKind::Empty | hir_js::StmtKind::Debugger => Ok(Flow::empty()),
       other => Err(match other {
         hir_js::StmtKind::ForIn { .. } => VmError::Unimplemented("for-in/of (hir-js compiled path)"),
-        hir_js::StmtKind::Try { .. } => VmError::Unimplemented("try/catch/finally (hir-js compiled path)"),
         _ => VmError::Unimplemented("statement (hir-js compiled path)"),
       }),
     }
