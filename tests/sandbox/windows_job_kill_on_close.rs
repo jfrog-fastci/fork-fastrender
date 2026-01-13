@@ -14,6 +14,7 @@ use std::os::windows::io::AsRawHandle;
 use std::time::Duration;
 
 use fastrender::sandbox::windows::spawn_sandboxed;
+use win_sandbox::SandboxSupport;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Threading::{
   GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
@@ -27,6 +28,15 @@ const CHILD_TIMEOUT_MS: u32 = 10_000;
 
 #[test]
 fn sandbox_job_kill_on_close_terminates_child_process() {
+  let support = SandboxSupport::detect();
+  match support {
+    SandboxSupport::Full | SandboxSupport::NoAppContainer => {}
+    other => {
+      eprintln!("skipping JobObject kill-on-close test: nested jobs are unavailable ({other})");
+      return;
+    }
+  }
+
   let exe = std::env::current_exe().expect("current test exe path");
   let test_name = "sandbox::windows_job_kill_on_close::sandbox_job_kill_on_close_child";
 

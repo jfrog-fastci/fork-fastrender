@@ -189,6 +189,13 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
     return;
   }
 
+  // Ensure developer environment overrides don't silently change test semantics.
+  let _env_guard = crate::common::EnvVarsGuard::remove(&[
+    "FASTR_DISABLE_RENDERER_SANDBOX",
+    "FASTR_WINDOWS_RENDERER_SANDBOX",
+    "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+  ]);
+
   let cmd_exe = cmd_exe_path().expect("determine cmd.exe path");
   // Sanity check: in the normal (unsandboxed) test process, cmd.exe should spawn successfully. If
   // this fails, the regression test could pass for the wrong reason.
@@ -222,6 +229,12 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
     drop(_cwd_guard);
     child.expect("spawn sandboxed child test process")
   });
+
+  assert_eq!(
+    child.level,
+    WindowsSandboxLevel::AppContainer,
+    "expected AppContainer sandboxing (no silent fallback)"
+  );
 
   // SAFETY: waiting on a valid process handle.
   let timeout_ms: u32 = 30_000;
