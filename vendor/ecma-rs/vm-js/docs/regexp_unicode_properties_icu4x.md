@@ -46,6 +46,11 @@ binary properties:
 - `ASCII`: `cp <= 0x7F`
 - `Assigned`: `General_Category != Unassigned`
 
+In addition, `White_Space` has a **name alias mismatch**: ECMA-262 uses the UCD alias `space`,
+whereas ICU4X’s built-in short name for this property is `WSpace`. The spike therefore
+special-cases `White_Space` name resolution to accept `space` and reject `WSpace` to stay aligned
+with ECMA-262’s accepted spellings.
+
 ### `General_Category` (`gc`)
 
 ICU4X provides:
@@ -99,4 +104,3 @@ If this approach is kept:
    add targeted test262 coverage.
 3. Consider caching the ICU4X `CodePointSetData`/`CodePointMapData` instances if construction cost
    becomes noticeable (the spike currently constructs them on demand).
-

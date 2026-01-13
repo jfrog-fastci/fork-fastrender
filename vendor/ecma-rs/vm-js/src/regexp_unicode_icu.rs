@@ -193,10 +193,21 @@ fn resolve_binary_property(name: &str) -> Option<BinaryProperty> {
     "Any" => return Some(Any),
     "ASCII" => return Some(Ascii),
     "Assigned" => return Some(Assigned),
+    // ECMA-262 / UCD alias for `White_Space` (note: ICU4X's short name for `White_Space` is
+    // `WSpace`, but the UCD alias list used by ECMA-262 uses `space`).
+    "space" => return Some(WhiteSpace),
     _ => {}
   }
 
   let bytes = name.as_bytes();
+
+  // `White_Space` is another special case: see the `"space"` comment above. We accept the canonical
+  // name (`White_Space`) but intentionally do *not* accept ICU4X's `WSpace` alias, since it is not
+  // part of the ECMA-262 alias set.
+  if bytes == <props::WhiteSpace as props::BinaryProperty>::NAME {
+    return Some(WhiteSpace);
+  }
+
   macro_rules! m {
     ($variant:ident, $marker:ty) => {
       if bytes == <$marker as props::BinaryProperty>::NAME
@@ -255,7 +266,6 @@ fn resolve_binary_property(name: &str) -> Option<BinaryProperty> {
   m!(UnifiedIdeograph, props::UnifiedIdeograph);
   m!(Uppercase, props::Uppercase);
   m!(VariationSelector, props::VariationSelector);
-  m!(WhiteSpace, props::WhiteSpace);
   m!(XidContinue, props::XidContinue);
   m!(XidStart, props::XidStart);
 
@@ -359,6 +369,18 @@ mod tests {
 
     assert_eq!(resolve_property_name("sc"), Some(PropertyName::Script));
     assert_eq!(resolve_property_name("scx"), Some(PropertyName::ScriptExtensions));
+
+    // White_Space has an alias `space` (lowercase) in the UCD alias list.
+    assert_eq!(
+      resolve_property_name("White_Space"),
+      Some(PropertyName::Binary(BinaryProperty::WhiteSpace))
+    );
+    assert_eq!(
+      resolve_property_name("space"),
+      Some(PropertyName::Binary(BinaryProperty::WhiteSpace))
+    );
+    // ICU's `WSpace` alias is not part of the ECMA-262 tables; keep matching strict.
+    assert_eq!(resolve_property_name("WSpace"), None);
   }
 
   #[test]
