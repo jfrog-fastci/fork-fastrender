@@ -745,7 +745,12 @@ pub(super) fn resolve_item_baselines(
   };
 
   // (item_index, other_axis_start_index, baseline_value)
-  let mut baseline_entries: Vec<(usize, u16, f32)> = Vec::new();
+  let baseline_entries_capacity = group_stats
+    .values()
+    .filter(|stats| stats.count > 1)
+    .map(|stats| stats.count)
+    .sum();
+  let mut baseline_entries: Vec<(usize, u16, f32)> = Vec::with_capacity(baseline_entries_capacity);
 
   for (idx, item) in items.iter_mut().enumerate() {
     check_layout_abort();
