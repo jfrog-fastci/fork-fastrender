@@ -88,8 +88,9 @@ transport/codec yet:
     sends/receives **length-prefixed** JSON messages on top of `src/ipc/framing.rs` while enforcing
     `MAX_IPC_MESSAGE_BYTES` on both send and receive.
   - Security note: `serde` ignores unknown struct fields by default. IPC protocol structs intended
-    for a trust boundary should use `#[serde(deny_unknown_fields)]` and should have regression tests
-    asserting unknown fields are rejected (see `src/ipc/connection.rs`).
+    for a trust boundary should use `#[serde(deny_unknown_fields)]` (including the **top-level**
+    message types, not just nested structs) and should have regression tests asserting unknown fields
+    are rejected (see `src/ipc/connection.rs`).
 - **Network-process IPC (in-tree, under active development):**
   - `src/net/transport.rs` defines a binary protocol with explicit per-field limits and uses
     `src/ipc/framing.rs` for bounded framing.
