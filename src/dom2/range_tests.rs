@@ -71,6 +71,68 @@ fn assert_range_collapsed(doc: &Document, range: super::RangeId, node: super::No
 }
 
 #[test]
+fn range_collapse_updates_boundary_points() {
+  let html = "<!doctype html><html><body><p id=p>Hello</p></body></html>";
+  let mut doc: Document = parse_html(html).unwrap();
+  let p = doc.get_element_by_id("p").unwrap();
+  let text = doc.node(p).children[0];
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 4).unwrap();
+
+  doc.range_collapse(range, /* to_start */ true).unwrap();
+  assert_range_collapsed(&doc, range, text, 1);
+
+  // Move end elsewhere and collapse to end.
+  doc.range_set_end(range, text, 3).unwrap();
+  doc.range_collapse(range, /* to_start */ false).unwrap();
+  assert_range_collapsed(&doc, range, text, 3);
+}
+
+#[test]
+fn range_detach_is_noop() {
+  let html = "<!doctype html><html><body><p id=p>Hello</p></body></html>";
+  let mut doc: Document = parse_html(html).unwrap();
+  let p = doc.get_element_by_id("p").unwrap();
+  let text = doc.node(p).children[0];
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 0).unwrap();
+  doc.range_set_end(range, text, 2).unwrap();
+
+  doc.range_detach(range).unwrap();
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}
+
+#[test]
+fn range_clone_range_produces_independent_range() {
+  let html = "<!doctype html><html><body><p id=p>Hello</p></body></html>";
+  let mut doc: Document = parse_html(html).unwrap();
+  let p = doc.get_element_by_id("p").unwrap();
+  let text = doc.node(p).children[0];
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 4).unwrap();
+
+  let cloned = doc.range_clone_range(range).unwrap();
+  assert_ne!(range, cloned);
+  assert_eq!(doc.range_start(range).unwrap(), doc.range_start(cloned).unwrap());
+  assert_eq!(doc.range_end(range).unwrap(), doc.range_end(cloned).unwrap());
+
+  // Mutating one range must not affect the other.
+  doc.range_set_start(range, text, 0).unwrap();
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_start_offset(cloned).unwrap(), 1);
+
+  doc.range_set_end(cloned, text, 5).unwrap();
+  assert_eq!(doc.range_end_offset(cloned).unwrap(), 5);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 4);
+}
+
+#[test]
 fn range_endpoints_update_after_replace_data_deletion_text() {
   // This matches the early-return CharacterData-only path in Range.deleteContents() /
   // Range.extractContents(): it performs a CharacterData replaceData/deleteData operation and

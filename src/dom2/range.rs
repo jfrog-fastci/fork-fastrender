@@ -472,6 +472,43 @@ impl Document {
     self.range_set_start_or_end(range, node, offset, /* is_start */ false)
   }
 
+  /// Collapse a live range to one of its boundary points.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-collapse
+  pub fn range_collapse(&mut self, range: RangeId, to_start: bool) -> DomResult<()> {
+    let range_obj = self.range_mut(range)?;
+    if to_start {
+      range_obj.end = range_obj.start;
+    } else {
+      range_obj.start = range_obj.end;
+    }
+    Ok(())
+  }
+
+  /// Legacy `Range.prototype.detach()` hook.
+  ///
+  /// Per spec this is a no-op, but it must exist for compatibility.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-detach
+  pub fn range_detach(&self, range: RangeId) -> DomResult<()> {
+    let _ = self.range(range)?;
+    Ok(())
+  }
+
+  /// Clone a live range, returning a new independent range object with the same boundary points.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-clonerange
+  pub fn range_clone_range(&mut self, range: RangeId) -> DomResult<RangeId> {
+    let existing = self.range(range)?.clone();
+    let id = self.live_mutation.alloc_live_range_id();
+    let prev = self.ranges.insert(id, existing);
+    debug_assert!(
+      prev.is_none(),
+      "range id collision: attempted to insert duplicate Range state"
+    );
+    Ok(id)
+  }
+
   /// ShadowRoot-aware "root of node" helper for DOM Range algorithms.
   ///
   /// `dom2` stores ShadowRoot nodes in the main tree with a `parent` pointer to the host element so
