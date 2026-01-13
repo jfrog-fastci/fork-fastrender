@@ -2814,9 +2814,16 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let child_id = platform.require_node_id(scope.heap(), child_value)?;
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
-          Ok(host.mutate_dom(|dom| match dom.append_child(parent_id, child_id) {
-            Ok(changed) => (Ok(()), changed),
-            Err(err) => (Err(err), false),
+          Ok(host.mutate_dom(|dom| {
+            let res = if matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. }) {
+              dom.with_shadow_root_as_document_fragment(child_id, |dom| dom.append_child(parent_id, child_id))
+            } else {
+              dom.append_child(parent_id, child_id)
+            };
+            match res {
+              Ok(changed) => (Ok(()), changed),
+              Err(err) => (Err(err), false),
+            }
           }))
         })?;
         match result {
@@ -2852,9 +2859,21 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
-          Ok(host.mutate_dom(|dom| match dom.insert_before(parent_id, child_id, reference) {
-            Ok(changed) => (Ok(()), changed),
-            Err(err) => (Err(err), false),
+          Ok(host.mutate_dom(|dom| {
+            if reference.is_some_and(|reference| matches!(dom.node(reference).kind, NodeKind::ShadowRoot { .. })) {
+              return (Err(DomError::NotFoundError), false);
+            }
+            let res = if matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. }) {
+              dom.with_shadow_root_as_document_fragment(child_id, |dom| {
+                dom.insert_before(parent_id, child_id, reference)
+              })
+            } else {
+              dom.insert_before(parent_id, child_id, reference)
+            };
+            match res {
+              Ok(changed) => (Ok(()), changed),
+              Err(err) => (Err(err), false),
+            }
           }))
         })?;
         match result {
@@ -2886,9 +2905,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let child_id = platform.require_node_id(scope.heap(), child_value)?;
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
-          Ok(host.mutate_dom(|dom| match dom.remove_child(parent_id, child_id) {
-            Ok(changed) => (Ok(()), changed),
-            Err(err) => (Err(err), false),
+          Ok(host.mutate_dom(|dom| {
+            if matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. }) {
+              return (Err(DomError::NotFoundError), false);
+            }
+            match dom.remove_child(parent_id, child_id) {
+              Ok(changed) => (Ok(()), changed),
+              Err(err) => (Err(err), false),
+            }
           }))
         })?;
         match result {
@@ -2922,9 +2946,21 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let old_child_id = platform.require_node_id(scope.heap(), old_child_value)?;
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
-          Ok(host.mutate_dom(|dom| match dom.replace_child(parent_id, new_child_id, old_child_id) {
-            Ok(changed) => (Ok(()), changed),
-            Err(err) => (Err(err), false),
+          Ok(host.mutate_dom(|dom| {
+            if matches!(dom.node(old_child_id).kind, NodeKind::ShadowRoot { .. }) {
+              return (Err(DomError::NotFoundError), false);
+            }
+            let res = if matches!(dom.node(new_child_id).kind, NodeKind::ShadowRoot { .. }) {
+              dom.with_shadow_root_as_document_fragment(new_child_id, |dom| {
+                dom.replace_child(parent_id, new_child_id, old_child_id)
+              })
+            } else {
+              dom.replace_child(parent_id, new_child_id, old_child_id)
+            };
+            match res {
+              Ok(changed) => (Ok(()), changed),
+              Err(err) => (Err(err), false),
+            }
           }))
         })?;
         match result {
@@ -2984,6 +3020,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
+            if matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. }) {
+              // ShadowRoot is not a tree child per the DOM Standard. It must not be removable via
+              // `Node.remove()` even though `dom2` stores it as a child of its host element.
+              return (Ok(()), false);
+            }
             let parent = match dom.parent(node_id) {
               Ok(Some(p)) => p,
               Ok(None) => return (Ok(()), false),

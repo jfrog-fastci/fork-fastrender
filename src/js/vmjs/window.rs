@@ -1932,6 +1932,99 @@ mod tests {
   }
 
   #[test]
+  fn webidl_dom_backend_shadow_root_mutation_semantics_open() -> Result<()> {
+    let dom = dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
+
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      "https://example.invalid/",
+      Arc::new(HttpFetcher::new()),
+      clock,
+      JsExecutionOptions::default(),
+      DomBindingsBackend::WebIdl,
+    )?;
+
+    let value = host.exec_script_in_event_loop(
+      &mut event_loop,
+      "(() => {\n\
+        const host = document.createElement('div');\n\
+        const sr = host.attachShadow({ mode: 'open' });\n\
+        const span = document.createElement('span');\n\
+        span.id = 'moved-open';\n\
+        sr.appendChild(span);\n\
+        document.body.appendChild(host);\n\
+\n\
+        // ShadowRoot is not a tree child; remove() must be a no-op.\n\
+        sr.remove();\n\
+        if (host.shadowRoot !== sr) throw new Error('shadow root detached via remove()');\n\
+        if (sr.childNodes.length !== 1) throw new Error('shadow root children changed by remove()');\n\
+\n\
+        // Inserting a ShadowRoot behaves like inserting a DocumentFragment.\n\
+        document.body.appendChild(sr);\n\
+        if (document.getElementById('moved-open') !== span) throw new Error('span was not moved to document');\n\
+        if (document.body.lastChild !== span) throw new Error('span not appended to body');\n\
+        if (sr.childNodes.length !== 0) throw new Error('shadow root was not emptied');\n\
+        if (host.shadowRoot !== sr) throw new Error('host.shadowRoot was detached');\n\
+\n\
+        // ShadowRoot is not a tree child; it cannot be removed/replaced nor used as a reference child.\n\
+        try { host.removeChild(sr); throw new Error('removeChild did not throw'); } catch (e) { if (!e || e.name !== 'NotFoundError') throw e; }\n\
+        try { host.insertBefore(document.createElement('i'), sr); throw new Error('insertBefore did not throw'); } catch (e) { if (!e || e.name !== 'NotFoundError') throw e; }\n\
+        try { host.replaceChild(document.createElement('b'), sr); throw new Error('replaceChild did not throw'); } catch (e) { if (!e || e.name !== 'NotFoundError') throw e; }\n\
+        return true;\n\
+      })()",
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_dom_backend_shadow_root_mutation_semantics_closed() -> Result<()> {
+    let dom = dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
+
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      "https://example.invalid/",
+      Arc::new(HttpFetcher::new()),
+      clock,
+      JsExecutionOptions::default(),
+      DomBindingsBackend::WebIdl,
+    )?;
+
+    let value = host.exec_script_in_event_loop(
+      &mut event_loop,
+      "(() => {\n\
+        const host = document.createElement('div');\n\
+        const sr = host.attachShadow({ mode: 'closed' });\n\
+        const span = document.createElement('span');\n\
+        span.id = 'moved-closed';\n\
+        sr.appendChild(span);\n\
+        document.body.appendChild(host);\n\
+        if (host.shadowRoot !== null) throw new Error('closed shadow root should not be exposed on host.shadowRoot');\n\
+\n\
+        // remove() must not detach the closed ShadowRoot from its host.\n\
+        sr.remove();\n\
+        try { host.attachShadow({ mode: 'open' }); throw new Error('attachShadow after remove() did not throw'); } catch (e) { if (!e || e.name !== 'NotSupportedError') throw e; }\n\
+\n\
+        document.body.appendChild(sr);\n\
+        if (document.getElementById('moved-closed') !== span) throw new Error('span was not moved to document');\n\
+        if (document.body.lastChild !== span) throw new Error('span not appended to body');\n\
+        if (sr.childNodes.length !== 0) throw new Error('shadow root was not emptied');\n\
+\n\
+        try { host.removeChild(sr); throw new Error('removeChild did not throw'); } catch (e) { if (!e || e.name !== 'NotFoundError') throw e; }\n\
+        return true;\n\
+      })()",
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn window_host_state_can_boot_with_webidl_dom_backend_and_call_webidl_document_prototype_methods(
   ) -> Result<()> {
     // Build a tiny DOM with a single element so `Document.prototype.getElementById` can find it.
