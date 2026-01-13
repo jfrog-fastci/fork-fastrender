@@ -1017,6 +1017,9 @@ navigation TTFP), enable JSONL perf logging:
 ```bash
 # Convenience wrapper: runs under run_limited, sets FASTR_PERF_LOG=1, and writes JSONL to a file.
 bash scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
+
+# Capture + summarize (runs browser_perf_log_summary after the browser exits):
+bash scripts/capture_browser_perf_log.sh --summary --url about:test-scroll --out target/browser_perf.jsonl
 ```
 
 Manual invocation (equivalent, but requires setting env vars / output paths yourself):
