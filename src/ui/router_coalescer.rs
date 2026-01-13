@@ -709,6 +709,33 @@ mod tests {
   }
 
   #[test]
+  fn barrier_flush_order_is_independent_of_hashmap_iteration() {
+    let mut c = UiToWorkerRouterCoalescer::new();
+
+    assert!(c.push(pm(TabId(2), 1.0, 1.0)).is_empty());
+    assert!(c.push(pm(TabId(1), 2.0, 2.0)).is_empty());
+
+    let out = c.push(UiToWorker::Copy { tab_id: TabId(1) });
+
+    assert_eq!(out.len(), 3);
+    match &out[0] {
+      UiToWorker::PointerMove { tab_id, pos_css, .. } => {
+        assert_eq!(*tab_id, TabId(2));
+        assert_eq!(*pos_css, (1.0, 1.0));
+      }
+      other => panic!("expected PointerMove for tab 2, got {other:?}"),
+    }
+    match &out[1] {
+      UiToWorker::PointerMove { tab_id, pos_css, .. } => {
+        assert_eq!(*tab_id, TabId(1));
+        assert_eq!(*pos_css, (2.0, 2.0));
+      }
+      other => panic!("expected PointerMove for tab 1, got {other:?}"),
+    }
+    assert!(matches!(out[2], UiToWorker::Copy { tab_id: TabId(1) }));
+  }
+
+  #[test]
   fn ime_commit_flushes_pending_text_and_preedit_before_commit() {
     let mut c = UiToWorkerRouterCoalescer::new();
     assert!(c
