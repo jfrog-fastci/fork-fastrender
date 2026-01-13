@@ -472,23 +472,10 @@ mod tests {
         .map_err(|e| Error::Other(e.to_string()))?;
     }
 
-    let err = {
-      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
-      let global = realm.global_object();
-      let mut scope = heap.scope();
-      let raf = get_prop(&mut scope, global, "requestAnimationFrame");
-      let handler_s = scope.alloc_string("1+1").unwrap();
-      scope
-        .push_root(Value::String(handler_s))
-        .expect("push root handler string");
-      vm.call_without_host(
-        &mut scope,
-        raf,
-        Value::Undefined,
-        &[Value::String(handler_s)],
-      )
-      .expect_err("requestAnimationFrame string callback should be rejected")
-    };
+    let err = host
+      .window
+      .exec_script("requestAnimationFrame('1+1')")
+      .expect_err("expected requestAnimationFrame(string) to throw TypeError");
 
     assert_type_error_contains(
       host.window.heap_mut(),

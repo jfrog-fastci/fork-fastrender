@@ -6012,56 +6012,27 @@ mod tests {
   }
 
   #[test]
-  fn timers_reject_string_handlers() -> crate::error::Result<()> {
+  fn timers_reject_string_handlers() -> Result<(), VmError> {
     let mut host = Host::new();
-
     {
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
-      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+      install_window_timers_bindings::<Host>(vm, realm, heap)?;
     }
 
-    let err_timeout = {
-      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
-      let global = realm.global_object();
-      let mut scope = heap.scope();
-      let set_timeout = get_prop(&mut scope, global, "setTimeout");
-      let handler_s = scope.alloc_string("1+1").unwrap();
-      scope
-        .push_root(Value::String(handler_s))
-        .expect("push root handler string");
-      vm.call_without_host(
-        &mut scope,
-        set_timeout,
-        Value::Undefined,
-        &[Value::String(handler_s), Value::Number(0.0)],
-      )
-      .expect_err("setTimeout string handler should be rejected")
-    };
-
+    let err_timeout = host
+      .window
+      .exec_script("setTimeout('1+1', 0)")
+      .expect_err("expected setTimeout(string) to throw TypeError");
     assert_type_error_contains(
       host.window.heap_mut(),
       err_timeout,
       SET_TIMEOUT_STRING_HANDLER_ERROR,
     );
 
-    let err_interval = {
-      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
-      let global = realm.global_object();
-      let mut scope = heap.scope();
-      let set_interval = get_prop(&mut scope, global, "setInterval");
-      let handler_s = scope.alloc_string("1+1").unwrap();
-      scope
-        .push_root(Value::String(handler_s))
-        .expect("push root handler string");
-      vm.call_without_host(
-        &mut scope,
-        set_interval,
-        Value::Undefined,
-        &[Value::String(handler_s), Value::Number(0.0)],
-      )
-      .expect_err("setInterval string handler should be rejected")
-    };
-
+    let err_interval = host
+      .window
+      .exec_script("setInterval('1+1', 0)")
+      .expect_err("expected setInterval(string) to throw TypeError");
     assert_type_error_contains(
       host.window.heap_mut(),
       err_interval,
