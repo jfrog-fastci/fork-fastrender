@@ -160,10 +160,6 @@ fn render_iframe_out_of_process(
   };
 
   let mut cmd = Command::new(bin);
-  cmd
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
 
   // Defense-in-depth: prevent leaking unrelated file descriptors into the iframe renderer process.
   //
@@ -191,6 +187,13 @@ fn render_iframe_out_of_process(
       format!("failed to configure iframe renderer sandbox: {err}"),
     ))
   })?;
+
+  // Configure stdio after sandbox wrapping so wrapper implementations (e.g. macOS `sandbox-exec`)
+  // don't discard the caller's pipe setup.
+  cmd
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
 
   let mut child = cmd.spawn().map_err(OopifError::SpawnFailed)?;
   {

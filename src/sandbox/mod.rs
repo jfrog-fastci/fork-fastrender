@@ -299,6 +299,13 @@ impl SandboxWarning {
 pub enum RendererSandboxError {
   #[error("rlimit value {value} for {resource} does not fit platform rlim_t")]
   InvalidRlimitValue { resource: &'static str, value: u64 },
+
+  #[cfg(target_os = "macos")]
+  #[error("failed to configure macOS sandbox-exec wrapper")]
+  MacosSandboxExecWrapFailed {
+    #[source]
+    source: io::Error,
+  },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

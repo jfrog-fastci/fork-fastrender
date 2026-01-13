@@ -41,7 +41,23 @@ pub fn configure_renderer_command(
     return Ok(());
   }
 
-  #[cfg(not(all(unix, target_os = "linux")))]
+  #[cfg(target_os = "macos")]
+  {
+    // On macOS, avoid `CommandExt::pre_exec` from a multithreaded parent process. When explicitly
+    // enabled, wrap the renderer spawn via `sandbox-exec` instead.
+    //
+    // This is a debug/legacy mechanism: Apple has deprecated `sandbox-exec` and may remove it in
+    // future macOS releases.
+    let _ = config;
+    crate::sandbox::macos_spawn::maybe_wrap_command_with_sandbox_exec(
+      cmd,
+      crate::sandbox::macos::RELAXED_SYSTEM_ALLOWLIST_PROFILE,
+    )
+    .map_err(|source| RendererSandboxError::MacosSandboxExecWrapFailed { source })?;
+    return Ok(());
+  }
+
+  #[cfg(not(any(all(unix, target_os = "linux"), target_os = "macos")))]
   {
     let _ = (cmd, config);
     return Ok(());
