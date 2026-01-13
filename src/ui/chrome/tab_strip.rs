@@ -1583,28 +1583,37 @@ pub(super) fn tab_strip_ui(
   let mut tab_units: f32 = 0.0;
   let mut group_chip_total_width: f32 = 0.0;
   let mut total_gap_width: f32 = 0.0;
-  let mut prev_scale: Option<f32> = None;
+  let mut first_item = true;
+  // Gap scaling in the unpinned strip is driven by the *previous* item:
+  // - gaps after normal tabs / group chips are full `TAB_GAP`
+  // - gaps after group-member tabs shrink with that group's expand factor
+  //
+  // This keeps the chip→next-item gap stable (avoids a pop at the end of collapse) while still
+  // allowing the collapsing group region to shrink away.
+  let mut prev_gap_scale: Option<f32> = None;
   {
     let mut idx = pinned_len;
     while idx < app.tabs.len() {
       let tab = &app.tabs[idx];
       let Some(group_id) = tab.group else {
-        if let Some(prev) = prev_scale {
-          total_gap_width += TAB_GAP * prev.min(1.0);
+        if !first_item {
+          total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0);
         }
+        first_item = false;
         tab_units += 1.0;
-        prev_scale = Some(1.0);
+        prev_gap_scale = None;
         idx += 1;
         continue;
       };
 
       // If the group metadata is missing, treat the tab as ungrouped so we stay robust.
       let Some(group) = app.tab_groups.get(&group_id) else {
-        if let Some(prev) = prev_scale {
-          total_gap_width += TAB_GAP * prev.min(1.0);
+        if !first_item {
+          total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0);
         }
+        first_item = false;
         tab_units += 1.0;
-        prev_scale = Some(1.0);
+        prev_gap_scale = None;
         idx += 1;
         continue;
       };
@@ -1617,10 +1626,12 @@ pub(super) fn tab_strip_ui(
           group.title.as_str()
         };
         group_chip_total_width += group_chip_width(ui, title);
-        if let Some(prev) = prev_scale {
-          total_gap_width += TAB_GAP * prev.min(1.0);
+        if !first_item {
+          total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0);
         }
-        prev_scale = Some(1.0);
+        first_item = false;
+        // Chips never scale the gap after them.
+        prev_gap_scale = None;
       }
 
       let group_t = group_expand_t
@@ -1636,11 +1647,12 @@ pub(super) fn tab_strip_ui(
         continue;
       }
 
-      if let Some(prev) = prev_scale {
-        total_gap_width += TAB_GAP * prev.min(group_t);
+      if !first_item {
+        total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0);
       }
+      first_item = false;
       tab_units += group_t;
-      prev_scale = Some(group_t);
+      prev_gap_scale = Some(group_t);
       idx += 1;
     }
   }
@@ -1942,20 +1954,19 @@ pub(super) fn tab_strip_ui(
           ui.horizontal(|ui| {
             let mut idx = pinned_len;
             let mut first_item = true;
-            // Scale gaps based on the visibility of adjacent items so collapsing tabs don't leave
-            // behind fixed `TAB_GAP` holes. We use `min(prev, curr)` so:
-            // - chip<->tab gaps shrink with the tab during collapse/expand
-            // - chip<->chip and chip<->ungrouped tab gaps remain at full size
-            let mut prev_item_scale: f32 = 1.0;
+            // Gap scaling is driven by the *previous* item: gaps after group-member tabs shrink
+            // with the group, while gaps after chips/normal tabs remain full. This avoids a
+            // chip→next-item "pop" at the end of collapse while still shrinking intra-group gaps.
+            let mut prev_gap_scale: Option<f32> = None;
 
             let mut add_gap =
-              |ui: &mut egui::Ui, first_item: &mut bool, prev_scale: f32, curr_scale: f32| {
+              |ui: &mut egui::Ui, first_item: &mut bool, prev_gap_scale: Option<f32>| {
                 if *first_item {
                   *first_item = false;
                   return;
                 }
-                let scale = prev_scale.min(curr_scale).clamp(0.0, 1.0);
-                let gap = (TAB_GAP * scale).max(0.0);
+                let scale = prev_gap_scale.unwrap_or(1.0).clamp(0.0, 1.0);
+                let gap = TAB_GAP * scale;
                 if gap > 0.0 {
                   ui.add_space(gap);
                 }
@@ -1967,9 +1978,9 @@ pub(super) fn tab_strip_ui(
               if let Some(group_id) = tab_group {
                 let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
                 if is_first {
-                  add_gap(ui, &mut first_item, prev_item_scale, 1.0);
+                  add_gap(ui, &mut first_item, prev_gap_scale);
                   group_chip_ui(ui, motion, app, group_id, &mut ops, focus_ring);
-                  prev_item_scale = 1.0;
+                  prev_gap_scale = None;
                 }
 
                 let collapsed = app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed);
@@ -1986,17 +1997,22 @@ pub(super) fn tab_strip_ui(
                   continue;
                 }
 
-                add_gap(ui, &mut first_item, prev_item_scale, group_t);
+                add_gap(ui, &mut first_item, prev_gap_scale);
                 let interactive = !collapsed && group_t > 0.95;
                 let tab_width = sizing.tab_width * group_t;
                 let is_active = active_id == Some(tab_id);
                 let favicon_tex = favicon_for_tab(tab_id);
-                let (tab_rect, tab_response, maybe_action) = {
+                let is_dragged = app.chrome.dragging_tab_id == Some(tab_id);
+                let (tab_rect, tab_response, maybe_action) = if is_dragged {
+                  // While dragging, keep layout stable but don't paint the tab in-flow.
+                  let (_, rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
+                  (rect, None, None)
+                } else {
                   let tab = &app.tabs[idx];
                   let group_border = tab
                     .group
                     .and_then(|gid| app.tab_groups.get(&gid).map(|g| group_color_egui(g.color)));
-                  tab_ui(
+                  let (rect, resp, action) = tab_ui(
                     ui,
                     motion,
                     tab,
@@ -2008,40 +2024,57 @@ pub(super) fn tab_strip_ui(
                     &mut app.chrome,
                     focus_ring,
                     group_border,
-                  )
+                  );
+                  (rect, Some(resp), action)
                 };
                 if is_active {
                   active_tab_rect = Some(tab_rect);
                   active_tab_is_pinned = false;
                 }
                 if is_active && active_changed {
-                  tab_response.scroll_to_me(Some(egui::Align::Center));
+                  if let Some(tab_response) = &tab_response {
+                    tab_response.scroll_to_me(Some(egui::Align::Center));
+                  }
                 }
                 #[cfg(test)]
                 tab_rects_for_test.push(tab_rect);
 
                 if interactive {
                   unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
-                  if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
-                    app.chrome.dragging_tab_id = Some(tab_id);
-                    app.chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+                  let is_close_action = maybe_action
+                    .as_ref()
+                    .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
+                  if !is_close_action {
+                    if let Some(tab_response) = &tab_response {
+                      if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
+                        app.chrome.dragging_tab_id = Some(tab_id);
+                        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+                        app.chrome.drag_start_pointer_pos = pointer_pos;
+                        if let Some(pointer_pos) = pointer_pos {
+                          ui.ctx().data_mut(|d| {
+                            d.insert_temp(drag_offset_id(), tab_rect.min - pointer_pos)
+                          });
+                        }
+                      }
+                    }
                   }
-                  if app.chrome.dragging_tab_id == Some(tab_id) {
-                    dragged_tab_rect = Some(tab_rect);
-                  }
+                }
+
+                if app.chrome.dragging_tab_id == Some(tab_id) {
+                  dragged_tab_rect = Some(tab_rect);
                 }
 
                 if let Some(action) = maybe_action {
                   actions.push(action);
                 }
 
-                prev_item_scale = group_t;
+                prev_gap_scale = Some(group_t);
                 idx += 1;
                 continue;
               }
 
-              add_gap(ui, &mut first_item, prev_item_scale, 1.0);
-              prev_item_scale = 1.0;
+              add_gap(ui, &mut first_item, prev_gap_scale);
+              prev_gap_scale = None;
               let is_active = active_id == Some(tab_id);
               let favicon_tex = favicon_for_tab(tab_id);
               let is_dragged = app.chrome.dragging_tab_id == Some(tab_id);
