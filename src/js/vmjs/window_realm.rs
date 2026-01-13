@@ -3468,6 +3468,8 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   // Collection/prototype helpers.
   HTML_COLLECTION_PROTOTYPE_KEY,
   NODE_LIST_PROTOTYPE_KEY,
+  NODE_ITERATOR_PROTOTYPE_KEY,
+  TREE_WALKER_PROTOTYPE_KEY,
   MUTATION_RECORD_PROTOTYPE_KEY,
   RANGE_PROTOTYPE_KEY,
   // HTMLFormElement/HTMLInputElement/HTMLTextAreaElement helpers.
@@ -3514,6 +3516,7 @@ const MUTATION_OBSERVER_REGISTRY_KEY: &str = "__fastrender_mutation_observer_reg
 const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notify";
 const MUTATION_OBSERVER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMOB"); // MutationObserver
 const MUTATION_RECORD_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMRC"); // MutationRecord
+const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const MUTATION_RECORD_PROTOTYPE_KEY: &str = "__fastrender_mutation_record_prototype";
 const RANGE_PROTOTYPE_KEY: &str = "__fastrender_range_prototype";
 const ATTR_PROTOTYPE_KEY: &str = "__fastrender_attr_prototype";
@@ -3528,6 +3531,14 @@ const NODE_LIST_ITERATOR_KIND_KEY: &str = "__fastrender_node_list_iterator_kind"
 const NODE_LIST_ITERATOR_KIND_VALUES: u8 = 0;
 const NODE_LIST_ITERATOR_KIND_KEYS: u8 = 1;
 const NODE_LIST_ITERATOR_KIND_ENTRIES: u8 = 2;
+
+const NODE_ITERATOR_ID_KEY: &str = "__fastrender_node_iterator_id";
+const NODE_ITERATOR_DOCUMENT_KEY: &str = "__fastrender_node_iterator_document";
+const NODE_ITERATOR_ROOT_KEY: &str = "__fastrender_node_iterator_root";
+const NODE_ITERATOR_REFERENCE_KEY: &str = "__fastrender_node_iterator_reference";
+const NODE_ITERATOR_WHAT_TO_SHOW_KEY: &str = "__fastrender_node_iterator_what_to_show";
+const NODE_ITERATOR_FILTER_KEY: &str = "__fastrender_node_iterator_filter";
+const NODE_ITERATOR_ACTIVE_KEY: &str = "__fastrender_node_iterator_active";
 
 const INTERSECTION_OBSERVER_ID_KEY: &str = "__fastrender_intersection_observer_id";
 const INTERSECTION_OBSERVER_CALLBACK_KEY: &str = "__fastrender_intersection_observer_callback";
@@ -14284,119 +14295,6 @@ fn document_create_element_native(
   let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
-
-fn document_create_node_iterator_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let Value::Object(document_obj) = this else {
-    return Err(VmError::TypeError(
-      "document.createNodeIterator must be called on a document object",
-    ));
-  };
-
-  // Ensure `this` is a document wrapper. The returned document id is currently unused in the
-  // handwritten stub, but keeping the brand-check matches other Document methods and prevents
-  // borrowing the function onto arbitrary objects.
-  let _document_id = ensure_document_handle_for_object(
-    vm,
-    scope,
-    document_obj,
-    "document.createNodeIterator must be called on a document object",
-  )?;
-
-  // Spec: `root` is required.
-  let root_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(root_value, Value::Object(_)) {
-    return Err(VmError::TypeError(
-      "document.createNodeIterator requires a root node",
-    ));
-  }
-
-  // WebIDL: optional unsigned long whatToShow = 0xFFFFFFFF.
-  //
-  // Use `ToUint32` conversion semantics (mod 2^32) so passing `-1` yields `0xFFFFFFFF`.
-  let what_to_show_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let what_to_show: u32 = match what_to_show_value {
-    Value::Undefined => 0xFFFF_FFFF,
-    other => webidl_to_uint32(vm, scope, host, hooks, other)?,
-  };
-
-  // WebIDL: optional NodeFilter? filter = null.
-  let filter = match args.get(2).copied().unwrap_or(Value::Undefined) {
-    Value::Undefined => Value::Null,
-    other => other,
-  };
-
-  let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj))?;
-
-  // Wire up the correct prototype chain so:
-  // - `it instanceof NodeIterator` works
-  // - `Object.prototype.toString.call(it)` yields `[object NodeIterator]` (via @@toStringTag).
-  let proto_key = alloc_key(scope, NODE_ITERATOR_PROTOTYPE_KEY)?;
-  let proto_val = object_get_data_property_value(scope.heap(), document_obj, &proto_key)?
-    .unwrap_or(Value::Undefined);
-  let Value::Object(proto_obj) = proto_val else {
-    return Err(VmError::InvariantViolation(
-      "document.createNodeIterator missing NodeIterator prototype",
-    ));
-  };
-  scope
-    .heap_mut()
-    .object_set_prototype(obj, Some(proto_obj))?;
-
-  // Expose only the core readonly attributes needed by curated traversal tests. Full NodeIterator
-  // traversal semantics are implemented separately; for now we at least preserve WebIDL conversion
-  // behavior for whatToShow.
-  let what_to_show_key = alloc_key(scope, "whatToShow")?;
-  scope.define_property(
-    obj,
-    what_to_show_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Number(what_to_show as f64),
-        writable: false,
-      },
-    },
-  )?;
-  let filter_key = alloc_key(scope, "filter")?;
-  scope.define_property(
-    obj,
-    filter_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: filter,
-        writable: false,
-      },
-    },
-  )?;
-  let root_key = alloc_key(scope, "root")?;
-  scope.define_property(
-    obj,
-    root_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: root_value,
-        writable: false,
-      },
-    },
-  )?;
-
-  Ok(Value::Object(obj))
-}
-
 fn value_to_rust_utf16_string(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -20510,7 +20408,6 @@ fn tree_walker_prototype_from_document(
     )),
   }
 }
-
 fn collection_length_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -20826,6 +20723,542 @@ fn node_list_iterator_next_native(
   let done_key = alloc_key(scope, "done")?;
   scope.define_property(result_obj, done_key, enumerable_data_desc(Value::Bool(done)))?;
   Ok(Value::Object(result_obj))
+}
+
+fn node_iterator_root_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(iter_obj))?;
+  let key = alloc_key(scope, NODE_ITERATOR_ROOT_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &key)?
+      .unwrap_or(Value::Null),
+  )
+}
+
+fn node_iterator_what_to_show_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(iter_obj))?;
+  let key = alloc_key(scope, NODE_ITERATOR_WHAT_TO_SHOW_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &key)?
+      .unwrap_or(Value::Number(0.0)),
+  )
+}
+
+fn node_iterator_filter_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(iter_obj))?;
+  let key = alloc_key(scope, NODE_ITERATOR_FILTER_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &key)?
+      .unwrap_or(Value::Null),
+  )
+}
+
+fn node_iterator_reference_node_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(iter_obj))?;
+
+  let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(iter_obj, &doc_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  scope.push_root(Value::Object(document_obj))?;
+
+  let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
+  let iter_id_u64 = match scope
+    .heap()
+    .object_get_own_data_property_value(iter_obj, &id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  let iter_id = dom2::NodeIteratorId::from_u64(iter_id_u64);
+
+  let document_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))?
+    .document_id;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let Some(reference_id) = dom.node_iterator_reference(iter_id) else {
+    return Ok(Value::Null);
+  };
+  let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), reference_id)?;
+
+  // Cache the wrapper on the iterator so reference nodes stay alive even if scripts drop their own
+  // reference to the underlying node.
+  let ref_key = alloc_key(scope, NODE_ITERATOR_REFERENCE_KEY)?;
+  let _ = scope
+    .heap_mut()
+    .object_set_existing_data_property_value(iter_obj, &ref_key, wrapper);
+
+  Ok(wrapper)
+}
+
+fn node_iterator_pointer_before_reference_node_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(iter_obj))?;
+
+  let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(iter_obj, &doc_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  let document_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))?
+    .document_id;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
+  let iter_id_u64 = match scope
+    .heap()
+    .object_get_own_data_property_value(iter_obj, &id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  let iter_id = dom2::NodeIteratorId::from_u64(iter_id_u64);
+
+  let before = dom
+    .node_iterator_pointer_before_reference(iter_id)
+    .unwrap_or(false);
+  Ok(Value::Bool(before))
+}
+
+fn node_iterator_next_node_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(iter_obj))?;
+
+  let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(iter_obj, &doc_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  scope.push_root(Value::Object(document_obj))?;
+
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let document_id = platform
+    .require_document_handle(scope.heap(), Value::Object(document_obj))?
+    .document_id;
+
+  let active_key = alloc_key(scope, NODE_ITERATOR_ACTIVE_KEY)?;
+  let is_active = matches!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &active_key)?,
+    Some(Value::Bool(true))
+  );
+  if is_active {
+    return Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      "InvalidStateError",
+      "NodeIterator is already active",
+    )?));
+  }
+  let _ = scope
+    .heap_mut()
+    .object_set_existing_data_property_value(iter_obj, &active_key, Value::Bool(true));
+
+  let result = (|| -> Result<Value, VmError> {
+    let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
+    let iter_id_u64 = match scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &id_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
+      _ => return Err(VmError::TypeError("Illegal invocation")),
+    };
+    let iter_id = dom2::NodeIteratorId::from_u64(iter_id_u64);
+
+    let what_key = alloc_key(scope, NODE_ITERATOR_WHAT_TO_SHOW_KEY)?;
+    let what_to_show = match scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &what_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() => to_uint32_from_f64(n),
+      _ => 0,
+    };
+
+    let filter_key = alloc_key(scope, NODE_ITERATOR_FILTER_KEY)?;
+    let filter_value = scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &filter_key)?
+      .unwrap_or(Value::Null);
+
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, document_id) else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    // SAFETY: we have exclusive access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+
+    let root = match dom.node_iterator_root(iter_id) {
+      Some(id) => id,
+      None => return Ok(Value::Null),
+    };
+
+    let mut reference = match dom.node_iterator_reference(iter_id) {
+      Some(id) => id,
+      None => root,
+    };
+    let mut pointer_before = dom
+      .node_iterator_pointer_before_reference(iter_id)
+      .unwrap_or(true);
+
+    loop {
+      let candidate = if pointer_before {
+        // When the pointer is before the reference node, the next node is the reference node itself.
+        pointer_before = false;
+        reference
+      } else {
+        let Some(next) = following_in_subtree_for_traversal(dom, root, reference) else {
+          return Ok(Value::Null);
+        };
+        reference = next;
+        next
+      };
+
+      // Update live iterator state even for skipped nodes (spec: the reference moves as we traverse).
+      dom.set_node_iterator_reference_and_pointer(iter_id, candidate, false);
+
+      let kind = &dom.node(candidate).kind;
+      if !what_to_show_includes_kind(what_to_show, kind) {
+        continue;
+      }
+
+      let node_value = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), candidate)?;
+      let filter_result = call_node_filter(vm, scope, host, hooks, filter_value, node_value)?;
+      if filter_result == TraversalFilterResult::Accept {
+        let ref_key = alloc_key(scope, NODE_ITERATOR_REFERENCE_KEY)?;
+        let _ = scope
+          .heap_mut()
+          .object_set_existing_data_property_value(iter_obj, &ref_key, node_value);
+        return Ok(node_value);
+      }
+    }
+  })();
+
+  let _ = scope
+    .heap_mut()
+    .object_set_existing_data_property_value(iter_obj, &active_key, Value::Bool(false));
+  result
+}
+
+fn node_iterator_previous_node_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(iter_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(iter_obj))?;
+
+  let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(iter_obj, &doc_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+  scope.push_root(Value::Object(document_obj))?;
+
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let document_id = platform
+    .require_document_handle(scope.heap(), Value::Object(document_obj))?
+    .document_id;
+
+  let active_key = alloc_key(scope, NODE_ITERATOR_ACTIVE_KEY)?;
+  let is_active = matches!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &active_key)?,
+    Some(Value::Bool(true))
+  );
+  if is_active {
+    return Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      "InvalidStateError",
+      "NodeIterator is already active",
+    )?));
+  }
+  let _ = scope
+    .heap_mut()
+    .object_set_existing_data_property_value(iter_obj, &active_key, Value::Bool(true));
+
+  let result = (|| -> Result<Value, VmError> {
+    let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
+    let iter_id_u64 = match scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &id_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
+      _ => return Err(VmError::TypeError("Illegal invocation")),
+    };
+    let iter_id = dom2::NodeIteratorId::from_u64(iter_id_u64);
+
+    let what_key = alloc_key(scope, NODE_ITERATOR_WHAT_TO_SHOW_KEY)?;
+    let what_to_show = match scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &what_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() => to_uint32_from_f64(n),
+      _ => 0,
+    };
+
+    let filter_key = alloc_key(scope, NODE_ITERATOR_FILTER_KEY)?;
+    let filter_value = scope
+      .heap()
+      .object_get_own_data_property_value(iter_obj, &filter_key)?
+      .unwrap_or(Value::Null);
+
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, document_id) else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    // SAFETY: we have exclusive access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+
+    let root = match dom.node_iterator_root(iter_id) {
+      Some(id) => id,
+      None => return Ok(Value::Null),
+    };
+
+    let mut reference = match dom.node_iterator_reference(iter_id) {
+      Some(id) => id,
+      None => root,
+    };
+    let mut pointer_before = dom
+      .node_iterator_pointer_before_reference(iter_id)
+      .unwrap_or(true);
+
+    loop {
+      let candidate = if !pointer_before {
+        // When the pointer is after the reference node, the previous node is the reference node itself.
+        pointer_before = true;
+        reference
+      } else {
+        let Some(prev) = preceding_in_subtree_for_traversal(dom, root, reference) else {
+          return Ok(Value::Null);
+        };
+        reference = prev;
+        prev
+      };
+
+      dom.set_node_iterator_reference_and_pointer(iter_id, candidate, true);
+
+      let kind = &dom.node(candidate).kind;
+      if !what_to_show_includes_kind(what_to_show, kind) {
+        continue;
+      }
+
+      let node_value = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), candidate)?;
+      let filter_result = call_node_filter(vm, scope, host, hooks, filter_value, node_value)?;
+      if filter_result == TraversalFilterResult::Accept {
+        let ref_key = alloc_key(scope, NODE_ITERATOR_REFERENCE_KEY)?;
+        let _ = scope
+          .heap_mut()
+          .object_set_existing_data_property_value(iter_obj, &ref_key, node_value);
+        return Ok(node_value);
+      }
+    }
+  })();
+
+  let _ = scope
+    .heap_mut()
+    .object_set_existing_data_property_value(iter_obj, &active_key, Value::Bool(false));
+  result
+}
+
+fn document_create_node_iterator_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createNodeIterator must be called on a document object",
+    ));
+  };
+  // Ensure `this` is a Document wrapper. This matches other Document methods and prevents borrowing
+  // the function onto arbitrary objects.
+  let _document_id = ensure_document_handle_for_object(
+    vm,
+    scope,
+    document_obj,
+    "document.createNodeIterator must be called on a document object",
+  )?;
+
+  let root_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(root_obj) = root_value else {
+    return Err(VmError::TypeError(
+      "Document.createNodeIterator requires a root Node",
+    ));
+  };
+  scope.push_root(Value::Object(root_obj))?;
+
+  let root_handle = node_handle_from_wrapper_obj(vm, scope, root_obj, "Illegal invocation")?;
+  scope.push_root(Value::Object(root_handle.document_obj))?;
+
+  let what_to_show_value = args.get(1).copied().unwrap_or(Value::Number(4294967295.0));
+  let n = match what_to_show_value {
+    Value::Number(n) => n,
+    other => scope.heap_mut().to_number(other)?,
+  };
+  let what_to_show = to_uint32_from_f64(n);
+
+  let filter_value = match args.get(2).copied().unwrap_or(Value::Undefined) {
+    Value::Undefined => Value::Null,
+    other => other,
+  };
+
+  let iter_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(iter_obj))?;
+
+  let proto = node_iterator_prototype_from_document(scope, root_handle.document_obj)?;
+  scope.heap_mut().object_set_prototype(iter_obj, Some(proto))?;
+
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, root_handle.document_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // SAFETY: we have exclusive access for the duration of this call.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let id = dom.create_node_iterator(root_handle.node_id);
+  dom.register_node_iterator_wrapper(scope.heap(), id, iter_obj);
+
+  let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
+  scope.define_property(
+    iter_obj,
+    id_key,
+    non_configurable_read_only_data_desc(Value::Number(id.as_u64() as f64)),
+  )?;
+  let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
+  scope.define_property(
+    iter_obj,
+    doc_key,
+    non_configurable_read_only_data_desc(Value::Object(root_handle.document_obj)),
+  )?;
+  let root_key = alloc_key(scope, NODE_ITERATOR_ROOT_KEY)?;
+  scope.define_property(
+    iter_obj,
+    root_key,
+    non_configurable_read_only_data_desc(Value::Object(root_obj)),
+  )?;
+  let ref_key = alloc_key(scope, NODE_ITERATOR_REFERENCE_KEY)?;
+  scope.define_property(
+    iter_obj,
+    ref_key,
+    data_desc(Value::Object(root_obj)),
+  )?;
+  let what_key = alloc_key(scope, NODE_ITERATOR_WHAT_TO_SHOW_KEY)?;
+  scope.define_property(
+    iter_obj,
+    what_key,
+    non_configurable_read_only_data_desc(Value::Number(what_to_show as f64)),
+  )?;
+  let filter_key = alloc_key(scope, NODE_ITERATOR_FILTER_KEY)?;
+  scope.define_property(
+    iter_obj,
+    filter_key,
+    non_configurable_read_only_data_desc(filter_value),
+  )?;
+  let active_key = alloc_key(scope, NODE_ITERATOR_ACTIVE_KEY)?;
+  scope.define_property(iter_obj, active_key, data_desc(Value::Bool(false)))?;
+
+  Ok(Value::Object(iter_obj))
 }
 
 fn alloc_node_array(
@@ -29213,6 +29646,181 @@ fn node_next_sibling_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Opt
     return Some(sib);
   }
   None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TraversalFilterResult {
+  Accept,
+  Reject,
+  Skip,
+}
+
+impl TraversalFilterResult {
+  fn from_u32(n: u32) -> Self {
+    match n {
+      1 => Self::Accept,
+      2 => Self::Reject,
+      3 => Self::Skip,
+      _ => Self::Accept,
+    }
+  }
+}
+
+fn node_type_for_kind(kind: &NodeKind) -> u32 {
+  match kind {
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => 1,
+    NodeKind::Text { .. } => 3,
+    NodeKind::ProcessingInstruction { .. } => 7,
+    NodeKind::Comment { .. } => 8,
+    NodeKind::Document { .. } => 9,
+    NodeKind::Doctype { .. } => 10,
+    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => 11,
+  }
+}
+
+fn what_to_show_includes_kind(what_to_show: u32, kind: &NodeKind) -> bool {
+  let node_type = node_type_for_kind(kind);
+  if node_type == 0 || node_type > 32 {
+    return false;
+  }
+  let bit = 1u32 << (node_type - 1);
+  (what_to_show & bit) != 0
+}
+
+fn to_uint32_from_f64(n: f64) -> u32 {
+  // Match ECMAScript's `ToUint32` semantics:
+  // - NaN / +/-0 / +/-Infinity -> 0
+  // - otherwise: `ToIntegerOrInfinity(n) modulo 2^32`
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  let int = n.trunc();
+  let mut r = int % 4294967296.0;
+  if r < 0.0 {
+    r += 4294967296.0;
+  }
+  r as u32
+}
+
+fn call_node_filter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  filter: Value,
+  node_value: Value,
+) -> Result<TraversalFilterResult, VmError> {
+  if matches!(filter, Value::Null | Value::Undefined) {
+    return Ok(TraversalFilterResult::Accept);
+  }
+
+  // Support both:
+  // - a callable passed directly (curated WPT uses this form), and
+  // - an object with an `acceptNode(node)` method (spec callback interface shape).
+  let (callable, this_arg) = if scope.heap().is_callable(filter).unwrap_or(false) {
+    (filter, Value::Undefined)
+  } else if let Value::Object(filter_obj) = filter {
+    scope.push_root(Value::Object(filter_obj))?;
+    let accept_node_key = alloc_key(scope, "acceptNode")?;
+    let method = vm.get_with_host_and_hooks(host, scope, hooks, filter_obj, accept_node_key)?;
+    if !scope.heap().is_callable(method).unwrap_or(false) {
+      return Ok(TraversalFilterResult::Accept);
+    }
+    (method, Value::Object(filter_obj))
+  } else {
+    return Ok(TraversalFilterResult::Accept);
+  };
+
+  let result_value = vm.call_with_host_and_hooks(host, scope, hooks, callable, this_arg, &[node_value])?;
+  let n = match result_value {
+    Value::Number(n) => n,
+    other => scope.to_number(vm, host, hooks, other)?,
+  };
+  let n = if !n.is_finite() || n.is_nan() {
+    0.0
+  } else {
+    n.trunc()
+  };
+
+  // DOM Standard: NodeFilter callback returns an `unsigned short` (effectively `ToUint16`).
+  // We only care about the well-known values 1/2/3, so treat anything else as ACCEPT.
+  let u = if n <= 0.0 || n > u32::MAX as f64 {
+    0
+  } else {
+    n as u32
+  };
+  Ok(TraversalFilterResult::from_u32(u))
+}
+
+fn is_in_subtree_for_traversal(dom: &dom2::Document, root: NodeId, node: NodeId) -> bool {
+  if root == node {
+    return true;
+  }
+  let mut current = Some(node);
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while remaining > 0 {
+    remaining -= 1;
+    let Some(id) = current else {
+      break;
+    };
+    if id == root {
+      return true;
+    }
+    current = node_parent_node_for_traversal(dom, id);
+  }
+  false
+}
+
+fn last_inclusive_descendant_for_traversal(dom: &dom2::Document, node: NodeId) -> NodeId {
+  let mut current = node;
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while remaining > 0 {
+    remaining -= 1;
+    let Some(last_child) = node_last_child_for_traversal(dom, current) else {
+      break;
+    };
+    current = last_child;
+  }
+  current
+}
+
+fn following_in_subtree_for_traversal(dom: &dom2::Document, root: NodeId, node: NodeId) -> Option<NodeId> {
+  if !is_in_subtree_for_traversal(dom, root, node) {
+    return None;
+  }
+
+  if let Some(first_child) = node_first_child_for_traversal(dom, node) {
+    return Some(first_child);
+  }
+
+  let mut current = node;
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while remaining > 0 {
+    remaining -= 1;
+    if current == root {
+      return None;
+    }
+    if let Some(next_sibling) = node_next_sibling_for_traversal(dom, current) {
+      return Some(next_sibling);
+    }
+    current = node_parent_node_for_traversal(dom, current)?;
+  }
+
+  None
+}
+
+fn preceding_in_subtree_for_traversal(dom: &dom2::Document, root: NodeId, node: NodeId) -> Option<NodeId> {
+  if root == node {
+    return None;
+  }
+  if !is_in_subtree_for_traversal(dom, root, node) {
+    return None;
+  }
+
+  if let Some(previous_sibling) = node_previous_sibling_for_traversal(dom, node) {
+    return Some(last_inclusive_descendant_for_traversal(dom, previous_sibling));
+  }
+  node_parent_node_for_traversal(dom, node)
 }
 
 fn node_parent_node_get_native(
@@ -47852,11 +48460,9 @@ fn init_window_globals(
       },
     )?;
 
-    // NodeIterator prototype + constructor.
+    // NodeIterator prototype + constructor (root/referenceNode/pointerBeforeReferenceNode/whatToShow/filter + nextNode/previousNode).
     //
     // NodeIterator instances are plain JS wrapper objects created by `document.createNodeIterator`.
-    // While NodeIterator itself is not yet fully implemented in the vm-js DOM shims, broader WPT
-    // expects the interface object to exist and for wrappers to pass `instanceof NodeIterator`.
     let node_iterator_proto = scope.alloc_object()?;
     scope.push_root(Value::Object(node_iterator_proto))?;
     scope.heap_mut().object_set_prototype(
@@ -47875,6 +48481,171 @@ fn init_window_globals(
       read_only_data_desc(Value::String(node_iterator_to_string_tag_value)),
     )?;
 
+    let node_iterator_root_get_call_id = vm.register_native_call(node_iterator_root_get_native)?;
+    let node_iterator_root_get_name = scope.alloc_string("get root")?;
+    scope.push_root(Value::String(node_iterator_root_get_name))?;
+    let node_iterator_root_get_func = scope.alloc_native_function(
+      node_iterator_root_get_call_id,
+      None,
+      node_iterator_root_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      node_iterator_root_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_iterator_root_get_func))?;
+
+    let node_iterator_reference_get_call_id =
+      vm.register_native_call(node_iterator_reference_node_get_native)?;
+    let node_iterator_reference_get_name = scope.alloc_string("get referenceNode")?;
+    scope.push_root(Value::String(node_iterator_reference_get_name))?;
+    let node_iterator_reference_get_func = scope.alloc_native_function(
+      node_iterator_reference_get_call_id,
+      None,
+      node_iterator_reference_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      node_iterator_reference_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_iterator_reference_get_func))?;
+
+    let node_iterator_pointer_get_call_id =
+      vm.register_native_call(node_iterator_pointer_before_reference_node_get_native)?;
+    let node_iterator_pointer_get_name = scope.alloc_string("get pointerBeforeReferenceNode")?;
+    scope.push_root(Value::String(node_iterator_pointer_get_name))?;
+    let node_iterator_pointer_get_func = scope.alloc_native_function(
+      node_iterator_pointer_get_call_id,
+      None,
+      node_iterator_pointer_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      node_iterator_pointer_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_iterator_pointer_get_func))?;
+
+    let node_iterator_what_to_show_get_call_id =
+      vm.register_native_call(node_iterator_what_to_show_get_native)?;
+    let node_iterator_what_to_show_get_name = scope.alloc_string("get whatToShow")?;
+    scope.push_root(Value::String(node_iterator_what_to_show_get_name))?;
+    let node_iterator_what_to_show_get_func = scope.alloc_native_function(
+      node_iterator_what_to_show_get_call_id,
+      None,
+      node_iterator_what_to_show_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      node_iterator_what_to_show_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_iterator_what_to_show_get_func))?;
+
+    let node_iterator_filter_get_call_id = vm.register_native_call(node_iterator_filter_get_native)?;
+    let node_iterator_filter_get_name = scope.alloc_string("get filter")?;
+    scope.push_root(Value::String(node_iterator_filter_get_name))?;
+    let node_iterator_filter_get_func = scope.alloc_native_function(
+      node_iterator_filter_get_call_id,
+      None,
+      node_iterator_filter_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      node_iterator_filter_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_iterator_filter_get_func))?;
+
+    let node_iterator_next_node_call_id = vm.register_native_call(node_iterator_next_node_native)?;
+    let node_iterator_next_node_name = scope.alloc_string("nextNode")?;
+    scope.push_root(Value::String(node_iterator_next_node_name))?;
+    let node_iterator_next_node_func = scope.alloc_native_function(
+      node_iterator_next_node_call_id,
+      None,
+      node_iterator_next_node_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      node_iterator_next_node_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_iterator_next_node_func))?;
+
+    let node_iterator_previous_node_call_id =
+      vm.register_native_call(node_iterator_previous_node_native)?;
+    let node_iterator_previous_node_name = scope.alloc_string("previousNode")?;
+    scope.push_root(Value::String(node_iterator_previous_node_name))?;
+    let node_iterator_previous_node_func = scope.alloc_native_function(
+      node_iterator_previous_node_call_id,
+      None,
+      node_iterator_previous_node_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      node_iterator_previous_node_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_iterator_previous_node_func))?;
+
+    // NodeIterator.prototype.root (readonly)
+    let node_iterator_root_key = alloc_key(&mut scope, "root")?;
+    scope.define_property(
+      node_iterator_proto,
+      node_iterator_root_key,
+      idl_attribute_desc(Value::Object(node_iterator_root_get_func), Value::Undefined),
+    )?;
+
+    // NodeIterator.prototype.referenceNode (readonly)
+    let node_iterator_reference_key = alloc_key(&mut scope, "referenceNode")?;
+    scope.define_property(
+      node_iterator_proto,
+      node_iterator_reference_key,
+      idl_attribute_desc(Value::Object(node_iterator_reference_get_func), Value::Undefined),
+    )?;
+
+    // NodeIterator.prototype.pointerBeforeReferenceNode (readonly)
+    let node_iterator_pointer_key = alloc_key(&mut scope, "pointerBeforeReferenceNode")?;
+    scope.define_property(
+      node_iterator_proto,
+      node_iterator_pointer_key,
+      idl_attribute_desc(Value::Object(node_iterator_pointer_get_func), Value::Undefined),
+    )?;
+
+    // NodeIterator.prototype.whatToShow (readonly)
+    let node_iterator_what_to_show_key = alloc_key(&mut scope, "whatToShow")?;
+    scope.define_property(
+      node_iterator_proto,
+      node_iterator_what_to_show_key,
+      idl_attribute_desc(Value::Object(node_iterator_what_to_show_get_func), Value::Undefined),
+    )?;
+
+    // NodeIterator.prototype.filter (readonly)
+    let node_iterator_filter_key = alloc_key(&mut scope, "filter")?;
+    scope.define_property(
+      node_iterator_proto,
+      node_iterator_filter_key,
+      idl_attribute_desc(Value::Object(node_iterator_filter_get_func), Value::Undefined),
+    )?;
+
+    // NodeIterator.prototype.nextNode()
+    let node_iterator_next_node_key = alloc_key(&mut scope, "nextNode")?;
+    scope.define_property(
+      node_iterator_proto,
+      node_iterator_next_node_key,
+      data_desc(Value::Object(node_iterator_next_node_func)),
+    )?;
+
+    // NodeIterator.prototype.previousNode()
+    let node_iterator_previous_node_key = alloc_key(&mut scope, "previousNode")?;
+    scope.define_property(
+      node_iterator_proto,
+      node_iterator_previous_node_key,
+      data_desc(Value::Object(node_iterator_previous_node_func)),
+    )?;
+
     let node_iterator_ctor = make_illegal_ctor(&mut scope, "NodeIterator")?;
     scope.push_root(Value::Object(node_iterator_ctor))?;
     scope.define_property(
@@ -47888,12 +48659,10 @@ fn init_window_globals(
       ctor_link_desc(Value::Object(node_iterator_ctor)),
     )?;
     let node_iterator_key = alloc_key(&mut scope, "NodeIterator")?;
-    scope.define_property(
-      global,
-      node_iterator_key,
-      data_desc(Value::Object(node_iterator_ctor)),
-    )?;
+    scope.define_property(global, node_iterator_key, data_desc(Value::Object(node_iterator_ctor)))?;
 
+    // Store the NodeIterator prototype on `document` so `createNodeIterator` can wire it up without
+    // walking the global object.
     let node_iterator_proto_internal_key = alloc_key(&mut scope, NODE_ITERATOR_PROTOTYPE_KEY)?;
     scope.define_property(
       document_obj,
