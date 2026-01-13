@@ -843,6 +843,11 @@ mod tests {
 
     run(2.0);
     run(-2.0);
+    // Radii larger than the image dimensions should saturate (clamp-to-edge neighborhood covers
+    // the full image). The fast path clamps the radius to `width-1`/`height-1`, so verify that
+    // behaviour matches the reference implementation.
+    run(10.0);
+    run(-10.0);
   }
 
   #[test]
