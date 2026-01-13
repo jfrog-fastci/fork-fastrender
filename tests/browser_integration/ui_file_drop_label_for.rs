@@ -123,3 +123,76 @@ fn dropped_file_on_label_for_selects_associated_file_input() -> Result<()> {
 
   Ok(())
 }
+
+#[test]
+fn dropped_file_on_label_descendant_selects_file_input() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(2);
+  let viewport_css = (320, 120);
+  let url = "https://example.com/index.html";
+
+  let dir = tempfile::tempdir()?;
+  let file_path = dir.path().join("hello.txt");
+  std::fs::write(&file_path, b"hello world")?;
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #lab { display: block; position: absolute; left: 0; top: 0; width: 280px; height: 32px; }
+          #f { position: absolute; left: 0; top: 60px; width: 280px; height: 32px; }
+        </style>
+      </head>
+      <body>
+        <label id="lab">
+          Drop here
+          <input id="f" type="file" required>
+        </label>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Drop over the label, not the input. With no `for=` attribute, the interaction engine should
+  // resolve to the first descendant labelable control.
+  let _ = controller.handle_message(UiToWorker::DropFiles {
+    tab_id,
+    pos_css: (10.0, 10.0),
+    paths: vec![file_path.clone()],
+  })?;
+
+  let input = find_element_by_id(controller.document().dom(), "f");
+  let stored = input
+    .get_attribute_ref("data-fastr-file-value")
+    .expect("expected file input to store selected file value");
+  assert!(
+    stored.contains("hello.txt"),
+    "expected stored file value to contain filename, got {stored:?}"
+  );
+
+  let prepared = controller
+    .document()
+    .prepared()
+    .expect("expected controller to have a prepared document");
+  let boxed_value =
+    find_file_control_value(&prepared.box_tree().root).expect("expected file control in box tree");
+  let boxed_value = boxed_value.expect("expected file control value to be present");
+  assert!(
+    boxed_value.contains("hello.txt"),
+    "expected box generation to surface selected file name, got {boxed_value:?}"
+  );
+
+  Ok(())
+}
