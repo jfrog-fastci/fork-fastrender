@@ -15908,8 +15908,21 @@ impl App {
 
     // If the mouse button was released while we missed the winit `MouseInput` release event (rare
     // but can happen when the window loses focus mid-drag), clear capture based on egui input.
+    //
+    // When capture ends with the cursor already over the page, request a hover resync so the worker
+    // immediately sees the current hover target without waiting for another CursorMoved event.
     if self.media_controls_overlay_pointer_capture && ctx.input(|i| !i.pointer.any_down()) {
       self.media_controls_overlay_pointer_capture = false;
+      if let Some(pos_points) = self.last_cursor_pos_points {
+        if self
+          .page_rect_points
+          .is_some_and(|page_rect| page_rect.contains(pos_points))
+          && !self.cursor_over_egui_overlay(pos_points)
+        {
+          self.hover_sync_pending = true;
+          self.window.request_redraw();
+        }
+      }
     }
 
     let Some(open_controls) = self.open_media_controls.as_ref() else {
