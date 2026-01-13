@@ -742,6 +742,53 @@ fn compiled_with_statement_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_with_restores_outer_lexical_env() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let x = 0;
+      let o = {x: 1};
+      with (o) { x = 2; }
+      x
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The `with` body assignment must go to `o.x` (because `o` has an `x` property), and the outer
+  // lexical `x` binding must remain unchanged after the `with` completes.
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_with_honors_symbol_unscopables() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let x = 1;
+      let o = {x: 2};
+      o[Symbol.unscopables] = {x: true};
+      with (o) { x }
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `Symbol.unscopables` should block `x` from being resolved through `o`'s `with` environment.
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_try_catch_binds_exception_value() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
