@@ -3072,7 +3072,7 @@ impl BrowserRuntime {
           tab.needs_repaint = true;
         }
       }
-      UiToWorker::A11ySetTextSelection {
+      UiToWorker::A11ySetTextSelectionRange {
         tab_id,
         node_id,
         start,

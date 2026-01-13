@@ -3,8 +3,9 @@ use crate::dom::DomNode;
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{
-  fragment_tree_with_scroll, DateTimeInputKind, FormSubmission, FormSubmissionMethod, InteractionAction,
-  InteractionEngine, InteractionState,
+  fragment_tree_with_scroll,
+  DateTimeInputKind, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
+  InteractionState,
 };
 use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
@@ -279,7 +280,7 @@ impl BrowserTabController {
         node_id,
         value,
       } if tab_id == self.tab_id => self.handle_a11y_set_text_value(node_id, &value),
-      UiToWorker::A11ySetTextSelection {
+      UiToWorker::A11ySetTextSelectionRange {
         tab_id,
         node_id,
         start,
