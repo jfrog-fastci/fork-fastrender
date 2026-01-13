@@ -754,16 +754,18 @@ static INLINE_RESHAPE_CACHE_STORES: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
   static APPLY_SPACING_SORT_COUNT: Cell<usize> = const { Cell::new(0) };
   static APPLY_SPACING_CLUSTER_COUNT: Cell<usize> = const { Cell::new(0) };
+  static APPLY_SPACING_STREAM_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
 fn reset_apply_spacing_diagnostics() {
   APPLY_SPACING_SORT_COUNT.with(|count| count.set(0));
   APPLY_SPACING_CLUSTER_COUNT.with(|count| count.set(0));
+  APPLY_SPACING_STREAM_COUNT.with(|count| count.set(0));
 }
 
 #[cfg(test)]
-fn take_apply_spacing_diagnostics() -> (usize, usize) {
+fn take_apply_spacing_diagnostics() -> (usize, usize, usize) {
   let sorts = APPLY_SPACING_SORT_COUNT.with(|count| {
     let value = count.get();
     count.set(0);
@@ -774,7 +776,12 @@ fn take_apply_spacing_diagnostics() -> (usize, usize) {
     count.set(0);
     value
   });
-  (sorts, clusters)
+  let streams = APPLY_SPACING_STREAM_COUNT.with(|count| {
+    let value = count.get();
+    count.set(0);
+    value
+  });
+  (sorts, clusters, streams)
 }
 
 pub(crate) fn enable_inline_reshape_cache_diagnostics() {
@@ -1590,6 +1597,11 @@ impl TextItem {
       #[cfg(test)]
       APPLY_SPACING_CLUSTER_COUNT.with(|count| {
         count.set(count.get().saturating_add(cluster_count));
+      });
+
+      #[cfg(test)]
+      APPLY_SPACING_STREAM_COUNT.with(|count| {
+        count.set(count.get().saturating_add(1));
       });
 
       return;
@@ -11174,9 +11186,13 @@ mod tests {
 
     reset_apply_spacing_diagnostics();
     TextItem::apply_spacing_to_runs(&mut runs, &text, letter_spacing, word_spacing);
-    let (sorts, clusters) = take_apply_spacing_diagnostics();
+    let (sorts, clusters, streams) = take_apply_spacing_diagnostics();
 
     assert_eq!(sorts, 0, "expected monotonic LTR clusters to skip sorting");
+    assert_eq!(
+      streams, 1,
+      "expected pure LTR runs to take the streaming no-allocation path"
+    );
     assert_eq!(
       clusters,
       text.chars().count(),
@@ -11217,12 +11233,13 @@ mod tests {
 
     reset_apply_spacing_diagnostics();
     TextItem::apply_spacing_to_runs(&mut runs, text, 2.0, 3.0);
-    let (sorts, clusters) = take_apply_spacing_diagnostics();
+    let (sorts, clusters, streams) = take_apply_spacing_diagnostics();
 
     assert_eq!(
       sorts, 1,
       "expected mixed-direction / out-of-order runs to sort"
     );
+    assert_eq!(streams, 0, "expected mixed-direction input to avoid streaming fast path");
     assert_eq!(clusters, text.chars().count());
 
     let spaced_width: f32 = runs.iter().map(|r| r.advance).sum();
@@ -11257,9 +11274,10 @@ mod tests {
 
     reset_apply_spacing_diagnostics();
     TextItem::apply_spacing_to_runs(&mut runs, text, 2.0, 3.0);
-    let (sorts, clusters) = take_apply_spacing_diagnostics();
+    let (sorts, clusters, streams) = take_apply_spacing_diagnostics();
 
     assert_eq!(sorts, 0, "expected monotonic RTL clusters to avoid sorting");
+    assert_eq!(streams, 0, "expected RTL runs to avoid the LTR streaming fast path");
     assert_eq!(clusters, text.chars().count());
 
     let spaced_width: f32 = runs.iter().map(|r| r.advance).sum();
