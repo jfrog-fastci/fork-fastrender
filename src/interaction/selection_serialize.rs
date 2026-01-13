@@ -337,6 +337,15 @@ fn slice_text_by_selection(
 #[derive(Default)]
 struct TableRowCtx {
   cell_index: usize,
+  /// Whether the previous cell in the row produced any output for the current selection.
+  ///
+  /// For `DocumentSelection::Range`, this is used to avoid emitting a leading `\t` when the
+  /// selection begins in a later cell (e.g. copying just "B" from the second `<td>` in a row).
+  prev_cell_had_output: bool,
+  /// Length of `builder.out` at the start of the currently-walked table cell.
+  ///
+  /// Used to infer whether the cell contributed any output.
+  cell_start_len: usize,
 }
 
 struct WalkCtx {
@@ -372,7 +381,12 @@ fn box_is_selectable(node: &BoxNode) -> bool {
   true
 }
 
-fn before_enter_box(builder: &mut TextBuilder, ctx: &mut WalkCtx, node: &BoxNode) {
+fn before_enter_box(
+  builder: &mut TextBuilder,
+  ctx: &mut WalkCtx,
+  node: &BoxNode,
+  selection: DocumentSelection,
+) {
   let display = node.style.display;
 
   match display {
@@ -386,10 +400,23 @@ fn before_enter_box(builder: &mut TextBuilder, ctx: &mut WalkCtx, node: &BoxNode
     }
     Display::TableCell => {
       if let Some(row) = ctx.current_row_mut() {
-        if row.cell_index > 0 {
-          builder.push_tab();
+        match selection {
+          DocumentSelection::All => {
+            if row.cell_index > 0 {
+              builder.push_tab();
+            }
+          }
+          // Avoid emitting a leading tab when earlier cells are entirely outside the selection.
+          DocumentSelection::Range(_) => {
+            if row.prev_cell_had_output {
+              builder.push_tab();
+            }
+          }
         }
         row.cell_index += 1;
+        // Record after writing any boundary tabs so they are not considered part of the cell's
+        // output.
+        row.cell_start_len = builder.out.len();
       }
       return;
     }
@@ -412,9 +439,17 @@ fn before_enter_box(builder: &mut TextBuilder, ctx: &mut WalkCtx, node: &BoxNode
   }
 }
 
-fn after_exit_box(ctx: &mut WalkCtx, node: &BoxNode) {
-  if matches!(node.style.display, Display::TableRow) {
-    ctx.row_stack.pop();
+fn after_exit_box(ctx: &mut WalkCtx, node: &BoxNode, builder: &TextBuilder) {
+  match node.style.display {
+    Display::TableCell => {
+      if let Some(row) = ctx.current_row_mut() {
+        row.prev_cell_had_output = builder.out.len() > row.cell_start_len;
+      }
+    }
+    Display::TableRow => {
+      ctx.row_stack.pop();
+    }
+    _ => {}
   }
 }
 
@@ -429,7 +464,7 @@ fn walk_box_tree(
     return;
   }
 
-  before_enter_box(builder, ctx, node);
+  before_enter_box(builder, ctx, node, selection);
 
   match &node.box_type {
     BoxType::Text(text_box) => {
@@ -453,9 +488,17 @@ fn walk_box_tree(
         builder.push_text(text, false);
       }
     }
-    BoxType::LineBreak(_) => {
-      builder.push_newline();
-    }
+    BoxType::LineBreak(_) => match selection {
+      DocumentSelection::All => builder.push_newline(),
+      DocumentSelection::Range(range) => {
+        if let Some(styled_node_id) = node.styled_node_id {
+          let range = range.normalized();
+          if styled_node_id >= range.start.node_id && styled_node_id <= range.end.node_id {
+            builder.push_newline();
+          }
+        }
+      }
+    },
     _ => {}
   }
 
@@ -466,7 +509,7 @@ fn walk_box_tree(
     walk_box_tree(child, selection, visible_box_ids, ctx, builder);
   }
 
-  after_exit_box(ctx, node);
+  after_exit_box(ctx, node, builder);
 }
 
 /// Serialize a document selection into plain text suitable for the clipboard.
@@ -502,7 +545,7 @@ pub fn serialize_document_selection(
 }
 
 #[cfg(test)]
-  mod tests {
+mod tests {
   use super::*;
   use crate::style::display::FormattingContextType;
   use crate::style::types::{TextCombineUpright, WhiteSpace};

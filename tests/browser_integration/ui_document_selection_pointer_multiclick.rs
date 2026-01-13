@@ -254,3 +254,101 @@ fn ui_document_selection_double_click_drag_preserves_initial_word() -> Result<()
 
   Ok(())
 }
+
+#[test]
+fn ui_document_selection_copy_word_after_br_has_no_leading_newline() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+
+  let tab_id = TabId::new();
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    r#"<!doctype html><meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+</style>
+<p style="position: absolute; top: 0; left: 10px; margin: 0; font: 40px/80px monospace"><br>hello</p>
+"#,
+    "https://example.invalid/",
+    (320, 220),
+    1.0,
+  )?;
+
+  // Initial paint ensures layout artifacts exist for selection serialization.
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Double-click on "hello" (second line, after the leading <br>).
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    (20.0, 120.0),
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    2,
+  ))?;
+  let _ = controller.handle_message(UiToWorker::PointerUp {
+    tab_id,
+    pos_css: (20.0, 120.0),
+    button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
+  })?;
+
+  let copy_msgs = controller.handle_message(UiToWorker::Copy { tab_id })?;
+  assert_eq!(
+    extract_clipboard_text(copy_msgs).as_deref(),
+    Some("hello"),
+    "expected copying a word selection after <br> to omit the leading newline"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn ui_document_selection_copy_word_in_second_table_cell_has_no_leading_tab() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+
+  let tab_id = TabId::new();
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    r#"<!doctype html><meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+  table { border-collapse: collapse; border-spacing: 0; }
+  td { padding: 0; width: 200px; }
+</style>
+<table style="position: absolute; top: 0; left: 10px; font: 40px/80px monospace">
+  <tr><td>A</td><td>B</td></tr>
+</table>
+"#,
+    "https://example.invalid/",
+    (520, 140),
+    1.0,
+  )?;
+
+  // Initial paint ensures layout artifacts exist for selection serialization.
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Double-click on "B" in the second <td>.
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    (230.0, 40.0),
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    2,
+  ))?;
+  let _ = controller.handle_message(UiToWorker::PointerUp {
+    tab_id,
+    pos_css: (230.0, 40.0),
+    button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
+  })?;
+
+  let copy_msgs = controller.handle_message(UiToWorker::Copy { tab_id })?;
+  assert_eq!(
+    extract_clipboard_text(copy_msgs).as_deref(),
+    Some("B"),
+    "expected copying a word selection in the second table cell to omit the leading tab"
+  );
+
+  Ok(())
+}
