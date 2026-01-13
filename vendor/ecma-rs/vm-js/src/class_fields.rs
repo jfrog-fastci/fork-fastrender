@@ -68,13 +68,79 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
   let mut init_scope = scope.reborrow();
   init_scope.push_roots(&[Value::Object(receiver), Value::Object(class_ctor)])?;
 
+  // Initialize private instance methods/accessors.
+  //
+  // `vm-js` represents class-private names (`#x`, `#m`, ...) via internal symbols scoped to the
+  // class's lexical environment. Private fields are stored in the class constructor's native-slot
+  // field list (and initialized below), but private methods/accessors are defined on the class's
+  // prototype object during class definition evaluation.
+  //
+  // For spec-correct per-instance privacy (brand checks) these private methods/accessors must also
+  // be installed as **own** properties on each constructed instance. Otherwise, `this.#m()` would
+  // fail the private brand check in `Evaluator::private_get`, which intentionally does not consult
+  // the prototype chain.
+  //
+  // We implement this by copying any internal-symbol keyed properties from the class prototype
+  // object onto the instance before evaluating any field initializers. This matches the observable
+  // behavior of `InitializeInstanceElements` where private methods are available to field
+  // initializers.
+  let prototype_obj = {
+    let prototype_key = PropertyKey::from_string(init_scope.common_key_prototype()?);
+    let Some(prototype_desc) = init_scope.heap().get_own_property(class_ctor, prototype_key)? else {
+      return Err(VmError::InvariantViolation(
+        "class constructor missing prototype property",
+      ));
+    };
+    let crate::PropertyKind::Data { value, .. } = prototype_desc.kind else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not a data property",
+      ));
+    };
+    let Value::Object(o) = value else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not an object",
+      ));
+    };
+    o
+  };
+  init_scope.push_root(Value::Object(prototype_obj))?;
+
+  let prototype_keys = init_scope.heap().own_property_keys(prototype_obj)?;
+  for key in prototype_keys {
+    let PropertyKey::Symbol(sym) = key else {
+      continue;
+    };
+    if !init_scope.heap().is_internal_symbol(sym) {
+      continue;
+    }
+    let Some(desc) = init_scope.heap().get_own_property(prototype_obj, key)? else {
+      continue;
+    };
+
+    let patch = match desc.kind {
+      crate::PropertyKind::Data { value, writable } => crate::PropertyDescriptorPatch {
+        value: Some(value),
+        writable: Some(writable),
+        enumerable: Some(desc.enumerable),
+        configurable: Some(desc.configurable),
+        ..Default::default()
+      },
+      crate::PropertyKind::Accessor { get, set } => crate::PropertyDescriptorPatch {
+        get: Some(get),
+        set: Some(set),
+        enumerable: Some(desc.enumerable),
+        configurable: Some(desc.configurable),
+        ..Default::default()
+      },
+    };
+
+    init_scope.define_property_or_throw(receiver, key, patch)?;
+  }
+
   // Copy the native-slot slice into an owned Vec so we can mutably borrow `init_scope` while
   // evaluating initializers and defining properties.
   let pairs: Vec<Value> = {
     let pairs = class_constructor_instance_field_pairs(&init_scope, class_ctor)?;
-    if pairs.is_empty() {
-      return Ok(());
-    }
     if pairs.len() % 2 != 0 {
       return Err(VmError::InvariantViolation(
         "class constructor instance field list has odd length",

@@ -41,3 +41,41 @@ fn generator_private_method_call_with_yield_in_base() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn generator_private_instance_field_get_with_yield_in_base() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+      (function () {
+        class C { #x = 1; *g(){ return (yield this).#x; } }
+        var c = new C();
+        var it = c.g();
+        var r1 = it.next();
+        var r2 = it.next(r1.value);
+        return r1.done === false && r2.done === true && r2.value === 1;
+      })()
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_private_instance_method_call_with_yield_in_base() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+      (function () {
+        class C { #m(){ return 2; } *g(){ return (yield this).#m(); } }
+        var c = new C();
+        var it = c.g();
+        var r1 = it.next();
+        var r2 = it.next(r1.value);
+        return r2.done === true && r2.value === 2;
+      })()
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
