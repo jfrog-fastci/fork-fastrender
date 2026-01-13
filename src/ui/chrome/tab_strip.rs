@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use super::ChromeAction;
 use super::FocusRingStyle;
+use crate::ui::ChromeAction;
 
 pub(super) fn tab_strip_tab_widget_id(tab_id: TabId) -> egui::Id {
   egui::Id::new(("tab_strip_tab", tab_id))
