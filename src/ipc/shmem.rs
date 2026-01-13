@@ -7,7 +7,9 @@
 //! This module is just a convenience wrapper so internal call sites can use `crate::ipc::shmem::*`
 //! paths.
 
-pub use fastrender_shmem::{generate_shmem_id, MAX_SHMEM_ID_LEN, MAX_SHMEM_NAME_LEN};
+pub use fastrender_shmem::{
+  generate_shmem_id, ShmemBackend, ShmemHandle, ShmemRegion, MAX_SHMEM_ID_LEN, MAX_SHMEM_NAME_LEN,
+};
 
 #[cfg(test)]
 mod tests {
@@ -40,5 +42,15 @@ mod tests {
       );
     }
   }
-}
 
+  #[cfg(unix)]
+  #[test]
+  fn shmem_region_create_zero_initializes() {
+    let (region, _handle) =
+      ShmemRegion::create(ShmemBackend::default(), 128).expect("create shared memory region");
+    assert!(
+      region.as_slice().iter().all(|b| *b == 0),
+      "newly created shared-memory region should be zero-initialized"
+    );
+  }
+}
