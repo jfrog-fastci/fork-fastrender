@@ -1417,3 +1417,64 @@ fn p3_load_event_waits_for_link_rel_icon() -> Result<()> {
   );
   Ok(())
 }
+
+#[test]
+fn p3_load_event_waits_for_input_type_image() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_input_image.html", js_options)?;
+
+  // `discover_and_start_image_loads` treats `<input type=image src=...>` as an image-like load
+  // blocker. Ensure `load` still waits for it.
+  let img_url = "https://example.invalid/input_image.png";
+  h.register_script_source(img_url, "fake image bytes");
+  h.register_html_source(&format!(
+    r#"<!doctype html><body>
+      <form>
+        <input type="image" src="{img_url}">
+      </form>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          setTimeout(() => console.log("timer"), 0);
+        }});
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+  ));
+  h.navigate()?;
+  h.run_until_idle()?;
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["dcl".to_string(), "timer".to_string(), "load".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
+fn p3_load_event_waits_for_video_poster() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_video_poster.html", js_options)?;
+
+  // `discover_and_start_image_loads` treats `<video poster=...>` as an image-like load blocker.
+  let poster_url = "https://example.invalid/poster.png";
+  h.register_script_source(poster_url, "fake image bytes");
+  h.register_html_source(&format!(
+    r#"<!doctype html><body>
+      <video poster="{poster_url}"></video>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          setTimeout(() => console.log("timer"), 0);
+        }});
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+  ));
+  h.navigate()?;
+  h.run_until_idle()?;
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["dcl".to_string(), "timer".to_string(), "load".to_string()]
+  );
+  Ok(())
+}
