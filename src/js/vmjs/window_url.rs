@@ -1636,6 +1636,10 @@ fn urlsp_get_all_native(
   scope
     .heap_mut()
     .object_set_prototype(arr, Some(intrinsics.array_prototype()))?;
+  // Root the array while populating it: `alloc_key` / `alloc_string` can trigger GC under small
+  // `HeapLimits::gc_threshold`, and an unrooted array can be collected and turn `arr` into an
+  // invalid handle before we define any properties on it.
+  scope.push_root(Value::Object(arr))?;
   for (idx, value) in values.into_iter().enumerate() {
     let idx_u32: u32 = idx
       .try_into()
@@ -2731,6 +2735,7 @@ pub(crate) fn serialize_url_search_params_for_fetch(
 mod tests {
   use super::*;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use vm_js::HeapLimits;
 
   fn get_string(heap: &Heap, value: Value) -> String {
     let Value::String(s) = value else {
@@ -2919,6 +2924,24 @@ mod tests {
     let sorted =
       realm.exec_script("const p = new URLSearchParams('b=1&a=2&a=1'); p.sort(); p.toString()")?;
     assert_eq!(get_string(realm.heap(), sorted), "a=2&a=1&b=1");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn url_search_params_get_all_is_safe_under_gc_pressure() -> Result<(), VmError> {
+    // Use a very small GC threshold so the allocations inside `URLSearchParams.getAll()` (array
+    // allocation, key strings, value strings, property table growth) trigger frequent GC cycles.
+    // This stresses rooting invariants: the array returned from `getAll()` must remain live while
+    // being populated.
+    let config = WindowRealmConfig::new("https://example.com/")
+      .with_heap_limits(HeapLimits::new(8 * 1024 * 1024, 4 * 1024));
+    let mut realm = WindowRealm::new(config)?;
+
+    let result =
+      realm.exec_script("new URLSearchParams('a=1&a=2&a=3').getAll('a').join(',')")?;
+    assert_eq!(get_string(realm.heap(), result), "1,2,3");
 
     realm.teardown();
     Ok(())
