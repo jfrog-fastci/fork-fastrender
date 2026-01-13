@@ -121,3 +121,30 @@ fn generator_private_field_prefix_update_yield_in_base() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_private_field_assignment_to_proxy_throws() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        static #x = 0;
+        static *g() {
+          try {
+            (yield new Proxy(this, {})).#x = 1;
+            return false;
+          } catch (e) {
+            return e && e.name === "TypeError";
+          }
+        }
+      }
+      var it = C.g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      r1.done === false && r2.done === true && r2.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

@@ -32830,6 +32830,11 @@ fn gen_eval_assignment_apply_reference(
           Completion::Normal(v) => {
             let value = v.unwrap_or(Value::Undefined);
             rhs_scope.push_root(value)?;
+            evaluator.maybe_set_anonymous_function_name_for_assignment(
+              &mut rhs_scope,
+              &reference,
+              value,
+            )?;
             evaluator.put_value_to_reference(&mut rhs_scope, &reference, value)?;
             Ok(GenEval::Complete(Completion::normal(value)))
           }
@@ -33965,9 +33970,17 @@ fn gen_resume_from_frames(
           let mut put_scope = scope.reborrow();
           evaluator.root_reference(&mut put_scope, &reference)?;
           put_scope.push_root(value)?;
-          match evaluator.put_value_to_reference(&mut put_scope, &reference, value) {
-            Ok(()) => state = Completion::normal(value),
-            Err(err) => state = gen_error_to_completion(evaluator, &mut put_scope, err)?,
+          if let Err(err) = evaluator.maybe_set_anonymous_function_name_for_assignment(
+            &mut put_scope,
+            &reference,
+            value,
+          ) {
+            state = gen_error_to_completion(evaluator, &mut put_scope, err)?;
+          } else {
+            match evaluator.put_value_to_reference(&mut put_scope, &reference, value) {
+              Ok(()) => state = Completion::normal(value),
+              Err(err) => state = gen_error_to_completion(evaluator, &mut put_scope, err)?,
+            }
           }
         }
         abrupt => state = abrupt,
