@@ -496,13 +496,11 @@ impl<'vm> HirEvaluator<'vm> {
         .set_function_bound_new_target(func_obj, self.new_target)?;
     }
 
-    // Ordinary functions get a `.prototype` object so `instanceof` works per spec.
+    // Constructable ordinary functions get a `.prototype` object so `instanceof` works per spec.
     //
-    // Note: user-defined functions are not currently constructable in the HIR execution engine, but
-    // `OrdinaryHasInstance` requires `C.prototype` to be an object for constructor-like functions
-    // (and throws if it isn't). Creating the prototype object here makes `instanceof` behave like
-    // the AST interpreter.
-    if !is_arrow {
+    // Note: method/getter/setter functions are not constructable and must *not* have an own
+    // `"prototype"` property.
+    if is_constructable {
       let _ = crate::function_properties::make_constructor(&mut scope, func_obj)?;
     }
 
