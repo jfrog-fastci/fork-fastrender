@@ -263,6 +263,12 @@ mod tests {
         url: Some("https://rust-lang.org/?a=1&b=2".to_string()),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
       },
+      OmniboxSuggestion {
+        action: OmniboxAction::ActivateTab(crate::ui::TabId(77)),
+        title: Some("Open tab".to_string()),
+        url: Some("https://open-tab.example/".to_string()),
+        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
+      },
     ];
 
     let html = chrome_frame_html(&app);
@@ -287,6 +293,11 @@ mod tests {
     assert!(
       html.contains(&expected_href_1),
       "expected second suggestion href, got html: {html}"
+    );
+
+    assert!(
+      html.contains(r#"href="chrome-action:activate-tab?tab=77""#),
+      "expected activate-tab href for open-tab suggestion, got html: {html}"
     );
 
     assert!(

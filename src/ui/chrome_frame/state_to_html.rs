@@ -156,7 +156,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("\">\n");
 
     // "Activate tab" link.
-    out.push_str("      <a class=\"tab-activate\" href=\"chrome-action:activate-tab?tab_id=");
+    out.push_str("      <a class=\"tab-activate\" href=\"chrome-action:activate-tab?tab=");
     out.push_str(&tab_id);
     out.push_str("\">");
     out.push_str("<img class=\"tab-favicon\" src=\"");
@@ -169,7 +169,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
 
     // Close button.
     out.push_str(
-      "      <a class=\"tab-close\" aria-label=\"Close tab\" href=\"chrome-action:close-tab?tab_id=",
+      "      <a class=\"tab-close\" aria-label=\"Close tab\" href=\"chrome-action:close-tab?tab=",
     );
     out.push_str(&tab_id);
     out.push_str("\">×</a>\n");
@@ -275,12 +275,12 @@ mod tests {
     assert!(html.contains("class=\"tab active\" data-tab-id=\"2\""));
 
     // Action URLs contain expected tab ids.
-    assert!(html.contains("chrome-action:activate-tab?tab_id=1"));
-    assert!(html.contains("chrome-action:activate-tab?tab_id=2"));
-    assert!(html.contains("chrome-action:activate-tab?tab_id=3"));
-    assert!(html.contains("chrome-action:close-tab?tab_id=1"));
-    assert!(html.contains("chrome-action:close-tab?tab_id=2"));
-    assert!(html.contains("chrome-action:close-tab?tab_id=3"));
+    assert!(html.contains("chrome-action:activate-tab?tab=1"));
+    assert!(html.contains("chrome-action:activate-tab?tab=2"));
+    assert!(html.contains("chrome-action:activate-tab?tab=3"));
+    assert!(html.contains("chrome-action:close-tab?tab=1"));
+    assert!(html.contains("chrome-action:close-tab?tab=2"));
+    assert!(html.contains("chrome-action:close-tab?tab=3"));
 
     // Favicons use stable chrome://favicons/<tab_id>.png URLs (no embedded data URLs).
     assert!(html.contains("chrome://favicons/1.png"));
@@ -310,6 +310,12 @@ mod tests {
         url: Some("https://rust-lang.org/?a=1&b=2".to_string()),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
       },
+      OmniboxSuggestion {
+        action: OmniboxAction::ActivateTab(TabId(42)),
+        title: Some("Switch to tab".to_string()),
+        url: Some("https://tab.example/".to_string()),
+        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
+      },
     ];
 
     let html = chrome_frame_html_from_state(&app);
@@ -334,6 +340,11 @@ mod tests {
     assert!(
       html.contains(&expected_href_1),
       "expected second suggestion href, got html: {html}"
+    );
+
+    assert!(
+      html.contains(r#"href="chrome-action:activate-tab?tab=42""#),
+      "expected activate-tab href for open-tab suggestion, got html: {html}"
     );
 
     // Ensure the HTML remains parseable by BrowserDocument.
