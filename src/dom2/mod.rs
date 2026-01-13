@@ -1436,13 +1436,11 @@ impl Document {
         return attrs;
       };
 
-      let (is_file_input, is_checkable_input) = {
-        let type_attr = attr_value_ci(&attrs, "type");
-        let is_file_input =
-          type_attr.is_some_and(|t| trim_ascii_whitespace_html(t).eq_ignore_ascii_case("file"));
-        let is_checkable_input = is_input_checkable(type_attr);
-        (is_file_input, is_checkable_input)
-      };
+      let input_type = attr_value_ci(&attrs, "type")
+        .map(trim_ascii_whitespace_html)
+        .unwrap_or("text");
+      let is_file_input = input_type.eq_ignore_ascii_case("file");
+      let is_checkable_input = is_input_checkable(Some(input_type));
       if is_file_input {
         // File inputs never expose pre-filled value strings from markup.
         remove_attr_ci(&mut attrs, "value");

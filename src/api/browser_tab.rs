@@ -8696,7 +8696,6 @@ impl BrowserTab {
   pub fn viewport_size_css(&self) -> Option<(u32, u32)> {
     self.host.document.options().viewport
   }
-
   /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
   ///
   /// Non-finite or non-positive values clear the override (falling back to the renderer default).
