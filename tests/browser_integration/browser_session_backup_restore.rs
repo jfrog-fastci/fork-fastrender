@@ -126,7 +126,8 @@ fn browser_restores_session_from_backup_when_primary_file_is_corrupted() {
   let expected_session = fastrender::ui::session::parse_session_json(BACKUP_JSON)
     .expect("parse expected backup session JSON");
 
-  let (status, stderr, stdout) = run_browser_headless_smoke(&[], &session_path, &[]);
+  let (status, stderr, stdout) =
+    run_browser_headless_smoke(&["--headless-smoke"], &session_path, &[]);
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
@@ -165,7 +166,8 @@ fn browser_restores_session_from_backup_when_primary_file_is_invalid_utf8() {
   let expected_session = fastrender::ui::session::parse_session_json(BACKUP_JSON)
     .expect("parse expected backup session JSON");
 
-  let (status, stderr, stdout) = run_browser_headless_smoke(&[], &session_path, &[]);
+  let (status, stderr, stdout) =
+    run_browser_headless_smoke(&["--headless-smoke"], &session_path, &[]);
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
