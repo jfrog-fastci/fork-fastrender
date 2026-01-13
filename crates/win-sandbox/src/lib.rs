@@ -103,7 +103,7 @@ fn format_hresult_message(hresult: i32) -> String {
 }
 
 /// Errors produced by the Windows sandbox layer.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum WinSandboxError {
   /// A Win32 API failed. Contains the function name and `GetLastError()` code.
   #[error("{func} failed with Win32 error {code}: {message}")]

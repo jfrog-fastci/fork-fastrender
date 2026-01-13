@@ -1,6 +1,10 @@
 use crate::{OwnedSid, Result, WinSandboxError};
 
 use std::ffi::c_void;
+use std::sync::OnceLock;
+
+use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE};
+use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
 type HRESULT = i32;
 
@@ -17,6 +21,102 @@ const fn hresult_from_win32(error: u32) -> HRESULT {
 
 fn wide_null(s: &str) -> Vec<u16> {
   s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+// -----------------------------------------------------------------------------
+// userenv.dll dynamic loader
+// -----------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct UserenvApis {
+  // Keep the backing module loaded for the lifetime of the process. The function
+  // pointers below are only valid while `userenv.dll` remains loaded.
+  _module: HMODULE,
+  create_app_container_profile: CreateAppContainerProfileFn,
+  derive_app_container_sid_from_app_container_name: DeriveAppContainerSidFromAppContainerNameFn,
+}
+
+// `HMODULE` is an opaque handle. It is safe to share this struct across threads
+// because we never dereference the module handle; it's only kept alive to
+// maintain the DLL reference count, and the function pointers are immutable.
+unsafe impl Send for UserenvApis {}
+unsafe impl Sync for UserenvApis {}
+
+#[derive(Debug)]
+enum UserenvAvailability {
+  Supported(UserenvApis),
+  Unsupported(WinSandboxError),
+}
+
+fn userenv_apis() -> Result<&'static UserenvApis> {
+  static AVAILABILITY: OnceLock<UserenvAvailability> = OnceLock::new();
+  match AVAILABILITY.get_or_init(|| unsafe { UserenvAvailability::load() }) {
+    UserenvAvailability::Supported(apis) => Ok(apis),
+    UserenvAvailability::Unsupported(err) => Err(err.clone()),
+  }
+}
+
+impl UserenvAvailability {
+  unsafe fn load() -> Self {
+    match UserenvApis::load() {
+      Ok(apis) => Self::Supported(apis),
+      Err(err) => Self::Unsupported(err),
+    }
+  }
+}
+
+impl UserenvApis {
+  unsafe fn load() -> Result<Self> {
+    let dll_w = wide_null("userenv.dll");
+    let module = LoadLibraryW(dll_w.as_ptr());
+    if module.is_null() {
+      return Err(WinSandboxError::last("LoadLibraryW(userenv.dll)"));
+    }
+
+    let create_app_container_profile = match get_proc::<CreateAppContainerProfileFn>(
+      module,
+      b"CreateAppContainerProfile\0",
+      "GetProcAddress(CreateAppContainerProfile)",
+    ) {
+      Ok(f) => f,
+      Err(err) => {
+        let _ = FreeLibrary(module);
+        return Err(err);
+      }
+    };
+
+    let derive_app_container_sid_from_app_container_name =
+      match get_proc::<DeriveAppContainerSidFromAppContainerNameFn>(
+        module,
+        b"DeriveAppContainerSidFromAppContainerName\0",
+        "GetProcAddress(DeriveAppContainerSidFromAppContainerName)",
+      ) {
+        Ok(f) => f,
+        Err(err) => {
+          let _ = FreeLibrary(module);
+          return Err(err);
+        }
+      };
+
+    Ok(Self {
+      _module: module,
+      create_app_container_profile,
+      derive_app_container_sid_from_app_container_name,
+    })
+  }
+}
+
+unsafe fn get_proc<T>(module: HMODULE, symbol: &'static [u8], func: &'static str) -> Result<T> {
+  // SAFETY: `symbol` is a pointer to a null-terminated ASCII string.
+  let proc = GetProcAddress(module, symbol.as_ptr());
+  match proc {
+    Some(proc) => {
+      // SAFETY: The caller is responsible for ensuring `T` matches the actual
+      // exported symbol's signature.
+      Ok(std::mem::transmute_copy(&proc))
+    }
+    None => Err(WinSandboxError::last(func)),
+  }
 }
 
 /// An AppContainer identity (profile + SID).
@@ -38,6 +138,8 @@ impl AppContainerProfile {
   /// This operation is intentionally idempotent: if the profile already exists,
   /// `ERROR_ALREADY_EXISTS` is treated as success.
   pub fn ensure(name: &str, display_name: &str, description: &str) -> Result<Self> {
+    let apis = userenv_apis()?;
+
     let name_w = wide_null(name);
     let display_name_w = wide_null(display_name);
     let description_w = wide_null(description);
@@ -45,7 +147,7 @@ impl AppContainerProfile {
     // SAFETY: Win32 FFI call.
     let mut sid: *mut c_void = std::ptr::null_mut();
     let hr = unsafe {
-      CreateAppContainerProfile(
+      (apis.create_app_container_profile)(
         name_w.as_ptr(),
         display_name_w.as_ptr(),
         description_w.as_ptr(),
@@ -87,11 +189,14 @@ impl AppContainerProfile {
 /// [`AppContainerProfile::ensure`] when preparing to spawn a process into an
 /// AppContainer.
 pub fn derive_appcontainer_sid(name: &str) -> Result<OwnedSid> {
+  let apis = userenv_apis()?;
   let name_w = wide_null(name);
 
   // SAFETY: Win32 FFI call.
   let mut sid: *mut c_void = std::ptr::null_mut();
-  let hr = unsafe { DeriveAppContainerSidFromAppContainerName(name_w.as_ptr(), &mut sid) };
+  let hr = unsafe {
+    (apis.derive_app_container_sid_from_app_container_name)(name_w.as_ptr(), &mut sid)
+  };
   if hr < 0 {
     return Err(WinSandboxError::from_hresult(
       "DeriveAppContainerSidFromAppContainerName",
@@ -114,22 +219,17 @@ struct SID_AND_ATTRIBUTES {
   attributes: u32,
 }
 
-#[link(name = "userenv")]
-extern "system" {
-  fn CreateAppContainerProfile(
-    pszAppContainerName: *const u16,
-    pszDisplayName: *const u16,
-    pszDescription: *const u16,
-    pCapabilities: *const SID_AND_ATTRIBUTES,
-    dwCapabilityCount: u32,
-    ppSidAppContainerSid: *mut *mut c_void,
-  ) -> HRESULT;
+type CreateAppContainerProfileFn = unsafe extern "system" fn(
+  *const u16,
+  *const u16,
+  *const u16,
+  *const SID_AND_ATTRIBUTES,
+  u32,
+  *mut *mut c_void,
+) -> HRESULT;
 
-  fn DeriveAppContainerSidFromAppContainerName(
-    pszAppContainerName: *const u16,
-    ppsidAppContainerSid: *mut *mut c_void,
-  ) -> HRESULT;
-}
+type DeriveAppContainerSidFromAppContainerNameFn =
+  unsafe extern "system" fn(*const u16, *mut *mut c_void) -> HRESULT;
 
 #[cfg(test)]
 mod tests {
@@ -211,11 +311,20 @@ mod tests {
   fn ensure_appcontainer_profile_is_idempotent() -> Result<()> {
     assert!(!current_process_is_appcontainer()?);
 
-    let _profile = AppContainerProfile::ensure(
+    let _profile = match AppContainerProfile::ensure(
       "FastRender.Renderer",
       "FastRender Renderer",
       "FastRender renderer AppContainer profile",
-    )?;
+    ) {
+      Ok(profile) => profile,
+      Err(WinSandboxError::Win32 { code, .. })
+        if code == windows_sys::Win32::Foundation::ERROR_PROC_NOT_FOUND =>
+      {
+        eprintln!("AppContainer APIs not available on this host; skipping test");
+        return Ok(());
+      }
+      Err(err) => return Err(err),
+    };
     let _profile2 = AppContainerProfile::ensure(
       "FastRender.Renderer",
       "FastRender Renderer",
