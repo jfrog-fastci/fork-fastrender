@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 use std::fmt;
+use std::mem;
+use std::slice;
 
 use crate::VmError;
 
@@ -14,16 +16,49 @@ pub struct JsString {
 }
 
 impl JsString {
-  pub fn from_code_units(units: &[u16]) -> Self {
-    Self::from_u16_vec(units.to_vec())
+  pub fn from_code_units(units: &[u16]) -> Result<Self, VmError> {
+    // Avoid `units.to_vec()`, which allocates infallibly and can abort the host process on OOM.
+    let mut buf: Vec<u16> = Vec::new();
+    buf
+      .try_reserve_exact(units.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    buf.extend_from_slice(units);
+    Self::from_u16_vec(buf)
   }
 
-  pub fn from_u16_vec(mut units: Vec<u16>) -> Self {
-    // Prefer an exact-sized backing allocation (avoid spare capacity).
-    units.shrink_to_fit();
-    let units = units.into_boxed_slice();
+  pub fn from_u16_vec(mut units: Vec<u16>) -> Result<Self, VmError> {
+    // Converting a `Vec<T>` into a `Box<[T]>` requires the backing allocation to be sized exactly
+    // for `len` elements. `Vec::shrink_to_fit` / `Vec::into_boxed_slice` will perform this
+    // reallocation infallibly (and abort the process on allocator OOM), so we need to handle spare
+    // capacity explicitly using fallible allocations.
+
+    let len = units.len();
+    let cap = units.capacity();
+
+    // Special-case empty strings: we can always represent these without any heap allocation.
+    if len == 0 {
+      units = Vec::new();
+    } else if cap != len {
+      // Allocate a trimmed buffer of exactly `len` code units using fallible `try_reserve_exact`.
+      // This avoids infallible reallocations in `into_boxed_slice` under attacker-controlled sizes.
+      let mut trimmed: Vec<u16> = Vec::new();
+      trimmed
+        .try_reserve_exact(len)
+        .map_err(|_| VmError::OutOfMemory)?;
+      trimmed.extend_from_slice(&units);
+      units = trimmed;
+    }
+
+    debug_assert_eq!(
+      units.len(),
+      units.capacity(),
+      "JsString::from_u16_vec must only box exact-capacity Vecs"
+    );
+
+    // Convert to `Box<[u16]>` without any further allocation.
+    let units = vec_into_boxed_slice_exact(units);
     let hash64 = stable_hash64(units.as_ref());
-    Self { units, hash64 }
+    Ok(Self { units, hash64 })
   }
 
   pub fn len_code_units(&self) -> usize {
@@ -60,6 +95,22 @@ impl JsString {
     // excludes `mem::size_of::<JsString>()` and only counts the backing UTF-16 buffer.
     units_len.checked_mul(2).unwrap_or(usize::MAX)
   }
+}
+
+/// Converts a `Vec<u16>` into `Box<[u16]>` without allocation.
+///
+/// # Safety contract
+///
+/// This requires `v.len() == v.capacity()` so the slice layout used by `Box<[T]>` deallocation
+/// matches the original `Vec` allocation layout. Callers must uphold this invariant.
+fn vec_into_boxed_slice_exact(mut v: Vec<u16>) -> Box<[u16]> {
+  debug_assert_eq!(v.len(), v.capacity());
+  let len = v.len();
+  let ptr = v.as_mut_ptr();
+  mem::forget(v);
+  // Safety: `ptr` came from a `Vec<u16>` allocation, and `len == capacity` ensures the allocation
+  // layout matches `Box<[u16]>`'s slice layout.
+  unsafe { Box::from_raw(slice::from_raw_parts_mut(ptr, len)) }
 }
 
 /// Fallible UTF-16→UTF-8 conversion for VM internals.

@@ -119,6 +119,14 @@ fn job_queue_enqueue_does_not_abort_on_oom() {
 }
 
 #[test]
+fn alloc_string_from_u16_vec_with_spare_capacity_does_not_abort_on_oom() {
+  // Converting a UTF-16 buffer with spare capacity into a heap `JsString` should not use infallible
+  // reallocations (e.g. `shrink_to_fit` / `into_boxed_slice`) that could abort the process under
+  // allocator OOM.
+  run_oom_harness("allocStringU16SpareCap", 20_000_000);
+}
+
+#[test]
 fn throw_string_formatting_does_not_abort_on_oom() {
   // Formatting a thrown string for host-visible reporting (Agent::format_vm_error) must not abort
   // when the UTF-16→UTF-8 conversion cannot allocate under RLIMIT_AS pressure.

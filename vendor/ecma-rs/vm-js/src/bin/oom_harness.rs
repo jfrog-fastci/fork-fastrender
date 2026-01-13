@@ -56,7 +56,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
+    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | allocStringU16SpareCap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
   );
   process::exit(2);
 }
@@ -266,6 +266,35 @@ fn main() {
       process::exit(1);
     }
   };
+
+  if scenario == "allocStringU16SpareCap" {
+    // Construct a UTF-16 buffer with `capacity() > len()` (via non-exact `try_reserve`), then
+    // convert it into a heap `JsString` under RLIMIT_AS pressure. This exercises the
+    // `alloc_string_from_u16_vec` path when it needs to trim spare capacity, ensuring it never
+    // relies on infallible reallocations that could abort the process on OOM.
+    let _keep = &filler;
+
+    let mut units: Vec<u16> = Vec::new();
+    let reserve = len_code_units.checked_add(1).unwrap_or_else(|| usage());
+    if units.try_reserve(reserve).is_err() {
+      eprintln!("oom_harness: failed to allocate input string buffer");
+      process::exit(1);
+    }
+    units.resize(len_code_units, 0x0800u16);
+
+    let mut scope = agent.heap_mut().scope();
+    match scope.alloc_string_from_u16_vec(units) {
+      Err(VmError::OutOfMemory) => process::exit(0),
+      Ok(_) => {
+        eprintln!("oom_harness: unexpected success in allocStringU16SpareCap");
+        process::exit(1);
+      }
+      Err(err) => {
+        eprintln!("oom_harness: unexpected error in allocStringU16SpareCap: {err:?}");
+        process::exit(1);
+      }
+    }
+  }
 
   if scenario == "moduleLink" {
     // Allocate a very large module specifier in host memory. Previously `ModuleGraph::link_inner`
