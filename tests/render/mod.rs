@@ -2,7 +2,6 @@
 
 mod container_query_prepass_test;
 mod diagnostics_test;
-mod animated_gif_animation_time;
 mod img_decoding_async;
 mod meta_viewport_output_size_test;
 mod partial_test;
