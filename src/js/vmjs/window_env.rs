@@ -2604,9 +2604,11 @@ mod tests {
   use super::*;
   use crate::dom2;
   use crate::js::{RunLimits, RunUntilIdleOutcome, WindowHost};
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use crate::style::media::MediaContext;
   use serde_json;
   use selectors::context::QuirksMode;
+  use std::sync::Arc;
   use std::time::Duration;
 
   fn get_prop(rt: &mut VmJsRuntime, obj: Value, name: &str) -> Value {
@@ -2619,6 +2621,21 @@ mod tests {
       panic!("expected string value");
     };
     rt.heap().get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Err(crate::Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> crate::error::Result<WindowHost> {
+    WindowHost::new_with_fetcher(dom, document_url, Arc::new(NoFetchResourceFetcher))
   }
 
   #[test]
@@ -2711,7 +2728,7 @@ mod tests {
   #[test]
   fn match_media_add_event_listener_fires_on_media_context_update() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
     host
       .exec_script(
         r#"
@@ -2749,7 +2766,7 @@ mod tests {
   #[test]
   fn match_media_accepts_object_query_string_via_to_string() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
     assert_eq!(
       host
         .exec_script(r#"matchMedia(new String("(min-width: 700px)")).matches"#)
@@ -2761,7 +2778,7 @@ mod tests {
   #[test]
   fn match_media_add_event_listener_accepts_object_event_type_via_to_string() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
     host
       .exec_script(
         r#"
@@ -2795,7 +2812,7 @@ mod tests {
   #[test]
   fn match_media_add_listener_fires_on_media_context_update() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
     host
       .exec_script(
         r#"
@@ -2833,7 +2850,7 @@ mod tests {
   #[test]
   fn match_media_onchange_is_invoked() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
     host
       .exec_script(
         r#"
@@ -2867,7 +2884,7 @@ mod tests {
   #[test]
   fn match_media_overlong_query_is_truncated_and_non_throwing() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
     host
       .exec_script(&format!(
         r#"
@@ -2892,7 +2909,7 @@ mod tests {
   #[test]
   fn navigator_send_beacon_exists_and_is_non_throwing() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
 
     let is_function = host
       .exec_script("typeof navigator.sendBeacon === 'function'")
@@ -2951,7 +2968,7 @@ mod tests {
   #[test]
   fn navigator_user_agent_data_is_present_and_resolves_high_entropy_values() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
 
     assert_eq!(
       host
@@ -3123,7 +3140,7 @@ mod tests {
   #[test]
   fn navigator_online_and_device_hints_are_present() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
 
     assert_eq!(host.exec_script("navigator.onLine").unwrap(), Value::Bool(true));
     assert_eq!(
@@ -3155,7 +3172,7 @@ mod tests {
   #[test]
   fn navigator_languages_is_array_and_supports_includes() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
 
     let is_array = host.exec_script("Array.isArray(navigator.languages)").unwrap();
     assert_eq!(is_array, Value::Bool(true));
@@ -3167,7 +3184,7 @@ mod tests {
   #[test]
   fn navigator_common_identity_fields_and_ua_data_to_json_are_present() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
 
     assert_eq!(
       host.exec_script("navigator.appCodeName === 'Mozilla'").unwrap(),
@@ -3246,7 +3263,7 @@ mod tests {
   #[test]
   fn navigator_plugins_mimetypes_and_java_enabled_are_present() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
 
     assert_eq!(
       host

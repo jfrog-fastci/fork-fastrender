@@ -325,13 +325,30 @@ mod tests {
   use crate::dom2;
   use crate::error::Result;
   use crate::js::WindowHost;
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use selectors::context::QuirksMode;
+  use std::sync::Arc;
   use vm_js::Value;
+
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      Err(crate::Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> Result<WindowHost> {
+    WindowHost::new_with_fetcher(dom, document_url, Arc::new(NoFetchResourceFetcher))
+  }
 
   #[test]
   fn serialize_to_string_throws_dom_exception_instance_for_invalid_comment() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_host(dom, "https://example.com/")?;
 
     let value = host.exec_script(
       r#"
@@ -351,4 +368,3 @@ mod tests {
     Ok(())
   }
 }
-

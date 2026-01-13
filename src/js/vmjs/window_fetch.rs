@@ -16984,7 +16984,7 @@ mod tests {
   #[test]
   fn window_host_readable_stream_pipe_to_and_pipe_through_pump() -> crate::error::Result<()> {
     let dom = crate::dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", Arc::new(StaticOkFetcher))?;
 
     host.exec_script(
       r#"

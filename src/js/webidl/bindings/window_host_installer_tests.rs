@@ -2,10 +2,35 @@ use super::{
   install_url_bindings_vm_js, install_url_search_params_bindings_vm_js, install_window_bindings_vm_js,
 };
 use crate::js::{JsExecutionOptions, RunLimits, RunUntilIdleOutcome, WindowHost};
+use crate::resource::{FetchedResource, ResourceFetcher};
 use crate::{Error, Result};
 use selectors::context::QuirksMode;
+use std::sync::Arc;
 use std::time::Duration;
 use vm_js::{PropertyKey, Value};
+
+#[derive(Debug, Default)]
+struct NoFetchResourceFetcher;
+
+impl ResourceFetcher for NoFetchResourceFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    Err(Error::Other(format!(
+      "NoFetchResourceFetcher does not support fetch: {url}"
+    )))
+  }
+}
+
+fn make_host(dom: crate::dom2::Document, url: impl Into<String>) -> Result<WindowHost> {
+  WindowHost::new_with_fetcher(dom, url, Arc::new(NoFetchResourceFetcher))
+}
+
+fn make_host_with_options(
+  dom: crate::dom2::Document,
+  url: impl Into<String>,
+  options: JsExecutionOptions,
+) -> Result<WindowHost> {
+  WindowHost::new_with_fetcher_and_options(dom, url, Arc::new(NoFetchResourceFetcher), options)
+}
 
 fn js_opts_for_test() -> JsExecutionOptions {
   // `vm-js` budgets are based on wall-clock time. The library default is intentionally aggressive,
@@ -97,7 +122,7 @@ fn install_generated_window_bindings(host: &mut WindowHost) -> Result<()> {
 #[test]
 fn vm_js_webidl_generated_url_and_search_params_work_in_window_host() -> Result<()> {
   let dom = crate::dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_opts_for_test())?;
+  let mut host = make_host_with_options(dom, "https://example.invalid/", js_opts_for_test())?;
   install_generated_window_bindings(&mut host)?;
 
   let got = host.exec_script(
@@ -118,7 +143,7 @@ fn vm_js_webidl_generated_url_and_search_params_work_in_window_host() -> Result<
 #[test]
 fn vm_js_webidl_generated_set_timeout_and_clear_timeout_work_in_window_host() -> Result<()> {
   let dom = crate::dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_opts_for_test())?;
+  let mut host = make_host_with_options(dom, "https://example.invalid/", js_opts_for_test())?;
   install_generated_window_bindings(&mut host)?;
 
   let _ = host.exec_script(
@@ -145,7 +170,7 @@ fn vm_js_webidl_generated_set_timeout_and_clear_timeout_work_in_window_host() ->
 #[test]
 fn vm_js_install_only_url_search_params_does_not_clobber_dom() -> Result<()> {
   let dom = crate::dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "https://example.invalid/")?;
 
   // Ensure we're starting from the default realm surface (handwritten DOM bindings present).
   let el = host.exec_script("document.createElement('div')")?;
@@ -176,7 +201,7 @@ fn vm_js_install_only_url_search_params_does_not_clobber_dom() -> Result<()> {
 #[test]
 fn vm_js_install_url_and_url_search_params_still_work() -> Result<()> {
   let dom = crate::dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "https://example.invalid/")?;
 
   // Replace the handcrafted URL + URLSearchParams bindings with the generated WebIDL bindings.
   delete_global_prop(&mut host, "URL")?;
@@ -204,4 +229,3 @@ fn vm_js_install_url_and_url_search_params_still_work() -> Result<()> {
 
   Ok(())
 }
-

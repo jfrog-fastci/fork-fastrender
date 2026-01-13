@@ -23,7 +23,9 @@ use crate::js::{
   WindowWebSocketEnv, WindowXhrBindings, WindowXhrEnv,
 };
 use crate::js::{Clock, RealClock};
-use crate::resource::{origin_from_url, HttpFetcher, ResourceFetcher};
+use crate::resource::{origin_from_url, ResourceFetcher};
+#[cfg(feature = "direct_network")]
+use crate::resource::HttpFetcher;
 use crate::style::media::MediaContext;
 use std::sync::Arc;
 
@@ -210,6 +212,7 @@ pub struct WindowHost {
 }
 
 impl WindowHost {
+  #[cfg(feature = "direct_network")]
   pub fn new(dom: dom2::Document, document_url: impl Into<String>) -> Result<Self> {
     Self::new_with_fetcher_and_options(
       dom,
@@ -219,6 +222,15 @@ impl WindowHost {
     )
   }
 
+  #[cfg(not(feature = "direct_network"))]
+  pub fn new(_dom: dom2::Document, _document_url: impl Into<String>) -> Result<Self> {
+    Err(Error::Other(
+      "WindowHost::new requires a ResourceFetcher; use WindowHost::new_with_fetcher (or enable the `direct_network` feature)"
+        .to_string(),
+    ))
+  }
+
+  #[cfg(feature = "direct_network")]
   pub fn new_with_js_execution_options(
     dom: dom2::Document,
     document_url: impl Into<String>,
@@ -230,6 +242,18 @@ impl WindowHost {
       Arc::new(HttpFetcher::new()),
       js_execution_options,
     )
+  }
+
+  #[cfg(not(feature = "direct_network"))]
+  pub fn new_with_js_execution_options(
+    _dom: dom2::Document,
+    _document_url: impl Into<String>,
+    _js_execution_options: JsExecutionOptions,
+  ) -> Result<Self> {
+    Err(Error::Other(
+      "WindowHost::new_with_js_execution_options requires a ResourceFetcher; use WindowHost::new_with_fetcher_and_options (or enable the `direct_network` feature)"
+        .to_string(),
+    ))
   }
 
   pub fn new_with_fetcher(
@@ -247,6 +271,7 @@ impl WindowHost {
     )
   }
 
+  #[cfg(feature = "direct_network")]
   pub fn new_with_event_loop(
     dom: dom2::Document,
     document_url: impl Into<String>,
@@ -259,6 +284,18 @@ impl WindowHost {
       event_loop,
       JsExecutionOptions::default(),
     )
+  }
+
+  #[cfg(not(feature = "direct_network"))]
+  pub fn new_with_event_loop(
+    _dom: dom2::Document,
+    _document_url: impl Into<String>,
+    _event_loop: EventLoop<WindowHostState>,
+  ) -> Result<Self> {
+    Err(Error::Other(
+      "WindowHost::new_with_event_loop requires a ResourceFetcher; use WindowHost::new_with_fetcher_and_event_loop (or enable the `direct_network` feature)"
+        .to_string(),
+    ))
   }
 
   pub fn new_with_fetcher_and_event_loop(
@@ -276,6 +313,7 @@ impl WindowHost {
     )
   }
 
+  #[cfg(feature = "direct_network")]
   pub fn new_with_options(
     dom: dom2::Document,
     document_url: impl Into<String>,
@@ -289,6 +327,18 @@ impl WindowHost {
       event_loop,
       options,
     )
+  }
+
+  #[cfg(not(feature = "direct_network"))]
+  pub fn new_with_options(
+    _dom: dom2::Document,
+    _document_url: impl Into<String>,
+    _options: JsExecutionOptions,
+  ) -> Result<Self> {
+    Err(Error::Other(
+      "WindowHost::new_with_options requires a ResourceFetcher; use WindowHost::new_with_fetcher_and_options (or enable the `direct_network` feature)"
+        .to_string(),
+    ))
   }
 
   pub fn new_with_fetcher_and_options(
@@ -307,6 +357,7 @@ impl WindowHost {
     )
   }
 
+  #[cfg(feature = "direct_network")]
   pub fn new_with_event_loop_and_options(
     dom: dom2::Document,
     document_url: impl Into<String>,
@@ -320,6 +371,19 @@ impl WindowHost {
       event_loop,
       options,
     )
+  }
+
+  #[cfg(not(feature = "direct_network"))]
+  pub fn new_with_event_loop_and_options(
+    _dom: dom2::Document,
+    _document_url: impl Into<String>,
+    _event_loop: EventLoop<WindowHostState>,
+    _options: JsExecutionOptions,
+  ) -> Result<Self> {
+    Err(Error::Other(
+      "WindowHost::new_with_event_loop_and_options requires a ResourceFetcher; use WindowHost::new_with_fetcher_and_event_loop_and_options (or enable the `direct_network` feature)"
+        .to_string(),
+    ))
   }
 
   pub fn new_with_fetcher_and_event_loop_and_options(
@@ -539,6 +603,7 @@ pub struct WindowHostState {
 }
 
 impl WindowHostState {
+  #[cfg(feature = "direct_network")]
   pub fn new(dom: dom2::Document, document_url: impl Into<String>) -> Result<Self> {
     Self::new_with_fetcher_and_options(
       dom,
@@ -546,6 +611,14 @@ impl WindowHostState {
       Arc::new(HttpFetcher::new()),
       JsExecutionOptions::default(),
     )
+  }
+
+  #[cfg(not(feature = "direct_network"))]
+  pub fn new(_dom: dom2::Document, _document_url: impl Into<String>) -> Result<Self> {
+    Err(Error::Other(
+      "WindowHostState::new requires a ResourceFetcher; use WindowHostState::new_with_fetcher (or enable the `direct_network` feature)"
+        .to_string(),
+    ))
   }
 
   pub fn new_with_fetcher(
@@ -1088,6 +1161,47 @@ mod tests {
     VmError, VmHost, VmHostHooks,
   };
 
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      Err(Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn default_test_fetcher() -> Arc<dyn ResourceFetcher> {
+    #[cfg(feature = "direct_network")]
+    {
+      return Arc::new(HttpFetcher::new());
+    }
+    #[cfg(not(feature = "direct_network"))]
+    {
+      return Arc::new(NoFetchResourceFetcher);
+    }
+  }
+
+  fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> Result<WindowHost> {
+    WindowHost::new_with_fetcher(dom, document_url, default_test_fetcher())
+  }
+
+  fn make_host_with_options(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    options: JsExecutionOptions,
+  ) -> Result<WindowHost> {
+    WindowHost::new_with_fetcher_and_options(dom, document_url, default_test_fetcher(), options)
+  }
+
+  fn make_host_state(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+  ) -> Result<WindowHostState> {
+    WindowHostState::new_with_fetcher(dom, document_url, default_test_fetcher())
+  }
+
   fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
     let window = host.host_mut().window_mut();
     let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
@@ -1332,7 +1446,7 @@ mod tests {
   #[test]
   fn structured_clone_rejects_xml_http_request() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let out = host.exec_script(
       "(() => {\n\
@@ -1351,7 +1465,7 @@ mod tests {
   #[test]
   fn structured_clone_rejects_web_socket() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let out = host.exec_script(
       "(() => {\n\
@@ -1371,7 +1485,7 @@ mod tests {
   fn generated_vmjs_url_search_params_installer_is_idempotent_and_does_not_clobber_dom(
   ) -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let before = get_global_prop(&mut host, "URLSearchParams");
     {
@@ -1401,7 +1515,7 @@ mod tests {
   #[test]
   fn dom_constructor_property_descriptors_match_webidl_expectations() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let ok = host.exec_script(
       r#"
@@ -1473,7 +1587,7 @@ mod tests {
   #[test]
   fn generated_vmjs_window_ops_installer_does_not_clobber_existing_timers() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let before = get_global_prop(&mut host, "setTimeout");
     {
@@ -1500,7 +1614,7 @@ mod tests {
   #[test]
   fn handwritten_window_realm_aligns_dom_event_target_prototype() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let out = host.exec_script("window instanceof EventTarget")?;
     assert_eq!(out, Value::Bool(true));
@@ -1523,7 +1637,7 @@ mod tests {
   #[test]
   fn window_inherits_from_event_target_prototype() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let out = host.exec_script("window instanceof EventTarget")?;
     assert_eq!(out, Value::Bool(true));
@@ -1537,7 +1651,7 @@ mod tests {
   #[test]
   fn window_add_event_listener_identifier_call_defaults_this_in_strict_mode() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     // Web-compatible behavior: `addEventListener(...)` is callable as a global function even in
     // strict mode.
@@ -1560,7 +1674,7 @@ mod tests {
   #[test]
   fn window_realm_installs_node_type_constants() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     // Mirror the DOM Parsing WPT checks: comment nodes must survive `innerHTML` parsing and
     // serialize back out, and `Node.COMMENT_NODE` must be defined.
@@ -1589,7 +1703,7 @@ mod tests {
       <div id=host><template shadowroot=open><span>shadow</span></template></div>\
       </body></html>";
     let dom = dom2::parse_html(html).expect("parse_html");
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let out = host.exec_script("document.getElementById('host').childNodes.length === 0")?;
     assert_eq!(out, Value::Bool(true));
@@ -1690,7 +1804,7 @@ mod tests {
   fn generated_vmjs_node_installer_can_patch_prototype_chain_after_event_target_install(
   ) -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     {
       // Ensure we start from a clean slate even if other tests installed these bindings.
       let window = host.host_mut().window_mut();
@@ -1814,7 +1928,7 @@ mod tests {
     let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
       dom,
       "https://example.invalid/",
-      Arc::new(HttpFetcher::new()),
+      default_test_fetcher(),
       clock,
       JsExecutionOptions::default(),
       DomBindingsBackend::WebIdl,
@@ -1901,7 +2015,7 @@ mod tests {
     let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
       dom,
       "https://example.invalid/",
-      Arc::new(HttpFetcher::new()),
+      default_test_fetcher(),
       clock,
       JsExecutionOptions::default(),
       DomBindingsBackend::WebIdl,
@@ -1955,7 +2069,7 @@ mod tests {
     let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
       dom,
       "https://example.invalid/",
-      Arc::new(HttpFetcher::new()),
+      default_test_fetcher(),
       clock,
       JsExecutionOptions::default(),
       DomBindingsBackend::WebIdl,
@@ -2020,7 +2134,7 @@ mod tests {
     let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
       dom,
       "https://example.invalid/",
-      Arc::new(HttpFetcher::new()),
+      default_test_fetcher(),
       clock,
       JsExecutionOptions::default(),
       DomBindingsBackend::WebIdl,
@@ -2069,7 +2183,7 @@ mod tests {
     let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
       dom,
       "https://example.invalid/",
-      Arc::new(HttpFetcher::new()),
+      default_test_fetcher(),
       clock,
       JsExecutionOptions::default(),
       DomBindingsBackend::WebIdl,
@@ -2121,7 +2235,7 @@ mod tests {
     let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
       dom,
       "https://example.invalid/",
-      Arc::new(HttpFetcher::new()),
+      default_test_fetcher(),
       clock,
       JsExecutionOptions::default(),
       DomBindingsBackend::WebIdl,
@@ -2156,7 +2270,7 @@ mod tests {
     let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
       dom,
       "https://example.invalid/",
-      Arc::new(HttpFetcher::new()),
+      default_test_fetcher(),
       clock,
       JsExecutionOptions::default(),
       DomBindingsBackend::WebIdl,
@@ -2221,7 +2335,7 @@ mod tests {
   #[test]
   fn node_wrappers_do_not_shadow_event_target_prototype_methods() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let out = host.exec_script(
       "(() => {\n\
@@ -2404,7 +2518,7 @@ mod tests {
   #[test]
   fn webidl_event_target_prototype_methods_throw_on_illegal_invocation() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     {
       let window = host.host_mut().window_mut();
       let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
@@ -2464,7 +2578,7 @@ mod tests {
   #[test]
   fn webidl_abort_signal_still_behaves_like_event_target() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     {
       // Ensure AbortSignal inherits from the WebIDL-generated EventTarget.prototype by reinstalling
       // AbortController/AbortSignal after installing generated EventTarget.
@@ -2521,7 +2635,7 @@ mod tests {
   #[test]
   fn handcrafted_dom_attribute_descriptors_match_webidl_defaults() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     // vm-js does not currently expose `Object.getOwnPropertyDescriptor`, so inspect the underlying
     // `vm_js::PropertyDescriptor` directly.
@@ -2623,7 +2737,7 @@ mod tests {
   #[test]
   fn window_host_state_exec_script_in_event_loop_sets_webidl_bindings_host_slot() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     // WindowRealm installs handcrafted URL bindings by default (`src/js/vmjs/window_url.rs`), which
     // do not use the WebIDL host slot. The generated bindings are idempotent and intentionally do
@@ -2767,7 +2881,7 @@ mod tests {
   #[test]
   fn webidl_window_timers_and_queue_microtask_run_via_event_loop() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     {
       let window = host.host_mut().window_mut();
       let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
@@ -2841,7 +2955,7 @@ mod tests {
   #[test]
   fn window_host_state_registers_import_maps_and_respects_resolved_module_set() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHostState::new(dom, "https://example.invalid/base/page.html")?;
+    let mut host = make_host_state(dom, "https://example.invalid/base/page.html")?;
 
     host.register_import_map_using_document_base(r#"{"imports":{"foo":"/mapped.js"}}"#)?;
 
@@ -2872,7 +2986,7 @@ mod tests {
   #[test]
   fn window_host_state_set_document_base_url_updates_document_base_uri() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHostState::new(dom, "https://example.invalid/a/b.html")?;
+    let mut host = make_host_state(dom, "https://example.invalid/a/b.html")?;
     host.set_document_base_url(Some("https://example.invalid/dir/".to_string()));
     let mut event_loop = EventLoop::<WindowHostState>::new();
     let base_uri = host.exec_script_in_event_loop(&mut event_loop, "document.baseURI")?;
@@ -3364,6 +3478,7 @@ mod tests {
     Ok(buf)
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn fetch_thenable_assimilation_runs_with_real_vm_host() -> Result<()> {
     let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
@@ -3445,7 +3560,7 @@ mod tests {
   #[test]
   fn node_constants_are_visible_on_node_instances() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     assert_eq!(host.exec_script("document.ELEMENT_NODE === 1")?, Value::Bool(true));
     assert_eq!(host.exec_script("document.TEXT_NODE === 3")?, Value::Bool(true));
@@ -3468,7 +3583,7 @@ mod tests {
       .expect("set id attribute");
     dom.append_child(dom.root(), target).expect("append child");
 
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       "const el = document.getElementById('target');\n\
@@ -3508,7 +3623,7 @@ mod tests {
       .expect("set id attribute");
     dom.append_child(dom.root(), target).expect("append child");
 
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       "globalThis.__called = 0;\n\
@@ -3543,7 +3658,7 @@ mod tests {
   #[test]
   fn exec_script_installs_event_loop_for_queue_microtask() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script("var g = this; g.__x = 0; g.queueMicrotask(function () { g.__x = 1; });")?;
 
@@ -3648,7 +3763,7 @@ mod tests {
   #[test]
   fn exec_script_passes_real_vm_host_context() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     // Install a native function that can only return `true` if script execution passes the actual
     // `DocumentHostState` as the vm-js host context.
@@ -3725,7 +3840,7 @@ mod tests {
   #[test]
   fn create_error_construction_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4033,7 +4148,7 @@ mod tests {
   #[test]
   fn text_decoder_option_getter_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4069,7 +4184,7 @@ mod tests {
   #[test]
   fn streams_text_encoder_stream_shopify_bootstrap() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     // Mirrors the Shopify fixture pattern:
     // - create a ReadableStream and capture its controller
@@ -4124,7 +4239,7 @@ mod tests {
   #[test]
   fn blob_option_getter_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4160,7 +4275,7 @@ mod tests {
   #[test]
   fn xhr_dispatch_event_getters_run_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4207,7 +4322,7 @@ mod tests {
   #[test]
   fn webidl_event_target_dispatch_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     // Force the generated WebIDL EventTarget bindings to install (WindowRealm ships with a
@@ -4359,7 +4474,7 @@ mod tests {
   #[test]
   fn dispatch_event_listener_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4380,7 +4495,7 @@ mod tests {
   #[test]
   fn dispatch_event_handle_event_listener_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4404,8 +4519,8 @@ mod tests {
 
     let dom_a = dom2::Document::new(QuirksMode::NoQuirks);
     let dom_b = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host_a = WindowHost::new(dom_a, "https://storage-events.test/a")?;
-    let mut host_b = WindowHost::new(dom_b, "https://storage-events.test/b")?;
+    let mut host_a = make_host(dom_a, "https://storage-events.test/a")?;
+    let mut host_b = make_host(dom_b, "https://storage-events.test/b")?;
 
     host_a.exec_script(
       "globalThis.__events = [];\n\
@@ -4499,8 +4614,8 @@ mod tests {
 
     let dom_a = dom2::Document::new(QuirksMode::NoQuirks);
     let dom_b = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host_a = WindowHost::new(dom_a, "https://example.com/a")?;
-    let mut host_b = WindowHost::new(dom_b, "https://example.com/b")?;
+    let mut host_a = make_host(dom_a, "https://example.com/a")?;
+    let mut host_b = make_host(dom_b, "https://example.com/b")?;
 
     host_b.exec_script(
       "globalThis.__events = [];\n\
@@ -4536,7 +4651,7 @@ mod tests {
   #[test]
   fn abort_signal_onabort_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4558,7 +4673,7 @@ mod tests {
   #[test]
   fn abort_signal_event_listener_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4580,7 +4695,7 @@ mod tests {
   #[test]
   fn event_target_and_abort_signal_receiver_branding_is_not_forgeable() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     host.exec_script(
       r#"
       globalThis.__event_target_illegal = false;
@@ -4641,7 +4756,7 @@ mod tests {
   #[test]
   fn headers_for_each_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4762,7 +4877,7 @@ mod tests {
   #[test]
   fn queue_microtask_callback_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4789,7 +4904,7 @@ mod tests {
   #[test]
   fn set_timeout_callback_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4876,7 +4991,7 @@ mod tests {
   #[test]
   fn set_interval_callback_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4914,7 +5029,7 @@ mod tests {
   #[test]
   fn request_animation_frame_callback_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -5083,7 +5198,7 @@ mod tests {
   #[test]
   fn exec_script_drains_promise_jobs_at_microtask_checkpoint() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     // Nested Promise job: the inner `then` must run in the same microtask checkpoint.
     host.exec_script(
@@ -5101,7 +5216,7 @@ mod tests {
   #[test]
   fn exec_script_preserves_microtask_order_between_promise_and_queue_microtask() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     // Both Promise jobs and `queueMicrotask` are microtasks in HTML. They must share the same FIFO
     // microtask queue so ordering matches enqueue order.
@@ -5404,7 +5519,7 @@ mod tests {
   #[test]
   fn intersection_observer_exists_and_supports_basic_methods() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -5465,7 +5580,7 @@ mod tests {
   #[test]
   fn resize_observer_exists_and_parses_box_option() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -5514,7 +5629,7 @@ mod tests {
   #[test]
   fn document_cookie_round_trip_is_deterministic() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script("document.cookie = 'b=c; Path=/'; document.cookie = 'a=b';")?;
 
@@ -5547,6 +5662,7 @@ mod tests {
     Ok(())
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn document_cookie_fetcher_sync_handles_empty_cookie_header() -> Result<()> {
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(HttpFetcher::new());
@@ -5566,6 +5682,7 @@ mod tests {
     Ok(())
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn fetch_includes_cookies_from_set_cookie_and_document_cookie() -> Result<()> {
     let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
@@ -5660,6 +5777,7 @@ mod tests {
     Ok(())
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn fetch_redirect_modes_surface_response_metadata() -> Result<()> {
     let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
@@ -5817,7 +5935,7 @@ mod tests {
   #[test]
   fn window_realm_supports_event_constructors_and_create_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -5887,7 +6005,7 @@ mod tests {
   #[test]
   fn window_onload_handler_runs_on_load_event_dispatch() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       "globalThis.__called = false;\n\
@@ -5910,7 +6028,7 @@ mod tests {
   #[test]
   fn document_onvisibilitychange_handler_runs_on_visibilitychange_event_dispatch() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       "globalThis.__called = false;\n\
@@ -5933,7 +6051,7 @@ mod tests {
   #[test]
   fn node_onclick_handler_runs_on_click_event_dispatch() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       "globalThis.__called = false;\n\
@@ -5957,7 +6075,7 @@ mod tests {
   #[test]
   fn window_onerror_handler_uses_special_signature_and_return_true_cancels() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       "globalThis.__argc = 0;\n\
@@ -6022,7 +6140,7 @@ mod tests {
   #[test]
   fn unhandled_promise_rejection_dispatches_unhandledrejection_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host_state, event_loop| {
       host_state.exec_script_in_event_loop(
@@ -6048,7 +6166,7 @@ mod tests {
   #[test]
   fn unhandledrejection_listener_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
 
     host.queue_task(TaskSource::Script, |host_state, event_loop| {
@@ -6075,7 +6193,7 @@ mod tests {
   #[test]
   fn unhandledrejection_event_supports_prevent_default() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host_state, event_loop| {
       host_state.exec_script_in_event_loop(
@@ -6104,7 +6222,7 @@ mod tests {
   #[test]
   fn onunhandledrejection_handler_runs_and_return_false_cancels() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host_state, event_loop| {
       host_state.exec_script_in_event_loop(
@@ -6147,7 +6265,7 @@ mod tests {
   #[test]
   fn onrejectionhandled_handler_runs() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host_state, event_loop| {
       host_state.exec_script_in_event_loop(
@@ -6183,7 +6301,7 @@ mod tests {
   #[test]
   fn promise_rejection_events_use_promise_rejection_event_and_are_read_only() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host_state, event_loop| {
       host_state.exec_script_in_event_loop(
@@ -6262,7 +6380,7 @@ mod tests {
   #[test]
   fn error_beforeunload_and_pagetransition_event_constructors_exist_and_roundtrip_init() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host_state, event_loop| {
       host_state.exec_script_in_event_loop(
@@ -6397,7 +6515,7 @@ mod tests {
   #[test]
   fn handled_after_notification_dispatches_rejectionhandled_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host_state, event_loop| {
       host_state.exec_script_in_event_loop(
@@ -6442,7 +6560,7 @@ mod tests {
   #[test]
   fn synchronously_handled_rejection_does_not_dispatch_unhandledrejection() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host_state, event_loop| {
       host_state.exec_script_in_event_loop(
@@ -6627,7 +6745,7 @@ mod tests {
       crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
     let dom = dom2::Document::from_renderer_dom(&renderer_dom);
 
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
     host.exec_script(&format!(
@@ -6754,7 +6872,7 @@ mod tests {
   #[test]
   fn exec_script_error_includes_stack_trace() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let err = host
       .exec_script("1;\nthrow \"boom\";")
@@ -6781,7 +6899,7 @@ mod tests {
   #[test]
   fn abort_controller_exists_and_dispatches_abort_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -6829,7 +6947,7 @@ mod tests {
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host =
-      WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
+      make_host_with_options(dom, "https://example.invalid/", js_options)?;
 
     let err = host
       .exec_script("while (true) {}")
@@ -6844,7 +6962,7 @@ mod tests {
   #[test]
   fn abort_signal_timeout_zero_aborts_on_next_turn() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -6932,7 +7050,7 @@ mod tests {
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host =
-      WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
+      make_host_with_options(dom, "https://example.invalid/", js_options)?;
 
     let err = host
       .exec_script("function f() { return f(); }\nf();")
@@ -6983,7 +7101,7 @@ mod tests {
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host =
-      WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options)?;
+      make_host_with_options(dom, "https://example.invalid/", js_options)?;
 
     host.exec_script("Promise.resolve().then(function () { while (true) {} });")?;
     let err = host
@@ -6999,7 +7117,7 @@ mod tests {
   #[test]
   fn request_exposes_signal_and_clone_preserves_it() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -7030,7 +7148,7 @@ mod tests {
       js_options.event_loop_run_limits.max_wall_time = None;
 
       let dom = dom2::Document::new(QuirksMode::NoQuirks);
-      match WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", js_options) {
+      match make_host_with_options(dom, "https://example.invalid/", js_options) {
         Ok(host) => break host,
         Err(_) => {
           max_bytes = max_bytes.saturating_mul(2);
@@ -7064,7 +7182,7 @@ mod tests {
     dom
       .append_child(dom.root(), container)
       .expect("append container");
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -7107,7 +7225,7 @@ mod tests {
       .expect("append container");
     let mut opts = js_opts_for_test();
     opts.supports_module_scripts = true;
-    let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", opts)?;
+    let mut host = make_host_with_options(dom, "https://example.invalid/", opts)?;
 
     host.exec_script(
       r#"
@@ -7258,7 +7376,7 @@ mod tests {
     dom
       .append_child(dom.root(), container)
       .expect("append container");
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -7478,7 +7596,7 @@ mod tests {
   #[test]
   fn history_traversal_fires_popstate_with_state() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host, event_loop| {
       host.exec_script_in_event_loop(
@@ -7514,7 +7632,7 @@ mod tests {
   #[test]
   fn location_hash_set_fires_hashchange_with_old_and_new_url() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host, event_loop| {
       host.exec_script_in_event_loop(
@@ -7550,7 +7668,7 @@ mod tests {
   #[test]
   fn history_traversal_fragment_change_fires_popstate_then_hashchange() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host, event_loop| {
       host.exec_script_in_event_loop(
@@ -7583,7 +7701,7 @@ mod tests {
   #[test]
   fn window_onpopstate_runs_on_traversal() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host, event_loop| {
       host.exec_script_in_event_loop(
@@ -7612,7 +7730,7 @@ mod tests {
   #[test]
   fn window_onhashchange_runs_for_hash_navigation() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.queue_task(TaskSource::Script, |host, event_loop| {
       host.exec_script_in_event_loop(
@@ -7648,7 +7766,7 @@ mod tests {
   #[test]
   fn hash_only_location_navigation_does_not_request_full_navigation() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script("location.href = '#a'")?;
     assert!(
@@ -7685,7 +7803,7 @@ mod import_map_tests {
   #[test]
   fn window_host_state_starts_with_empty_import_map_state() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let host = WindowHostState::new(dom, "https://example.com/index.html").expect("new host state");
+    let host = make_host_state(dom, "https://example.com/index.html").expect("new host state");
 
     let state = host.import_map_state();
     assert!(state.import_map.imports.is_empty());
@@ -7698,7 +7816,7 @@ mod import_map_tests {
   fn window_host_can_register_import_map_and_resolve_specifier() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host =
-      WindowHostState::new(dom, "https://example.com/index.html").expect("new host state");
+      make_host_state(dom, "https://example.com/index.html").expect("new host state");
     let base_url = Url::parse("https://example.com/index.html").expect("parse base URL");
 
     let warnings = host
@@ -7735,7 +7853,7 @@ mod import_map_tests {
   fn window_host_register_import_map_propagates_errors() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host =
-      WindowHostState::new(dom, "https://example.com/index.html").expect("new host state");
+      make_host_state(dom, "https://example.com/index.html").expect("new host state");
     let base_url = Url::parse("https://example.com/index.html").expect("parse base URL");
 
     let err = host

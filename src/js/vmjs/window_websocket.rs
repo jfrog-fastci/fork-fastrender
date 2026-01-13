@@ -2114,9 +2114,10 @@ mod tests {
   use crate::dom2;
   use crate::error::Result;
   use crate::js::{EventLoop, RunLimits, WindowHost, WindowHostState};
-  use crate::resource::HttpFetcher;
+  use crate::resource::{FetchedResource, HttpFetcher};
   use crate::testing::{net_test_lock, try_bind_localhost};
   use selectors::context::QuirksMode;
+  use std::sync::Arc;
   use std::time::Instant;
 
   fn get_global_prop_utf8(host: &mut WindowHost, name: &str) -> Option<String> {
@@ -2141,6 +2142,21 @@ mod tests {
       Value::Undefined => None,
       _ => Some(format!("{val:?}")),
     }
+  }
+
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      Err(crate::Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> Result<WindowHost> {
+    WindowHost::new_with_fetcher(dom, document_url, Arc::new(NoFetchResourceFetcher))
   }
 
   #[test]
@@ -2193,7 +2209,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -2312,7 +2328,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -2380,7 +2396,7 @@ mod tests {
 
     // Phase 1: ensure the failed connection surfaces `error` + `close` events.
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     host.exec_script(&format!(
       r#"
       globalThis.__got_error = false;
@@ -2427,7 +2443,7 @@ mod tests {
     // Phase 2: ensure env teardown (Drop) cannot hang joining the websocket thread even if the
     // thread is stuck in its connect path.
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     host.exec_script(&format!(
       r#"globalThis.__ws = new WebSocket({target:?});"#,
     ))?;
@@ -2797,7 +2813,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let msg_size = MAX_WEBSOCKET_MESSAGE_BYTES;
     let cap = MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES;
@@ -3140,7 +3156,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"

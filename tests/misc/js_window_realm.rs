@@ -2714,7 +2714,8 @@ child.dispatchEvent(new Event('x', { bubbles: true }));
 #[test]
 fn event_constructors_are_new_only() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host =
+    WindowHost::new_with_fetcher(dom, "https://example.com/", Arc::new(InMemoryFetcher::default()))?;
 
   host.exec_script(
     r#"
@@ -3223,7 +3224,8 @@ controller.abort();
 #[test]
 fn event_target_methods_reject_forged_dom_receivers() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  let mut host =
+    WindowHost::new_with_fetcher(dom, "https://example.com/", Arc::new(InMemoryFetcher::default()))?;
   host.exec_script(
     r#"
 globalThis.__err_name = "";

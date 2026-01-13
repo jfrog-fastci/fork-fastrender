@@ -2954,6 +2954,7 @@ mod tests {
   use crate::js::event_loop::{EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::JsExecutionOptions;
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use std::collections::HashMap;
   use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex, OnceLock};
@@ -2962,6 +2963,24 @@ mod tests {
   use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
   const CALLBACK_GLOBAL_KEY: &str = "__test_global";
+
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Err(crate::Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn make_window_host(
+    dom: crate::dom2::Document,
+    document_url: impl Into<String>,
+  ) -> crate::error::Result<crate::js::WindowHost> {
+    crate::js::WindowHost::new_with_fetcher(dom, document_url, Arc::new(NoFetchResourceFetcher))
+  }
 
   #[test]
   fn auto_discard_job_cell_does_not_panic_when_heap_ptr_missing() {
@@ -2978,7 +2997,7 @@ mod tests {
   #[test]
   fn dynamic_import_rejects_when_module_graph_is_not_installed() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
-    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_window_host(dom, "https://example.com/")?;
 
     let _ = host.exec_script(
       r#"
@@ -3142,7 +3161,7 @@ mod tests {
   #[test]
   fn request_idle_callback_is_exposed_and_runs_when_idle() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
-    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_window_host(dom, "https://example.com/")?;
 
     let has_api = host.exec_script(
       "typeof requestIdleCallback === 'function' && typeof cancelIdleCallback === 'function'",
@@ -3186,7 +3205,7 @@ mod tests {
   #[test]
   fn request_idle_callback_deadline_properties_are_read_only() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
-    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_window_host(dom, "https://example.com/")?;
 
     host.exec_script(
       r#"
@@ -3213,7 +3232,7 @@ mod tests {
   #[test]
   fn request_idle_callback_deadline_prototype_lookup_is_best_effort() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
-    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_window_host(dom, "https://example.com/")?;
 
     host.exec_script(
       r#"
@@ -3244,7 +3263,7 @@ mod tests {
   #[test]
   fn cancel_idle_callback_prevents_invocation() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
-    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_window_host(dom, "https://example.com/")?;
 
     host.exec_script(
       r#"
@@ -6258,7 +6277,7 @@ mod tests {
   fn uncaught_request_idle_callback_exception_dispatches_error_event_and_onerror_can_cancel(
   ) -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
-    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_window_host(dom, "https://example.com/")?;
 
     host.exec_script(
       r#"

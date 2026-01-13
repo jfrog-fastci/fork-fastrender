@@ -1127,7 +1127,9 @@ mod tests {
   use crate::dom2;
   use crate::js::window::WindowHost;
   use crate::js::RunLimits;
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use selectors::context::QuirksMode;
+  use std::sync::Arc;
 
   fn get_string(heap: &Heap, value: Value) -> String {
     let Value::String(s) = value else {
@@ -1136,10 +1138,25 @@ mod tests {
     heap.get_string(s).unwrap().to_utf8_lossy()
   }
 
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Err(crate::Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> crate::error::Result<WindowHost> {
+    WindowHost::new_with_fetcher(dom, document_url, Arc::new(NoFetchResourceFetcher))
+  }
+
   #[test]
   fn read_as_text_fires_onload_and_sets_result() -> crate::error::Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_host(dom, "https://example.com/")?;
 
     host.exec_script(
       "globalThis.onloadCalled = false;\n\
@@ -1164,7 +1181,7 @@ mod tests {
   #[test]
   fn add_event_listener_load_works() -> crate::error::Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_host(dom, "https://example.com/")?;
 
     host.exec_script(
       "globalThis.loadSeen = false;\n\
@@ -1182,7 +1199,7 @@ mod tests {
   #[test]
   fn read_as_array_buffer_matches_bytes() -> crate::error::Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_host(dom, "https://example.com/")?;
 
     host.exec_script(
       "globalThis.buf = null;\n\
@@ -1205,7 +1222,7 @@ mod tests {
   #[test]
   fn abort_cancels_and_fires_abort_and_loadend() -> crate::error::Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_host(dom, "https://example.com/")?;
 
     host.exec_script(
       "globalThis.events = [];\n\
@@ -1230,7 +1247,7 @@ mod tests {
   #[test]
   fn structured_clone_rejects_file_reader() -> crate::error::Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_host(dom, "https://example.com/")?;
 
     let ok = host.exec_script(
       "(() => {\

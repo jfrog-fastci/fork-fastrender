@@ -8155,11 +8155,28 @@ mod dom_dispatch_tests {
   use super::*;
 
   use crate::js::window::WindowHostState;
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use std::any::Any;
+  use std::sync::Arc;
   use vm_js::{Job, RealmId, VmHostHooks};
 
   // Must match `window_realm::WRAPPER_DOCUMENT_KEY`.
   const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
+
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Err(crate::Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn default_test_fetcher() -> Arc<dyn ResourceFetcher> {
+    Arc::new(NoFetchResourceFetcher)
+  }
 
   struct TestHooks {
     payload: VmJsHostHooksPayload,
@@ -8285,7 +8302,9 @@ mod dom_dispatch_tests {
   #[test]
   fn node_append_child_attaches_and_traversal_reflects_it() -> Result<(), VmError> {
     let dom = crate::dom2::parse_html("<div id=a></div>").unwrap();
-    let mut host = WindowHostState::new(dom, "https://example.invalid/").unwrap();
+    let mut host =
+      WindowHostState::new_with_fetcher(dom, "https://example.invalid/", default_test_fetcher())
+        .unwrap();
 
     let parent_id = host
       .with_dom(|dom| dom.get_element_by_id("a"))
@@ -8387,7 +8406,9 @@ mod dom_dispatch_tests {
   #[test]
   fn node_append_child_brand_check_rejects_plain_object() -> Result<(), VmError> {
     let dom = crate::dom2::parse_html("<div id=a></div>").unwrap();
-    let mut host = WindowHostState::new(dom, "https://example.invalid/").unwrap();
+    let mut host =
+      WindowHostState::new_with_fetcher(dom, "https://example.invalid/", default_test_fetcher())
+        .unwrap();
 
     let parent_id = host
       .with_dom(|dom| dom.get_element_by_id("a"))
@@ -8437,7 +8458,9 @@ mod dom_dispatch_tests {
   #[test]
   fn node_mutation_errors_throw_dom_exception_like() -> Result<(), VmError> {
     let dom = crate::dom2::parse_html("<div id=a></div>").unwrap();
-    let mut host = WindowHostState::new(dom, "https://example.invalid/").unwrap();
+    let mut host =
+      WindowHostState::new_with_fetcher(dom, "https://example.invalid/", default_test_fetcher())
+        .unwrap();
 
     let parent_text_id = host.mutate_dom(|dom| (dom.create_text("hi"), false));
     let child_id = host.mutate_dom(|dom| (dom.create_element("span", ""), false));

@@ -1201,8 +1201,21 @@ mod tests {
   use crate::dom2;
   use crate::error::Result;
   use crate::js::{RunLimits, RunUntilIdleOutcome, WindowHost};
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use selectors::context::QuirksMode;
+  use std::sync::Arc;
   use vm_js::{PropertyKey, Value};
+
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      Err(crate::Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
 
   fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
     let window = host.host_mut().window_mut();
@@ -1238,7 +1251,8 @@ mod tests {
 
   fn make_host() -> WindowHost {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    WindowHost::new(dom, "https://example.invalid/").expect("WindowHost::new")
+    WindowHost::new_with_fetcher(dom, "https://example.invalid/", Arc::new(NoFetchResourceFetcher))
+      .expect("WindowHost::new_with_fetcher")
   }
 
   #[test]

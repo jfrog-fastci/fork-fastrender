@@ -5,12 +5,28 @@ use fastrender::js::{
   install_window_websocket_ipc_bindings_with_guard, RunLimits, WebSocketIpcCommand, WebSocketIpcEvent,
   WindowHost, WindowHostState, WindowWebSocketIpcEnv,
 };
+use fastrender::resource::{FetchedResource, ResourceFetcher};
 use fastrender::{Error, Result};
 use selectors::context::QuirksMode;
 use std::net::TcpListener;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use vm_js::{PropertyKey, Value};
+
+#[derive(Debug, Default)]
+struct NoFetchResourceFetcher;
+
+impl ResourceFetcher for NoFetchResourceFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    Err(Error::Other(format!(
+      "NoFetchResourceFetcher does not support fetch: {url}"
+    )))
+  }
+}
+
+fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> Result<WindowHost> {
+  WindowHost::new_with_fetcher(dom, document_url, Arc::new(NoFetchResourceFetcher))
+}
 
 fn get_global_prop_utf8(host: &mut WindowHost, name: &str) -> Option<String> {
   let window = host.host_mut().window_mut();
@@ -280,7 +296,7 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "https://example.invalid/")?;
 
   // Override the default (in-process tungstenite) WebSocket bindings with the IPC-backed version.
   let _ipc_bindings = {
@@ -832,7 +848,7 @@ fn websocket_ipc_send_queue_full_does_not_increase_buffered_amount() -> Result<(
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "https://example.invalid/")?;
 
   let _ipc_bindings = {
     let window = host.host_mut().window_mut();

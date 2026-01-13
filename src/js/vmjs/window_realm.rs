@@ -48955,6 +48955,32 @@ mod tests {
   use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
   use std::time::Duration;
 
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<crate::resource::FetchedResource> {
+      Err(crate::Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn default_test_fetcher() -> Arc<dyn ResourceFetcher> {
+    #[cfg(feature = "direct_network")]
+    {
+      return Arc::new(crate::resource::HttpFetcher::new());
+    }
+    #[cfg(not(feature = "direct_network"))]
+    {
+      return Arc::new(NoFetchResourceFetcher);
+    }
+  }
+
+  fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> crate::error::Result<WindowHost> {
+    WindowHost::new_with_fetcher(dom, document_url, default_test_fetcher())
+  }
+
   #[derive(Debug, Clone, PartialEq)]
   enum CapturedConsoleArg {
     Undefined,
@@ -50333,7 +50359,7 @@ mod tests {
 
   #[test]
   fn history_traversal_queues_task_and_dispatches_events() -> crate::error::Result<()> {
-    let mut host = WindowHost::new(
+    let mut host = make_host(
       dom2::Document::new(QuirksMode::NoQuirks),
       "https://example.com/",
     )?;
@@ -59043,7 +59069,7 @@ mod tests {
   #[test]
   fn location_href_fragment_navigation_updates_url_history_and_emits_hashchange(
   ) -> crate::error::Result<()> {
-    let mut host = WindowHost::new(
+    let mut host = make_host(
       dom2::Document::new(QuirksMode::NoQuirks),
       "https://example.com/",
     )?;
@@ -59096,7 +59122,7 @@ mod tests {
   #[test]
   fn window_location_set_fragment_navigation_updates_url_and_emits_hashchange(
   ) -> crate::error::Result<()> {
-    let mut host = WindowHost::new(
+    let mut host = make_host(
       dom2::Document::new(QuirksMode::NoQuirks),
       "https://example.com/",
     )?;
@@ -59128,7 +59154,7 @@ mod tests {
 
   #[test]
   fn location_assign_fragment_navigation_updates_url_and_emits_hashchange() -> crate::error::Result<()> {
-    let mut host = WindowHost::new(
+    let mut host = make_host(
       dom2::Document::new(QuirksMode::NoQuirks),
       "https://example.com/",
     )?;
@@ -59160,7 +59186,7 @@ mod tests {
 
   #[test]
   fn location_replace_fragment_replaces_entry_and_emits_hashchange() -> crate::error::Result<()> {
-    let mut host = WindowHost::new(
+    let mut host = make_host(
       dom2::Document::new(QuirksMode::NoQuirks),
       "https://example.com/",
     )?;
@@ -59202,7 +59228,7 @@ mod tests {
 
   #[test]
   fn location_hash_set_normalizes_and_pushes_history() -> crate::error::Result<()> {
-    let mut host = WindowHost::new(
+    let mut host = make_host(
       dom2::Document::new(QuirksMode::NoQuirks),
       "https://example.com/",
     )?;
@@ -59232,7 +59258,7 @@ mod tests {
 
   #[test]
   fn history_push_state_does_not_emit_hashchange() -> crate::error::Result<()> {
-    let mut host = WindowHost::new(
+    let mut host = make_host(
       dom2::Document::new(QuirksMode::NoQuirks),
       "https://example.com/",
     )?;

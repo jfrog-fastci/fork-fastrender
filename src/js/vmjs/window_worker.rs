@@ -1264,8 +1264,25 @@ mod tests {
   use super::*;
   use crate::dom2;
   use crate::js::{RunLimits, WindowHost};
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use selectors::context::QuirksMode;
+  use std::sync::Arc;
   use vm_js::{PropertyKey, Value};
+
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> FastResult<FetchedResource> {
+      Err(Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> FastResult<WindowHost> {
+    WindowHost::new_with_fetcher(dom, document_url, Arc::new(NoFetchResourceFetcher))
+  }
 
   fn get_global_number(host: &mut WindowHost, name: &str) -> Option<f64> {
     let window = host.host_mut().window_mut();
@@ -1337,7 +1354,7 @@ mod tests {
   #[test]
   fn worker_echoes_message() -> FastResult<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -1361,7 +1378,7 @@ mod tests {
   #[test]
   fn worker_terminate_prevents_further_messages() -> FastResult<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -1400,7 +1417,7 @@ mod tests {
   #[test]
   fn worker_can_access_structured_clone() -> FastResult<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -1426,7 +1443,7 @@ mod tests {
   #[test]
   fn worker_structured_clone_deep_clones_object() -> FastResult<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
@@ -1449,7 +1466,7 @@ mod tests {
   #[test]
   fn worker_is_event_target() -> FastResult<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(
       r#"
