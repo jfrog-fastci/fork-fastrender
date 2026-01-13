@@ -863,6 +863,27 @@ fn regexp_unicode_mode_consumes_surrogate_pairs_for_dot() {
 }
 
 #[test]
+fn regexp_unicode_mode_advance_string_index_skips_surrogate_pairs_on_empty_global_matches() {
+  // When a global match succeeds with an empty string, RegExpBuiltinExec advances lastIndex using
+  // AdvanceStringIndex. In UnicodeMode this must advance by code points, not UTF-16 code units, so
+  // it doesn't split surrogate pairs.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var s = "💩";
+        [
+          s.match(/(?:)/g).length,
+          s.match(/(?:)/gu).length,
+          s.match(new RegExp("(?:)", "gv")).length,
+        ].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "3,2,2");
+}
+
+#[test]
 fn regexp_unicode_mode_parses_non_bmp_literals_and_classes_as_code_points() {
   let mut rt = new_runtime();
   let value = rt
