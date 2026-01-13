@@ -474,6 +474,21 @@ mod tests {
   use tempfile::tempdir;
 
   #[test]
+  fn build_filter_directory_prefix_matches_descendants() {
+    let filter = build_filter(Some("built-ins/RegExp/prototype/flags")).unwrap();
+    assert!(filter.matches("built-ins/RegExp/prototype/flags/get-order.js"));
+    assert!(filter.matches("built-ins/RegExp/prototype/flags/return-order.js"));
+    assert!(!filter.matches("built-ins/RegExp/prototype/flag/get-order.js"));
+  }
+
+  #[test]
+  fn build_filter_directory_prefix_with_trailing_slash_matches_descendants() {
+    let filter = build_filter(Some("built-ins/RegExp/prototype/flags/")).unwrap();
+    assert!(filter.matches("built-ins/RegExp/prototype/flags/get-order.js"));
+    assert!(!filter.matches("built-ins/RegExp/prototype/flag/get-order.js"));
+  }
+
+  #[test]
   fn manifest_prefers_exact_then_glob_then_regex() {
     let manifest = r#"
 [[expectations]]
