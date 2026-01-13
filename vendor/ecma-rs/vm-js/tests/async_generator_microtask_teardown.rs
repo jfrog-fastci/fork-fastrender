@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
+use vm_js::{Budget, Heap, HeapLimits, JsRuntime, PropertyKey, TerminationReason, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -99,3 +99,47 @@ fn teardown_microtasks_with_pending_async_generator_resume_jobs_does_not_leak_ro
   Ok(())
 }
 
+#[test]
+fn termination_tears_down_pending_async_generator_jobs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  if !feature_detect_async_generators(&mut rt)? {
+    return Ok(());
+  }
+
+  let baseline_roots = rt.heap.persistent_root_count();
+
+  // Terminate after enqueuing at least one async generator Promise job.
+  rt.vm.set_budget(Budget {
+    // Needs to be large enough to run `g().next()` before we hit the infinite loop.
+    fuel: Some(1000),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt
+    .exec_script(
+      r#"
+        async function* g() { yield 1; }
+        g().next();
+        while (true) {}
+      "#,
+    )
+    .unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected termination, got {other:?}"),
+  }
+
+  // Hard-stop termination should tear down any queued jobs so we don't leak persistent roots.
+  assert!(
+    rt.vm.microtask_queue().is_empty(),
+    "hard-stop termination should discard queued Promise jobs"
+  );
+  assert_eq!(
+    rt.heap.persistent_root_count(),
+    baseline_roots,
+    "hard-stop termination should not leak persistent roots"
+  );
+
+  Ok(())
+}
