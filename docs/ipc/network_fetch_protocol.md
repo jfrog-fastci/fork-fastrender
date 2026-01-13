@@ -458,7 +458,7 @@ Notes:
 |---|---|---|
 | `Fetch*` / `FetchHttpRequest` / `FetchPartial*` | **Either** `Response{id, IpcResponse::Fetched(Ok(IpcFetchedResource{bytes_b64,..}))}` **or** `FetchStart/FetchBodyChunk*/FetchEnd` **or** `FetchErr{id, IpcError}` | “Fetch-like”: may use chunked body when `bytes.len() > IPC_INLINE_LIMIT_BYTES`. For `FetchPartial*`, the in-tree client treats a `206 Partial Content` response as valid only when `Content-Range` starts at 0. |
 | `RequestHeaderValue{..}` | `Response{id, IpcResponse::MaybeString(Ok(<string-or-null>))}` | `Ok(null)` means “unknown / cannot determine header value”. Used for cache `Vary` keying. |
-| `CookieHeaderValue{..}` | `Response{id, IpcResponse::MaybeString(Ok(<string-or-null>))}` | `Ok(Some("a=b; c=d"))` means the `Cookie` header value that would be sent. `Ok(null)` means “no cookie header available” (commonly: no cookies, invalid URL, or cookie state not exposed). The in-tree server returns `null` when there are no cookies (because the underlying cookie jar returns `None`). |
+| `CookieHeaderValue{..}` | `Response{id, IpcResponse::MaybeString(Ok(<string-or-null>))}` | `Ok(Some("a=b; c=d"))` means the `Cookie` header value that would be sent. `Ok(Some(""))` means “cookie support enabled, but there are no matching cookies”. `Ok(null)` means cookie state is not exposed or the URL was invalid/unparseable. |
 | `StoreCookieFromDocument{..}` | `Response{id, IpcResponse::Unit(Ok(()))}` or `Response{id, IpcResponse::Unit(Err(IpcError))}` | In-tree server always returns `Ok(())` (best-effort). |
 | `ReadCacheArtifact*{..}` | `Response{id, IpcResponse::MaybeFetched(Ok(<resource-or-null>))}` | Returned body is always inline base64 (no chunked stream for cache artifacts). In-tree server always returns `Ok(...)`. |
 | `WriteCacheArtifact*{..}` | `Response{id, IpcResponse::Unit(Ok(()))}` or `Response{id, IpcResponse::Unit(Err(IpcError))}` | Base64 decode errors are surfaced as `Err(IpcError)` (in-tree server). |
@@ -834,11 +834,10 @@ The renderer’s `document.cookie` plumbing uses two IPC calls:
 
 - **Getter**: `IpcRequest::CookieHeaderValue { url }` → `IpcResponse::MaybeString(Ok(Option<String>))`
   - `Ok(Some("a=b; c=d"))` means cookies are supported and that cookie header value would be sent.
-  - `Ok(None)` (`null` in JSON) means no cookie header value is available (commonly: no matching
-    cookies, invalid URL, or cookie state not exposed). The in-tree server returns `null` when there
-    are no cookies (because the underlying cookie jar API returns `None`), and the in-tree client
-    (`IpcResourceFetcher`) treats this as an empty cookie string for deterministic `document.cookie`.
-  - `Ok(Some(""))` is representable on the wire but is not produced by the in-tree HTTP fetcher.
+  - `Ok(Some(""))` means cookies are supported but there are no matching cookies.
+  - `Ok(None)` (`null` in JSON) means the underlying fetcher does not expose cookie state *or* the
+    URL was invalid/unparseable. The in-tree client (`IpcResourceFetcher`) treats `null` defensively
+    as an empty cookie string for deterministic `document.cookie`.
 - **Setter**: `IpcRequest::StoreCookieFromDocument { url, cookie_string }` → `IpcResponse::Unit(...)`
 
 Semantics:
