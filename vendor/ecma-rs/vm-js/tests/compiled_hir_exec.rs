@@ -6718,6 +6718,33 @@ fn compiled_switch_break_exits_only_switch() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_switch_continue_targets_outer_loop() -> Result<(), VmError> {
+  // `continue` inside a switch statement should target the nearest enclosing loop, and must not be
+  // consumed by the switch itself.
+  let result = compile_and_call0(
+    r#"
+      function f(){
+        let i = 0;
+        let out = 0;
+        while (i < 3) {
+          switch(i){
+            case 0: out = out + 1; i = i + 1; continue;
+            case 1: out = out + 10; i = i + 1; continue;
+            default: out = out + 100; i = i + 1; continue;
+          }
+          // If `continue` is incorrectly consumed by the switch, control reaches here.
+          out = out + 1000;
+        }
+        return out;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(111.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_switch_function_labeled_break_exits_outer_statement() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
