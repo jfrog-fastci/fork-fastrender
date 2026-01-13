@@ -574,10 +574,12 @@ Windows-only tests that encode the intended boundary:
 - No child processes (active process job limit): `tests/sandbox/windows_no_child_process.rs`
 - Parent process handle escape attempt: `tests/sandbox/windows_process_handle_escape.rs`
 - AppContainer spawn smoke: `tests/sandbox/windows_sandbox_appcontainer_spawn.rs`
+- Sandboxed renderer smoke (can initialize FastRender + render minimal HTML under AppContainer + mitigations): `tests/sandbox/windows_renderer_smoke.rs`
 - Environment sanitization (no secret env inheritance): `tests/sandbox/windows_sandbox_env_sanitization.rs`
 - AppContainer temp dir is writable (override parent TEMP/TMP): `tests/sandbox/windows_appcontainer_temp_dir.rs`
 - Job kill-on-close semantics: `tests/sandbox/windows_job_kill_on_close.rs`
 - AppContainer blocks outbound network (end-to-end spawn helper): `tests/sandbox/windows_network_denial.rs`
+- End-to-end token state + filesystem/network denial + job kill-on-close: `tests/sandbox/windows_renderer_sandbox_test.rs`
 - AppContainer blocks user profile file reads (end-to-end spawn helper): `crates/win-sandbox/tests/filesystem_denied.rs`
 - AppContainer blocks outbound network (no capabilities): `crates/win-sandbox/tests/network_denied.rs`
 - Job object invariants (kill-on-close, process count): `crates/win-sandbox/tests/job_limits.rs`
