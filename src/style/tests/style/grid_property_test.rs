@@ -146,12 +146,63 @@ fn grid_template_columns_ignores_invalid_values() {
   assert_eq!(style.grid_column_subgrid, expected_subgrid);
   assert_eq!(style.subgrid_column_line_names, expected_subgrid_line_names);
 
+  // Invalid: line names before `subgrid`.
+  apply_declaration(
+    &mut style,
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("[a] subgrid".into()),
+    ),
+    &base,
+    16.0,
+    16.0,
+  );
+  assert_eq!(style.grid_template_columns, expected_tracks);
+  assert_eq!(style.grid_column_names, expected_names);
+  assert_eq!(style.grid_column_line_names, expected_line_names);
+  assert_eq!(style.grid_column_subgrid, expected_subgrid);
+  assert_eq!(style.subgrid_column_line_names, expected_subgrid_line_names);
+
   // Invalid: `subgrid` cannot be followed by track sizes.
   apply_declaration(
     &mut style,
     &decl(
       "grid-template-columns",
       PropertyValue::Keyword("subgrid 10px".into()),
+    ),
+    &base,
+    16.0,
+    16.0,
+  );
+  assert_eq!(style.grid_template_columns, expected_tracks);
+  assert_eq!(style.grid_column_names, expected_names);
+  assert_eq!(style.grid_column_line_names, expected_line_names);
+  assert_eq!(style.grid_column_subgrid, expected_subgrid);
+  assert_eq!(style.subgrid_column_line_names, expected_subgrid_line_names);
+
+  // Invalid: duplicate `subgrid` keyword.
+  apply_declaration(
+    &mut style,
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("subgrid subgrid".into()),
+    ),
+    &base,
+    16.0,
+    16.0,
+  );
+  assert_eq!(style.grid_template_columns, expected_tracks);
+  assert_eq!(style.grid_column_names, expected_names);
+  assert_eq!(style.grid_column_line_names, expected_line_names);
+  assert_eq!(style.grid_column_subgrid, expected_subgrid);
+  assert_eq!(style.subgrid_column_line_names, expected_subgrid_line_names);
+
+  // Invalid: trailing junk after the line-name-list.
+  apply_declaration(
+    &mut style,
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("subgrid [a] junk".into()),
     ),
     &base,
     16.0,
@@ -264,6 +315,39 @@ fn grid_template_columns_subgrid_sets_line_names() {
     style.subgrid_column_line_names,
     vec![vec!["a".to_string()], vec!["b".to_string()]]
   );
+}
+
+#[test]
+fn grid_template_columns_subgrid_accepts_empty_line_name_list() {
+  let mut style = ComputedStyle::default();
+
+  apply_declaration(
+    &mut style,
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("subgrid".into()),
+    ),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert!(style.grid_column_subgrid);
+  assert!(style.grid_template_columns.is_empty());
+  assert!(style.subgrid_column_line_names.is_empty());
+
+  apply_declaration(
+    &mut style,
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("subgrid []".into()),
+    ),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+  assert!(style.grid_column_subgrid);
+  assert!(style.grid_template_columns.is_empty());
+  assert_eq!(style.subgrid_column_line_names, vec![Vec::<String>::new()]);
 }
 
 #[test]

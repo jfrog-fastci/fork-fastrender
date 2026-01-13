@@ -1061,10 +1061,28 @@ impl<'a> TrackListParser<'a> {
 
   fn starts_with_ident(&self, ident: &str) -> bool {
     let rem = self.remaining();
-    rem
-      .get(..ident.len())
-      .map(|prefix| prefix.eq_ignore_ascii_case(ident))
-      .unwrap_or(false)
+    let Some(prefix) = rem.get(..ident.len()) else {
+      return false;
+    };
+    if !prefix.eq_ignore_ascii_case(ident) {
+      return false;
+    }
+
+    // Ensure we matched a full identifier token, not just a substring prefix (e.g. reject
+    // `rowdense` when looking for `row`).
+    //
+    // This parser only needs to disambiguate ASCII keyword identifiers, so we treat common CSS
+    // identifier continuation characters as part of the same token.
+    let Some(rest) = rem.get(ident.len()..) else {
+      return true;
+    };
+    let Some(next) = rest.chars().next() else {
+      return true;
+    };
+    // CSS identifiers can contain non-ASCII codepoints, but all our grid keywords are ASCII.
+    // If the next character could legally continue an identifier, do not treat this as a keyword
+    // match.
+    !(next.is_ascii_alphanumeric() || next == '-' || next == '_' || next as u32 >= 0x80 || next == '\\')
   }
 
   fn consume_bracketed_names(&mut self) -> Option<Vec<String>> {
@@ -1249,83 +1267,75 @@ impl<'a> TrackListParser<'a> {
   }
 }
 
-/// Parse the line-name portions of a `subgrid` track list.
-///
-/// Returns any bracketed line name lists that appear alongside the `subgrid` keyword.
-pub fn parse_subgrid_line_names(input: &str) -> Option<Vec<Vec<String>>> {
-  fn parse_line_names_group(input: &str) -> Option<Vec<Vec<String>>> {
-    let mut parser = TrackListParser::new(input);
-    let mut line_names: Vec<Vec<String>> = Vec::new();
-    while !parser.is_eof() {
-      parser.skip_whitespace();
-      if parser.is_eof() {
-        break;
-      }
-      if let Some(names) = parser.consume_bracketed_names() {
-        line_names.push(names);
-        continue;
-      }
-      return None;
-    }
-    if line_names.is_empty() {
-      None
-    } else {
-      Some(line_names)
-    }
-  }
-
-  let mut parser = TrackListParser::new(input);
-  let mut line_names: Vec<Vec<String>> = Vec::new();
-  let mut saw_subgrid = false;
+fn parse_line_name_list(
+  parser: &mut TrackListParser<'_>,
+  require_non_empty: bool,
+) -> Option<Vec<Vec<String>>> {
+  let mut out: Vec<Vec<String>> = Vec::new();
 
   while !parser.is_eof() {
     parser.skip_whitespace();
     if parser.is_eof() {
       break;
     }
+
     if let Some(names) = parser.consume_bracketed_names() {
-      line_names.push(names);
+      out.push(names);
       continue;
     }
 
-    if parser.starts_with_ident("subgrid") {
-      saw_subgrid = true;
-      parser.pos += "subgrid".len();
-      continue;
-    }
-
-    // CSS Grid 2: `repeat(<integer>, <line-names>+)` in subgrid line name lists.
-    //
-    // Note: `repeat(auto-fill, ...)` is currently unsupported.
     if parser.starts_with_ident("repeat") {
       let inner = parser.consume_function_arguments("repeat")?;
-      let (count_str, names_str) = split_once_comma(&inner)?;
+      let (count_str, pattern_str) = split_once_comma(&inner)?;
       let count_str = trim_ascii_whitespace(count_str);
 
-      if count_str.eq_ignore_ascii_case("auto-fill") {
+      if count_str.is_empty() || !count_str.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+      }
+      let count: usize = count_str.parse().ok()?;
+      if count == 0 {
         return None;
       }
 
-      let repeat_count: usize = count_str.parse().ok()?;
-      if repeat_count == 0 {
+      let mut pattern_parser = TrackListParser::new(pattern_str);
+      let pattern = parse_line_name_list(&mut pattern_parser, true)?;
+
+      if pattern.is_empty() {
         return None;
       }
 
-      let group = parse_line_names_group(names_str)?;
-      for _ in 0..repeat_count {
-        line_names.extend(group.iter().cloned());
+      // Expand the repeat inline.
+      out.reserve(pattern.len().saturating_mul(count));
+      for _ in 0..count {
+        out.extend(pattern.iter().cloned());
       }
       continue;
     }
 
-    // Unknown token; invalid `subgrid` track list.
     return None;
   }
 
-  if !saw_subgrid {
+  if require_non_empty && out.is_empty() {
+    None
+  } else {
+    Some(out)
+  }
+}
+
+/// Parse the line-name portions of a `subgrid` track list.
+///
+/// Returns any bracketed line name lists that appear alongside the `subgrid` keyword.
+pub fn parse_subgrid_line_names(input: &str) -> Option<Vec<Vec<String>>> {
+  let mut parser = TrackListParser::new(input);
+  parser.skip_whitespace();
+
+  // Grammar: `subgrid <<line-name-list>>?`
+  // Require the `subgrid` keyword to appear first (ignoring leading whitespace).
+  if !parser.starts_with_ident("subgrid") {
     return None;
   }
-  Some(line_names)
+  parser.pos += "subgrid".len();
+  parse_line_name_list(&mut parser, false)
 }
 
 fn split_once_comma(input: &str) -> Option<(&str, &str)> {
