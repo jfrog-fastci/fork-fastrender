@@ -2,6 +2,13 @@
 //!
 //! The goal is to minimize the "unsandboxed window" by installing security
 //! restrictions immediately after `fork(2)` and before `execve(2)`.
+//!
+//! Platform notes:
+//! - **Linux**: uses `CommandExt::pre_exec` to install the sandbox in the child after `fork` and
+//!   before `exec` (tightest window).
+//! - **macOS**: avoids `pre_exec` (unsafe in multithreaded parents). When explicitly enabled via
+//!   `FASTR_MACOS_USE_SANDBOX_EXEC=1`, spawns are wrapped in Apple’s deprecated
+//!   `/usr/bin/sandbox-exec` so the renderer starts sandboxed.
 
 use crate::sandbox::{RendererSandboxConfig, RendererSandboxError};
 use std::process::Command;
@@ -13,6 +20,10 @@ use std::os::unix::process::CommandExt;
 ///
 /// On Linux this uses `CommandExt::pre_exec` to run the sandbox setup in the child
 /// process right after `fork` and right before `exec`.
+///
+/// On macOS, this can optionally wrap the spawn in `/usr/bin/sandbox-exec` when
+/// `FASTR_MACOS_USE_SANDBOX_EXEC=1` is set. This path is intended for debugging/legacy workflows
+/// only; Apple has deprecated `sandbox-exec`.
 ///
 /// ## Safety notes
 ///
