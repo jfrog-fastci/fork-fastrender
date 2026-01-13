@@ -407,6 +407,7 @@ impl BrowserTabController {
     } else {
       Ok(Vec::new())
     }
+  }
 
   fn handle_tick(&mut self, delta: Duration) -> Result<Vec<WorkerToUi>> {
     let wants_ticks = self.document.prepared().is_some_and(|prepared| {
