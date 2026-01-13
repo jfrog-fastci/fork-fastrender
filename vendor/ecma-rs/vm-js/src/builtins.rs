@@ -5318,6 +5318,7 @@ pub fn function_constructor_construct(
     match crate::early_errors::validate_top_level(
       &parsed.stx.body,
       crate::early_errors::EarlyErrorOptions::script(false),
+      Some(source.as_str()),
       &mut tick,
     ) {
       Ok(()) => {}
@@ -5370,8 +5371,13 @@ pub fn function_constructor_construct(
             break;
           };
           if lit.stx.value == "use strict" {
-            is_strict = true;
-            break;
+            let start = expr.loc.0.min(source.len());
+            let end = expr.loc.1.min(source.len());
+            let raw = source.get(start..end).unwrap_or("");
+            if raw == "\"use strict\"" || raw == "'use strict'" {
+              is_strict = true;
+              break;
+            }
           }
         }
         body_stmts = Some(stmts);
@@ -5567,6 +5573,7 @@ pub fn generator_function_constructor_construct(
     match crate::early_errors::validate_top_level(
       &parsed.stx.body,
       crate::early_errors::EarlyErrorOptions::script(false),
+      Some(source.as_str()),
       &mut tick,
     ) {
       Ok(()) => {}
@@ -5619,8 +5626,13 @@ pub fn generator_function_constructor_construct(
             break;
           };
           if lit.stx.value == "use strict" {
-            is_strict = true;
-            break;
+            let start = expr.loc.0.min(source.len());
+            let end = expr.loc.1.min(source.len());
+            let raw = source.get(start..end).unwrap_or("");
+            if raw == "\"use strict\"" || raw == "'use strict'" {
+              is_strict = true;
+              break;
+            }
           }
         }
         body_stmts = Some(stmts);
@@ -5821,6 +5833,7 @@ pub fn async_function_constructor_construct(
     match crate::early_errors::validate_top_level(
       &parsed.stx.body,
       crate::early_errors::EarlyErrorOptions::script(false),
+      Some(source.as_str()),
       &mut tick,
     ) {
       Ok(()) => {}
@@ -5873,8 +5886,13 @@ pub fn async_function_constructor_construct(
             break;
           };
           if lit.stx.value == "use strict" {
-            is_strict = true;
-            break;
+            let start = expr.loc.0.min(source.len());
+            let end = expr.loc.1.min(source.len());
+            let raw = source.get(start..end).unwrap_or("");
+            if raw == "\"use strict\"" || raw == "'use strict'" {
+              is_strict = true;
+              break;
+            }
           }
         }
         body_stmts = Some(stmts);
@@ -6079,6 +6097,7 @@ pub fn async_generator_function_constructor_construct(
     match crate::early_errors::validate_top_level(
       &parsed.stx.body,
       crate::early_errors::EarlyErrorOptions::script(false),
+      Some(source.as_str()),
       &mut tick,
     ) {
       Ok(()) => {}
@@ -6131,8 +6150,13 @@ pub fn async_generator_function_constructor_construct(
             break;
           };
           if lit.stx.value == "use strict" {
-            is_strict = true;
-            break;
+            let start = expr.loc.0.min(source.len());
+            let end = expr.loc.1.min(source.len());
+            let raw = source.get(start..end).unwrap_or("");
+            if raw == "\"use strict\"" || raw == "'use strict'" {
+              is_strict = true;
+              break;
+            }
           }
         }
         body_stmts = Some(stmts);

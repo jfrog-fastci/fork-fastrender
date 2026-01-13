@@ -120,7 +120,7 @@ impl CompiledScript {
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
     {
       let mut tick = || Ok(());
-      let strict = detect_use_strict_directive(&parsed.stx.body, &mut tick)?;
+      let strict = detect_use_strict_directive(source.text.as_ref(), &parsed.stx.body, &mut tick)?;
       crate::early_errors::validate_top_level(
         &parsed.stx.body,
         crate::early_errors::EarlyErrorOptions {
@@ -129,6 +129,7 @@ impl CompiledScript {
           is_module: false,
           allow_super_call: false,
         },
+        Some(source.text.as_ref()),
         &mut tick,
       )?;
     }
@@ -190,6 +191,7 @@ impl CompiledScript {
       crate::early_errors::validate_top_level(
         &parsed.stx.body,
         crate::early_errors::EarlyErrorOptions::module(),
+        Some(source.text.as_ref()),
         &mut tick,
       )?;
       crate::module_record::validate_module_static_semantics_early_errors(&parsed, &mut tick)?;
@@ -265,7 +267,7 @@ impl CompiledScript {
     };
     let strict = {
       let mut tick = || vm.tick();
-      detect_use_strict_directive(&parsed.stx.body, &mut tick)?
+      detect_use_strict_directive(source.text.as_ref(), &parsed.stx.body, &mut tick)?
     };
     let has_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
     {
@@ -278,6 +280,7 @@ impl CompiledScript {
           is_module: false,
           allow_super_call: false,
         },
+        Some(source.text.as_ref()),
         &mut tick,
       )?;
     }
@@ -326,6 +329,7 @@ impl CompiledScript {
       crate::early_errors::validate_top_level(
         &parsed.stx.body,
         crate::early_errors::EarlyErrorOptions::module(),
+        Some(source.text.as_ref()),
         &mut tick,
       )?;
       crate::module_record::validate_module_static_semantics_early_errors(&parsed, &mut tick)?;
@@ -424,7 +428,11 @@ fn ast_feature_flags<T: Drive>(root: &T) -> AstFeatureFlags {
   found.get()
 }
 
-fn detect_use_strict_directive<F>(stmts: &[Node<Stmt>], tick: &mut F) -> Result<bool, VmError>
+fn detect_use_strict_directive<F>(
+  source: &str,
+  stmts: &[Node<Stmt>],
+  tick: &mut F,
+) -> Result<bool, VmError>
 where
   F: FnMut() -> Result<(), VmError>,
 {
@@ -445,7 +453,12 @@ where
       break;
     };
     if lit.stx.value == "use strict" {
-      return Ok(true);
+      let start = expr.loc.0.min(source.len());
+      let end = expr.loc.1.min(source.len());
+      let raw = source.get(start..end).unwrap_or("");
+      if raw == "\"use strict\"" || raw == "'use strict'" {
+        return Ok(true);
+      }
     }
   }
   Ok(false)

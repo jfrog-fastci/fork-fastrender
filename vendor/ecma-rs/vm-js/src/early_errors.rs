@@ -81,12 +81,13 @@ impl EarlyErrorOptions {
 pub(crate) fn validate_top_level<F>(
   stmts: &[Node<Stmt>],
   opts: EarlyErrorOptions,
+  source: Option<&str>,
   tick: &mut F,
 ) -> Result<(), VmError>
 where
   F: FnMut() -> Result<(), VmError>,
 {
-  let diags = collect_top_level(stmts, opts, tick)?;
+  let diags = collect_top_level(stmts, opts, source, tick)?;
   if diags.is_empty() {
     Ok(())
   } else {
@@ -97,12 +98,13 @@ where
 pub(crate) fn collect_top_level<F>(
   stmts: &[Node<Stmt>],
   opts: EarlyErrorOptions,
+  source: Option<&str>,
   tick: &mut F,
 ) -> Result<Vec<Diagnostic>, VmError>
 where
   F: FnMut() -> Result<(), VmError>,
 {
-  let mut walker = EarlyErrorWalker::new(tick);
+  let mut walker = EarlyErrorWalker::new(source, tick);
   let mut ctx = ControlContext {
     strict: opts.strict,
     await_allowed: opts.allow_top_level_await,
@@ -230,6 +232,7 @@ struct PrivateNameDeclState {
 }
 
 struct EarlyErrorWalker<'a, F: FnMut() -> Result<(), VmError>> {
+  source: Option<&'a str>,
   tick: &'a mut F,
   steps: u32,
   diags: Vec<Diagnostic>,
@@ -261,8 +264,9 @@ enum FuncNameKind {
 }
 
 impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
-  fn new(tick: &'a mut F) -> Self {
+  fn new(source: Option<&'a str>, tick: &'a mut F) -> Self {
     Self {
+      source,
       tick,
       steps: 0,
       diags: Vec::new(),
@@ -320,6 +324,16 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       // - async function bodies/params, and
       // - class static initialization blocks.
       "await" => is_module || await_is_reserved,
+      // ES strict mode reserved words (web legacy / ES5 strict compatibility).
+      // See also `parse-js` `Parser::is_strict_mode_reserved_word`.
+      "implements"
+      | "interface"
+      | "let"
+      | "package"
+      | "private"
+      | "protected"
+      | "public"
+      | "static" => strict,
       _ => false,
     };
     if reserved {
@@ -359,7 +373,16 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         break;
       };
       if lit.stx.value == "use strict" {
-        return Ok(true);
+        if let Some(source) = self.source {
+          let start = expr.loc.0.min(source.len());
+          let end = expr.loc.1.min(source.len());
+          let raw = source.get(start..end).unwrap_or("");
+          if raw == "\"use strict\"" || raw == "'use strict'" {
+            return Ok(true);
+          }
+        } else {
+          return Ok(true);
+        }
       }
     }
     Ok(false)
@@ -3190,9 +3213,15 @@ mod tests {
   fn private_name_decl_state_insert_returns_syntax_error_instead_of_panicking() {
     // Exercise the private-name declaration state insertion path in `visit_class_body` by
     // introducing an illegal duplicate private name (static vs instance).
-    let program = parse_js::parse("class C { #x; static #x; }").expect("parse class with private names");
+    let source = "class C { #x; static #x; }";
+    let program = parse_js::parse(source).expect("parse class with private names");
     let mut tick = || Ok(());
-    let res = validate_top_level(&program.stx.body, EarlyErrorOptions::script(false), &mut tick);
+    let res = validate_top_level(
+      &program.stx.body,
+      EarlyErrorOptions::script(false),
+      Some(source),
+      &mut tick,
+    );
     match res {
       Err(VmError::Syntax(diags)) => {
         assert!(

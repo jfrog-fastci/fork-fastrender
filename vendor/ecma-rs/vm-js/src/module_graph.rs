@@ -403,6 +403,7 @@ impl ModuleGraph {
       crate::early_errors::validate_top_level(
         &top.stx.body,
         crate::early_errors::EarlyErrorOptions::module(),
+        Some(source.text.as_ref()),
         &mut cancel,
       )?;
     }
@@ -3519,6 +3520,7 @@ fn parse_module_ast_for_tla_fallback(
     crate::early_errors::validate_top_level(
       &top.stx.body,
       crate::early_errors::EarlyErrorOptions::module(),
+      Some(source.text.as_ref()),
       &mut tick,
     )?;
   }

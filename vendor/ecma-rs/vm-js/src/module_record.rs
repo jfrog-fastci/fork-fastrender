@@ -423,6 +423,7 @@ impl SourceTextModuleRecord {
       crate::early_errors::validate_top_level(
         &top.stx.body,
         crate::early_errors::EarlyErrorOptions::module(),
+        Some(source.text.as_ref()),
         &mut tick,
       )?;
     }
@@ -462,6 +463,7 @@ impl SourceTextModuleRecord {
     crate::early_errors::validate_top_level(
       &top.stx.body,
       crate::early_errors::EarlyErrorOptions::module(),
+      Some(source.text.as_ref()),
       &mut cancel,
     )?;
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
@@ -482,6 +484,7 @@ impl SourceTextModuleRecord {
     crate::early_errors::validate_top_level(
       &top.stx.body,
       crate::early_errors::EarlyErrorOptions::module(),
+      Some(source.text.as_ref()),
       &mut cancel,
     )?;
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
