@@ -40,6 +40,23 @@ fn indexed_db_presence_shim_installs_and_fails_async() -> Result<()> {
     r#"
       globalThis.__idb_ok = false;
       globalThis.__idb_events = [];
+      globalThis.__idb_del_events = [];
+      globalThis.__idb_cmp_ok = false;
+      globalThis.__idb_keyrange_only_ok = false;
+      globalThis.__idb_keyrange_lower_ok = false;
+      globalThis.__idb_keyrange_upper_ok = false;
+      globalThis.__idb_keyrange_bound_ok = false;
+
+      function __isNotSupportedError(e) {
+        try {
+          if (e && e.name === 'NotSupportedError') return true;
+        } catch (_e) {}
+        try {
+          return String(e).includes('NotSupportedError');
+        } catch (_e2) {
+          return false;
+        }
+      }
 
       // Presence checks.
       const hasIndexedDb = typeof indexedDB === 'object' && indexedDB !== null;
@@ -86,7 +103,48 @@ fn indexed_db_presence_shim_installs_and_fails_async() -> Result<()> {
         });
       }
 
+      // `deleteDatabase` must not throw synchronously and must fail asynchronously in a deterministic
+      // manner.
+      let delReq;
+      let delThrew = false;
+      try {
+        delReq = indexedDB.deleteDatabase('x');
+      } catch (e) {
+        delThrew = true;
+      }
+
+      // Register an attribute handler + listeners. Attribute handler runs first and exceptions
+      // must be swallowed so later listeners still run.
+      if (delReq) {
+        delReq.onerror = function (e) {
+          globalThis.__idb_del_events.push('attr');
+          globalThis.__idb_del_error_name = delReq.error && delReq.error.name;
+          globalThis.__idb_del_ready_state = delReq.readyState;
+          globalThis.__idb_del_event_type = e && e.type;
+          globalThis.__idb_del_event_target_ok = !!e && e.target === delReq && e.currentTarget === delReq;
+          globalThis.__idb_del_this_ok = this === delReq;
+          globalThis.__idb_del_result_nullish = (delReq.result === undefined || delReq.result === null);
+          throw new Error('handler failure should be swallowed');
+        };
+        delReq.addEventListener('error', function (_e) {
+          globalThis.__idb_del_events.push('listener1');
+          throw new Error('listener failure should be swallowed');
+        });
+        delReq.addEventListener('error', function (_e) {
+          globalThis.__idb_del_events.push('listener2');
+        });
+      }
+
+      // Helpers must throw synchronously with `NotSupportedError`.
+      try { indexedDB.cmp(1, 2); } catch (e) { globalThis.__idb_cmp_ok = __isNotSupportedError(e); }
+      try { IDBKeyRange.only(1); } catch (e) { globalThis.__idb_keyrange_only_ok = __isNotSupportedError(e); }
+      try { IDBKeyRange.lowerBound(1); } catch (e) { globalThis.__idb_keyrange_lower_ok = __isNotSupportedError(e); }
+      try { IDBKeyRange.upperBound(1); } catch (e) { globalThis.__idb_keyrange_upper_ok = __isNotSupportedError(e); }
+      try { IDBKeyRange.bound(1, 2); } catch (e) { globalThis.__idb_keyrange_bound_ok = __isNotSupportedError(e); }
+
       globalThis.__idb_ok = hasIndexedDb && aliasOk && ctorOk && !threw;
+      globalThis.__idb_del_call_ok =
+        !delThrew && typeof delReq === 'object' && delReq !== null;
     "#,
   )?;
 
@@ -102,9 +160,22 @@ fn indexed_db_presence_shim_installs_and_fails_async() -> Result<()> {
         && globalThis.__idb_result_nullish === true
         && Array.isArray(globalThis.__idb_events)
         && globalThis.__idb_events.join(',') === 'attr,listener1,listener2'
+        && globalThis.__idb_del_call_ok === true
+        && globalThis.__idb_del_error_name === 'NotSupportedError'
+        && globalThis.__idb_del_ready_state === 'done'
+        && globalThis.__idb_del_event_type === 'error'
+        && globalThis.__idb_del_event_target_ok === true
+        && globalThis.__idb_del_this_ok === true
+        && globalThis.__idb_del_result_nullish === true
+        && Array.isArray(globalThis.__idb_del_events)
+        && globalThis.__idb_del_events.join(',') === 'attr,listener1,listener2'
+        && globalThis.__idb_cmp_ok === true
+        && globalThis.__idb_keyrange_only_ok === true
+        && globalThis.__idb_keyrange_lower_ok === true
+        && globalThis.__idb_keyrange_upper_ok === true
+        && globalThis.__idb_keyrange_bound_ok === true
     "#,
   )?;
   assert_eq!(ok, Value::Bool(true));
   Ok(())
 }
-
