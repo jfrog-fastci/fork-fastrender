@@ -4587,6 +4587,20 @@ impl BrowserRuntime {
       }
     }
 
+    // Full navigations replace the document; stop any in-flight media playback and cancel any
+    // previously requested media wakeups. (Fragment-only navigations above keep the current
+    // document and should not affect media state.)
+    if tab.media.playing || tab.media.last_requested_deadline.is_some() {
+      tab.media.playing = false;
+      tab.media.next_deadline = None;
+      tab.media.last_requested_deadline = None;
+      let _ = self.ui_tx.send(WorkerToUi::RequestWakeAfter {
+        tab_id,
+        after: Duration::MAX,
+        reason: WakeReason::Media,
+      });
+    }
+
     // Full navigations replace the document; clear any active find-in-page results so the UI does
     // not continue displaying stale match counts for the previous page.
     if !tab.find.query.is_empty()
@@ -11701,15 +11715,19 @@ mod base_url_tests {
 mod media_wakeup_tests {
   use super::*;
   use std::sync::mpsc::Receiver;
-  use std::time::Duration;
- 
+  use std::time::{Duration, Instant};
+  
   fn recv_media_wake(rx: &Receiver<WorkerToUi>) -> (TabId, Duration, WakeReason) {
-    let msg = rx
-      .recv_timeout(Duration::from_secs(1))
-      .unwrap_or_else(|err| panic!("timed out waiting for RequestWakeAfter: {err:?}"));
-    match msg {
-      WorkerToUi::RequestWakeAfter { tab_id, after, reason } => (tab_id, after, reason),
-      other => panic!("unexpected WorkerToUi message while waiting for wakeup: {other:?}"),
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+      let remaining = deadline.saturating_duration_since(Instant::now());
+      let msg = rx
+        .recv_timeout(remaining)
+        .unwrap_or_else(|err| panic!("timed out waiting for RequestWakeAfter: {err:?}"));
+      match msg {
+        WorkerToUi::RequestWakeAfter { tab_id, after, reason } => return (tab_id, after, reason),
+        _ => continue,
+      }
     }
   }
 
@@ -11764,6 +11782,31 @@ mod media_wakeup_tests {
     assert_eq!(wake_tab, tab_id);
     assert_eq!(reason2, WakeReason::Media);
     assert_eq!(after2, Duration::MAX, "expected paused media to cancel wakeups");
+
+    // Start playback again, then ensure navigating away cancels wakeups.
+    runtime.handle_message(UiToWorker::MediaCommand {
+      tab_id,
+      node_id: 1,
+      command: MediaCommand::TogglePlayPause,
+    });
+    let (wake_tab, after3, reason3) = recv_media_wake(&worker_rx);
+    assert_eq!(wake_tab, tab_id);
+    assert_eq!(reason3, WakeReason::Media);
+    assert_ne!(after3, Duration::MAX, "expected restarted media to request a wakeup");
+
+    runtime.handle_message(UiToWorker::Navigate {
+      tab_id,
+      url: "about:blank".to_string(),
+      reason: NavigationReason::TypedUrl,
+    });
+    let (wake_tab, after4, reason4) = recv_media_wake(&worker_rx);
+    assert_eq!(wake_tab, tab_id);
+    assert_eq!(reason4, WakeReason::Media);
+    assert_eq!(
+      after4,
+      Duration::MAX,
+      "expected navigation to cancel media wakeups"
+    );
 
     Ok(())
   }
