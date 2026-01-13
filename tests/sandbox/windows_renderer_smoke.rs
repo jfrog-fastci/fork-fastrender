@@ -19,6 +19,7 @@ use std::io;
 use std::os::windows::io::{AsRawHandle, RawHandle};
 
 use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
+use fastrender::sandbox::windows::appcontainer::appcontainer_apis;
 use windows_sys::Win32::Foundation::{
   CloseHandle, SetHandleInformation, ERROR_INSUFFICIENT_BUFFER, HANDLE, HANDLE_FLAG_INHERIT,
   INVALID_HANDLE_VALUE,
@@ -318,6 +319,8 @@ fn collect_stdio_handles_for_inheritance() -> Vec<RawHandle> {
 
 #[test]
 fn appcontainer_renderer_can_render_minimal_html() {
+  let appcontainer_supported = appcontainer_apis().is_ok();
+
   let exe = std::env::current_exe().expect("current test exe path");
   let test_name = "sandbox::windows_renderer_smoke::appcontainer_renderer_smoke_child";
 
@@ -340,7 +343,15 @@ fn appcontainer_renderer_can_render_minimal_html() {
     child.level
   );
 
-  if child.level != WindowsSandboxLevel::AppContainer {
+  if appcontainer_supported {
+    assert_eq!(
+      child.level,
+      WindowsSandboxLevel::AppContainer,
+      "expected AppContainer sandboxing to be available on this host; spawn_sandboxed fell back to {:?}. \
+See stderr for the AppContainer spawn warning emitted by spawn_sandboxed().",
+      child.level
+    );
+  } else if child.level != WindowsSandboxLevel::AppContainer {
     eprintln!(
       "skipping AppContainer-specific assertion: sandbox spawn fell back to {:?}",
       child.level
