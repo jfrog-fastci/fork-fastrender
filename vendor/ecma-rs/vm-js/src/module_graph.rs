@@ -3254,7 +3254,7 @@ fn parse_module_ast_for_tla_fallback(
   };
   let top = vm.parse_top_level_with_budget(&source.text, opts)?;
 
-  Ok((Arc::new(top), token))
+  Ok((arc_try_new_vm(top)?, token))
 }
 
 /// Per-SCC (cycle-root) module evaluation progress for async module evaluation graphs.

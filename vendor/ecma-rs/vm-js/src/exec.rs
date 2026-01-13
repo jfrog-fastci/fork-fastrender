@@ -2325,6 +2325,7 @@ impl JsRuntime {
           let res: Result<Value, VmError> = (|| {
             // In classic scripts, top-level `this` is the global object (even in strict mode).
             let global_this = Value::Object(global_object);
+
             if !has_await {
               let mut evaluator = Evaluator {
                 vm: &mut *vm_frame,
@@ -6969,6 +6970,7 @@ impl<'a> Evaluator<'a> {
       let ClassOrObjVal::Method(method) = &member.stx.val else {
         continue;
       };
+
       if ctor_method.is_some() {
         return Err(syntax_error(member.loc, "A class may only have one constructor"));
       }
@@ -17650,7 +17652,8 @@ fn async_eval_class_after_super(
   };
 
   // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
-  // object so `[[Construct]]` can implement derived `super()` semantics.
+  // object so `[[Construct]]` can implement class-field initialization and derived `super()`
+  // semantics.
   if let Some(body_func) = ctor_body_func {
     if let Err(err) = class_scope.heap_mut().set_function_data(
       body_func,
@@ -17686,36 +17689,38 @@ fn async_eval_class_after_super(
   }
 
   // Extract the prototype object created by `make_constructor`.
-  let (prototype_key, prototype_obj) =
-    match (|| -> Result<(PropertyKey, GcObject), VmError> {
-      let mut proto_scope = class_scope.reborrow();
-      proto_scope.push_root(Value::Object(func_obj))?;
-      let prototype_key_s = proto_scope.alloc_string("prototype")?;
-      proto_scope.push_root(Value::String(prototype_key_s))?;
-      let prototype_key = PropertyKey::from_string(prototype_key_s);
-      let Some(prototype_desc) = proto_scope.heap().get_own_property(func_obj, prototype_key)? else {
-        return Err(VmError::InvariantViolation(
-          "class constructor missing prototype property",
-        ));
-      };
-      let PropertyKind::Data { value, .. } = prototype_desc.kind else {
-        return Err(VmError::InvariantViolation(
-          "class constructor prototype property is not a data property",
-        ));
-      };
-      let Value::Object(prototype_obj) = value else {
-        return Err(VmError::InvariantViolation(
-          "class constructor prototype property is not an object",
-        ));
-      };
-      Ok((prototype_key, prototype_obj))
-    })() {
-      Ok(v) => v,
-      Err(e) => {
-        class_scope.heap_mut().remove_root(func_root);
-        return Err(e);
-      }
+  let (prototype_key, prototype_obj) = match (|| -> Result<(PropertyKey, GcObject), VmError> {
+    let mut proto_scope = class_scope.reborrow();
+    proto_scope.push_root(Value::Object(func_obj))?;
+    let prototype_key_s = proto_scope.alloc_string("prototype")?;
+    proto_scope.push_root(Value::String(prototype_key_s))?;
+    let prototype_key = PropertyKey::from_string(prototype_key_s);
+    let Some(prototype_desc) = proto_scope
+      .heap()
+      .get_own_property(func_obj, prototype_key)?
+    else {
+      return Err(VmError::InvariantViolation(
+        "class constructor missing prototype property",
+      ));
     };
+    let PropertyKind::Data { value, .. } = prototype_desc.kind else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not a data property",
+      ));
+    };
+    let Value::Object(prototype_obj) = value else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not an object",
+      ));
+    };
+    Ok((prototype_key, prototype_obj))
+  })() {
+    Ok(v) => v,
+    Err(e) => {
+      class_scope.heap_mut().remove_root(func_root);
+      return Err(e);
+    }
+  };
 
   // Per ECMAScript, class constructors have a non-writable `prototype` property.
   let patch_res = (|| -> Result<(), VmError> {
@@ -17818,6 +17823,8 @@ fn async_eval_class_after_super(
   // Define prototype and static methods.
   async_eval_class_members_from(evaluator, &mut class_scope, members, 0, func_root)
 }
+
+
 fn async_eval_class_members_from(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
