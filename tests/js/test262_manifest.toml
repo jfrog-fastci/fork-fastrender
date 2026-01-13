@@ -1821,23 +1821,19 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/argument-is-new-reg-exp-and-instance-is-string-hello.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split does not yet implement RegExp separators."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/arguments-are-new-reg-exp-and-undefined-and-instance-is-string-hello.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split does not yet implement RegExp separators."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/arguments-are-new-reg-exp-and-void-0-and-instance-is-string-hello.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split does not yet implement RegExp separators."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/call-split-new-reg-exp.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split does not yet implement RegExp separators."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/cstm-split-invocation.js"

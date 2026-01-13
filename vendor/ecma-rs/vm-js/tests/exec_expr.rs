@@ -861,6 +861,24 @@ fn string_prototype_split_works_and_is_generic() {
 }
 
 #[test]
+fn string_prototype_split_with_regexp_separators_handles_zero_length_matches() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a = "hello".split(new RegExp);
+         var b = "x".split(/$/);
+         var c = "x".split(/()/);
+         var d = "x".split(/x/);
+         a.length===5 && a[0]==="h" && a[4]==="o"
+           && b.length===1 && b[0]==="x"
+           && c.length===1 && c[0]==="x"
+           && d.length===2 && d[0]==="" && d[1]==="" "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_prototype_repeat_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt

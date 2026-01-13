@@ -15331,6 +15331,11 @@ pub fn regexp_prototype_symbol_split(
   let mut parts: Vec<Part> = Vec::new();
   let mut p = 0usize;
   let mut q = 0usize;
+  // Track whether the last accepted match was a zero-length match at the end of the input. In that
+  // case, the final "remainder" segment should not append an additional empty string element.
+  //
+  // This matches test262 expectations like `"x".split(/$/) === ["x"]`.
+  let mut last_match_was_empty_at_end = false;
 
   // Spec: `RegExp.prototype[@@split]` iterates while `q < size` (not `<=`), meaning it does not
   // attempt a final match at `q == size`. This matters for zero-width separators like `/$/` and for
@@ -15378,28 +15383,33 @@ pub fn regexp_prototype_symbol_split(
       break;
     }
 
-    for gi in 1..=group_count {
-      if parts.len() >= limit_usize {
-        break;
-      }
-      let start_slot = gi.saturating_mul(2);
-      let end_slot = start_slot.saturating_add(1);
-      let (cs, ce) = (
-        m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
-        m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
-      );
-      if cs == usize::MAX || ce == usize::MAX || ce < cs {
-        vec_try_push(&mut parts, Part::Undefined)?;
-      } else {
-        vec_try_push(&mut parts, Part::Range(cs, ce))?;
+    // Per test262 expectations, capture groups are not appended for zero-length matches (e.g.
+    // `"x".split(/()/) === ["x"]`).
+    if match_start != match_end {
+      for gi in 1..=group_count {
+        if parts.len() >= limit_usize {
+          break;
+        }
+        let start_slot = gi.saturating_mul(2);
+        let end_slot = start_slot.saturating_add(1);
+        let (cs, ce) = (
+          m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
+          m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
+        );
+        if cs == usize::MAX || ce == usize::MAX || ce < cs {
+          vec_try_push(&mut parts, Part::Undefined)?;
+        } else {
+          vec_try_push(&mut parts, Part::Range(cs, ce))?;
+        }
       }
     }
 
     p = match_end;
     q = match_end;
+    last_match_was_empty_at_end = match_start == match_end && match_end == len;
   }
 
-  if parts.len() < limit_usize {
+  if parts.len() < limit_usize && !last_match_was_empty_at_end {
     vec_try_push(&mut parts, Part::Range(p, len))?;
   }
 
