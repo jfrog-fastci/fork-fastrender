@@ -203,12 +203,18 @@ Example (illustrative):
 
 ```html
 <a href="chrome-action:new-tab">New tab</a>
-<button data-href="chrome-action:reload">Reload</button>
+<form action="chrome-action:reload" method="get">
+  <button type="submit">Reload</button>
+</form>
 ```
 
 The chrome host is expected to intercept these URLs at the UI-event layer and dispatch them to
 browser logic (typically by mapping to a strongly-typed enum such as `ChromeAction` in
-[`src/ui/chrome.rs`](../src/ui/chrome.rs)).
+[`src/ui/chrome_action.rs`](../src/ui/chrome_action.rs)).
+
+Implementation note:
+
+- Canonical `chrome-action:` URL parser/formatter: [`src/ui/chrome_action_url.rs`](../src/ui/chrome_action_url.rs)
 
 ### Where it is allowed
 
@@ -284,10 +290,11 @@ Untrusted content must treat `chrome-dialog:` as an unsupported scheme (same tru
 
 ### Adding a new `chrome-action:` action
 
-1. Add a new strongly-typed action variant (e.g. in [`src/ui/chrome.rs`](../src/ui/chrome.rs) or a dedicated registry).
-2. Implement the handler in the chrome host (browser process).
-3. Ensure untrusted contexts cannot trigger it (scheme must remain unsupported there).
-4. Add unit tests for parsing and dispatch (including invalid/unknown actions).
+1. Add a new strongly-typed action variant in [`src/ui/chrome_action.rs`](../src/ui/chrome_action.rs).
+2. Add parsing/formatting support in [`src/ui/chrome_action_url.rs`](../src/ui/chrome_action_url.rs).
+3. Implement the handler in the chrome host (browser process).
+4. Ensure untrusted contexts cannot trigger it (scheme must remain unsupported there).
+5. Add unit tests for parsing and dispatch (including invalid/unknown actions).
 
 ---
 
