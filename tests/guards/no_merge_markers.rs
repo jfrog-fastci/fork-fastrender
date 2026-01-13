@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
-const MERGE_MARKERS: [&str; 3] = [
+const MERGE_MARKERS: [&str; 4] = [
   concat!("<<<", "<<", "<<"),
+  concat!("|||", "|||", "|"),
   concat!("===", "==", "=="),
   concat!(">>>", ">>>", ">"),
 ];

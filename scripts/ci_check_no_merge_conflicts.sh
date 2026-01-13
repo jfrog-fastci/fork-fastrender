@@ -169,7 +169,7 @@ if [[ "${status}" -eq 0 && -n "${matches}" ]]; then
   echo "error: found unresolved git merge-conflict markers:" >&2
   echo "${matches}" >&2
   echo >&2
-  echo "hint: resolve the conflict and delete the <<<<<<< / ======= / >>>>>>> lines before committing." >&2
+  echo "hint: resolve the conflict and delete the <<<<<<< / ||||||| / ======= / >>>>>>> lines before committing." >&2
   exit 1
 fi
 

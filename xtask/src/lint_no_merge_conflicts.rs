@@ -20,7 +20,9 @@ pub fn run_lint_no_merge_conflicts(repo_root: &Path, _args: LintNoMergeConflicts
     "-e",
     "^<<<<<<< ",
     "-e",
-    "^=======",
+    "^||||||| ",
+    "-e",
+    "^=======[[:space:]]*$",
     "-e",
     "^>>>>>>> ",
     "--",
@@ -65,4 +67,3 @@ pub fn run_lint_no_merge_conflicts(repo_root: &Path, _args: LintNoMergeConflicts
     }
   }
 }
-
