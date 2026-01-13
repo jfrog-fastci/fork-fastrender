@@ -72,7 +72,7 @@ fn is_anchor_with_href(doc: &Document, node: &crate::dom2::Node) -> bool {
       && node_get_attr(doc, node, "href").is_some_and(|href| {
         let href = trim_ascii_whitespace(href);
         // Match browser behavior: an explicit `href` attribute is a link target even when it is
-        // empty/whitespace-only (`<a href=\"\">`).
+        // empty/whitespace-only (`<a href="">`).
         !href
           .as_bytes()
           .get(.."javascript:".len())

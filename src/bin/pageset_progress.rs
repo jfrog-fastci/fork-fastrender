@@ -1474,6 +1474,8 @@ fn normalize_progress_url(url: &str) -> String {
 struct ProgressConfig {
   disk_cache_enabled: bool,
   http_browser_headers_enabled: bool,
+  #[serde(default, skip_serializing_if = "bool_is_false")]
+  js: bool,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   disk_cache_max_bytes: Option<u64>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1505,10 +1507,12 @@ fn progress_config_from_parts(
   http_browser_headers_enabled: bool,
   disk_cache_stale_policy: DiskCacheStalePolicyArg,
   offline: bool,
+  js: bool,
 ) -> ProgressConfig {
   let mut config = ProgressConfig {
     disk_cache_enabled,
     http_browser_headers_enabled,
+    js,
     disk_cache_max_bytes: None,
     disk_cache_max_age_secs: None,
     disk_cache_stale_policy: None,
@@ -1532,6 +1536,7 @@ fn current_progress_config(
   disk_cache: &DiskCacheArgs,
   disk_cache_stale_policy: DiskCacheStalePolicyArg,
   offline: bool,
+  js: bool,
 ) -> ProgressConfig {
   let raw = std::env::var("FASTR_HTTP_BROWSER_HEADERS").ok();
   progress_config_from_parts(
@@ -1540,6 +1545,7 @@ fn current_progress_config(
     http_browser_headers_enabled_from_raw(raw.as_deref()),
     disk_cache_stale_policy,
     offline,
+    js,
   )
 }
 
@@ -1551,6 +1557,7 @@ fn migrate_progress_config(progress: &mut PageProgress) {
   progress.config = Some(ProgressConfig {
     disk_cache_enabled: true,
     http_browser_headers_enabled: true,
+    js: false,
     disk_cache_max_bytes: None,
     disk_cache_max_age_secs: None,
     disk_cache_stale_policy: None,
@@ -3168,7 +3175,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
   let mut log = String::new();
   let current_sha = current_git_sha();
   let progress_config =
-    current_progress_config(&args.disk_cache, args.disk_cache_stale_policy, args.offline);
+    current_progress_config(&args.disk_cache, args.disk_cache_stale_policy, args.offline, args.js);
 
   let progress_before = read_progress(&args.progress_path);
 
@@ -3476,36 +3483,87 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
   record_stage(StageHeartbeat::CssInline);
   log.push_str("Stage: render\n");
   flush_log(&log, &args.log_path);
+  #[derive(Debug)]
+  struct WorkerRenderError {
+    error: fastrender::Error,
+    diagnostics: Option<RenderDiagnostics>,
+  }
+
   let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     if args.js {
       let js_execution_options = args.js_execution.to_options();
-      let mut tab = BrowserTab::from_html_with_document_url_and_fetcher_and_js_execution_options(
+      let mut tab = match BrowserTab::from_html_with_document_url_and_fetcher_and_js_execution_options(
         &doc.html,
         &base_hint,
         options.clone(),
         VmJsBrowserTabExecutor::default(),
         std::sync::Arc::clone(&fetcher),
         js_execution_options,
-      )?;
-      let _ = tab.run_until_stable(args.js_max_frames)?;
-      let pixmap = match tab.render_if_needed()? {
-        Some(pixmap) => pixmap,
-        None => tab.render_frame()?,
+      ) {
+        Ok(tab) => tab,
+        Err(error) => {
+          return Err(WorkerRenderError {
+            error,
+            diagnostics: None,
+          })
+        }
       };
+
+      let mut pixmap: Option<Pixmap> = None;
+      let mut error: Option<fastrender::Error> = None;
+
+      if let Err(err) = tab.run_until_stable(args.js_max_frames) {
+        error = Some(err);
+      }
+
+      if error.is_none() {
+        match tab.render_if_needed() {
+          Ok(Some(frame)) => {
+            pixmap = Some(frame);
+          }
+          Ok(None) => match tab.render_frame() {
+            Ok(frame) => {
+              pixmap = Some(frame);
+            }
+            Err(err) => {
+              error = Some(err);
+            }
+          },
+          Err(err) => {
+            error = Some(err);
+          }
+        }
+      }
+
       let mut diagnostics = tab.diagnostics_snapshot().unwrap_or_default();
       diagnostics.embed_js_failure_into_stats();
-      Ok(RenderResult {
-        pixmap,
-        accessibility: None,
-        diagnostics,
-      })
+
+      match error {
+        None => Ok(RenderResult {
+          pixmap: pixmap.expect("pixmap exists when render succeeded"),
+          accessibility: None,
+          diagnostics,
+        }),
+        Some(error) => Err(WorkerRenderError {
+          error,
+          diagnostics: Some(diagnostics),
+        }),
+      }
     } else {
       let Some(renderer) = renderer.as_mut() else {
-        return Err(fastrender::Error::Other(
-          "internal error: renderer missing for non-JS render".to_string(),
-        ));
+        return Err(WorkerRenderError {
+          error: fastrender::Error::Other(
+            "internal error: renderer missing for non-JS render".to_string(),
+          ),
+          diagnostics: None,
+        });
       };
-      render_fetched_document(renderer, &resource, Some(&base_hint), &options)
+      render_fetched_document(renderer, &resource, Some(&base_hint), &options).map_err(|error| {
+        WorkerRenderError {
+          error,
+          diagnostics: None,
+        }
+      })
     }
   }));
 
@@ -3657,6 +3715,11 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
       });
     }
     Ok(Err(err)) => {
+      let WorkerRenderError {
+        error: err,
+        diagnostics,
+      } = err;
+
       match &err {
         fastrender::Error::Render(RenderError::Timeout { stage, elapsed }) => {
           populate_timeout_progress_with_heartbeat(
@@ -3682,6 +3745,44 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
 
       log.push_str(&format!("Status: {:?}\n", progress.status));
       log.push_str(&format!("Error: {}\n", format_error_with_chain(&err, true)));
+
+      if let Some(diagnostics) = diagnostics.as_ref() {
+        let fetch_error_summary =
+          build_fetch_error_summary(diagnostics.fetch_errors.iter().filter(|err| {
+            !is_bot_mitigation_fetch_error(err) && !is_external_network_failure_fetch_error(err)
+          }));
+        let bot_mitigation_summary = build_fetch_error_summary(
+          diagnostics.blocked_fetch_errors.iter().chain(
+            diagnostics
+              .fetch_errors
+              .iter()
+              .filter(|err| is_bot_mitigation_fetch_error(err)),
+          ),
+        );
+        let external_network_failure_summary = build_fetch_error_summary(
+          diagnostics
+            .fetch_errors
+            .iter()
+            .filter(|err| is_external_network_failure_fetch_error(err)),
+        );
+        let invalid_image_summary = build_url_summary(&diagnostics.invalid_images);
+        progress.diagnostics = if diagnostics.stats.is_some()
+          || fetch_error_summary.is_some()
+          || invalid_image_summary.is_some()
+          || bot_mitigation_summary.is_some()
+          || external_network_failure_summary.is_some()
+        {
+          Some(ProgressDiagnostics {
+            stats: diagnostics.stats.clone(),
+            fetch_error_summary,
+            invalid_image_summary,
+            bot_mitigation_summary,
+            external_network_failure_summary,
+          })
+        } else {
+          None
+        };
+      }
     }
     Err(panic) => {
       progress.status = ProgressStatus::Panic;
@@ -8767,7 +8868,7 @@ fn run_queue(
   let rayon_threads_per_worker = default_rayon_threads_per_worker(total_cpus, jobs);
   let current_sha = current_git_sha();
   let progress_config =
-    current_progress_config(&args.disk_cache, args.disk_cache_stale_policy, args.offline);
+    current_progress_config(&args.disk_cache, args.disk_cache_stale_policy, args.offline, args.js);
   let poll_interval = std::env::var("FASTR_TEST_PAGESET_POLL_INTERVAL_MS")
     .ok()
     .and_then(|raw| raw.parse::<u64>().ok())
@@ -9951,7 +10052,7 @@ fn worker_on_large_stack(args: WorkerArgs) -> io::Result<()> {
   let started = Instant::now();
   let current_sha = current_git_sha();
   let progress_config =
-    current_progress_config(&args.disk_cache, args.disk_cache_stale_policy, args.offline);
+    current_progress_config(&args.disk_cache, args.disk_cache_stale_policy, args.offline, args.js);
 
   let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render_worker(args)));
   match result {
@@ -10831,6 +10932,7 @@ mod progress_tests {
       &disk_cache,
       DiskCacheStalePolicyArg::UseStaleWhenDeadline,
       false,
+      false,
     );
     assert_eq!(
       config.disk_cache_enabled,
@@ -10873,6 +10975,7 @@ mod progress_tests {
       true,
       DiskCacheStalePolicyArg::UseStaleWhenDeadline,
       false,
+      false,
     );
     assert_eq!(
       enabled.disk_cache_max_bytes,
@@ -10885,6 +10988,7 @@ mod progress_tests {
       false,
       true,
       DiskCacheStalePolicyArg::UseStaleWhenDeadline,
+      false,
       false,
     );
     assert_eq!(disabled.disk_cache_max_bytes, None);

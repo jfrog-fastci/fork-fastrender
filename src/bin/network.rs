@@ -75,7 +75,7 @@ fn handle_client(
 
   match req {
     // Protocol violation: `Hello` must only be sent once at the start of the connection.
-    ipc::NetworkRequest::Hello { .. } => return Ok(()),
+    ipc::NetworkRequest::Hello { .. } => Ok(()),
     ipc::NetworkRequest::Fetch { url } => {
       if url.len() > ipc::MAX_URL_BYTES {
         let _ = conn.send_response(&ipc::NetworkResponse::Error {
@@ -99,6 +99,7 @@ fn handle_client(
           },
         })?,
       }
+      Ok(())
     }
 
     ipc::NetworkRequest::DownloadStart { url } => {
@@ -163,6 +164,7 @@ fn handle_client(
           })?;
         }
       }
+      Ok(())
     }
 
     ipc::NetworkRequest::Shutdown => {
@@ -178,8 +180,6 @@ fn handle_client(
       std::process::exit(0);
     }
   }
-
-  Ok(())
 }
 
 #[cfg(feature = "direct_websocket")]

@@ -1350,6 +1350,8 @@ impl WorkerToUi {
       | WorkerToUi::HoverChanged { tab_id, .. }
       | WorkerToUi::FindResult { tab_id, .. }
       | WorkerToUi::SetClipboardText { tab_id, .. }
+      | WorkerToUi::MediaControlsOpened { tab_id, .. }
+      | WorkerToUi::MediaControlsClosed { tab_id }
       | WorkerToUi::DownloadStarted { tab_id, .. }
       | WorkerToUi::DownloadProgress { tab_id, .. }
       | WorkerToUi::DownloadFinished { tab_id, .. }

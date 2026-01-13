@@ -67,6 +67,73 @@ fn pageset_progress_worker_writes_diagnostics_stats() {
 }
 
 #[test]
+fn pageset_progress_worker_writes_js_failure_stats_when_js_enabled() {
+  let temp = TempDir::new().expect("tempdir");
+  let cache_path = temp.path().join("example.html");
+  fs::write(
+    &cache_path,
+    r#"<!doctype html><html><body><script>throw new Error("boom")</script><p>after</p></body></html>"#,
+  )
+  .expect("write html");
+
+  let progress_path = temp.path().join("progress.json");
+
+  let status = Command::new(env!("CARGO_BIN_EXE_pageset_progress"))
+    .env("DISK_CACHE", "0")
+    .env("NO_DISK_CACHE", "1")
+    .current_dir(temp.path())
+    .args([
+      "worker",
+      "--cache-path",
+      cache_path.to_str().unwrap(),
+      "--stem",
+      "example",
+      "--progress-path",
+      progress_path.to_str().unwrap(),
+      "--viewport",
+      "64x64",
+      "--dpr",
+      "1.0",
+      "--user-agent",
+      "test-agent",
+      "--accept-language",
+      "en-US",
+      "--diagnostics",
+      "verbose",
+      "--js",
+      "--js-max-frames",
+      "1",
+      "--bundled-fonts",
+    ])
+    .status()
+    .expect("run pageset_progress worker");
+
+  assert!(status.success(), "worker should succeed");
+
+  let contents = fs::read_to_string(&progress_path).expect("read progress");
+  let json: Value = serde_json::from_str(&contents).expect("parse progress JSON");
+  assert_eq!(
+    json
+      .get("config")
+      .and_then(|config| config.get("js"))
+      .and_then(|v| v.as_bool()),
+    Some(true),
+    "progress should record js mode in config.js"
+  );
+
+  let js = json
+    .get("diagnostics")
+    .and_then(|d| d.get("stats"))
+    .and_then(|stats| stats.get("js"))
+    .and_then(|v| v.as_object())
+    .expect("progress should include non-empty diagnostics.stats.js when JS mode is enabled");
+  assert!(
+    !js.is_empty(),
+    "diagnostics.stats.js should contain at least one telemetry field"
+  );
+}
+
+#[test]
 fn pageset_progress_worker_writes_fetch_error_summary_for_ok_pages() {
   let temp = TempDir::new().expect("tempdir");
   let cache_path = temp.path().join("example.html");

@@ -11417,9 +11417,7 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
       // Wildcard MIME groups.
       "image/*" => push_all(
         &mut exts,
-        &[
-          "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg",
-        ],
+        &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg"],
       ),
       "text/*" => push_all(
         &mut exts,

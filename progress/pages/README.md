@@ -13,6 +13,8 @@ This directory contains the **committed pageset scoreboard**: one tiny JSON file
 - Each `<stem>.json` should match the cached HTML filename stem under `fetches/html/<stem>.html` (same normalization as `fetch_pages`).
 - Keep these files small and stable (no raw HTML, no machine-local paths, no traces).
 - When diagnostics are enabled, successful renders may include `diagnostics.stats` (structured `RenderStats` timing/count summaries) to power `pageset_progress report --verbose-stats`. No giant blobs or logs.
+  - `pageset_progress run --js` executes pages through the JS-capable `BrowserTab` runtime and persists bounded JS failure telemetry under `diagnostics.stats.js` (used by `pageset_progress report --top-js-errors`).
+  - JS mode is recorded in `config.js` (omitted when `--js` is not passed) so mixed runs are distinguishable.
   - `diagnostics.stats.resources` may include resource/cache breakdowns used for pageset triage:
     - `fetch_counts` (by resource kind)
     - `image_cache_hits` / `image_cache_misses`

@@ -29,5 +29,15 @@ zero-valued fields for compactness.
 
 ## Note on missing telemetry
 
-If `pages_with_js` is `0`, the committed progress artifacts do not currently contain JS telemetry.
-In that case, the report will be empty/zeroed until the pageset harness records `diagnostics.stats.js`.
+The pageset scoreboard (`progress/pages/*.json`) only contains JS failure telemetry when it was
+generated with JavaScript execution enabled:
+
+```bash
+# From repo root, after `fetches/html/` caches exist:
+bash scripts/cargo_agent.sh run --release --bin pageset_progress -- \
+  run --js
+```
+
+If `pages_with_js` is `0`, the committed progress artifacts were generated without `--js` (the
+default) and therefore omit `diagnostics.stats.js`. Rerun with `--js` to populate the telemetry, then
+regenerate the report.
