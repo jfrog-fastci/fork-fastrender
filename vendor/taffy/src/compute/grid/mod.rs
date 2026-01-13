@@ -1763,32 +1763,35 @@ where
 
   // Determine the grid container baseline(s) (currently we only compute the first baseline)
   let grid_container_baseline: f32 = {
-    // Sort items by row start position so that we can iterate items in groups which are in the same row
-    items.sort_unstable_by_key(|item| (item.row_indexes.start, item.source_order));
-
-    // Get the row index of the first row containing items
-    let first_row = items[0].row_indexes.start;
-
-    // Create a slice of all of the items start in this row (taking advantage of the fact that we have just sorted the array)
-    let first_row_items = &items[0..]
-      .split(|item| item.row_indexes.start != first_row)
-      .next()
+    // Find the first row containing items without sorting.
+    //
+    // Items are already in `source_order` at this point, so iterating the slice preserves the
+    // same tie-breaking behaviour as the previous stable row-start sort.
+    let first_row = items
+      .iter()
+      .map(|item| item.row_indexes.start)
+      .min()
       .unwrap();
 
-    // Check if any items in *this row* are baseline aligned
-    let row_has_baseline_item = first_row_items
-      .iter()
-      .any(|item| item.align_self == AlignSelf::Baseline);
+    let mut first_row_first_item: Option<&GridItem> = None;
+    let mut first_row_first_baseline_item: Option<&GridItem> = None;
 
-    let item = if row_has_baseline_item {
-      first_row_items
-        .iter()
-        .find(|item| item.align_self == AlignSelf::Baseline)
-        .unwrap()
-    } else {
-      &first_row_items[0]
-    };
+    for item in items.iter() {
+      if item.row_indexes.start != first_row {
+        continue;
+      }
 
+      if first_row_first_item.is_none() {
+        first_row_first_item = Some(item);
+      }
+
+      if item.align_self == AlignSelf::Baseline {
+        first_row_first_baseline_item = Some(item);
+        break;
+      }
+    }
+
+    let item = first_row_first_baseline_item.unwrap_or_else(|| first_row_first_item.unwrap());
     item.y_position + item.baseline.unwrap_or(item.height)
   };
 
