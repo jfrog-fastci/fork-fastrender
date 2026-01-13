@@ -756,7 +756,9 @@ pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandbox
       })
     }
   };
-  let mut source = if sandbox_env.is_some() || seatbelt_profile_env.is_some() {
+  let sandbox_env_set = sandbox_env.is_some();
+  let seatbelt_profile_env_set = seatbelt_profile_env.is_some();
+  let mut source = if sandbox_env_set || seatbelt_profile_env_set {
     MacosSandboxSource::EnvVar
   } else {
     MacosSandboxSource::Default
@@ -787,7 +789,13 @@ pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandbox
     // `FASTR_MACOS_RENDERER_SANDBOX=system-fonts|pure-computation` can override the strict/relaxed
     // selection for the in-process Seatbelt entrypoints. Only apply it when using those built-in
     // profiles (not when a named profile like `no-internet` or a custom SBPL file is selected).
-    if mode != MacosSandboxMode::Off
+    //
+    // If `FASTR_RENDERER_SANDBOX` (or `FASTR_RENDERER_MACOS_SEATBELT_PROFILE`) is explicitly set, it
+    // is treated as the authoritative sandbox configuration surface and this legacy override is
+    // ignored.
+    if !sandbox_env_set
+      && !seatbelt_profile_env_set
+      && mode != MacosSandboxMode::Off
       && matches!(
         config.macos_seatbelt_profile,
         config::MacosSeatbeltProfileSelection::PureComputation

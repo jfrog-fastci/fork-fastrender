@@ -129,7 +129,8 @@ Set:
 - Prefer `FASTR_RENDERER_SANDBOX=strict|relaxed|off` for the multiprocess renderer sandbox entrypoints
   in `src/sandbox/mod.rs`.
 - `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off` remains as a legacy macOS-only
-  alias for the low-level Seatbelt wrappers in `src/sandbox/macos.rs`.
+  alias for the low-level Seatbelt wrappers in `src/sandbox/macos.rs` (ignored when
+  `FASTR_RENDERER_SANDBOX` is explicitly set).
 
 Notes:
 

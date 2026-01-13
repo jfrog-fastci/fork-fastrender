@@ -27,8 +27,9 @@ Legacy aliases: `FASTR_RENDERER_SANDBOX=1` = `strict`, `FASTR_RENDERER_SANDBOX=0
 Note: the debug escape hatches `FASTR_DISABLE_RENDERER_SANDBOX=1` and `FASTR_MACOS_RENDERER_SANDBOX=off`
 also disable Seatbelt sandboxing, overriding `FASTR_RENDERER_SANDBOX`.
 
-`FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts` can also override the strict/relaxed mode
-selection while still keeping sandboxing enabled.
+When `FASTR_RENDERER_SANDBOX` is unset, `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts`
+can also override the strict/relaxed mode selection while still keeping sandboxing enabled. This is
+a legacy macOS-only alias and is ignored when `FASTR_RENDERER_SANDBOX` is explicitly set.
 
 The canonical entrypoint is:
 
