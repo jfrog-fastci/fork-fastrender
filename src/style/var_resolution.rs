@@ -9,19 +9,21 @@ use crate::css::types::PropertyValue;
 use crate::dom::DomNode;
 use crate::geometry::Size;
 use crate::style::color::{Color, Rgba};
-use crate::style::ComputedStyle;
 use crate::style::custom_property_store::CustomPropertyStore;
 use crate::style::media::{ColorScheme, MediaContext, MediaQuery};
+use crate::style::ComputedStyle;
 use cssparser::ParseError;
 use cssparser::ParseErrorKind;
 use cssparser::Parser;
 use cssparser::ParserInput;
 use cssparser::ToCss;
 use cssparser::Token;
+use rustc_hash::FxHashSet;
 use std::borrow::Cow;
 use std::cell::Cell;
 #[cfg(test)]
 use std::cell::Cell as TestCell;
+use std::sync::Arc;
 
 /// Maximum depth for recursive var()/if()/attr()/first-valid()/toggle() resolution.
 ///
@@ -43,6 +45,39 @@ const TOKEN_SPLICE_SEPARATOR: &str = " ";
 #[cfg(test)]
 std::thread_local! {
   static TOKEN_RESOLVER_ENTRY_COUNT: TestCell<usize> = TestCell::new(0);
+}
+
+#[derive(Default)]
+struct VarResolutionStack {
+  stack: Vec<Arc<str>>,
+  set: FxHashSet<Arc<str>>,
+}
+
+impl VarResolutionStack {
+  #[inline]
+  fn clear(&mut self) {
+    self.stack.clear();
+    self.set.clear();
+  }
+
+  #[inline]
+  fn contains(&self, name: &str) -> bool {
+    self.set.contains(name)
+  }
+
+  #[inline]
+  fn push(&mut self, name: &str) {
+    let name: Arc<str> = Arc::from(name);
+    self.stack.push(name.clone());
+    self.set.insert(name);
+  }
+
+  #[inline]
+  fn pop(&mut self) {
+    if let Some(name) = self.stack.pop() {
+      self.set.remove(&name);
+    }
+  }
 }
 
 #[derive(Clone, Copy)]
@@ -707,7 +742,7 @@ fn try_resolve_var_calls_without_tokenizer<'a>(
   let mut in_string: Option<u8> = None;
   let mut any = false;
   // Reuse the same recursion stack for each top-level var() call to avoid repeated allocations.
-  let mut stack: Vec<String> = Vec::new();
+  let mut stack = VarResolutionStack::default();
 
   while i < bytes.len() {
     let b = bytes[i];
@@ -942,7 +977,7 @@ pub fn resolve_var_for_property<'a>(
       // materialize the referenced custom property's value.
       if !raw.as_bytes().contains(&b'\\') {
         if let Some((name, fallback)) = parse_simple_var_call(raw) {
-          let mut stack = Vec::new();
+          let mut stack = VarResolutionStack::default();
           match resolve_variable_reference(
             name,
             fallback.map(Cow::Borrowed),
@@ -1031,7 +1066,7 @@ fn resolve_from_string<'a>(
   depth: usize,
   property_name: &str,
 ) -> VarResolutionResult<'a> {
-  let mut stack = Vec::new();
+  let mut stack = VarResolutionStack::default();
   match resolve_value_tokens(raw, custom_properties, &mut stack, depth, property_name) {
     Ok(resolved) => match parse_value_after_resolution(&resolved, property_name) {
       Some(value) => VarResolutionResult::Resolved {
@@ -1047,7 +1082,7 @@ fn resolve_from_string<'a>(
 fn resolve_value_tokens<'a, 'i>(
   value: &'i str,
   custom_properties: &'a CustomPropertyStore,
-  stack: &mut Vec<String>,
+  stack: &mut VarResolutionStack,
   depth: usize,
   property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
@@ -1070,7 +1105,7 @@ where
 fn resolve_tokens_from_parser<'a, 'i, 't>(
   parser: &mut Parser<'i, 't>,
   custom_properties: &'a CustomPropertyStore,
-  stack: &mut Vec<String>,
+  stack: &mut VarResolutionStack,
   depth: usize,
   property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
@@ -1208,7 +1243,7 @@ fn map_nested_result<'a, 'i, T>(
 fn parse_var_function<'a, 'i, 't>(
   parser: &mut Parser<'i, 't>,
   custom_properties: &'a CustomPropertyStore,
-  stack: &mut Vec<String>,
+  stack: &mut VarResolutionStack,
   depth: usize,
   property_name: &str,
 ) -> Result<Cow<'a, str>, VarResolutionResult<'a>>
@@ -1235,7 +1270,7 @@ struct IfBranch {
 fn parse_if_function<'a, 'i, 't>(
   parser: &mut Parser<'i, 't>,
   custom_properties: &'a CustomPropertyStore,
-  stack: &mut Vec<String>,
+  stack: &mut VarResolutionStack,
   depth: usize,
   property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
@@ -1286,7 +1321,7 @@ where
 fn parse_first_valid_function<'a, 'i, 't>(
   parser: &mut Parser<'i, 't>,
   custom_properties: &'a CustomPropertyStore,
-  stack: &mut Vec<String>,
+  stack: &mut VarResolutionStack,
   depth: usize,
   property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
@@ -1334,7 +1369,7 @@ where
 fn parse_toggle_function<'a, 'i, 't>(
   parser: &mut Parser<'i, 't>,
   custom_properties: &'a CustomPropertyStore,
-  stack: &mut Vec<String>,
+  stack: &mut VarResolutionStack,
   depth: usize,
   property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
@@ -1404,7 +1439,8 @@ where
   //
   // FastRender currently only supports computed-value matching for `<color>` properties; other
   // uses are treated as invalid at computed-value time so the declaration computes to `unset`.
-  let parent = current_parent_style().ok_or_else(|| VarResolutionResult::InvalidSyntax("toggle".into()))?;
+  let parent =
+    current_parent_style().ok_or_else(|| VarResolutionResult::InvalidSyntax("toggle".into()))?;
 
   let base_color = if property_name.eq_ignore_ascii_case("background-color") {
     Some(parent.background_color)
@@ -1484,7 +1520,13 @@ where
     return Ok(selected);
   }
 
-  resolve_value_tokens(&selected, custom_properties, stack, depth + 1, property_name)
+  resolve_value_tokens(
+    &selected,
+    custom_properties,
+    stack,
+    depth + 1,
+    property_name,
+  )
 }
 
 fn serialize_css_string_token(value: &str) -> String {
@@ -1515,7 +1557,7 @@ fn serialize_css_string_token(value: &str) -> String {
 fn parse_attr_function<'a, 'i, 't>(
   parser: &mut Parser<'i, 't>,
   custom_properties: &'a CustomPropertyStore,
-  stack: &mut Vec<String>,
+  stack: &mut VarResolutionStack,
   depth: usize,
   property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
@@ -1527,7 +1569,7 @@ where
 
   let resolve_fallback = |fallback: &str,
                           custom_properties: &'a CustomPropertyStore,
-                          stack: &mut Vec<String>,
+                          stack: &mut VarResolutionStack,
                           depth: usize|
    -> Result<String, VarResolutionResult<'a>> {
     if !contains_ascii_case_insensitive_substitution_call(fallback)
@@ -2151,7 +2193,7 @@ fn resolve_variable_reference<'a>(
   name: &str,
   fallback: Option<Cow<'a, str>>,
   custom_properties: &'a CustomPropertyStore,
-  stack: &mut Vec<String>,
+  stack: &mut VarResolutionStack,
   depth: usize,
   property_name: &str,
 ) -> Result<Cow<'a, str>, VarResolutionResult<'a>> {
@@ -2160,7 +2202,7 @@ fn resolve_variable_reference<'a>(
   }
 
   let resolve_fallback = |fallback_value: Cow<'a, str>,
-                          stack: &mut Vec<String>|
+                          stack: &mut VarResolutionStack|
    -> Result<Cow<'a, str>, VarResolutionResult<'a>> {
     // Same fast-path as below for literal fallback tokens.
     if !contains_ascii_case_insensitive_substitution_call(fallback_value.as_ref())
@@ -2184,7 +2226,7 @@ fn resolve_variable_reference<'a>(
     })
   };
 
-  if stack.iter().any(|n| n == name) {
+  if stack.contains(name) {
     if let Some(fallback_value) = fallback {
       return resolve_fallback(fallback_value, stack);
     }
@@ -2208,7 +2250,7 @@ fn resolve_variable_reference<'a>(
       return Ok(resolved);
     }
 
-    stack.push(name.to_string());
+    stack.push(name);
     let resolved = if !raw.as_bytes().contains(&b'\\') {
       if let Some((nested_name, nested_fallback)) = parse_simple_var_call(raw) {
         resolve_variable_reference(
@@ -3000,8 +3042,8 @@ mod tests {
   #[test]
   fn toggle_function_resolves_based_on_parent_computed_value_for_background_color() {
     use crate::dom::DomNodeType;
-    use crate::style::ComputedStyle;
     use crate::style::media::ColorScheme;
+    use crate::style::ComputedStyle;
 
     let node = DomNode {
       node_type: DomNodeType::Element {
@@ -3018,9 +3060,13 @@ mod tests {
     let props = CustomPropertyStore::default();
     let value = PropertyValue::Keyword("toggle(green, red)".to_string());
 
-    let result = with_substitution_context(&node, &parent, Size::new(0.0, 0.0), ColorScheme::Light, || {
-      resolve_var_for_property(&value, &props, "background-color")
-    });
+    let result = with_substitution_context(
+      &node,
+      &parent,
+      Size::new(0.0, 0.0),
+      ColorScheme::Light,
+      || resolve_var_for_property(&value, &props, "background-color"),
+    );
 
     let resolved = match result {
       VarResolutionResult::Resolved { value, .. } => value.into_owned(),
