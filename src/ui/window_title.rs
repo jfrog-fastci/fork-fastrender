@@ -86,6 +86,19 @@ mod tests {
   use crate::ui::TabId;
 
   #[test]
+  fn window_title_is_app_name_when_no_tab() {
+    let mut cache = WindowTitleCache::default();
+
+    assert_eq!(cache.sync(None, None), Some("FastRender"));
+    assert_eq!(cache.full_title(), "FastRender");
+    assert_eq!(cache.active_tab_id(), None);
+
+    // Steady-state path should be allocation-free and avoid redundant updates.
+    assert_eq!(cache.sync(None, None), None);
+    assert_eq!(cache.full_title(), "FastRender");
+  }
+
+  #[test]
   fn window_title_updates_when_active_tab_changes() {
     let mut cache = WindowTitleCache::default();
     let tab_a = TabId::new();
@@ -99,6 +112,23 @@ mod tests {
       cache.sync(Some(tab_b), Some("Example B")),
       Some("Example B — FastRender")
     );
+  }
+
+  #[test]
+  fn window_title_cache_tracks_active_tab_even_when_title_unchanged() {
+    let mut cache = WindowTitleCache::default();
+    let tab_a = TabId::new();
+    let tab_b = TabId::new();
+
+    assert_eq!(cache.sync(Some(tab_a), Some("Same")), Some("Same — FastRender"));
+    assert_eq!(cache.active_tab_id(), Some(tab_a));
+    assert_eq!(cache.full_title(), "Same — FastRender");
+
+    // Title unchanged (so callers can skip `window.set_title`), but we still want the cache to
+    // reflect which tab is active for any consumers of `active_tab_id()`.
+    assert_eq!(cache.sync(Some(tab_b), Some("Same")), None);
+    assert_eq!(cache.active_tab_id(), Some(tab_b));
+    assert_eq!(cache.full_title(), "Same — FastRender");
   }
 
   #[test]
@@ -125,4 +155,3 @@ mod tests {
     assert_eq!(cache.sync(Some(tab), Some("Stable")), None);
   }
 }
-
