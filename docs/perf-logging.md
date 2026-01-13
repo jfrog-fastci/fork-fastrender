@@ -132,6 +132,44 @@ in [Perfetto UI](https://ui.perfetto.dev):
 
 All profiling logs are best run in release builds to reflect real performance.
 
+## Browser responsiveness (`FASTR_PERF_LOG`)
+
+The windowed `browser` UI can emit a machine-readable JSONL stream describing responsiveness
+metrics (per-frame and per-input timing). Enable it by setting:
+
+```bash
+FASTR_PERF_LOG=1
+```
+
+Each log line is a JSON object that includes a `schema_version`, `event` type, and `t_ms`
+(timestamp in milliseconds), plus event-specific numeric fields:
+
+- `event=frame`: `ui_frame_ms`
+- `event=input`: `input_to_present_ms` (+ `input_kind`)
+- `event=resize`: `resize_to_present_ms`
+- `event=ttfp`: `ttfp_ms`
+- `event=idle_summary`: `idle_frames`
+
+To turn a captured JSONL log into p50/p95/max summary numbers, pipe it into the helper:
+
+```bash
+FASTR_PERF_LOG=1 \
+  bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser \
+  | bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary
+```
+
+You can also summarize an existing file:
+
+```bash
+bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input perf.jsonl
+```
+
+Filtering options:
+
+- `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
+- `--only-event frame|input|resize|ttfp|idle_summary`: summarize one event type.
+
 ## Perf smoke (deterministic offline fixtures)
 
 Run a quick offline perf pass against the curated pages fixtures with bundled fonts and

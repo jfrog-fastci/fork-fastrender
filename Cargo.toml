@@ -304,6 +304,10 @@ name = "bench_compare"
 path = "tools/bench_compare.rs"
 
 [[bin]]
+name = "browser_perf_log_summary"
+path = "tools/browser_perf_log_summary.rs"
+
+[[bin]]
 name = "render_fixtures"
 path = "src/bin/render_fixtures.rs"
 test = false
