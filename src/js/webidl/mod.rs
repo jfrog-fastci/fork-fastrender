@@ -36,3 +36,6 @@ pub use legacy::VmJsRuntime;
 pub mod legacy {
   pub use webidl_js_runtime::{NativeHostFunction, VmJsRuntime, WebIdlBindingsRuntime};
 }
+
+#[cfg(test)]
+mod host_dispatch_coverage_tests;
