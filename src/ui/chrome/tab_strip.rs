@@ -1621,6 +1621,8 @@ pub(super) fn tab_strip_ui(
       let scroll_output = egui::ScrollArea::horizontal()
         .id_source("tab_strip_scroll")
         .auto_shrink([false, true])
+        // The tab strip should look like a real browser: overflow is indicated via the edge fades,
+        // not visible scrollbars.
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(&mut unpinned_ui, |ui| {
           // We apply tab gaps explicitly (instead of relying on `item_spacing`) so group collapse can
