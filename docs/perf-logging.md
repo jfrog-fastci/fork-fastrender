@@ -79,6 +79,9 @@ When enabled, you should expect events covering at least:
 - **TTFP** (“time to first paint”): navigation start → first presented frame for that tab.
 - **Frame time samples** during scroll and resize (used to spot jank and dropped frames).
 - **Input latency** samples (input arrival → visible UI response).
+- **Frame upload/coalescing** samples: `event=frame_upload` reports wgpu upload timing and
+  `FrameUploadCoalescer` counters (push/overwrite/drain/pending) to help diagnose scroll/resize
+  jank caused by dropped frames or expensive texture uploads.
 
 The exact schema evolves, but each JSON line is intended to be self-describing. Common fields
 include:
