@@ -24,7 +24,11 @@ use url::Url;
 // -----------------------------------------------------------------------------
 
 static NEXT_FRAME_ID: AtomicU64 = AtomicU64::new(1);
-static NEXT_RENDERER_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
+
+// Re-export the canonical browser-session-local renderer process id type. This keeps the
+// multiprocess state machine aligned with the rest of the UI without introducing a second
+// `RendererProcessId` definition.
+pub use super::RendererProcessId;
 
 /// Identifier for a renderer-owned frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -35,21 +39,6 @@ impl FrameId {
   pub fn new() -> Self {
     loop {
       let id = NEXT_FRAME_ID.fetch_add(1, Ordering::Relaxed);
-      if id != 0 {
-        return Self(id);
-      }
-    }
-  }
-}
-
-/// Identifier for a renderer process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RendererProcessId(pub u64);
-
-impl RendererProcessId {
-  pub fn new() -> Self {
-    loop {
-      let id = NEXT_RENDERER_PROCESS_ID.fetch_add(1, Ordering::Relaxed);
       if id != 0 {
         return Self(id);
       }
@@ -446,4 +435,3 @@ impl MultiprocessBrowser {
     }
   }
 }
-
