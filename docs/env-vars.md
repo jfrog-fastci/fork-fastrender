@@ -145,11 +145,20 @@ and [`instructions/browser_responsiveness.md`](../instructions/browser_responsiv
 interpret the metrics.
 
 - `FASTR_PERF_LOG=0|1` – enable JSONL (“JSON Lines”) perf logging in the windowed `browser` UI.
-  - When enabled, the browser emits one JSON object per line describing frame-time samples, input
-    latency, and navigation TTFP measurements.
-- `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` – optional output path for `FASTR_PERF_LOG` JSONL events.
-  - When unset, the browser may default to stderr or a build-defined path; set this explicitly when
-    you want a stable on-disk artifact.
+  - When enabled, the `browser` binary emits JSONL (one JSON object per line) events describing
+    frame-time samples, input latency, resize latency, and navigation TTFP measurements.
+    Event types: `frame`, `input`, `resize`, `navigation`, `ttfp`.
+  - Output:
+    - Defaults to **stdout** (so it can be piped/collected).
+    - If `FASTR_PERF_LOG_OUT` is set, the log is written to that path instead (created/truncated).
+  - Example:
+    ```bash
+    FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
+      bash scripts/run_limited.sh --as 64G -- \
+      bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+    ```
+- `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` – output path for `FASTR_PERF_LOG` JSONL events.
+  - When unset/empty, events go to **stdout**.
 - `FASTR_PERF_TRACE_OUT=/path/to/trace.json` – optional Perfetto/Chrome trace output for UI
   responsiveness (when supported by your build).
 - `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` – write a Chrome trace of the windowed `browser`

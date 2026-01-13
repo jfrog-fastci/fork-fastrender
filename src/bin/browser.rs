@@ -46,9 +46,11 @@ const ENV_BROWSER_MAX_PENDING_FRAME_BYTES: &str = "FASTR_BROWSER_MAX_PENDING_FRA
 #[cfg(feature = "browser_ui")]
 const DEFAULT_BROWSER_MAX_PENDING_FRAME_BYTES: u64 = 512 * 1024 * 1024;
 
-// Opt-in perf logging for UI-level performance investigations (e.g. allocation churn).
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 const ENV_PERF_LOG: &str = "FASTR_PERF_LOG";
+
+#[cfg(feature = "browser_ui")]
+const ENV_PERF_LOG_OUT: &str = "FASTR_PERF_LOG_OUT";
 
 #[cfg(any(test, feature = "browser_ui"))]
 fn parse_env_bool(raw: Option<&str>) -> bool {
@@ -62,6 +64,116 @@ fn parse_env_bool(raw: Option<&str>) -> bool {
   match trimmed.to_ascii_lowercase().as_str() {
     "0" | "false" | "no" | "off" => false,
     _ => true,
+  }
+}
+
+// Structured JSONL performance logging used by the windowed browser UI.
+//
+// Kept outside the `browser_ui` feature gate so unit tests can validate schema emission without
+// compiling the full winit/wgpu/egui stack.
+#[cfg(any(test, feature = "browser_ui"))]
+mod perf_log {
+  use serde::Serialize;
+  use std::io::{self, Write};
+  use std::time::Instant;
+
+  pub const SCHEMA_VERSION: u32 = 1;
+
+  #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+  #[serde(rename_all = "snake_case")]
+  pub enum InputKind {
+    Keyboard,
+    MouseWheel,
+    PointerMove,
+    Button,
+  }
+
+  #[derive(Debug, Serialize)]
+  #[serde(tag = "event", rename_all = "snake_case")]
+  pub enum PerfEvent<'a> {
+    Frame {
+      schema_version: u32,
+      ts_ms: u64,
+      window_id: &'a str,
+      active_tab_id: Option<u64>,
+      ui_frame_ms: f64,
+      fps: Option<f64>,
+      window_focused: bool,
+      window_occluded: bool,
+      window_minimized: bool,
+    },
+    Input {
+      schema_version: u32,
+      ts_ms: u64,
+      window_id: &'a str,
+      active_tab_id: Option<u64>,
+      kind: InputKind,
+      input_ts_ms: u64,
+      input_to_present_ms: f64,
+      count: u32,
+    },
+    Resize {
+      schema_version: u32,
+      ts_ms: u64,
+      window_id: &'a str,
+      resize_ts_ms: u64,
+      resize_to_present_ms: f64,
+      new_width_px: u32,
+      new_height_px: u32,
+    },
+    Navigation {
+      schema_version: u32,
+      ts_ms: u64,
+      window_id: &'a str,
+      tab_id: u64,
+      navigation_seqno: u64,
+      url: &'a str,
+    },
+    Ttfp {
+      schema_version: u32,
+      ts_ms: u64,
+      window_id: &'a str,
+      tab_id: u64,
+      navigation_seqno: u64,
+      ttfp_ms: f64,
+    },
+  }
+
+  pub fn write_event_jsonl<W: Write>(writer: &mut W, event: &PerfEvent<'_>) -> io::Result<()> {
+    serde_json::to_writer(writer, event)?;
+    writer.write_all(b"\n")?;
+    Ok(())
+  }
+
+  #[derive(Debug)]
+  pub struct JsonlPerfWriter<W: Write> {
+    pub start: Instant,
+    writer: W,
+    disabled: bool,
+  }
+
+  impl<W: Write> JsonlPerfWriter<W> {
+    pub fn new(start: Instant, writer: W) -> Self {
+      Self {
+        start,
+        writer,
+        disabled: false,
+      }
+    }
+
+    pub fn ms_since_start(&self, t: Instant) -> u64 {
+      t.saturating_duration_since(self.start).as_millis() as u64
+    }
+
+    pub fn emit(&mut self, event: &PerfEvent<'_>) {
+      if self.disabled {
+        return;
+      }
+      if write_event_jsonl(&mut self.writer, event).is_err() {
+        // Avoid crashing or spamming logs if stdout is closed (e.g. broken pipe).
+        self.disabled = true;
+      }
+    }
   }
 }
 
@@ -176,10 +288,18 @@ mod input_focus_helpers_tests {
 
   #[test]
   fn keyboard_context_menu_requires_page_focus_and_no_chrome_text_focus() {
-    assert!(!should_open_page_context_menu_from_keyboard(false, false, false));
-    assert!(!should_open_page_context_menu_from_keyboard(true, true, false));
-    assert!(!should_open_page_context_menu_from_keyboard(true, false, true));
-    assert!(should_open_page_context_menu_from_keyboard(true, false, false));
+    assert!(!should_open_page_context_menu_from_keyboard(
+      false, false, false
+    ));
+    assert!(!should_open_page_context_menu_from_keyboard(
+      true, true, false
+    ));
+    assert!(!should_open_page_context_menu_from_keyboard(
+      true, false, true
+    ));
+    assert!(should_open_page_context_menu_from_keyboard(
+      true, false, false
+    ));
   }
 
   #[test]
@@ -410,7 +530,10 @@ fn is_path_within_dir(dir: &std::path::Path, path: &std::path::Path) -> bool {
   let dir_abs = clean(&absolutize(dir));
   let path_abs = clean(&absolutize(path));
 
-  if let (Ok(dir_can), Ok(path_can)) = (std::fs::canonicalize(&dir_abs), std::fs::canonicalize(&path_abs)) {
+  if let (Ok(dir_can), Ok(path_can)) = (
+    std::fs::canonicalize(&dir_abs),
+    std::fs::canonicalize(&path_abs),
+  ) {
     return path_can.starts_with(&dir_can);
   }
 
@@ -826,8 +949,16 @@ impl ScrollCoalescer {
       self.tab_id = Some(tab_id);
     }
 
-    let dx = if delta_css.0.is_finite() { delta_css.0 } else { 0.0 };
-    let dy = if delta_css.1.is_finite() { delta_css.1 } else { 0.0 };
+    let dx = if delta_css.0.is_finite() {
+      delta_css.0
+    } else {
+      0.0
+    };
+    let dy = if delta_css.1.is_finite() {
+      delta_css.1
+    } else {
+      0.0
+    };
     self.delta_css.0 += dx;
     self.delta_css.1 += dy;
     // Preserve pointer-targeted semantics by remembering the most recent pointer location.
@@ -951,7 +1082,9 @@ fn parse_env_bool_override(key: &str, raw: Option<&str>) -> Result<Option<bool>,
     return Ok(Some(false));
   }
 
-  Err(format!("{key}: invalid value {raw:?}; expected 0|1|true|false"))
+  Err(format!(
+    "{key}: invalid value {raw:?}; expected 0|1|true|false"
+  ))
 }
 
 fn parse_env_u64_override(key: &str, raw: Option<&str>) -> Result<Option<u64>, String> {
@@ -980,10 +1113,7 @@ fn parse_renderer_watchdog_timeout_ms_env(raw: Option<&str>) -> Result<Option<u6
 }
 
 fn parse_allow_crash_urls_env(raw: Option<&str>) -> Result<bool, String> {
-  Ok(
-    parse_env_bool_override(ENV_BROWSER_ALLOW_CRASH_URLS, raw)?
-      .unwrap_or(false),
-  )
+  Ok(parse_env_bool_override(ENV_BROWSER_ALLOW_CRASH_URLS, raw)?.unwrap_or(false))
 }
 
 #[cfg(feature = "browser_ui")]
@@ -1070,16 +1200,43 @@ mod browser_renderer_watchdog_env_tests {
     assert_eq!(parse_renderer_watchdog_enabled_env(Some("")), Ok(None));
     assert_eq!(parse_renderer_watchdog_enabled_env(Some("   ")), Ok(None));
 
-    assert_eq!(parse_renderer_watchdog_enabled_env(Some("1")), Ok(Some(true)));
-    assert_eq!(parse_renderer_watchdog_enabled_env(Some("true")), Ok(Some(true)));
-    assert_eq!(parse_renderer_watchdog_enabled_env(Some("TrUe")), Ok(Some(true)));
-    assert_eq!(parse_renderer_watchdog_enabled_env(Some("yes")), Ok(Some(true)));
-    assert_eq!(parse_renderer_watchdog_enabled_env(Some("on")), Ok(Some(true)));
+    assert_eq!(
+      parse_renderer_watchdog_enabled_env(Some("1")),
+      Ok(Some(true))
+    );
+    assert_eq!(
+      parse_renderer_watchdog_enabled_env(Some("true")),
+      Ok(Some(true))
+    );
+    assert_eq!(
+      parse_renderer_watchdog_enabled_env(Some("TrUe")),
+      Ok(Some(true))
+    );
+    assert_eq!(
+      parse_renderer_watchdog_enabled_env(Some("yes")),
+      Ok(Some(true))
+    );
+    assert_eq!(
+      parse_renderer_watchdog_enabled_env(Some("on")),
+      Ok(Some(true))
+    );
 
-    assert_eq!(parse_renderer_watchdog_enabled_env(Some("0")), Ok(Some(false)));
-    assert_eq!(parse_renderer_watchdog_enabled_env(Some("false")), Ok(Some(false)));
-    assert_eq!(parse_renderer_watchdog_enabled_env(Some("no")), Ok(Some(false)));
-    assert_eq!(parse_renderer_watchdog_enabled_env(Some("off")), Ok(Some(false)));
+    assert_eq!(
+      parse_renderer_watchdog_enabled_env(Some("0")),
+      Ok(Some(false))
+    );
+    assert_eq!(
+      parse_renderer_watchdog_enabled_env(Some("false")),
+      Ok(Some(false))
+    );
+    assert_eq!(
+      parse_renderer_watchdog_enabled_env(Some("no")),
+      Ok(Some(false))
+    );
+    assert_eq!(
+      parse_renderer_watchdog_enabled_env(Some("off")),
+      Ok(Some(false))
+    );
 
     assert!(parse_renderer_watchdog_enabled_env(Some("maybe")).is_err());
   }
@@ -1088,10 +1245,22 @@ mod browser_renderer_watchdog_env_tests {
   fn parse_renderer_watchdog_timeout_ms_env_values() {
     assert_eq!(parse_renderer_watchdog_timeout_ms_env(None), Ok(None));
     assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("")), Ok(None));
-    assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("   ")), Ok(None));
-    assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("0")), Ok(Some(0)));
-    assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("1000")), Ok(Some(1000)));
-    assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("1_000")), Ok(Some(1000)));
+    assert_eq!(
+      parse_renderer_watchdog_timeout_ms_env(Some("   ")),
+      Ok(None)
+    );
+    assert_eq!(
+      parse_renderer_watchdog_timeout_ms_env(Some("0")),
+      Ok(Some(0))
+    );
+    assert_eq!(
+      parse_renderer_watchdog_timeout_ms_env(Some("1000")),
+      Ok(Some(1000))
+    );
+    assert_eq!(
+      parse_renderer_watchdog_timeout_ms_env(Some("1_000")),
+      Ok(Some(1000))
+    );
     assert!(parse_renderer_watchdog_timeout_ms_env(Some("wat")).is_err());
   }
 
@@ -1751,7 +1920,9 @@ mod scroll_coalescer_tests {
     coalescer.push_scroll(tab_b, (2.0, 0.0), Some((5.0, 5.0)));
 
     match coalescer.take_scroll_msg() {
-      Some(UiToWorker::Scroll { tab_id, delta_css, .. }) => {
+      Some(UiToWorker::Scroll {
+        tab_id, delta_css, ..
+      }) => {
         assert_eq!(tab_id, tab_b);
         assert_eq!(delta_css, (2.0, 0.0));
       }
@@ -2265,11 +2436,7 @@ mod tests {
       })
     };
 
-    let a = spawn(
-      coalescer.clone(),
-      callback_calls.clone(),
-      barrier.clone(),
-    );
+    let a = spawn(coalescer.clone(), callback_calls.clone(), barrier.clone());
     let b = spawn(coalescer.clone(), callback_calls.clone(), barrier.clone());
     barrier.wait();
 
@@ -2281,11 +2448,7 @@ mod tests {
     coalescer.begin_drain();
 
     let barrier = Arc::new(Barrier::new(3));
-    let a = spawn(
-      coalescer.clone(),
-      callback_calls.clone(),
-      barrier.clone(),
-    );
+    let a = spawn(coalescer.clone(), callback_calls.clone(), barrier.clone());
     let b = spawn(coalescer.clone(), callback_calls.clone(), barrier.clone());
     barrier.wait();
 
@@ -2435,7 +2598,9 @@ mod date_time_picker_a11y_tests {
 
     let label = ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_value_label")));
     assert!(
-      label.as_deref().is_some_and(|label| !label.trim().is_empty()),
+      label
+        .as_deref()
+        .is_some_and(|label| !label.trim().is_empty()),
       "expected picker TextEdit to have a non-empty accessible label"
     );
     assert_eq!(label.as_deref(), Some("Value"));
@@ -2798,6 +2963,42 @@ fn update_renderer_media_prefs_runtime_toggles(
 
 #[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+  let perf_log_start = std::time::Instant::now();
+  let perf_log_writer = if parse_env_bool(std::env::var(ENV_PERF_LOG).ok().as_deref()) {
+    let out_path = std::env::var(ENV_PERF_LOG_OUT)
+      .ok()
+      .map(|raw| raw.trim().to_string())
+      .filter(|s| !s.is_empty());
+
+    let sink: Box<dyn std::io::Write> = if let Some(path) = out_path {
+      let path = std::path::PathBuf::from(path);
+      let open = (|| -> std::io::Result<std::fs::File> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+          std::fs::create_dir_all(parent)?;
+        }
+        std::fs::File::create(&path)
+      })();
+      match open {
+        Ok(file) => Box::new(file),
+        Err(err) => {
+          eprintln!(
+            "warning: failed to open {ENV_PERF_LOG_OUT}={} ({err}); falling back to stdout",
+            path.display()
+          );
+          Box::new(std::io::stdout())
+        }
+      }
+    } else {
+      Box::new(std::io::stdout())
+    };
+
+    Some(std::rc::Rc::new(std::cell::RefCell::new(
+      perf_log::JsonlPerfWriter::new(perf_log_start, std::io::BufWriter::new(sink)),
+    )))
+  } else {
+    None
+  };
+
   let cli = BrowserCliArgs::parse();
 
   // ---------------------------------------------------------------------------
@@ -3068,11 +3269,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     worker_wake_coalescer: Arc<WorkerWakeCoalescer>,
     worker_wake_counters: Option<Arc<WorkerWakeHudCounters>>,
-  ) -> std::io::Result<(
-    WorkerMsgQueue,
-    Arc<AtomicBool>,
-    std::thread::JoinHandle<()>,
-  )> {
+  ) -> std::io::Result<(WorkerMsgQueue, Arc<AtomicBool>, std::thread::JoinHandle<()>)> {
     let worker_msgs = WorkerMsgQueue::new();
     let worker_msgs_pusher = worker_msgs.pusher();
     let worker_wake_pending = Arc::new(AtomicBool::new(false));
@@ -3352,6 +3549,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       renderer_backend.clone(),
       &gpu,
       browser_trace.clone(),
+      perf_log_start,
+      perf_log_writer.clone(),
       appearance_env,
       applied_appearance.clone(),
       theme_accent,
@@ -3553,6 +3752,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           if let Some(monitor) = win.app.idle_repaint_monitor.as_mut() {
             monitor.note_winit_event(&event);
           }
+          win.app.perf_record_winit_window_event(&event);
           let response = win.app.egui_state.on_event(&win.app.egui_ctx, &event);
           win.app.handle_winit_input_event(&event);
 
@@ -3807,6 +4007,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           renderer_backend.clone(),
           &gpu,
           browser_trace.clone(),
+          perf_log_start,
+          perf_log_writer.clone(),
           appearance_env,
           applied_appearance.clone(),
           theme_accent,
@@ -3929,6 +4131,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           renderer_backend.clone(),
           &gpu,
           browser_trace.clone(),
+          perf_log_start,
+          perf_log_writer.clone(),
           appearance_env,
           applied_appearance.clone(),
           theme_accent,
@@ -4565,9 +4769,9 @@ fn run_headless_crash_smoke_mode(
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
   use fastrender::ui::render_worker::BROWSER_WORKER_CRASH_TEST_URL;
+  use std::collections::HashMap;
   use std::sync::mpsc::RecvTimeoutError;
   use std::time::{Duration, Instant};
-  use std::collections::HashMap;
 
   // Keep the smoke test cheap and deterministic. See `run_headless_smoke_mode` for rationale.
   const RAYON_NUM_THREADS_ENV: &str = "RAYON_NUM_THREADS";
@@ -4601,9 +4805,11 @@ fn run_headless_crash_smoke_mode(
     )?
   };
 
-  let (ui_to_worker_tx, worker_to_ui_rx, join) =
-    fastrender::ui::spawn_ui_worker_with_factory("fastr-browser-headless-crash-smoke-worker", factory)?
-      .split();
+  let (ui_to_worker_tx, worker_to_ui_rx, join) = fastrender::ui::spawn_ui_worker_with_factory(
+    "fastr-browser-headless-crash-smoke-worker",
+    factory,
+  )?
+  .split();
 
   // Not strictly needed for the crash smoke test, but keeps parity with other headless harnesses.
   ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
@@ -4951,7 +5157,9 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
 
     match token.as_str() {
       // Wildcard MIME groups.
-      "image/*" => push_all(&["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg"]),
+      "image/*" => push_all(&[
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg",
+      ]),
       "text/*" => push_all(&["txt", "md", "markdown", "csv", "json", "xml", "html", "htm"]),
       "audio/*" => push_all(&["mp3", "wav", "ogg", "flac", "m4a", "aac"]),
       "video/*" => push_all(&["mp4", "mov", "webm", "mkv", "avi", "mpeg", "mpg"]),
@@ -5191,7 +5399,10 @@ impl TouchGestureRecognizer {
   const DEFAULT_SLOP_RADIUS_POINTS: f32 = 8.0;
 
   fn new() -> Self {
-    Self::new_with_config(Self::DEFAULT_LONG_PRESS_THRESHOLD, Self::DEFAULT_SLOP_RADIUS_POINTS)
+    Self::new_with_config(
+      Self::DEFAULT_LONG_PRESS_THRESHOLD,
+      Self::DEFAULT_SLOP_RADIUS_POINTS,
+    )
   }
 
   fn new_with_config(long_press_threshold: std::time::Duration, slop_radius_points: f32) -> Self {
@@ -5842,9 +6053,7 @@ impl ChromeAccessKit {
       event_loop_proxy,
     );
 
-    Self {
-      adapter,
-    }
+    Self { adapter }
   }
 
   fn process_window_event(
@@ -5883,6 +6092,264 @@ fn new_browser_egui_context(pixels_per_point: f32) -> egui::Context {
   egui_ctx.enable_accesskit();
   egui_ctx.set_pixels_per_point(pixels_per_point);
   egui_ctx
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy, Default)]
+struct PendingPerfInput {
+  first: Option<std::time::Instant>,
+  count: u32,
+}
+
+#[cfg(feature = "browser_ui")]
+impl PendingPerfInput {
+  fn record(&mut self, now: std::time::Instant) {
+    if self.first.is_none() {
+      self.first = Some(now);
+    }
+    self.count = self.count.saturating_add(1);
+  }
+
+  fn take(&mut self) -> Option<(std::time::Instant, u32)> {
+    let first = self.first.take()?;
+    let count = std::mem::take(&mut self.count).max(1);
+    Some((first, count))
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy)]
+struct PendingPerfResize {
+  at: std::time::Instant,
+  size_px: (u32, u32),
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy)]
+struct PendingPerfNavigation {
+  seqno: u64,
+  started_at: std::time::Instant,
+  saw_frame_ready: bool,
+  frame_uploaded: bool,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+struct PerfWindowLog {
+  start: std::time::Instant,
+  window_id: String,
+  writer: std::rc::Rc<
+    std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+  >,
+  last_present: Option<std::time::Instant>,
+  pending_keyboard: PendingPerfInput,
+  pending_mouse_wheel: PendingPerfInput,
+  pending_pointer_move: PendingPerfInput,
+  pending_button: PendingPerfInput,
+  pending_resize: Option<PendingPerfResize>,
+  nav_seqno: std::collections::HashMap<fastrender::ui::TabId, u64>,
+  pending_nav: std::collections::HashMap<fastrender::ui::TabId, PendingPerfNavigation>,
+}
+
+#[cfg(feature = "browser_ui")]
+impl PerfWindowLog {
+  fn new(
+    start: std::time::Instant,
+    window_id: String,
+    writer: std::rc::Rc<
+      std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+    >,
+  ) -> Self {
+    Self {
+      start,
+      window_id,
+      writer,
+      last_present: None,
+      pending_keyboard: PendingPerfInput::default(),
+      pending_mouse_wheel: PendingPerfInput::default(),
+      pending_pointer_move: PendingPerfInput::default(),
+      pending_button: PendingPerfInput::default(),
+      pending_resize: None,
+      nav_seqno: std::collections::HashMap::new(),
+      pending_nav: std::collections::HashMap::new(),
+    }
+  }
+
+  fn ts_ms(&self, t: std::time::Instant) -> u64 {
+    t.saturating_duration_since(self.start).as_millis() as u64
+  }
+
+  fn emit(&mut self, event: &perf_log::PerfEvent<'_>) {
+    self.writer.borrow_mut().emit(event);
+  }
+
+  fn record_input(&mut self, kind: perf_log::InputKind, at: std::time::Instant) {
+    match kind {
+      perf_log::InputKind::Keyboard => self.pending_keyboard.record(at),
+      perf_log::InputKind::MouseWheel => self.pending_mouse_wheel.record(at),
+      perf_log::InputKind::PointerMove => self.pending_pointer_move.record(at),
+      perf_log::InputKind::Button => self.pending_button.record(at),
+    }
+  }
+
+  fn record_resize(&mut self, size_px: (u32, u32), at: std::time::Instant) {
+    self.pending_resize = Some(PendingPerfResize { at, size_px });
+  }
+
+  fn navigation_started(
+    &mut self,
+    tab_id: fastrender::ui::TabId,
+    url: &str,
+    at: std::time::Instant,
+  ) {
+    let seqno = self
+      .nav_seqno
+      .entry(tab_id)
+      .and_modify(|v| *v += 1)
+      .or_insert(1);
+    let seqno = *seqno;
+
+    self.pending_nav.insert(
+      tab_id,
+      PendingPerfNavigation {
+        seqno,
+        started_at: at,
+        saw_frame_ready: false,
+        frame_uploaded: false,
+      },
+    );
+
+    let event = perf_log::PerfEvent::Navigation {
+      schema_version: perf_log::SCHEMA_VERSION,
+      ts_ms: self.ts_ms(at),
+      window_id: &self.window_id,
+      tab_id: tab_id.0,
+      navigation_seqno: seqno,
+      url,
+    };
+    self.emit(&event);
+  }
+
+  fn frame_ready(&mut self, tab_id: fastrender::ui::TabId) {
+    if let Some(pending) = self.pending_nav.get_mut(&tab_id) {
+      pending.saw_frame_ready = true;
+    }
+  }
+
+  fn frame_uploaded(&mut self, tab_id: fastrender::ui::TabId) {
+    let Some(pending) = self.pending_nav.get_mut(&tab_id) else {
+      return;
+    };
+    if pending.saw_frame_ready {
+      pending.frame_uploaded = true;
+    }
+  }
+
+  fn on_present(
+    &mut self,
+    present_at: std::time::Instant,
+    active_tab_id: Option<fastrender::ui::TabId>,
+    ui_frame_ms: f64,
+    window_focused: bool,
+    window_occluded: bool,
+    window_minimized: bool,
+  ) {
+    let ts_ms = self.ts_ms(present_at);
+    let fps = self.last_present.and_then(|prev| {
+      let dt = present_at.saturating_duration_since(prev).as_secs_f64();
+      if dt > 0.0 && dt.is_finite() {
+        Some((1.0 / dt).min(10_000.0))
+      } else {
+        None
+      }
+    });
+    self.last_present = Some(present_at);
+
+    let frame_event = perf_log::PerfEvent::Frame {
+      schema_version: perf_log::SCHEMA_VERSION,
+      ts_ms,
+      window_id: &self.window_id,
+      active_tab_id: active_tab_id.map(|t| t.0),
+      ui_frame_ms,
+      fps,
+      window_focused,
+      window_occluded,
+      window_minimized,
+    };
+    self.emit(&frame_event);
+
+    let mut emit_input = |kind: perf_log::InputKind, pending: &mut PendingPerfInput| {
+      let Some((first, count)) = pending.take() else {
+        return;
+      };
+      let input_ts_ms = self.ts_ms(first);
+      let latency = present_at.saturating_duration_since(first).as_secs_f64() * 1000.0;
+      let event = perf_log::PerfEvent::Input {
+        schema_version: perf_log::SCHEMA_VERSION,
+        ts_ms,
+        window_id: &self.window_id,
+        active_tab_id: active_tab_id.map(|t| t.0),
+        kind,
+        input_ts_ms,
+        input_to_present_ms: latency,
+        count,
+      };
+      self.emit(&event);
+    };
+
+    emit_input(perf_log::InputKind::Keyboard, &mut self.pending_keyboard);
+    emit_input(
+      perf_log::InputKind::MouseWheel,
+      &mut self.pending_mouse_wheel,
+    );
+    emit_input(
+      perf_log::InputKind::PointerMove,
+      &mut self.pending_pointer_move,
+    );
+    emit_input(perf_log::InputKind::Button, &mut self.pending_button);
+
+    if let Some(resize) = self.pending_resize.take() {
+      let resize_ts_ms = self.ts_ms(resize.at);
+      let latency = present_at
+        .saturating_duration_since(resize.at)
+        .as_secs_f64()
+        * 1000.0;
+      let event = perf_log::PerfEvent::Resize {
+        schema_version: perf_log::SCHEMA_VERSION,
+        ts_ms,
+        window_id: &self.window_id,
+        resize_ts_ms,
+        resize_to_present_ms: latency,
+        new_width_px: resize.size_px.0,
+        new_height_px: resize.size_px.1,
+      };
+      self.emit(&event);
+    }
+
+    if let Some(tab_id) = active_tab_id {
+      let should_emit_ttfp = self
+        .pending_nav
+        .get(&tab_id)
+        .is_some_and(|pending| pending.frame_uploaded);
+      if should_emit_ttfp {
+        if let Some(pending) = self.pending_nav.remove(&tab_id) {
+          let ttfp_ms = present_at
+            .saturating_duration_since(pending.started_at)
+            .as_secs_f64()
+            * 1000.0;
+          let event = perf_log::PerfEvent::Ttfp {
+            schema_version: perf_log::SCHEMA_VERSION,
+            ts_ms,
+            window_id: &self.window_id,
+            tab_id: tab_id.0,
+            navigation_seqno: pending.seqno,
+            ttfp_ms,
+          };
+          self.emit(&event);
+        }
+      }
+    }
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -6032,7 +6499,7 @@ struct App {
   window_occluded: bool,
   window_minimized: bool,
   window_fullscreen: bool,
- 
+
   page_has_focus: bool,
   /// Whether a browser-chrome (non-page) text input currently owns keyboard input.
   ///
@@ -6098,6 +6565,7 @@ struct App {
   media_controls_overlay_pointer_capture: bool,
   hud: Option<BrowserHud>,
   idle_repaint_monitor: Option<IdleRepaintMonitor>,
+  perf_log: Option<PerfWindowLog>,
 
   tab_notifications: std::collections::HashMap<fastrender::ui::TabId, TabNotificationUiState>,
   warning_toast_rect: Option<egui::Rect>,
@@ -6181,6 +6649,76 @@ impl App {
     std::time::Duration::from_millis(1000);
   const MULTI_CLICK_MAX_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
   const MULTI_CLICK_MAX_DIST_POINTS: f32 = 4.0;
+
+  fn perf_record_input(&mut self, kind: perf_log::InputKind) {
+    let Some(perf) = self.perf_log.as_mut() else {
+      return;
+    };
+    perf.record_input(kind, std::time::Instant::now());
+  }
+
+  fn perf_record_winit_window_event(&mut self, event: &winit::event::WindowEvent<'_>) {
+    use winit::event::WindowEvent;
+
+    if self.perf_log.is_none() {
+      return;
+    }
+
+    match event {
+      WindowEvent::KeyboardInput { .. } => self.perf_record_input(perf_log::InputKind::Keyboard),
+      WindowEvent::MouseWheel { .. } => self.perf_record_input(perf_log::InputKind::MouseWheel),
+      WindowEvent::CursorMoved { .. } => self.perf_record_input(perf_log::InputKind::PointerMove),
+      WindowEvent::MouseInput { .. } => self.perf_record_input(perf_log::InputKind::Button),
+      WindowEvent::Resized(size) => self.perf_record_resize((size.width, size.height)),
+      WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+        self.perf_record_resize((new_inner_size.width, new_inner_size.height));
+      }
+      _ => {}
+    }
+  }
+
+  fn perf_record_resize(&mut self, size_px: (u32, u32)) {
+    let Some(perf) = self.perf_log.as_mut() else {
+      return;
+    };
+    perf.record_resize(size_px, std::time::Instant::now());
+  }
+
+  fn perf_navigation_started(&mut self, tab_id: fastrender::ui::TabId, url: &str) {
+    let Some(perf) = self.perf_log.as_mut() else {
+      return;
+    };
+    perf.navigation_started(tab_id, url, std::time::Instant::now());
+  }
+
+  fn perf_frame_ready(&mut self, tab_id: fastrender::ui::TabId) {
+    let Some(perf) = self.perf_log.as_mut() else {
+      return;
+    };
+    perf.frame_ready(tab_id);
+  }
+
+  fn perf_frame_uploaded(&mut self, tab_id: fastrender::ui::TabId) {
+    let Some(perf) = self.perf_log.as_mut() else {
+      return;
+    };
+    perf.frame_uploaded(tab_id);
+  }
+
+  fn perf_on_present(&mut self, present_at: std::time::Instant, ui_frame_ms: f64) {
+    let Some(perf) = self.perf_log.as_mut() else {
+      return;
+    };
+    let active_tab_id = self.browser_state.active_tab_id();
+    perf.on_present(
+      present_at,
+      active_tab_id,
+      ui_frame_ms,
+      self.window_focused,
+      self.window_occluded,
+      self.window_minimized,
+    );
+  }
 
   fn sync_media_preferences_to_worker(&mut self, system_theme: Option<winit::window::Theme>) {
     use fastrender::ui::UiToWorker;
@@ -6476,6 +7014,12 @@ impl App {
     renderer_backend: fastrender::ui::RendererBackendHandle,
     gpu: &GpuContext,
     trace: fastrender::debug::trace::TraceHandle,
+    perf_log_start: std::time::Instant,
+    perf_log_writer: Option<
+      std::rc::Rc<
+        std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+      >,
+    >,
     appearance_env_overrides: fastrender::ui::appearance::AppearanceEnvOverrides,
     applied_appearance: fastrender::ui::appearance::AppearanceSettings,
     theme_accent: Option<egui::Color32>,
@@ -6497,6 +7041,9 @@ impl App {
     } else {
       ChromeA11yBackend::Egui
     };
+
+    let perf_log = perf_log_writer
+      .map(|writer| PerfWindowLog::new(perf_log_start, format!("{:?}", window.id()), writer));
 
     let system_pixels_per_point = window.scale_factor() as f32;
     let ui_scale = applied_appearance.ui_scale;
@@ -6600,8 +7147,11 @@ impl App {
 
     let egui_renderer = egui_wgpu::Renderer::new(&device, surface_format, None, 1);
     let debug_log_ui_enabled = debug_log_ui_enabled();
-    let log_surface_configure =
-      parse_env_bool(std::env::var(ENV_BROWSER_LOG_SURFACE_CONFIGURE).ok().as_deref());
+    let log_surface_configure = parse_env_bool(
+      std::env::var(ENV_BROWSER_LOG_SURFACE_CONFIGURE)
+        .ok()
+        .as_deref(),
+    );
     let surface_configure_count = 1u64;
     if log_surface_configure {
       eprintln!(
@@ -6772,6 +7322,7 @@ impl App {
       media_controls_overlay_pointer_capture: false,
       hud,
       idle_repaint_monitor,
+      perf_log,
       tab_notifications: std::collections::HashMap::new(),
       warning_toast_rect: None,
       error_infobar_rect: None,
@@ -6947,7 +7498,10 @@ impl App {
       self.last_resize_event_at = None;
     }
 
-    std::mem::swap(&mut self.viewport_throttle, &mut self.viewport_throttle_resizing);
+    std::mem::swap(
+      &mut self.viewport_throttle,
+      &mut self.viewport_throttle_resizing,
+    );
     self.viewport_throttle.reset();
 
     if was_resizing && !is_resizing {
@@ -7376,7 +7930,9 @@ impl App {
       if !rect.contains(pos_points) {
         return;
       }
-      if self.cursor_over_egui_overlay(pos_points) || self.cursor_over_overlay_scrollbars(pos_points) {
+      if self.cursor_over_egui_overlay(pos_points)
+        || self.cursor_over_overlay_scrollbars(pos_points)
+      {
         return;
       }
 
@@ -7476,13 +8032,19 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     // If the active tab changes while a scrollbar thumb drag is in progress, drop any unflushed
     // delta and cancel the drag. This avoids "leaking" drag scroll into the wrong tab.
     if let UiToWorker::SetActiveTab { tab_id } = &msg {
-      if self.scrollbar_drag.is_some_and(|drag| drag.tab_id != *tab_id) {
+      if self
+        .scrollbar_drag
+        .is_some_and(|drag| drag.tab_id != *tab_id)
+      {
         self.pending_scroll_drag = None;
         self.cancel_scrollbar_drag();
       }
     }
     if let UiToWorker::CloseTab { tab_id } = &msg {
-      if self.scrollbar_drag.is_some_and(|drag| drag.tab_id == *tab_id) {
+      if self
+        .scrollbar_drag
+        .is_some_and(|drag| drag.tab_id == *tab_id)
+      {
         self.pending_scroll_drag = None;
         self.cancel_scrollbar_drag();
       }
@@ -7676,14 +8238,18 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       self.last_resize_event_at = None;
       if self.resize_burst_active {
         self.resize_burst_active = false;
-        std::mem::swap(&mut self.viewport_throttle, &mut self.viewport_throttle_resizing);
+        std::mem::swap(
+          &mut self.viewport_throttle,
+          &mut self.viewport_throttle_resizing,
+        );
         self.viewport_throttle.reset();
       }
       return;
     }
 
     self.last_resize_event_at = Some(std::time::Instant::now());
-    if new_size.width == self.surface_config.width && new_size.height == self.surface_config.height {
+    if new_size.width == self.surface_config.width && new_size.height == self.surface_config.height
+    {
       return;
     }
 
@@ -7835,7 +8401,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
   fn cancel_color_picker(&mut self) {
     if let Some(picker) = self.open_color_picker.as_ref() {
-      self.send_worker_msg(fastrender::ui::UiToWorker::ColorPickerCancel { tab_id: picker.tab_id });
+      self.send_worker_msg(fastrender::ui::UiToWorker::ColorPickerCancel {
+        tab_id: picker.tab_id,
+      });
     }
     self.close_color_picker();
   }
@@ -8399,6 +8967,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         history_changed: false,
       };
     };
+    if let fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } = &msg {
+      self.perf_navigation_started(*tab_id, url);
+    }
 
     // UI-only side effects that depend on the raw message before the shared reducer consumes it.
     match &msg {
@@ -8500,9 +9071,12 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             "Clipboard text too large; truncated to {} KiB",
             (limit / 1024).max(1)
           );
-          self
-            .chrome_toast
-            .show(ToastKind::Warning, toast_text, std::time::Instant::now(), TOAST_DEFAULT_TTL);
+          self.chrome_toast.show(
+            ToastKind::Warning,
+            toast_text,
+            std::time::Instant::now(),
+            TOAST_DEFAULT_TTL,
+          );
         }
 
         let debug_line = format!(
@@ -8546,20 +9120,20 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       if matches_pending {
         let pending = self.pending_context_menu_request.take();
 
-          // Only open the egui menu when the default `contextmenu` was not suppressed and the tab
-          // is still active.
-          if !*default_prevented && self.browser_state.active_tab_id() == Some(*tab_id) {
-            if let Some(pending) = pending {
-              let link_url = link_url
-                .as_deref()
-                .and_then(fastrender::ui::url::sanitize_worker_url_for_ui);
-              let image_url = image_url
-                .as_deref()
-                .and_then(fastrender::ui::url::sanitize_worker_url_for_ui);
-              self.open_context_menu = Some(OpenContextMenu {
-                tab_id: *tab_id,
-                pos_css: *pos_css,
-                anchor_points: pending.anchor_points,
+        // Only open the egui menu when the default `contextmenu` was not suppressed and the tab
+        // is still active.
+        if !*default_prevented && self.browser_state.active_tab_id() == Some(*tab_id) {
+          if let Some(pending) = pending {
+            let link_url = link_url
+              .as_deref()
+              .and_then(fastrender::ui::url::sanitize_worker_url_for_ui);
+            let image_url = image_url
+              .as_deref()
+              .and_then(fastrender::ui::url::sanitize_worker_url_for_ui);
+            self.open_context_menu = Some(OpenContextMenu {
+              tab_id: *tab_id,
+              pos_css: *pos_css,
+              anchor_points: pending.anchor_points,
               link_url,
               image_url,
               can_copy: *can_copy,
@@ -8715,6 +9289,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     if let Some(frame_ready) = update.frame_ready {
       // Ignore stale frames for tabs that have already been closed.
       if self.browser_state.tab(frame_ready.tab_id).is_some() {
+        self.perf_frame_ready(frame_ready.tab_id);
         // Coalesce uploads until the next `render_frame`: uploading each intermediate pixmap is
         // expensive.
         self.pending_frame_uploads.push(frame_ready);
@@ -8881,6 +9456,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.last_page_upload_at = None;
         }
       }
+
+      self.perf_frame_uploaded(tab_id);
     }
 
     self.next_page_upload_redraw = None;
@@ -9715,13 +10292,20 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       hud.worker_coalesced_wakes_per_sec,
       hud.worker_pending_msgs_estimate,
     ) {
-      (Some(msgs), Some(in_msgs), Some(wakes), Some(sent), Some(empty), Some(coalesced), Some(pending))
-        if msgs.is_finite()
-          && in_msgs.is_finite()
-          && wakes.is_finite()
-          && sent.is_finite()
-          && empty.is_finite()
-          && coalesced.is_finite() =>
+      (
+        Some(msgs),
+        Some(in_msgs),
+        Some(wakes),
+        Some(sent),
+        Some(empty),
+        Some(coalesced),
+        Some(pending),
+      ) if msgs.is_finite()
+        && in_msgs.is_finite()
+        && wakes.is_finite()
+        && sent.is_finite()
+        && empty.is_finite()
+        && coalesced.is_finite() =>
       {
         let _ = writeln!(
           &mut hud.text_buf,
@@ -9747,32 +10331,28 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         let _ = writeln!(
           &mut hud.text_buf,
           "drain: last {}  max {}  msg/nonempty_wake {msg_per_wake:.2}  fup_wake {followup:.0}/s",
-          hud.worker_last_drain,
-          max_drain
+          hud.worker_last_drain, max_drain
         );
       }
       (Some(msg_per_wake), max_drain, _) if msg_per_wake.is_finite() => {
         let _ = writeln!(
           &mut hud.text_buf,
           "drain: last {}  max {}  msg/nonempty_wake {msg_per_wake:.2}  fup_wake -/s",
-          hud.worker_last_drain,
-          max_drain
+          hud.worker_last_drain, max_drain
         );
       }
       (_, max_drain, Some(followup)) if followup.is_finite() => {
         let _ = writeln!(
           &mut hud.text_buf,
           "drain: last {}  max {}  msg/nonempty_wake -  fup_wake {followup:.0}/s",
-          hud.worker_last_drain,
-          max_drain
+          hud.worker_last_drain, max_drain
         );
       }
       _ => {
         let _ = writeln!(
           &mut hud.text_buf,
           "drain: last {}  max {}  msg/nonempty_wake -  fup_wake -/s",
-          hud.worker_last_drain,
-          hud.worker_max_drain_recent
+          hud.worker_last_drain, hud.worker_max_drain_recent
         );
       }
     }
@@ -9794,23 +10374,19 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     let _ = writeln!(
       &mut hud.text_buf,
       "wgpu: surface.configure={}  page_tex_recreate={}",
-      hud.surface_configure_calls_total,
-      hud.page_texture_recreates_total
+      hud.surface_configure_calls_total, hud.page_texture_recreates_total
     );
     if hud.last_upload_ms.is_finite() {
       let _ = writeln!(
         &mut hud.text_buf,
         "upload: {}  {:.2}ms  {} bytes",
-        hud.uploads_this_frame,
-        hud.last_upload_ms,
-        hud.last_upload_bytes
+        hud.uploads_this_frame, hud.last_upload_ms, hud.last_upload_bytes
       );
     } else {
       let _ = writeln!(
         &mut hud.text_buf,
         "upload: {}  - ms  {} bytes",
-        hud.uploads_this_frame,
-        hud.last_upload_bytes
+        hud.uploads_this_frame, hud.last_upload_bytes
       );
     }
 
@@ -9833,13 +10409,16 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
     if self.resize_burst_active {
       let ttl_left_ms = resize_burst_deadline(self.last_resize_event_at)
-        .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()).as_millis())
+        .map(|deadline| {
+          deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis()
+        })
         .unwrap_or(0);
       let _ = writeln!(
         &mut hud.text_buf,
         "resize_burst: yes (ttl {}ms, dpr×{:.2})",
-        ttl_left_ms,
-        self.resize_dpr_scale
+        ttl_left_ms, self.resize_dpr_scale
       );
     } else {
       let _ = writeln!(&mut hud.text_buf, "resize_burst: no");
@@ -9849,7 +10428,10 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       let idle_fps = monitor.idle_frames_per_sec;
       let idle_total = monitor.idle_frames_total;
       if idle_fps.is_finite() {
-        let _ = writeln!(&mut hud.text_buf, "idle_frames: {idle_fps:.1}/s total={idle_total}");
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "idle_frames: {idle_fps:.1}/s total={idle_total}"
+        );
       } else {
         let _ = writeln!(&mut hud.text_buf, "idle_frames: -/s total={idle_total}");
       }
@@ -11642,7 +12224,11 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
   }
 
   fn render_media_controls(&mut self, _ctx: &egui::Context) {
-    let Some(tab_id) = self.open_media_controls.as_ref().map(|overlay| overlay.tab_id) else {
+    let Some(tab_id) = self
+      .open_media_controls
+      .as_ref()
+      .map(|overlay| overlay.tab_id)
+    else {
       // Defensive: ensure stale rect/pointer-capture state cannot linger if some code path drops the
       // overlay without calling `close_media_controls`.
       if self.open_media_controls_rect.is_some() || self.media_controls_overlay_pointer_capture {
@@ -11755,7 +12341,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     //
     // Note: `address_bar_has_focus` is included defensively since some chrome states keep the
     // address bar "focused" even while transitioning between display/edit widgets.
-    self.chrome_has_text_focus = ctx.wants_keyboard_input() || self.browser_state.chrome.address_bar_has_focus;
+    self.chrome_has_text_focus =
+      ctx.wants_keyboard_input() || self.browser_state.chrome.address_bar_has_focus;
   }
 
   fn handle_profile_shortcuts(&mut self, key: winit::event::VirtualKeyCode) -> bool {
@@ -11928,9 +12515,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     use winit::event::VirtualKeyCode;
     use winit::event::WindowEvent;
 
-    let _span = self
-      .trace
-      .span("handle_winit_input_event", "ui.input");
+    let _span = self.trace.span("handle_winit_input_event", "ui.input");
 
     if let ChromeA11yBackend::FastRender(a11y) = &mut self.chrome_a11y {
       a11y.process_window_event(&self.window, event);
@@ -12067,13 +12652,13 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
         if let Some((tab_id, axis, scrollbar, axis_delta_points)) = drag_update {
           let axis_delta_css = scrollbar.scroll_delta_css_for_thumb_drag_points(axis_delta_points);
-            if axis_delta_css != 0.0 {
-              let delta_css = match axis {
-                fastrender::ui::scrollbars::ScrollbarAxis::Vertical => (0.0, axis_delta_css),
-                fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => (axis_delta_css, 0.0),
-              };
-              PendingScrollDrag::push(&mut self.pending_scroll_drag, tab_id, delta_css);
-            }
+          if axis_delta_css != 0.0 {
+            let delta_css = match axis {
+              fastrender::ui::scrollbars::ScrollbarAxis::Vertical => (0.0, axis_delta_css),
+              fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => (axis_delta_css, 0.0),
+            };
+            PendingScrollDrag::push(&mut self.pending_scroll_drag, tab_id, delta_css);
+          }
           self.window.request_redraw();
           return;
         }
@@ -12379,12 +12964,13 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               {
                 return;
               }
-              let clicked_input_control = self.open_date_time_picker.as_ref().is_some_and(|picker| {
-                self
-                  .page_input_mapping
-                  .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(picker.anchor_css))
-                  .is_some_and(|rect_points| rect_points.contains(pos_points))
-              });
+              let clicked_input_control =
+                self.open_date_time_picker.as_ref().is_some_and(|picker| {
+                  self
+                    .page_input_mapping
+                    .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(picker.anchor_css))
+                    .is_some_and(|rect_points| rect_points.contains(pos_points))
+                });
               self.cancel_date_time_picker();
               self.window.request_redraw();
               if clicked_input_control {
@@ -12441,7 +13027,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               return;
             }
 
-            self.touch_gesture.touch_start(touch.id, now, (pos_points.x, pos_points.y));
+            self
+              .touch_gesture
+              .touch_start(touch.id, now, (pos_points.x, pos_points.y));
           }
           TouchPhase::Moved => {
             self
@@ -12449,10 +13037,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               .touch_move(touch.id, (pos_points.x, pos_points.y));
           }
           TouchPhase::Ended => {
-            let action =
-              self
-                .touch_gesture
-                .touch_end(touch.id, now, (pos_points.x, pos_points.y));
+            let action = self
+              .touch_gesture
+              .touch_end(touch.id, now, (pos_points.x, pos_points.y));
             let Some(action) = action else {
               return;
             };
@@ -14738,6 +15325,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
   }
 
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) -> bool {
+    let perf_frame_start = self.perf_log.is_some().then(std::time::Instant::now);
     let _frame_span = self.trace.span("ui.frame", "ui.frame");
 
     let frame_start = if let Some(hud) = self.hud.as_mut() {
@@ -14805,24 +15393,24 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         if self.perf_log_enabled {
           let wheel_cap_after = self.wheel_events_buf.capacity();
           let paste_cap_after = self.paste_events_buf.capacity();
-        if wheel_cap_after > wheel_cap_before || paste_cap_after > paste_cap_before {
-          eprintln!(
+          if wheel_cap_after > wheel_cap_before || paste_cap_after > paste_cap_before {
+            eprintln!(
             "[{ENV_PERF_LOG}] egui scratch buffers grew: wheel {wheel_cap_before}→{wheel_cap_after}, paste {paste_cap_before}→{paste_cap_after} (raw.events={}, wheel={}, paste={})",
             raw.events.len(),
             self.wheel_events_buf.len(),
             self.paste_events_buf.len(),
           );
+          }
         }
-      }
 
-      raw
-    };
+        raw
+      };
 
-    // Defensive: make sure AccessKit stays enabled even if something toggles egui options at
-    // runtime. This is cheap and guarantees every frame has an update carrier for merged page a11y.
-    self.egui_ctx.enable_accesskit();
-    self.egui_ctx.begin_frame(raw_input);
-  }
+      // Defensive: make sure AccessKit stays enabled even if something toggles egui options at
+      // runtime. This is cheap and guarantees every frame has an update carrier for merged page a11y.
+      self.egui_ctx.enable_accesskit();
+      self.egui_ctx.begin_frame(raw_input);
+    }
 
     let ctx = self.egui_ctx.clone();
     fastrender::ui::motion::UiMotion::set_ctx_reduced_motion(
@@ -14885,25 +15473,25 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       if !menu_commands.is_empty() {
         let mut chrome_actions = Vec::new();
         for cmd in menu_commands {
-            match cmd {
-              fastrender::ui::MenuCommand::ToggleDebugLogPanel => {
-                let prev_enabled = self.debug_log_ui_enabled;
-                if !self.debug_log_ui_enabled {
-                  self.debug_log_ui_enabled = true;
-                  self.debug_log_ui_open = true;
-                } else {
-                  self.debug_log_ui_open = !self.debug_log_ui_open;
-                }
-                if self.debug_log_ui_enabled != prev_enabled {
-                  self.send_worker_msg(fastrender::ui::UiToWorker::SetDebugLogEnabled {
-                    enabled: self.debug_log_ui_enabled,
-                  });
-                }
+          match cmd {
+            fastrender::ui::MenuCommand::ToggleDebugLogPanel => {
+              let prev_enabled = self.debug_log_ui_enabled;
+              if !self.debug_log_ui_enabled {
+                self.debug_log_ui_enabled = true;
+                self.debug_log_ui_open = true;
+              } else {
+                self.debug_log_ui_open = !self.debug_log_ui_open;
               }
-              fastrender::ui::MenuCommand::ToggleHistoryPanel => {
-                self.history_panel_open = !self.history_panel_open;
-                if self.history_panel_open {
-                  self.bookmarks_panel_open = false;
+              if self.debug_log_ui_enabled != prev_enabled {
+                self.send_worker_msg(fastrender::ui::UiToWorker::SetDebugLogEnabled {
+                  enabled: self.debug_log_ui_enabled,
+                });
+              }
+            }
+            fastrender::ui::MenuCommand::ToggleHistoryPanel => {
+              self.history_panel_open = !self.history_panel_open;
+              if self.history_panel_open {
+                self.bookmarks_panel_open = false;
                 self.downloads_panel_open = false;
                 self.downloads_panel_request_focus = false;
                 self.bookmarks_manager.clear_transient();
@@ -15015,7 +15603,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                   }
                   fastrender::ui::MenuCommand::Paste => {
                     if let Some(text) = os_clipboard::read_text() {
-                      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+                      let _ =
+                        self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
                     }
                   }
                   fastrender::ui::MenuCommand::SelectAll => {
@@ -15082,7 +15671,6 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     // Cache egui text focus state into our backend-agnostic focus model before routing any keyboard
     // derived events (paste/menu commands/etc).
     self.refresh_chrome_text_focus_from_egui(&ctx);
-  
     let suppress_paste_events = std::mem::take(&mut self.suppress_paste_events);
     if should_forward_paste_events_to_page(
       self.page_has_focus,
@@ -15345,7 +15933,14 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       let (tab_loading, tab_stage, tab_progress, tab_unresponsive) = self
         .browser_state
         .tab(active_tab)
-        .map(|t| (t.loading, t.load_stage, t.chrome_loading_progress(), t.unresponsive))
+        .map(|t| {
+          (
+            t.loading,
+            t.load_stage,
+            t.chrome_loading_progress(),
+            t.unresponsive,
+          )
+        })
         .unwrap_or((false, None, None, false));
 
       if let Some(tex) = self.tab_textures.get_mut(&active_tab) {
@@ -15390,21 +15985,19 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               let drawn_px_w = size_points.x * self.pixels_per_point;
               let drawn_px_h = size_points.y * self.pixels_per_point;
 
-              let max_scale_delta = if tex_w_px > 0
-                && tex_h_px > 0
-                && drawn_px_w.is_finite()
-                && drawn_px_h.is_finite()
-              {
-                let scale_x = drawn_px_w / tex_w_px as f32;
-                let scale_y = drawn_px_h / tex_h_px as f32;
-                if scale_x.is_finite() && scale_y.is_finite() {
-                  Some((scale_x - 1.0).abs().max((scale_y - 1.0).abs()))
+              let max_scale_delta =
+                if tex_w_px > 0 && tex_h_px > 0 && drawn_px_w.is_finite() && drawn_px_h.is_finite()
+                {
+                  let scale_x = drawn_px_w / tex_w_px as f32;
+                  let scale_y = drawn_px_h / tex_h_px as f32;
+                  if scale_x.is_finite() && scale_y.is_finite() {
+                    Some((scale_x - 1.0).abs().max((scale_y - 1.0).abs()))
+                  } else {
+                    None
+                  }
                 } else {
                   None
-                }
-              } else {
-                None
-              };
+                };
 
               // Hysteresis band:
               // - switch *to* Nearest only when very close to 1:1,
@@ -15940,8 +16533,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                       }
                       if reload.clicked() {
                         let now = std::time::SystemTime::now();
-                        let _ =
-                          self.browser_state.dismiss_tab_unresponsive(active_tab, now);
+                        let _ = self.browser_state.dismiss_tab_unresponsive(active_tab, now);
                         if let Some(tab) = self.browser_state.tab_mut(active_tab) {
                           tab.loading = true;
                           tab.error = None;
@@ -15951,7 +16543,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                           tab.unresponsive = false;
                         }
                         self.force_send_viewport_now();
-                        self.send_worker_msg(fastrender::ui::UiToWorker::Reload { tab_id: active_tab });
+                        self.send_worker_msg(fastrender::ui::UiToWorker::Reload {
+                          tab_id: active_tab,
+                        });
                         ctx.request_repaint();
                       }
                     });
@@ -16122,6 +16716,14 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       surface_texture.present();
     }
 
+    if let Some(perf_start) = perf_frame_start {
+      let present_at = std::time::Instant::now();
+      let ui_frame_ms = present_at
+        .saturating_duration_since(perf_start)
+        .as_secs_f64()
+        * 1000.0;
+      self.perf_on_present(present_at, ui_frame_ms);
+    }
     if let Some(monitor) = self.idle_repaint_monitor.as_mut() {
       monitor.on_frame_presented(repaint_after);
     }
@@ -16436,6 +17038,58 @@ mod debug_log_env_tests {
     assert!(!should_show_debug_log_ui(false, Some("0")));
     assert!(should_show_debug_log_ui(false, Some("1")));
     assert!(should_show_debug_log_ui(true, None));
+  }
+}
+
+#[cfg(test)]
+mod perf_log_tests {
+  use super::{parse_env_bool, perf_log, ENV_PERF_LOG};
+
+  #[test]
+  fn perf_log_env_bool_parsing() {
+    // `FASTR_PERF_LOG` follows the shared `parse_env_bool` semantics.
+    assert_eq!(ENV_PERF_LOG, "FASTR_PERF_LOG");
+    assert!(!parse_env_bool(None));
+    assert!(!parse_env_bool(Some("")));
+    assert!(!parse_env_bool(Some("0")));
+    assert!(!parse_env_bool(Some("false")));
+    assert!(!parse_env_bool(Some("no")));
+    assert!(!parse_env_bool(Some("off")));
+    assert!(parse_env_bool(Some("1")));
+    assert!(parse_env_bool(Some("true")));
+    assert!(parse_env_bool(Some("yes")));
+    assert!(parse_env_bool(Some("on")));
+  }
+
+  #[test]
+  fn perf_log_writer_emits_jsonl() {
+    let start = std::time::Instant::now();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut writer = perf_log::JsonlPerfWriter::new(start, &mut buf);
+
+    let event = perf_log::PerfEvent::Frame {
+      schema_version: perf_log::SCHEMA_VERSION,
+      ts_ms: 42,
+      window_id: "WindowId(1)",
+      active_tab_id: Some(123),
+      ui_frame_ms: 9.5,
+      fps: Some(60.0),
+      window_focused: true,
+      window_occluded: false,
+      window_minimized: false,
+    };
+    writer.emit(&event);
+    drop(writer);
+
+    let text = String::from_utf8(buf).expect("valid utf-8");
+    let mut lines = text.lines();
+    let line = lines.next().expect("expected a JSONL line");
+    assert!(lines.next().is_none(), "expected exactly one JSONL event");
+
+    let value: serde_json::Value = serde_json::from_str(line).expect("valid json");
+    assert_eq!(value["event"], "frame");
+    assert_eq!(value["schema_version"], perf_log::SCHEMA_VERSION);
+    assert_eq!(value["ts_ms"], 42);
   }
 }
 
@@ -17158,9 +17812,7 @@ mod select_dropdown_a11y_tests {
 
 #[cfg(all(test, feature = "browser_ui"))]
 mod page_form_popup_focus_tests {
-  use super::{
-    close_date_time_picker_popup, egui_focused_widget_id, OpenDateTimePicker,
-  };
+  use super::{close_date_time_picker_popup, egui_focused_widget_id, OpenDateTimePicker};
   use fastrender::geometry::Rect;
   use fastrender::ui::messages::DateTimeInputKind;
   use fastrender::ui::TabId;
