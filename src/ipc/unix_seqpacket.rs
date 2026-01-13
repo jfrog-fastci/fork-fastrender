@@ -26,6 +26,8 @@ pub enum FdPassingError {
     #[source]
     source: io::Error,
   },
+  #[error("peer closed the socket (EOF)")]
+  UnexpectedEof,
   #[error("failed to set FD_CLOEXEC on received fd {fd}")]
   SetCloexecFailed {
     fd: RawFd,
@@ -76,12 +78,12 @@ impl UnixSeqpacket {
   /// - Uses `MSG_NOSIGNAL` to avoid SIGPIPE when the peer is closed.
   /// - Retries on `EINTR`.
   pub fn send_msg(&self, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<(), FdPassingError> {
-    if bytes.is_empty() && !fds.is_empty() {
-      // `SCM_RIGHTS` should never be sent without at least one byte of real payload (see `unix(7)`
-      // and the checklist in `docs/ipc_linux_fd_passing.md`). Guard here so higher-level protocol
-      // code can't accidentally create a "fd-only" message.
+    if bytes.is_empty() {
+      // Disallow empty payload messages. This ensures:
+      // - `recvmsg` returning 0 bytes is unambiguous EOF for callers, and
+      // - `SCM_RIGHTS` is never sent without a byte payload (see `unix(7)`).
       return Err(FdPassingError::InvalidInput {
-        reason: "fd passing requires at least one byte of payload data",
+        reason: "seqpacket messages must contain at least one byte of payload data",
       });
     }
 
@@ -176,6 +178,11 @@ impl UnixSeqpacket {
     max_bytes: usize,
     max_fds: usize,
   ) -> Result<(Vec<u8>, Vec<OwnedFd>), FdPassingError> {
+    if max_bytes == 0 {
+      return Err(FdPassingError::InvalidInput {
+        reason: "max_bytes must be non-zero",
+      });
+    }
     self.recv_msg_impl(max_bytes, max_fds, None)
   }
 
@@ -190,6 +197,11 @@ impl UnixSeqpacket {
     max_fds: usize,
     flags_override: Option<libc::c_int>,
   ) -> Result<(Vec<u8>, Vec<OwnedFd>), FdPassingError> {
+    if max_bytes == 0 {
+      return Err(FdPassingError::InvalidInput {
+        reason: "max_bytes must be non-zero",
+      });
+    }
     let mut bytes = vec![0u8; max_bytes];
     let mut iov = libc::iovec {
       iov_base: bytes.as_mut_ptr().cast::<libc::c_void>(),
@@ -284,6 +296,10 @@ impl UnixSeqpacket {
       return Err(FdPassingError::Truncated {
         msg_flags: hdr.msg_flags,
       });
+    }
+
+    if read_len == 0 {
+      return Err(FdPassingError::UnexpectedEof);
     }
 
     if need_manual_cloexec {
@@ -610,6 +626,31 @@ mod tests {
       flags & libc::FD_CLOEXEC,
       0,
       "expected received fd to have FD_CLOEXEC set (fallback path)"
+    );
+  }
+
+  #[test]
+  fn send_empty_payload_is_rejected() {
+    let _guard = TEST_LOCK.lock().unwrap();
+
+    let (tx, _rx) = UnixSeqpacket::pair().expect("socketpair");
+    let res = tx.send_msg(&[], &[]);
+    assert!(
+      matches!(res, Err(FdPassingError::InvalidInput { .. })),
+      "expected InvalidInput for empty payload, got {res:?}"
+    );
+  }
+
+  #[test]
+  fn recv_eof_is_reported() {
+    let _guard = TEST_LOCK.lock().unwrap();
+
+    let (tx, rx) = UnixSeqpacket::pair().expect("socketpair");
+    drop(tx);
+    let res = rx.recv_msg(16, 0);
+    assert!(
+      matches!(res, Err(FdPassingError::UnexpectedEof)),
+      "expected UnexpectedEof, got {res:?}"
     );
   }
 }
