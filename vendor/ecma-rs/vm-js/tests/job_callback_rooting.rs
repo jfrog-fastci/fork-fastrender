@@ -60,7 +60,7 @@ fn job_callback_payload_is_not_a_gc_root() -> Result<(), VmError> {
 
   // The default `host_make_job_callback` stores a raw `GcObject` inside a `JobCallback`, but this is
   // host-owned data and is not traced by GC.
-  let job_callback = host.host_make_job_callback(callback_obj);
+  let job_callback = host.host_make_job_callback(callback_obj)?;
 
   // With no other roots, a GC cycle should reclaim the object even though the `JobCallback` still
   // holds a handle to it.
@@ -86,7 +86,7 @@ fn job_roots_callback_until_run_then_releases() -> Result<(), VmError> {
     let mut scope = heap_mut.scope();
     scope.alloc_object()?
   };
-  let job_callback = host.host_make_job_callback(callback_obj);
+  let job_callback = host.host_make_job_callback(callback_obj)?;
 
   // Create a job that captures the JobCallback (and therefore the raw callback handle).
   let mut job = Job::new(

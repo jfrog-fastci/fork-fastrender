@@ -139,7 +139,7 @@ fn host_make_job_callback_can_be_rooted_across_gc() -> Result<(), VmError> {
   let mut host = TestHost::default();
 
   let callback = alloc_native_callback(&mut ctx, return_123, 0)?;
-  let job_callback = host.host_make_job_callback(callback);
+  let job_callback = host.host_make_job_callback(callback)?;
 
   // Root the callback through the JobCallback record so the host can safely store it in
   // out-of-heap state (timers, tasks, etc.).
@@ -167,7 +167,7 @@ fn host_call_job_callback_invokes_and_returns_result() -> Result<(), VmError> {
   let mut host = TestHost::default();
 
   let callback = alloc_native_callback(&mut ctx, add_this_and_first_arg, 1)?;
-  let job_callback = host.host_make_job_callback(callback);
+  let job_callback = host.host_make_job_callback(callback)?;
 
   let result = host.host_call_job_callback(
     &mut ctx,
@@ -193,7 +193,7 @@ fn host_call_job_callback_observes_budget() -> Result<(), VmError> {
   });
 
   let callback = alloc_native_callback(&mut ctx, should_not_be_called, 0)?;
-  let job_callback = host.host_make_job_callback(callback);
+  let job_callback = host.host_make_job_callback(callback)?;
 
   let err = host
     .host_call_job_callback(&mut ctx, &job_callback, Value::Undefined, &[])

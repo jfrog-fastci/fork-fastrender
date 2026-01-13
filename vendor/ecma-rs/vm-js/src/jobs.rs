@@ -373,7 +373,7 @@ impl Drop for Job {
 /// # let mut host = Host;
 /// # let mut ctx = Ctx;
 /// # let callback_obj: GcObject = todo!();
-/// let job_callback: JobCallback = host.host_make_job_callback(callback_obj);
+/// let job_callback: JobCallback = host.host_make_job_callback(callback_obj)?;
 ///
 /// let mut job = Job::new(JobKind::Generic, move |_ctx, _host| -> JobResult {
 ///   // Later: _host.host_call_job_callback(_ctx, &job_callback, ...)?;
@@ -787,21 +787,19 @@ pub trait VmHostHooks {
   /// If the callback object must stay alive until some future task/microtask runs, the embedding
   /// MUST keep it alive itself (for example by rooting it as part of the queued [`Job`] via
   /// [`Job::add_root`], or by using [`crate::Heap::add_root`]).
-  fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+  ///
+  /// ## Fallibility
+  ///
+  /// This hook is fallible so OOM during callback wrapping can propagate as
+  /// [`VmError::OutOfMemory`] instead of panicking or aborting the process.
+  fn host_make_job_callback(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
     JobCallback::try_new(callback)
   }
 
-  /// Creates a host-defined [`JobCallback`] record.
-  ///
-  /// This is the infallible legacy form of [`VmHostHooks::host_make_job_callback_fallible`].
-  ///
-  /// Embeddings should prefer overriding the fallible hook and only override this method for
-  /// backwards compatibility.
-  fn host_make_job_callback(&mut self, callback: GcObject) -> JobCallback {
-    match self.host_make_job_callback_fallible(callback) {
-      Ok(cb) => cb,
-      Err(_) => panic!("VmHostHooks::host_make_job_callback: out of memory"),
-    }
+  /// Deprecated alias for [`VmHostHooks::host_make_job_callback`].
+  #[deprecated(note = "use VmHostHooks::host_make_job_callback")]
+  fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+    self.host_make_job_callback(callback)
   }
 
   /// Calls a host-defined [`JobCallback`] record.
@@ -874,11 +872,7 @@ pub trait VmHostHooks {
         self.0.as_any_mut()
       }
 
-      fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
-        self.0.host_make_job_callback_fallible(callback)
-      }
-
-      fn host_make_job_callback(&mut self, callback: GcObject) -> JobCallback {
+      fn host_make_job_callback(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
         self.0.host_make_job_callback(callback)
       }
 
@@ -1066,11 +1060,7 @@ pub trait VmHostHooks {
         self.0.as_any_mut()
       }
 
-      fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
-        self.0.host_make_job_callback_fallible(callback)
-      }
-
-      fn host_make_job_callback(&mut self, callback: GcObject) -> JobCallback {
+      fn host_make_job_callback(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
         self.0.host_make_job_callback(callback)
       }
 
@@ -1132,14 +1122,14 @@ pub trait VmHostHooks {
 #[cfg(test)]
 mod oom_tests {
   use super::*;
-  use crate::test_alloc::FailAllocsGuard;
-  use crate::test_alloc::FailNextMatchingAllocGuard;
+  use crate::test_alloc::{FailAllocsGuard, FailNextMatchingAllocGuard};
+  use crate::{Heap, HeapLimits, VmOptions};
 
   const JOB_CALLBACK_ARC_INNER_SIZE: usize = std::mem::size_of::<ArcInner<JobCallbackInner>>();
   const JOB_CALLBACK_ARC_INNER_ALIGN: usize = std::mem::align_of::<ArcInner<JobCallbackInner>>();
 
   #[test]
-  fn host_make_job_callback_fallible_returns_out_of_memory_on_arc_alloc_failure() {
+  fn host_make_job_callback_returns_out_of_memory_on_arc_alloc_failure() {
     struct Host;
 
     impl VmHostHooks for Host {
@@ -1152,7 +1142,7 @@ mod oom_tests {
     let _guard = FailNextMatchingAllocGuard::new(JOB_CALLBACK_ARC_INNER_SIZE, JOB_CALLBACK_ARC_INNER_ALIGN);
 
     let err = host
-      .host_make_job_callback_fallible(callback)
+      .host_make_job_callback(callback)
       .expect_err("expected OOM error");
     assert!(matches!(err, VmError::OutOfMemory));
   }
@@ -1174,6 +1164,55 @@ mod oom_tests {
     assert!(matches!(extend_result, Err(VmError::OutOfMemory)));
     assert!(job_push.roots.is_empty());
     assert!(job_extend.roots.is_empty());
+    Ok(())
+  }
+
+  #[test]
+  fn promise_job_callback_wrap_is_oom_safe() -> Result<(), VmError> {
+    fn noop(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      Ok(Value::Undefined)
+    }
+
+    struct Host;
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    // Allocate all VM/heap state and the callable `then` function *before* forcing allocator
+    // failures.
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let then_action = {
+      let mut scope = heap.scope();
+      let call_id = vm.register_native_call(noop)?;
+      let name = scope.alloc_string("then")?;
+      scope.alloc_native_function(call_id, None, name, 1)?
+    };
+
+    let mut host = Host;
+
+    // When allocations fail, creating a Promise job that requires `HostMakeJobCallback` should not
+    // panic; it must surface `VmError::OutOfMemory`.
+    let _guard = FailAllocsGuard::new();
+    let err = crate::create_promise_resolve_thenable_job(
+      &mut host,
+      &mut heap,
+      Value::Undefined,
+      Value::Object(then_action),
+      Value::Undefined,
+      Value::Undefined,
+    )
+    .expect_err("expected OOM error");
+
+    assert!(matches!(err, VmError::OutOfMemory));
     Ok(())
   }
 }

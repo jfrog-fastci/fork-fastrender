@@ -6692,8 +6692,8 @@ mod tests {
       argument_obj = Some(argument);
 
       let job_callback = hooks
-        .host_make_job_callback_fallible(callback)
-        .expect("host_make_job_callback_fallible");
+        .host_make_job_callback(callback)
+        .expect("host_make_job_callback");
       let fulfill_reaction = vm_js::PromiseReactionRecord {
         reaction_type: vm_js::PromiseReactionType::Fulfill,
         handler: Some(job_callback),

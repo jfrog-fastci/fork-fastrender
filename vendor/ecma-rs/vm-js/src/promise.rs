@@ -3,8 +3,8 @@
 //! This module intentionally implements only the parts of the ECMA-262 Promise algorithms that are
 //! needed to model *job scheduling* and the HTML integration points:
 //!
-//! - [`VmHostHooks::host_make_job_callback`] (HTML: `HostMakeJobCallback`)
-//! - [`VmHostHooks::host_make_job_callback_fallible`] (fallible host hook)
+//! - [`VmHostHooks::host_make_job_callback`] (HTML: `HostMakeJobCallback`, fallible)
+//! - [`VmHostHooks::host_make_job_callback_fallible`] (deprecated alias)
 //! - [`VmHostHooks::host_call_job_callback`] (HTML: `HostCallJobCallback`)
 //!
 //! In addition to job-scheduling scaffolding, it defines **GC-traceable, spec-shaped record types**
@@ -122,7 +122,7 @@ fn is_callable(heap: &Heap, value: Value) -> Result<Option<GcObject>, VmError> {
 /// Implements the "handler normalization" part of ECMA-262's `PerformPromiseThen`.
 ///
 /// When `on_fulfilled` / `on_rejected` are callable, this captures them into host-defined
-/// [`JobCallback`] records using [`VmHostHooks::host_make_job_callback_fallible`], per the
+/// [`JobCallback`] records using [`VmHostHooks::host_make_job_callback`], per the
 /// ECMA-262 + HTML
 /// integration requirements.
 pub fn normalize_promise_then_handlers(
@@ -132,11 +132,11 @@ pub fn normalize_promise_then_handlers(
   on_rejected: Value,
 ) -> Result<(PromiseReactionRecord, PromiseReactionRecord), VmError> {
   let on_fulfilled = match is_callable(heap, on_fulfilled)? {
-    Some(cb) => Some(host.host_make_job_callback_fallible(cb)?),
+    Some(cb) => Some(host.host_make_job_callback(cb)?),
     None => None,
   };
   let on_rejected = match is_callable(heap, on_rejected)? {
-    Some(cb) => Some(host.host_make_job_callback_fallible(cb)?),
+    Some(cb) => Some(host.host_make_job_callback(cb)?),
     None => None,
   };
 
@@ -169,7 +169,7 @@ pub fn create_promise_resolve_thenable_job(
     return Ok(None);
   };
 
-  let then_job_callback = host.host_make_job_callback_fallible(then_action)?;
+  let then_job_callback = host.host_make_job_callback(then_action)?;
   Ok(Some(new_promise_resolve_thenable_job(
     heap,
     thenable,

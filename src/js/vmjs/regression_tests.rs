@@ -1169,7 +1169,7 @@ mod promise_job_rooting {
       // Not used by these tests; we run jobs directly.
     }
 
-    fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+    fn host_make_job_callback(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
       JobCallback::try_new(callback)
     }
 
@@ -1334,7 +1334,7 @@ mod promise_job_rooting {
 
       let reaction = PromiseReactionRecord {
         reaction_type: PromiseReactionType::Fulfill,
-        handler: Some(host.host_make_job_callback_fallible(callback)?),
+        handler: Some(host.host_make_job_callback(callback)?),
       };
       job = new_promise_reaction_job(scope.heap_mut(), reaction, Value::Object(argument))?;
     }
@@ -1378,7 +1378,7 @@ mod promise_job_rooting {
 
       let reaction = PromiseReactionRecord {
         reaction_type: PromiseReactionType::Fulfill,
-        handler: Some(host.host_make_job_callback_fallible(callback)?),
+        handler: Some(host.host_make_job_callback(callback)?),
       };
       job = new_promise_reaction_job(scope.heap_mut(), reaction, Value::Object(argument))?;
     }
