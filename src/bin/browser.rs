@@ -4676,12 +4676,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // holds a local copy. Keep a single authoritative value here and propagate changes to all windows.
   let mut global_appearance = startup_appearance.clone();
   let mut global_home_url = home_url.clone();
+  // Window resize/move events can fire extremely frequently (e.g. per pixel). Building a full
+  // session snapshot on every geometry update is expensive, so we debounce window-state autosaves
+  // with a trailing-edge timer. All other session-dirty events continue to use the normal
+  // session-save scheduler.
+  let mut pending_window_state_autosave_deadline: Option<std::time::Instant> = None;
+  let mut window_state_autosave_due = false;
+  let window_state_autosave_debounce = std::time::Duration::from_millis(500);
 
   event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
     let _ = &session_lock;
     // Keep the event loop idle when there is no work to do.
     *control_flow = ControlFlow::Wait;
+
+    // Promote a pending window-state autosave deadline to "due" once it elapses. We defer the
+    // actual snapshot build until later in the event loop so it can be coalesced with any other
+    // pending session autosaves.
+    if let Some(deadline) = pending_window_state_autosave_deadline {
+      if std::time::Instant::now() >= deadline {
+        pending_window_state_autosave_deadline = None;
+        window_state_autosave_due = true;
+      }
+    }
 
     // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
     // threads) explicitly when the loop is torn down.
@@ -4803,13 +4820,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     match event {
       Event::WindowEvent { window_id, event } => {
-        let mut session_dirty = matches!(
+        let window_state_dirty = matches!(
           event,
-          WindowEvent::Focused(_)
-            | WindowEvent::Moved(_)
-            | WindowEvent::Resized(_)
-            | WindowEvent::ScaleFactorChanged { .. }
+          WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
         );
+        let mut session_dirty_immediate = matches!(event, WindowEvent::Focused(_));
 
         // Window close is handled specially so we can drop its worker + textures immediately.
         if matches!(event, WindowEvent::CloseRequested) {
@@ -4821,7 +4836,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               active_window_id = window_order.last().copied();
             }
             win.shutdown();
-            session_dirty = true;
+            session_dirty_immediate = true;
           }
         } else if let Some(win) = windows.get_mut(&window_id) {
           if let Some(monitor) = win.app.idle_repaint_monitor.as_mut() {
@@ -4874,8 +4889,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         }
 
-        if session_dirty {
+        if session_dirty_immediate {
           session_save_scheduler.mark_dirty(std::time::Instant::now());
+        } else if window_state_dirty {
+          let now = std::time::Instant::now();
+          pending_window_state_autosave_deadline = Some(now + window_state_autosave_debounce);
+          window_state_autosave_due = false;
         }
       }
       Event::UserEvent(UserEvent::WorkerWake) => {
@@ -5719,7 +5738,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Flush a debounced session snapshot if it is due.
     let now = std::time::Instant::now();
-    if session_save_scheduler.should_flush(now) && session_save_scheduler.take_pending() {
+    let session_snapshot_due =
+      session_save_scheduler.should_flush(now) && session_save_scheduler.take_pending();
+    let window_state_snapshot_due = window_state_autosave_due;
+    if session_snapshot_due || window_state_snapshot_due {
+      // We're about to persist the latest session snapshot; clear any pending window-state debounce
+      // so we don't immediately clone+save again.
+      pending_window_state_autosave_deadline = None;
+      window_state_autosave_due = false;
       request_autosave(&windows, &window_order, active_window_id);
     }
 
@@ -5752,6 +5778,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure the event loop wakes up to flush pending autosaves (profile/session), if any, and to
     // keep process-level CPU sampling armed even when no frames are being drawn.
     let mut next_deadline = session_save_scheduler.next_deadline(now);
+    if let Some(deadline) = pending_window_state_autosave_deadline {
+      next_deadline = Some(match next_deadline {
+        Some(existing) => existing.min(deadline),
+        None => deadline,
+      });
+    }
     if profile_autosave_tx.is_some() {
       for deadline in [history_autosave_send_scheduler.next_deadline(now)] {
         if let Some(deadline) = deadline {
