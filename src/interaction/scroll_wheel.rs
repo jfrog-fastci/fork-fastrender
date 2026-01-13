@@ -1,3 +1,4 @@
+use crate::api::PreparedDocument;
 use crate::geometry::{Point, Rect, Size};
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::scroll::{
@@ -277,18 +278,18 @@ pub fn apply_wheel_scroll_at_point(
   page_point: Point,
   input: ScrollWheelInput,
 ) -> ScrollState {
-  let delta = Point::new(sanitize_delta(input.delta_x), sanitize_delta(input.delta_y));
-
-  if delta.x == 0.0 && delta.y == 0.0 {
-    return scroll_state.clone();
-  }
-
   let sanitize_scroll = |value: Point| {
     Point::new(
       if value.x.is_finite() { value.x } else { 0.0 },
       if value.y.is_finite() { value.y } else { 0.0 },
     )
   };
+
+  let delta = Point::new(sanitize_delta(input.delta_x), sanitize_delta(input.delta_y));
+
+  if delta.x == 0.0 && delta.y == 0.0 {
+    return scroll_state.clone();
+  }
 
   let original_viewport = sanitize_scroll(scroll_state.viewport);
 
@@ -311,7 +312,89 @@ pub fn apply_wheel_scroll_at_point(
   crate::scroll::apply_scroll_offsets(&mut scrolled_tree, &sanitized_scroll_state);
   crate::scroll::apply_viewport_scroll_cancel(&mut scrolled_tree, &sanitized_scroll_state);
 
-  let Some((root_kind, path)) = scrolled_tree.hit_test_path(page_point) else {
+  apply_wheel_scroll_at_point_with_hit_test_tree(
+    fragment_tree,
+    &scrolled_tree,
+    scroll_state,
+    &sanitized_scroll_state,
+    viewport_size,
+    page_point,
+    delta,
+    options,
+    sanitize_scroll,
+  )
+}
+
+/// Like [`apply_wheel_scroll_at_point`], but performs wheel hit testing in the prepared document's
+/// paint-time geometry coordinate space (element scroll offsets + sticky offsets).
+///
+/// This should be preferred by browser UI code that has access to a [`PreparedDocument`], because
+/// sticky positioning depends on paint-time geometry. Without applying sticky offsets, wheel events
+/// over stuck elements (e.g. `position: sticky` headers) can hit-test the wrong scroll container.
+pub fn apply_wheel_scroll_at_point_prepared(
+  prepared: &PreparedDocument,
+  scroll_state: &ScrollState,
+  viewport_size: Size,
+  page_point: Point,
+  input: ScrollWheelInput,
+) -> ScrollState {
+  let sanitize_scroll = |value: Point| {
+    Point::new(
+      if value.x.is_finite() { value.x } else { 0.0 },
+      if value.y.is_finite() { value.y } else { 0.0 },
+    )
+  };
+
+  let delta = Point::new(sanitize_delta(input.delta_x), sanitize_delta(input.delta_y));
+  if delta.x == 0.0 && delta.y == 0.0 {
+    return scroll_state.clone();
+  }
+
+  let original_viewport = sanitize_scroll(scroll_state.viewport);
+  let sanitized_elements = scroll_state
+    .elements
+    .iter()
+    .filter_map(|(&id, &offset)| {
+      let offset = sanitize_scroll(offset);
+      (offset != Point::ZERO).then_some((id, offset))
+    })
+    .collect();
+  let sanitized_scroll_state = ScrollState::from_parts(original_viewport, sanitized_elements);
+
+  let options = ScrollOptions {
+    source: ScrollSource::User,
+    simulate_overscroll: false,
+  };
+
+  // Mirror the paint pipeline for hit testing: sticky offsets are applied relative to scroll state,
+  // then scroll offsets translate scroll container contents.
+  let hit_test_tree = prepared.fragment_tree_for_geometry(&sanitized_scroll_state);
+
+  apply_wheel_scroll_at_point_with_hit_test_tree(
+    prepared.fragment_tree(),
+    &hit_test_tree,
+    scroll_state,
+    &sanitized_scroll_state,
+    viewport_size,
+    page_point,
+    delta,
+    options,
+    sanitize_scroll,
+  )
+}
+
+fn apply_wheel_scroll_at_point_with_hit_test_tree(
+  fragment_tree: &FragmentTree,
+  hit_test_tree: &FragmentTree,
+  scroll_state: &ScrollState,
+  sanitized_scroll_state: &ScrollState,
+  viewport_size: Size,
+  page_point: Point,
+  delta: Point,
+  options: ScrollOptions,
+  sanitize_scroll: impl Copy + Fn(Point) -> Point,
+) -> ScrollState {
+  let Some((root_kind, path)) = hit_test_tree.hit_test_path(page_point) else {
     let mut next = scroll_state.clone();
     next.viewport = apply_viewport_delta(
       fragment_tree,
@@ -332,7 +415,7 @@ pub fn apply_wheel_scroll_at_point(
         next.viewport = apply_viewport_delta(
           fragment_tree,
           viewport_size,
-          original_viewport,
+          sanitized_scroll_state.viewport,
           delta,
           options,
         );
@@ -342,9 +425,9 @@ pub fn apply_wheel_scroll_at_point(
       let chain_len = chain.len();
       for (idx, state) in chain.iter_mut().enumerate() {
         if idx == chain_len - 1 {
-          state.scroll = original_viewport;
+          state.scroll = sanitized_scroll_state.viewport;
         } else if let Some(id) = state.container.box_id() {
-          state.scroll = sanitize_scroll(scroll_state.element_offset(id));
+          state.scroll = sanitized_scroll_state.element_offset(id);
         }
       }
       patch_form_control_scroll_bounds(viewport_size, &mut chain);
@@ -364,7 +447,7 @@ pub fn apply_wheel_scroll_at_point(
         next.viewport = apply_viewport_delta(
           fragment_tree,
           viewport_size,
-          original_viewport,
+          sanitized_scroll_state.viewport,
           delta,
           options,
         );
@@ -375,7 +458,7 @@ pub fn apply_wheel_scroll_at_point(
 
       for state in chain.iter_mut() {
         if let Some(id) = state.container.box_id() {
-          state.scroll = sanitize_scroll(scroll_state.element_offset(id));
+          state.scroll = sanitized_scroll_state.element_offset(id);
         }
       }
       patch_form_control_scroll_bounds(viewport_size, &mut chain);
@@ -391,7 +474,7 @@ pub fn apply_wheel_scroll_at_point(
         next.viewport = apply_viewport_delta(
           fragment_tree,
           viewport_size,
-          original_viewport,
+          sanitized_scroll_state.viewport,
           result.remaining,
           options,
         );

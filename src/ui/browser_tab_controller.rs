@@ -2,7 +2,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::dom::DomNode;
 use crate::html::title::find_document_title;
 use crate::interaction::focus_scroll;
-use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
+use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point_prepared, ScrollWheelInput};
 use crate::interaction::{
   DateTimeInputKind, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
   InteractionState,
@@ -750,8 +750,8 @@ impl BrowserTabController {
     if let Some(pointer_css) = pointer_css {
       let page_point =
         Point::new(pointer_css.0, pointer_css.1).translate(self.scroll_state.viewport);
-      next_state = apply_wheel_scroll_at_point(
-        prepared.fragment_tree(),
+      next_state = apply_wheel_scroll_at_point_prepared(
+        prepared,
         &self.scroll_state,
         Size::new(self.viewport_css.0 as f32, self.viewport_css.1 as f32),
         page_point,

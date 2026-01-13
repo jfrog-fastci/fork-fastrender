@@ -134,6 +134,7 @@ mod ui_number_input_wheel_step;
 mod ui_render_thread;
 mod ui_render_worker_thread_builder_test;
 mod ui_scroll_metrics;
+mod ui_scroll_wheel_sticky_hit_test;
 mod ui_scrolling;
 mod ui_select_dropdown_choose;
 mod ui_select_dropdown_keyboard_open;

@@ -847,8 +847,8 @@ impl BrowserDocument {
     let current_scroll_state = self.scroll_state();
     let page_point_css = viewport_point_css.translate(current_scroll_state.viewport);
     let (delta_x, delta_y) = delta_css;
-    let mut next = crate::interaction::scroll_wheel::apply_wheel_scroll_at_point(
-      prepared.fragment_tree(),
+    let mut next = crate::interaction::scroll_wheel::apply_wheel_scroll_at_point_prepared(
+      prepared,
       &current_scroll_state,
       prepared.layout_viewport(),
       page_point_css,
