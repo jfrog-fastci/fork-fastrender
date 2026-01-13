@@ -15,6 +15,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub mod audio;
+pub mod audio_engine;
 pub mod av_sync;
 pub mod clock;
 pub mod codecs;
