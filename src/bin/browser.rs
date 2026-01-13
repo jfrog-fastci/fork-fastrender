@@ -14538,12 +14538,13 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           //
           // Special-case: clicking the underlying media element itself should typically just toggle
           // the overlay closed (don't immediately reopen it by forwarding the click to the page).
-          let clicked_media_element = self.open_media_controls.as_ref().is_some_and(|controls| {
-            self
-              .page_input_mapping
-              .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
-              .is_some_and(|rect_points| rect_points.contains(pos_points))
-          });
+          let clicked_media_element = matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+            && self.open_media_controls.as_ref().is_some_and(|controls| {
+              self
+                .page_input_mapping
+                .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
+                .is_some_and(|rect_points| rect_points.contains(pos_points))
+            });
 
           self.close_media_controls();
           self.window.request_redraw();
