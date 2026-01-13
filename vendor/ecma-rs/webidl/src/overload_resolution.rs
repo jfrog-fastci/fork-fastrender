@@ -9,7 +9,7 @@
 //! emitting bespoke dispatch code per overloaded operation.
 
 use crate::runtime::{IteratorRecord, WebIdlJsRuntime};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use crate::ir::{
   DefaultValue, DistinguishabilityCategory, IdlType, NamedType, NamedTypeKind, NumericLiteral,
   NumericType, TypeAnnotation,
@@ -136,6 +136,12 @@ pub enum WebIdlValue<V: Copy> {
   Sequence {
     elem_ty: Box<IdlType>,
     values: Vec<WebIdlValue<V>>,
+  },
+
+  Record {
+    key_ty: Box<IdlType>,
+    value_ty: Box<IdlType>,
+    entries: Vec<(String, WebIdlValue<V>)>,
   },
 
   Dictionary {
@@ -526,6 +532,7 @@ fn sequence_element_type(t: &IdlType) -> Option<&IdlType> {
     IdlType::Annotated { inner, .. } => sequence_element_type(inner),
     IdlType::Nullable(inner) => sequence_element_type(inner),
     IdlType::Sequence(elem) => Some(elem.as_ref()),
+    IdlType::FrozenArray(elem) => Some(elem.as_ref()),
     _ => None,
   }
 }
@@ -919,7 +926,7 @@ fn type_matches_sequence(t: &IdlType) -> bool {
     IdlType::Annotated { inner, .. } => type_matches_sequence(inner),
     IdlType::Nullable(inner) => type_matches_sequence(inner),
     IdlType::Union(members) => members.iter().any(type_matches_sequence),
-    IdlType::Sequence(_) => true,
+    IdlType::Sequence(_) | IdlType::FrozenArray(_) => true,
     _ => false,
   }
 }
@@ -982,20 +989,153 @@ fn type_matches_string(t: &IdlType) -> bool {
   }
 }
 
+fn append_webidl_value_roots<V: Copy>(roots: &mut Vec<V>, value: &WebIdlValue<V>) {
+  match value {
+    WebIdlValue::String(v) | WebIdlValue::Enum(v) | WebIdlValue::JsValue(v) => roots.push(*v),
+    WebIdlValue::Sequence { values, .. } => {
+      for item in values {
+        append_webidl_value_roots(roots, item);
+      }
+    }
+    WebIdlValue::Record { entries, .. } => {
+      for (_k, v) in entries {
+        append_webidl_value_roots(roots, v);
+      }
+    }
+    WebIdlValue::Dictionary { members, .. } => {
+      for (_k, v) in members {
+        append_webidl_value_roots(roots, v);
+      }
+    }
+    WebIdlValue::Union { value, .. } => append_webidl_value_roots(roots, value),
+    WebIdlValue::Undefined
+    | WebIdlValue::Null
+    | WebIdlValue::Boolean(_)
+    | WebIdlValue::Byte(_)
+    | WebIdlValue::Octet(_)
+    | WebIdlValue::Short(_)
+    | WebIdlValue::UnsignedShort(_)
+    | WebIdlValue::Long(_)
+    | WebIdlValue::UnsignedLong(_)
+    | WebIdlValue::LongLong(_)
+    | WebIdlValue::UnsignedLongLong(_)
+    | WebIdlValue::Float(_)
+    | WebIdlValue::UnrestrictedFloat(_)
+    | WebIdlValue::Double(_)
+    | WebIdlValue::UnrestrictedDouble(_) => {}
+  }
+}
+
 fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
   rt: &mut R,
   elem_ty: &IdlType,
-  value: R::JsValue,
+  iterable: R::JsValue,
   method: R::JsValue,
 ) -> Result<WebIdlValue<R::JsValue>, R::Error> {
-  let mut record: IteratorRecord<R::JsValue> = rt.get_iterator_from_method(value, method)?;
-  let mut out = Vec::<WebIdlValue<R::JsValue>>::new();
-  while let Some(next) = rt.iterator_step_value(&mut record)? {
-    out.push(convert_js_to_idl(rt, elem_ty, next)?);
+  let mut record: IteratorRecord<R::JsValue> = rt.get_iterator_from_method(iterable, method)?;
+  rt.with_stack_roots(
+    &[iterable, record.iterator, record.next_method],
+    |rt| {
+      let mut out = Vec::<WebIdlValue<R::JsValue>>::new();
+      // Roots for any JS values stored in `out` so far. These are not otherwise visible to the GC.
+      let mut value_roots: Vec<R::JsValue> = Vec::new();
+
+      loop {
+        // Ensure any previously-converted JS values remain alive while we perform the next
+        // `IteratorStepValue` (which can allocate and trigger GC).
+        let next = rt.with_stack_roots(&value_roots, |rt| rt.iterator_step_value(&mut record))?;
+        let Some(next) = next else {
+          break;
+        };
+
+        if out.len() >= rt.limits().max_sequence_length {
+          return Err(rt.throw_range_error("sequence exceeds maximum length"));
+        }
+
+        let converted = rt.with_stack_roots(&value_roots, |rt| {
+          rt.with_stack_roots(&[next], |rt| convert_js_to_idl(rt, elem_ty, next))
+        })?;
+        append_webidl_value_roots(&mut value_roots, &converted);
+        out.push(converted);
+      }
+
+      Ok(WebIdlValue::Sequence {
+        elem_ty: Box::new(elem_ty.clone()),
+        values: out,
+      })
+    },
+  )
+}
+
+fn convert_record<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  key_ty: &IdlType,
+  value_ty: &IdlType,
+) -> Result<WebIdlValue<R::JsValue>, R::Error> {
+  // Record conversions use `ToObject` (per WebIDL), so accept primitives here.
+  let obj = rt.to_object(value)?;
+
+  // Root `obj` while collecting keys: `own_property_keys` can allocate (e.g. array growth).
+  let keys = rt.with_stack_roots(&[obj], |rt| rt.own_property_keys(obj))?;
+
+  // Roots for any JS values stored in `entries` so far. These are not otherwise visible to the GC.
+  let mut roots: Vec<R::JsValue> = Vec::new();
+  roots.push(obj);
+
+  let mut entries: Vec<(String, WebIdlValue<R::JsValue>)> = Vec::new();
+  // Records use map/set semantics; when a converted key already exists, the value is overwritten
+  // without changing insertion order.
+  let mut index_by_key = HashMap::<String, usize>::new();
+
+  for key in keys {
+    let Some((typed_key, typed_value)) = rt.with_stack_roots(&roots, |rt| {
+      let Some(desc) = rt.get_own_property(obj, key)? else {
+        return Ok(None);
+      };
+      if !desc.enumerable {
+        return Ok(None);
+      }
+
+      // This must throw for Symbol keys (per WebIDL).
+      let key_value = rt.property_key_to_js_string(key)?;
+      let typed_key = rt.with_stack_roots(&[key_value], |rt| {
+        convert_js_to_idl(rt, key_ty, key_value)
+      })?;
+      let WebIdlValue::String(typed_key_value) = typed_key else {
+        return Err(rt.throw_type_error("record key did not convert to a string"));
+      };
+      let typed_key = rt.with_stack_roots(&[typed_key_value], |rt| {
+        rt.string_to_utf8_lossy(typed_key_value)
+      })?;
+
+      let prop_value = rt.get(obj, key)?;
+      let typed_value = rt.with_stack_roots(&[prop_value], |rt| {
+        convert_js_to_idl(rt, value_ty, prop_value)
+      })?;
+
+      Ok(Some((typed_key, typed_value)))
+    })?
+    else {
+      continue;
+    };
+
+    append_webidl_value_roots(&mut roots, &typed_value);
+    if let Some(&idx) = index_by_key.get(&typed_key) {
+      entries[idx].1 = typed_value;
+    } else {
+      if entries.len() >= rt.limits().max_record_entries {
+        return Err(rt.throw_range_error("record exceeds maximum entry count"));
+      }
+      index_by_key.insert(typed_key.clone(), entries.len());
+      entries.push((typed_key, typed_value));
+    }
   }
-  Ok(WebIdlValue::Sequence {
-    elem_ty: Box::new(elem_ty.clone()),
-    values: out,
+
+  Ok(WebIdlValue::Record {
+    key_ty: Box::new(key_ty.clone()),
+    value_ty: Box::new(value_ty.clone()),
+    entries,
   })
 }
 
@@ -1082,6 +1222,19 @@ struct IntegerConversionAttrs {
   enforce_range: bool,
 }
 
+fn to_js_string_with_limits<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+) -> Result<R::JsValue, R::Error> {
+  let s = rt.to_string(value)?;
+  let max_units = rt.limits().max_string_code_units;
+  let len = rt.with_stack_roots(&[s], |rt| rt.with_string_code_units(s, |units| units.len()))?;
+  if len > max_units {
+    return Err(rt.throw_range_error("string exceeds maximum length"));
+  }
+  Ok(s)
+}
+
 fn convert_js_to_idl<R: WebIdlJsRuntime>(
   rt: &mut R,
   ty: &IdlType,
@@ -1128,7 +1281,7 @@ fn convert_js_to_idl_inner<R: WebIdlJsRuntime>(
       }
       Ok(WebIdlValue::JsValue(rt.to_bigint(value)?))
     }
-    IdlType::String(_) => Ok(WebIdlValue::String(rt.to_string(value)?)),
+    IdlType::String(_) => Ok(WebIdlValue::String(to_js_string_with_limits(rt, value)?)),
     IdlType::Object => {
       if !rt.is_object(value) {
         return Err(rt.throw_type_error("value is not an object"));
@@ -1149,23 +1302,39 @@ fn convert_js_to_idl_inner<R: WebIdlJsRuntime>(
       convert_js_to_idl_inner(rt, inner, value, int_attrs)
     }
     IdlType::Union(_) => convert_union(rt, ty, value),
-    IdlType::Sequence(elem_ty) => {
-      if !rt.is_object(value) {
-        return Err(rt.throw_type_error("value is not an object"));
-      }
-      let iter_key = rt.symbol_iterator()?;
-      let method = rt.get_method(value, iter_key)?;
-      let Some(method_value) = method else {
-        return Err(rt.throw_type_error("value is not iterable"));
-      };
-      create_sequence_from_iterable(rt, elem_ty, value, method_value)
+    IdlType::Sequence(elem_ty) | IdlType::FrozenArray(elem_ty) => {
+      // `GetMethod(V, @@iterator)` uses `ToObject(V)` under the hood, so accept primitives here.
+      let obj = rt.to_object(value)?;
+      rt.with_stack_roots(&[obj], |rt| {
+        let iter_key = rt.symbol_iterator()?;
+        let method = rt.get_method(obj, iter_key)?;
+        let Some(method_value) = method else {
+          return Err(rt.throw_type_error("value is not iterable"));
+        };
+        create_sequence_from_iterable(rt, elem_ty, obj, method_value)
+      })
     }
-    IdlType::FrozenArray(_)
-    | IdlType::AsyncSequence(_)
-    | IdlType::Record(_, _)
-    | IdlType::Promise(_) => {
-      Err(rt.throw_type_error("conversion for this WebIDL type is not implemented yet"))
+    IdlType::Record(key_ty, value_ty) => convert_record(rt, value, key_ty, value_ty),
+    IdlType::AsyncSequence(_elem_ty) => {
+      // MVP: validate the value is async-iterable (or at least iterable) and preserve the object
+      // reference so bindings can consume it.
+      let obj = rt.to_object(value)?;
+      rt.with_stack_roots(&[obj], |rt| {
+        let async_iter_key = rt.symbol_async_iterator()?;
+        let iter_key = rt.symbol_iterator()?;
+        let mut method = rt.get_method(obj, async_iter_key)?;
+        if method.is_none() {
+          method = rt.get_method(obj, iter_key)?;
+        }
+        if method.is_none() {
+          return Err(rt.throw_type_error("value is not async iterable"));
+        }
+        Ok(WebIdlValue::JsValue(obj))
+      })
     }
+    IdlType::Promise(_) => Err(rt.throw_type_error(
+      "conversion for this WebIDL type is not implemented yet",
+    )),
   }
 }
 
@@ -1213,7 +1382,7 @@ fn convert_named<R: WebIdlJsRuntime>(
       }
       Ok(WebIdlValue::JsValue(value))
     }
-    NamedTypeKind::Enum => Ok(WebIdlValue::Enum(rt.to_string(value)?)),
+    NamedTypeKind::Enum => Ok(WebIdlValue::Enum(to_js_string_with_limits(rt, value)?)),
     NamedTypeKind::Typedef | NamedTypeKind::Unresolved => {
       Err(rt.throw_type_error("typedefs must be resolved before conversion"))
     }
@@ -1255,19 +1424,92 @@ fn convert_union<R: WebIdlJsRuntime>(
   }
 
   // platform object members.
-  if rt.is_platform_object(value) {
-    if let Some(iface) = types.iter().find_map(|t| match t.innermost_type() {
-      IdlType::Named(NamedType {
-        kind: NamedTypeKind::Interface,
-        name,
-      }) if rt.implements_interface(value, crate::interface_id_from_name(name)) => Some(t.clone()),
-      _ => None,
-    }) {
+  if rt.is_object(value) {
+    // Interfaces / platform objects.
+    if rt.is_platform_object(value) {
+      if let Some(iface) = types.iter().find_map(|t| match t.innermost_type() {
+        IdlType::Named(NamedType {
+          kind: NamedTypeKind::Interface,
+          name,
+        }) if rt.implements_interface(value, crate::interface_id_from_name(name)) => Some(t.clone()),
+        _ => None,
+      }) {
+        return Ok(WebIdlValue::Union {
+          member_ty: Box::new(iface),
+          value: Box::new(WebIdlValue::JsValue(value)),
+        });
+      }
+    }
+
+    // Async sequence.
+    if let Some(async_ty) = types
+      .iter()
+      .find(|t| matches!(t.innermost_type(), IdlType::AsyncSequence(_)))
+      .cloned()
+    {
+      let has_string_type = types.iter().any(|t| type_matches_string(t));
+      let skip_async_sequence = rt.is_string_object(value) && has_string_type;
+
+      if !skip_async_sequence {
+        let async_iter_key = rt.symbol_async_iterator()?;
+        let iter_key = rt.symbol_iterator()?;
+        let mut m = rt.get_method(value, async_iter_key)?;
+        if m.is_none() {
+          m = rt.get_method(value, iter_key)?;
+        }
+        if m.is_some() {
+          let out = convert_js_to_idl(rt, &async_ty, value)?;
+          return Ok(WebIdlValue::Union {
+            member_ty: Box::new(async_ty),
+            value: Box::new(out),
+          });
+        }
+      }
+    }
+
+    // Sequence / FrozenArray.
+    if let Some(seq_ty) = types
+      .iter()
+      .find(|t| matches!(t.innermost_type(), IdlType::Sequence(_) | IdlType::FrozenArray(_)))
+      .cloned()
+    {
+      let iter_key = rt.symbol_iterator()?;
+      let method = rt.get_method(value, iter_key)?;
+      if let Some(method_value) = method {
+        let Some(elem_ty) = sequence_element_type(&seq_ty) else {
+          return Err(rt.throw_type_error("unexpected sequence type shape"));
+        };
+        let seq = create_sequence_from_iterable(rt, elem_ty, value, method_value)?;
+        return Ok(WebIdlValue::Union {
+          member_ty: Box::new(seq_ty),
+          value: Box::new(seq),
+        });
+      }
+    }
+
+    // Dictionary.
+    if let Some(dict_ty) = types.iter().find(|t| is_dictionary_type(t)).cloned() {
+      let out = convert_js_to_idl(rt, &dict_ty, value)?;
       return Ok(WebIdlValue::Union {
-        member_ty: Box::new(iface),
-        value: Box::new(WebIdlValue::JsValue(value)),
+        member_ty: Box::new(dict_ty),
+        value: Box::new(out),
       });
     }
+
+    // Record.
+    if let Some(record_ty) = types
+      .iter()
+      .find(|t| matches!(t.innermost_type(), IdlType::Record(_, _)))
+      .cloned()
+    {
+      let out = convert_js_to_idl(rt, &record_ty, value)?;
+      return Ok(WebIdlValue::Union {
+        member_ty: Box::new(record_ty),
+        value: Box::new(out),
+      });
+    }
+
+    // object
     if types
       .iter()
       .any(|t| matches!(t.innermost_type(), IdlType::Object))

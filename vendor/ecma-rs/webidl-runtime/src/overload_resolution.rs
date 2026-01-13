@@ -344,4 +344,200 @@ mod tests {
     };
     assert_eq!(rt.heap().get_string(handle).unwrap().to_utf8_lossy(), "foo");
   }
+
+  fn alloc_iterable_from_values(
+    rt: &mut VmJsRuntime,
+    values: Vec<Value>,
+  ) -> Result<Value, VmError> {
+    let next_key = rt.property_key_from_str("next")?;
+    let done_key = rt.property_key_from_str("done")?;
+    let value_key = rt.property_key_from_str("value")?;
+
+    let iterator_obj = rt.alloc_object_value()?;
+
+    let idx = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let values = std::rc::Rc::new(values);
+    let idx_for_next = idx.clone();
+    let values_for_next = values.clone();
+
+    let next_fn = rt.alloc_function_value(move |rt, _this, _args| {
+      let i = idx_for_next.get();
+      let result_obj = rt.alloc_object_value()?;
+      if i >= values_for_next.len() {
+        rt.define_data_property(result_obj, done_key, Value::Bool(true), true)?;
+        rt.define_data_property(result_obj, value_key, Value::Undefined, true)?;
+      } else {
+        rt.define_data_property(result_obj, done_key, Value::Bool(false), true)?;
+        rt.define_data_property(result_obj, value_key, values_for_next[i], true)?;
+        idx_for_next.set(i + 1);
+      }
+      Ok(result_obj)
+    })?;
+    rt.define_data_property(iterator_obj, next_key, next_fn, true)?;
+
+    let iterator_method = rt.alloc_function_value(move |_rt, _this, _args| Ok(iterator_obj))?;
+
+    let iterable_obj = rt.alloc_object_value()?;
+    let iterator_sym = rt.symbol_iterator()?;
+    rt.define_data_property(iterable_obj, iterator_sym, iterator_method, true)?;
+
+    Ok(iterable_obj)
+  }
+
+  #[test]
+  fn frozen_array_overload_wins_for_iterable_object() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::new();
+
+    // Overloads: f(FrozenArray<any>) vs f(DOMString)
+    let overloads = vec![
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::FrozenArray(Box::new(IdlType::Any)),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 0,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::String(StringType::DomString),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 1,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+    ];
+
+    let iterable = alloc_iterable_from_values(&mut rt, vec![Value::Number(1.0)])?;
+    let out = resolve_overload(&mut rt, &overloads, &[iterable])?;
+    assert_eq!(out.overload_index, 0);
+    Ok(())
+  }
+
+  #[test]
+  fn record_conversion_collects_enumerable_string_keys() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::new();
+
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: IdlType::Record(
+          Box::new(IdlType::String(StringType::DomString)),
+          Box::new(IdlType::Numeric(NumericType::Long)),
+        ),
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    let obj = rt.alloc_object_value()?;
+    let a = rt.property_key_from_str("a")?;
+    let b = rt.property_key_from_str("b")?;
+    rt.define_data_property(obj, a, Value::Number(1.0), true)?;
+    rt.define_data_property(obj, b, Value::Number(2.0), true)?;
+
+    let out = resolve_overload(&mut rt, &overloads, &[obj])?;
+    let [ConvertedArgument::Value(WebIdlValue::Record { entries, .. })] = out.values.as_slice()
+    else {
+      panic!("expected record conversion");
+    };
+
+    assert_eq!(
+      entries,
+      &[
+        ("a".to_string(), WebIdlValue::Long(1)),
+        ("b".to_string(), WebIdlValue::Long(2)),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn record_conversion_enumerable_symbol_key_throws_type_error() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::new();
+
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: IdlType::Record(
+          Box::new(IdlType::String(StringType::DomString)),
+          Box::new(IdlType::Any),
+        ),
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    let obj = rt.alloc_object_value()?;
+    let sym = {
+      let mut scope = rt.heap_mut().scope();
+      scope.alloc_symbol(Some("s"))?
+    };
+    rt.define_data_property(obj, PropertyKey::Symbol(sym), Value::Number(1.0), true)?;
+
+    let err = resolve_overload(&mut rt, &overloads, &[obj]).unwrap_err();
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected a throw");
+    };
+    let s = rt.to_string(thrown)?;
+    let msg = as_utf8_lossy(&rt, s);
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn sequence_conversion_enforces_max_sequence_length() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::new();
+    rt.set_webidl_limits(webidl::WebIdlLimits {
+      max_sequence_length: 2,
+      ..webidl::WebIdlLimits::default()
+    });
+
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: IdlType::Sequence(Box::new(IdlType::Any)),
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    let iterable =
+      alloc_iterable_from_values(&mut rt, vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)])?;
+    let err = resolve_overload(&mut rt, &overloads, &[iterable]).unwrap_err();
+    assert_eq!(thrown_message(&mut rt, err), "sequence exceeds maximum length");
+    Ok(())
+  }
+
+  #[test]
+  fn string_conversion_enforces_max_string_code_units() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::new();
+    rt.set_webidl_limits(webidl::WebIdlLimits {
+      max_string_code_units: 4,
+      ..webidl::WebIdlLimits::default()
+    });
+
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: IdlType::String(StringType::DomString),
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    let s = rt.alloc_string_value("12345")?; // 5 code units > 4 limit.
+    let err = resolve_overload(&mut rt, &overloads, &[s]).unwrap_err();
+    assert_eq!(thrown_message(&mut rt, err), "string exceeds maximum length");
+    Ok(())
+  }
 }
