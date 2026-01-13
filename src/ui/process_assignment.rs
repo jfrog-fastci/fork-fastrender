@@ -1,6 +1,6 @@
-use crate::multiprocess::{RendererProcessId, SiteKey};
+use crate::multiprocess::RendererProcessId;
+use crate::site_isolation::{site_key_for_navigation, SiteKey};
 use std::collections::HashMap;
-use url::Url;
 
 /// Controls how the browser assigns renderer processes to navigations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,15 +67,15 @@ impl ProcessAssignmentState {
       .ok_or_else(|| format!("unknown renderer process: {:?}", process))?
       .clone();
 
-    let parsed = Url::parse(committed_url)
-      .map_err(|err| format!("invalid committed URL {committed_url:?}: {err}"))?;
-    let committed_site = SiteKey::from_url(&parsed);
+    // When deriving a SiteKey from a commit, treat the current process lock as the "parent" so
+    // special URLs like `about:blank` inherit the existing site key.
+    let committed_site = site_key_for_navigation(committed_url, Some(&locked_site));
 
     match self.process_model {
       ProcessModel::PerSiteKey => {
         if committed_site != locked_site {
           return Err(format!(
-            "site lock violation: process {:?} locked to {} attempted to commit {} ({})",
+            "site lock violation: process {:?} locked to {:?} attempted to commit {:?} ({})",
             process, locked_site, committed_site, committed_url
           ));
         }
@@ -94,7 +94,7 @@ mod tests {
   use super::*;
 
   fn site(url: &str) -> SiteKey {
-    SiteKey::from_url(&Url::parse(url).expect("test url should parse"))
+    site_key_for_navigation(url, None)
   }
 
   #[test]
@@ -121,6 +121,20 @@ mod tests {
       .validate_or_update_site_lock(process, "https://evil.com")
       .expect_err("PerSiteKey must reject cross-site commits");
     assert!(err.contains("site lock violation"));
+
+    assert_eq!(state.site_lock(process), Some(&initial));
+  }
+
+  #[test]
+  fn per_site_key_allows_about_blank_commit_in_locked_process() {
+    let mut state = ProcessAssignmentState::new(ProcessModel::PerSiteKey);
+    let process = RendererProcessId::new(1);
+    let initial = site("https://example.com");
+    state.set_site_lock(process, initial.clone());
+
+    state
+      .validate_or_update_site_lock(process, "about:blank")
+      .expect("about:blank should inherit the existing site lock");
 
     assert_eq!(state.site_lock(process), Some(&initial));
   }
