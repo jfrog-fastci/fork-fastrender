@@ -225,18 +225,52 @@ Feature detection:
 - If sandbox setup fails, which layer failed, and why?
 - After enabling the sandbox, are forbidden operations actually blocked?
 
-Run:
+Run (defaults: `--mode full`, `--probe all`):
 
 ```bash
 timeout -k 10 60 bash scripts/run_limited.sh --as 2G -- \
   bash scripts/cargo_agent.sh run --release --bin sandbox_probe
 ```
 
+Common usage patterns:
+
+```bash
+# Seccomp only (no Landlock).
+bash scripts/cargo_agent.sh run --release --bin sandbox_probe -- --mode seccomp
+
+# Landlock only (deny-all ruleset; useful to confirm the kernel supports Landlock at all).
+bash scripts/cargo_agent.sh run --release --bin sandbox_probe -- --mode landlock
+
+# Only run filesystem probes (skip network + exec).
+bash scripts/cargo_agent.sh run --release --bin sandbox_probe -- --probe fs
+
+# Same, but via env vars (clap `env=` hooks).
+FASTRENDER_SANDBOX_MODE=seccomp FASTRENDER_SANDBOX_PROBE=fs \
+  bash scripts/cargo_agent.sh run --release --bin sandbox_probe
+```
+
+`sandbox_probe` also honors the renderer sandbox env vars documented in [`docs/env-vars.md`](../env-vars.md),
+notably:
+
+- `FASTR_DISABLE_RENDERER_SANDBOX=1` (master off switch; insecure)
+- `FASTR_RENDERER_SECCOMP=0|1`
+- `FASTR_RENDERER_LANDLOCK=0|1`
+- `FASTR_RENDERER_CLOSE_FDS=0|1`
+
+Exit codes:
+
+- `0`: sandbox behaved as expected for the chosen probes.
+- `1`: a probe was unexpectedly allowed/blocked (possible sandbox regression).
+- `2`: sandbox setup failed (or invalid sandbox env var).
+
 Interpreting failures:
 
 - `EPERM` installing seccomp often means you’re already inside an outer sandbox (container seccomp).
 - `EINVAL` installing seccomp often means the kernel is too old for TSYNC (or the flags are not
   supported).
+- Landlock `Unsupported` is normal on older kernels or when Landlock is not enabled in the kernel’s
+  active LSM list (e.g. missing from `lsm=`); in `--mode full` we treat Landlock as best-effort and
+  still apply seccomp.
 - If the process dies with `SIGSYS` / “Bad system call”, the renderer hit a syscall that wasn’t in
   the allowlist. Use:
   - `scripts/trace_renderer_syscalls.sh` and the workflow in [seccomp_allowlist.md](../seccomp_allowlist.md)
