@@ -19,6 +19,27 @@ fn aria_labelledby_token_order_and_hidden() {
 }
 
 #[test]
+fn aria_labelledby_describedby_dedupe_duplicate_tokens() {
+  let html = r#"
+    <html>
+      <body>
+        <span id="a">Alpha</span>
+        <span id="b">Beta</span>
+        <button id="lbl" aria-labelledby="a a b b">X</button>
+        <button id="desc" aria-describedby="a a b b">Y</button>
+      </body>
+    </html>
+  "#;
+
+  let tree = render_accessibility_tree(html);
+  let lbl = find_by_id(&tree, "lbl").expect("lbl button");
+  assert_eq!(lbl.name.as_deref(), Some("Alpha Beta"));
+
+  let desc = find_by_id(&tree, "desc").expect("desc button");
+  assert_eq!(desc.description.as_deref(), Some("Alpha Beta"));
+}
+
+#[test]
 fn nested_label_contents_are_traversed() {
   let html = r#"
     <html>

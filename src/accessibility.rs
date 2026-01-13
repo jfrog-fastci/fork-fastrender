@@ -886,7 +886,11 @@ impl<'a, 'state> BuildContext<'a, 'state> {
               ElementStep::AriaLabelledBy => {
                 if let Some(labelledby) = node.node.get_attribute_ref("aria-labelledby") {
                   let mut targets: Vec<&'a StyledNode> = Vec::new();
+                  let mut seen_tokens: HashSet<&str> = HashSet::new();
                   for id in split_ascii_whitespace(labelledby) {
+                    if !seen_tokens.insert(id) {
+                      continue;
+                    }
                     if let Some(target) = self.node_for_id_scoped(node.node_id, id) {
                       targets.push(target);
                     }
@@ -3323,7 +3327,11 @@ fn referenced_text_attr(
   mode: TextAlternativeMode,
 ) -> String {
   let mut parts = Vec::new();
+  let mut seen_tokens: HashSet<&str> = HashSet::new();
   for id in split_ascii_whitespace(attr_value) {
+    if !seen_tokens.insert(id) {
+      continue;
+    }
     if let Some(target) = ctx.node_for_id_scoped(referrer_node_id, id) {
       if let Some(text) = ctx.text_alternative(target, visited, mode, Some(true)) {
         if !text.is_empty() {
