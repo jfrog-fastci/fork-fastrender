@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::interaction::KeyAction;
-use fastrender::ui::messages::{PointerButton, RepaintReason, TabId};
+use fastrender::ui::messages::{PointerButton, RepaintReason, TabId, UiToWorker};
 use fastrender::ui::BrowserTabController;
 use fastrender::{dom::DomNode, Result};
 
@@ -969,6 +969,97 @@ fn textarea_auto_scrolls_to_keep_caret_visible_after_typing_many_lines() -> Resu
     "expected textarea to auto-scroll after inserting many lines; got {:?}",
     controller.scroll_state().elements
   );
+
+  Ok(())
+}
+
+#[test]
+fn input_maxlength_clamps_text_input() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 180px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" maxlength="3" value="">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the input.
+  let click = (10.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  let _ = controller.handle_message(support::text_input(tab_id, "abcd"))?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("abc"));
+
+  Ok(())
+}
+
+#[test]
+fn textarea_maxlength_clamps_paste() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 160);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #ta { position: absolute; left: 0; top: 0; width: 180px; height: 80px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <textarea id="ta" maxlength="3"></textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the textarea.
+  let click = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  let _ = controller.handle_message(UiToWorker::Paste {
+    tab_id,
+    text: "abcd".to_string(),
+  })?;
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  assert_eq!(textarea.get_attribute_ref("data-fastr-value"), Some("abc"));
 
   Ok(())
 }

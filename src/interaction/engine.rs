@@ -9843,7 +9843,11 @@ impl InteractionEngine {
       self.text_edit = Some(TextEditState {
         node_id,
         caret: next_caret,
-        caret_affinity: CaretAffinity::Upstream,
+        caret_affinity: if insert_text.is_empty() {
+          caret_affinity
+        } else {
+          CaretAffinity::Upstream
+        },
         selection_anchor: None,
         preferred_x: None,
       });
