@@ -520,6 +520,27 @@ fn apply_global_appearance(
   apply_global_value(global, proposed_global, windows)
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+fn sanitize_home_url(raw: &str) -> String {
+  let trimmed = raw.trim().to_string();
+  if trimmed.is_empty() || fastrender::ui::validate_user_navigation_url_scheme(&trimmed).is_err() {
+    fastrender::ui::about_pages::ABOUT_NEWTAB.to_string()
+  } else {
+    trimmed
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn apply_global_home_url(
+  global: &String,
+  proposed_global: Option<String>,
+  windows: &[String],
+) -> (String, Vec<bool>) {
+  let global = sanitize_home_url(global);
+  let proposed_global = proposed_global.map(|url| sanitize_home_url(&url));
+  apply_global_value(&global, proposed_global, windows)
+}
+
 #[cfg(test)]
 mod input_focus_helpers_tests {
   use super::{should_forward_paste_events_to_page, should_open_page_context_menu_from_keyboard};
@@ -551,7 +572,7 @@ mod input_focus_helpers_tests {
 
 #[cfg(test)]
 mod global_session_settings_tests {
-  use super::{apply_global_appearance, apply_global_value};
+  use super::{apply_global_appearance, apply_global_home_url};
   use fastrender::ui::appearance::AppearanceSettings;
   use fastrender::ui::theme_parsing::BrowserTheme;
 
@@ -587,7 +608,7 @@ mod global_session_settings_tests {
     let changed = "https://example.com".to_string();
 
     let windows = vec![global.clone(), changed.clone()];
-    let (new_global, updates) = apply_global_value(&global, Some(changed.clone()), &windows);
+    let (new_global, updates) = apply_global_home_url(&global, Some(changed.clone()), &windows);
 
     assert_eq!(new_global, changed);
     assert_eq!(updates, vec![true, false]);
@@ -599,10 +620,35 @@ mod global_session_settings_tests {
     let stale_new_window = "about:newtab".to_string();
 
     let windows = vec![global.clone(), stale_new_window];
-    let (new_global, updates) = apply_global_value(&global, None, &windows);
+    let (new_global, updates) = apply_global_home_url(&global, None, &windows);
 
     assert_eq!(new_global, global);
     assert_eq!(updates, vec![false, true]);
+  }
+
+  #[test]
+  fn home_url_is_trimmed_and_validated() {
+    let global = "about:newtab".to_string();
+    let proposed = "  https://example.com/  ".to_string();
+
+    let windows = vec![global.clone(), proposed.clone()];
+    let (new_global, updates) = apply_global_home_url(&global, Some(proposed), &windows);
+
+    assert_eq!(new_global, "https://example.com/".to_string());
+    // Both windows should converge to the trimmed URL.
+    assert_eq!(updates, vec![true, true]);
+  }
+
+  #[test]
+  fn invalid_home_url_defaults_to_newtab() {
+    let global = "https://example.com".to_string();
+    let proposed = "javascript:alert(1)".to_string();
+
+    let windows = vec![global.clone(), proposed.clone()];
+    let (new_global, updates) = apply_global_home_url(&global, Some(proposed), &windows);
+
+    assert_eq!(new_global, fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
+    assert_eq!(updates, vec![true, true]);
   }
 }
 
@@ -8116,7 +8162,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect::<Vec<_>>();
           let (new_global, updates) =
-            apply_global_value(&global_home_url, proposed_home_url, &ordered_urls);
+            apply_global_home_url(&global_home_url, proposed_home_url, &ordered_urls);
           if new_global != global_home_url {
             global_home_url = new_global;
             global_home_url_changed = true;
