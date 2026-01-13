@@ -151,14 +151,22 @@ metrics (per-frame and per-input timing). Enable it by setting:
 FASTR_PERF_LOG=1
 ```
 
-Each log line is a JSON object that includes a `schema_version`, `event` type, and `t_ms`
-(timestamp in milliseconds), plus event-specific numeric fields:
+Each log line is a JSON object that includes:
 
-- `event=frame`: `ui_frame_ms`
-- `event=input`: `input_to_present_ms` (+ `input_kind`)
-- `event=resize`: `resize_to_present_ms`
-- `event=ttfp`: `ttfp_ms`
-- `event=idle_summary`: `idle_frames`
+- `schema_version` (currently `1`)
+- `event` (tag)
+- `ts_ms` (monotonic timestamp in milliseconds since process start)
+- `window_id` (string)
+
+Event payload fields (current schema in `src/bin/browser.rs`, `perf_log::PerfEvent`):
+
+- `event=frame`: `ui_frame_ms`, `fps` (optional), plus window state flags (`window_focused`,
+  `window_occluded`, `window_minimized`).
+- `event=input`: `kind` (`keyboard|mouse_wheel|pointer_move|button`), `input_to_present_ms`,
+  `input_ts_ms`, `count`.
+- `event=resize`: `resize_to_present_ms`, `resize_ts_ms`, `new_width_px`, `new_height_px`.
+- `event=navigation`: `tab_id`, `navigation_seqno`, `url`.
+- `event=ttfp`: `tab_id`, `navigation_seqno`, `ttfp_ms`.
 
 To turn a captured JSONL log into p50/p95/max summary numbers, pipe it into the helper:
 
@@ -175,10 +183,10 @@ You can also summarize an existing file:
 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input perf.jsonl
 ```
 
-Filtering options:
+Filtering options (see `browser_perf_log_summary --help`):
 
 - `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
-- `--only-event frame|input|resize|ttfp|idle_summary`: summarize one event type.
+- `--only-event frame|input|resize|ttfp|idle_summary`: summarize one event type (unknown events are ignored for forward compatibility).
 
 ## Interactive profiling (windowed browser UI)
 
