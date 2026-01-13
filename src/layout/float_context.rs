@@ -341,6 +341,20 @@ impl ActiveEdgeSet {
     self.edges.clear();
   }
 
+  fn len(&self) -> usize {
+    self.edges.len()
+  }
+
+  /// Returns the current most-constraining edge and its relaxation bottom without pruning.
+  ///
+  /// This is used for debug output and intentionally does not mutate the set.
+  fn peek_constraining_unpruned(&self) -> Option<(f32, f32)> {
+    match self.kind {
+      ActiveEdgeSetKind::Left => self.edges.iter().next_back().map(|(k, v)| (k.0, *v)),
+      ActiveEdgeSetKind::Right => self.edges.iter().next().map(|(k, v)| (k.0, *v)),
+    }
+  }
+
   fn insert(&mut self, edge: f32, bottom: f32) {
     let key = FloatKey(edge);
     match self.edges.get_mut(&key) {
@@ -1251,44 +1265,32 @@ impl FloatContext {
 
     match self.sweep_state.try_borrow() {
       Ok(state) => {
-        let active_count = state.active.iter().filter(|v| **v).count();
+        let active_left_edges = state.active_left.len();
+        let active_right_edges = state.active_right.len();
         eprintln!(
-          "  sweep_state: current_y={:.2} pending_events={} pending_start_events={} active={} active_shapes=(left={}, right={})",
+          "  sweep_state: current_y={:.2} pending_events={} pending_start_events={} active_edges=(left={}, right={}) active_shapes=(left={}, right={})",
           state.current_y,
           state.pending_events.len(),
           state.pending_start_events.len(),
-          active_count,
+          active_left_edges,
+          active_right_edges,
           state.active_shape_left.len(),
           state.active_shape_right.len()
         );
 
-        if let Some((edge, bottom, id)) = state.active_left.peek() {
-          let float = self.float_info(*id);
+        if let Some((edge, bottom)) = state.active_left.peek_constraining_unpruned() {
           eprintln!(
-            "    constraining_left: edge={:.2} bottom={:.2} id={} rect=[x={:.2} y={:.2} w={:.2} h={:.2}]",
-            edge.0,
-            bottom.0,
-            id,
-            float.rect.x(),
-            float.rect.y(),
-            float.rect.width(),
-            float.rect.height()
+            "    constraining_left: edge={:.2} bottom={:.2}",
+            edge, bottom
           );
         } else {
           eprintln!("    constraining_left: none");
         }
 
-        if let Some((Reverse(edge), bottom, id)) = state.active_right.peek() {
-          let float = self.float_info(*id);
+        if let Some((edge, bottom)) = state.active_right.peek_constraining_unpruned() {
           eprintln!(
-            "    constraining_right: edge={:.2} bottom={:.2} id={} rect=[x={:.2} y={:.2} w={:.2} h={:.2}]",
-            edge.0,
-            bottom.0,
-            id,
-            float.rect.x(),
-            float.rect.y(),
-            float.rect.width(),
-            float.rect.height()
+            "    constraining_right: edge={:.2} bottom={:.2}",
+            edge, bottom
           );
         } else {
           eprintln!("    constraining_right: none");
