@@ -12,12 +12,12 @@ pub enum DomError {
   IndexSizeError,
   #[error("InvalidCharacterError")]
   InvalidCharacterError,
-  #[error("InvalidStateError")]
-  InvalidStateError,
   #[error("NamespaceError")]
   NamespaceError,
   #[error("NotFoundError")]
   NotFoundError,
+  #[error("InvalidStateError")]
+  InvalidStateError,
   #[error("NotSupportedError")]
   NotSupportedError,
   #[error("WrongDocumentError")]
@@ -36,9 +36,9 @@ impl DomError {
       Self::HierarchyRequestError => "HierarchyRequestError",
       Self::IndexSizeError => "IndexSizeError",
       Self::InvalidCharacterError => "InvalidCharacterError",
-      Self::InvalidStateError => "InvalidStateError",
       Self::NamespaceError => "NamespaceError",
       Self::NotFoundError => "NotFoundError",
+      Self::InvalidStateError => "InvalidStateError",
       Self::NotSupportedError => "NotSupportedError",
       Self::WrongDocumentError => "WrongDocumentError",
       Self::InvalidNodeTypeError => "InvalidNodeTypeError",
@@ -49,3 +49,16 @@ impl DomError {
 }
 
 pub type Result<T> = std::result::Result<T, DomError>;
+
+#[cfg(test)]
+mod tests {
+  use super::DomError;
+
+  #[test]
+  fn dom_error_codes_match_dom_exception_names() {
+    assert_eq!(DomError::InvalidStateError.code(), "InvalidStateError");
+    assert_eq!(DomError::InvalidNodeTypeError.code(), "InvalidNodeTypeError");
+    assert_eq!(DomError::InvalidStateError.to_string(), "InvalidStateError");
+    assert_eq!(DomError::InvalidNodeTypeError.to_string(), "InvalidNodeTypeError");
+  }
+}

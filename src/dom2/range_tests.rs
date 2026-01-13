@@ -6,6 +6,22 @@ use selectors::context::QuirksMode;
 use std::collections::HashMap;
 
 #[test]
+fn range_set_start_end_reject_doctype_with_invalid_node_type_error() {
+  let mut doc: Document = Document::new(QuirksMode::NoQuirks);
+  let range = doc.create_range();
+  let doctype = doc.create_doctype("html", "", "");
+
+  assert_eq!(
+    doc.range_set_start(range, doctype, 0),
+    Err(DomError::InvalidNodeTypeError)
+  );
+  assert_eq!(
+    doc.range_set_end(range, doctype, 0),
+    Err(DomError::InvalidNodeTypeError)
+  );
+}
+
+#[test]
 fn range_tree_root_stops_at_shadow_root_and_pre_remove_does_not_cross_shadow_boundary() {
   let html = concat!(
     "<!doctype html>",
