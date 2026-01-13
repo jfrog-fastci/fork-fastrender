@@ -139,6 +139,52 @@ Fetch error (for a fetch-like request):
 }
 ```
 
+Inline fetch success (single-frame body):
+
+```json
+{
+  "Response": {
+    "id": 42,
+    "response": {
+      "Fetched": {
+        "Ok": {
+          "bytes_b64": "SGVsbG8sIHdvcmxkIQ==",
+          "content_type": "text/plain",
+          "nosniff": false,
+          "content_encoding": null,
+          "status": 200,
+          "etag": null,
+          "last_modified": null,
+          "access_control_allow_origin": null,
+          "timing_allow_origin": null,
+          "vary": null,
+          "response_referrer_policy": null,
+          "access_control_allow_credentials": false,
+          "final_url": "https://example.com/",
+          "cache_policy": null,
+          "response_headers": null
+        }
+      }
+    }
+  }
+}
+```
+
+CookieHeaderValue response (cookie getter):
+
+```json
+{
+  "Response": {
+    "id": 7,
+    "response": {
+      "MaybeString": {
+        "Ok": "a=b; c=d"
+      }
+    }
+  }
+}
+```
+
 ---
 
 ## Connection setup (Hello handshake)
@@ -462,6 +508,39 @@ Constraints:
 - `total_len` is the exact byte length of the response body.
 - Each chunk’s decoded length must be `<= IPC_CHUNK_MAX_BYTES` (64 KiB).
 - Client must enforce `total_len <= IPC_MAX_BODY_BYTES` (50 MiB) and reject overflow / extra bytes.
+
+### Per-request state machine (server → client)
+
+For a single request `id`, the server sends exactly one of the following sequences:
+
+1. **Non-fetch RPC response** (cookies, cache artifacts, etc):
+
+   ```
+   Response(id, IpcResponse::<...>)
+   ```
+
+2. **Fetch success, inline body** (`bytes.len() <= IPC_INLINE_LIMIT_BYTES`):
+
+   ```
+   Response(id, IpcResponse::Fetched(Ok(IpcFetchedResource{ bytes_b64, ... })))
+   ```
+
+3. **Fetch success, chunked body** (`bytes.len() > IPC_INLINE_LIMIT_BYTES`):
+
+   ```
+   FetchStart(id, meta, total_len)
+   FetchBodyChunk(id, bytes_b64)   // 0..N chunks
+   FetchEnd(id)
+   ```
+
+4. **Fetch error** (any fetch-like request failure):
+
+   ```
+   FetchErr(id, IpcError)
+   ```
+
+Any deviation (wrong message type for the current state, wrong `id`, invalid base64, chunk overflow,
+etc.) is a **protocol violation** and must terminate the connection.
 
 ### Shared-memory / FD-backed future work
 
