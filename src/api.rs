@@ -6669,27 +6669,11 @@ fn paint_fragment_tree_into_rgba_with_state(
 
   fragment_tree.set_viewport_size(paint_viewport);
 
-  let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
-  scroll_state = scroll_result.state;
-  scroll_state.viewport = Point::new(
-    if scroll_state.viewport.x.is_finite() {
-      scroll_state.viewport.x
-    } else {
-      0.0
-    },
-    if scroll_state.viewport.y.is_finite() {
-      scroll_state.viewport.y
-    } else {
-      0.0
-    },
+  scroll_state = crate::scroll::resolve_effective_scroll_state_for_paint_mut(
+    &mut fragment_tree,
+    scroll_state,
+    scrollport_viewport,
   );
-  if let Some(bounds) =
-    crate::scroll::build_scroll_chain(&fragment_tree.root, scrollport_viewport, &[])
-      .first()
-      .map(|state| state.bounds)
-  {
-    scroll_state.viewport = bounds.clamp(scroll_state.viewport);
-  }
 
   fn resolve_scaled_metrics_for_style(
     font_context: &FontContext,
