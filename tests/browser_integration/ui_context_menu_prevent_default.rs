@@ -188,7 +188,11 @@ fn context_menu_prevent_default_still_sends_suppressed_response_without_id() {
   // protocol response; instead, the worker reports `default_prevented=true`.
   let pos_css = (10.0, 10.0);
   ui_tx
-    .send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css,
+      modifiers: PointerModifiers::NONE,
+    })
     .expect("send ContextMenuRequest");
 
   let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {

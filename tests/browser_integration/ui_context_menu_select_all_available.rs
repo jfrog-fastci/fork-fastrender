@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
 
@@ -59,7 +59,11 @@ fn context_menu_advertises_select_all_without_existing_selection() {
 
   let pos_css = (10.0, 10.0);
   ui_tx
-    .send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css,
+      modifiers: PointerModifiers::NONE,
+    })
     .expect("send ContextMenuRequest");
 
   let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
