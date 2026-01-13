@@ -12512,10 +12512,13 @@ fn ensure_within_limit(len: usize, limit: usize) -> std::result::Result<(), Cont
 
 /// Guess content-type from file path extension
 fn guess_content_type_from_path(path: &str) -> Option<String> {
-  let ext = Path::new(path)
-    .extension()
-    .and_then(|e| e.to_str())
-    .map(|e| e.to_lowercase())?;
+  let ext = Path::new(path).extension().and_then(|e| e.to_str())?;
+  // Extensions are ASCII per URL semantics, and treating them as such avoids surprising Unicode
+  // case-folding behavior.
+  if !ext.is_ascii() {
+    return None;
+  }
+  let ext = ext.to_lowercase();
 
   let mime = match ext.as_str() {
     "png" => "image/png",
@@ -12526,6 +12529,13 @@ fn guess_content_type_from_path(path: &str) -> Option<String> {
     "svg" => "image/svg+xml",
     "ico" => "image/x-icon",
     "bmp" => "image/bmp",
+    "mp4" | "m4v" => "video/mp4",
+    "webm" => "video/webm",
+    "weba" => "audio/webm",
+    "mp3" => "audio/mpeg",
+    "m4a" => "audio/mp4",
+    "ogg" | "oga" | "opus" => "audio/ogg",
+    "wav" => "audio/wav",
     "css" => "text/css",
     "html" | "htm" => "text/html",
     "js" => "application/javascript",
@@ -18724,7 +18734,76 @@ mod tests {
       guess_content_type_from_path("/path/to/style.CSS"),
       Some("text/css".to_string())
     );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/movie.MP4"),
+      Some("video/mp4".to_string())
+    );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/movie.m4v"),
+      Some("video/mp4".to_string())
+    );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/movie.webm"),
+      Some("video/webm".to_string())
+    );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/audio.weba"),
+      Some("audio/webm".to_string())
+    );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/audio.mp3"),
+      Some("audio/mpeg".to_string())
+    );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/audio.m4a"),
+      Some("audio/mp4".to_string())
+    );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/audio.ogg"),
+      Some("audio/ogg".to_string())
+    );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/audio.oga"),
+      Some("audio/ogg".to_string())
+    );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/audio.opus"),
+      Some("audio/ogg".to_string())
+    );
+    assert_eq!(
+      guess_content_type_from_path("/path/to/audio.wav"),
+      Some("audio/wav".to_string())
+    );
     assert_eq!(guess_content_type_from_path("/path/to/file"), None);
+  }
+
+  #[test]
+  fn fetch_file_sets_media_content_type() {
+    let fetcher = HttpFetcher::new();
+
+    let mut mp4 = tempfile::Builder::new()
+      .suffix(".mp4")
+      .tempfile()
+      .expect("temp mp4");
+    mp4.write_all(b"mp4 data").expect("write mp4");
+    mp4.flush().expect("flush mp4");
+    let mp4_url = Url::from_file_path(mp4.path())
+      .expect("mp4 file url")
+      .to_string();
+    let mp4_res = fetcher.fetch(&mp4_url).expect("fetch mp4");
+    assert_eq!(mp4_res.content_type.as_deref(), Some("video/mp4"));
+
+    let mut webm = tempfile::Builder::new()
+      .suffix(".webm")
+      .tempfile()
+      .expect("temp webm");
+    webm.write_all(b"webm data").expect("write webm");
+    webm.flush().expect("flush webm");
+    let webm_url = Url::from_file_path(webm.path())
+      .expect("webm file url")
+      .to_string();
+    let webm_res = fetcher.fetch(&webm_url).expect("fetch webm");
+    assert_eq!(webm_res.content_type.as_deref(), Some("video/webm"));
   }
 
   #[test]
