@@ -48,6 +48,8 @@ pub enum ChromeAction {
   FocusAddressBar,
   /// Open a new top-level browser window.
   NewWindow,
+  /// Toggle native window fullscreen mode.
+  ToggleFullScreen,
   OpenFindInPage,
   /// Begin/update an active "find in page" query for a tab.
   FindQuery {

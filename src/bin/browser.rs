@@ -2986,6 +2986,7 @@ struct App {
   window_focused: bool,
   window_occluded: bool,
   window_minimized: bool,
+  window_fullscreen: bool,
 
   page_has_focus: bool,
   pointer_captured: bool,
@@ -3445,6 +3446,7 @@ impl App {
       .ok_or("wgpu surface reports no alpha modes")?;
 
     let size = window.inner_size();
+    let window_fullscreen = window.fullscreen().is_some();
     let surface_config = wgpu::SurfaceConfiguration {
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
       format: surface_format,
@@ -3534,6 +3536,7 @@ impl App {
       window_focused: true,
       window_occluded: false,
       window_minimized: size.width == 0 || size.height == 0,
+      window_fullscreen,
       page_has_focus: false,
       pointer_captured: false,
       captured_button: fastrender::ui::PointerButton::None,
@@ -8728,6 +8731,20 @@ impl App {
             .event_loop_proxy
             .send_event(UserEvent::RequestNewWindow(self.window.id()));
         }
+        ChromeAction::ToggleFullScreen => {
+          use winit::window::Fullscreen;
+
+          let currently_fullscreen = self.window.fullscreen().is_some();
+          let next = !currently_fullscreen;
+          self.window_fullscreen = next;
+          if next {
+            let monitor = self.window.current_monitor().or_else(|| self.window.primary_monitor());
+            self.window.set_fullscreen(Some(Fullscreen::Borderless(monitor)));
+          } else {
+            self.window.set_fullscreen(None);
+          }
+          self.window.request_redraw();
+        }
         ChromeAction::OpenFindInPage => {
           // Treat the find bar as chrome text input: while it's opening/active, don't forward
           // keyboard events to the page.
@@ -9531,6 +9548,9 @@ impl App {
     self.flush_pending_frame_uploads();
 
     let session_revision_before = self.browser_state.session_revision();
+    // Keep fullscreen tracking in sync with winit (e.g. when the user toggles fullscreen via
+    // platform window controls).
+    self.window_fullscreen = self.window.fullscreen().is_some();
     let mut session_dirty = false;
     while let Some(update) = self.search_suggest.try_recv() {
       self.browser_state.chrome.remote_search_cache.query = update.query;
@@ -9665,18 +9685,6 @@ impl App {
           }
           fastrender::ui::MenuCommand::ToggleBookmarkThisPage => {
             self.toggle_bookmark_for_active_tab();
-          }
-          fastrender::ui::MenuCommand::ToggleFullScreen => {
-            let currently_fullscreen = self.window.fullscreen().is_some();
-            if currently_fullscreen {
-              self.window.set_fullscreen(None);
-            } else {
-              let monitor = self.window.current_monitor().or_else(|| self.window.primary_monitor());
-              self
-                .window
-                .set_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));
-            }
-            self.window.request_redraw();
           }
           fastrender::ui::MenuCommand::Quit => {
             self.shutdown();

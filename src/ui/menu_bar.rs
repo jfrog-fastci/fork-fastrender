@@ -16,6 +16,11 @@ const SHORTCUT_NEW_TAB: &str = "Cmd+T";
 const SHORTCUT_NEW_TAB: &str = "Ctrl+T";
 
 #[cfg(target_os = "macos")]
+const SHORTCUT_NEW_WINDOW: &str = "Cmd+N";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_NEW_WINDOW: &str = "Ctrl+N";
+
+#[cfg(target_os = "macos")]
 const SHORTCUT_CLOSE_TAB: &str = "Cmd+W";
 #[cfg(not(target_os = "macos"))]
 const SHORTCUT_CLOSE_TAB: &str = "Ctrl+W";
@@ -26,24 +31,9 @@ const SHORTCUT_REOPEN_TAB: &str = "Cmd+Shift+T";
 const SHORTCUT_REOPEN_TAB: &str = "Ctrl+Shift+T";
 
 #[cfg(target_os = "macos")]
-const SHORTCUT_NEW_WINDOW: &str = "Cmd+N";
-#[cfg(not(target_os = "macos"))]
-const SHORTCUT_NEW_WINDOW: &str = "Ctrl+N";
-
-#[cfg(target_os = "macos")]
 const SHORTCUT_RELOAD: &str = "Cmd+R";
 #[cfg(not(target_os = "macos"))]
 const SHORTCUT_RELOAD: &str = "Ctrl+R";
-
-#[cfg(target_os = "macos")]
-const SHORTCUT_BOOKMARK_MANAGER: &str = "Cmd+Shift+O";
-#[cfg(not(target_os = "macos"))]
-const SHORTCUT_BOOKMARK_MANAGER: &str = "Ctrl+Shift+O";
-
-#[cfg(target_os = "macos")]
-const SHORTCUT_TOGGLE_FULLSCREEN: &str = "Ctrl+Cmd+F";
-#[cfg(not(target_os = "macos"))]
-const SHORTCUT_TOGGLE_FULLSCREEN: &str = "F11";
 
 #[cfg(target_os = "macos")]
 const SHORTCUT_ZOOM_IN: &str = "Cmd++";
@@ -86,6 +76,21 @@ const SHORTCUT_FORWARD: &str = "Cmd+]";
 const SHORTCUT_FORWARD: &str = "Alt+Right";
 
 #[cfg(target_os = "macos")]
+const SHORTCUT_BOOKMARK_MANAGER: &str = "Cmd+Shift+O";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_BOOKMARK_MANAGER: &str = "Ctrl+Shift+O";
+
+#[cfg(target_os = "macos")]
+const SHORTCUT_DOWNLOADS: &str = "Cmd+Shift+J";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_DOWNLOADS: &str = "Ctrl+J";
+
+#[cfg(target_os = "macos")]
+const SHORTCUT_TOGGLE_FULLSCREEN: &str = "Ctrl+Cmd+F";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_TOGGLE_FULLSCREEN: &str = "F11";
+
+#[cfg(target_os = "macos")]
 const SHORTCUT_QUIT: &str = "Cmd+Q";
 #[cfg(not(target_os = "macos"))]
 const SHORTCUT_QUIT: &str = "Alt+F4";
@@ -101,8 +106,8 @@ pub struct MenuBarState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuCommand {
   NewTab,
-  CloseTab,
   NewWindow,
+  CloseTab,
   Quit,
   Copy,
   Cut,
@@ -115,8 +120,8 @@ pub enum MenuCommand {
   ToggleHistoryPanel,
   ToggleBookmarksPanel,
   ToggleBookmarksManager,
-  ToggleDownloadsPanel,
   ToggleBookmarkThisPage,
+  ToggleDownloadsPanel,
   ToggleFullScreen,
   Back,
   Forward,
@@ -458,7 +463,9 @@ pub fn menu_bar_ui(
               ui.close_menu();
             }
 
-            let downloads_resp = ui.button("Show Downloads…");
+            let downloads_resp = ui.add(
+              egui::Button::new("Show Downloads…").shortcut_text(SHORTCUT_DOWNLOADS),
+            );
             downloads_resp.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show downloads")
             });
@@ -522,7 +529,7 @@ pub fn dispatch_menu_command(command: MenuCommand, app: &mut BrowserAppState) ->
     MenuCommand::ReopenClosedTab => vec![ChromeAction::ReopenClosedTab],
     MenuCommand::ToggleBookmarksManager => vec![ChromeAction::ToggleBookmarksManager],
     MenuCommand::ToggleDownloadsPanel => vec![ChromeAction::ToggleDownloadsPanel],
-    MenuCommand::ToggleFullScreen => Vec::new(),
+    MenuCommand::ToggleFullScreen => vec![ChromeAction::ToggleFullScreen],
     MenuCommand::ZoomIn => {
       if let Some(tab) = app.active_tab_mut() {
         tab.zoom = zoom::zoom_in(tab.zoom);
@@ -650,6 +657,47 @@ mod tests {
     let actions = dispatch_menu_command(MenuCommand::NewTab, &mut app);
     assert_eq!(actions.len(), 1);
     assert!(matches!(actions[0], crate::ui::ChromeAction::NewTab));
+  }
+
+  #[test]
+  fn dispatch_new_window_emits_chrome_action() {
+    let mut app = BrowserAppState::new();
+    let actions = dispatch_menu_command(MenuCommand::NewWindow, &mut app);
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(actions[0], crate::ui::ChromeAction::NewWindow));
+  }
+
+  #[test]
+  fn dispatch_downloads_emits_chrome_action() {
+    let mut app = BrowserAppState::new();
+    let actions = dispatch_menu_command(MenuCommand::ToggleDownloadsPanel, &mut app);
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(
+      actions[0],
+      crate::ui::ChromeAction::ToggleDownloadsPanel
+    ));
+  }
+
+  #[test]
+  fn dispatch_bookmarks_manager_emits_chrome_action() {
+    let mut app = BrowserAppState::new();
+    let actions = dispatch_menu_command(MenuCommand::ToggleBookmarksManager, &mut app);
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(
+      actions[0],
+      crate::ui::ChromeAction::ToggleBookmarksManager
+    ));
+  }
+
+  #[test]
+  fn dispatch_toggle_full_screen_emits_chrome_action() {
+    let mut app = BrowserAppState::new();
+    let actions = dispatch_menu_command(MenuCommand::ToggleFullScreen, &mut app);
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(
+      actions[0],
+      crate::ui::ChromeAction::ToggleFullScreen
+    ));
   }
 
   #[test]
