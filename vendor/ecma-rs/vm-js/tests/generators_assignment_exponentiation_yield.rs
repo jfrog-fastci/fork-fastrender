@@ -46,3 +46,46 @@ fn exponentiation_assignment_on_property_captures_base_and_key_before_yield() ->
   Ok(())
 }
 
+#[test]
+fn exponentiation_assignment_on_property_uses_pre_yield_old_value() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      var o = { a: 2 };
+      function* g(){ return o.a **= (yield 0); }
+      var it = g();
+      var r0 = it.next();
+      o.a = 10; // mutate after yield; should not affect captured old value
+      var r = it.next(3);
+      r0.value === 0 && r0.done === false &&
+      r.done === true && r.value === 8 && o.a === 8
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn exponentiation_assignment_on_computed_property_captures_base_and_key_before_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      var o1 = { a: 2, b: 3 };
+      var o2 = { a: 10, b: 100 };
+      var o = o1;
+      var k = "a";
+      function* g(){ return o[k] **= (yield 0); }
+      var it = g();
+      var r0 = it.next();
+      o = o2;
+      k = "b";
+      var r = it.next(3);
+      r0.value === 0 && r0.done === false &&
+      r.done === true && r.value === 8 &&
+      o1.a === 8 && o1.b === 3 &&
+      o2.a === 10 && o2.b === 100
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
