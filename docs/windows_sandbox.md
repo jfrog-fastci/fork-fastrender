@@ -121,6 +121,10 @@ The Windows renderer sandbox is **defense-in-depth**, layered as:
 - **AppContainer requires Windows 8+** (and `userenv.dll` must export the AppContainer profile APIs).
   On older Windows versions, or unusual Windows Server configurations where the APIs are absent,
   we treat AppContainer as unsupported and **fail closed by default**.
+  - Some hardened Windows environments expose the AppContainer exports but still refuse to create or
+    ensure profiles (e.g. `CreateAppContainerProfile` fails due to system policy). Treat this the
+    same way: AppContainer is effectively unavailable, so spawns fail closed unless explicitly opted
+    into fallback mode.
   - For developer convenience, set `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to opt in to falling back to
     the restricted-token (or unsandboxed) spawn path.
 - **Nested jobs** (assigning a process to a new Job when the parent is already in one) are
