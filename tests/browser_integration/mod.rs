@@ -90,6 +90,7 @@ mod ui_select_dropdown_choose;
 mod ui_select_dropdown_keyboard_open;
 mod ui_select_listbox_click;
 mod ui_select_listbox_click_after_wheel_scroll;
+mod ui_select_typeahead_hidden_option;
 mod ui_stage_heartbeat_forwarding;
 mod ui_text_editing;
 mod ui_tabindex_negative_pointer_focus;
