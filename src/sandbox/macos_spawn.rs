@@ -187,7 +187,8 @@ pub fn sandbox_exec_command(
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
   use super::*;
-  use std::net::TcpListener;
+  use std::io;
+  use std::net::{TcpListener, TcpStream};
 
   // This test is macOS-only and ignored by default because it relies on the host having a working
   // Seatbelt sandbox (`sandbox-exec`). It's still valuable to run locally on macOS to validate that
@@ -196,16 +197,41 @@ mod tests {
   #[ignore]
   fn sandbox_exec_blocks_file_and_network() {
     const CHILD_ENV: &str = "FASTR_TEST_SANDBOX_EXEC_CHILD";
+    const PORT_ENV: &str = "FASTR_TEST_SANDBOX_EXEC_PORT";
+
+    fn is_permission_error(err: &io::Error) -> bool {
+      if err.kind() == io::ErrorKind::PermissionDenied {
+        return true;
+      }
+      matches!(err.raw_os_error(), Some(libc::EPERM) | Some(libc::EACCES))
+    }
 
     let is_child = std::env::var_os(CHILD_ENV).is_some();
     if is_child {
+      let port: u16 = std::env::var(PORT_ENV)
+        .expect("child process missing sandbox port env var")
+        .parse()
+        .expect("parse sandbox port env var");
+
+      let read_err = std::fs::read("/private/etc/passwd")
+        .or_else(|err| {
+          if err.kind() == io::ErrorKind::NotFound {
+            std::fs::read("/etc/passwd")
+          } else {
+            Err(err)
+          }
+        })
+        .expect_err("expected sandbox to block reading /etc/passwd");
       assert!(
-        std::fs::read("/etc/passwd").is_err(),
-        "expected sandbox to block reading /etc/passwd"
+        is_permission_error(&read_err),
+        "expected file read to be denied by sandbox, got {read_err:?}"
       );
+
+      let connect_err =
+        TcpStream::connect(("127.0.0.1", port)).expect_err("expected sandbox to block TCP connect");
       assert!(
-        TcpListener::bind(("127.0.0.1", 0)).is_err(),
-        "expected sandbox to block binding a TCP listener"
+        is_permission_error(&connect_err),
+        "expected connect to be denied by sandbox, got {connect_err:?}"
       );
       return;
     }
@@ -216,8 +242,21 @@ mod tests {
       eprintln!("skipping: cannot read /etc/passwd in parent process");
       return;
     }
-    if TcpListener::bind(("127.0.0.1", 0)).is_err() {
-      eprintln!("skipping: cannot bind localhost in parent process");
+
+    let listener = match TcpListener::bind(("127.0.0.1", 0)) {
+      Ok(listener) => listener,
+      Err(_) => {
+        eprintln!("skipping: cannot bind localhost in parent process");
+        return;
+      }
+    };
+    let port = listener
+      .local_addr()
+      .expect("listener local addr")
+      .port()
+      .to_string();
+    if TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap())).is_err() {
+      eprintln!("skipping: cannot connect to localhost in parent process");
       return;
     }
 
@@ -232,6 +271,7 @@ mod tests {
     let mut cmd =
       sandbox_exec_command(&exe, &args).expect("construct sandbox-exec wrapped test command");
     cmd.env(CHILD_ENV, "1");
+    cmd.env(PORT_ENV, port);
     let output = cmd.output().expect("spawn sandboxed child test process");
     assert!(
       output.status.success(),
