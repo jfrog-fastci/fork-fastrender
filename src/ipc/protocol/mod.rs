@@ -1,4 +1,5 @@
 pub mod cancel;
+pub mod network;
 pub mod renderer;
 
 // Compatibility re-exports: the transport layer historically referred to the top-level

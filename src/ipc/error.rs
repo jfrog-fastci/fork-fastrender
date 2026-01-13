@@ -39,6 +39,9 @@ pub enum IpcError {
   // Protocol validation errors (renderer → browser)
   // ==========================================================================
 
+  #[error("request_id must be non-zero")]
+  RequestIdZero,
+
   #[error("frame buffer list too large: {len} (max {max})")]
   TooManyFrameBuffers { len: usize, max: usize },
 
