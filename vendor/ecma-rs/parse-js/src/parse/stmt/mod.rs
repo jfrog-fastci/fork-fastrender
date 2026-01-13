@@ -79,6 +79,26 @@ impl<'a> Parser<'a> {
     ctx: ParseCtx,
     allow_legacy_function_decl: bool,
   ) -> SyntaxResult<Node<Stmt>> {
+    self.stmt_in_statement_position_impl(ctx, allow_legacy_function_decl, true)
+  }
+
+  fn label_chain_ends_in_function(stmt: &Node<LabelStmt>) -> bool {
+    let mut inner_stmt = &stmt.stx.statement;
+    loop {
+      match &*inner_stmt.stx {
+        Stmt::Label(label) => inner_stmt = &label.stx.statement,
+        Stmt::FunctionDecl(_) => return true,
+        _ => return false,
+      }
+    }
+  }
+
+  fn stmt_in_statement_position_impl(
+    &mut self,
+    ctx: ParseCtx,
+    allow_legacy_function_decl: bool,
+    disallow_labelled_functions: bool,
+  ) -> SyntaxResult<Node<Stmt>> {
     // TypeScript/JS recovery mode intentionally accepts many invalid programs, so
     // keep using the more permissive `stmt` parsing in those dialects.
     if self.should_recover() {
@@ -102,16 +122,18 @@ impl<'a> Parser<'a> {
       // test262 coverage:
       // - `if (false) let // ASI\nx = 1;` must parse as `if (false) let; x = 1;`
       // - `if (false) let\n[a] = 0;` is still a SyntaxError due to the `let [` lookahead restriction.
-      TT::KeywordLet if t1.typ == TT::BracketOpen => Err(t0.error(SyntaxErrorType::ExpectedSyntax(
-        "statement (not a declaration)",
-      ))),
+      TT::KeywordLet if t1.typ == TT::BracketOpen => Err(t0.error(
+        SyntaxErrorType::ExpectedSyntax("statement (not a declaration)"),
+      )),
       TT::KeywordLet
         if t1.preceded_by_line_terminator
           && (t1.typ == TT::BraceOpen || is_valid_pattern_identifier(t1.typ, ctx.rules)) =>
       {
         Ok(self.expr_stmt(ctx)?.into_wrapped())
       }
-      TT::KeywordLet if t1.typ == TT::BraceOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) => {
+      TT::KeywordLet
+        if t1.typ == TT::BraceOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) =>
+      {
         Err(t0.error(SyntaxErrorType::ExpectedSyntax(
           "statement (not a declaration)",
         )))
@@ -142,6 +164,15 @@ impl<'a> Parser<'a> {
       // allowances.
       TT::KeywordAsync if t1.typ == TT::KeywordFunction && !t1.preceded_by_line_terminator => {
         Err(t0.error(SyntaxErrorType::ExpectedSyntax("statement")))
+      }
+
+      t if is_valid_pattern_identifier(t, ctx.rules) && t1.typ == TT::Colon => {
+        let label_stmt = self.label_stmt(ctx)?;
+        if disallow_labelled_functions && Self::label_chain_ends_in_function(&label_stmt) {
+          // Static Semantics: IsLabelledFunction(Statement)
+          return Err(t0.error(SyntaxErrorType::ExpectedSyntax("statement")));
+        }
+        Ok(label_stmt.into_wrapped())
       }
 
       // Everything else is a valid `Statement` and can be handled by the normal
@@ -446,7 +477,7 @@ impl<'a> Parser<'a> {
         name: label_name.clone(),
         is_iteration,
       });
-      let statement = p.stmt_in_statement_position(ctx.non_top_level(), true);
+      let statement = p.stmt_in_statement_position_impl(ctx.non_top_level(), true, false);
       p.labels.truncate(prev_labels_len);
       let statement = statement?;
       Ok(LabelStmt {
