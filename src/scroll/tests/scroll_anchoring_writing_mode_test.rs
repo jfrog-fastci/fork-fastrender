@@ -18,7 +18,7 @@ fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
   // The anchor is the only visible fragment with a box id and remains in view under the initial
   // scroll offset.
   let anchor_old_bounds = Rect::from_xywh(20.0, 0.0, 10.0, 10.0);
-  let anchor_new_bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+  let anchor_new_bounds = Rect::from_xywh(35.0, 0.0, 10.0, 10.0);
 
   let anchor_old = FragmentNode::new_block_with_id(anchor_old_bounds, 1, vec![]);
   let root_old = FragmentNode::new_block_styled(
