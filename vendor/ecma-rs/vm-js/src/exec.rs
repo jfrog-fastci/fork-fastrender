@@ -11533,6 +11533,64 @@ impl<'a> Evaluator<'a> {
           Ok(value)
         }
       },
+      OperatorName::AssignmentBitwiseAnd
+      | OperatorName::AssignmentBitwiseOr
+      | OperatorName::AssignmentBitwiseXor => match &*expr.left.stx {
+        Expr::ObjPat(_) | Expr::ArrPat(_) => Err(VmError::Unimplemented(
+          "assignment bitwise op to destructuring patterns",
+        )),
+        _ => {
+          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut op_scope = scope.reborrow();
+          self.root_reference(&mut op_scope, &reference)?;
+
+          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
+          op_scope.push_root(left)?;
+          let right = self.eval_expr(&mut op_scope, &expr.right)?;
+          // Root `right` across `ToNumeric` and BigInt operations.
+          op_scope.push_root(right)?;
+
+          let left_num = self.to_numeric(&mut op_scope, left)?;
+          let right_num = self.to_numeric(&mut op_scope, right)?;
+          let value = match (left_num, right_num) {
+            (NumericValue::Number(a), NumericValue::Number(b)) => {
+              let a = to_int32(a);
+              let b = to_int32(b);
+              let out = match expr.operator {
+                OperatorName::AssignmentBitwiseAnd => a & b,
+                OperatorName::AssignmentBitwiseOr => a | b,
+                OperatorName::AssignmentBitwiseXor => a ^ b,
+                _ => unreachable!(),
+              };
+              Ok(Value::Number(out as f64))
+            }
+            (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+              let out = {
+                let a = op_scope.heap().get_bigint(a)?;
+                let b = op_scope.heap().get_bigint(b)?;
+                match expr.operator {
+                  OperatorName::AssignmentBitwiseAnd => a.bitwise_and(b)?,
+                  OperatorName::AssignmentBitwiseOr => a.bitwise_or(b)?,
+                  OperatorName::AssignmentBitwiseXor => a.bitwise_xor(b)?,
+                  _ => unreachable!(),
+                }
+              };
+              let out = op_scope.alloc_bigint(out)?;
+              Ok(Value::BigInt(out))
+            }
+            _ => Err(throw_type_error(
+              self.vm,
+              &mut op_scope,
+              "Cannot mix BigInt and other types",
+            )?),
+          }?;
+
+          op_scope.push_root(value)?;
+          self.put_value_to_reference(&mut op_scope, &reference, value)?;
+          Ok(value)
+        }
+      },
       OperatorName::LogicalAnd => {
         let left = self.eval_expr(scope, &expr.left)?;
         if !to_boolean(scope.heap(), left)? {
