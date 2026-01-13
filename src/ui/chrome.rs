@@ -5934,6 +5934,25 @@ mod tests {
       .unwrap_or_else(|| panic!("expected temp id {key:?}"))
   }
 
+  fn nav_row_tab_order(ctx: &egui::Context) -> Vec<egui::Id> {
+    vec![
+      expect_temp_id(ctx, "chrome_back_button_id"),
+      expect_temp_id(ctx, "chrome_forward_button_id"),
+      expect_temp_id(ctx, "chrome_reload_stop_button_id"),
+      expect_temp_id(ctx, "chrome_home_button_id"),
+      // Zoom controls are present in non-compact layout (800px wide test context).
+      expect_temp_id(ctx, "chrome_zoom_out_button_id"),
+      expect_temp_id(ctx, "chrome_zoom_reset_button_id"),
+      expect_temp_id(ctx, "chrome_zoom_in_button_id"),
+      // Address bar + right-side actions (left-to-right): address bar, downloads, bookmark, menu, appearance.
+      expect_temp_id(ctx, "chrome_address_bar_text_edit_id"),
+      expect_temp_id(ctx, "chrome_downloads_button_id"),
+      expect_temp_id(ctx, "chrome_bookmark_star_id"),
+      expect_temp_id(ctx, "chrome_menu_button_id"),
+      expect_temp_id(ctx, "chrome_appearance_button_id"),
+    ]
+  }
+
   #[test]
   fn tab_focus_traversal_in_nav_row_is_left_to_right() {
     // Expected focus traversal order matches the visual left-to-right order of the main toolbar
@@ -5952,22 +5971,7 @@ mod tests {
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
     let _ = ctx.end_frame();
 
-    let order = vec![
-      expect_temp_id(&ctx, "chrome_back_button_id"),
-      expect_temp_id(&ctx, "chrome_forward_button_id"),
-      expect_temp_id(&ctx, "chrome_reload_stop_button_id"),
-      expect_temp_id(&ctx, "chrome_home_button_id"),
-      // Zoom controls are present in non-compact layout (800px wide test context).
-      expect_temp_id(&ctx, "chrome_zoom_out_button_id"),
-      expect_temp_id(&ctx, "chrome_zoom_reset_button_id"),
-      expect_temp_id(&ctx, "chrome_zoom_in_button_id"),
-      // Address bar + right-side actions (left-to-right): address bar, downloads, bookmark, menu, appearance.
-      expect_temp_id(&ctx, "chrome_address_bar_text_edit_id"),
-      expect_temp_id(&ctx, "chrome_downloads_button_id"),
-      expect_temp_id(&ctx, "chrome_bookmark_star_id"),
-      expect_temp_id(&ctx, "chrome_menu_button_id"),
-      expect_temp_id(&ctx, "chrome_appearance_button_id"),
-    ];
+    let order = nav_row_tab_order(&ctx);
 
     // Frame 1: focus the first widget (back button).
     ctx.memory_mut(|mem| mem.request_focus(order[0]));
@@ -5999,33 +6003,34 @@ mod tests {
 
   #[test]
   fn shift_tab_focus_traversal_in_nav_row_is_right_to_left() {
+    // Mirror `tab_focus_traversal_in_nav_row_is_left_to_right`, but traverse backwards (Shift+Tab)
+    // from the right-most toolbar control.
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(
-      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
-      true,
-    );
+    let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
+    tab.can_go_back = true;
+    tab.can_go_forward = true;
+    app.push_tab(tab, true);
+    let bookmarks = BookmarkStore::default();
     let ctx = egui::Context::default();
 
-    // Frame 1: layout and capture widget IDs.
+    // Frame 0: render once to capture the widget ids from `store_test_id`.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
     let _ = ctx.end_frame();
 
-    let home_id = expect_temp_id(&ctx, "chrome_home_button_id");
-    let address_bar_text_edit_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
-    let address_bar_display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
-    let menu_button_id = expect_temp_id(&ctx, "chrome_menu_button_id");
+    let order = nav_row_tab_order(&ctx);
+    let reverse: Vec<_> = order.iter().rev().copied().collect();
 
-    // Frame 2: focus the menu button as a right-side anchor, then Shift+Tab backward.
-    ctx.memory_mut(|mem| mem.request_focus(menu_button_id));
+    // Frame 1: focus the last widget (appearance button).
+    ctx.memory_mut(|mem| mem.request_focus(reverse[0]));
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
     let _ = ctx.end_frame();
 
     assert!(
-      ctx.memory(|mem| mem.has_focus(menu_button_id)),
-      "expected initial focus on menu button"
+      ctx.memory(|mem| mem.has_focus(reverse[0])),
+      "expected initial focus on appearance button"
     );
 
     fn shift_tab_press() -> egui::Event {
@@ -6040,40 +6045,22 @@ mod tests {
       }
     }
 
-    let mut address_step: Option<usize> = None;
-    let mut home_step: Option<usize> = None;
-
-    for step in 0..32 {
+    // Subsequent frames: press Shift+Tab and ensure focus moves in reverse order.
+    for (idx, expected) in reverse.iter().enumerate().skip(1) {
       begin_frame(&ctx, vec![shift_tab_press()]);
-      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
       let _ = ctx.end_frame();
 
-      let address_focused = ctx.memory(|mem| {
-        mem.has_focus(address_bar_text_edit_id) || mem.has_focus(address_bar_display_id)
-      });
-      let home_focused = ctx.memory(|mem| mem.has_focus(home_id));
-
-      if address_focused && address_step.is_none() {
-        address_step = Some(step);
-      }
-      if home_focused && home_step.is_none() {
-        home_step = Some(step);
-      }
-
-      if address_step.is_some() && home_step.is_some() {
-        break;
-      }
+      let focused = order
+        .iter()
+        .copied()
+        .find(|id| ctx.memory(|mem| mem.has_focus(*id)));
+      assert_eq!(
+        focused,
+        Some(*expected),
+        "unexpected focus after Shift+Tab step {idx}; expected {expected:?}, got {focused:?}"
+      );
     }
-
-    let address_step =
-      address_step.unwrap_or_else(|| panic!("expected Shift+Tab traversal to reach address bar"));
-    let home_step =
-      home_step.unwrap_or_else(|| panic!("expected Shift+Tab traversal to reach home button"));
-
-    assert!(
-      address_step < home_step,
-      "expected address bar to be focused before home button when Shift+Tabbing backward (address step {address_step}, home step {home_step})"
-    );
   }
 
   fn click_menu_item(
