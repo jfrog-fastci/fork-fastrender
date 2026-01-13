@@ -498,6 +498,19 @@ impl BrowserDocumentDom2 {
     }
   }
 
+  /// Marks the paint stage dirty without invalidating style/layout.
+  ///
+  /// This is intended for dynamic sources whose pixels can change between frames without any DOM
+  /// mutations (for example: video playback). Calling this ensures the next
+  /// [`render_if_needed`](Self::render_if_needed) produces a fresh frame while reusing cached
+  /// style/layout artifacts when possible.
+  ///
+  /// This sets `paint_dirty = true` while leaving `style_dirty`/`layout_dirty` unchanged, and does
+  /// not clear any existing dirtiness flags.
+  pub fn invalidate_paint(&mut self) {
+    self.paint_dirty = true;
+  }
+
   /// Returns true when style/layout must be recomputed before painting.
   pub fn needs_layout(&self) -> bool {
     self.prepared.is_none()
@@ -2578,6 +2591,47 @@ mod tests {
 
     assert!(doc.render_if_needed().unwrap().is_some());
     assert!(doc.render_if_needed().unwrap().is_none());
+  }
+
+  #[test]
+  fn invalidate_paint_triggers_repaint_without_layout() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+
+    // Prime the layout cache.
+    assert!(doc.render_if_needed()?.is_some());
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "expected render_if_needed to return None when clean"
+    );
+
+    let before = doc.invalidation_counters();
+    assert!(
+      !doc.needs_layout(),
+      "expected document to have up-to-date layout after initial render"
+    );
+
+    doc.invalidate_paint();
+    assert!(
+      !doc.needs_layout(),
+      "paint-only invalidation should not mark style/layout dirty"
+    );
+
+    assert!(
+      doc.render_if_needed()?.is_some(),
+      "expected paint-only invalidation to trigger a repaint"
+    );
+
+    let after = doc.invalidation_counters();
+    assert_eq!(
+      after, before,
+      "paint-only invalidation should reuse cached style/layout artifacts"
+    );
+    Ok(())
   }
 
   #[test]

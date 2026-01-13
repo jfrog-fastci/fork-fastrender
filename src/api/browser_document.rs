@@ -714,6 +714,19 @@ impl BrowserDocument {
   pub fn needs_layout(&self) -> bool {
     self.prepared.is_none() || self.style_dirty || self.layout_dirty
   }
+
+  /// Marks the paint stage dirty without invalidating style/layout.
+  ///
+  /// This is intended for dynamic sources whose pixels can change between frames without any DOM
+  /// mutations (for example: video playback). Calling this ensures the next
+  /// [`render_if_needed`](Self::render_if_needed) produces a fresh frame while reusing cached
+  /// style/layout artifacts when possible.
+  ///
+  /// This sets `paint_dirty = true` while leaving `style_dirty`/`layout_dirty` unchanged, and does
+  /// not clear any existing dirtiness flags.
+  pub fn invalidate_paint(&mut self) {
+    self.paint_dirty = true;
+  }
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
   pub fn set_scroll(&mut self, scroll_x: f32, scroll_y: f32) {
     if self.options.scroll_x != scroll_x || self.options.scroll_y != scroll_y {
