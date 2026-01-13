@@ -4,6 +4,7 @@ pub mod html_escape;
 pub mod appearance;
 pub mod compositor;
 pub mod renderer_media_prefs;
+pub mod perf_log;
 pub mod chrome_assets;
 pub mod bookmarks;
 pub mod bookmarks_io_job;

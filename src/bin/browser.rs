@@ -216,6 +216,15 @@ mod perf_log {
       input_to_present_ms: f64,
       count: u32,
     },
+    TabSwitch {
+      schema_version: u32,
+      t_ms: u64,
+      window_id: &'a str,
+      from_tab_id: u64,
+      to_tab_id: u64,
+      cached: bool,
+      latency_ms: u64,
+    },
     Resize {
       schema_version: u32,
       t_ms: u64,
@@ -10130,6 +10139,26 @@ impl PerfWindowLog {
     self.pending_resize = Some(PendingPerfResize { at, size_px });
   }
 
+  fn tab_switch(
+    &mut self,
+    from_tab_id: fastrender::ui::TabId,
+    to_tab_id: fastrender::ui::TabId,
+    cached: bool,
+    latency_ms: u64,
+    at: std::time::Instant,
+  ) {
+    let event = perf_log::PerfEvent::TabSwitch {
+      schema_version: perf_log::SCHEMA_VERSION,
+      t_ms: self.ts_ms(at),
+      window_id: &self.window_id,
+      from_tab_id: from_tab_id.0,
+      to_tab_id: to_tab_id.0,
+      cached,
+      latency_ms,
+    };
+    self.emit(&event);
+  }
+
   fn navigation_started(
     &mut self,
     tab_id: fastrender::ui::TabId,
@@ -10598,6 +10627,7 @@ struct App {
   debug_log_overlay_pointer_capture: bool,
   media_controls_overlay_pointer_capture: bool,
   hud: Option<BrowserHud>,
+  tab_switch_latency: Option<fastrender::ui::perf_log::TabSwitchLatencyTracker>,
   idle_repaint_monitor: Option<IdleRepaintMonitor>,
   perf_log: Option<PerfWindowLog>,
 
@@ -11318,6 +11348,11 @@ impl App {
     } else {
       None
     };
+    let tab_switch_latency = if hud.is_some() || perf_log_enabled {
+      Some(fastrender::ui::perf_log::TabSwitchLatencyTracker::new())
+    } else {
+      None
+    };
 
     let mut browser_state = fastrender::ui::BrowserAppState::new();
     browser_state.history = history;
@@ -11491,6 +11526,7 @@ impl App {
       debug_log_overlay_pointer_capture: false,
       media_controls_overlay_pointer_capture: false,
       hud,
+      tab_switch_latency,
       idle_repaint_monitor,
       perf_log,
       tab_notifications: std::collections::HashMap::new(),
@@ -16408,6 +16444,20 @@ impl App {
       stage,
       last_stage
     );
+
+    match self.tab_switch_latency.as_ref().and_then(|tracker| tracker.last()) {
+      Some(switch) => {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "tab_switch: {}ms cached={}",
+          switch.latency_ms(),
+          if switch.cached { "yes" } else { "no" }
+        );
+      }
+      None => {
+        let _ = writeln!(&mut hud.text_buf, "tab_switch: - ms cached=-");
+      }
+    }
 
     if let (Some((w, h)), Some(dpr)) = (viewport_css, dpr) {
       let _ = writeln!(&mut hud.text_buf, "viewport_css: {w}x{h}  dpr: {dpr:.2}");
@@ -22141,9 +22191,19 @@ impl App {
           self.window.request_redraw();
         }
         ChromeAction::ActivateTab(tab_id) => {
+          let prev_active = self.browser_state.active_tab_id();
           if self.browser_state.set_active_tab(tab_id) {
             session_dirty = true;
             open_tabs_snapshot_dirty = true;
+            if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+              let cached = self.tab_textures.contains_key(&tab_id)
+                || self
+                  .browser_state
+                  .tab(tab_id)
+                  .and_then(|tab| tab.latest_frame_meta.as_ref())
+                  .is_some();
+              tracker.start(prev, tab_id, cached);
+            }
             self.viewport_cache_tab = None;
             self.last_page_upload_at = None;
             self.next_page_upload_redraw = None;
@@ -23384,6 +23444,20 @@ impl App {
         .unwrap_or((false, None, None, false));
 
       if let Some(tex) = self.tab_textures.get_mut(&active_tab) {
+        if let Some(tracker) = self.tab_switch_latency.as_mut() {
+          if let Some(switch) = tracker.mark_tab_presented(active_tab) {
+            if let Some(perf_log) = self.perf_log.as_mut() {
+              perf_log.tab_switch(
+                switch.from_tab,
+                switch.to_tab,
+                switch.cached,
+                switch.latency_ms(),
+                std::time::Instant::now(),
+              );
+            }
+          }
+        }
+
         let loading_ui =
           fastrender::ui::loading_overlay::decide_page_loading_ui(true, tab_loading, tab_stage);
         self.page_loading_overlay_blocks_input =

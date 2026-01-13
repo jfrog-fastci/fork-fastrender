@@ -126,6 +126,7 @@ mod ui_file_drop_label_for;
 mod ui_file_drop_prevent_default;
 mod ui_fragment_navigation;
 mod ui_frame_upload_coalescing;
+mod ui_tab_switch_perf_log;
 mod ui_input_routing;
 mod ui_keyboard_horizontal_scrolling;
 mod ui_browser_tab_controller_focus_scroll;
