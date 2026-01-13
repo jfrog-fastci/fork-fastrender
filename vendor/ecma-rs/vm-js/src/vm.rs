@@ -288,7 +288,10 @@ pub struct Vm {
   interrupt: InterruptToken,
   interrupt_handle: InterruptHandle,
   budget: BudgetState,
-  math_random_state: u64,
+  /// Fallback deterministic `Math.random()` state used when no realm is active.
+  ///
+  /// In normal operation, `Math.random()` state is stored per-realm in [`Vm::realm_states`].
+  unscoped_math_random_state: u64,
   /// Counter used to assign deterministic `[[AsyncEvaluationOrder]]` values during async module
   /// evaluation (top-level await).
   ///
@@ -357,27 +360,15 @@ pub struct Vm {
   /// The embedding MUST ensure the pointed-to `ModuleGraph` outlives the VM (or clears this pointer
   /// before dropping the graph).
   module_graph: Option<*mut ModuleGraph>,
-  /// Active realm id for per-realm VM state (`intrinsics`, `global_var_names`, etc).
-  active_realm_id: Option<RealmId>,
-  /// Per-realm VM state.
+  /// Per-realm VM state (intrinsics, tracked global var names, deterministic PRNG state, ...).
   realm_states: HashMap<RealmId, RealmState>,
-  // Per-realm intrinsic graph used by built-in native function implementations.
+  /// Unscoped intrinsics used when the host installs intrinsics without associating them with a
+  /// specific [`RealmId`] (see [`Vm::set_intrinsics`]).
   intrinsics: Option<Intrinsics>,
-  /// The [`RealmId`] that `intrinsics` (and other single-realm VM state) currently corresponds to.
+  /// Default realm used by host entry points that run without an active execution context.
   ///
-  /// This is used to avoid clearing the wrong realm's state when tearing down a realm that is not
-  /// the most recently-initialized realm.
+  /// When multiple realms exist, most VM operations should consult [`Vm::current_realm`] instead.
   intrinsics_realm: Option<RealmId>,
-  /// Set of global `var`/function declaration names in the current realm.
-  ///
-  /// This models the GlobalEnvironmentRecord's internal `[[VarNames]]` list, which is used by
-  /// `GlobalDeclarationInstantiation` to reject global lexical declarations that would conflict
-  /// with pre-existing global `var`/function declarations (even when the corresponding global
-  /// property is configurable).
-  ///
-  /// Note: This is VM-owned (not GC-managed) state. `vm-js` currently assumes a single active
-  /// realm per `Vm`; when multiple realms are supported, this will need to become realm-indexed.
-  global_var_names: HashSet<String>,
   #[cfg(test)]
   native_calls_len_override: Option<usize>,
   #[cfg(test)]
@@ -403,11 +394,9 @@ impl std::fmt::Debug for Vm {
     ds.field("template_registry", &self.template_registry.len());
     ds.field("async_continuations", &self.async_continuations.len());
     ds.field("module_graph", &self.module_graph.is_some());
-    ds.field("active_realm_id", &self.active_realm_id);
     ds.field("realm_states", &self.realm_states.len());
     ds.field("intrinsics", &self.intrinsics);
     ds.field("intrinsics_realm", &self.intrinsics_realm);
-    ds.field("global_var_names", &self.global_var_names.len());
     #[cfg(test)]
     {
       ds.field("native_calls_len_override", &self.native_calls_len_override);
@@ -601,14 +590,14 @@ impl Vm {
     let (interrupt, interrupt_handle) =
       InterruptToken::from_internal_and_external_flags(internal, external);
     let check_time_every = options.check_time_every;
-    let math_random_state = options.math_random_seed;
+    let unscoped_math_random_state = options.math_random_seed;
     let mut vm = Self {
       options,
       interrupt,
       interrupt_handle,
       // Placeholder; immediately overwritten by `reset_budget_to_default`.
       budget: BudgetState::new(Budget::unlimited(check_time_every)),
-      math_random_state,
+      unscoped_math_random_state,
       module_async_evaluation_count: 0,
       stack: Vec::new(),
       execution_context_stack: Vec::new(),
@@ -637,11 +626,9 @@ impl Vm {
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
       module_graph: None,
-      active_realm_id: None,
       realm_states: HashMap::new(),
       intrinsics: None,
       intrinsics_realm: None,
-      global_var_names: HashSet::new(),
       #[cfg(test)]
       native_calls_len_override: None,
       #[cfg(test)]
@@ -651,11 +638,11 @@ impl Vm {
     vm
   }
 
-  pub(crate) fn register_realm_state(&mut self, realm: RealmId, intrinsics: Intrinsics) -> Result<(), VmError> {
-    // If a realm is already active, snapshot its per-realm state before switching the VM to the
-    // newly-created realm.
-    self.save_active_realm_state()?;
-
+  pub(crate) fn register_realm_state(
+    &mut self,
+    realm: RealmId,
+    intrinsics: Intrinsics,
+  ) -> Result<(), VmError> {
     // Ensure we can insert without panicking on allocator OOM.
     if !self.realm_states.contains_key(&realm) {
       self
@@ -664,89 +651,52 @@ impl Vm {
         .map_err(|_| VmError::OutOfMemory)?;
     }
 
-    let entry = self.realm_states.entry(realm).or_insert_with(|| RealmState {
-      intrinsics,
-      global_var_names: HashSet::new(),
-      math_random_state: self.options.math_random_seed,
-    });
-    entry.intrinsics = intrinsics;
-    // New realm initialization boundary for per-realm PRNG.
-    entry.math_random_state = self.options.math_random_seed;
+    // Realm initialization boundary for per-realm PRNG + `[[VarNames]]`.
+    self.realm_states.insert(
+      realm,
+      RealmState {
+        intrinsics,
+        global_var_names: HashSet::new(),
+        math_random_state: self.options.math_random_seed,
+      },
+    );
 
-    self.active_realm_id = Some(realm);
-    self.intrinsics = Some(intrinsics);
+    // Treat the most recently-initialized realm as the default for host entry points that run
+    // without an execution context.
     self.intrinsics_realm = Some(realm);
-    self.math_random_state = self.options.math_random_seed;
-    self.global_var_names.clear();
     Ok(())
   }
 
-  pub(crate) fn save_active_realm_state(&mut self) -> Result<(), VmError> {
-    let Some(active) = self.active_realm_id else {
-      return Ok(());
-    };
-    let Some(intr) = self.intrinsics else {
-      return Ok(());
-    };
-    if !self.realm_states.contains_key(&active) {
-      self
-        .realm_states
-        .try_reserve(1)
-        .map_err(|_| VmError::OutOfMemory)?;
-      self.realm_states.insert(
-        active,
-        RealmState {
-          intrinsics: intr,
-          global_var_names: HashSet::new(),
-          math_random_state: self.math_random_state,
-        },
-      );
-    }
-    let state = self
-      .realm_states
-      .get_mut(&active)
-      .ok_or(VmError::InvariantViolation("active realm state missing"))?;
-    state.intrinsics = intr;
-    state.math_random_state = self.math_random_state;
-    mem::swap(&mut state.global_var_names, &mut self.global_var_names);
-    // After saving, clear any stale previous snapshot that was swapped into `global_var_names`.
-    // This keeps the active VM state empty and ready to load another realm's state.
-    self.global_var_names.clear();
-    Ok(())
-  }
-
-  /// Switch the VM's active realm state (intrinsics, global var names, per-realm PRNG) to `realm`.
+  /// Set the VM's **default realm** (used when no [`ExecutionContext`] is active) to `realm`.
   ///
-  /// This is primarily intended for embeddings that manage multiple realms on a single VM/heap
-  /// (e.g. test262 `$262.createRealm`). It does **not** push an [`ExecutionContext`]; callers that
-  /// need `Vm::current_realm()` to reflect the active realm should also manage execution contexts.
+  /// `vm-js` stores per-realm VM state (intrinsics, tracked global `var`/function names, deterministic
+  /// `Math.random()` state, ...) in [`Vm::realm_states`]. Most runtime operations consult the realm
+  /// on the active execution context stack (`Vm::current_realm`).
+  ///
+  /// Some host entry points run without an execution context (for example, module linking/loader
+  /// plumbing). In those situations this API allows an embedder to set a default realm for
+  /// realm-sensitive operations, and updates the heap's default `%Object.prototype%` accordingly.
   pub fn load_realm_state(
     &mut self,
     heap: &mut Heap,
     realm: RealmId,
   ) -> Result<Option<RealmId>, VmError> {
-    if self.active_realm_id == Some(realm) {
-      return Ok(self.active_realm_id);
+    let prev = self.intrinsics_realm;
+    if prev == Some(realm) {
+      return Ok(prev);
     }
-
-    self.save_active_realm_state()?;
 
     let state = self
       .realm_states
-      .get_mut(&realm)
+      .get(&realm)
       .ok_or(VmError::InvariantViolation("unknown realm id"))?;
 
-    self.intrinsics = Some(state.intrinsics);
     self.intrinsics_realm = Some(realm);
-    self.math_random_state = state.math_random_state;
-    mem::swap(&mut state.global_var_names, &mut self.global_var_names);
     heap.set_default_object_prototype(Some(state.intrinsics.object_prototype()));
-
-    let prev = self.active_realm_id.replace(realm);
     Ok(prev)
   }
 
-  /// Restore a previous realm state returned by [`Vm::load_realm_state`].
+  /// Restore a previous default realm returned by [`Vm::load_realm_state`].
   pub fn restore_realm_state(&mut self, heap: &mut Heap, prev: Option<RealmId>) -> Result<(), VmError> {
     match prev {
       Some(id) => {
@@ -754,11 +704,7 @@ impl Vm {
       }
       None => {
         // No prior realm: clear realm-dependent VM state.
-        self.save_active_realm_state()?;
-        self.active_realm_id = None;
-        self.intrinsics = None;
         self.intrinsics_realm = None;
-        self.global_var_names.clear();
         heap.set_default_object_prototype(None);
       }
     }
@@ -771,11 +717,6 @@ impl Vm {
   /// intrinsics without switching the VM's active realm state (e.g. `ArraySpeciesCreate`'s
   /// cross-realm `%Array%` check).
   pub(crate) fn intrinsics_for_realm(&self, realm: RealmId) -> Option<Intrinsics> {
-    // If the requested realm is the currently-active realm, prefer the live `self.intrinsics`
-    // snapshot so callers observe any in-place updates.
-    if self.active_realm_id == Some(realm) || self.intrinsics_realm == Some(realm) {
-      return self.intrinsics;
-    }
     self.realm_states.get(&realm).map(|state| state.intrinsics)
   }
 
@@ -785,39 +726,60 @@ impl Vm {
   /// context stack. Host code may call into the VM without an execution context (e.g. native tests);
   /// in that case, built-ins can treat this as the "current" realm for realm-sensitive operations.
   pub(crate) fn active_realm_state(&self) -> Option<RealmId> {
-    self.active_realm_id.or(self.intrinsics_realm)
+    self.current_realm().or(self.intrinsics_realm)
   }
 
   pub(crate) fn global_var_names_contains(&self, name: &str) -> bool {
-    self.global_var_names.contains(name)
+    let Some(realm) = self.current_realm().or(self.intrinsics_realm) else {
+      return false;
+    };
+    self
+      .realm_states
+      .get(&realm)
+      .is_some_and(|state| state.global_var_names.contains(name))
   }
 
   pub(crate) fn global_var_names_insert_all<I>(&mut self, names: I) -> Result<(), VmError>
   where
     I: IntoIterator<Item = String>,
   {
+    let realm = self
+      .current_realm()
+      .or(self.intrinsics_realm)
+      .ok_or(VmError::InvariantViolation(
+        "global var name tracking requires an active realm",
+      ))?;
+    let state = self
+      .realm_states
+      .get_mut(&realm)
+      .ok_or(VmError::InvariantViolation("unknown realm id"))?;
+
     let iter = names.into_iter();
     // Best-effort capacity hint to avoid OOM aborts on large scripts.
     let (lower, _) = iter.size_hint();
     if lower != 0 {
-      self
+      state
         .global_var_names
         .try_reserve(lower)
         .map_err(|_| VmError::OutOfMemory)?;
     }
     for name in iter {
       // Ensure each insert cannot abort on OOM.
-      self
+      state
         .global_var_names
         .try_reserve(1)
         .map_err(|_| VmError::OutOfMemory)?;
-      self.global_var_names.insert(name);
+      state.global_var_names.insert(name);
     }
     Ok(())
   }
 
   pub(crate) fn global_var_names_clear(&mut self) {
-    self.global_var_names.clear();
+    if let Some(realm) = self.current_realm().or(self.intrinsics_realm) {
+      if let Some(state) = self.realm_states.get_mut(&realm) {
+        state.global_var_names.clear();
+      }
+    }
   }
 
   /// Returns the next pseudorandom `u64` output for `Math.random()` and advances the VM's internal
@@ -830,16 +792,34 @@ impl Vm {
   ///
   /// The algorithm is xorshift64* (Marsaglia), chosen for its tiny constant-time implementation.
   pub(crate) fn next_math_random_u64(&mut self) -> u64 {
+    // Prefer the current realm if one is active; otherwise fall back to the default realm installed
+    // by `Realm::new` / `Vm::load_realm_state`.
+    if let Some(realm) = self.current_realm().or(self.intrinsics_realm) {
+      if let Some(state) = self.realm_states.get_mut(&realm) {
+        // xorshift64* requires a non-zero state. If a host explicitly seeded with 0, fall back to
+        // the default constant so `Math.random()` still produces a useful sequence.
+        if state.math_random_state == 0 {
+          state.math_random_state = 0x243F_6A88_85A3_08D3;
+        }
+        let mut x = state.math_random_state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        state.math_random_state = x;
+        return x.wrapping_mul(0x2545_F491_4F6C_DD1D);
+      }
+    }
+
     // xorshift64* requires a non-zero state. If a host explicitly seeded with 0, fall back to the
     // default constant so `Math.random()` still produces a useful sequence.
-    if self.math_random_state == 0 {
-      self.math_random_state = 0x243F_6A88_85A3_08D3;
+    if self.unscoped_math_random_state == 0 {
+      self.unscoped_math_random_state = 0x243F_6A88_85A3_08D3;
     }
-    let mut x = self.math_random_state;
+    let mut x = self.unscoped_math_random_state;
     x ^= x >> 12;
     x ^= x << 25;
     x ^= x >> 27;
-    self.math_random_state = x;
+    self.unscoped_math_random_state = x;
     x.wrapping_mul(0x2545_F491_4F6C_DD1D)
   }
 
@@ -965,17 +945,9 @@ impl Vm {
       false
     });
 
-    // Clear VM-owned per-realm state only if it belongs to `realm`.
-    // Drop any stored per-realm snapshot state.
     self.realm_states.remove(&realm);
-
-    if self.active_realm_id == Some(realm) || self.intrinsics_realm == Some(realm) {
-      self.active_realm_id = None;
-      self.intrinsics = None;
+    if self.intrinsics_realm == Some(realm) {
       self.intrinsics_realm = None;
-      self.global_var_names.clear();
-      // Reset to the default seed so a fresh realm starts from a deterministic state.
-      self.math_random_state = self.options.math_random_seed;
     }
   }
 
@@ -1489,12 +1461,15 @@ impl Vm {
     }
   }
 
-  /// Replace the VM's active realm intrinsics.
+  /// Replace the VM's unscoped intrinsics fallback.
   ///
-  /// This is normally called by [`crate::Realm::new`] during realm initialization.
+  /// In normal operation, realms are created via [`crate::Realm::new`], which registers per-realm
+  /// intrinsics in [`Vm::realm_states`]. Most runtime operations select intrinsics based on the
+  /// current execution context (`Vm::current_realm`).
   ///
-  /// Embeddings that manage multiple realms on a single [`Vm`] (notably test262's
-  /// `$262.createRealm`) may need to temporarily swap intrinsics while creating new realms.
+  /// This API exists for low-level embeddings that want to install intrinsics without associating
+  /// them with a concrete [`RealmId`]. When a realm is active, its per-realm intrinsics take
+  /// precedence.
   pub fn set_intrinsics(&mut self, intrinsics: Intrinsics) {
     self.intrinsics = Some(intrinsics);
     // Without an explicit realm id, we cannot safely associate these intrinsics with a specific
@@ -1503,39 +1478,73 @@ impl Vm {
   }
 
   pub(crate) fn set_intrinsics_for_realm(&mut self, realm: RealmId, intrinsics: Intrinsics) {
-    self.intrinsics = Some(intrinsics);
+    if !self.realm_states.contains_key(&realm) {
+      // Best-effort: if we cannot reserve, leave intrinsics unchanged.
+      if self.realm_states.try_reserve(1).is_ok() {
+        self.realm_states.insert(
+          realm,
+          RealmState {
+            intrinsics,
+            global_var_names: HashSet::new(),
+            math_random_state: self.options.math_random_seed,
+          },
+        );
+      }
+    }
+    if let Some(state) = self.realm_states.get_mut(&realm) {
+      state.intrinsics = intrinsics;
+      // Intrinsics are installed per realm. Treat this as the realm initialization boundary for
+      // `Math.random()` and reset the per-realm PRNG state.
+      state.math_random_state = self.options.math_random_seed;
+    }
     self.intrinsics_realm = Some(realm);
-    // Intrinsics are installed per realm. Treat this as the realm initialization boundary for
-    // `Math.random()` and reset the per-realm PRNG state.
-    self.math_random_state = self.options.math_random_seed;
   }
 
-  /// Takes ownership of the VM's current global `var`/function declaration name set.
+  /// Takes ownership of the current realm's global `var`/function declaration name set.
   ///
-  /// This models the GlobalEnvironmentRecord internal `[[VarNames]]` list for the **active** realm.
-  ///
-  /// Note: `vm-js` currently stores this per-VM, but embeddings that create multiple realms on a
-  /// shared heap can use this to snapshot/restore the active realm state.
+  /// This models the GlobalEnvironmentRecord internal `[[VarNames]]` list for the current realm
+  /// (as determined by [`Vm::current_realm`] or [`Vm::intrinsics_realm`]).
   pub fn take_global_var_names(&mut self) -> HashSet<String> {
-    mem::take(&mut self.global_var_names)
+    let Some(realm) = self.current_realm().or(self.intrinsics_realm) else {
+      return HashSet::new();
+    };
+    self
+      .realm_states
+      .get_mut(&realm)
+      .map(|state| mem::take(&mut state.global_var_names))
+      .unwrap_or_default()
   }
 
-  /// Replace the VM's global `var`/function declaration name set for the active realm.
+  /// Replace the current realm's global `var`/function declaration name set.
   pub fn set_global_var_names(&mut self, names: HashSet<String>) {
-    self.global_var_names = names;
+    if let Some(realm) = self.current_realm().or(self.intrinsics_realm) {
+      if let Some(state) = self.realm_states.get_mut(&realm) {
+        state.global_var_names = names;
+      }
+    }
   }
 
-  /// Returns the VM's current deterministic `Math.random()` state.
-  ///
-  /// This is intended for embeddings that need to snapshot/restore per-realm state when managing
-  /// multiple realms on a single [`Vm`].
+  /// Returns the current realm's deterministic `Math.random()` state.
   pub fn math_random_state(&self) -> u64 {
-    self.math_random_state
+    let Some(realm) = self.current_realm().or(self.intrinsics_realm) else {
+      return self.unscoped_math_random_state;
+    };
+    self
+      .realm_states
+      .get(&realm)
+      .map(|state| state.math_random_state)
+      .unwrap_or(self.unscoped_math_random_state)
   }
 
-  /// Replace the VM's deterministic `Math.random()` state.
+  /// Replace the current realm's deterministic `Math.random()` state.
   pub fn set_math_random_state(&mut self, state: u64) {
-    self.math_random_state = state;
+    if let Some(realm) = self.current_realm().or(self.intrinsics_realm) {
+      if let Some(realm_state) = self.realm_states.get_mut(&realm) {
+        realm_state.math_random_state = state;
+        return;
+      }
+    }
+    self.unscoped_math_random_state = state;
   }
 
   /// Returns the VM's initialized intrinsics, if any.
@@ -1544,6 +1553,12 @@ impl Vm {
   /// conversions or native builtins) may require access to well-known symbols or prototypes, and
   /// should treat `None` as "realm not initialized".
   pub fn intrinsics(&self) -> Option<Intrinsics> {
+    let realm = self.current_realm().or(self.intrinsics_realm);
+    if let Some(realm) = realm {
+      if let Some(state) = self.realm_states.get(&realm) {
+        return Some(state.intrinsics);
+      }
+    }
     self.intrinsics
   }
 
@@ -2322,7 +2337,7 @@ impl Vm {
     // (`JsRuntime`/`Evaluator`), the realm is tracked via an execution context.
     //
     // Some internal tests call into the VM without an explicit execution context; in that case,
-    // fall back to the single-realm `intrinsics_realm` state that `vm-js` currently maintains.
+    // fall back to the VM's default realm (`intrinsics_realm`).
     let realm = self
       .current_realm()
       .or(self.intrinsics_realm)
@@ -2475,11 +2490,10 @@ impl Vm {
     self.execution_context_stack.last().map(|ctx| ctx.realm)
   }
 
-  /// Returns the realm id that the VM's currently-installed intrinsics belong to, if known.
+  /// Returns the VM's default realm id, if any.
   ///
-  /// This is set by [`Vm::set_intrinsics_for_realm`]. It is useful as a "default realm" in host
-  /// entry points (like module linking/instantiation) that may run without an active execution
-  /// context.
+  /// This is useful as a "default realm" in host entry points (like module linking/instantiation)
+  /// that may run without an active execution context.
   pub(crate) fn intrinsics_realm(&self) -> Option<RealmId> {
     self.intrinsics_realm
   }
@@ -4456,6 +4470,105 @@ mod tests {
     heap.collect_garbage();
     assert!(!heap.is_valid_object(template_obj));
     Ok(())
+  }
+
+  #[test]
+  fn multi_realm_global_var_names_and_math_random_are_isolated() -> Result<(), VmError> {
+    use crate::exec::eval_script_with_host_and_hooks;
+    use crate::microtasks::MicrotaskQueue;
+    use crate::{ExecutionContext, HeapLimits, Realm};
+
+    fn eval_in_realm(
+      vm: &mut Vm,
+      heap: &mut Heap,
+      realm: RealmId,
+      source: &str,
+    ) -> Result<Value, VmError> {
+      let exec_ctx = ExecutionContext {
+        realm,
+        script_or_module: None,
+      };
+      let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
+      let mut scope = heap.scope();
+      let source_string = scope.alloc_string(source)?;
+      let mut host = ();
+      let mut hooks = MicrotaskQueue::new();
+      let value = eval_script_with_host_and_hooks(
+        &mut *vm_ctx,
+        &mut scope,
+        &mut host,
+        &mut hooks,
+        source_string,
+      )?;
+      // These tests do not involve Promises; ensure no jobs were enqueued.
+      assert!(hooks.is_empty());
+      Ok(value)
+    }
+
+    fn value_as_f64(v: Value) -> f64 {
+      match v {
+        Value::Number(n) => n,
+        other => panic!("expected number, got {other:?}"),
+      }
+    }
+
+    fn value_is_undefined(v: Value) -> bool {
+      matches!(v, Value::Undefined)
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let mut realm_a = Realm::new(&mut vm, &mut heap)?;
+    let realm_a_id = realm_a.id();
+    let mut realm_b = Realm::new(&mut vm, &mut heap)?;
+    let realm_b_id = realm_b.id();
+
+    let result: Result<(), VmError> = (|| {
+      // Declare globals in realm A. Realm B was created last, so any "single active realm" bugs
+      // will typically clobber realm B state when running this script.
+      let _ = eval_in_realm(
+        &mut vm,
+        &mut heap,
+        realm_a_id,
+        "var x = 1; function f(){ return 42; }",
+      )?;
+
+      // Realm B should not observe realm A's var-created globals.
+      let b_x = eval_in_realm(&mut vm, &mut heap, realm_b_id, "globalThis.x")?;
+      assert!(
+        value_is_undefined(b_x),
+        "expected realm B globalThis.x to be undefined, got {b_x:?}"
+      );
+
+      // Realm B should not observe realm A's `[[VarNames]]` list during GlobalDeclarationInstantiation.
+      // If var-name tracking leaks across realms, this would throw a SyntaxError.
+      let b_let_x = eval_in_realm(&mut vm, &mut heap, realm_b_id, "let x = 2; x")?;
+      assert_eq!(b_let_x, Value::Number(2.0));
+
+      // Realm A should retain its global binding.
+      let a_x = eval_in_realm(&mut vm, &mut heap, realm_a_id, "globalThis.x")?;
+      assert_eq!(a_x, Value::Number(1.0));
+
+      // `Math.random()` PRNG state should be isolated per realm. Since both realms start from the
+      // same deterministic seed, the per-realm sequences should match.
+      let a_r1 = value_as_f64(eval_in_realm(&mut vm, &mut heap, realm_a_id, "Math.random()")?);
+      let b_r1 = value_as_f64(eval_in_realm(&mut vm, &mut heap, realm_b_id, "Math.random()")?);
+      assert_eq!(a_r1.to_bits(), b_r1.to_bits());
+
+      let a_r2 = value_as_f64(eval_in_realm(&mut vm, &mut heap, realm_a_id, "Math.random()")?);
+      let b_r2 = value_as_f64(eval_in_realm(&mut vm, &mut heap, realm_b_id, "Math.random()")?);
+      assert_eq!(a_r2.to_bits(), b_r2.to_bits());
+      assert_ne!(a_r1.to_bits(), a_r2.to_bits());
+
+      Ok(())
+    })();
+
+    // Avoid leaking persistent roots: always tear down realms, even if script evaluation failed.
+    realm_a.teardown(&mut heap);
+    realm_b.teardown(&mut heap);
+
+    result
   }
 
   #[test]
