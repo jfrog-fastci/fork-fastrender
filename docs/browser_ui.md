@@ -287,6 +287,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Ctrl/Cmd+R / F5 | Reload |
 | Ctrl/Cmd+D | Toggle bookmark for current page |
 | Ctrl+H (Win/Linux); Cmd+Y / Cmd+Shift+H (macOS) | Toggle history panel |
+| Ctrl/Cmd+Shift+Delete | Open “Clear browsing data” dialog |
 | Ctrl/Cmd+Shift+O | Toggle bookmarks manager |
 | Ctrl/Cmd+Plus / Ctrl/Cmd+Equals | Zoom in |
 | Ctrl/Cmd+Minus | Zoom out |
@@ -349,7 +350,7 @@ FastRender’s experimental desktop browser UI supports **bookmarks** and a basi
 - **History**:
   - Open the history panel with <kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux) or <kbd>Cmd</kbd>+<kbd>Y</kbd>
     / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS).
-  - The history UI includes **search** and a **clear** action.
+  - The history UI includes **search** and a **Clear browsing data…** action (with a time range).
 - **Persistence**:
   - Bookmarks and history are stored as JSON files under the per-user FastRender config directory
     (for example `~/.config/fastrender/` on Linux).
