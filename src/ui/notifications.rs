@@ -107,6 +107,82 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
   }
 }
 
+fn parse_tuple_u32_prefix(input: &str) -> Option<((u32, u32), &str)> {
+  let input = input.strip_prefix('(')?;
+  let close = input.find(')')?;
+  let inside = input.get(..close)?;
+  let rest = input.get(close + 1..)?;
+  let mut parts = inside.split(',');
+  let a = parts.next()?.trim().parse::<u32>().ok()?;
+  let b = parts.next()?.trim().parse::<u32>().ok()?;
+  // Ensure there are exactly two elements.
+  if parts.next().is_some() {
+    return None;
+  }
+  Some(((a, b), rest))
+}
+
+fn parse_f32_prefix(input: &str) -> Option<(f32, &str)> {
+  let input = input.trim_start();
+  if input.is_empty() {
+    return None;
+  }
+  let mut end = 0usize;
+  for (idx, ch) in input.char_indices() {
+    let ok = ch.is_ascii_digit() || matches!(ch, '.' | '+' | '-');
+    if !ok {
+      break;
+    }
+    end = idx + ch.len_utf8();
+  }
+  if end == 0 {
+    return None;
+  }
+  let num = input.get(..end)?.parse::<f32>().ok()?;
+  if !num.is_finite() {
+    return None;
+  }
+  Some((num, input.get(end..)?))
+}
+
+fn format_float_compact(value: f32, decimals: usize) -> String {
+  let s = format!("{:.*}", decimals, value);
+  s.trim_end_matches('0')
+    .trim_end_matches('.')
+    .to_string()
+}
+
+fn viewport_clamped_summary(warning: &str) -> Option<String> {
+  // Expected format from `BrowserLimits::warning_text`:
+  // "Viewport clamped: requested viewport_css=(W, H) dpr=... → viewport_css=(W2, H2) dpr=... (..."
+  let mut rest = warning.strip_prefix("Viewport clamped:")?.trim_start();
+  rest = rest.strip_prefix("requested viewport_css=")?;
+  let (requested_viewport, after_requested_viewport) = parse_tuple_u32_prefix(rest)?;
+
+  let mut rest = after_requested_viewport.trim_start();
+  rest = rest.strip_prefix("dpr=")?;
+  let (requested_dpr, after_requested_dpr) = parse_f32_prefix(rest)?;
+
+  let mut rest = after_requested_dpr.trim_start();
+  rest = rest.strip_prefix("→")?.trim_start();
+  rest = rest.strip_prefix("viewport_css=")?;
+  let (clamped_viewport, after_clamped_viewport) = parse_tuple_u32_prefix(rest)?;
+
+  let mut rest = after_clamped_viewport.trim_start();
+  rest = rest.strip_prefix("dpr=")?;
+  let (clamped_dpr, _) = parse_f32_prefix(rest)?;
+
+  Some(format!(
+    "{}×{} @ {} → {}×{} @ {}",
+    requested_viewport.0,
+    requested_viewport.1,
+    format_float_compact(requested_dpr, 2),
+    clamped_viewport.0,
+    clamped_viewport.1,
+    format_float_compact(clamped_dpr, 2),
+  ))
+}
+
 /// Classify a warning string into a reusable presentation model for the warning toast UI.
 ///
 /// Deterministic and UI-framework-agnostic (no egui types).
@@ -121,7 +197,8 @@ pub fn classify_warning_toast(warning: Option<&str>) -> Option<WarningToastPrese
   if warning.starts_with("Viewport clamped:") || warning == "Viewport clamped" {
     return Some(WarningToastPresentation {
       title: "Viewport clamped".to_string(),
-      summary: Some("Viewport was reduced to stay within safety limits.".to_string()),
+      summary: viewport_clamped_summary(warning)
+        .or_else(|| Some("Viewport was reduced to stay within safety limits.".to_string())),
       icon: WarningToastIcon::WarningInsecure,
     });
   }
@@ -207,12 +284,12 @@ mod tests {
 
   #[test]
   fn classify_warning_toast_viewport_clamped() {
-    let presentation =
-      classify_warning_toast(Some("Viewport clamped: requested viewport_css=(1,1) dpr=2")).unwrap();
+    let input = "Viewport clamped: requested viewport_css=(800, 600) dpr=2.000 → viewport_css=(800, 600) dpr=1.000 (pixmap_px=800x600; limits: max_dim_px=8192 max_pixels=50000000)";
+    let presentation = classify_warning_toast(Some(input)).unwrap();
     assert_eq!(presentation.title, "Viewport clamped");
     assert_eq!(
       presentation.summary.as_deref(),
-      Some("Viewport was reduced to stay within safety limits.")
+      Some("800×600 @ 2 → 800×600 @ 1")
     );
     assert_eq!(presentation.icon, WarningToastIcon::WarningInsecure);
   }
