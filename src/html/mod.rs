@@ -12,6 +12,7 @@ pub(crate) mod iframe_url;
 pub mod image_attrs;
 pub mod image_prefetch;
 pub mod images;
+pub mod media;
 pub mod meta_refresh;
 pub mod pausable_html5ever;
 pub mod referrer_policy;
