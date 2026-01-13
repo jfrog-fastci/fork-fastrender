@@ -27,6 +27,7 @@ pub mod decoder;
 pub mod demux;
 pub mod demuxer;
 pub mod loader;
+pub mod track_selection;
 pub mod master_clock;
 pub mod mp4;
 pub mod packet;

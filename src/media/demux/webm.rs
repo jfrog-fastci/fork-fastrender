@@ -3,6 +3,10 @@ use crate::media::{
   MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
   MediaVideoInfo,
 };
+use crate::media::track_selection::{
+  select_primary_audio_track_id, select_primary_video_track_id, TrackCandidate, TrackFilterMode,
+  TrackSelectionPolicy,
+};
 use crate::render_control::{check_root, check_root_periodic};
 use matroska_demuxer::{DemuxError, Frame, MatroskaFile, TrackType};
 use std::collections::{HashMap, VecDeque};
@@ -55,6 +59,10 @@ pub struct WebmDemuxerOptions {
   pub inter_track_reordering: bool,
   /// Maximum number of queued packets per track when inter-track reordering is enabled.
   pub per_track_queue_capacity: usize,
+  /// Policy used to pick the primary audio/video tracks when multiple tracks are present.
+  pub track_selection_policy: TrackSelectionPolicy,
+  /// Which tracks to emit packets for.
+  pub track_filter: TrackFilterMode,
 }
 
 impl Default for WebmDemuxerOptions {
@@ -62,14 +70,75 @@ impl Default for WebmDemuxerOptions {
     Self {
       inter_track_reordering: true,
       per_track_queue_capacity: 8,
+      track_selection_policy: TrackSelectionPolicy::default(),
+      track_filter: TrackFilterMode::PrimaryOnly,
     }
   }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WebmTrackSelectionInfo {
+  id: u64,
+  track_type: TrackType,
+  codec: MediaCodec,
+  enabled: bool,
+  default: bool,
+  commentary: bool,
+  hearing_impaired: bool,
+  pixel_count: u64,
+}
+
+fn select_primary_track_ids(
+  tracks: &[WebmTrackSelectionInfo],
+  policy: TrackSelectionPolicy,
+) -> (Option<u64>, Option<u64>) {
+  let mut video_candidates = Vec::new();
+  let mut audio_candidates = Vec::new();
+
+  for t in tracks {
+    match t.track_type {
+      TrackType::Video => {
+        if t.codec != MediaCodec::Vp9 {
+          continue;
+        }
+        video_candidates.push(TrackCandidate {
+          id: t.id,
+          enabled: t.enabled,
+          default: t.default,
+          commentary: t.commentary,
+          hearing_impaired: t.hearing_impaired,
+          pixel_count: t.pixel_count,
+        });
+      }
+      TrackType::Audio => {
+        if t.codec != MediaCodec::Opus {
+          continue;
+        }
+        audio_candidates.push(TrackCandidate {
+          id: t.id,
+          enabled: t.enabled,
+          default: t.default,
+          commentary: t.commentary,
+          hearing_impaired: t.hearing_impaired,
+          pixel_count: 0,
+        });
+      }
+      _ => {}
+    }
+  }
+
+  (
+    select_primary_video_track_id(&video_candidates, policy),
+    select_primary_audio_track_id(&audio_candidates, policy),
+  )
 }
 
 pub struct WebmDemuxer<R: Read + Seek> {
   mkv: MatroskaFile<DeadlineReader<R>>,
   options: WebmDemuxerOptions,
   tracks: Vec<MediaTrackInfo>,
+  primary_video_track_id: Option<u64>,
+  primary_audio_track_id: Option<u64>,
   timestamp_scale_ns: u64,
   /// Codec delay (nanoseconds) per track.
   codec_delay_ns: HashMap<u64, u64>,
@@ -100,8 +169,8 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     let mkv = MatroskaFile::open(DeadlineReader::new(reader)).map_err(map_demux_error)?;
     let timestamp_scale_ns = mkv.info().timestamp_scale().get();
 
-    let mut codec_delay_ns = HashMap::new();
-    let mut max_codec_delay_ns = 0_u64;
+    let mut selection_infos = Vec::new();
+    let mut supported_codec_delay_ns = HashMap::new();
     let mut tracks = Vec::new();
 
     for track in mkv.tracks() {
@@ -134,10 +203,26 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         other => MediaCodec::Unknown(other.to_string()),
       };
 
+      if matches!(track.track_type(), TrackType::Video | TrackType::Audio) {
+        let pixel_count = track
+          .video()
+          .map(|v| v.pixel_width().get().saturating_mul(v.pixel_height().get()))
+          .unwrap_or(0);
+        selection_infos.push(WebmTrackSelectionInfo {
+          id,
+          track_type: track.track_type(),
+          codec: codec.clone(),
+          enabled: track.flag_enabled(),
+          default: track.flag_default(),
+          commentary: track.flag_commentary(),
+          hearing_impaired: track.flag_hearing_impaired(),
+          pixel_count,
+        });
+      }
+
       // Store codec delay only for the codecs we currently emit packets for.
       if matches!(codec, MediaCodec::Vp9 | MediaCodec::Opus) {
-        codec_delay_ns.insert(id, codec_delay);
-        max_codec_delay_ns = max_codec_delay_ns.max(codec_delay);
+        supported_codec_delay_ns.insert(id, codec_delay);
       }
 
       tracks.push(MediaTrackInfo {
@@ -151,8 +236,34 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       });
     }
 
-    let mut active_track_ids: Vec<u64> = codec_delay_ns.keys().copied().collect();
+    let (primary_video_track_id, primary_audio_track_id) =
+      select_primary_track_ids(&selection_infos, options.track_selection_policy);
+
+    let mut active_track_ids = match options.track_filter {
+      TrackFilterMode::AllTracks => supported_codec_delay_ns.keys().copied().collect(),
+      TrackFilterMode::PrimaryOnly => {
+        let mut ids = Vec::new();
+        if let Some(id) = primary_video_track_id {
+          ids.push(id);
+        }
+        if let Some(id) = primary_audio_track_id {
+          if !ids.contains(&id) {
+            ids.push(id);
+          }
+        }
+        ids
+      }
+    };
     active_track_ids.sort_unstable();
+
+    let mut codec_delay_ns = HashMap::new();
+    let mut max_codec_delay_ns = 0_u64;
+    for id in &active_track_ids {
+      if let Some(delay) = supported_codec_delay_ns.get(id) {
+        codec_delay_ns.insert(*id, *delay);
+        max_codec_delay_ns = max_codec_delay_ns.max(*delay);
+      }
+    }
 
     let mut packet_queues = HashMap::new();
     for &track_id in &active_track_ids {
@@ -163,6 +274,8 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       mkv,
       options,
       tracks,
+      primary_video_track_id,
+      primary_audio_track_id,
       timestamp_scale_ns,
       codec_delay_ns,
       max_codec_delay_ns,
@@ -175,6 +288,14 @@ impl<R: Read + Seek> WebmDemuxer<R> {
 
   pub fn tracks(&self) -> &[MediaTrackInfo] {
     &self.tracks
+  }
+
+  pub fn primary_video_track_id(&self) -> Option<u64> {
+    self.primary_video_track_id
+  }
+
+  pub fn primary_audio_track_id(&self) -> Option<u64> {
+    self.primary_audio_track_id
   }
 
   fn read_next_supported_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
@@ -414,6 +535,125 @@ mod tests {
   use std::path::PathBuf;
   use std::time::Duration;
 
+  #[test]
+  fn selects_highest_resolution_video_track_among_preferred_candidates() {
+    let policy = TrackSelectionPolicy::default();
+    let tracks = vec![
+      WebmTrackSelectionInfo {
+        id: 1,
+        track_type: TrackType::Video,
+        codec: MediaCodec::Vp9,
+        enabled: true,
+        default: true,
+        commentary: false,
+        hearing_impaired: false,
+        pixel_count: 640 * 360,
+      },
+      WebmTrackSelectionInfo {
+        id: 2,
+        track_type: TrackType::Video,
+        codec: MediaCodec::Vp9,
+        enabled: true,
+        default: true,
+        commentary: false,
+        hearing_impaired: false,
+        pixel_count: 1920 * 1080,
+      },
+      WebmTrackSelectionInfo {
+        id: 10,
+        track_type: TrackType::Audio,
+        codec: MediaCodec::Opus,
+        enabled: true,
+        default: true,
+        commentary: false,
+        hearing_impaired: false,
+        pixel_count: 0,
+      },
+    ];
+
+    let (video, audio) = select_primary_track_ids(&tracks, policy);
+    assert_eq!(video, Some(2));
+    assert_eq!(audio, Some(10));
+  }
+
+  #[test]
+  fn prefers_default_video_track_over_non_default_even_if_lower_resolution() {
+    let policy = TrackSelectionPolicy::default();
+    let tracks = vec![
+      WebmTrackSelectionInfo {
+        id: 1,
+        track_type: TrackType::Video,
+        codec: MediaCodec::Vp9,
+        enabled: true,
+        default: true,
+        commentary: false,
+        hearing_impaired: false,
+        pixel_count: 640 * 360,
+      },
+      WebmTrackSelectionInfo {
+        id: 2,
+        track_type: TrackType::Video,
+        codec: MediaCodec::Vp9,
+        enabled: true,
+        default: false,
+        commentary: false,
+        hearing_impaired: false,
+        pixel_count: 1920 * 1080,
+      },
+    ];
+
+    let (video, _) = select_primary_track_ids(&tracks, policy);
+    assert_eq!(video, Some(1));
+  }
+
+  #[test]
+  fn avoids_commentary_audio_when_alternative_exists() {
+    let policy = TrackSelectionPolicy::default();
+    let tracks = vec![
+      WebmTrackSelectionInfo {
+        id: 1,
+        track_type: TrackType::Audio,
+        codec: MediaCodec::Opus,
+        enabled: true,
+        default: true,
+        commentary: true,
+        hearing_impaired: false,
+        pixel_count: 0,
+      },
+      WebmTrackSelectionInfo {
+        id: 2,
+        track_type: TrackType::Audio,
+        codec: MediaCodec::Opus,
+        enabled: true,
+        default: true,
+        commentary: false,
+        hearing_impaired: false,
+        pixel_count: 0,
+      },
+    ];
+
+    let (_, audio) = select_primary_track_ids(&tracks, policy);
+    assert_eq!(audio, Some(2));
+  }
+
+  #[test]
+  fn falls_back_to_commentary_audio_when_no_alternative_exists() {
+    let policy = TrackSelectionPolicy::default();
+    let tracks = vec![WebmTrackSelectionInfo {
+      id: 99,
+      track_type: TrackType::Audio,
+      codec: MediaCodec::Opus,
+      enabled: true,
+      default: true,
+      commentary: true,
+      hearing_impaired: false,
+      pixel_count: 0,
+    }];
+
+    let (_, audio) = select_primary_track_ids(&tracks, policy);
+    assert_eq!(audio, Some(99));
+  }
+
   fn webm_fixture_bytes(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
       .join("tests/fixtures/media")
@@ -536,6 +776,7 @@ mod tests {
       WebmDemuxerOptions {
         inter_track_reordering: true,
         per_track_queue_capacity: 8,
+        ..Default::default()
       },
     )
     .expect("open webm");
