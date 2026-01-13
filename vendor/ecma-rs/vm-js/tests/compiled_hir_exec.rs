@@ -10112,3 +10112,18 @@ fn compiled_script_generator_function_falls_back_to_ecma() -> Result<(), VmError
   assert_eq!(result, Value::Number(1.0));
   Ok(())
 }
+
+#[test]
+fn compiled_allows_defining_async_function_decls() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        async function g() { return 1; }
+        return 2;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}

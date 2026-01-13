@@ -154,7 +154,7 @@ pub(crate) struct EcmaFunctionCode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct EcmaFunctionKey {
-  source: *const SourceText,
+  source: *const (),
   span_start: u32,
   span_end: u32,
   kind: EcmaFunctionKind,
@@ -163,7 +163,7 @@ struct EcmaFunctionKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TemplateRegistryKey {
   realm: RealmId,
-  source: *const SourceText,
+  source: *const (),
   span_start: u32,
   span_end: u32,
 }
@@ -1653,7 +1653,7 @@ impl Vm {
     kind: EcmaFunctionKind,
   ) -> Result<EcmaFunctionId, VmError> {
     let key = EcmaFunctionKey {
-      source: Arc::as_ptr(&source),
+      source: source.cache_key_ptr(),
       span_start,
       span_end,
       kind,
@@ -2204,10 +2204,9 @@ impl Vm {
       .current_realm()
       .ok_or(VmError::Unimplemented("template literal requires active realm"))?;
 
-    let source_ptr = Arc::as_ptr(&source);
     let key = TemplateRegistryKey {
       realm,
-      source: source_ptr,
+      source: source.cache_key_ptr(),
       span_start,
       span_end,
     };

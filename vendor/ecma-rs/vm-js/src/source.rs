@@ -142,6 +142,18 @@ impl SourceText {
     Ok(source)
   }
 
+  /// Returns a stable identity pointer for this source text.
+  ///
+  /// This is intended for internal caching tables keyed by source identity (e.g. function snippet
+  /// caches). Charged sources use their external-memory token address so that clones of the same
+  /// `SourceText` share the same identity.
+  pub(crate) fn cache_key_ptr(&self) -> *const () {
+    match &self.external_memory {
+      Some(token) => Arc::as_ptr(token) as *const (),
+      None => self as *const SourceText as *const (),
+    }
+  }
+
   /// Convert a UTF-8 byte offset into 1-based `(line, col)` numbers.
   ///
   /// Columns are reported as 1-based UTF-8 byte offsets from the start of the
