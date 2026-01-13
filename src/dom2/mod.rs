@@ -2547,6 +2547,8 @@ mod contextual_fragment_tests;
 #[cfg(test)]
 mod cross_document_tests;
 #[cfg(test)]
+mod qualified_name_tests;
+#[cfg(test)]
 mod html5ever_sink_tests;
 #[cfg(test)]
 #[cfg(test)]
