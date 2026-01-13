@@ -169,3 +169,78 @@ fn generator_direct_eval_with_yield_spread_argument_is_direct() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_direct_eval_with_yield_argument_inherits_strictness() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g(){
+            "use strict";
+            try { return eval(yield 0); }
+            catch (e) { return e.name; }
+          }
+          var it = g();
+          it.next();
+          var r = it.next("with ({x:1}) { x }");
+          ok = r.done === true && r.value === "SyntaxError";
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_strict_direct_eval_does_not_leak_var_declarations_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g(){
+            "use strict";
+            eval(yield 0);
+            return typeof x;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("var x = 1");
+          ok = r.done === true && r.value === "undefined";
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_direct_eval_var_decl_conflicts_with_outer_let_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g(){
+            let x = 1;
+            try { eval(yield 0); return "no error"; }
+            catch (e) { return e.name; }
+          }
+          var it = g();
+          it.next();
+          var r = it.next("var x = 2");
+          ok = r.done === true && r.value === "SyntaxError";
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
