@@ -41770,6 +41770,13 @@ fn schedule_dynamic_script_via_browser_tab_host(
     .is_ok()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DynamicScriptPreparationSteps {
+  Insertion,
+  ChildrenChanged,
+  SrcAttributeChanged,
+}
+
 fn prepare_dynamic_script_element(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -41777,6 +41784,7 @@ fn prepare_dynamic_script_element(
   hooks: &mut dyn VmHostHooks,
   document_obj: GcObject,
   mut dom_ptr: NonNull<dom2::Document>,
+  steps: DynamicScriptPreparationSteps,
   script: NodeId,
 ) -> Result<(), VmError> {
   let base_url = current_base_url_for_dynamic_scripts(vm);
@@ -41849,6 +41857,45 @@ fn prepare_dynamic_script_element(
       let dom = unsafe { dom_ptr.as_mut() };
       let _ = dom.set_script_already_started(script, true);
       return Ok(());
+    }
+
+    let is_async_like = spec.async_attr || spec.force_async;
+    if steps != DynamicScriptPreparationSteps::Insertion && is_async_like {
+      // HTML: when an already-connected script becomes runnable due to child-node/attribute
+      // mutations, it may need to execute asynchronously (as a task) when it is async-like.
+      //
+      // This is observable for parser-inserted scripts that were prepared while empty: `prepare a
+      // script` clears the parser document slot and (when `async` is absent) sets the "force async"
+      // flag, so later text insertion should queue execution instead of running synchronously inside
+      // the mutating DOM API call stack.
+      if let Some(event_loop) = event_loop_mut_from_hooks::<crate::api::BrowserTabHost>(hooks) {
+        // Mark started before queueing to avoid re-entrancy / double-scheduling.
+        // SAFETY: `dom_ptr` points at the active `dom2::Document` for this JS call turn and is only
+        // used within this function call.
+        let dom = unsafe { dom_ptr.as_mut() };
+        if dom.set_script_already_started(script, true).is_err() {
+          return Ok(());
+        }
+
+        let spec_for_task = spec.clone();
+        let base_url_at_discovery = spec_for_task.base_url.clone();
+        // Queue as a *task* (not a microtask) so JS microtasks queued by the mutating script run
+        // before the newly-runnable script executes.
+        if event_loop
+          .queue_task(TaskSource::Script, move |host, event_loop| {
+            let _ = host.register_and_schedule_dynamic_script(
+              script,
+              spec_for_task,
+              base_url_at_discovery,
+              event_loop,
+            )?;
+            Ok(())
+          })
+          .is_ok()
+        {
+          return Ok(());
+        }
+      }
     }
 
     // Mark started before executing to avoid re-entrancy.
@@ -42007,7 +42054,16 @@ fn run_dynamic_script_insertion_steps(
   };
 
   for script in scripts {
-    prepare_dynamic_script_element(vm, scope, host, hooks, document_obj, dom_ptr, script)?;
+    prepare_dynamic_script_element(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      DynamicScriptPreparationSteps::Insertion,
+      script,
+    )?;
   }
   Ok(())
 }
@@ -42021,7 +42077,16 @@ fn run_dynamic_script_children_changed_steps(
   dom_ptr: NonNull<dom2::Document>,
   node_id: NodeId,
 ) -> Result<(), VmError> {
-  prepare_dynamic_script_element(vm, scope, host, hooks, document_obj, dom_ptr, node_id)
+  prepare_dynamic_script_element(
+    vm,
+    scope,
+    host,
+    hooks,
+    document_obj,
+    dom_ptr,
+    DynamicScriptPreparationSteps::ChildrenChanged,
+    node_id,
+  )
 }
 
 fn run_dynamic_script_src_attribute_changed_steps(
@@ -42033,7 +42098,16 @@ fn run_dynamic_script_src_attribute_changed_steps(
   dom_ptr: NonNull<dom2::Document>,
   node_id: NodeId,
 ) -> Result<(), VmError> {
-  prepare_dynamic_script_element(vm, scope, host, hooks, document_obj, dom_ptr, node_id)
+  prepare_dynamic_script_element(
+    vm,
+    scope,
+    host,
+    hooks,
+    document_obj,
+    dom_ptr,
+    DynamicScriptPreparationSteps::SrcAttributeChanged,
+    node_id,
+  )
 }
 
 fn build_dynamic_script_spec(

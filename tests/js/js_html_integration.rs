@@ -694,6 +694,45 @@ fn p1_dynamic_external_scripts_with_async_false_execute_in_insertion_order() -> 
 }
 
 #[test]
+fn p1_force_async_for_parser_inserted_script_that_initially_cannot_run_executes_later_as_task(
+) -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p1_force_async_late_inline.html", js_options)?;
+
+  // WHATWG HTML `#prepare-a-script`: steps 2–4 set the "force async" flag for parser-inserted
+  // `<script>` elements without an `async` attribute. This must happen even if the script is not
+  // initially runnable (e.g. empty), so that if it later becomes runnable (e.g. script text is
+  // inserted), it executes asynchronously.
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script id="s"></script>
+      <script>
+        const s = document.getElementById("s");
+        s.textContent = 'console.log("late")';
+        queueMicrotask(() => console.log("microtask"));
+        console.log("after");
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      // Must not execute synchronously during the `textContent` setter call.
+      "after".to_string(),
+      // Microtasks run before the next task turn.
+      "microtask".to_string(),
+      // Script execution is a task (not a microtask).
+      "late".to_string(),
+    ]
+  );
+  Ok(())
+}
+
+#[test]
 fn p1_document_write_inserts_into_the_token_stream_during_parsing_and_supports_nested_writes() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p1_document_write.html", js_options)?;
