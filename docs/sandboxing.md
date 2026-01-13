@@ -63,6 +63,25 @@ Object** configured with:
 These constraints are intended as *defense in depth* and lifecycle hygiene, even when the renderer
 itself crashes or misbehaves.
 
+### Defense in depth: process mitigation policies (Windows)
+
+When spawning a sandboxed renderer on Windows, we also apply a default set of *process mitigation
+policies* at process creation time (best-effort) via `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`:
+
+- Win32k lockdown (disable `win32k.sys` system calls; headless-only)
+- prohibit dynamic code
+- disable extension points (legacy injection)
+- image load hardening (no remote / no low-mandatory-label images)
+- strict handle checks
+
+If the host OS rejects the mitigation attribute (for example on older/unusual Windows builds), the
+spawn logic retries without mitigations rather than failing process creation.
+
+Debug/compatibility escape hatch:
+
+- `FASTR_DISABLE_WIN_MITIGATIONS=1` disables **mitigation policies only** (it does not disable
+  AppContainer/restricted-token sandboxing, Job Object limits, or handle allowlisting).
+
 ### Fallback mode: restricted token + low integrity (+ job object)
 
 If AppContainer is unavailable (or creation fails), the sandbox spawner **fails closed** by default
