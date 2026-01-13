@@ -601,6 +601,9 @@ fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RegExpFlags {
   /// The `d` / `hasIndices` flag.
+  ///
+  /// Note: `vm-js` currently accepts and stores this flag, but does not yet implement
+  /// `regexp-match-indices` result semantics (e.g. `match.indices`).
   pub(crate) has_indices: bool,
   pub(crate) global: bool,
   pub(crate) ignore_case: bool,
@@ -2667,7 +2670,7 @@ pub(crate) fn advance_string_index(input: &[u16], index: usize, unicode: bool) -
   if !unicode {
     return index.saturating_add(1);
   }
-  let (_, len) = utf16_code_point_at(input, index, input.len());
+  let (_, len) = utf16_code_point_at_bounded(input, index, input.len());
   index.saturating_add(len)
 }
 
@@ -4596,6 +4599,30 @@ mod tests {
     // Duplicate `v` should also be rejected.
     let mut tick = || Ok(());
     let err = RegExpFlags::parse(&[b'v' as u16, b'v' as u16], &mut tick).unwrap_err();
+    match err {
+      RegExpCompileError::Syntax(e) => {
+        assert_eq!(e.message, "Invalid flags supplied to RegExp constructor")
+      }
+      other => panic!("expected syntax error, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn regexp_flags_d_is_accepted_and_reports_in_canonical_order() {
+    let mut tick = || Ok(());
+    let d = RegExpFlags::parse(&[b'd' as u16], &mut tick).expect("d should parse");
+    assert!(d.has_indices);
+    assert_eq!(d.to_canonical_string(), "d");
+
+    let mut tick = || Ok(());
+    let vd = RegExpFlags::parse(&[b'v' as u16, b'd' as u16], &mut tick).expect("vd should parse");
+    assert!(vd.has_indices);
+    assert!(vd.unicode_sets);
+    assert_eq!(vd.to_canonical_string(), "dv");
+
+    // Duplicates are rejected.
+    let mut tick = || Ok(());
+    let err = RegExpFlags::parse(&[b'd' as u16, b'd' as u16], &mut tick).unwrap_err();
     match err {
       RegExpCompileError::Syntax(e) => {
         assert_eq!(e.message, "Invalid flags supplied to RegExp constructor")
