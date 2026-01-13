@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::AccessibilityNode;
-use accesskit::{Node, NodeBuilder, NodeClassSet, NodeId, Role, Tree, TreeUpdate};
+pub use accesskit::{Node, NodeBuilder, NodeClassSet, NodeId, Role, TextDirection, Tree, TreeUpdate};
 use std::collections::HashMap;
 use std::num::NonZeroU128;
 

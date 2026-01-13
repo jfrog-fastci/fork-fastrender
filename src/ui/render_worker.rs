@@ -22,7 +22,9 @@ use crate::paint::rasterize::fill_rect;
 use crate::render_control::{
   push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard,
 };
-use crate::resource::{CachingFetcher, HttpFetcher, ResourceFetcher};
+use crate::resource::{
+  origin_from_url, CachingFetcher, DocumentOrigin, HttpFetcher, ResourceFetcher,
+};
 use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
 use crate::style::types::OrientationTransform;
@@ -145,6 +147,36 @@ pub struct BrowserWorkerHandle {
 struct NavigationRequest {
   request: FormSubmission,
   apply_fragment_scroll: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum SiteKey {
+  Origin(DocumentOrigin),
+  /// Opaque/unknown site key (invalid URL, opaque origin).
+  Opaque(String),
+}
+
+/// Maximum number of consecutive site-mismatch restarts for a single in-flight navigation.
+///
+/// This guards against redirect loops or a compromised renderer repeatedly committing a URL that
+/// does not match the process it is running in.
+const MAX_SITE_MISMATCH_RESTARTS: u8 = 3;
+
+fn site_key_for_navigation(url: &str, parent_site: Option<&SiteKey>) -> SiteKey {
+  let url = url.trim();
+
+  // about:blank/about:srcdoc inherit the initiator origin when present (iframe/srcdoc patterns).
+  // For top-level navigations without a parent, treat them as their own opaque site.
+  if url.eq_ignore_ascii_case("about:blank") || url.eq_ignore_ascii_case("about:srcdoc") {
+    if let Some(parent) = parent_site {
+      return parent.clone();
+    }
+    return SiteKey::Opaque(url.to_string());
+  }
+
+  origin_from_url(url)
+    .map(SiteKey::Origin)
+    .unwrap_or_else(|| SiteKey::Opaque(url.to_string()))
 }
 
 // `UiToWorker::Tick` is the UI's periodic driver for time-based updates (CSS animations/transitions,
@@ -465,6 +497,15 @@ struct TabState {
 
   tick_time: Duration,
 
+  /// Site key (origin) of the last successfully committed navigation.
+  ///
+  /// This is used to enforce site isolation invariants: navigations that commit to a different site
+  /// than the renderer they ran in are treated as a site mismatch and restarted in a fresh
+  /// renderer.
+  site_key: Option<SiteKey>,
+  /// Number of consecutive site-mismatch restarts for the current in-flight navigation.
+  site_mismatch_restarts: u8,
+
   find: FindInPageWorkerState,
 }
 
@@ -505,6 +546,8 @@ impl TabState {
       needs_repaint: false,
       force_repaint: false,
       tick_time: Duration::ZERO,
+      site_key: None,
+      site_mismatch_restarts: 0,
       find: FindInPageWorkerState::default(),
     }
   }
@@ -3701,6 +3744,9 @@ impl BrowserRuntime {
       return;
     };
 
+    // New navigation from the UI: reset any site-mismatch restart loop counter.
+    tab.site_mismatch_restarts = 0;
+
     // Navigations replace the document (or at least its URL/scroll state); clear any stale hover
     // metadata until the next pointer move re-establishes it.
     Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default);
@@ -3798,6 +3844,7 @@ impl BrowserRuntime {
               tab.history.set_title(title.to_string());
             }
             tab.history.mark_committed();
+            tab.site_key = Some(site_key_for_navigation(&url_string, None));
             let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
               tab_id,
               url: url_string,
@@ -7954,7 +8001,7 @@ impl BrowserRuntime {
 
     // Pull what we need out of `TabState` so we can release the borrow while running the expensive
     // prepare+paint pipeline (and so we can reinsert the document on all exit paths).
-    let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, cancel, doc) = {
+    let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, cancel, doc, current_site_key) = {
       let tab = self.tabs.get_mut(&tab_id)?;
       let doc = tab.document.take();
       if doc.is_none() {
@@ -7970,6 +8017,7 @@ impl BrowserRuntime {
         tab.history.current().map(|e| (e.scroll_x, e.scroll_y)),
         tab.cancel.clone(),
         doc,
+        tab.site_key.clone(),
       )
     };
     // Capture the original URL before any redirects/mutations for history bookkeeping.
@@ -8009,6 +8057,89 @@ impl BrowserRuntime {
       },
     };
 
+    // ---------------------------------------------------------------------------
+    // Site isolation: process selection for this navigation
+    // ---------------------------------------------------------------------------
+    //
+    // The UI worker models a site-isolated process boundary by rebuilding the per-tab renderer
+    // when navigating across sites. We keep the previous committed `BrowserDocument` alive while a
+    // cross-site navigation is in flight so cancellation (StopLoading / superseded navigation) can
+    // restore the currently committed document state.
+    let process_site_key = site_key_for_navigation(&original_url, None);
+    let mut fallback_doc: Option<BrowserDocument> = None;
+
+    // Fail fast for unsupported schemes before we allocate a new renderer for a site swap.
+    if !about_pages::is_about_url(&original_url) {
+      if let Err(err) = validate_user_navigation_url_scheme(&original_url) {
+        let _ = self.reinsert_document(tab_id, doc);
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return None;
+        };
+        tab.loading = false;
+        tab.pending_history_entry = false;
+        tab.history.mark_committed();
+        return Some(JobOutput {
+          tab_id,
+          snapshot,
+          snapshot_kind: SnapshotKind::Prepare,
+          msgs: vec![
+            WorkerToUi::NavigationFailed {
+              tab_id,
+              url: original_url,
+              error: err,
+              can_go_back: tab.history.can_go_back(),
+              can_go_forward: tab.history.can_go_forward(),
+            },
+            WorkerToUi::LoadingState {
+              tab_id,
+              loading: false,
+            },
+          ],
+        });
+      }
+    }
+
+    // If this is a cross-site navigation, create a fresh renderer instance for the target site and
+    // keep the previous committed document as a fallback for cancellation.
+    if current_site_key
+      .as_ref()
+      .is_some_and(|current| current != &process_site_key)
+    {
+      fallback_doc = Some(doc);
+      doc = match self.build_initial_document(viewport_css, dpr) {
+        Ok(doc) => doc,
+        Err(err) => {
+          if let Some(fallback) = fallback_doc {
+            let _ = self.reinsert_document(tab_id, fallback);
+          }
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return None;
+          };
+          tab.loading = false;
+          tab.pending_history_entry = false;
+          tab.history.mark_committed();
+          return Some(JobOutput {
+            tab_id,
+            snapshot,
+            snapshot_kind: SnapshotKind::Prepare,
+            msgs: vec![
+              WorkerToUi::NavigationFailed {
+                tab_id,
+                url: original_url,
+                error: format!("failed to create renderer for site swap: {err}"),
+                can_go_back: tab.history.can_go_back(),
+                can_go_forward: tab.history.can_go_forward(),
+              },
+              WorkerToUi::LoadingState {
+                tab_id,
+                loading: false,
+              },
+            ],
+          });
+        }
+      };
+    }
+
     let prepare_cancel_callback = combine_cancel_callbacks(
       snapshot.cancel_callback_for_prepare(&cancel),
       preempt_cancel_callback.clone(),
@@ -8045,22 +8176,37 @@ impl BrowserRuntime {
       match result {
         Ok((committed_url, base_url)) => (Some(committed_url), Some(base_url)),
         Err(err) => {
-          let _ = self.reinsert_document(tab_id, doc);
           // Treat cancelled/preempted prepares as silent drops.
           if prepare_cancel_callback() {
             // New navigation superseded this attempt.
             if !snapshot.is_still_current_for_prepare(&cancel) {
+              if let Some(fallback) = fallback_doc {
+                let _ = self.reinsert_document(tab_id, fallback);
+              } else {
+                let _ = self.reinsert_document(tab_id, doc);
+              }
               return None;
             }
             // Preempted by active-tab work: re-queue the navigation so it can resume later.
             if let Some(tab) = self.tabs.get_mut(&tab_id) {
               tab.pending_navigation = Some(request_for_retry);
             }
+            if let Some(fallback) = fallback_doc {
+              let _ = self.reinsert_document(tab_id, fallback);
+            } else {
+              let _ = self.reinsert_document(tab_id, doc);
+            }
             return None;
           }
           if !snapshot.is_still_current_for_prepare(&cancel) {
+            if let Some(fallback) = fallback_doc {
+              let _ = self.reinsert_document(tab_id, fallback);
+            } else {
+              let _ = self.reinsert_document(tab_id, doc);
+            }
             return None;
           }
+          let _ = self.reinsert_document(tab_id, doc);
           return self.run_navigation_error(
             tab_id,
             &original_url,
@@ -8070,88 +8216,73 @@ impl BrowserRuntime {
         }
       }
     } else {
-      match validate_user_navigation_url_scheme(&original_url) {
-        Ok(()) => {
-          let report = {
-            let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-            if request.method == FormSubmissionMethod::Get
-              && request.headers.is_empty()
-              && request.body.is_none()
-            {
-              doc
-                .navigate_url(&original_url, options.clone())
-                .map(|report| (report.final_url, report.base_url))
-            } else {
-              doc
-                .navigate_http_request_with_options(
-                  &original_url,
-                  request.method.as_http_method(),
-                  &request.headers,
-                  request.body.as_deref(),
-                  options.clone(),
-                )
-                .map(|(committed_url, base_url)| (Some(committed_url), Some(base_url)))
-            }
-          };
-          match report {
-            Ok((final_url, base_url)) => (final_url, base_url),
-            Err(err) => {
-              // Restore the document before delegating to the navigation-error renderer.
-              let _ = self.reinsert_document(tab_id, doc);
-
-              // If the navigation was cancelled/preempted, treat it as a silent drop.
-              if prepare_cancel_callback() {
-                if !snapshot.is_still_current_for_prepare(&cancel) {
-                  return None;
-                }
-                if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                  tab.pending_navigation = Some(request_for_retry);
-                }
-                return None;
-              }
-              if !snapshot.is_still_current_for_prepare(&cancel) {
-                return None;
-              }
-
-              return self.run_navigation_error(tab_id, &original_url, &err.to_string(), snapshot);
-            }
-          }
+      let report = {
+        let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+        if request.method == FormSubmissionMethod::Get
+          && request.headers.is_empty()
+          && request.body.is_none()
+        {
+          doc
+            .navigate_url(&original_url, options.clone())
+            .map(|report| (report.final_url, report.base_url))
+        } else {
+          doc
+            .navigate_http_request_with_options(
+              &original_url,
+              request.method.as_http_method(),
+              &request.headers,
+              request.body.as_deref(),
+              options.clone(),
+            )
+            .map(|(committed_url, base_url)| (Some(committed_url), Some(base_url)))
         }
+      };
+      match report {
+        Ok((final_url, base_url)) => (final_url, base_url),
         Err(err) => {
-          let _ = self.reinsert_document(tab_id, doc);
-
-          // Unsupported URL schemes should fail fast without rendering an error page.
-          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          // If the navigation was cancelled/preempted, treat it as a silent drop.
+          if prepare_cancel_callback() {
+            if !snapshot.is_still_current_for_prepare(&cancel) {
+              if let Some(fallback) = fallback_doc {
+                let _ = self.reinsert_document(tab_id, fallback);
+              } else {
+                let _ = self.reinsert_document(tab_id, doc);
+              }
+              return None;
+            }
+            if let Some(tab) = self.tabs.get_mut(&tab_id) {
+              tab.pending_navigation = Some(request_for_retry);
+            }
+            if let Some(fallback) = fallback_doc {
+              let _ = self.reinsert_document(tab_id, fallback);
+            } else {
+              let _ = self.reinsert_document(tab_id, doc);
+            }
             return None;
-          };
-          tab.loading = false;
-          tab.pending_history_entry = false;
-          tab.history.mark_committed();
-          return Some(JobOutput {
-            tab_id,
-            snapshot,
-            snapshot_kind: SnapshotKind::Prepare,
-            msgs: vec![
-              WorkerToUi::NavigationFailed {
-                tab_id,
-                url: original_url,
-                error: err,
-                can_go_back: tab.history.can_go_back(),
-                can_go_forward: tab.history.can_go_forward(),
-              },
-              WorkerToUi::LoadingState {
-                tab_id,
-                loading: false,
-              },
-            ],
-          });
+          }
+          if !snapshot.is_still_current_for_prepare(&cancel) {
+            if let Some(fallback) = fallback_doc {
+              let _ = self.reinsert_document(tab_id, fallback);
+            } else {
+              let _ = self.reinsert_document(tab_id, doc);
+            }
+            return None;
+          }
+
+          // Restore the document before delegating to the navigation-error renderer.
+          let _ = self.reinsert_document(tab_id, doc);
+          return self.run_navigation_error(tab_id, &original_url, &err.to_string(), snapshot);
         }
       }
     };
 
     // If a new navigation was initiated while we were preparing, treat this result as cancelled.
     if !snapshot.is_still_current_for_prepare(&cancel) {
-      let _ = self.reinsert_document(tab_id, doc);
+      if let Some(fallback) = fallback_doc {
+        let _ = self.reinsert_document(tab_id, fallback);
+      } else {
+        let _ = self.reinsert_document(tab_id, doc);
+      }
       return None;
     }
 
@@ -8162,6 +8293,76 @@ impl BrowserRuntime {
       Some(final_url) => apply_original_fragment_to_final_url(&original_url, final_url),
       None => original_url.clone(),
     };
+
+    // ---------------------------------------------------------------------------
+    // Site isolation: committed URL must match the process it ran in
+    // ---------------------------------------------------------------------------
+    //
+    // A navigation may commit a different site than the URL it started with:
+    // - Cross-site redirects (A -> B)
+    // - A compromised/buggy renderer lying about `final_url`
+    //
+    // In either case, we must not allow the navigation to commit in the wrong renderer process.
+    let committed_site_key = site_key_for_navigation(&committed_url, None);
+    if committed_site_key != process_site_key {
+      // Drop the untrusted renderer/document and restore the previously committed document (if any)
+      // while we restart navigation in the correct process.
+      if let Some(fallback) = fallback_doc {
+        let _ = self.reinsert_document(tab_id, fallback);
+      }
+
+      let Some(tab) = self.tabs.get_mut(&tab_id) else {
+        return None;
+      };
+
+      tab.site_mismatch_restarts = tab.site_mismatch_restarts.saturating_add(1);
+      if tab.site_mismatch_restarts > MAX_SITE_MISMATCH_RESTARTS {
+        // Give up after too many restarts to avoid infinite loops. Treat this as a navigation
+        // failure and stop loading, leaving the committed history entry untouched.
+        tab.loading = false;
+        if tab.pending_history_entry {
+          tab.history.cancel_pending_navigation_entry();
+        } else {
+          tab.history.revert_to_committed();
+        }
+        tab.pending_history_entry = false;
+        return Some(JobOutput {
+          tab_id,
+          snapshot,
+          snapshot_kind: SnapshotKind::Prepare,
+          msgs: vec![
+            WorkerToUi::NavigationFailed {
+              tab_id,
+              url: original_url,
+              error: format!(
+                "site isolation: navigation committed to {committed_url} but ran in wrong process; exceeded restart limit"
+              ),
+              can_go_back: tab.history.can_go_back(),
+              can_go_forward: tab.history.can_go_forward(),
+            },
+            WorkerToUi::LoadingState {
+              tab_id,
+              loading: false,
+            },
+          ],
+        });
+      }
+
+      // Keep the provisional history entry in sync with the final URL so the restarted navigation
+      // can commit it in-place.
+      tab.history.replace_current_url(committed_url.clone());
+
+      let mut restart_request = request_for_retry;
+      restart_request.request.url = committed_url;
+      restart_request.apply_fragment_scroll = apply_fragment_scroll;
+      tab.pending_navigation = Some(restart_request);
+
+      // Keep loading state; do not emit NavigationCommitted/Failed until the site mismatch is
+      // resolved.
+      tab.loading = true;
+
+      return None;
+    }
 
     // Keep the document URL hint stable for `:target` evaluation and relative URL resolution.
     doc.set_navigation_urls(Some(committed_url.clone()), base_url.clone());
@@ -8296,7 +8497,11 @@ impl BrowserRuntime {
       Err(err) => {
         // If a new navigation was initiated while we were painting, drop this result silently.
         if !snapshot.is_still_current_for_prepare(&cancel) {
-          let _ = self.reinsert_document(tab_id, doc);
+          if let Some(fallback) = fallback_doc {
+            let _ = self.reinsert_document(tab_id, fallback);
+          } else {
+            let _ = self.reinsert_document(tab_id, doc);
+          }
           return None;
         }
 
@@ -8316,6 +8521,8 @@ impl BrowserRuntime {
           tab.tick_time = Duration::ZERO;
           tab.last_committed_url = Some(committed_url.clone());
           tab.last_base_url = base_url.clone();
+          tab.site_key = Some(site_key_for_navigation(&committed_url, None));
+          tab.site_mismatch_restarts = 0;
 
           Self::sync_js_tab_for_committed_navigation(
             &runtime_toggles,
@@ -8388,7 +8595,11 @@ impl BrowserRuntime {
 
     // If a new navigation was initiated while we were painting, drop the result.
     if !snapshot.is_still_current_for_prepare(&cancel) {
-      let _ = self.reinsert_document(tab_id, doc);
+      if let Some(fallback) = fallback_doc {
+        let _ = self.reinsert_document(tab_id, fallback);
+      } else {
+        let _ = self.reinsert_document(tab_id, doc);
+      }
       return None;
     }
 
@@ -8432,7 +8643,11 @@ impl BrowserRuntime {
 
     // If a new navigation was initiated while we were fetching the favicon, drop the result.
     if !snapshot.is_still_current_for_prepare(&cancel) {
-      let _ = self.reinsert_document(tab_id, doc);
+      if let Some(fallback) = fallback_doc {
+        let _ = self.reinsert_document(tab_id, fallback);
+      } else {
+        let _ = self.reinsert_document(tab_id, doc);
+      }
       return None;
     }
 
@@ -8458,6 +8673,8 @@ impl BrowserRuntime {
     tab.tick_time = Duration::ZERO;
     tab.last_committed_url = Some(committed_url.clone());
     tab.last_base_url = base_url.clone();
+    tab.site_key = Some(site_key_for_navigation(&committed_url, None));
+    tab.site_mismatch_restarts = 0;
 
     Self::sync_js_tab_for_committed_navigation(
       &runtime_toggles,
@@ -8793,6 +9010,8 @@ impl BrowserRuntime {
     tab.scroll_state = painted.scroll_state.clone();
     tab.last_committed_url = Some(about_pages::ABOUT_ERROR.to_string());
     tab.last_base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
+    tab.site_key = Some(site_key_for_navigation(about_pages::ABOUT_ERROR, None));
+    tab.site_mismatch_restarts = 0;
 
     tab.loading = false;
     tab.pending_history_entry = false;

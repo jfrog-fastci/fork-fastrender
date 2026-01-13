@@ -185,6 +185,7 @@ mod ui_worker_page_accessibility;
 mod ui_worker_prioritization_preemption;
 mod ui_worker_protocol_smoke;
 mod ui_worker_renderer_reuse;
+mod ui_worker_site_isolation_committed_url_mismatch;
 mod ui_worker_robustness;
 mod ui_worker_overscroll_behavior;
 mod ui_worker_overflow_hidden_scroll;
