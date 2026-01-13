@@ -17,15 +17,19 @@ fn parse_backtick_words(table: &'static str) -> Vec<&'static str> {
   // (The caller includes files like `specs/tc39-ecma262/table-binary-unicode-properties.html`
   // where the header comment mentions non-binary properties like `Script` — those must not end up
   // being treated as supported binary property names.)
-  let table = match table.find("<pre>") {
-    Some(start) => {
-      let after_start = start + "<pre>".len();
-      match table[after_start..].find("</pre>") {
-        Some(end_rel) => &table[after_start..after_start + end_rel],
-        None => &table[after_start..],
+  let table = if let Some(pre_start) = table.find("<pre") {
+    let after_pre = &table[pre_start..];
+    if let Some(gt_rel) = after_pre.find('>') {
+      let start = pre_start + gt_rel + 1;
+      match table[start..].find("</pre>") {
+        Some(end_rel) => &table[start..start + end_rel],
+        None => &table[start..],
       }
+    } else {
+      table
     }
-    None => table,
+  } else {
+    table
   };
 
   let bytes = table.as_bytes();

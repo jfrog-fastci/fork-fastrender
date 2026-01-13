@@ -965,23 +965,13 @@ impl<'a> Parser<'a> {
       if await_ && p.is_strict_ecmascript() && !header_ctx.rules.await_expr_allowed {
         // `for await (...)` is only allowed when the grammar parameter `Await` is enabled, i.e.
         // in modules (top-level await) and inside async functions.
-        //
-        // However, some consumers (notably `vm-js`) support **async classic scripts** that can
-        // contain top-level `for await...of` and evaluate to a Promise. That surface syntax is
-        // unambiguous and can be permitted at script top-level (outside any function) even when
-        // `await` expressions are otherwise disabled for scripts.
-        //
-        // We still reject `for await...of` in non-async function bodies; those must use an `async`
-        // function wrapper per the spec.
-        if p.in_function > 0 {
-          let loc = await_token
-            .match_loc()
-            .expect("matched MaybeToken must have a location");
-          return Err(loc.error(
-            SyntaxErrorType::ExpectedSyntax("`for await` is only valid in async contexts"),
-            Some(TT::KeywordAwait),
-          ));
-        }
+        let loc = await_token
+          .match_loc()
+          .expect("matched MaybeToken must have a location");
+        return Err(loc.error(
+          SyntaxErrorType::ExpectedSyntax("`for await` is only valid in async contexts"),
+          Some(TT::KeywordAwait),
+        ));
       }
       p.require(TT::ParenthesisOpen)?;
       // In strict ECMAScript, `for-of` does not allow a left-hand-side expression that starts

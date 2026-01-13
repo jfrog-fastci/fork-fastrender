@@ -143,8 +143,9 @@ fn strict_ecma_rejects_ts_only_syntax_and_recovery_paths() {
   assert_reject("1 = 2;");
   assert_reject("obj?.a = 1;");
   assert_reject("for (foo() of bar) {}");
-  assert_reject("for ((a) of b) {}");
-  assert_reject("for ((a) in b) {}");
+  // Parenthesized assignment targets are valid.
+  assert_accept("for ((a) of b) {}");
+  assert_accept("for ((a) in b) {}");
   assert_reject("for (var x = 1 of y) {}");
   assert_reject("for (let x = 1 of y) {}");
   assert_reject("for (const x = 1 of y) {}");
