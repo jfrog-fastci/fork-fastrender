@@ -98,6 +98,7 @@ mod ui_worker_hover_text_cursor;
 mod ui_worker_interaction;
 mod ui_details_toggle;
 mod ui_fieldset_disabled;
+mod ui_form_reset;
 mod ui_worker_keyboard;
 mod ui_worker_form_state_tab_switch;
 mod ui_worker_navigation_errors;

@@ -125,9 +125,23 @@ pub struct InteractionEngine {
   document_drag: Option<DocumentDragState>,
   text_edit: Option<TextEditState>,
   text_undo: HashMap<usize, TextUndoHistory>,
+  form_default_snapshots: HashMap<usize, FormDefaultSnapshot>,
   modality: InputModality,
   last_click_target: Option<usize>,
   last_form_submitter: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FormDefaultSnapshot {
+  /// Default (initial) `value` content attribute for `<input>` elements, keyed by input node id.
+  ///
+  /// When `None`, the `value` attribute was absent in the original document.
+  input_value: HashMap<usize, Option<String>>,
+  /// Default checkedness for checkbox/radio inputs, keyed by input node id.
+  input_checked: HashMap<usize, bool>,
+  /// Default `selected` content attribute presence for `<option>` elements in `<select>` controls
+  /// whose form owner matches the snapshot's form.
+  option_selected: HashMap<usize, bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1700,6 +1714,12 @@ fn is_select(node: &DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
 }
 
+fn is_option(node: &DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+}
+
 fn is_form(node: &DomNode) -> bool {
   node
     .tag_name()
@@ -1851,6 +1871,18 @@ fn is_submit_button(node: &DomNode) -> bool {
 
 fn is_submit_control(node: &DomNode) -> bool {
   is_submit_input(node) || is_image_submit_input(node) || is_submit_button(node)
+}
+
+fn is_reset_input(node: &DomNode) -> bool {
+  is_input(node) && input_type(node).eq_ignore_ascii_case("reset")
+}
+
+fn is_reset_button(node: &DomNode) -> bool {
+  is_button(node) && button_type(node).eq_ignore_ascii_case("reset")
+}
+
+fn is_reset_control(node: &DomNode) -> bool {
+  is_reset_input(node) || is_reset_button(node)
 }
 
 fn is_text_input(node: &DomNode) -> bool {
@@ -3501,6 +3533,25 @@ fn resolve_form_owner(index: &DomIndexMut, control_node_id: usize) -> Option<usi
   find_ancestor_form(index, control_node_id)
 }
 
+fn find_ancestor_select(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
+  while node_id != 0 {
+    let node = index.node(node_id)?;
+    if is_select(node) {
+      return Some(node_id);
+    }
+    // Shadow roots are tree root boundaries for select/option relationships; do not walk out into
+    // the shadow host tree.
+    if matches!(
+      node.node_type,
+      DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. }
+    ) {
+      break;
+    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+  None
+}
+
 // `SelectControl` uses Strings/Vecs and does not contain floats, so its derived `PartialEq` is a
 // full equivalence relation. Mark it as `Eq` so interaction actions can remain `Eq` as well.
 impl Eq for SelectControl {}
@@ -3618,6 +3669,7 @@ impl InteractionEngine {
       document_drag: None,
       text_edit: None,
       text_undo: HashMap::new(),
+      form_default_snapshots: HashMap::new(),
       modality: InputModality::Pointer,
       last_click_target: None,
       last_form_submitter: None,
@@ -3791,6 +3843,225 @@ impl InteractionEngine {
       .is_some_and(|form_id| self.mark_user_validity(form_id))
   }
 
+  fn ensure_form_default_snapshot_for_control(&mut self, index: &DomIndexMut, control_node_id: usize) {
+    let Some(form_id) = resolve_form_owner(index, control_node_id) else {
+      return;
+    };
+    self.ensure_form_default_snapshot_for_form(index, form_id);
+  }
+
+  fn ensure_form_default_snapshot_for_form(&mut self, index: &DomIndexMut, form_id: usize) {
+    if self.form_default_snapshots.contains_key(&form_id) {
+      return;
+    }
+
+    let mut snapshot = FormDefaultSnapshot::default();
+
+    for node_id in 1..index.id_to_node.len() {
+      if node_or_ancestor_is_template(index, node_id) {
+        continue;
+      }
+      let Some(node) = index.node(node_id) else {
+        continue;
+      };
+      if !node.is_element() {
+        continue;
+      }
+
+      if is_input(node) && resolve_form_owner(index, node_id) == Some(form_id) {
+        snapshot
+          .input_value
+          .insert(node_id, node.get_attribute_ref("value").map(|v| v.to_string()));
+
+        if is_checkbox_input(node) || is_radio_input(node) {
+          snapshot
+            .input_checked
+            .insert(node_id, node.get_attribute_ref("checked").is_some());
+        }
+      }
+
+      if is_option(node) {
+        let Some(select_id) = find_ancestor_select(index, node_id) else {
+          continue;
+        };
+        if resolve_form_owner(index, select_id) != Some(form_id) {
+          continue;
+        }
+        snapshot
+          .option_selected
+          .insert(node_id, node.get_attribute_ref("selected").is_some());
+      }
+    }
+
+    self.form_default_snapshots.insert(form_id, snapshot);
+  }
+
+  fn perform_form_reset(&mut self, index: &mut DomIndexMut, control_node_id: usize) -> bool {
+    let Some(form_id) = resolve_form_owner(index, control_node_id) else {
+      return false;
+    };
+
+    self.ensure_form_default_snapshot_for_form(index, form_id);
+    let Some(snapshot) = self.form_default_snapshots.get(&form_id) else {
+      return false;
+    };
+
+    let mut changed = false;
+
+    // Reset value-bearing `<input>` elements.
+    for (&input_id, default_value_attr) in &snapshot.input_value {
+      let Some(node) = index.node(input_id) else {
+        continue;
+      };
+      if !is_input(node) {
+        continue;
+      }
+
+      let ty = input_type(node);
+      // Button-ish inputs are not resettable in practice and never change without JS.
+      if ty.eq_ignore_ascii_case("submit")
+        || ty.eq_ignore_ascii_case("reset")
+        || ty.eq_ignore_ascii_case("button")
+        || ty.eq_ignore_ascii_case("image")
+      {
+        continue;
+      }
+
+      if is_checkbox_input(node) || is_radio_input(node) {
+        let desired_checked = snapshot
+          .input_checked
+          .get(&input_id)
+          .copied()
+          .unwrap_or(false);
+        if let Some(node_mut) = index.node_mut(input_id) {
+          if desired_checked {
+            changed |= set_node_attr(node_mut, "checked", "");
+          } else {
+            changed |= remove_node_attr(node_mut, "checked");
+          }
+          // Resetting checkbox/radio state also clears `indeterminate` if present.
+          changed |= remove_node_attr(node_mut, "indeterminate");
+        }
+        continue;
+      }
+
+      if let Some(node_mut) = index.node_mut(input_id) {
+        match default_value_attr {
+          Some(value) => {
+            changed |= set_node_attr(node_mut, "value", value);
+          }
+          None => {
+            changed |= remove_node_attr(node_mut, "value");
+          }
+        }
+      }
+    }
+
+    // Reset `<textarea>` values by removing the internal override attribute so the current value
+    // falls back to the original text content.
+    for node_id in 1..index.id_to_node.len() {
+      if node_or_ancestor_is_template(index, node_id) {
+        continue;
+      }
+      let Some(node) = index.node(node_id) else {
+        continue;
+      };
+      if !is_textarea(node) {
+        continue;
+      }
+      if resolve_form_owner(index, node_id) != Some(form_id) {
+        continue;
+      }
+      if let Some(node_mut) = index.node_mut(node_id) {
+        changed |= remove_node_attr(node_mut, "data-fastr-value");
+      }
+    }
+
+    // Reset `<select>` selections by restoring each `<option>`'s `selected` content attribute.
+    for (&option_id, selected) in &snapshot.option_selected {
+      if let Some(node_mut) = index.node_mut(option_id) {
+        if *selected {
+          changed |= set_node_attr(node_mut, "selected", "");
+        } else {
+          changed |= remove_node_attr(node_mut, "selected");
+        }
+      }
+    }
+
+    // Clear text undo history for controls in this form.
+    {
+      let mut ids_in_form = std::collections::HashSet::<usize>::new();
+      for node_id in 1..index.id_to_node.len() {
+        if node_or_ancestor_is_template(index, node_id) {
+          continue;
+        }
+        let Some(node) = index.node(node_id) else {
+          continue;
+        };
+        if !(is_input(node) || is_textarea(node)) {
+          continue;
+        }
+        if resolve_form_owner(index, node_id) != Some(form_id) {
+          continue;
+        }
+        ids_in_form.insert(node_id);
+      }
+      self.text_undo.retain(|node_id, _| !ids_in_form.contains(node_id));
+    }
+
+    // Clear HTML "user validity" gating for the form + its associated controls.
+    let mut cleared_user_validity = false;
+    if self.state.user_validity.remove(&form_id) {
+      cleared_user_validity = true;
+    }
+    for node_id in 1..index.id_to_node.len() {
+      if node_or_ancestor_is_template(index, node_id) {
+        continue;
+      }
+      let Some(node) = index.node(node_id) else {
+        continue;
+      };
+      if !(is_input(node) || is_textarea(node) || is_select(node) || is_button(node)) {
+        continue;
+      }
+      if resolve_form_owner(index, node_id) != Some(form_id) {
+        continue;
+      }
+      if self.state.user_validity.remove(&node_id) {
+        cleared_user_validity = true;
+      }
+    }
+    changed |= cleared_user_validity;
+
+    // If the focused element is within the reset form, clamp caret/selection state to the new
+    // value length to preserve internal invariants.
+    if let Some(focused) = self.state.focused {
+      let focused_in_form = focused == form_id
+        || index
+          .node(focused)
+          .is_some_and(|node| resolve_form_owner(index, focused) == Some(form_id));
+      if focused_in_form {
+        if let Some(edit) = self.text_edit.as_mut().filter(|edit| edit.node_id == focused) {
+          let value_len = index
+            .node(focused)
+            .map(|node| {
+              if is_textarea(node) {
+                textarea_value_for_editing(node).chars().count()
+              } else {
+                node.get_attribute_ref("value").unwrap_or("").chars().count()
+              }
+            })
+            .unwrap_or(0);
+          edit.caret = edit.caret.min(value_len);
+          edit.selection_anchor = edit.selection_anchor.map(|a| a.min(value_len));
+          changed |= self.sync_text_edit_paint_state();
+        }
+      }
+    }
+
+    changed
+  }
+
   fn step_number_input(&mut self, index: &mut DomIndexMut, node_id: usize, delta_steps: i32) -> bool {
     if delta_steps == 0 {
       return false;
@@ -3807,6 +4078,8 @@ impl InteractionEngine {
     {
       return false;
     }
+
+    self.ensure_form_default_snapshot_for_control(index, node_id);
 
     // Any direct value mutation cancels an in-progress IME preedit string.
     let mut changed = self.ime_cancel_internal();
@@ -3853,6 +4126,8 @@ impl InteractionEngine {
     option_node_id: usize,
     toggle_for_multiple: bool,
   ) -> bool {
+    let index = DomIndexMut::new(dom);
+    self.ensure_form_default_snapshot_for_control(&index, select_node_id);
     let dom_changed = dom_mutation::activate_select_option(
       dom,
       select_node_id,
@@ -3905,6 +4180,8 @@ impl InteractionEngine {
       };
       if ok { trimmed } else { "" }
     };
+
+    self.ensure_form_default_snapshot_for_control(&index, input_node_id);
 
     let Some(node_mut) = index.node_mut(input_node_id) else {
       return false;
@@ -4188,6 +4465,7 @@ impl InteractionEngine {
         && page_point.x >= 0.0
         && page_point.y >= 0.0
       {
+        self.ensure_form_default_snapshot_for_control(&index, state.node_id);
         let changed = update_range_value_from_pointer(
           &mut index,
           fragment_tree,
@@ -4408,6 +4686,7 @@ impl InteractionEngine {
           node_id: hit.dom_node_id,
           box_id: hit.box_id,
         });
+        self.ensure_form_default_snapshot_for_control(&index, hit.dom_node_id);
         let changed = update_range_value_from_pointer(
           &mut index,
           fragment_tree,
@@ -4922,6 +5201,7 @@ impl InteractionEngine {
         && page_point.x >= 0.0
         && page_point.y >= 0.0
       {
+        self.ensure_form_default_snapshot_for_control(&index, state.node_id);
         let changed = update_range_value_from_pointer(
           &mut index,
           fragment_tree,
@@ -5002,6 +5282,7 @@ impl InteractionEngine {
 
           if is_primary_button && !disabled {
             if let Some((select_box_id, control, _, style)) = snapshot.as_ref() {
+              self.ensure_form_default_snapshot_for_control(&index, target_id);
               let changed = apply_select_listbox_click(
                 dom,
                 fragment_tree,
@@ -5151,6 +5432,7 @@ impl InteractionEngine {
               }
             } else if index.node(target_id).is_some_and(is_checkbox_input) {
               if !node_is_disabled(&index, target_id) {
+                self.ensure_form_default_snapshot_for_control(&index, target_id);
                 if let Some(node_mut) = index.node_mut(target_id) {
                   let changed = dom_mutation::toggle_checkbox(node_mut);
                   dom_changed |= changed;
@@ -5161,6 +5443,7 @@ impl InteractionEngine {
               }
             } else if index.node(target_id).is_some_and(is_radio_input) {
               if !node_is_disabled(&index, target_id) {
+                self.ensure_form_default_snapshot_for_control(&index, target_id);
                 let changed = dom_mutation::activate_radio(dom, target_id);
                 dom_changed |= changed;
                 if changed {
@@ -5176,6 +5459,12 @@ impl InteractionEngine {
                   input_node_id: target_id,
                   kind,
                 };
+              }
+            } else if index.node(target_id).is_some_and(is_reset_control) {
+              if is_disabled_or_inert(&index, target_id) {
+                // Disabled reset controls do not reset.
+              } else {
+                dom_changed |= self.perform_form_reset(&mut index, target_id);
               }
             } else if index.node(target_id).is_some_and(is_submit_control) {
               if node_is_disabled(&index, target_id) {
@@ -5328,6 +5617,8 @@ impl InteractionEngine {
     if text.is_empty() {
       return changed;
     }
+
+    self.ensure_form_default_snapshot_for_control(&index, focused);
 
     let current = if focused_is_textarea {
       index
@@ -5761,6 +6052,8 @@ impl InteractionEngine {
       return (dom_changed, selected);
     }
 
+    self.ensure_form_default_snapshot_for_control(&index, focused);
+
     self.record_text_undo_snapshot(focused, &current, &edit);
     dom_changed |= self.ime_cancel_internal();
 
@@ -5883,6 +6176,7 @@ impl InteractionEngine {
       }
 
       let can_edit_value = !node_is_readonly(&index, focused);
+      self.ensure_form_default_snapshot_for_control(&index, focused);
 
       // `<input type=number>` uses ArrowUp/ArrowDown to increment/decrement (like browsers).
       if focused_is_text_input
@@ -6549,6 +6843,7 @@ impl InteractionEngine {
           } else {
             None
           };
+          self.ensure_form_default_snapshot_for_control(&index, focused);
           if let Some(node_mut) = index.node_mut(focused) {
             let dom_changed = match key {
               KeyAction::ArrowUp | KeyAction::ArrowRight => dom_mutation::step_range_value(node_mut, 1),
@@ -6849,6 +7144,7 @@ impl InteractionEngine {
           }
         } else if index.node(focused).is_some_and(is_checkbox_input) {
           if !node_is_disabled(&index, focused) {
+            self.ensure_form_default_snapshot_for_control(&index, focused);
             if let Some(node_mut) = index.node_mut(focused) {
               let dom_changed = dom_mutation::toggle_checkbox(node_mut);
               changed |= dom_changed;
@@ -6859,11 +7155,18 @@ impl InteractionEngine {
           }
         } else if index.node(focused).is_some_and(is_radio_input) {
           if !node_is_disabled(&index, focused) {
+            self.ensure_form_default_snapshot_for_control(&index, focused);
             let dom_changed = dom_mutation::activate_radio(dom, focused);
             changed |= dom_changed;
             if dom_changed {
               changed |= self.mark_user_validity(focused);
             }
+          }
+        } else if index.node(focused).is_some_and(is_reset_control) {
+          if is_disabled_or_inert(&index, focused) {
+            // Disabled reset controls do not reset.
+          } else {
+            changed |= self.perform_form_reset(&mut index, focused);
           }
         } else if index.node(focused).is_some_and(is_submit_control) {
           if is_disabled_or_inert(&index, focused) {
@@ -6972,6 +7275,7 @@ impl InteractionEngine {
           }
         } else if index.node(focused).is_some_and(is_checkbox_input) {
           if !node_is_disabled(&index, focused) {
+            self.ensure_form_default_snapshot_for_control(&index, focused);
             if let Some(node_mut) = index.node_mut(focused) {
               let dom_changed = dom_mutation::toggle_checkbox(node_mut);
               changed |= dom_changed;
@@ -6982,11 +7286,18 @@ impl InteractionEngine {
           }
         } else if index.node(focused).is_some_and(is_radio_input) {
           if !node_is_disabled(&index, focused) {
+            self.ensure_form_default_snapshot_for_control(&index, focused);
             let dom_changed = dom_mutation::activate_radio(dom, focused);
             changed |= dom_changed;
             if dom_changed {
               changed |= self.mark_user_validity(focused);
             }
+          }
+        } else if index.node(focused).is_some_and(is_reset_control) {
+          if is_disabled_or_inert(&index, focused) {
+            // Disabled reset controls do not reset.
+          } else {
+            changed |= self.perform_form_reset(&mut index, focused);
           }
         } else if index.node(focused).is_some_and(is_submit_control) {
           if is_disabled_or_inert(&index, focused) {
@@ -7171,6 +7482,7 @@ impl InteractionEngine {
           }
         } else if index.node(focused).is_some_and(is_checkbox_input) {
           if !node_is_disabled(&index, focused) {
+            self.ensure_form_default_snapshot_for_control(&index, focused);
             if let Some(node_mut) = index.node_mut(focused) {
               let dom_changed = dom_mutation::toggle_checkbox(node_mut);
               changed |= dom_changed;
@@ -7181,11 +7493,18 @@ impl InteractionEngine {
           }
         } else if index.node(focused).is_some_and(is_radio_input) {
           if !node_is_disabled(&index, focused) {
+            self.ensure_form_default_snapshot_for_control(&index, focused);
             let dom_changed = dom_mutation::activate_radio(dom, focused);
             changed |= dom_changed;
             if dom_changed {
               changed |= self.mark_user_validity(focused);
             }
+          }
+        } else if index.node(focused).is_some_and(is_reset_control) {
+          if is_disabled_or_inert(&index, focused) {
+            // Disabled reset controls do not reset.
+          } else {
+            changed |= self.perform_form_reset(&mut index, focused);
           }
         } else if index.node(focused).is_some_and(is_submit_control) {
           if is_disabled_or_inert(&index, focused) {
@@ -7280,6 +7599,7 @@ impl InteractionEngine {
           }
         } else if index.node(focused).is_some_and(is_checkbox_input) {
           if !node_is_disabled(&index, focused) {
+            self.ensure_form_default_snapshot_for_control(&index, focused);
             if let Some(node_mut) = index.node_mut(focused) {
               let dom_changed = dom_mutation::toggle_checkbox(node_mut);
               changed |= dom_changed;
@@ -7290,11 +7610,18 @@ impl InteractionEngine {
           }
         } else if index.node(focused).is_some_and(is_radio_input) {
           if !node_is_disabled(&index, focused) {
+            self.ensure_form_default_snapshot_for_control(&index, focused);
             let dom_changed = dom_mutation::activate_radio(dom, focused);
             changed |= dom_changed;
             if dom_changed {
               changed |= self.mark_user_validity(focused);
             }
+          }
+        } else if index.node(focused).is_some_and(is_reset_control) {
+          if is_disabled_or_inert(&index, focused) {
+            // Disabled reset controls do not reset.
+          } else {
+            changed |= self.perform_form_reset(&mut index, focused);
           }
         } else if index.node(focused).is_some_and(is_submit_control) {
           if is_disabled_or_inert(&index, focused) {
