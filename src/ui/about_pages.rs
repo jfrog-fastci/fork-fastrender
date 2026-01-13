@@ -177,6 +177,11 @@ pub fn sync_about_page_snapshot_chrome_accent(accent: Option<RgbaColor>) {
   about_page_snapshot_lock().write().chrome_accent = accent;
 }
 
+#[cfg(feature = "browser_ui")]
+pub fn sync_about_page_snapshot_download_dir(download_dir: Option<String>) {
+  about_page_snapshot_lock().write().download_dir = download_dir;
+}
+
 pub fn sync_about_page_snapshot_open_tabs(open_tabs: Vec<OpenTabSnapshot>) {
   about_page_snapshot_lock().write().open_tabs = open_tabs;
 }

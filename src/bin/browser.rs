@@ -3985,6 +3985,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set the download directory once during startup, before any `CreateTab { initial_url: Some(..) }`
     // messages trigger a navigation.
+    fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+      download_dir.display().to_string(),
+    ));
     renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
       path: download_dir.clone(),
     })?;
@@ -4492,6 +4495,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           eprintln!("failed to send debug log setting to new window worker: {err}");
         }
 
+        fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+          download_dir.display().to_string(),
+        ));
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: download_dir.clone(),
         }) {
@@ -4627,6 +4633,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           eprintln!("failed to send debug log setting to new window worker: {err}");
         }
 
+        fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+          download_dir.display().to_string(),
+        ));
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: download_dir.clone(),
         }) {
@@ -5279,6 +5288,9 @@ fn run_headless_smoke_mode(
         "fastr-browser-headless-smoke-worker",
       )?;
 
+      fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+        download_dir.display().to_string(),
+      ));
       renderer_backend.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
 
       let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
@@ -5510,6 +5522,9 @@ fn run_headless_crash_smoke_mode(
   .split();
 
   // Not strictly needed for the crash smoke test, but keeps parity with other headless harnesses.
+  fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+    download_dir.display().to_string(),
+  ));
   ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
 
   let tab_id = TabId::new();
