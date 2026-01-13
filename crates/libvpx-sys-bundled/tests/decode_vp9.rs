@@ -3,14 +3,6 @@ use std::ffi::CStr;
 use std::io::Cursor;
 use std::path::PathBuf;
 
-// From libvpx headers:
-// VPX_IMAGE_ABI_VERSION = 5 (vpx/vpx_image.h)
-// VPX_CODEC_ABI_VERSION = 4 + VPX_IMAGE_ABI_VERSION
-// VPX_DECODER_ABI_VERSION = 3 + VPX_CODEC_ABI_VERSION
-//
-// For libvpx 1.13.1, this resolves to 12.
-const VPX_DECODER_ABI_VERSION: i32 = 12;
-
 #[test]
 fn decodes_vp9_frame_from_webm_fixture() {
     // Reuse the workspace's deterministic CC0 fixture.
@@ -143,19 +135,11 @@ impl CodecCtx {
         iface: *mut libvpx_sys_bundled::vpx_codec_iface_t,
         cfg: &libvpx_sys_bundled::vpx_codec_dec_cfg_t,
     ) {
-        let err = unsafe {
-            libvpx_sys_bundled::vpx_codec_dec_init_ver(
-                &mut self.ctx,
-                iface,
-                cfg,
-                0,
-                VPX_DECODER_ABI_VERSION,
-            )
-        };
+        let err = unsafe { libvpx_sys_bundled::vpx_codec_dec_init(&mut self.ctx, iface, cfg, 0) };
         assert_eq!(
             err,
             libvpx_sys_bundled::VPX_CODEC_OK,
-            "vpx_codec_dec_init_ver failed: {}",
+            "vpx_codec_dec_init failed: {}",
             err_to_string(err)
         );
         self.initialized = true;

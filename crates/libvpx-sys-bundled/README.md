@@ -39,6 +39,15 @@ Currently supported:
 
 Other targets will emit a clear build error.
 
+## ABI helpers
+
+The upstream C headers provide convenience macros like `vpx_codec_dec_init()` that expand to
+`vpx_codec_dec_init_ver(..., VPX_DECODER_ABI_VERSION)`. Since macros aren't available through FFI,
+this crate defines the relevant ABI constants and provides an equivalent Rust wrapper:
+
+- `VPX_DECODER_ABI_VERSION`
+- `unsafe fn vpx_codec_dec_init(...)`
+
 ## Updating libvpx
 
 High-level steps:

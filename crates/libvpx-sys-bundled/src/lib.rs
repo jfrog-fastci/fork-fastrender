@@ -891,3 +891,31 @@ extern "C" {
                                                 cb_priv: *mut ::libc::c_void)
      -> vpx_codec_err_t;
 }
+
+// ============================================================================
+// ABI helpers
+// ============================================================================
+//
+// The libvpx C API exposes convenience macros like `vpx_codec_dec_init()` that forward to
+// `vpx_codec_dec_init_ver(..., VPX_DECODER_ABI_VERSION)`.
+//
+// C macros don't translate into Rust FFI, so we replicate the relevant ABI version constants and
+// provide a small wrapper for decoder init.
+//
+// These values are taken from the vendored libvpx headers (libvpx 1.13.1):
+// - vpx/vpx_image.h:   `VPX_IMAGE_ABI_VERSION = 5`
+// - vpx/vpx_codec.h:   `VPX_CODEC_ABI_VERSION = 4 + VPX_IMAGE_ABI_VERSION`
+// - vpx/vpx_decoder.h: `VPX_DECODER_ABI_VERSION = 3 + VPX_CODEC_ABI_VERSION`
+pub const VPX_IMAGE_ABI_VERSION: ::libc::c_int = 5;
+pub const VPX_CODEC_ABI_VERSION: ::libc::c_int = 4 + VPX_IMAGE_ABI_VERSION;
+pub const VPX_DECODER_ABI_VERSION: ::libc::c_int = 3 + VPX_CODEC_ABI_VERSION;
+
+#[inline]
+pub unsafe fn vpx_codec_dec_init(
+    ctx: *mut vpx_codec_ctx_t,
+    iface: *mut vpx_codec_iface_t,
+    cfg: *const vpx_codec_dec_cfg_t,
+    flags: vpx_codec_flags_t,
+) -> vpx_codec_err_t {
+    vpx_codec_dec_init_ver(ctx, iface, cfg, flags, VPX_DECODER_ABI_VERSION)
+}
