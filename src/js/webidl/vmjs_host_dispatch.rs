@@ -2313,63 +2313,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     Ok(())
   }
 
-  fn sync_cached_children_for_wrapper(
-    &mut self,
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    wrapper_obj: GcObject,
-    node_id: NodeId,
-    document_id: DocumentId,
-  ) -> Result<(), VmError>
-  where
-    Host: DomHost,
-  {
-    let children_key = key_from_str(scope, NODE_CHILDREN_KEY)?;
-    let Some(Value::Object(collection_obj)) = scope
-      .heap()
-      .object_get_own_data_property_value(wrapper_obj, &children_key)?
-    else {
-      return Ok(());
-    };
-
-    #[derive(Debug)]
-    enum SyncChildrenError {
-      Dom(DomError),
-      OutOfMemory,
-    }
-
-    let children: Result<Vec<(NodeId, DomInterface)>, SyncChildrenError> =
-      self.with_dom_host(vm, |host| {
-        Ok(host.with_dom(|dom| {
-          if node_id.index() >= dom.nodes_len() {
-            return Err(SyncChildrenError::Dom(DomError::NotFoundError));
-          }
-
-          let child_ids = dom.children_elements(node_id);
-          let mut out: Vec<(NodeId, DomInterface)> = Vec::new();
-          out
-            .try_reserve(child_ids.len())
-            .map_err(|_| SyncChildrenError::OutOfMemory)?;
-          for child_id in child_ids {
-            let primary = if child_id.index() >= dom.nodes_len() {
-              DomInterface::Node
-            } else {
-              DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
-            };
-            out.push((child_id, primary));
-          }
-          Ok(out)
-        }))
-      })?;
-
-    let children = match children {
-      Ok(v) => v,
-      Err(SyncChildrenError::Dom(err)) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
-      Err(SyncChildrenError::OutOfMemory) => return Err(VmError::OutOfMemory),
-    };
-    sync_dom_node_collection_object(vm, scope, collection_obj, document_id, &children)
-  }
-
   fn try_delegate_dom_call_operation(
     &mut self,
     vm: &mut Vm,

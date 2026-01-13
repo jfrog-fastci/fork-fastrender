@@ -209,8 +209,8 @@ pub struct InteractionEngine {
   text_edit: Option<TextEditState>,
   text_undo: HashMap<usize, TextUndoHistory>,
   form_default_snapshots: HashMap<usize, FormDefaultSnapshot>,
-  /// Per-`<select>` anchor option for Shift range-selection in listbox controls (`multiple` or
-  /// `size > 1`).
+  /// Per-`<select>` anchor `<option>` id for Shift range-selection in listbox controls (`multiple`
+  /// or `size > 1`).
   ///
   /// Native browsers treat Shift-click as selecting a contiguous option range from a stable anchor.
   /// The anchor updates on non-shift interactions (plain click, Ctrl/Cmd click, arrow-key
@@ -7715,6 +7715,14 @@ impl InteractionEngine {
 
     // Any focus change cancels an in-progress IME composition and resets text-editing state.
     if prev_focused != new_focused {
+      // Listbox range selection anchor is scoped to a focused `<select>`; drop it when focus moves
+      // away so Shift-click behaviour doesn't leak across focus changes.
+      if let Some(prev_id) = prev_focused {
+        if index.node(prev_id).is_some_and(is_select) {
+          self.select_listbox_anchor.remove(&prev_id);
+        }
+      }
+
       if self.state.ime_preedit.is_some() {
         changed = true;
       }

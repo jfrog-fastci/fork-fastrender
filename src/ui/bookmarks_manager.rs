@@ -1169,7 +1169,7 @@ fn folder_open_id(folder_id: BookmarkId) -> egui::Id {
 
 fn folder_open(ctx: &egui::Context, folder_id: BookmarkId) -> bool {
   ctx
-    .data(|d| d.get_persisted::<bool>(folder_open_id(folder_id)))
+    .data_mut(|d| d.get_persisted::<bool>(folder_open_id(folder_id)))
     .unwrap_or(false)
 }
 

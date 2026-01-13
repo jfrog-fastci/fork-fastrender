@@ -482,6 +482,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       )
       .map_err(|err| Error::Other(err.to_string()))?;
 
+      // WebSocket env is available in both direct and stub builds; the stub implementation simply
+      // does not install the JS `WebSocket` constructor.
       let ws_env = WindowWebSocketEnv::for_document(Arc::clone(&fetcher), Some(url.to_string()));
 
       let websocket_bindings = install_window_websocket_bindings_with_guard::<BrowserTabHost>(

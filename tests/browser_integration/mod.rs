@@ -84,6 +84,7 @@ mod select_listbox_hidden_option_click;
 mod select_listbox_multi_select_modifiers;
 mod select_listbox_multi_select_shift_skips_disabled;
 mod select_listbox_multiple_selection;
+mod select_listbox_multiselect_click;
 mod select_listbox_wheel_scroll;
 mod scroll_snap_wheel_scroll_accumulate;
 mod user_validity_common_form_controls;

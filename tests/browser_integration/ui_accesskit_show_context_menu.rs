@@ -64,6 +64,8 @@ fn a11y_show_context_menu_on_focused_link_reports_link_url() {
     .unwrap();
 
   // Simulate an assistive-technology "Show context menu" action.
+  //
+  // Use `node_id: None` to exercise the worker fallback behaviour (use the currently focused node).
   worker
     .ui_tx
     .send(UiToWorker::A11yShowContextMenu {

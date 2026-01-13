@@ -624,7 +624,6 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
       }
     }
   }
-
   let Some(entry) = stsd
     .descriptions
     .get(desc_index0)

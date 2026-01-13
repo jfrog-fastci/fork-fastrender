@@ -849,6 +849,8 @@ impl WindowHostState {
         }
       };
 
+      // WebSocket env is available in both direct and stub builds; the stub implementation simply
+      // does not install the JS `WebSocket` constructor.
       let ws_env =
         WindowWebSocketEnv::for_document(Arc::clone(&host_fetcher), Some(document_url.clone()));
 

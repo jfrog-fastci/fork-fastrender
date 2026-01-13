@@ -1660,8 +1660,20 @@ pub fn chrome_ui_with_bookmarks(
     // Navigation + address bar row.
     ui.horizontal(|ui| {
       let is_compact = ui.available_width() < COMPACT_MODE_THRESHOLD_PX;
-      let active_tab = app.active_tab();
-      let (can_back, can_forward, loading, stage, load_progress, zoom_factor) = active_tab
+      // Avoid holding an immutable borrow of `app` for the entire toolbar render pass: we need to
+      // mutate tab/chrome state (zoom, omnibox, etc.) based on UI interactions in this same frame.
+      let (
+        can_back,
+        can_forward,
+        loading,
+        stage,
+        load_progress,
+        zoom_factor,
+        error,
+        warning,
+        active_url,
+      ) = app
+        .active_tab()
         .map(|t| {
           (
             t.can_go_back,
@@ -1670,13 +1682,28 @@ pub fn chrome_ui_with_bookmarks(
             t.load_stage,
             t.load_progress,
             t.zoom,
+            t.error.clone(),
+            t.warning.clone(),
+            t.committed_url
+              .as_deref()
+              .or_else(|| t.current_url())
+              .unwrap_or("")
+              .to_string(),
           )
         })
-        .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
-      // Avoid cloning error/warning strings every frame; these are only needed by reference for
-      // display/tooltip rendering.
-      let error = active_tab.and_then(|t| t.error.as_deref());
-      let warning = active_tab.and_then(|t| t.warning.as_deref());
+        .unwrap_or((
+          false,
+          false,
+          false,
+          None,
+          None,
+          zoom::DEFAULT_ZOOM,
+          None,
+          None,
+          String::new(),
+        ));
+      let error = error.as_deref();
+      let warning = warning.as_deref();
 
       let downloads = app.downloads.aggregate_progress();
 
@@ -1867,10 +1894,6 @@ pub fn chrome_ui_with_bookmarks(
 
       // Derive the URL for display/indicator from the active tab (not from in-progress address bar
       // edits).
-      let active_url = app
-        .active_tab()
-        .and_then(|t| t.committed_url.as_deref().or_else(|| t.current_url()))
-        .unwrap_or("");
       let active_url_trim = active_url.trim();
 
       let (
@@ -1882,13 +1905,13 @@ pub fn chrome_ui_with_bookmarks(
         loading_text,
       ) = {
         let cache = &mut app.chrome.address_bar_cache;
-        cache.update_active_url(active_url, ADDRESS_BAR_DISPLAY_MAX_CHARS);
+        cache.update_active_url(&active_url, ADDRESS_BAR_DISPLAY_MAX_CHARS);
         let url_generation = cache.active_url_generation();
         let active_url_is_bookmarked = cache.is_url_bookmarked(active_url_trim, omnibox_bookmarks);
         let indicator = cache.security_indicator();
-        let loading_text = cache.loading_text(stage);
-        let formatted_url = cache.formatted_url();
-        let display_path_query_fragment = cache.display_path_query_fragment();
+        let formatted_url = cache.formatted_url().clone();
+        let display_path_query_fragment = cache.display_path_query_fragment().map(|s| s.to_owned());
+        let loading_text = cache.loading_text(stage).to_string();
         (
           formatted_url,
           url_generation,
@@ -2196,8 +2219,8 @@ pub fn chrome_ui_with_bookmarks(
                 let cache = d.get_temp_mut_or_default::<AddressBarDisplayGalleyCache>(cache_id);
                 cache.update(
                   ui,
-                  formatted_url,
-                  display_path_query_fragment,
+                  &formatted_url,
+                  display_path_query_fragment.as_deref(),
                   max_width,
                   url_generation,
                 );
@@ -2718,7 +2741,7 @@ pub fn chrome_ui_with_bookmarks(
         let tooltip = if active_url_trim.is_empty() {
           "Enter URL…"
         } else {
-          active_url
+          active_url.as_str()
         };
         // Avoid `on_hover_text`: it forces the tooltip text to be owned (`'static`) and allocates
         // every frame even when the address bar isn't hovered. We only need the tooltip when the
