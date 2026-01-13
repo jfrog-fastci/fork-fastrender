@@ -1463,9 +1463,13 @@ impl TextItem {
       is_space: bool,
     }
 
-    let mut clusters: Vec<ClusterRef> = Vec::new();
+    // Most runs are cluster-trivial (1 cluster per glyph). Reserve to avoid repeated reallocation on
+    // long LTR paragraphs.
+    let mut clusters: Vec<ClusterRef> =
+      Vec::with_capacity(runs.iter().map(|r| r.glyphs.len()).sum());
     let mut last_offset: Option<usize> = None;
     let mut needs_sort = false;
+    let wants_word_spacing = word_spacing != 0.0;
 
     for (run_idx, run) in runs.iter().enumerate() {
       if run.glyphs.is_empty() {
@@ -1481,8 +1485,12 @@ impl TextItem {
         let glyph_end = idx;
 
         let offset = run.start.saturating_add(cluster_value as usize);
-        let ch = text.get(offset..).and_then(|s| s.chars().next());
-        let is_space = matches!(ch, Some(' ') | Some('\u{00A0}') | Some('\t'));
+        let is_space = if wants_word_spacing {
+          let ch = text.get(offset..).and_then(|s| s.chars().next());
+          matches!(ch, Some(' ') | Some('\u{00A0}') | Some('\t'))
+        } else {
+          false
+        };
 
         if let Some(prev) = last_offset {
           if offset < prev {
