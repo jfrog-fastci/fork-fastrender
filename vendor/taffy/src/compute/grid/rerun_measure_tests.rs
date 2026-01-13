@@ -88,5 +88,133 @@ mod tests {
       "unexpected intrinsic probe fanout: {intrinsic_probe_count} probes for {CHILD_COUNT} children (expected < {upper_bound})"
     );
   }
-}
 
+  #[test]
+  fn grid_intrinsic_rerun_scan_skips_aspect_ratio_items_when_inline_tracks_are_unaffected() {
+    // The inline-axis rerun scan only needs to probe aspect-ratio items if their min-content
+    // contributions could affect track sizing. In the flex batch, that requires a flexible track
+    // whose *minimum* sizing function is intrinsic.
+    //
+    // If an aspect-ratio item spans a flexible track with a definite min (e.g. `minmax(0, 1fr)`),
+    // then the scan is guaranteed to be a no-op and should not trigger any intrinsic probes.
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child = taffy
+      .new_leaf(Style {
+        aspect_ratio: Some(1.0),
+        grid_column: Line {
+          start: line(1),
+          end: span(2),
+        },
+        grid_row: Line {
+          start: line(1),
+          end: span(1),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          size: Size::from_lengths(200.0, 200.0),
+          // First track is flexible but has a definite min (minmax(0, 1fr)).
+          // Second track is intrinsic so the item crosses intrinsic columns and triggers rerun logic.
+          grid_template_columns: vec![flex(1.0), auto()],
+          grid_template_rows: vec![length(10.0); 1],
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    let mut inline_intrinsic_probe_count = 0usize;
+    taffy
+      .compute_layout_with_measure(
+        root,
+        Size {
+          width: AvailableSpace::Definite(200.0),
+          height: AvailableSpace::Definite(200.0),
+        },
+        |_, available_space, _, _, _| {
+          if matches!(
+            available_space.width,
+            AvailableSpace::MinContent | AvailableSpace::MaxContent
+          ) {
+            inline_intrinsic_probe_count += 1;
+          }
+
+          MeasureOutput {
+            size: Size { width: 10.0, height: 10.0 },
+            first_baselines: Point { x: None, y: None },
+          }
+        },
+      )
+      .unwrap();
+
+    assert_eq!(inline_intrinsic_probe_count, 0);
+  }
+
+  #[test]
+  fn grid_intrinsic_rerun_scan_skips_aspect_ratio_items_when_block_tracks_are_unaffected() {
+    // Same as the inline-axis test above, but for the block-axis rerun scan.
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child = taffy
+      .new_leaf(Style {
+        aspect_ratio: Some(1.0),
+        grid_row: Line {
+          start: line(1),
+          end: span(2),
+        },
+        grid_column: Line {
+          start: line(1),
+          end: span(1),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          size: Size::from_lengths(200.0, 200.0),
+          grid_template_columns: vec![length(10.0); 1],
+          // First row is flexible but has a definite min (minmax(0, 1fr)).
+          // Second row is intrinsic so the item crosses intrinsic rows and triggers rerun logic.
+          grid_template_rows: vec![flex(1.0), auto()],
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    let mut block_intrinsic_probe_count = 0usize;
+    taffy
+      .compute_layout_with_measure(
+        root,
+        Size {
+          width: AvailableSpace::Definite(200.0),
+          height: AvailableSpace::Definite(200.0),
+        },
+        |_, available_space, _, _, _| {
+          if matches!(
+            available_space.height,
+            AvailableSpace::MinContent | AvailableSpace::MaxContent
+          ) {
+            block_intrinsic_probe_count += 1;
+          }
+
+          MeasureOutput {
+            size: Size { width: 10.0, height: 10.0 },
+            first_baselines: Point { x: None, y: None },
+          }
+        },
+      )
+      .unwrap();
+
+    assert_eq!(block_intrinsic_probe_count, 0);
+  }
+}

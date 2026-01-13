@@ -1520,10 +1520,41 @@ where
         running_column_sum += track.base_size + track.content_alignment_adjustment;
         column_prefix_sum.push(running_column_sum);
       }
+      let gutter_percentage_basis = Some(inner_node_size.width.unwrap_or(0.0));
+      let row_percentage_basis = |track: &GridTrack| {
+        if track.kind == GridTrackKind::Gutter {
+          gutter_percentage_basis
+        } else {
+          inner_node_size.height
+        }
+      };
 
       let min_content_contribution_changed = items
         .iter_mut()
         .filter(|item| item.crosses_intrinsic_row && item.aspect_ratio.is_some())
+        .filter(|item| {
+          // Row rerun detection only needs to probe min-content contributions if those contributions
+          // could affect the track sizing algorithm for this item.
+          //
+          // The logic mirrors the inline-axis rerun detection:
+          // - In the flex batch, min-content contributions can only influence flexible tracks whose
+          //   *minimum* sizing function is intrinsic (11.5.1/11.5.2). Growth-limit steps do not run.
+          // - In the non-flex batch, min-content contributions can influence both base sizes (11.5.1/11.5.2)
+          //   and growth limits (11.5.5).
+          let spanned_tracks = &rows[item.track_range_excluding_lines(AbstractAxis::Block)];
+          if item.crosses_flexible_row {
+            spanned_tracks.iter().any(|track| {
+              track.is_flexible() && track.min_track_sizing_function.is_intrinsic()
+            })
+          } else {
+            spanned_tracks.iter().any(|track| {
+              track.min_track_sizing_function.is_intrinsic()
+                || !track
+                  .max_track_sizing_function
+                  .has_definite_value(row_percentage_basis(track))
+            })
+          }
+        })
         .any(|item| {
           let range = item.track_range_excluding_lines(AbstractAxis::Inline);
           let other_axis_sum = column_prefix_sum[range.end] - column_prefix_sum[range.start];
