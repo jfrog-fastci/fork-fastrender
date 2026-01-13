@@ -34,6 +34,7 @@ use parking_lot::RwLock;
 use std::sync::OnceLock;
 use std::time::SystemTime;
 
+use super::string_match::contains_ascii_case_insensitive;
 use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
 use crate::ui::theme_parsing::{RgbaColor, ENV_BROWSER_ACCENT, ENV_BROWSER_HIGH_CONTRAST, ENV_BROWSER_THEME};
 use crate::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE;
@@ -1067,42 +1068,14 @@ fn about_query_param(url: &str, key: &str) -> Option<String> {
   out
 }
 
-fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
-  // Lightweight ASCII-only case-insensitive matching (non-ASCII bytes are compared exactly).
-  if needle.is_empty() {
-    return true;
-  }
-
-  let hay = haystack.as_bytes();
-  let needle = needle.as_bytes();
-  if needle.len() > hay.len() {
-    return false;
-  }
-
-  for i in 0..=(hay.len() - needle.len()) {
-    let mut ok = true;
-    for j in 0..needle.len() {
-      if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
-        ok = false;
-        break;
-      }
-    }
-    if ok {
-      return true;
-    }
-  }
-
-  false
-}
-
 fn matches_search_tokens(url: &str, title: Option<&str>, tokens: &[&str]) -> bool {
   if tokens.is_empty() {
     return true;
   }
 
   for token in tokens {
-    let in_url = contains_case_insensitive(url, token);
-    let in_title = title.is_some_and(|t| contains_case_insensitive(t, token));
+    let in_url = contains_ascii_case_insensitive(url, token);
+    let in_title = title.is_some_and(|t| contains_ascii_case_insensitive(t, token));
     if !in_url && !in_title {
       return false;
     }
@@ -1155,7 +1128,11 @@ fn history_html(full_url: &str) -> String {
     .unwrap_or_default()
     .trim()
     .to_string();
-  let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
+  let query_lower = query.to_ascii_lowercase();
+  let tokens: Vec<&str> = query_lower
+    .split_whitespace()
+    .filter(|t| !t.is_empty())
+    .collect();
   let safe_query = escape_html(&query);
 
   let snapshot = about_page_snapshot();
@@ -1225,7 +1202,11 @@ fn bookmarks_html(full_url: &str) -> String {
     .unwrap_or_default()
     .trim()
     .to_string();
-  let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
+  let query_lower = query.to_ascii_lowercase();
+  let tokens: Vec<&str> = query_lower
+    .split_whitespace()
+    .filter(|t| !t.is_empty())
+    .collect();
   let safe_query = escape_html(&query);
 
   let snapshot = about_page_snapshot();
