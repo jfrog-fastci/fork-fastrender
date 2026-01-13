@@ -12,8 +12,19 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 // `rgba(0, 120, 215, 0.35)` over white.
+//
+// Different raster backends may round channel values slightly differently (e.g. 207 vs 208 for
+// green). Accept a small tolerance so the test asserts selection behavior rather than the exact
+// rounding mode.
 const SELECTION_HIGHLIGHT: [u8; 4] = [166, 208, 241, 255];
 const WHITE: [u8; 4] = [255, 255, 255, 255];
+
+fn is_selection_highlight(rgba: [u8; 4]) -> bool {
+  rgba[0] == SELECTION_HIGHLIGHT[0]
+    && rgba[2] == SELECTION_HIGHLIGHT[2]
+    && rgba[3] == SELECTION_HIGHLIGHT[3]
+    && rgba[1].abs_diff(SELECTION_HIGHLIGHT[1]) <= 1
+}
 
 fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
@@ -134,9 +145,9 @@ fn ui_document_selection_multi_range_ctrl_click_adds_ranges_and_copy_concatenate
     .expect("pointer up (A)");
 
   let frame_a = next_frame_ready_until(&ui_rx, tab_id, "after selecting A", |frame| {
-    support::rgba_at(&frame.pixmap, 20, 10) == SELECTION_HIGHLIGHT
+    is_selection_highlight(support::rgba_at(&frame.pixmap, 20, 10))
   });
-  assert_eq!(support::rgba_at(&frame_a.pixmap, 20, 10), SELECTION_HIGHLIGHT);
+  assert!(is_selection_highlight(support::rgba_at(&frame_a.pixmap, 20, 10)));
   assert_eq!(support::rgba_at(&frame_a.pixmap, 220, 10), WHITE);
   assert_eq!(support::rgba_at(&frame_a.pixmap, 420, 10), WHITE);
 
@@ -169,12 +180,12 @@ fn ui_document_selection_multi_range_ctrl_click_adds_ranges_and_copy_concatenate
     .expect("pointer up (B)");
 
   let frame_ab = next_frame_ready_until(&ui_rx, tab_id, "after selecting A+B", |frame| {
-    support::rgba_at(&frame.pixmap, 20, 10) == SELECTION_HIGHLIGHT
-      && support::rgba_at(&frame.pixmap, 220, 10) == SELECTION_HIGHLIGHT
+    is_selection_highlight(support::rgba_at(&frame.pixmap, 20, 10))
+      && is_selection_highlight(support::rgba_at(&frame.pixmap, 220, 10))
       && support::rgba_at(&frame.pixmap, 420, 10) == WHITE
   });
-  assert_eq!(support::rgba_at(&frame_ab.pixmap, 20, 10), SELECTION_HIGHLIGHT);
-  assert_eq!(support::rgba_at(&frame_ab.pixmap, 220, 10), SELECTION_HIGHLIGHT);
+  assert!(is_selection_highlight(support::rgba_at(&frame_ab.pixmap, 20, 10)));
+  assert!(is_selection_highlight(support::rgba_at(&frame_ab.pixmap, 220, 10)));
   assert_eq!(support::rgba_at(&frame_ab.pixmap, 420, 10), WHITE);
 
   ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
@@ -204,14 +215,14 @@ fn ui_document_selection_multi_range_ctrl_click_adds_ranges_and_copy_concatenate
     tab_id,
     "after shift-extending primary range",
     |frame| {
-      support::rgba_at(&frame.pixmap, 20, 10) == SELECTION_HIGHLIGHT
-        && support::rgba_at(&frame.pixmap, 220, 10) == SELECTION_HIGHLIGHT
-        && support::rgba_at(&frame.pixmap, 420, 10) == SELECTION_HIGHLIGHT
+      is_selection_highlight(support::rgba_at(&frame.pixmap, 20, 10))
+        && is_selection_highlight(support::rgba_at(&frame.pixmap, 220, 10))
+        && is_selection_highlight(support::rgba_at(&frame.pixmap, 420, 10))
     },
   );
-  assert_eq!(support::rgba_at(&frame_abc.pixmap, 20, 10), SELECTION_HIGHLIGHT);
-  assert_eq!(support::rgba_at(&frame_abc.pixmap, 220, 10), SELECTION_HIGHLIGHT);
-  assert_eq!(support::rgba_at(&frame_abc.pixmap, 420, 10), SELECTION_HIGHLIGHT);
+  assert!(is_selection_highlight(support::rgba_at(&frame_abc.pixmap, 20, 10)));
+  assert!(is_selection_highlight(support::rgba_at(&frame_abc.pixmap, 220, 10)));
+  assert!(is_selection_highlight(support::rgba_at(&frame_abc.pixmap, 420, 10)));
 
   ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
   assert_eq!(next_clipboard_text(&ui_rx, tab_id), "AAAAA\nBBBBBCCCCC");
