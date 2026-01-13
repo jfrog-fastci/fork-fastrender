@@ -1,7 +1,7 @@
 #![cfg(windows)]
 
-use std::ffi::OsString;
 use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -11,13 +11,13 @@ use win_sandbox::{restricted_token, RestrictedToken, SpawnConfig};
 use windows_sys::Win32::Foundation::{
   CloseHandle, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
 };
-use windows_sys::Win32::Security::{
-  GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-  TOKEN_MANDATORY_LABEL, TOKEN_QUERY, PSID,
-};
 use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
   NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+};
+use windows_sys::Win32::Security::{
+  GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel, PSID,
+  TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -136,8 +136,16 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
 fn current_integrity_rid() -> u32 {
   let mut token: HANDLE = std::ptr::null_mut();
   let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
-  assert_ne!(ok, 0, "OpenProcessToken failed: {}", std::io::Error::last_os_error());
-  assert!(!token.is_null(), "OpenProcessToken returned null token handle");
+  assert_ne!(
+    ok,
+    0,
+    "OpenProcessToken failed: {}",
+    std::io::Error::last_os_error()
+  );
+  assert!(
+    !token.is_null(),
+    "OpenProcessToken returned null token handle"
+  );
 
   let mut len: u32 = 0;
   unsafe {
@@ -149,7 +157,10 @@ fn current_integrity_rid() -> u32 {
       &mut len,
     );
   }
-  assert!(len > 0, "GetTokenInformation(TokenIntegrityLevel) returned len=0");
+  assert!(
+    len > 0,
+    "GetTokenInformation(TokenIntegrityLevel) returned len=0"
+  );
 
   let mut buf = vec![0u8; len as usize];
   let ok = unsafe {
@@ -173,7 +184,10 @@ fn current_integrity_rid() -> u32 {
   assert!(!sid.is_null(), "integrity SID should be non-null");
 
   let subauth_count = unsafe { *GetSidSubAuthorityCount(sid) } as usize;
-  assert!(subauth_count > 0, "integrity SID should have sub authorities");
+  assert!(
+    subauth_count > 0,
+    "integrity SID should have sub authorities"
+  );
   let rid = unsafe { *GetSidSubAuthority(sid, (subauth_count - 1) as u32) };
   unsafe {
     CloseHandle(token);
@@ -265,7 +279,8 @@ fn restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile() {
     .expect("create restricted token")
     .into_handle();
 
-  let child = restricted_token::spawn_with_token(&cfg, &token).expect("spawn restricted-token child");
+  let child =
+    restricted_token::spawn_with_token(&cfg, &token).expect("spawn restricted-token child");
 
   let exit_code = child
     .wait_timeout(Duration::from_secs(30))
