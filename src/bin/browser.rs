@@ -2401,6 +2401,11 @@ struct OpenSelectDropdown {
   tab_id: fastrender::ui::TabId,
   select_node_id: usize,
   control: fastrender::tree::box_tree::SelectControl,
+  /// egui widget id that held focus before the dropdown was opened.
+  ///
+  /// Used to restore focus when the popup closes (or clear focus when none was set) so we don't
+  /// leave egui focused on widgets that have been removed.
+  focus_before_open: Option<egui::Id>,
   /// Optional viewport-local CSS-pixel rect for positioning the popup.
   ///
   /// When present, this should be the `<select>` control's bounds in **viewport-local CSS
@@ -2447,11 +2452,63 @@ struct OpenDateTimePicker {
   tab_id: fastrender::ui::TabId,
   input_node_id: usize,
   kind: fastrender::ui::messages::DateTimeInputKind,
+  /// egui widget id that held focus before the picker was opened.
+  ///
+  /// Used to restore focus when the popup closes (or clear focus when none was set) so we don't
+  /// leave egui focused on widgets that have been removed.
+  focus_before_open: Option<egui::Id>,
   /// Bounding box of the `<input>` control in viewport CSS coordinates.
   anchor_css: fastrender::geometry::Rect,
   /// Fallback anchor position in egui points (cursor position).
   anchor_points: egui::Pos2,
   state: DateTimePickerState,
+}
+
+#[cfg(feature = "browser_ui")]
+fn egui_focused_widget_id(ctx: &egui::Context) -> Option<egui::Id> {
+  ctx.memory(|mem| mem.focused())
+}
+
+#[cfg(feature = "browser_ui")]
+fn restore_or_clear_egui_focus(ctx: &egui::Context, previous_focus: Option<egui::Id>) {
+  ctx.memory_mut(|mem| {
+    if let Some(prev) = previous_focus {
+      mem.request_focus(prev);
+      return;
+    }
+    let Some(focused) = mem.focused() else {
+      return;
+    };
+    mem.surrender_focus(focused);
+  });
+}
+
+#[cfg(feature = "browser_ui")]
+fn close_select_dropdown_popup(
+  ctx: &egui::Context,
+  open_select_dropdown: &mut Option<OpenSelectDropdown>,
+  open_select_dropdown_rect: &mut Option<egui::Rect>,
+) {
+  let Some(dropdown) = open_select_dropdown.take() else {
+    *open_select_dropdown_rect = None;
+    return;
+  };
+  *open_select_dropdown_rect = None;
+  restore_or_clear_egui_focus(ctx, dropdown.focus_before_open);
+}
+
+#[cfg(feature = "browser_ui")]
+fn close_date_time_picker_popup(
+  ctx: &egui::Context,
+  open_date_time_picker: &mut Option<OpenDateTimePicker>,
+  open_date_time_picker_rect: &mut Option<egui::Rect>,
+) {
+  let Some(picker) = open_date_time_picker.take() else {
+    *open_date_time_picker_rect = None;
+    return;
+  };
+  *open_date_time_picker_rect = None;
+  restore_or_clear_egui_focus(ctx, picker.focus_before_open);
 }
 
 #[cfg(feature = "browser_ui")]
@@ -3935,8 +3992,11 @@ impl App {
   }
 
   fn close_select_dropdown(&mut self) {
-    self.open_select_dropdown = None;
-    self.open_select_dropdown_rect = None;
+    close_select_dropdown_popup(
+      &self.egui_ctx,
+      &mut self.open_select_dropdown,
+      &mut self.open_select_dropdown_rect,
+    );
   }
 
   fn cancel_select_dropdown(&mut self) {
@@ -3949,8 +4009,11 @@ impl App {
   }
 
   fn close_date_time_picker(&mut self) {
-    self.open_date_time_picker = None;
-    self.open_date_time_picker_rect = None;
+    close_date_time_picker_popup(
+      &self.egui_ctx,
+      &mut self.open_date_time_picker,
+      &mut self.open_date_time_picker_rect,
+    );
   }
 
   fn cancel_date_time_picker(&mut self) {
@@ -4419,6 +4482,12 @@ impl App {
     } = &msg
     {
       if self.browser_state.active_tab_id() == Some(*tab_id) {
+        let focus_before_open = self
+          .open_date_time_picker
+          .as_ref()
+          .map(|existing| existing.focus_before_open)
+          .unwrap_or_else(|| egui_focused_widget_id(&self.egui_ctx));
+
         let mut anchor_points = self
           .last_cursor_pos_points
           .or_else(|| self.page_rect_points.map(|rect| rect.center()))
@@ -4472,6 +4541,7 @@ impl App {
           tab_id: *tab_id,
           input_node_id: *input_node_id,
           kind: *kind,
+          focus_before_open,
           anchor_css: *anchor_css,
           anchor_points,
           state,
@@ -4557,10 +4627,17 @@ impl App {
             }
           }
 
+          let focus_before_open = self
+            .open_select_dropdown
+            .as_ref()
+            .map(|existing| existing.focus_before_open)
+            .unwrap_or_else(|| egui_focused_widget_id(&self.egui_ctx));
+
           self.open_select_dropdown = Some(OpenSelectDropdown {
             tab_id: dropdown.tab_id,
             select_node_id: dropdown.select_node_id,
             control: dropdown.control,
+            focus_before_open,
             anchor_css: control_anchor,
             anchor_points,
             anchor_width_points,
@@ -10840,5 +10917,139 @@ mod select_dropdown_a11y_tests {
       ..control
     };
     assert_eq!(App::select_dropdown_focus_target_item_index(&control), Some(1));
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod page_form_popup_focus_tests {
+  use super::{
+    close_date_time_picker_popup, egui_focused_widget_id, DateTimePickerState, OpenDateTimePicker,
+  };
+  use fastrender::geometry::Rect;
+  use fastrender::ui::messages::DateTimeInputKind;
+  use fastrender::ui::TabId;
+
+  fn begin_frame(ctx: &egui::Context) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::pos2(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    ctx.begin_frame(raw);
+  }
+
+  #[test]
+  fn date_time_picker_text_edit_focus_is_cleared_on_close() {
+    let ctx = egui::Context::default();
+    let mut draft = String::new();
+    let picker_text_id = egui::Id::new("test_date_time_picker_text_edit");
+
+    // Frame 1: "open" the picker and focus the text edit.
+    begin_frame(&ctx);
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      // Mirror the browser UI behaviour: focus requests are applied before constructing the widget.
+      ui.memory_mut(|mem| mem.request_focus(picker_text_id));
+      ui.add(egui::TextEdit::singleline(&mut draft).id(picker_text_id));
+    });
+    let _ = ctx.end_frame();
+
+    assert_eq!(egui_focused_widget_id(&ctx), Some(picker_text_id));
+    assert!(
+      ctx.wants_keyboard_input(),
+      "expected the picker text edit to claim keyboard focus"
+    );
+
+    // Frame 2: render without the text edit (simulating the picker being removed), without any
+    // focus restore/clear requests. This reproduces the failure mode: egui focus stays on the
+    // removed text edit, so `wants_keyboard_input` remains true.
+    begin_frame(&ctx);
+    egui::CentralPanel::default().show(&ctx, |_ui| {});
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.wants_keyboard_input(),
+      "expected egui to retain focus on the removed picker text edit"
+    );
+
+    // Simulate the browser closing the picker with no previous focused id.
+    let mut open_picker = Some(OpenDateTimePicker {
+      tab_id: TabId(1),
+      input_node_id: 1,
+      kind: DateTimeInputKind::DateTimeLocal,
+      focus_before_open: None,
+      anchor_css: Rect::ZERO,
+      anchor_points: egui::pos2(0.0, 0.0),
+      state: DateTimePickerState::Text {
+        draft: String::new(),
+      },
+    });
+    let mut picker_rect = Some(egui::Rect::NOTHING);
+    close_date_time_picker_popup(&ctx, &mut open_picker, &mut picker_rect);
+
+    begin_frame(&ctx);
+    egui::CentralPanel::default().show(&ctx, |_ui| {});
+    let _ = ctx.end_frame();
+
+    assert!(
+      !ctx.wants_keyboard_input(),
+      "expected closing the picker to clear egui keyboard focus"
+    );
+  }
+
+  #[test]
+  fn date_time_picker_close_restores_previous_focus() {
+    let ctx = egui::Context::default();
+    let prev_id = egui::Id::new("test_prev_text_edit");
+    let picker_text_id = egui::Id::new("test_picker_text_edit");
+    let mut prev_text = String::new();
+    let mut picker_text = String::new();
+
+    // Frame 1: focus a stable widget (simulating chrome focus before opening the picker).
+    begin_frame(&ctx);
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      ui.memory_mut(|mem| mem.request_focus(prev_id));
+      ui.add(egui::TextEdit::singleline(&mut prev_text).id(prev_id));
+    });
+    let _ = ctx.end_frame();
+    assert_eq!(egui_focused_widget_id(&ctx), Some(prev_id));
+
+    // Frame 2: picker opens and takes focus.
+    begin_frame(&ctx);
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      ui.add(egui::TextEdit::singleline(&mut prev_text).id(prev_id));
+      ui.memory_mut(|mem| mem.request_focus(picker_text_id));
+      ui.add(egui::TextEdit::singleline(&mut picker_text).id(picker_text_id));
+    });
+    let _ = ctx.end_frame();
+    assert_eq!(egui_focused_widget_id(&ctx), Some(picker_text_id));
+
+    // Close picker: focus should be restored to the previous widget.
+    let mut open_picker = Some(OpenDateTimePicker {
+      tab_id: TabId(1),
+      input_node_id: 1,
+      kind: DateTimeInputKind::DateTimeLocal,
+      focus_before_open: Some(prev_id),
+      anchor_css: Rect::ZERO,
+      anchor_points: egui::pos2(0.0, 0.0),
+      state: DateTimePickerState::Text {
+        draft: String::new(),
+      },
+    });
+    let mut picker_rect = Some(egui::Rect::NOTHING);
+    close_date_time_picker_popup(&ctx, &mut open_picker, &mut picker_rect);
+
+    begin_frame(&ctx);
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      ui.add(egui::TextEdit::singleline(&mut prev_text).id(prev_id));
+    });
+    let _ = ctx.end_frame();
+
+    assert_eq!(egui_focused_widget_id(&ctx), Some(prev_id));
+    assert!(
+      ctx.wants_keyboard_input(),
+      "expected focus restore to keep keyboard input routed to the previous TextEdit"
+    );
   }
 }
