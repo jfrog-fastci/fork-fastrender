@@ -680,3 +680,26 @@ fn compiled_array_literal_uses_array_prototype() -> Result<(), VmError> {
   assert_eq!(result, Value::Number(2.0));
   Ok(())
 }
+
+#[test]
+fn compiled_template_literal_executes() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let x = 2;
+      `a${x}b`
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap_mut().scope();
+  let expected = scope.alloc_string("a2b")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}

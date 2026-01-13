@@ -3,6 +3,7 @@ use crate::conversion_ops::ToPrimitiveHint;
 use crate::exec::RuntimeEnv;
 use crate::function::ThisMode;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
+use crate::tick::DEFAULT_TICK_EVERY;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{EnvBinding, GcEnv, GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::cmp::Ordering;
@@ -87,6 +88,51 @@ fn concat_strings(
   }
 
   scope.alloc_string_from_u16_vec(units)
+}
+
+fn vec_try_extend_utf16_from_str_with_ticks(
+  out: &mut Vec<u16>,
+  s: &str,
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<(), VmError> {
+  // Extend `out` with the UTF-16 encoding of `s` using fallible allocation and periodic ticks.
+  //
+  // We buffer into a fixed-size stack array so we can:
+  // - use `Vec::try_reserve` to avoid panicking on OOM, and
+  // - tick periodically so large template literal segments can't perform long stretches of
+  //   uninterruptible work.
+  let mut buf = [0u16; DEFAULT_TICK_EVERY];
+  let mut buf_len = 0usize;
+  let mut need_tick = false;
+
+  for unit in s.encode_utf16() {
+    if need_tick {
+      tick()?;
+      need_tick = false;
+    }
+
+    buf[buf_len] = unit;
+    buf_len += 1;
+
+    if buf_len == buf.len() {
+      out
+        .try_reserve(buf_len)
+        .map_err(|_| VmError::OutOfMemory)?;
+      out.extend_from_slice(&buf[..buf_len]);
+      buf_len = 0;
+      // Defer ticking until we know there is at least one more code unit.
+      need_tick = true;
+    }
+  }
+
+  if buf_len != 0 {
+    out
+      .try_reserve(buf_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    out.extend_from_slice(&buf[..buf_len]);
+  }
+
+  Ok(())
 }
 
 struct HirEvaluator<'vm> {
@@ -902,11 +948,10 @@ impl<'vm> HirEvaluator<'vm> {
           self.alloc_user_function_object(scope, *func_body, name_str.as_str(), *is_arrow)?;
         Ok(Value::Object(func_obj))
       }
+      hir_js::ExprKind::Template(tpl) => self.eval_template_literal(scope, body, tpl),
       other => Err(match other {
         hir_js::ExprKind::ClassExpr { .. } => VmError::Unimplemented("class expression (hir-js compiled path)"),
-        hir_js::ExprKind::Template(_) | hir_js::ExprKind::TaggedTemplate { .. } => {
-          VmError::Unimplemented("template literal (hir-js compiled path)")
-        }
+        hir_js::ExprKind::TaggedTemplate { .. } => VmError::Unimplemented("template literal (hir-js compiled path)"),
         hir_js::ExprKind::Await { .. } => VmError::Unimplemented("await (hir-js compiled path)"),
         hir_js::ExprKind::Yield { .. } => VmError::Unimplemented("yield (hir-js compiled path)"),
         hir_js::ExprKind::ImportCall { .. } | hir_js::ExprKind::ImportMeta => {
@@ -1101,6 +1146,40 @@ impl<'vm> HirEvaluator<'vm> {
     arr_scope.define_property(arr_obj, PropertyKey::from_string(length_key_s), length_desc)?;
 
     Ok(Value::Object(arr_obj))
+  }
+
+  fn eval_template_literal(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    tpl: &hir_js::TemplateLiteral,
+  ) -> Result<Value, VmError> {
+    let mut units: Vec<u16> = Vec::new();
+
+    vec_try_extend_utf16_from_str_with_ticks(&mut units, tpl.head.as_str(), || self.vm.tick())?;
+
+    for span in &tpl.spans {
+      // Charge budget per span so a template with many expressions can't run unbounded without
+      // consuming fuel/deadline budget.
+      self.vm.tick()?;
+
+      let value = self.eval_expr(scope, body, span.expr)?;
+      let value_s = scope.to_string(self.vm, &mut *self.host, &mut *self.hooks, value)?;
+
+      {
+        let heap = scope.heap();
+        vec_try_extend_from_slice_with_ticks(
+          &mut units,
+          heap.get_string(value_s)?.as_code_units(),
+          || self.vm.tick(),
+        )?;
+      }
+
+      vec_try_extend_utf16_from_str_with_ticks(&mut units, span.literal.as_str(), || self.vm.tick())?;
+    }
+
+    let out = scope.alloc_string_from_u16_vec(units)?;
+    Ok(Value::String(out))
   }
 
   fn eval_literal(&mut self, scope: &mut Scope<'_>, lit: &hir_js::Literal) -> Result<Value, VmError> {
