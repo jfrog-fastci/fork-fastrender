@@ -2836,6 +2836,7 @@ fn readable_stream_tee_read_fulfilled_native(
   enum TeeChunk {
     Bytes(Vec<u8>),
     String(String),
+    Value(Value),
   }
   let chunk = match chunk_val {
     Value::Object(obj) if scope.heap().is_uint8_array_object(obj) => {
@@ -2874,34 +2875,7 @@ fn readable_stream_tee_read_fulfilled_native(
       }
       TeeChunk::String(utf16_units_to_utf8_string_lossy(code_units, byte_len)?)
     }
-    _ => {
-      let msg = "ReadableStream.tee: expected Uint8Array or string chunks".to_string();
-      let pending0 = error_readable_stream(vm, scope, callee, branch0_obj, msg.clone())?;
-      if let Some(pending) = pending0 {
-        settle_pending_read(
-          vm,
-          scope,
-          host,
-          hooks,
-          pending.reader,
-          pending.roots,
-          pending.outcome,
-        )?;
-      }
-      let pending1 = error_readable_stream(vm, scope, callee, branch1_obj, msg)?;
-      if let Some(pending) = pending1 {
-        settle_pending_read(
-          vm,
-          scope,
-          host,
-          hooks,
-          pending.reader,
-          pending.roots,
-          pending.outcome,
-        )?;
-      }
-      return Ok(Value::Undefined);
-    }
+    _ => TeeChunk::Value(chunk_val),
   };
 
   // Enqueue into each non-canceled branch.
@@ -2955,6 +2929,37 @@ fn readable_stream_tee_read_fulfilled_native(
       }
       if branch1_open {
         let pending = enqueue_string_into_readable_stream(vm, scope, callee, branch1_obj, s)?;
+        if let Some(pending) = pending {
+          settle_pending_read(
+            vm,
+            scope,
+            host,
+            hooks,
+            pending.reader,
+            pending.roots,
+            pending.outcome,
+          )?;
+        }
+      }
+    }
+    TeeChunk::Value(value) => {
+      if branch0_open {
+        let pending =
+          enqueue_value_into_readable_stream(vm, scope, callee, branch0_obj, value)?;
+        if let Some(pending) = pending {
+          settle_pending_read(
+            vm,
+            scope,
+            host,
+            hooks,
+            pending.reader,
+            pending.roots,
+            pending.outcome,
+          )?;
+        }
+      }
+      if branch1_open {
+        let pending = enqueue_value_into_readable_stream(vm, scope, callee, branch1_obj, value)?;
         if let Some(pending) = pending {
           settle_pending_read(
             vm,
@@ -7905,6 +7910,84 @@ mod tests {
       let done1 = read_result_prop(&mut scope, r1_done_obj, "done")?;
       assert_eq!(done0, Value::Bool(true));
       assert_eq!(done1, Value::Bool(true));
+    }
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_tee_preserves_object_identity_for_value_chunks() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let _ = realm.exec_script(
+      r#"
+        globalThis.o = { a: 1 };
+        globalThis.rs = new ReadableStream({
+          start(c) {
+            c.enqueue(o);
+            c.close();
+          }
+        });
+        const [b0, b1] = rs.tee();
+        globalThis.r0 = b0.getReader();
+        globalThis.r1 = b1.getReader();
+        globalThis.p0 = r0.read();
+        globalThis.p1 = r1.read();
+      "#,
+    )?;
+
+    realm.perform_microtask_checkpoint()?;
+
+    let o = realm.exec_script("o")?;
+    let Value::Object(o_obj) = o else {
+      return Err(VmError::InvariantViolation("globalThis.o must be an object"));
+    };
+
+    let p0 = realm.exec_script("p0")?;
+    let p1 = realm.exec_script("p1")?;
+    let (Value::Object(p0_obj), Value::Object(p1_obj)) = (p0, p1) else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+
+    assert_eq!(
+      realm.heap().promise_state(p0_obj)?,
+      PromiseState::Fulfilled
+    );
+    assert_eq!(
+      realm.heap().promise_state(p1_obj)?,
+      PromiseState::Fulfilled
+    );
+
+    let Some(r0_val) = realm.heap().promise_result(p0_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Some(r1_val) = realm.heap().promise_result(p1_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let (Value::Object(r0_obj), Value::Object(r1_obj)) = (r0_val, r1_val) else {
+      return Err(VmError::InvariantViolation(
+        "read() must resolve to an object",
+      ));
+    };
+
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+
+      let done0 = read_result_prop(&mut scope, r0_obj, "done")?;
+      let done1 = read_result_prop(&mut scope, r1_obj, "done")?;
+      assert_eq!(done0, Value::Bool(false));
+      assert_eq!(done1, Value::Bool(false));
+
+      let v0 = read_result_prop(&mut scope, r0_obj, "value")?;
+      let v1 = read_result_prop(&mut scope, r1_obj, "value")?;
+
+      assert_eq!(v0, Value::Object(o_obj));
+      assert_eq!(v1, Value::Object(o_obj));
+      assert_eq!(v0, v1);
     }
 
     realm.teardown();
