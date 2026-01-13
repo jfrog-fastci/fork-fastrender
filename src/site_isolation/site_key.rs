@@ -144,6 +144,16 @@ impl fmt::Display for SiteKey {
   }
 }
 
+impl SiteKey {
+  /// Convenience helper to derive a site key from a parsed URL, treating it as a top-level
+  /// navigation with no parent inheritance.
+  ///
+  /// This is intentionally a thin wrapper over [`site_key_for_navigation`].
+  pub fn from_url(url: &Url) -> SiteKey {
+    site_key_for_navigation(url.as_str(), None, false)
+  }
+}
+
 /// Canonical origin key for origin-partitioned state.
 ///
 /// This is intentionally distinct from [`SiteKey`]: `OriginKey` remains an origin-like key
