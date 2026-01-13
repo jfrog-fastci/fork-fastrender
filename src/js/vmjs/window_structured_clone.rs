@@ -2555,6 +2555,63 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_array_buffer_subclass_clones_as_array_buffer() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\
+         let MyAB;\
+         let ab;\
+         try {\
+           MyAB = class MyAB extends ArrayBuffer {};\
+           ab = new MyAB(2);\
+         } catch (_e) {\
+           /* If `class extends ArrayBuffer` isn't supported, emulate via prototype mutation. */\
+           MyAB = function MyAB(len) {\
+             const ab = new ArrayBuffer(len);\
+             Object.setPrototypeOf(ab, MyAB.prototype);\
+             return ab;\
+           };\
+           MyAB.prototype = Object.create(ArrayBuffer.prototype);\
+           Object.defineProperty(MyAB.prototype, 'constructor', { value: MyAB });\
+           ab = new MyAB(2);\
+         }\
+         new Uint8Array(ab).set([1, 2]);\
+         if (!(ab instanceof MyAB)) return false;\
+         if (Object.getPrototypeOf(ab) !== MyAB.prototype) return false;\
+         const c = structuredClone(ab);\
+         if (Object.prototype.toString.call(c) !== '[object ArrayBuffer]') return false;\
+         if (Object.getPrototypeOf(c) !== ArrayBuffer.prototype) return false;\
+         if (!(c instanceof ArrayBuffer)) return false;\
+         if (c instanceof MyAB) return false;\
+         const v = new Uint8Array(c);\
+         return v[0] === 1 && v[1] === 2;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_array_buffer_uses_intrinsics_under_global_tampering() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\
+         const RealArrayBuffer = ArrayBuffer;\
+         const ab = new RealArrayBuffer(2);\
+         new Uint8Array(ab).set([1, 2]);\
+         globalThis.ArrayBuffer = function () { throw new Error('tampered'); };\
+         const c = structuredClone(ab);\
+         if (!(c instanceof RealArrayBuffer)) return false;\
+         if (Object.getPrototypeOf(c) !== RealArrayBuffer.prototype) return false;\
+         const v = new Uint8Array(c);\
+         return v[0] === 1 && v[1] === 2;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_typed_array_and_data_view_use_intrinsics() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
