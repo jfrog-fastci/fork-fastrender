@@ -16700,23 +16700,6 @@ impl App {
         };
 
         let wheel_delta = fastrender::ui::WheelDelta::from_winit(*delta, self.pixels_per_point);
-        let wheel_delta = match wheel_delta {
-          fastrender::ui::WheelDelta::Lines(delta) => {
-            let (dx, dy) =
-              remap_wheel_delta_for_shift((delta.x, delta.y), self.modifiers.shift());
-            fastrender::ui::WheelDelta::Lines(egui::vec2(dx, dy))
-          }
-          fastrender::ui::WheelDelta::Points(delta) => {
-            let (dx, dy) =
-              remap_wheel_delta_for_shift((delta.x, delta.y), self.modifiers.shift());
-            fastrender::ui::WheelDelta::Points(egui::vec2(dx, dy))
-          }
-          fastrender::ui::WheelDelta::Pages(delta) => {
-            let (dx, dy) =
-              remap_wheel_delta_for_shift((delta.x, delta.y), self.modifiers.shift());
-            fastrender::ui::WheelDelta::Pages(egui::vec2(dx, dy))
-          }
-        };
         let Some(delta_css) = mapping.wheel_delta_to_delta_css(wheel_delta) else {
           return;
         };
