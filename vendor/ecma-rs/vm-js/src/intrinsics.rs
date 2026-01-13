@@ -1133,6 +1133,7 @@ impl Intrinsics {
     let math_cos = vm.register_native_call(builtins::math_cos)?;
     let math_cosh = vm.register_native_call(builtins::math_cosh)?;
     let math_expm1 = vm.register_native_call(builtins::math_expm1)?;
+    let math_f16round = vm.register_native_call(builtins::math_f16round)?;
     let math_fround = vm.register_native_call(builtins::math_fround)?;
     let math_hypot = vm.register_native_call(builtins::math_hypot)?;
     let math_imul = vm.register_native_call(builtins::math_imul)?;
@@ -6167,6 +6168,7 @@ impl Intrinsics {
       define_method("cos", math_cos, 1)?;
       define_method("cosh", math_cosh, 1)?;
       define_method("expm1", math_expm1, 1)?;
+      define_method("f16round", math_f16round, 1)?;
       define_method("fround", math_fround, 1)?;
       define_method("hypot", math_hypot, 2)?;
       define_method("imul", math_imul, 2)?;

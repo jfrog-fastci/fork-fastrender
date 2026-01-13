@@ -19370,6 +19370,169 @@ pub fn math_expm1(
   math_unary_number_op(vm, scope, host, hooks, args, |n| n.exp_m1())
 }
 
+fn f64_to_f16_bits_round_ties_to_even(n: f64) -> u16 {
+  // Implements IEEE-754 binary16 conversion with roundTiesToEven (nearest-even), converting directly
+  // from f64 to f16 without an intermediate f32 step.
+  //
+  // This avoids the double-rounding pitfall described by ECMA-262 for `Math.f16round`.
+  let bits = n.to_bits();
+  let sign = ((bits >> 63) & 1) as u16;
+  let sign16 = sign << 15;
+
+  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+  let frac_bits = bits & 0x000F_FFFF_FFFF_FFFFu64;
+
+  // NaN / Infinity.
+  if exp_bits == 0x7ff {
+    if frac_bits == 0 {
+      return sign16 | 0x7c00;
+    }
+    // Canonical quiet NaN.
+    return sign16 | 0x7e00;
+  }
+
+  // ±0.
+  if exp_bits == 0 && frac_bits == 0 {
+    return sign16;
+  }
+
+  // Normalize into a (mantissa, exponent) pair where:
+  //   value = mantissa * 2^(exp_unbiased - 52)
+  // and `mantissa` has its top bit set at bit 52.
+  let (mantissa, exp_unbiased): (u64, i32) = if exp_bits == 0 {
+    // f64 subnormal.
+    let mut mantissa = frac_bits;
+    let mut exp_unbiased = -1022;
+    // Normalize so bit 52 is set.
+    let top_bit = 63 - (mantissa.leading_zeros() as i32);
+    let shift = (52 - top_bit) as u32;
+    mantissa <<= shift;
+    exp_unbiased -= shift as i32;
+    (mantissa, exp_unbiased)
+  } else {
+    (frac_bits | (1u64 << 52), exp_bits - 1023)
+  };
+
+  // Overflow to ±Infinity.
+  if exp_unbiased > 15 {
+    return sign16 | 0x7c00;
+  }
+
+  // Normal binary16 numbers have exponent range [-14, 15].
+  if exp_unbiased >= -14 {
+    // Keep 11 bits of precision (implicit leading 1 + 10 fraction bits).
+    const SHIFT: u32 = 52 - 10; // 42
+    let mut mant11: u32 = (mantissa >> SHIFT) as u32;
+    let remainder = mantissa & ((1u64 << SHIFT) - 1);
+    let half = 1u64 << (SHIFT - 1);
+    if remainder > half || (remainder == half && (mant11 & 1) == 1) {
+      mant11 = mant11.saturating_add(1);
+    }
+
+    let mut exp16: i32 = exp_unbiased + 15;
+    // Rounding can overflow the significand (e.g. 1.111... -> 10.000...).
+    if mant11 == 0x800 {
+      mant11 >>= 1;
+      exp16 += 1;
+    }
+
+    if exp16 >= 31 {
+      return sign16 | 0x7c00;
+    }
+    let frac16 = (mant11 & 0x3ff) as u16;
+    return sign16 | ((exp16 as u16) << 10) | frac16;
+  }
+
+  // Subnormal binary16 numbers represent values in (0, 2^-14), with:
+  //   value = fraction * 2^-24
+  //
+  // Values smaller than half of the minimum subnormal (2^-25) round to ±0.
+  if exp_unbiased < -25 {
+    return sign16;
+  }
+
+  // For subnormals, compute:
+  //   fraction = roundTiesToEven(value / 2^-24)
+  //            = roundTiesToEven(mantissa * 2^(exp_unbiased - 28))
+  // This is equivalent to shifting right by (28 - exp_unbiased) with rounding.
+  let shift: u32 = (28 - exp_unbiased) as u32;
+  debug_assert!((43..=53).contains(&shift));
+  let mut frac: u32 = (mantissa >> shift) as u32;
+  let remainder = mantissa & ((1u64 << shift) - 1);
+  let half = 1u64 << (shift - 1);
+  if remainder > half || (remainder == half && (frac & 1) == 1) {
+    frac = frac.saturating_add(1);
+  }
+
+  // Rounding can produce the minimum normal value.
+  if frac >= 1024 {
+    return sign16 | (1u16 << 10);
+  }
+
+  sign16 | (frac as u16)
+}
+
+fn f16_bits_to_f64(bits: u16) -> f64 {
+  let sign = ((bits >> 15) & 1) as u64;
+  let exp = ((bits >> 10) & 0x1f) as u64;
+  let frac = (bits & 0x3ff) as u64;
+
+  let sign64 = sign << 63;
+  match exp {
+    0 => {
+      if frac == 0 {
+        // ±0.
+        f64::from_bits(sign64)
+      } else {
+        // Subnormal: value = frac * 2^-24.
+        let p = 63 - (frac.leading_zeros() as u64);
+        let rem = frac - (1u64 << p);
+        let exp64 = (999 + p) << 52; // (p - 24) + 1023
+        let frac64 = rem << ((52 - p) as u32);
+        f64::from_bits(sign64 | exp64 | frac64)
+      }
+    }
+    0x1f => {
+      if frac == 0 {
+        // ±Infinity.
+        f64::from_bits(sign64 | 0x7ff0_0000_0000_0000u64)
+      } else {
+        // NaN (canonical quiet NaN).
+        f64::from_bits(sign64 | 0x7ff8_0000_0000_0000u64)
+      }
+    }
+    _ => {
+      // Normal.
+      let exp_unbiased = (exp as i32) - 15;
+      let exp64 = (exp_unbiased + 1023) as u64;
+      let frac64 = frac << 42;
+      f64::from_bits(sign64 | (exp64 << 52) | frac64)
+    }
+  }
+}
+
+/// `Math.f16round(x)` (ECMA-262).
+pub fn math_f16round(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let v = args.first().copied().unwrap_or(Value::Undefined);
+  let n = scope.to_number(vm, host, hooks, v)?;
+  // Spec: https://tc39.es/ecma262/#sec-math.f16round
+  // - If n is NaN, ±0, or ±Infinity, return n.
+  // - Otherwise, convert to IEEE-754 binary16 using roundTiesToEven, then back to binary64.
+  if n.is_nan() || n == 0.0 || n.is_infinite() {
+    return Ok(Value::Number(n));
+  }
+  let bits = f64_to_f16_bits_round_ties_to_even(n);
+  Ok(Value::Number(f16_bits_to_f64(bits)))
+}
+
 /// `Math.fround(x)` (ECMA-262).
 pub fn math_fround(
   vm: &mut Vm,
