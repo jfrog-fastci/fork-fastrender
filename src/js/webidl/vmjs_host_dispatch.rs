@@ -8943,14 +8943,39 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
 
-      ("Element", op @ ("append" | "prepend"), 0) => {
+      (interface @ ("Element" | "Document" | "DocumentFragment"), op @ ("append" | "prepend"), 0) => {
         let prepend = op == "prepend";
-        let (element_id, wrapper_obj) = require_element_receiver(vm, scope, receiver)?;
-        scope.push_root(Value::Object(wrapper_obj))?;
-
-        let document_id = require_dom_platform_mut(vm)?
-          .require_element_handle(scope.heap(), Value::Object(wrapper_obj))?
-          .document_id;
+        let (parent_id, wrapper_obj, document_id) = match interface {
+          "Element" => {
+            let (element_id, wrapper_obj) = require_element_receiver(vm, scope, receiver)?;
+            scope.push_root(Value::Object(wrapper_obj))?;
+            let document_id = require_dom_platform_mut(vm)?
+              .require_element_handle(scope.heap(), Value::Object(wrapper_obj))?
+              .document_id;
+            (element_id, wrapper_obj, document_id)
+          }
+          "Document" => {
+            let receiver = receiver.unwrap_or(Value::Undefined);
+            let Value::Object(wrapper_obj) = receiver else {
+              return Err(VmError::TypeError("Illegal invocation"));
+            };
+            scope.push_root(Value::Object(wrapper_obj))?;
+            let handle = require_dom_platform_mut(vm)?
+              .require_document_handle(scope.heap(), Value::Object(wrapper_obj))?;
+            (handle.node_id, wrapper_obj, handle.document_id)
+          }
+          "DocumentFragment" => {
+            let receiver = receiver.unwrap_or(Value::Undefined);
+            let Value::Object(wrapper_obj) = receiver else {
+              return Err(VmError::TypeError("Illegal invocation"));
+            };
+            scope.push_root(Value::Object(wrapper_obj))?;
+            let handle = require_dom_platform_mut(vm)?
+              .require_document_fragment_handle(scope.heap(), Value::Object(wrapper_obj))?;
+            (handle.node_id, wrapper_obj, handle.document_id)
+          }
+          _ => unreachable!(),
+        };
 
         #[derive(Debug)]
         enum NodeOrDomString {
@@ -9027,7 +9052,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             // `prepend` inserts before the (current) first child. For the multi-arg path, this is
             // computed after moving nodes into the temporary fragment, matching the DOM Standard.
             let reference = if prepend {
-              let children = match dom.children(element_id) {
+              let children = match dom.children(parent_id) {
                 Ok(children) => children,
                 Err(err) => return (Err(err), false),
               };
@@ -9036,7 +9061,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   return false;
                 }
                 let child = dom.node(child_id);
-                child.parent == Some(element_id)
+                child.parent == Some(parent_id)
                   && !matches!(child.kind, NodeKind::ShadowRoot { .. })
               })
             } else {
@@ -9048,15 +9073,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             let inserted = if node_is_shadow_root {
               if prepend {
                 dom.with_shadow_root_as_document_fragment(node_to_insert, |dom| {
-                  dom.insert_before(element_id, node_to_insert, reference)
+                  dom.insert_before(parent_id, node_to_insert, reference)
                 })
               } else {
-                dom.with_shadow_root_as_document_fragment(node_to_insert, |dom| dom.append_child(element_id, node_to_insert))
+                dom.with_shadow_root_as_document_fragment(node_to_insert, |dom| dom.append_child(parent_id, node_to_insert))
               }
             } else if prepend {
-              dom.insert_before(element_id, node_to_insert, reference)
+              dom.insert_before(parent_id, node_to_insert, reference)
             } else {
-              dom.append_child(element_id, node_to_insert)
+              dom.append_child(parent_id, node_to_insert)
             };
             match inserted {
               Ok(changed) => (Ok(()), changed),
@@ -9089,24 +9114,22 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               });
 
             if child_nodes_obj.is_some() || children_obj.is_some() {
-              let snapshot: Result<
-                (Vec<(NodeId, DomInterface)>, Vec<(NodeId, DomInterface)>),
-                VmError,
-              > = self.with_dom_host(vm, |host| {
+              let snapshot: Result<(Vec<(NodeId, DomInterface)>, Vec<(NodeId, DomInterface)>), VmError> =
+                self.with_dom_host(vm, |host| {
                 Ok(host.with_dom(|dom| {
-                  let node_in_range = element_id.index() < dom.nodes_len();
+                  let node_in_range = parent_id.index() < dom.nodes_len();
 
                   let child_nodes = if child_nodes_obj.is_some() && node_in_range {
                     let mut children: Vec<(NodeId, DomInterface)> = Vec::new();
                     children
-                      .try_reserve(dom.node(element_id).children.len())
+                      .try_reserve(dom.node(parent_id).children.len())
                       .map_err(|_| VmError::OutOfMemory)?;
-                    for &child_id in dom.node(element_id).children.iter() {
+                    for &child_id in dom.node(parent_id).children.iter() {
                       if child_id.index() >= dom.nodes_len() {
                         continue;
                       }
                       let child = dom.node(child_id);
-                      if child.parent != Some(element_id) {
+                      if child.parent != Some(parent_id) {
                         continue;
                       }
                       if matches!(child.kind, NodeKind::ShadowRoot { .. }) {
@@ -9122,7 +9145,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
                   let children = if children_obj.is_some() && node_in_range {
                     dom
-                      .children_elements(element_id)
+                      .children_elements(parent_id)
                       .into_iter()
                       .map(|child_id| {
                         let primary = if child_id.index() >= dom.nodes_len() {
@@ -11846,6 +11869,76 @@ mod element_dispatch_tests {
       assert!(dom.get_element_by_id("a").is_none());
     });
 
+    Ok(())
+  }
+
+  #[test]
+  fn document_fragment_append_and_prepend_work_in_webidl_dom_backend() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = realm.global_object();
+
+    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut host_dispatch),
+    );
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => {\
+        const frag = document.createDocumentFragment();\
+        const list = frag.childNodes;\
+        const a = document.createElement('a');\
+        frag.append('x', a);\
+        if (list.length !== 2) return false;\
+        if (list.item(1) !== a) return false;\
+        const b = document.createElement('b');\
+        frag.prepend('y', b);\
+        if (list.length !== 4) return false;\
+        if (list.item(1) !== b) return false;\
+        if (list.item(2) !== a) return false;\
+        return true;\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn document_append_inserts_node_in_webidl_dom_backend() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = realm.global_object();
+
+    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut host_dispatch),
+    );
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => {\
+        const d = new Document();\
+        const c = d.createComment('x');\
+        d.append(c);\
+        return d.childNodes.length === 1 && d.childNodes[0] === c;\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
     Ok(())
   }
 
