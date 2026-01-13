@@ -278,6 +278,14 @@ impl<'a> Parser<'a> {
               // - `return` is not permitted (handled above via `in_function = 0`).
               let is_module = p.is_module();
               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
+                // Static blocks are parsed as:
+                // `StatementList[~Yield, +Await, ~Return]opt`
+                //
+                // This means:
+                // - `await` is treated as a keyword (it is not permitted as an identifier),
+                // - `await` expressions are only permitted when allowed by the surrounding context,
+                // - `yield` expressions are never permitted, and
+                // - `return` statements are never permitted (handled above via `in_function = 0`).
                 await_allowed: false,
                 yield_allowed: !is_module,
                 await_expr_allowed: ctx.rules.await_expr_allowed,
@@ -292,7 +300,22 @@ impl<'a> Parser<'a> {
               p.super_prop_allowed = prev_super_prop_allowed;
               p.super_call_allowed = prev_super_call_allowed;
               p.labels = prev_labels;
-              let body = body?;
+              let body = match body {
+                Ok(body) => body,
+                Err(err)
+                  if !ctx.rules.await_expr_allowed
+                    && err.actual_token == Some(TT::KeywordAwait)
+                    && matches!(err.typ, SyntaxErrorType::ExpectedSyntax("expression operand")) =>
+                {
+                  return Err(err.loc.error(
+                    SyntaxErrorType::ExpectedSyntax(
+                      "'await' is not allowed in class static initialization block",
+                    ),
+                    None,
+                  ));
+                }
+                Err(err) => return Err(err),
+              };
               p.require(TT::BraceClose)?;
               Ok(crate::ast::class_or_object::ClassStaticBlock { body })
             })?;

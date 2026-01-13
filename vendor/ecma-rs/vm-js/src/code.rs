@@ -131,10 +131,16 @@ impl CompiledScript {
               if has_await && !has_module_syntax {
                 parsed
               } else {
-                return Err(VmError::Syntax(vec![script_err.to_diagnostic(FileId(0))]));
+                let diag =
+                  crate::parse_diagnostics::parse_js_error_to_diagnostic(&script_err, FileId(0));
+                return Err(VmError::Syntax(vec![diag]));
               }
             }
-            Err(_) => return Err(VmError::Syntax(vec![script_err.to_diagnostic(FileId(0))])),
+            Err(_) => {
+              let diag =
+                crate::parse_diagnostics::parse_js_error_to_diagnostic(&script_err, FileId(0));
+              return Err(VmError::Syntax(vec![diag]));
+            }
           }
         }
       }
@@ -213,7 +219,10 @@ impl CompiledScript {
       parse_with_options(source.text.as_ref(), opts)
     }))
     .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a module"))?
-    .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+    .map_err(|err| {
+      let diag = crate::parse_diagnostics::parse_js_error_to_diagnostic(&err, FileId(0));
+      VmError::Syntax(vec![diag])
+    })?;
 
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
     let top_level_await_requires_ast_fallback =

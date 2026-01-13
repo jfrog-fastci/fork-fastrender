@@ -3844,11 +3844,12 @@ impl<'a> Parser<'a> {
                      if p.consume_if(TT::Equals).is_match() {
                        let key_name = direct_key.stx.key.clone();
                        let key_loc = direct_key.loc;
+                       p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
                        let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
-                       let id_expr = Node::new(
-                         key_loc,
-                         IdExpr {
-                           name: key_name.clone(),
+                        let id_expr = Node::new(
+                          key_loc,
+                          IdExpr {
+                            name: key_name.clone(),
                          },
                        )
                        .into_wrapped();
@@ -3871,12 +3872,15 @@ impl<'a> Parser<'a> {
                           },
                         )),
                          val: ClassOrObjVal::Prop(Some(bin_expr)),
-                       }
-                     } else {
-                       ObjMemberType::Shorthand {
-                         id: direct_key.map_stx(|n| IdExpr { name: n.key }),
-                       }
-                     }
+                        }
+                      } else {
+                       let key_loc = direct_key.loc;
+                       let key_name = direct_key.stx.key.clone();
+                       p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
+                        ObjMemberType::Shorthand {
+                          id: direct_key.map_stx(|n| IdExpr { name: n.key }),
+                        }
+                      }
                     } else {
                       if !is_valid_pattern_identifier(direct_key.stx.tt, ctx.rules) {
                         return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
@@ -3899,11 +3903,12 @@ impl<'a> Parser<'a> {
                       if p.consume_if(TT::Equals).is_match() {
                         let key_name = direct_key.stx.key.clone();
                         let key_loc = direct_key.loc;
+                        p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
                         let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
                         let id_expr = Node::new(
                          key_loc,
-                         IdExpr {
-                           name: key_name.clone(),
+                          IdExpr {
+                            name: key_name.clone(),
                          },
                        )
                        .into_wrapped();
@@ -3918,17 +3923,20 @@ impl<'a> Parser<'a> {
                        .into_wrapped();
                        bin_expr.assoc.set(CoverInitializedName);
                        ObjMemberType::Valued {
-                         key: ClassOrObjKey::Direct(direct_key),
-                         val: ClassOrObjVal::Prop(Some(bin_expr)),
-                       }
-                     } else {
-                       ObjMemberType::Shorthand {
-                         id: direct_key.map_stx(|n| IdExpr { name: n.key }),
-                       }
-                     }
-                   }
-                 }
-               }
+                          key: ClassOrObjKey::Direct(direct_key),
+                          val: ClassOrObjVal::Prop(Some(bin_expr)),
+                        }
+                      } else {
+                       let key_loc = direct_key.loc;
+                       let key_name = direct_key.stx.key.clone();
+                       p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
+                        ObjMemberType::Shorthand {
+                          id: direct_key.map_stx(|n| IdExpr { name: n.key }),
+                        }
+                      }
+                    }
+                  }
+                }
               }
             _ => ObjMemberType::Valued { key, val: value },
           };

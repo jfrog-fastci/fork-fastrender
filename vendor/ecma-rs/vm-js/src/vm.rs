@@ -3032,19 +3032,8 @@ impl Vm {
           VmError::Termination(Termination::new(TerminationReason::Interrupted, Vec::new()))
         })),
         Err(err) => {
-          // `parse-js` performs some spec-driven validations that overlap with `vm-js` early errors.
-          // Preserve `vm-js`'s stable diagnostic code for these cases.
-          if matches!(
-            err.typ,
-            SyntaxErrorType::ExpectedSyntax(
-              "'arguments' is not allowed in class field initializer or static initialization block"
-            )
-          ) {
-            let mut diag = err.to_diagnostic(FileId(0));
-            diag.code = "VMJS0004".into();
-            return Err(VmError::Syntax(vec![diag]));
-          }
-          Err(VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))
+          let diag = crate::parse_diagnostics::parse_js_error_to_diagnostic(&err, FileId(0));
+          Err(VmError::Syntax(vec![diag]))
         }
       }
     };

@@ -45586,6 +45586,9 @@ fn gen_root_values_for_continuation(
   }
 
   let mut values: Vec<Value> = Vec::new();
+  // Pre-reserve the exact number of values we will push so we never trigger an infallible
+  // reallocation while building the root list (which could abort the host process on allocator
+  // OOM).
   values
     .try_reserve_exact(needed)
     .map_err(|_| VmError::OutOfMemory)?;

@@ -144,6 +144,7 @@ mod conversion_ops;
 mod destructure;
 mod env;
 mod early_errors;
+mod parse_diagnostics;
 mod error;
 mod error_object;
 mod fallible_alloc;

@@ -720,7 +720,10 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(iterator_prototype, Some(object_prototype))?;
-    // `%IteratorPrototype%[@@toStringTag] === "Iterator"` (Iterator helpers / Object.prototype.toString fallback).
+    // Iterator-helpers proposal: `%IteratorPrototype%[@@toStringTag] === "Iterator"`.
+    //
+    // This enables `Object.prototype.toString` fallback tagging for iterator objects when the
+    // concrete iterator prototype does not define its own `@@toStringTag`.
     install_to_string_tag(
       scope,
       iterator_prototype,
