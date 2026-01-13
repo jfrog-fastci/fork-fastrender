@@ -16215,6 +16215,31 @@ pub fn string_prototype_split(
   let separator = args.get(0).copied().unwrap_or(Value::Undefined);
   let limit_val = args.get(1).copied().unwrap_or(Value::Undefined);
 
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  scope.push_roots(&[o, separator, limit_val])?;
+
+  // `separator` has `@@split` => delegate.
+  //
+  // Important: per spec, the @@split dispatch happens before `ToString(this value)`. Per the
+  // latest spec + test262 expectations, primitives must *not* be boxed for the @@split lookup (no
+  // prototype lookup on Boolean/Number/String wrappers).
+  if let Value::Object(_) = separator {
+    let intr = require_intrinsics(vm)?;
+    if let Some(method) = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      separator,
+      PropertyKey::from_symbol(intr.well_known_symbols().split),
+    )? {
+      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, separator, &[o, limit_val]);
+    }
+  }
+
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
+
   // Per spec, `limit` is `ToUint32(limit)`. If it is not provided, the limit is `2^32 - 1`.
   let limit: u32 = if matches!(limit_val, Value::Undefined) {
     u32::MAX
@@ -16229,15 +16254,14 @@ pub fn string_prototype_split(
     }
   };
 
-  if limit == 0 {
-    return Ok(Value::Object(create_array_object(vm, &mut scope, 0)?));
-  }
-
-  let s = scope.to_string(vm, host, hooks, this)?;
-  scope.push_root(Value::String(s))?;
-
   // `separator === undefined` => return [S].
+  //
+  // If `limit == 0`, the empty array is returned (after `ToUint32(limit)`).
   if matches!(separator, Value::Undefined) {
+    if limit == 0 {
+      return Ok(Value::Object(create_array_object(vm, &mut scope, 0)?));
+    }
+
     let array = create_array_object(vm, &mut scope, 1)?;
     let mut idx_scope = scope.reborrow();
     idx_scope.push_roots(&[Value::Object(array), Value::String(s)])?;
@@ -16246,34 +16270,14 @@ pub fn string_prototype_split(
     return Ok(Value::Object(array));
   }
 
-  // `separator` has `@@split` => delegate.
-  if !matches!(separator, Value::Null | Value::Undefined) {
-    // Per spec, primitives must skip the `GetMethod(separator, @@split)` path (avoid boxing and
-    // consulting `Boolean/Number/String.prototype[Symbol.split]`).
-    if let Value::Object(_) = separator {
-      let intr = require_intrinsics(vm)?;
-      if let Some(method) = crate::spec_ops::get_method_with_host_and_hooks(
-        vm,
-        &mut scope,
-        host,
-        hooks,
-        separator,
-        PropertyKey::from_symbol(intr.well_known_symbols().split),
-      )? {
-        return vm.call_with_host_and_hooks(
-          host,
-          &mut scope,
-          hooks,
-          method,
-          separator,
-          &[Value::String(s), Value::Number(limit as f64)],
-        );
-      }
-    }
-  }
-
+  // `separator` string coercion happens before the `limit == 0` early return (test262
+  // `separator-tostring-error.js`).
   let sep = scope.to_string(vm, host, hooks, separator)?;
   scope.push_root(Value::String(sep))?;
+
+  if limit == 0 {
+    return Ok(Value::Object(create_array_object(vm, &mut scope, 0)?));
+  }
 
   let s_len = {
     let js = scope.heap().get_string(s)?;

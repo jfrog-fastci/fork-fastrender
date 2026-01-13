@@ -1498,8 +1498,7 @@ reason = "vm-js: String.prototype.split does not yet implement RegExp separators
 
 [[expectations]]
 id = "built-ins/String/prototype/split/separator-tostring-error.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split does not yet match spec ordering for ToString(separator) vs limit conversion."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/separator-undef-limit-custom.js"
@@ -1513,8 +1512,7 @@ reason = "vm-js does not yet implement the exponentiation operator (**)."
 
 [[expectations]]
 id = "built-ins/String/prototype/split/this-value-not-obj-coercible.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split does not yet implement RequireObjectCoercible(this value)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/this-value-tostring-error.js"
