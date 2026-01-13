@@ -51,6 +51,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "vm_js_exec_compiled"
+path = "fuzz_targets/vm_js_exec_compiled.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "llvm_stackmaps_parse"
 path = "fuzz_targets/llvm_stackmaps_parse.rs"
 test = false

@@ -10,10 +10,11 @@ The fuzz targets live in `vendor/ecma-rs/fuzz/`:
 
 - `parse_js` (parser-only)
 - `vm_js_exec` (parse + execute via `vm-js::Agent::run_script`)
+- `vm_js_exec_compiled` (compile + execute via `vm-js::CompiledScript` + `vm-js::JsRuntime::exec_compiled_script`)
 
 ## Safety: budgets + heap limits
 
-The `vm_js_exec` target is intentionally defensive:
+The `vm_js_exec` and `vm_js_exec_compiled` targets are intentionally defensive:
 
 - **Fuel budget:** 10k ticks per run
 - **Deadline:** ~20ms per run
@@ -35,7 +36,7 @@ From the repo root:
 timeout -k 10 600 bash scripts/cargo_agent.sh install cargo-fuzz
 
 # Create gitignored output corpus directories (one-time).
-mkdir -p vendor/ecma-rs/fuzz/corpus/parse_js vendor/ecma-rs/fuzz/corpus/vm_js_exec
+mkdir -p vendor/ecma-rs/fuzz/corpus/parse_js vendor/ecma-rs/fuzz/corpus/vm_js_exec vendor/ecma-rs/fuzz/corpus/vm_js_exec_compiled
 
 # Always wrap with `timeout -k` so a missed tick can't hang the agent indefinitely.
 #
@@ -48,6 +49,7 @@ mkdir -p vendor/ecma-rs/fuzz/corpus/parse_js vendor/ecma-rs/fuzz/corpus/vm_js_ex
 # read-only corpus.
 timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run parse_js fuzz/corpus/parse_js vm-js/fuzz/corpus/parse_js -- -max_total_time=10
 timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run vm_js_exec fuzz/corpus/vm_js_exec vm-js/fuzz/corpus/vm_js_exec -- -max_total_time=10
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz run vm_js_exec_compiled fuzz/corpus/vm_js_exec_compiled vm-js/fuzz/corpus/vm_js_exec_compiled -- -max_total_time=10
 ```
 
 Tip: add `-- -max_len=8192` to cap libFuzzer's generated input size (the harness also caps).
