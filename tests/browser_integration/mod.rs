@@ -144,6 +144,7 @@ mod ui_fieldset_disabled;
 mod ui_form_reset;
 mod ui_worker_keyboard;
 mod ui_worker_media_prefs;
+mod ui_worker_parse_time_js_dom_mutation_first_frame;
 mod ui_worker_form_state_tab_switch;
 mod ui_worker_navigation_errors;
 mod ui_worker_navigation_messages;
