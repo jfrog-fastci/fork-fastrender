@@ -382,7 +382,12 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
   //
   // Recompute `crosses_intrinsic_*` for this sizing pass so percentage tracks behave as intrinsic
   // in the first pass and as fixed tracks once the container size becomes definite (reruns).
-  update_item_crosses_intrinsic_tracks_for_axis(axis, items, axis_tracks, axis_inner_node_size);
+  let has_percentage_track = axis_tracks
+    .iter()
+    .any(|t| t.kind == GridTrackKind::Track && t.uses_percentage());
+  if has_percentage_track {
+    update_item_crosses_intrinsic_tracks_for_axis(axis, items, axis_tracks, axis_inner_node_size);
+  }
 
   // 11.5.1 Shim item baselines
   if has_baseline_aligned_item {
