@@ -241,8 +241,12 @@ Use `about:test-scroll` → `about:test-form` to build deterministic back/forwar
 - [ ] Relaunch the browser without a URL.
 - [ ] Expected results:
   - [ ] The browser restores the previous session.
-  - [ ] A warning is emitted (currently printed to stderr) indicating the previous session ended
-    unexpectedly.
+  - [ ] A crash-recovery infobar/toast appears indicating the previous session was restored.
+    - [ ] It includes **Keep** (dismiss) and **Start new session** (discard restored tabs) actions.
+    - [ ] Clicking **Keep** dismisses the infobar and preserves the restored tabs.
+    - [ ] Clicking **Start new session** closes/discards the restored tabs and leaves a fresh
+      `about:newtab` session (per window).
+  - [ ] A warning is also printed to stderr indicating the previous session ended unexpectedly.
 
 ### Renderer crash isolation (optional, dev/testing hook)
 
