@@ -127,11 +127,6 @@ status = "xfail"
 reason = "NodeList.item() is not implemented yet (childNodes returns an iterable NodeList, but the WebIDL method + live semantics are incomplete)."
 
 [[expectations]]
-id = "dom/collections/nodelist-queryselectorall-static.window.js"
-status = "xfail"
-reason = "NodeList.item() is not implemented yet (querySelectorAll returns an iterable NodeList, but the WebIDL method + snapshot semantics are incomplete)."
-
-[[expectations]]
 id = "dom/collections/htmlcollection-children.window.js"
 status = "xfail"
 reason = "Element.children/childElementCount/firstElementChild/lastElementChild (HTMLCollection + element traversal) are not implemented yet."
