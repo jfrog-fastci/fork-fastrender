@@ -107,18 +107,16 @@ fn run() -> i32 {
   println!();
   println!("== POSIX shared memory (after sandbox) ==");
 
-  let shm_create_result = probe_posix_shm_create_after_sandbox(&post_sandbox_shm_name);
-  unexpected_success |= report_action(
+  report_capability(
     "ipc: posix shmem create (shm_open+ftruncate+mmap)",
-    shm_create_result,
-    false,
+    probe_posix_shm_create_after_sandbox(&post_sandbox_shm_name),
   );
 
   let shm_mmap_result = match preopened_shm_fd {
     Ok(fd) => probe_posix_shm_mmap_inherited_fd(fd),
-    Err(err) => ActionResult::failure(err),
+    Err(err) => ActionResult::failure_with_context("pre-sandbox shm_open", err),
   };
-  unexpected_success |= report_action("ipc: posix shmem mmap(inherited fd) (mmap)", shm_mmap_result, false);
+  report_capability("ipc: posix shmem mmap(inherited fd) (mmap)", shm_mmap_result);
 
   if let Ok(fd) = preopened_shm_fd {
     // SAFETY: `fd` is a live file descriptor owned by this process.
@@ -381,6 +379,18 @@ to probe against a self-bound listener."
   result.ok && expected_denied
 }
 
+fn report_capability(name: &str, result: ActionResult) {
+  if result.ok {
+    println!("{name}: ALLOWED ({})", result.detail);
+    return;
+  }
+  if let Some(errno) = result.raw_os_error {
+    println!("{name}: DENIED (errno={errno}; error={})", result.detail);
+  } else {
+    println!("{name}: DENIED (error={})", result.detail);
+  }
+}
+
 // ============================================================================
 // Seatbelt sandbox API bindings
 // ============================================================================
@@ -547,4 +557,3 @@ fn probe_posix_shm_mmap_inherited_fd(fd: i32) -> ActionResult {
   }
   ActionResult::success("mapped".to_string())
 }
-
