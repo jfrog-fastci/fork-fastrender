@@ -6969,6 +6969,36 @@ impl App {
           return;
         }
 
+        if !self.pointer_captured
+          && self
+            .debug_log_overlay_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+        {
+          // Treat the debug log UI as a true overlay. If the cursor moves from the page into the
+          // debug log window/button, ensure the worker receives a hover-clear sentinel so the
+          // hovered URL/cursor state doesn't remain "stuck" under the overlay.
+          //
+          // Also drop any coalesced pointer move from earlier CursorMoved events in this frame so
+          // we don't forward a stale hover update when the cursor leaves the overlay before the
+          // next redraw flush.
+          self.pending_pointer_move = None;
+          if self.cursor_in_page {
+            self.cursor_in_page = false;
+            if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
+              self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
+                tab_id,
+                pos_css: (-1.0, -1.0),
+                button: fastrender::ui::PointerButton::None,
+                modifiers: map_modifiers(self.modifiers),
+              });
+              self.window.request_redraw();
+            }
+          } else {
+            self.cursor_in_page = false;
+          }
+          return;
+        }
+
         if !self.pointer_captured && self.cursor_over_egui_overlay(pos_points) {
           return;
         }
@@ -7158,6 +7188,22 @@ impl App {
           // Treat the debug log UI as an egui overlay: don't forward clicks to the page and clear
           // focus so keyboard input can remain in egui (e.g. the filter text edit).
           self.page_has_focus = false;
+          // Also clear any page hover state so hovered-link status does not remain active under the
+          // overlay (this can happen if the overlay appears under a stationary cursor, e.g. when
+          // toggled via menu/shortcut).
+          if matches!(state, ElementState::Pressed) {
+            self.pending_pointer_move = None;
+            self.cursor_in_page = false;
+            if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
+              self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
+                tab_id,
+                pos_css: (-1.0, -1.0),
+                button: fastrender::ui::PointerButton::None,
+                modifiers: map_modifiers(self.modifiers),
+              });
+              self.window.request_redraw();
+            }
+          }
           return;
         }
 
