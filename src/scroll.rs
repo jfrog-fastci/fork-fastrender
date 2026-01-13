@@ -15,6 +15,8 @@ use crate::style::{
 };
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 
+mod anchoring;
+pub use anchoring::{apply_scroll_anchoring, capture_scroll_anchors, ScrollAnchor, ScrollAnchorSnapshot};
 pub(crate) mod anchoring_debug;
 
 /// Viewport and element scroll offsets used when applying scroll snap.
@@ -2582,6 +2584,7 @@ mod tests {
   mod offset_translates_promoted_fragments_test;
   mod overflow_clipping_test;
   mod scroll_blit_supported_test;
+  mod scroll_anchoring_missing_anchor_test;
 
   fn container_style(axis: ScrollSnapAxis, strictness: ScrollSnapStrictness) -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
