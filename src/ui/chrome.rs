@@ -16,7 +16,8 @@ use crate::ui::omnibox::{
   OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource,
 };
 use crate::ui::omnibox_nav::{
-  apply_omnibox_nav_key, omnibox_suggestion_accept_action, OmniboxNavKey,
+  apply_omnibox_nav_key, omnibox_suggestion_accept_action, omnibox_suggestion_fill_text,
+  OmniboxNavKey,
 };
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
@@ -29,8 +30,8 @@ use crate::ui::theme_parsing::{
 use crate::ui::url::{http_fallback_url_for_failed_https, resolve_omnibox_search_query};
 use crate::ui::url_display;
 use crate::ui::zoom;
-use crate::ui::{icon_button, icon_button_with_id, icon_tinted, spinner, BrowserIcon};
 use crate::ui::ChromeAction;
+use crate::ui::{icon_button, icon_button_with_id, icon_tinted, spinner, BrowserIcon};
 use url::Url;
 
 const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
@@ -316,6 +317,19 @@ fn omnibox_suggestion_a11y_label(suggestion: &OmniboxSuggestion) -> String {
       }
     }
   }
+}
+
+fn ascii_starts_with_case_insensitive(haystack: &str, prefix: &str) -> bool {
+  let haystack = haystack.as_bytes();
+  let prefix = prefix.as_bytes();
+  if prefix.len() > haystack.len() {
+    return false;
+  }
+  haystack
+    .iter()
+    .take(prefix.len())
+    .zip(prefix)
+    .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
 }
 
 fn tab_search_input_id() -> egui::Id {
@@ -1356,6 +1370,7 @@ pub fn chrome_ui_with_bookmarks(
       // frame, so we need to wait until after `activated_display_mode` is computed below.
       let mut key_arrow_down = false;
       let mut key_arrow_up = false;
+      let mut key_tab = false;
       let mut key_alt_enter = false;
       let mut key_enter = false;
       let mut key_escape = false;
@@ -1429,9 +1444,39 @@ pub fn chrome_ui_with_bookmarks(
       let show_text_edit = show_text_edit_initial || activated_display_mode;
 
       if show_text_edit && shortcuts_enabled {
+        // If we have an inline-completion suffix selected, treat Tab as "accept completion" instead
+        // of focus traversal.
+        //
+        // We consume Tab here (before the `TextEdit` sees it) so egui doesn't move focus to the next
+        // widget.
+        let tab_should_accept_inline_completion = egui_focus
+          && app.chrome.omnibox.selected.is_none()
+          && app.chrome.omnibox.original_input.is_some()
+          && {
+            let typed = app
+              .chrome
+              .omnibox
+              .original_input
+              .as_deref()
+              .unwrap_or_default();
+            let typed_len = typed.chars().count();
+            let completed_len = app.chrome.address_bar_text.chars().count();
+            if typed_len >= completed_len {
+              false
+            } else {
+              let state =
+                egui::text_edit::TextEditState::load(ctx, address_bar_id).unwrap_or_default();
+              state.ccursor_range().is_some_and(|range| {
+                range.primary.index == typed_len && range.secondary.index == completed_len
+              })
+            }
+          };
         ui.input_mut(|i| {
           key_arrow_down = i.consume_key(Default::default(), egui::Key::ArrowDown);
           key_arrow_up = i.consume_key(Default::default(), egui::Key::ArrowUp);
+          if tab_should_accept_inline_completion {
+            key_tab = i.consume_key(Default::default(), egui::Key::Tab);
+          }
           // Consume Alt+Enter separately from plain Enter so we can implement the standard
           // "open in new tab" omnibox behaviour (Alt+Enter on Windows/Linux, Option+Enter on
           // macOS).
@@ -1959,7 +2004,11 @@ pub fn chrome_ui_with_bookmarks(
               show_tooltip_on_focus(ui, &resp, tooltip);
 
               // Paint a small pill button.
-              let bg_alpha = if resp.hovered() || resp.has_focus() { 70 } else { 40 };
+              let bg_alpha = if resp.hovered() || resp.has_focus() {
+                70
+              } else {
+                40
+              };
               let err_bg =
                 egui::Color32::from_rgba_unmultiplied(err_fg.r(), err_fg.g(), err_fg.b(), bg_alpha);
               ui.painter().rect_filled(rect, badge_rounding, err_bg);
@@ -2200,15 +2249,18 @@ pub fn chrome_ui_with_bookmarks(
         // Address bar display-mode context menu (right click / context-menu key).
         let can_copy_url = !active_url_trim.is_empty();
         let copy_domain = can_copy_url
-          .then(|| Url::parse(active_url_trim).ok().and_then(|url| url.host_str().map(str::to_string)))
+          .then(|| {
+            Url::parse(active_url_trim)
+              .ok()
+              .and_then(|url| url.host_str().map(str::to_string))
+          })
           .flatten();
         bar_response.context_menu(|ui| {
           ui.set_min_width(140.0);
 
           let copy_url_btn = ui.add_enabled(can_copy_url, egui::Button::new("Copy URL"));
-          copy_url_btn.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy URL")
-          });
+          copy_url_btn
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy URL"));
           if copy_url_btn.clicked() {
             ui.ctx()
               .output_mut(|o| o.copied_text = active_url_trim.to_string());
@@ -2217,9 +2269,8 @@ pub fn chrome_ui_with_bookmarks(
 
           let copy_domain_btn =
             ui.add_enabled(copy_domain.is_some(), egui::Button::new("Copy domain"));
-          copy_domain_btn.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy domain")
-          });
+          copy_domain_btn
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy domain"));
           if copy_domain_btn.clicked() {
             if let Some(domain) = copy_domain.clone() {
               ui.ctx().output_mut(|o| o.copied_text = domain);
@@ -2332,20 +2383,25 @@ pub fn chrome_ui_with_bookmarks(
 
         // If remote suggestions arrived for the current query, rebuild the suggestion list so the
         // dropdown updates even when the user pauses typing.
+        let omnibox_query = app
+          .chrome
+          .omnibox
+          .original_input
+          .as_deref()
+          .unwrap_or(app.chrome.address_bar_text.as_str());
         if has_focus
           && app.chrome.address_bar_editing
           && app.chrome.omnibox.open
           && app.chrome.omnibox.selected.is_none()
-          && app.chrome.omnibox.last_built_for_input == app.chrome.address_bar_text
+          && app.chrome.omnibox.last_built_for_input == omnibox_query
         {
           let remote = &app.chrome.remote_search_cache;
           if remote.fetched_at != app.chrome.omnibox.last_built_remote_fetched_at {
-            let remote_is_for_current_query =
-              resolve_omnibox_search_query(&app.chrome.address_bar_text)
-                .is_some_and(|q| q == remote.query.as_str());
+            let remote_is_for_current_query = resolve_omnibox_search_query(omnibox_query)
+              .is_some_and(|q| q == remote.query.as_str());
 
             if remote_is_for_current_query {
-              let input = app.chrome.address_bar_text.as_str();
+              let input = omnibox_query;
               let suggestions = {
                 let ctx = OmniboxContext {
                   open_tabs: &app.tabs,
@@ -2358,11 +2414,15 @@ pub fn chrome_ui_with_bookmarks(
                 build_omnibox_suggestions_default_limit(&ctx, input)
               };
               app.chrome.omnibox.suggestions = suggestions;
-              app
-                .chrome
-                .omnibox
-                .last_built_for_input
-                .clone_from(&app.chrome.address_bar_text);
+              if let Some(original) = app.chrome.omnibox.original_input.as_ref() {
+                app.chrome.omnibox.last_built_for_input.clone_from(original);
+              } else {
+                app
+                  .chrome
+                  .omnibox
+                  .last_built_for_input
+                  .clone_from(&app.chrome.address_bar_text);
+              }
               if app.chrome.omnibox.suggestions.is_empty() {
                 app.chrome.omnibox.open = false;
               }
@@ -2374,12 +2434,134 @@ pub fn chrome_ui_with_bookmarks(
           }
         }
 
+        // Inline omnibox autocomplete ("ghost text") when the dropdown is open.
+        //
+        // We only do this when `omnibox.selected == None` so we don't fight the existing
+        // arrow-key preview behaviour (which also uses `omnibox.original_input`).
+        if has_focus
+          && app.chrome.address_bar_editing
+          && app.chrome.omnibox.open
+          && app.chrome.omnibox.selected.is_none()
+          && !app.chrome.omnibox.suggestions.is_empty()
+          && !key_escape
+        {
+          let completed_len = app.chrome.address_bar_text.chars().count();
+          let mut state =
+            egui::text_edit::TextEditState::load(ctx, address_bar_id).unwrap_or_default();
+          let range = state.ccursor_range();
+
+          let (mut typed_len, completion_selection_active) =
+            if let Some(original) = app.chrome.omnibox.original_input.as_deref() {
+              let typed_len = original.chars().count();
+              let selection_matches = range.is_some_and(|range| {
+                range.primary.index == typed_len && range.secondary.index == completed_len
+              });
+              let prefix_matches =
+                ascii_starts_with_case_insensitive(app.chrome.address_bar_text.as_str(), original);
+              (
+                typed_len,
+                typed_len < completed_len && selection_matches && prefix_matches,
+              )
+            } else {
+              (completed_len, false)
+            };
+
+          // Accept inline completion on Tab (optional; Right Arrow is handled naturally by TextEdit).
+          if completion_selection_active && key_tab {
+            app.chrome.omnibox.original_input = None;
+            state.set_ccursor_range(Some(egui::text::CCursorRange::one(
+              egui::text::CCursor::new(completed_len),
+            )));
+            state.store(ctx, address_bar_id);
+          } else {
+            // If the user moved the caret/selection away from the inline-completion suffix (e.g.
+            // Right Arrow, mouse click), stop treating it as an active completion so Escape doesn't
+            // unexpectedly restore old input.
+            if app.chrome.omnibox.original_input.is_some() && !completion_selection_active {
+              app.chrome.omnibox.original_input = None;
+              typed_len = completed_len;
+            }
+
+            let cursor_at_typed_end = range.is_some_and(|range| {
+              range.primary.index == typed_len && range.secondary.index == typed_len
+            });
+            let should_try_completion = completion_selection_active || cursor_at_typed_end;
+
+            if should_try_completion && typed_len > 0 {
+              let candidate = if let Some(original) = app.chrome.omnibox.original_input.as_deref() {
+                app
+                  .chrome
+                  .omnibox
+                  .suggestions
+                  .iter()
+                  .filter_map(omnibox_suggestion_fill_text)
+                  .find(|fill| {
+                    fill.chars().count() > typed_len
+                      && ascii_starts_with_case_insensitive(fill, original)
+                  })
+              } else {
+                // Borrow the current input only long enough to choose a completion candidate; we may
+                // move the string into `omnibox.original_input` below.
+                let typed = app.chrome.address_bar_text.as_str();
+                app
+                  .chrome
+                  .omnibox
+                  .suggestions
+                  .iter()
+                  .filter_map(omnibox_suggestion_fill_text)
+                  .find(|fill| {
+                    fill.chars().count() > typed_len
+                      && ascii_starts_with_case_insensitive(fill, typed)
+                  })
+              };
+
+              if let Some(candidate) = candidate {
+                let candidate_len = candidate.chars().count();
+
+                if app.chrome.omnibox.original_input.is_none() {
+                  // Preserve the user-typed input so Escape can restore it.
+                  app.chrome.omnibox.original_input =
+                    Some(std::mem::take(&mut app.chrome.address_bar_text));
+                }
+
+                if app.chrome.address_bar_text != candidate {
+                  app.chrome.address_bar_text = candidate.to_string();
+                }
+
+                state.set_ccursor_range(Some(egui::text::CCursorRange::two(
+                  egui::text::CCursor::new(typed_len),
+                  egui::text::CCursor::new(candidate_len),
+                )));
+                state.store(ctx, address_bar_id);
+                ctx.request_repaint();
+              } else if completion_selection_active {
+                // Suggestions no longer extend the typed prefix: drop the stale completion.
+                if let Some(original) = app.chrome.omnibox.original_input.take() {
+                  app.chrome.address_bar_text = original;
+                  state.set_ccursor_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(typed_len),
+                  )));
+                  state.store(ctx, address_bar_id);
+                  ctx.request_repaint();
+                }
+              }
+            }
+          }
+        }
+
         if has_focus && key_escape {
           let was_open_or_selected =
             app.chrome.omnibox.open || app.chrome.omnibox.selected.is_some();
           let _ = apply_omnibox_nav_key(app, OmniboxNavKey::Escape);
           if was_open_or_selected {
             // Ensure we paint at least one follow-up frame so the dropdown can fade out smoothly.
+            let end = app.chrome.address_bar_text.chars().count();
+            let mut state =
+              egui::text_edit::TextEditState::load(ctx, address_bar_id).unwrap_or_default();
+            state.set_ccursor_range(Some(egui::text::CCursorRange::one(
+              egui::text::CCursor::new(end),
+            )));
+            state.store(ctx, address_bar_id);
             ctx.request_repaint();
           } else {
             response.surrender_focus();
@@ -2428,13 +2610,8 @@ pub fn chrome_ui_with_bookmarks(
         .unwrap_or(false);
       let menu_open_prev = menu_open;
 
-      let menu_button = icon_button_with_id(
-        ui,
-        menu_id.with("button"),
-        BrowserIcon::Menu,
-        "Menu",
-        true,
-      );
+      let menu_button =
+        icon_button_with_id(ui, menu_id.with("button"), BrowserIcon::Menu, "Menu", true);
       #[cfg(test)]
       store_test_rect(ctx, "chrome_menu_button_rect", menu_button.rect);
       #[cfg(test)]
@@ -4017,9 +4194,10 @@ mod tests {
     update: &'a accesskit::TreeUpdate,
     name: &str,
   ) -> (accesskit::NodeId, &'a accesskit::Node) {
-    let mut matches = update.nodes.iter().filter(|(_id, node)| {
-      node.name().unwrap_or("").trim() == name
-    });
+    let mut matches = update
+      .nodes
+      .iter()
+      .filter(|(_id, node)| node.name().unwrap_or("").trim() == name);
     let Some((id, node)) = matches.next() else {
       let mut seen: Vec<String> = update
         .nodes
@@ -4525,7 +4703,8 @@ mod tests {
       "expected appearance popup to be open after AccessKit Expand"
     );
 
-    let (_id, node) = accesskit_node_by_role_and_name(&output, accesskit::Role::Button, "Appearance");
+    let (_id, node) =
+      accesskit_node_by_role_and_name(&output, accesskit::Role::Button, "Appearance");
     assert_eq!(
       node.is_expanded(),
       Some(true),
@@ -4563,7 +4742,8 @@ mod tests {
       !app.chrome.appearance_popup_open,
       "expected appearance popup to be closed after AccessKit Collapse"
     );
-    let (_id, node) = accesskit_node_by_role_and_name(&output, accesskit::Role::Button, "Appearance");
+    let (_id, node) =
+      accesskit_node_by_role_and_name(&output, accesskit::Role::Button, "Appearance");
     assert_eq!(
       node.is_expanded(),
       Some(false),
@@ -4673,9 +4853,15 @@ mod tests {
     let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let output0 = ctx.end_frame();
     let update0 = accesskit_update(&output0);
-    assert!(accesskit_node_selected(accesskit_node_by_name(update0, alpha_label).1));
-    assert!(!accesskit_node_selected(accesskit_node_by_name(update0, beta_label).1));
-    assert!(!accesskit_node_selected(accesskit_node_by_name(update0, gamma_label).1));
+    assert!(accesskit_node_selected(
+      accesskit_node_by_name(update0, alpha_label).1
+    ));
+    assert!(!accesskit_node_selected(
+      accesskit_node_by_name(update0, beta_label).1
+    ));
+    assert!(!accesskit_node_selected(
+      accesskit_node_by_name(update0, gamma_label).1
+    ));
 
     // Frame 1: move selection to row 1.
     app.chrome.tab_search.selected = 1;
@@ -4683,8 +4869,12 @@ mod tests {
     let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let output1 = ctx.end_frame();
     let update1 = accesskit_update(&output1);
-    assert!(!accesskit_node_selected(accesskit_node_by_name(update1, alpha_label).1));
-    assert!(accesskit_node_selected(accesskit_node_by_name(update1, beta_label).1));
+    assert!(!accesskit_node_selected(
+      accesskit_node_by_name(update1, alpha_label).1
+    ));
+    assert!(accesskit_node_selected(
+      accesskit_node_by_name(update1, beta_label).1
+    ));
 
     // Frame 2: move selection to row 2.
     app.chrome.tab_search.selected = 2;
@@ -4692,8 +4882,12 @@ mod tests {
     let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let output2 = ctx.end_frame();
     let update2 = accesskit_update(&output2);
-    assert!(!accesskit_node_selected(accesskit_node_by_name(update2, beta_label).1));
-    assert!(accesskit_node_selected(accesskit_node_by_name(update2, gamma_label).1));
+    assert!(!accesskit_node_selected(
+      accesskit_node_by_name(update2, beta_label).1
+    ));
+    assert!(accesskit_node_selected(
+      accesskit_node_by_name(update2, gamma_label).1
+    ));
   }
 
   #[test]
@@ -4813,9 +5007,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      actions
-        .iter()
-        .any(|action| matches!(action, ChromeAction::NavigateTo(url) if url == "http://example.com/")),
+      actions.iter().any(
+        |action| matches!(action, ChromeAction::NavigateTo(url) if url == "http://example.com/")
+      ),
       "expected ChromeAction::NavigateTo(\"http://example.com/\"), got {actions:?}"
     );
   }
@@ -4880,7 +5074,10 @@ mod tests {
     // layout/focus settling), the chrome should report "no repaint requested" via a very large
     // `repaint_after` value.
     let mut repaint_after_by_frame = Vec::new();
-    for (idx, time) in [0.0_f64, 0.016, 0.032, 0.048, 0.064].into_iter().enumerate() {
+    for (idx, time) in [0.0_f64, 0.016, 0.032, 0.048, 0.064]
+      .into_iter()
+      .enumerate()
+    {
       begin_frame_with_time(&ctx, time, Vec::new());
       let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
       let output = ctx.end_frame();
@@ -7277,6 +7474,67 @@ frame={idx} repaint_after={:?}\n",
       "expected at least one OmniboxSuggestionSource::Url(About), got {:?}",
       app.chrome.omnibox.suggestions
     );
+  }
+
+  #[test]
+  fn omnibox_inline_autocomplete_selects_suffix_and_accepts_with_right_arrow() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    app.chrome.address_bar_text.clear();
+    let ctx = egui::Context::default();
+
+    // Focus address bar.
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    assert!(app.chrome.address_bar_has_focus);
+
+    let address_bar_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
+
+    // Type a prefix that can be completed by the about-pages provider.
+    begin_frame(&ctx, vec![egui::Event::Text("about:n".into())]);
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    assert_eq!(app.chrome.address_bar_text, "about:newtab");
+    let state =
+      egui::text_edit::TextEditState::load(&ctx, address_bar_id).expect("expected TextEdit state");
+    let range = state
+      .ccursor_range()
+      .expect("expected address bar to have a cursor range");
+    assert_eq!(range.primary.index, "about:n".chars().count());
+    assert_eq!(range.secondary.index, "about:newtab".chars().count());
+
+    // Typing should replace the selected suffix.
+    begin_frame(&ctx, vec![egui::Event::Text("x".into())]);
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    assert_eq!(app.chrome.address_bar_text, "about:nx");
+
+    // Backspace should restore the prefix and re-trigger inline completion.
+    begin_frame(&ctx, vec![key_press(egui::Key::Backspace)]);
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    assert_eq!(app.chrome.address_bar_text, "about:newtab");
+
+    // Right arrow accepts completion by collapsing selection to the end.
+    begin_frame(&ctx, vec![key_press(egui::Key::ArrowRight)]);
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    assert_eq!(app.chrome.address_bar_text, "about:newtab");
+    let state =
+      egui::text_edit::TextEditState::load(&ctx, address_bar_id).expect("expected TextEdit state");
+    let range = state
+      .ccursor_range()
+      .expect("expected address bar to have a cursor range");
+    let end = "about:newtab".chars().count();
+    assert_eq!(range.primary.index, end);
+    assert_eq!(range.secondary.index, end);
   }
 
   #[test]
