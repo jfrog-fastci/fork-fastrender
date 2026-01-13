@@ -26,13 +26,10 @@ pub mod demux;
 pub mod loader;
 pub mod master_clock;
 pub mod mp4;
-<<<<<<< HEAD
-pub mod timestamp;
-=======
 pub mod decoder;
 pub mod demuxer;
 pub mod pipeline;
->>>>>>> 2b0999f6 (feat(media): add demux+decode pipeline for MP4/WebM)
+pub mod timestamp;
 pub mod timebase;
 
 pub use audio_clock::InterpolatedAudioClock;
@@ -40,13 +37,11 @@ pub use av_sync::AvSyncConfig;
 pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, RealAudioDeviceClock};
 pub use master_clock::{ClockSource, MasterClock};
 pub use mp4::{Mp4Demuxer, Mp4Sample, Mp4Track, SeekMethod};
-<<<<<<< HEAD
-pub use timestamp::MediaTimestamp;
-pub use timebase::{duration_to_ticks, ticks_to_duration, ticks_to_timestamp, timestamp_to_ticks, Timebase};
-=======
 pub use pipeline::MediaDecodePipeline;
-pub use timebase::{duration_to_ticks, ticks_to_duration, Timebase};
->>>>>>> 2b0999f6 (feat(media): add demux+decode pipeline for MP4/WebM)
+pub use timestamp::MediaTimestamp;
+pub use timebase::{
+  duration_to_ticks, ticks_to_duration, ticks_to_timestamp, timestamp_to_ticks, Timebase,
+};
 
 /// Size information that can help a [`MediaFrameProvider`] choose an appropriate decode/scale
 /// strategy.
