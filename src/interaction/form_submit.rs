@@ -6,7 +6,7 @@ use url::Url;
 
 use super::resolve_url;
 use super::InteractionState;
-use super::state::FileSelection;
+use super::state::{FileSelection, FormStateDom2, InteractionStateDom2};
 use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +80,18 @@ pub trait Dom2FileInputLookup {
 impl Dom2FileInputLookup for FxHashMap<dom2::NodeId, Vec<FileSelection>> {
   fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]> {
     self.get(&input).map(|v| v.as_slice())
+  }
+}
+
+impl Dom2FileInputLookup for FormStateDom2 {
+  fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]> {
+    self.file_inputs.get(&input).map(|v| v.as_slice())
+  }
+}
+
+impl Dom2FileInputLookup for InteractionStateDom2 {
+  fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]> {
+    self.form_state.file_inputs.get(&input).map(|v| v.as_slice())
   }
 }
 

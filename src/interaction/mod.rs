@@ -30,7 +30,9 @@ pub use engine::{
 };
 pub use element_geometry::{element_geometry_for_styled_node_id, ElementBoxGeometry};
 pub use form_submit::{
-  form_submission, form_submission_get_url, FormSubmission, FormSubmissionEnctype,
+  form_submission, form_submission_dom2, form_submission_from_submitter_dom2, form_submission_get_url,
+  form_submission_get_url_dom2, form_submission_get_url_from_submitter_dom2,
+  form_submission_without_submitter_dom2, Dom2FileInputLookup, FormSubmission, FormSubmissionEnctype,
   FormSubmissionMethod,
 };
 pub use fragment_geometry::absolute_bounds_for_box_id;
