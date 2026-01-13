@@ -1019,6 +1019,45 @@ mod tests {
     }
   }
 
+  struct ChannelReader {
+    rx: mpsc::Receiver<Vec<u8>>,
+    cur: Cursor<Vec<u8>>,
+  }
+
+  impl ChannelReader {
+    fn new(rx: mpsc::Receiver<Vec<u8>>) -> Self {
+      Self {
+        rx,
+        cur: Cursor::new(Vec::new()),
+      }
+    }
+  }
+
+  impl Read for ChannelReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+      loop {
+        let n = self.cur.read(buf)?;
+        if n != 0 {
+          return Ok(n);
+        }
+
+        match self.rx.recv() {
+          Ok(chunk) => {
+            self.cur = Cursor::new(chunk);
+          }
+          Err(_) => return Ok(0),
+        }
+      }
+    }
+  }
+
+  fn frame_bytes(msg: &NetworkMessage, limits: &NetworkMessageLimits) -> Vec<u8> {
+    let payload = encode_message(msg, limits).unwrap();
+    let mut out = Vec::new();
+    write_frame(&mut out, &payload).unwrap();
+    out
+  }
+
   #[test]
   fn framing_round_trip() {
     let limits = NetworkMessageLimits::default();
@@ -1320,5 +1359,147 @@ mod tests {
       let outcome = std::panic::catch_unwind(|| decode_message(&payload, &limits));
       assert!(outcome.is_ok(), "decode panicked on payload {payload:?}");
     }
+
+  #[test]
+  fn recv_closes_on_decode_error() {
+    let limits = NetworkMessageLimits::default();
+    let mut bytes = Vec::new();
+    write_frame(&mut bytes, &[99]).unwrap();
+
+    let mut reader = ConnectionReader::new(Cursor::new(bytes), limits);
+    let err = reader.recv().unwrap_err();
+    assert!(matches!(
+      err,
+      TransportError::Decode(DecodeError::InvalidMessageType(99))
+    ));
+    assert!(matches!(reader.recv().unwrap_err(), TransportError::Closed));
+  }
+
+  #[test]
+  fn recv_rejects_field_limits() {
+    let writer_limits = NetworkMessageLimits::default();
+    let mut reader_limits = NetworkMessageLimits::default();
+    reader_limits.max_header_count = 0;
+
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let writer = ConnectionWriter::new(SharedVecWriter(buf.clone()), writer_limits);
+    let msg = NetworkMessage::Response(NetworkResponse {
+      request_id: 1,
+      status: 200,
+      headers: vec![("x".to_string(), "y".to_string())],
+      body: Vec::new(),
+    });
+    writer.send(&msg).unwrap();
+
+    let bytes = buf.lock().unwrap().clone();
+    let mut reader = ConnectionReader::new(Cursor::new(bytes), reader_limits);
+    let err = reader.recv().unwrap_err();
+    assert!(matches!(
+      err,
+      TransportError::Decode(DecodeError::LimitExceeded {
+        kind: NetworkLimitKind::HeaderCount,
+        ..
+      })
+    ));
+    assert!(matches!(reader.recv().unwrap_err(), TransportError::Closed));
+  }
+
+  #[test]
+  fn routed_client_routes_responses_and_events_without_deadlock() {
+    let limits = NetworkMessageLimits::default();
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let reader = ConnectionReader::new(ChannelReader::new(rx), limits.clone());
+
+    let client_buf = Arc::new(Mutex::new(Vec::new()));
+    let writer = ConnectionWriter::new(SharedVecWriter(client_buf), limits.clone());
+
+    let client = spawn_routed_client(reader, writer);
+
+    let response_rx = client
+      .send_request(NetworkRequest {
+        request_id: 7,
+        method: "GET".to_string(),
+        url: "https://example.com/".to_string(),
+        headers: Vec::new(),
+        body: Vec::new(),
+      })
+      .unwrap();
+
+    // Deliver an unsolicited event first, then the response.
+    tx.send(frame_bytes(
+      &NetworkMessage::Event(NetworkEvent::DownloadChunk {
+        request_id: 7,
+        finished: true,
+        chunk: b"chunk".to_vec(),
+      }),
+      &limits,
+    ))
+    .unwrap();
+    tx.send(frame_bytes(
+      &NetworkMessage::Response(NetworkResponse {
+        request_id: 7,
+        status: 200,
+        headers: Vec::new(),
+        body: b"ok".to_vec(),
+      }),
+      &limits,
+    ))
+    .unwrap();
+    drop(tx);
+
+    let event = client
+      .events()
+      .recv_timeout(Duration::from_secs(1))
+      .expect("receive event");
+    assert_eq!(
+      event,
+      NetworkEvent::DownloadChunk {
+        request_id: 7,
+        finished: true,
+        chunk: b"chunk".to_vec(),
+      }
+    );
+
+    let resp = response_rx
+      .recv_timeout(Duration::from_secs(1))
+      .expect("receive response");
+    assert_eq!(
+      resp,
+      NetworkResponse {
+        request_id: 7,
+        status: 200,
+        headers: Vec::new(),
+        body: b"ok".to_vec(),
+      }
+    );
+
+    // Duplicate request IDs should be rejected while the original is pending.
+    let (tx2, rx2) = mpsc::channel::<Vec<u8>>();
+    let reader2 = ConnectionReader::new(ChannelReader::new(rx2), limits.clone());
+    let writer2 = ConnectionWriter::new(SharedVecWriter(Arc::new(Mutex::new(Vec::new()))), limits);
+    let client2 = spawn_routed_client(reader2, writer2);
+    let _first = client2
+      .send_request(NetworkRequest {
+        request_id: 1,
+        method: "GET".to_string(),
+        url: "https://example.com/".to_string(),
+        headers: Vec::new(),
+        body: Vec::new(),
+      })
+      .unwrap();
+    let dup_err = client2
+      .send_request(NetworkRequest {
+        request_id: 1,
+        method: "GET".to_string(),
+        url: "https://example.com/".to_string(),
+        headers: Vec::new(),
+        body: Vec::new(),
+      })
+      .unwrap_err();
+    assert!(matches!(
+      dup_err,
+      TransportError::DuplicateRequestId { request_id: 1 }
+    ));
+    drop(tx2);
   }
 }

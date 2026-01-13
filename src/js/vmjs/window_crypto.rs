@@ -2790,8 +2790,9 @@ mod tests {
       realm.exec_script("globalThis.__encrypt_done").unwrap(),
       Value::Bool(true)
     );
+    let outcome = realm.exec_script("globalThis.__encrypt_outcome").unwrap();
     assert_eq!(
-      js_value_to_utf8(realm.heap(), realm.exec_script("globalThis.__encrypt_outcome").unwrap()),
+      js_value_to_utf8(realm.heap(), outcome),
       "rejected"
     );
   }

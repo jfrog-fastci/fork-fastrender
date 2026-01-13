@@ -3006,7 +3006,7 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::clock::VirtualClock;
+  use crate::clock::{Clock, VirtualClock};
   use crate::js::event_loop::{EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::JsExecutionOptions;
@@ -5958,7 +5958,8 @@ mod tests {
   fn interval_continues_after_uncaught_exception() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
     let clock = Arc::new(VirtualClock::new());
-    let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(Arc::clone(&clock));
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(clock_for_loop);
     let mut host =
       crate::js::WindowHost::new_with_fetcher_and_event_loop(
         dom,

@@ -16,7 +16,9 @@ use crate::js::window_blob;
 use crate::js::window_realm::{
   is_secure_context_for_document_url, WindowRealmHost, WindowRealmUserData, EVENT_TARGET_HOST_TAG,
 };
-use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks};
+use crate::js::window_timers::{
+  event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
+};
 use crate::ipc::websocket::{
   WebSocketCommand, WebSocketConnectParams, WebSocketEvent, MAX_WEBSOCKET_CLOSE_REASON_BYTES,
   MAX_WEBSOCKET_MESSAGE_BYTES, MAX_WEBSOCKET_PROTOCOL_BYTES, MAX_WEBSOCKET_PROTOCOLS,
