@@ -198,6 +198,7 @@ struct SubpixelAADiagnostics {
   skips_disabled: u64,
   skips_blend_mode: u64,
   skips_rotation: u64,
+  skips_state_transform: u64,
   attempts: u64,
   successes: u64,
   failures_non_axis_aligned: u64,
@@ -1119,14 +1120,16 @@ impl Drop for TextRasterizer {
       && stats.skips_disabled == 0
       && stats.skips_blend_mode == 0
       && stats.skips_rotation == 0
+      && stats.skips_state_transform == 0
     {
       return;
     }
     eprintln!(
-      "text_subpixel_aa: skips(disabled={}, blend_mode={}, rotation={}) attempts={} ok={} failures(non_axis_aligned={}, clip_mismatch={}, mask_overflow={}, other={})",
+      "text_subpixel_aa: skips(disabled={}, blend_mode={}, rotation={}, state_transform={}) attempts={} ok={} failures(non_axis_aligned={}, clip_mismatch={}, mask_overflow={}, other={})",
       stats.skips_disabled,
       stats.skips_blend_mode,
       stats.skips_rotation,
+      stats.skips_state_transform,
       stats.attempts,
       stats.successes,
       stats.failures_non_axis_aligned,
@@ -1972,6 +1975,8 @@ impl TextRasterizer {
                 stats.skips_blend_mode = stats.skips_blend_mode.saturating_add(1);
               } else if rotation.is_some() {
                 stats.skips_rotation = stats.skips_rotation.saturating_add(1);
+              } else if !translation_only_state_transform {
+                stats.skips_state_transform = stats.skips_state_transform.saturating_add(1);
               }
             }
 
