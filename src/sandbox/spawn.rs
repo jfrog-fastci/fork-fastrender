@@ -178,20 +178,27 @@ fn linux_pre_exec(cfg: LinuxPreExecConfig) -> std::io::Result<()> {
 
   // 0b) Make the process non-dumpable (no ptrace/coredumps). This is defense-in-depth for renderer
   // security boundaries.
-  set_dumpable_0()?;
+  //
+  // Best-effort: on hosts that already constrain the process (or older kernels / unusual security
+  // policies), PR_SET_DUMPABLE may fail. Do not abort spawning the renderer just because this knob
+  // could not be applied.
+  let _ = set_dumpable_0();
 
   // 1) Apply rlimits.
   if let Some(limit) = cfg.rlimit_as {
-    apply_rlimit_hard_ceiling(libc::RLIMIT_AS, limit)?;
+    // Best-effort: rlimit clamps are defense-in-depth and should not prevent the renderer from
+    // starting if the host disallows changes (e.g. already inside a container with restrictive
+    // limits).
+    let _ = apply_rlimit_hard_ceiling(libc::RLIMIT_AS, limit);
   }
   if let Some(limit) = cfg.rlimit_nofile {
-    apply_rlimit_hard_ceiling(libc::RLIMIT_NOFILE, limit)?;
+    let _ = apply_rlimit_hard_ceiling(libc::RLIMIT_NOFILE, limit);
   }
   if let Some(limit) = cfg.rlimit_core {
-    apply_rlimit_hard_ceiling(libc::RLIMIT_CORE, limit)?;
+    let _ = apply_rlimit_hard_ceiling(libc::RLIMIT_CORE, limit);
   }
   if let Some(limit) = cfg.rlimit_nproc {
-    apply_rlimit_hard_ceiling(libc::RLIMIT_NPROC, limit)?;
+    let _ = apply_rlimit_hard_ceiling(libc::RLIMIT_NPROC, limit);
   }
 
   // 2) no_new_privs is required before installing seccomp/landlock without caps.
