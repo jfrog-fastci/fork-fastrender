@@ -1321,6 +1321,81 @@ fn unforced_page_break_truncates_collapsed_margins_between_siblings() {
 }
 
 #[test]
+fn unforced_pagination_break_truncates_collapsed_margins() {
+  // Two blocks whose adjoining margins collapse to 60px (max(60px, 20px)).
+  //
+  // Pick a fragmentainer size so block1 fits but the collapsed margin + block2 do not, forcing an
+  // *unforced* pagination break inside the collapsed margin space.
+  let mut first_style = ComputedStyle::default();
+  first_style.height = Some(Length::px(20.0));
+  first_style.margin_bottom = Some(Length::px(60.0));
+
+  let mut second_style = ComputedStyle::default();
+  second_style.height = Some(Length::px(20.0));
+  second_style.margin_top = Some(Length::px(20.0));
+
+  let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  let second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![first, second],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let first_id = box_tree.root.children.get(0).expect("first child").id;
+  let second_id = box_tree.root.children.get(1).expect("second child").id;
+
+  let page_height = 60.0;
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, page_height), 0.0));
+  let fragments = engine.layout_tree(&box_tree).expect("layout");
+
+  assert!(
+    !fragments.additional_fragments.is_empty(),
+    "expected content to paginate across at least two pages"
+  );
+
+  let first_page = &fragments.root;
+  let second_page = &fragments.additional_fragments[0];
+
+  let first_block = fragments_with_id(first_page, first_id);
+  assert_eq!(first_block.len(), 1, "expected first block to render on page 1");
+  assert!(
+    fragments_with_id(second_page, first_id).is_empty(),
+    "expected first block to not be duplicated/continued onto page 2"
+  );
+
+  let second_block = fragments_with_id(second_page, second_id);
+  assert_eq!(second_block.len(), 1, "expected second block to render on page 2");
+  assert!(
+    fragments_with_id(first_page, second_id).is_empty(),
+    "expected second block to not render on page 1"
+  );
+
+  let first_block = first_block[0];
+  assert!(
+    (first_block.bounds.height() - 20.0).abs() < 0.1,
+    "sanity-check: first block should preserve its height"
+  );
+  let trailing_space = first_page.bounds.height() - first_block.bounds.max_y();
+  assert!(
+    trailing_space.abs() < 0.1,
+    "unforced pagination break should truncate collapsed margins before the break (trailing_space={trailing_space})"
+  );
+
+  let second_block = second_block[0];
+  assert!(
+    (second_block.bounds.height() - 20.0).abs() < 0.1,
+    "sanity-check: second block should preserve its height"
+  );
+  assert!(
+    second_block.bounds.y().abs() < 0.1,
+    "unforced pagination break should truncate collapsed margins after the break (y={})",
+    second_block.bounds.y()
+  );
+}
+
+#[test]
 fn multicolumn_unforced_break_truncates_leading_margins() {
   let mut root_style = ComputedStyle::default();
   root_style.column_count = Some(2);
