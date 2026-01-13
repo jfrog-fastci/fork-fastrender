@@ -212,6 +212,47 @@ fn display_list_img_alt_text_wraps_within_replaced_box() {
 }
 
 #[test]
+fn display_list_img_alt_text_honors_text_align_when_painted_with_broken_icon() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+
+  let tmp = tempdir().expect("tempdir");
+  let empty_path = tmp.path().join("empty.bin");
+  std::fs::write(&empty_path, []).expect("write empty image");
+  let empty_url = Url::from_file_path(&empty_path).expect("file URL");
+
+  // Chrome keeps the broken-image icon pinned to the start edge of the replaced box, but the
+  // accompanying alt text is laid out in the remaining space and can be affected by `text-align`.
+  //
+  // This is important on real pages that center-align hero content (e.g. kotlinlang.org), where
+  // forcing start alignment causes the alt text to appear in the wrong place relative to Chrome.
+  let html = format!(
+    "<!doctype html>\
+     <style>\
+       html, body {{ margin: 0; background: rgb(0, 0, 0); }}\
+       img {{ display: block; width: 200px; height: 40px; font-size: 16px; line-height: 16px; color: rgb(255, 0, 0); text-align: center; }}\
+     </style>\
+     <img src=\"{empty_url}\" alt=\"X\">"
+  );
+
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  let pixmap = renderer.render_html(&html, 200, 40).expect("render");
+
+  // The broken-image icon consumes the first ~20px (inset + 16px icon + gap). With `text-align:
+  // center`, the 'X' should land much further to the right than start-aligned text.
+  let left_red = count_red(&pixmap, 20, 0, 60, 40);
+  let center_red = count_red(&pixmap, 90, 0, 130, 40);
+  assert!(center_red > 0, "expected centered red alt text pixels");
+  assert!(
+    left_red * 5 < center_red,
+    "expected centered alt text (left_red={left_red}, center_red={center_red})"
+  );
+}
+
+#[test]
 fn display_list_img_marked_placeholder_png_renders_ua_broken_image_icon() {
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),

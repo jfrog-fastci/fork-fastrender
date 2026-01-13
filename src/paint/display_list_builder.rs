@@ -15202,9 +15202,11 @@ impl DisplayListBuilder {
       );
 
       if icon_size > 0.0 {
-        // Chrome positions the broken-image icon (and following alt text) at the top-left of the
-        // replaced box. It does not appear to honor the inherited `text-align` value for this UA
-        // fallback rendering, so keep it stable by always aligning to the start edge.
+        // Chrome positions the broken-image icon at the top-left of the replaced box. The
+        // accompanying alt text is laid out in the remaining inline space and can be affected by
+        // `text-align` (e.g. `center` aligns the alt text within the space to the right of the
+        // icon). Don't override `text-align` here; doing so causes noticeable diffs on pages that
+        // center-align hero content (e.g. kotlinlang.org).
         let icon_rect =
           Rect::from_xywh(content_inner_rect.x(), content_inner_rect.y(), icon_size, icon_size);
         self.emit_broken_image_icon(icon_rect);
@@ -15217,13 +15219,7 @@ impl DisplayListBuilder {
           content_inner_rect.height(),
         );
 
-        let override_style = style.map(|style| {
-          let mut clone = style.clone();
-          clone.text_align = crate::style::types::TextAlign::Start;
-          clone
-        });
-        let style_ref = override_style.as_ref().map(|s| s as &ComputedStyle).or(style);
-        self.emit_text_with_style(alt, style_ref, text_rect)
+        self.emit_text_with_style(alt, style, text_rect)
       } else {
         self.emit_text_with_style(alt, style, content_inner_rect)
       }

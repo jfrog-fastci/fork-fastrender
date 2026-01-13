@@ -16,31 +16,32 @@
     "layout": 35.131865041493775,
     "paint": 52.1959137759336
   },
-  "notes": "",
+  "notes": "Good. Remaining diffs are minor text rasterization/hinting differences and small UA broken-image placeholder details (fixture includes intentionally missing/0-byte images).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 19049,
-    "diff_percent": 1.9843,
-    "perceptual": 0.5692,
+    "diff_pixels": 14330,
+    "diff_percent": 1.4927,
+    "perceptual": 0.0143,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 414,
-      "y": 0,
+      "x": 102,
+      "y": 20,
       "baseline_rgba": [
-        25,
-        25,
-        28,
+        112,
+        112,
+        114,
         255
       ],
       "rendered_rgba": [
-        69,
-        69,
-        71,
+        112,
+        112,
+        113,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "4cf8b949629b5c2044d5abef3f7f46b9017ee11b"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,
