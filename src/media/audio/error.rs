@@ -27,6 +27,25 @@ pub enum AudioErrorKind {
   Other,
 }
 
+impl AudioErrorKind {
+  #[must_use]
+  pub const fn as_str(self) -> &'static str {
+    match self {
+      Self::DeviceUnavailable => "device_unavailable",
+      Self::ConfigUnsupported => "config_unsupported",
+      Self::StreamFailure => "stream_failure",
+      Self::QueueOverflow => "queue_overflow",
+      Self::Other => "other",
+    }
+  }
+}
+
+impl std::fmt::Display for AudioErrorKind {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
 /// Sample formats used by audio backends.
 ///
 /// This is intentionally backend-agnostic (doesn't depend on CPAL types) so `AudioError` stays
@@ -247,7 +266,8 @@ impl AudioError {
 
 impl From<AudioError> for crate::error::Error {
   fn from(err: AudioError) -> Self {
-    crate::error::Error::Other(format!("audio error: {err}"))
+    let kind = err.kind();
+    crate::error::Error::Other(format!("audio ({kind}): {err}"))
   }
 }
 

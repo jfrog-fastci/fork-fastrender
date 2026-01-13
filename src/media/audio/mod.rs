@@ -668,11 +668,15 @@ impl dyn AudioBackend {
       match CpalAudioBackend::new_with_config_and_trace(cfg, _trace.clone()) {
         Ok(backend) => return Box::new(backend),
         Err(err) => {
-          WARN_ONCE.call_once(|| {
-            eprintln!(
-              "warning: failed to initialize CPAL audio backend ({err}); falling back to NullAudioBackend"
-            );
-          });
+          // Device-unavailable is expected in CI/headless runs; avoid spamming a warning in that
+          // common case.
+          if err.kind() != AudioErrorKind::DeviceUnavailable {
+            WARN_ONCE.call_once(|| {
+              eprintln!(
+                "warning: failed to initialize CPAL audio backend ({err}); falling back to NullAudioBackend"
+              );
+            });
+          }
         }
       }
     }
