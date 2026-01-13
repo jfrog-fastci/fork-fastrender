@@ -19703,7 +19703,7 @@ mod tests {
       .expect("parse content")
     });
 
-    let chosen = match content {
+    let chosen = match &content {
       ContentValue::Items(items) if items.len() == 1 => match &items[0] {
         ContentItem::Url(url) => url.clone(),
         other => panic!("unexpected content item: {other:?}"),
