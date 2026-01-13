@@ -7406,27 +7406,31 @@ impl<'a> Evaluator<'a> {
         len: super_root_len,
       };
 
-    // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
-    // native-slot storage.
-    let mut instance_field_count: usize = 0;
-    for member in members {
-      if member.stx.static_ {
-        continue;
+      // Count instance elements stored in the class constructor's native slots so the wrapper can
+      // preallocate its hidden storage.
+      //
+      // This includes:
+      // - public + private instance fields, and
+      // - private instance methods (which are stored per-instance so private access does not consult
+      //   the prototype chain).
+      let mut instance_field_count: usize = 0;
+      for member in members {
+        if member.stx.static_ {
+          continue;
+        }
+        let is_private_key = matches!(
+          &member.stx.key,
+          ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+        );
+        let is_slot_backed = matches!(&member.stx.val, ClassOrObjVal::Prop(_))
+          || (is_private_key && matches!(&member.stx.val, ClassOrObjVal::Method(_)));
+        if !is_slot_backed {
+          continue;
+        }
+        instance_field_count = instance_field_count
+          .checked_add(1)
+          .ok_or(VmError::OutOfMemory)?;
       }
-      if !matches!(&member.stx.val, ClassOrObjVal::Prop(_)) {
-        continue;
-      }
-      let is_private_field = matches!(
-        &member.stx.key,
-        ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
-      );
-      if is_private_field {
-        continue;
-      }
-      instance_field_count = instance_field_count
-        .checked_add(1)
-        .ok_or(VmError::OutOfMemory)?;
-    }
 
     // Find an explicit `constructor(...) { ... }` method, if present.
     let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
@@ -7868,7 +7872,7 @@ impl<'a> Evaluator<'a> {
               PropertyKey::Symbol(_) => member_scope.alloc_string("")?,
             };
 
-            let func_obj = member_scope.alloc_ecma_function(
+            let method_func_obj = member_scope.alloc_ecma_function(
               code,
               /* is_constructable */ false,
               name_string,
@@ -7883,7 +7887,7 @@ impl<'a> Evaluator<'a> {
               .intrinsics()
               .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
             member_scope.heap_mut().object_set_prototype(
-              func_obj,
+              method_func_obj,
               Some(if func_node.stx.generator {
                 if is_async_generator {
                   intr.async_generator_function_prototype()
@@ -7896,59 +7900,84 @@ impl<'a> Evaluator<'a> {
             )?;
             member_scope
               .heap_mut()
-              .set_function_realm(func_obj, self.env.global_object())?;
+              .set_function_realm(method_func_obj, self.env.global_object())?;
             if let Some(realm) = self.vm.current_realm() {
               member_scope
                 .heap_mut()
-                .set_function_job_realm(func_obj, realm)?;
+                .set_function_job_realm(method_func_obj, realm)?;
             }
             if let Some(script_or_module) = self.vm.get_active_script_or_module() {
               let token = self.vm.intern_script_or_module(script_or_module)?;
               member_scope
                 .heap_mut()
-                .set_function_script_or_module_token(func_obj, Some(token))?;
+                .set_function_script_or_module_token(method_func_obj, Some(token))?;
             }
             member_scope
               .heap_mut()
-              .set_function_home_object(func_obj, Some(target_obj))?;
+              .set_function_home_object(method_func_obj, Some(target_obj))?;
             if func_node.stx.generator {
               if is_async_generator {
                 crate::function_properties::make_async_generator_function_instance_prototype(
                   &mut member_scope,
-                  func_obj,
+                  method_func_obj,
                   intr.async_generator_prototype(),
                 )?;
               } else {
                 crate::function_properties::make_generator_function_instance_prototype(
                   &mut member_scope,
-                  func_obj,
+                  method_func_obj,
                   intr.generator_prototype(),
                 )?;
               }
             }
-            member_scope.push_root(Value::Object(func_obj))?;
+            member_scope.push_root(Value::Object(method_func_obj))?;
 
             // Methods use the property key as the function `name` if possible.
             if !matches!(key, PropertyKey::String(_)) {
               crate::function_properties::set_function_name(
                 &mut member_scope,
-                func_obj,
+                method_func_obj,
                 key,
                 None,
               )?;
             }
 
-            member_scope.define_property_or_throw(
-              target_obj,
-              key,
-              PropertyDescriptorPatch {
-                value: Some(Value::Object(func_obj)),
-                writable: Some(!is_private_key),
-                enumerable: Some(false),
-                configurable: Some(!is_private_key),
-                ..Default::default()
-              },
-            )?;
+            // Private instance methods are initialized per-instance (and therefore must not be
+            // defined on the shared prototype object). Store them alongside instance field metadata
+            // in the class constructor's native slots; `InitializeInstanceElements` will define them
+            // as hidden internal-symbol properties.
+            if is_private_key && !member.stx.static_ {
+              let PropertyKey::Symbol(sym) = key else {
+                return Err(VmError::InvariantViolation(
+                  "private method key is not a symbol",
+                ));
+              };
+              let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+                .saturating_add(instance_field_idx.saturating_mul(2));
+              member_scope
+                .heap_mut()
+                .set_function_native_slot(func_obj, slot_base, Value::Symbol(sym))?;
+              member_scope.heap_mut().set_function_native_slot(
+                func_obj,
+                slot_base.saturating_add(1),
+                Value::Object(method_func_obj),
+              )?;
+              instance_field_idx = instance_field_idx
+                .checked_add(1)
+                .ok_or(VmError::OutOfMemory)?;
+            } else {
+              member_scope.define_property_or_throw(
+                target_obj,
+                key,
+                PropertyDescriptorPatch {
+                  value: Some(Value::Object(method_func_obj)),
+                  writable: Some(!is_private_key),
+                  enumerable: Some(false),
+                  configurable: Some(!is_private_key),
+                  ..Default::default()
+                },
+              )?;
+            }
           }
           ClassOrObjVal::Getter(getter) => {
             let func_node = &getter.stx.func;
@@ -8140,10 +8169,7 @@ impl<'a> Evaluator<'a> {
             //
             // Private fields are handled separately so we can enforce the correct property
             // attributes (notably non-enumerable and non-configurable for private static fields).
-            if is_private_key {
-              if !member.stx.static_ {
-                return Err(VmError::Unimplemented("private instance fields"));
-              }
+            if is_private_key && member.stx.static_ {
               let PropertyKey::Symbol(sym) = key else {
                 return Err(VmError::InvariantViolation(
                   "private field key is not a symbol",
@@ -26244,10 +26270,22 @@ fn async_call_member_after_base(
   let callee_value = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let key_s = key_scope.alloc_string(&member.right)?;
-    let reference = Reference::Property {
-      base,
-      key: PropertyKey::from_string(key_s),
+    let reference = if member.right.starts_with('#') {
+      let sym = key_scope
+        .heap()
+        .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
+        .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+      Reference::Private {
+        base,
+        sym,
+        name: &member.right,
+      }
+    } else {
+      let key_s = key_scope.alloc_string(&member.right)?;
+      Reference::Property {
+        base,
+        key: PropertyKey::from_string(key_s),
+      }
     };
     evaluator
       .get_value_from_reference(&mut key_scope, &reference)

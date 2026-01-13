@@ -1,4 +1,4 @@
-use crate::{GcObject, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{function::CallHandler, GcObject, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 /// Native slot index for a class constructor's hidden user-defined constructor body function.
 pub(crate) const CLASS_CTOR_SLOT_BODY: usize = 0;
@@ -50,13 +50,19 @@ pub(crate) fn class_constructor_instance_field_pairs<'a>(
   )
 }
 
-/// Initialize public instance fields for `class_ctor` on the already-constructed `receiver`.
+/// Initialize per-instance elements for `class_ctor` on the already-constructed `receiver`.
 ///
-/// This implements the public-field subset of `InitializeInstanceElements` / `DefineField`.
+/// This implements instance field initialization plus private methods/accessors represented as
+/// internal-symbol-keyed properties.
 ///
 /// Field records are stored as `(key, initializer)` pairs in the class constructor's native slots.
 /// - `key` is stored as `Value::String` or `Value::Symbol`.
-/// - `initializer` is stored as `Value::Object(func)` or `Value::Undefined` for "no initializer".
+/// - For fields:
+///   - `initializer` is stored as `Value::Object(func)` where `func` is a `ClassFieldInitializer`
+///     function, or `Value::Undefined` for "no initializer".
+/// - For private instance methods:
+///   - `initializer` stores the method function object itself (`Value::Object(func)`), which must
+///     *not* be invoked during initialization.
 pub(crate) fn initialize_instance_fields_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -173,37 +179,63 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
       }
     };
 
+    let is_private = matches!(key, PropertyKey::Symbol(sym) if init_scope.heap().is_internal_symbol(sym));
+
     // Evaluate the initializer before defining the property (spec: `DefineField`).
-    let value = match init_value {
-      Value::Object(func) => vm.call_with_host_and_hooks(
-        host,
-        &mut init_scope,
-        hooks,
-        Value::Object(func),
-        Value::Object(receiver),
-        &[],
-      )?,
-      Value::Undefined => Value::Undefined,
+    //
+    // vm-js stores:
+    // - field initializers as `ClassFieldInitializer` functions (must be invoked here), and
+    // - private instance methods as the method function object itself (must *not* be invoked).
+    let (value, is_field_initializer) = match init_value {
+      Value::Object(func) => {
+        let is_field_init = match init_scope.heap().get_function(func) {
+          Ok(f) => match &f.call {
+            CallHandler::Ecma(code_id) => vm
+              .ecma_function_source_span(*code_id)
+              .map(|(_, _, _, kind)| kind == crate::vm::EcmaFunctionKind::ClassFieldInitializer)
+              .unwrap_or(false),
+            _ => false,
+          },
+          Err(_) => false,
+        };
+        if is_field_init {
+          let value = vm.call_with_host_and_hooks(
+            host,
+            &mut init_scope,
+            hooks,
+            Value::Object(func),
+            Value::Object(receiver),
+            &[],
+          )?;
+          (value, true)
+        } else {
+          (Value::Object(func), false)
+        }
+      }
+      Value::Undefined => (Value::Undefined, true),
       _ => {
         return Err(VmError::InvariantViolation(
-          "class constructor instance field initializer is not a function or undefined",
+          "class constructor instance element initializer is not an object or undefined",
         ))
       }
     };
 
     init_scope.push_root(value)?;
-    // Private fields are stored as symbol-keyed properties using internal symbols so they are
-    // filtered out by `[[OwnPropertyKeys]]` (`Object.getOwnPropertySymbols`, `Reflect.ownKeys`, ...).
+
+    // Private elements are stored as internal-symbol-keyed properties so they are filtered out by
+    // `[[OwnPropertyKeys]]` (`Object.getOwnPropertySymbols`, `Reflect.ownKeys`, ...).
     //
-    // Unlike public fields, they must be non-enumerable and non-configurable.
-    let is_private_field = matches!(key, PropertyKey::Symbol(sym) if init_scope.heap().is_internal_symbol(sym));
-    if is_private_field {
+    // - Private fields are writable (like `DefineField`).
+    // - Private instance methods are not writable (attempts to assign should throw).
+    // - Both are non-enumerable and non-configurable.
+    if is_private {
+      let writable = is_field_initializer;
       init_scope.define_property_or_throw(
         receiver,
         key,
         crate::PropertyDescriptorPatch {
           value: Some(value),
-          writable: Some(true),
+          writable: Some(writable),
           enumerable: Some(false),
           configurable: Some(false),
           ..Default::default()
