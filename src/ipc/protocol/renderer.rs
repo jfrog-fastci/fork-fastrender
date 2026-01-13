@@ -691,6 +691,12 @@ mod frame_flow_control {
     let msg = BrowserToRenderer::FrameAck { frame_seq: 123 };
     assert_eq!(msg, roundtrip(&msg));
 
+    let msg = BrowserToRenderer::ReleaseFrameBuffer {
+      generation: 7,
+      buffer_index: 3,
+    };
+    assert_eq!(msg, roundtrip(&msg));
+
     let msg = BrowserToRenderer::Navigate {
       tab_id: 42,
       url: UrlString::try_from("https://example.com/").unwrap(),
@@ -811,6 +817,10 @@ mod frame_flow_control {
       BrowserToRenderer::FrameAck { frame_seq: 9 },
       BrowserToRenderer::TabClosed { tab_id: 1 },
       BrowserToRenderer::Shutdown,
+      BrowserToRenderer::ReleaseFrameBuffer {
+        generation: 1,
+        buffer_index: 0,
+      },
     ];
 
     for msg in b2r_zero_fd_cases {
