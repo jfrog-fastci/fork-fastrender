@@ -382,6 +382,8 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Shift+Space (page focus, no element focused) | Scroll up |
 | Home (page focus, no element focused) | Scroll to top |
 | End (page focus, no element focused) | Scroll to bottom |
+| Ctrl/Cmd+Z (page focus) | Undo in the focused page `<input>`/`<textarea>` |
+| Ctrl+Shift+Z (page focus, Win/Linux); Cmd+Shift+Z (page focus, macOS); Ctrl+Y (page focus, Win/Linux) | Redo in the focused page `<input>`/`<textarea>` |
 | Ctrl/Cmd+A (page focus) | Select all text in the focused page `<input>`/`<textarea>` |
 | Ctrl/Cmd+C (page focus) | Copy selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
 | Ctrl/Cmd+X (page focus) | Cut selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
