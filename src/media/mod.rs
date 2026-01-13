@@ -33,6 +33,7 @@ pub mod packet;
 pub mod pipeline;
 pub mod timestamp;
 pub mod timebase;
+pub mod yuv;
 
 pub use audio_clock::InterpolatedAudioClock;
 pub use av_sync::AvSyncConfig;

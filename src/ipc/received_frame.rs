@@ -210,10 +210,7 @@ mod tests {
     let current_epoch = Arc::new(AtomicU64::new(1));
 
     let mut map: HashMap<u64, ReceivedFrame> = HashMap::new();
-    map.insert(
-      123,
-      make_frame(10, 1, Arc::clone(&current_epoch), tx.clone()),
-    );
+    map.insert(123, make_frame(10, 1, Arc::clone(&current_epoch), tx.clone()));
     // Overwrite the old frame for the same key; this should drop and ack the previous one.
     map.insert(123, make_frame(11, 1, Arc::clone(&current_epoch), tx));
 
@@ -249,3 +246,4 @@ mod tests {
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 }
+
