@@ -38,7 +38,13 @@ impl CpalAudioBackend {
     let frames_played = Arc::new(AtomicU64::new(0));
     let mixer = Arc::new(MixerState::new(config));
 
-    let stream = build_stream(&device, &stream_config, sample_format, mixer.clone(), frames_played.clone())?;
+    let stream = build_stream(
+      &device,
+      &stream_config,
+      sample_format,
+      mixer.clone(),
+      frames_played.clone(),
+    )?;
     stream
       .play()
       .map_err(|err| AudioError::StreamPlayFailed(err.to_string()))?;
@@ -258,6 +264,7 @@ where
     .build_output_stream(
       config,
       move |output: &mut [T], _info| {
+        super::thread_priority::promote_current_thread_for_audio();
         if mix_buf.len() < output.len() {
           mix_buf.resize(output.len(), 0.0);
         }

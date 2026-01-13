@@ -26,6 +26,8 @@ mod cpal_backend;
 mod null_backend;
 #[cfg(feature = "audio_cpal")]
 mod ring_buffer;
+#[cfg(feature = "audio_cpal")]
+mod thread_priority;
 pub mod queue;
 
 #[cfg(feature = "audio_cpal")]
@@ -56,10 +58,7 @@ pub enum AudioClock {
     sample_rate_hz: u32,
   },
   /// Clock derived from wall time (used by `NullAudioBackend`).
-  Instant {
-    start: Instant,
-    sample_rate_hz: u32,
-  },
+  Instant { start: Instant, sample_rate_hz: u32 },
 }
 
 impl AudioClock {
