@@ -576,26 +576,6 @@ status = "xfail"
 reason = "vm-js: Object is missing some ES5-era static methods (e.g. defineProperties, seal, freeze)."
 
 [[expectations]]
-id = "built-ins/Object/getOwnPropertyNames/proxy-invariant-absent-not-configurable-symbol-key.js"
-status = "xfail"
-reason = "vm-js does not yet implement Proxy invariants."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyNames/proxy-invariant-duplicate-symbol-entry.js"
-status = "xfail"
-reason = "vm-js does not yet implement Proxy invariants."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyNames/proxy-invariant-not-extensible-absent-symbol-key.js"
-status = "xfail"
-reason = "vm-js does not yet implement Proxy invariants."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyNames/proxy-invariant-not-extensible-extra-symbol-key.js"
-status = "xfail"
-reason = "vm-js does not yet implement Proxy invariants."
-
-[[expectations]]
 glob = "built-ins/Object/getOwnPropertyDescriptor/**"
 status = "pass"
 

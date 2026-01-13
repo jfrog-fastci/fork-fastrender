@@ -69,7 +69,6 @@ impl DomHost for RenderedHost {
     <BrowserDocumentDom2 as DomHost>::mutate_dom(&mut self.document, f)
   }
 }
-
 impl WindowRealmHost for RenderedHost {
   fn vm_host_and_window_realm(
     &mut self,
