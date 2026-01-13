@@ -7271,20 +7271,20 @@ fn paint_fragment_tree_region_with_state(
   } else {
     1.0
   };
-  let viewport_device_w = ((target_width as f32) * scale).round().max(1.0) as i64;
-  let viewport_device_h = ((target_height as f32) * scale).round().max(1.0) as i64;
+  let viewport_device_w = ((target_width as f32) * scale).round().max(1.0) as u32;
+  let viewport_device_h = ((target_height as f32) * scale).round().max(1.0) as u32;
 
   // Convert the requested CSS rect to a device-pixel-aligned rectangle so the resulting pixmap can
   // be composited as a direct byte-for-byte crop of a full-frame render, even when
   // `device_pixel_ratio` is fractional.
-  let region_device_min_x =
-    ((region.min_x() * scale).floor() as i64).clamp(0, viewport_device_w);
-  let region_device_min_y =
-    ((region.min_y() * scale).floor() as i64).clamp(0, viewport_device_h);
-  let region_device_max_x =
-    ((region.max_x() * scale).ceil() as i64).clamp(0, viewport_device_w);
-  let region_device_max_y =
-    ((region.max_y() * scale).ceil() as i64).clamp(0, viewport_device_h);
+  let region_device_min_x = ((region.min_x() * scale).floor() as i64)
+    .clamp(0, i64::from(viewport_device_w)) as u32;
+  let region_device_min_y = ((region.min_y() * scale).floor() as i64)
+    .clamp(0, i64::from(viewport_device_h)) as u32;
+  let region_device_max_x = ((region.max_x() * scale).ceil() as i64)
+    .clamp(0, i64::from(viewport_device_w)) as u32;
+  let region_device_max_y = ((region.max_y() * scale).ceil() as i64)
+    .clamp(0, i64::from(viewport_device_h)) as u32;
 
   if region_device_max_x <= region_device_min_x || region_device_max_y <= region_device_min_y {
     return Err(Error::Render(RenderError::InvalidParameters {
@@ -7294,9 +7294,43 @@ fn paint_fragment_tree_region_with_state(
   let effective_region = Rect::from_xywh(
     region_device_min_x as f32 / scale,
     region_device_min_y as f32 / scale,
-    (region_device_max_x - region_device_min_x) as f32 / scale,
-    (region_device_max_y - region_device_min_y) as f32 / scale,
+    region_device_max_x.saturating_sub(region_device_min_x) as f32 / scale,
+    region_device_max_y.saturating_sub(region_device_min_y) as f32 / scale,
   );
+
+  // The region paint path is optimized for the display-list backend. When the legacy backend is
+  // selected, preserve correctness by falling back to a full-frame paint and cropping the result.
+  let backend = paint_backend_from_env();
+  if backend == PaintBackend::Legacy {
+    let full_pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
+      &fragment_tree,
+      target_width,
+      target_height,
+      background,
+      font_context.clone(),
+      paint_image_cache,
+      media_provider,
+      device_pixel_ratio,
+      base_offset,
+      paint_parallelism,
+      &scroll_state_for_paint,
+      backend,
+      max_iframe_depth,
+    )?;
+
+    let crop_x = region_device_min_x;
+    let crop_y = region_device_min_y;
+    let crop_w = region_device_max_x.saturating_sub(region_device_min_x).max(1);
+    let crop_h = region_device_max_y.saturating_sub(region_device_min_y).max(1);
+    let pixmap = crop_pixmap_device(&full_pixmap, crop_x, crop_y, crop_w, crop_h)?;
+    return Ok((
+      PaintedFrame {
+        pixmap,
+        scroll_state,
+      },
+      effective_region,
+    ));
+  }
 
   // Compute a conservative halo so effects that sample outside the target region (blur,
   // backdrop-filter, etc) produce byte-identical output with a full-frame render.
@@ -7314,7 +7348,7 @@ fn paint_fragment_tree_region_with_state(
       .with_appearance_none_form_controls(fragment_tree.appearance_none_form_controls.clone())
       .with_scroll_state(scroll_state_for_paint.clone())
       .with_media_provider(halo_media_provider.clone())
-      .with_device_pixel_ratio(device_pixel_ratio)
+      .with_device_pixel_ratio(scale)
       .with_parallelism(&paint_parallelism)
       .with_max_iframe_depth(max_iframe_depth)
       .with_viewport_size(viewport.width, viewport.height)
@@ -7326,22 +7360,24 @@ fn paint_fragment_tree_region_with_state(
   for extra in &fragment_tree.additional_fragments {
     halo_list.append(build_list_for_root(extra, &paint_image_cache)?);
   }
-  let halo_px = conservative_tile_halo_px(&halo_list, device_pixel_ratio)?;
-  let halo_i64 = i64::try_from(halo_px).unwrap_or(i64::MAX);
-  let expanded_device_min_x = region_device_min_x.saturating_sub(halo_i64).max(0);
-  let expanded_device_min_y = region_device_min_y.saturating_sub(halo_i64).max(0);
-  let expanded_device_max_x = region_device_max_x.saturating_add(halo_i64).min(viewport_device_w);
-  let expanded_device_max_y = region_device_max_y.saturating_add(halo_i64).min(viewport_device_h);
+  let halo_px = conservative_tile_halo_px(&halo_list, scale)?;
+  let expanded_device_min_x = region_device_min_x.saturating_sub(halo_px);
+  let expanded_device_min_y = region_device_min_y.saturating_sub(halo_px);
+  let expanded_device_max_x =
+    region_device_max_x.saturating_add(halo_px).min(viewport_device_w);
+  let expanded_device_max_y =
+    region_device_max_y.saturating_add(halo_px).min(viewport_device_h);
 
-  if expanded_device_max_x <= expanded_device_min_x || expanded_device_max_y <= expanded_device_min_y
+  if expanded_device_max_x <= expanded_device_min_x
+    || expanded_device_max_y <= expanded_device_min_y
   {
     return Err(Error::Render(RenderError::InvalidParameters {
       message: "Expanded region does not intersect viewport".to_string(),
     }));
   }
 
-  let expanded_device_w = (expanded_device_max_x - expanded_device_min_x) as u32;
-  let expanded_device_h = (expanded_device_max_y - expanded_device_min_y) as u32;
+  let expanded_device_w = expanded_device_max_x.saturating_sub(expanded_device_min_x).max(1);
+  let expanded_device_h = expanded_device_max_y.saturating_sub(expanded_device_min_y).max(1);
 
   // Request a CSS viewport size large enough to cover the desired device-pixel rectangle (the
   // painter rounds `(css * scale)` when allocating the backing pixmap). We'll crop down to the
@@ -7369,7 +7405,7 @@ fn paint_fragment_tree_region_with_state(
     offset,
     paint_parallelism,
     &scroll_state_for_paint,
-    paint_backend_from_env(),
+    backend,
     max_iframe_depth,
   )?;
 
