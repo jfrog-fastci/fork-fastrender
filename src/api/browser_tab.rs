@@ -7406,6 +7406,32 @@ impl BrowserTab {
       || self.event_loop.has_pending_animation_frame_callbacks()
   }
 
+  /// Returns a scheduler hint for when the tab should be "ticked" next.
+  ///
+  /// This is intended for interactive embeddings that want to avoid ticking at a fixed cadence
+  /// (e.g. 60Hz) when the tab only has long-delay timers pending.
+  ///
+  /// This method is purely a query: it must **not** run any tasks.
+  pub fn next_tick_due_in(&mut self) -> Option<std::time::Duration> {
+    // If there is runnable work immediately (tasks/microtasks/external tasks/idle callbacks),
+    // request an immediate tick.
+    if !self.event_loop.is_idle() {
+      return Some(std::time::Duration::ZERO);
+    }
+
+    // If rAF callbacks are pending, we should tick on the next vsync-ish cadence.
+    if self.event_loop.has_pending_animation_frame_callbacks() {
+      return Some(self.host.js_execution_options.animation_frame_interval);
+    }
+
+    // Timers are not considered by `EventLoop::is_idle`, so check them separately.
+    if self.event_loop.has_pending_timers() {
+      return self.event_loop.duration_until_next_timer();
+    }
+
+    None
+  }
+
   /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
   /// rendered frame when the document becomes dirty.
   ///
@@ -8104,6 +8130,7 @@ mod tests {
   use crate::js::window_timers::{event_loop_mut_from_hooks, VmJsEventLoopHooks};
   use crate::js::{Clock, VirtualClock, WindowRealm, WindowRealmConfig, WindowRealmHost};
   use crate::resource::{FetchedResource, ResourceFetcher};
+  use crate::ui::repaint_scheduler::MIN_EGUI_REPAINT_INTERVAL;
 
   use std::cell::RefCell;
   use std::collections::HashMap;
@@ -18452,6 +18479,27 @@ document.body.appendChild(second);"#,
   }
 
   #[test]
+  fn next_tick_due_in_reports_timer_delay() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock.clone());
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut tab = BrowserTab::from_html_with_event_loop(
+      "",
+      RenderOptions::default(),
+      TestExecutor { log },
+      event_loop,
+    )?;
+    tab.event_loop.clear_all_pending_work();
+
+    tab
+      .event_loop
+      .set_timeout(Duration::from_millis(100), |_host, _event_loop| Ok(()))?;
+
+    assert_eq!(tab.next_tick_due_in(), Some(Duration::from_millis(100)));
+    Ok(())
+  }
+
+  #[test]
   fn next_wake_time_respects_updated_animation_frame_interval() -> Result<()> {
     use crate::js::VirtualClock;
     use std::time::Duration;
@@ -18492,6 +18540,51 @@ document.body.appendChild(second);"#,
       before, after,
       "expected animation_frame_interval update to change next_wake_time"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn next_tick_due_in_reports_animation_frame_interval() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock.clone());
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut tab = BrowserTab::from_html_with_event_loop(
+      "",
+      RenderOptions::default(),
+      TestExecutor { log },
+      event_loop,
+    )?;
+    tab.event_loop.clear_all_pending_work();
+
+    tab
+      .event_loop
+      .request_animation_frame(|_host, _event_loop, _timestamp| Ok(()))?;
+
+    assert_eq!(
+      tab.next_tick_due_in(),
+      Some(tab.js_execution_options().animation_frame_interval)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn next_tick_due_in_reports_immediate_work() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock.clone());
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut tab = BrowserTab::from_html_with_event_loop(
+      "",
+      RenderOptions::default(),
+      TestExecutor { log },
+      event_loop,
+    )?;
+    tab.event_loop.clear_all_pending_work();
+
+    tab
+      .event_loop
+      .queue_task(TaskSource::DOMManipulation, |_host, _event_loop| Ok(()))?;
+
+    assert_eq!(tab.next_tick_due_in(), Some(Duration::ZERO));
     Ok(())
   }
 }
