@@ -588,6 +588,10 @@ struct TabState {
   /// a corresponding `FrameReady` (e.g. cancelled paints), avoiding redundant messages in the hot
   /// paint path.
   last_reported_scroll_state: ScrollState,
+  /// Scroll state used for the most recently emitted `WorkerToUi::FrameReady` for this tab.
+  ///
+  /// This is used by scroll-blit diagnostics to compute the scroll delta between frames.
+  last_painted_scroll_state: Option<ScrollState>,
   /// True when the next paint was triggered by a scroll message and we should coalesce any
   /// immediately-following scroll events before rendering.
   scroll_coalesce: bool,
@@ -667,6 +671,7 @@ impl TabState {
       dpr: 1.0,
       scroll_state: ScrollState::default(),
       last_reported_scroll_state: ScrollState::default(),
+      last_painted_scroll_state: None,
       scroll_coalesce: false,
       next_paint_is_scroll: false,
       tick_coalesce: false,
@@ -4622,6 +4627,11 @@ impl BrowserRuntime {
         active_match_index: None,
       });
     }
+
+    // Scroll blit is only meaningful within a single document. Clear the last-painted scroll state
+    // so the first frame of the new navigation does not attempt to compute a delta against the
+    // previous page.
+    tab.last_painted_scroll_state = None;
 
     tab.cancel.bump_nav();
     tab.loading = true;
@@ -10645,6 +10655,7 @@ impl BrowserRuntime {
     let mut emitted_frame = false;
     if let Some(frame) = painted {
       if paint_snapshot.is_still_current_for_paint(&cancel) && !js_dom_changed {
+        tab.last_painted_scroll_state = Some(tab.scroll_state.clone());
         let actual_dpr = tab
           .document
           .as_ref()
@@ -10945,6 +10956,7 @@ impl BrowserRuntime {
     tab.tick_time = Duration::ZERO;
     tab.tick_coalesce = false;
     tab.scroll_state = painted.scroll_state.clone();
+    tab.last_painted_scroll_state = Some(tab.scroll_state.clone());
     tab.last_committed_url = Some(about_pages::ABOUT_ERROR.to_string());
     tab.last_base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
     tab.site_key = Some(site_key_for_navigation(about_pages::ABOUT_ERROR, None));
@@ -11040,6 +11052,29 @@ impl BrowserRuntime {
     }
     let prev_viewport_scroll = tab.scroll_state.viewport;
 
+    // Scroll blit fallback diagnostics.
+    //
+    // The worker may have a fast-path for scroll-only repaints (blit the previous frame by an
+    // integer device-pixel delta). When that path is unavailable we still repaint, but tests and
+    // debug UIs want visibility into *why* the fast-path was skipped.
+    #[cfg(any(test, feature = "browser_ui"))]
+    {
+      if !force && !doc.needs_layout() {
+        if let Some(prev_scroll) = tab.last_painted_scroll_state.as_ref() {
+          let next_scroll = &tab.scroll_state;
+          if prev_scroll.viewport != next_scroll.viewport {
+            if let Some(prepared) = doc.prepared() {
+              if let Err(reason) =
+                crate::ui::scroll_blit::scroll_blit_plan(prepared, prev_scroll, next_scroll)
+              {
+                crate::ui::scroll_blit::record_scroll_blit_fallback_reason(reason);
+              }
+            }
+          }
+        }
+      }
+    }
+
     let snapshot = tab.cancel.snapshot_paint();
     let cancel_callback = combine_cancel_callbacks(
       snapshot.cancel_callback_for_paint(&tab.cancel),
@@ -11125,6 +11160,7 @@ impl BrowserRuntime {
     let mut viewport_scrolled = false;
     if let Some(frame) = painted {
       tab.scroll_state = frame.scroll_state.clone();
+      tab.last_painted_scroll_state = Some(tab.scroll_state.clone());
       viewport_scrolled = tab.scroll_state.viewport != prev_viewport_scroll;
       tab.sync_js_scroll_state();
       tab

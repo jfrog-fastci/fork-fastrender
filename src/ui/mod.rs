@@ -69,6 +69,7 @@ pub mod renderer_process_id;
 mod router_coalescer;
 pub mod scrollbars;
 pub mod shortcuts;
+pub mod scroll_blit;
 pub mod find_in_page;
 pub mod repaint_scheduler;
 pub mod address_bar;
