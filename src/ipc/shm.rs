@@ -114,6 +114,7 @@ fn validate_size(size: usize) -> Result<(), ShmError> {
 #[cfg(target_os = "linux")]
 mod linux {
   use super::{validate_size, SealStatus, ShmError, MAX_SHM_SIZE};
+  use crate::ipc::sync;
   use std::io;
   use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
   use std::ptr::NonNull;
@@ -294,6 +295,11 @@ mod linux {
 
       self.sealed = true;
 
+      // Publish all shared-memory writes performed by the producer (pixel buffer, response body,
+      // etc.) before we hand the memfd off to another process. The actual readiness signal travels
+      // over a separate IPC channel; this fence provides the necessary ordering point.
+      sync::shm_publish_frame();
+
       // Best-effort: make our mapping read-only to avoid accidental writes in the producer.
       let _ = self.region.mprotect_readonly();
 
@@ -386,6 +392,10 @@ mod linux {
     }
 
     pub fn as_slice(&self) -> &[u8] {
+      // Ensure we don't speculatively read from the mapping until after we've observed the IPC
+      // signal that transferred/announced this memfd. Pair with the producer-side Release fence in
+      // `OwnedShm::seal_readonly`.
+      sync::shm_consume_frame();
       self.region.as_slice()
     }
   }
@@ -398,6 +408,7 @@ mod linux {
 #[cfg(not(target_os = "linux"))]
 mod portable {
   use super::{validate_size, SealStatus, ShmError};
+  use crate::ipc::sync;
 
   /// Portable fallback that stores bytes inline.
   ///
@@ -434,6 +445,7 @@ mod portable {
     }
 
     pub fn seal_readonly(&mut self) -> Result<SealStatus, ShmError> {
+      sync::shm_publish_frame();
       self.sealed = true;
       Ok(SealStatus::Unsupported)
     }
@@ -458,6 +470,7 @@ mod portable {
     }
 
     pub fn as_slice(&self) -> &[u8] {
+      sync::shm_consume_frame();
       &self.buf
     }
   }
@@ -476,10 +489,14 @@ pub use portable::{OwnedShm, ReceivedShm};
 mod tests {
   use super::*;
   use crate::ipc::ancillary::{recv_fd, send_fd};
+  use crate::ipc::sync;
   use std::os::unix::net::UnixStream;
 
   #[test]
   fn memfd_roundtrip_over_scm_rights() {
+    let publish_before = sync::shm_publish_count_for_test();
+    let consume_before = sync::shm_consume_count_for_test();
+
     let mut shm = OwnedShm::new(4096).expect("create shm");
     let buf = shm.as_mut_slice().expect("mutable slice");
     for (i, b) in buf.iter_mut().enumerate() {
@@ -487,6 +504,10 @@ mod tests {
     }
 
     let _ = shm.seal_readonly().expect("seal");
+    assert!(
+      sync::shm_publish_count_for_test() > publish_before,
+      "expected publish fence to run when sealing shared memory"
+    );
 
     let (a, b) = UnixStream::pair().expect("socketpair");
     send_fd(&a, shm.as_fd()).expect("send fd");
@@ -495,7 +516,12 @@ mod tests {
     let received =
       ReceivedShm::from_fd(received_fd, 4096, MAX_SHM_SIZE).expect("map received shm");
     assert_eq!(received.size(), 4096);
-    assert_eq!(received.as_slice(), shm.as_slice());
+    let received_bytes = received.as_slice();
+    assert!(
+      sync::shm_consume_count_for_test() > consume_before,
+      "expected consume fence to run when reading shared memory"
+    );
+    assert_eq!(received_bytes, shm.as_slice());
   }
 
   #[test]
