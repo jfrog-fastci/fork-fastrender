@@ -850,6 +850,17 @@ impl<'a> Parser<'a> {
       p.require(TT::KeywordFor)?;
       let await_token = p.consume_if(TT::KeywordAwait);
       let await_ = await_token.is_match();
+      if await_ && p.is_strict_ecmascript() && !header_ctx.rules.await_expr_allowed {
+        // `for await (...)` is only allowed when the grammar parameter `Await` is enabled, i.e.
+        // in modules (top-level await) and inside async functions.
+        let loc = await_token
+          .match_loc()
+          .expect("matched MaybeToken must have a location");
+        return Err(loc.error(
+          SyntaxErrorType::ExpectedSyntax("`for await` is only valid in async contexts"),
+          Some(TT::KeywordAwait),
+        ));
+      }
       p.require(TT::ParenthesisOpen)?;
       // In strict ECMAScript, `for-of` does not allow a left-hand-side expression that starts
       // with `let` unless it is parsed as a lexical declaration.
