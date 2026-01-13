@@ -2876,6 +2876,8 @@ const ABOUT_BLANK_URL: &str = "about:blank";
 
 const LOCATION_URL_KEY: &str = "__fastrender_location_url";
 const LOCATION_ACCESSOR_LOCATION_OBJ_SLOT: usize = 0;
+const DOCUMENT_URL_GETTER_LOCATION_OBJ_SLOT: usize = 0;
+const DOCUMENT_URL_GETTER_HOST_DOCUMENT_OBJ_SLOT: usize = 1;
 const HISTORY_OBJ_SLOT: usize = 0;
 const HISTORY_LOCATION_OBJ_SLOT: usize = 1;
 const HISTORY_DOCUMENT_OBJ_SLOT: usize = 2;
@@ -5840,7 +5842,7 @@ fn request_location_navigation(
   url_value: Value,
   replace: bool,
 ) -> Result<Value, VmError> {
-  let (base_url, current_document_url, document_obj, window_obj, privileged_chrome_realm) = {
+  let (base_url, current_document_url, window_obj, privileged_chrome_realm) = {
     let Some(data) = vm.user_data::<WindowRealmUserData>() else {
       return Err(VmError::InvariantViolation("window realm missing user data"));
     };
@@ -5851,7 +5853,6 @@ fn request_location_navigation(
         .clone()
         .unwrap_or_else(|| data.document_url.clone()),
       data.document_url.clone(),
-      data.document_obj,
       data.window_obj,
       data.privileged_chrome_realm,
     )
@@ -5917,16 +5918,6 @@ fn request_location_navigation(
           scope.define_property(
             location_obj,
             location_url_key,
-            data_desc(Value::String(resolved_s)),
-          )?;
-        }
-
-        if let Some(document_obj) = document_obj {
-          scope.push_root(Value::Object(document_obj))?;
-          let doc_url_key = alloc_key(&mut scope, "URL")?;
-          scope.define_property(
-            document_obj,
-            doc_url_key,
             data_desc(Value::String(resolved_s)),
           )?;
         }
@@ -6907,6 +6898,7 @@ fn history_state_change_native(
     Value::Object(obj) => obj,
     _ => return Ok(Value::Undefined),
   };
+  let _ = document_obj;
   let replace = matches!(
     slots
       .get(HISTORY_REPLACE_SLOT)
@@ -6998,19 +6990,11 @@ fn history_state_change_native(
       // Root objects while allocating property keys: `alloc_key` can trigger GC.
       let mut scope = scope.reborrow();
       scope.push_root(Value::Object(location_obj))?;
-      scope.push_root(Value::Object(document_obj))?;
 
       let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
       scope.define_property(
         location_obj,
         location_url_key,
-        data_desc(Value::String(resolved_s)),
-      )?;
-
-      let doc_url_key = alloc_key(&mut scope, "URL")?;
-      scope.define_property(
-        document_obj,
-        doc_url_key,
         data_desc(Value::String(resolved_s)),
       )?;
     }
@@ -7128,7 +7112,7 @@ fn history_traverse_delta(
   scope: &mut Scope<'_>,
   history_obj: GcObject,
   location_obj: GcObject,
-  document_obj: GcObject,
+  _document_obj: GcObject,
   delta: isize,
 ) -> Result<Option<HistoryTraversalOutcome>, VmError> {
   if delta == 0 {
@@ -7185,14 +7169,15 @@ fn history_traverse_delta(
     (old_url, new_entry.url, state_value, entries_len)
   };
 
-  // Update `location.href`/`document.URL`/`history.state`.
+  // Update `location.href` and the History facade (`history.state`/`history.length`).
+  //
+  // `document.URL` is implemented as a getter that mirrors `location.href`.
   let new_url_s = scope.alloc_string(&new_url)?;
   scope.push_root(Value::String(new_url_s))?;
   {
     // Root objects while allocating property keys: `alloc_key` can trigger GC.
     let mut scope = scope.reborrow();
     scope.push_root(Value::Object(location_obj))?;
-    scope.push_root(Value::Object(document_obj))?;
     scope.push_root(Value::Object(history_obj))?;
     scope.push_root(state_value)?;
 
@@ -7200,13 +7185,6 @@ fn history_traverse_delta(
     scope.define_property(
       location_obj,
       location_url_key,
-      data_desc(Value::String(new_url_s)),
-    )?;
-
-    let doc_url_key = alloc_key(&mut scope, "URL")?;
-    scope.define_property(
-      document_obj,
-      doc_url_key,
       data_desc(Value::String(new_url_s)),
     )?;
 
@@ -39162,6 +39140,68 @@ fn document_base_uri_get_native(
   Ok(Value::String(scope.alloc_string(&base_url)?))
 }
 
+fn document_url_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let location_obj = match slots
+    .get(DOCUMENT_URL_GETTER_LOCATION_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Ok(Value::String(scope.alloc_string(ABOUT_BLANK_URL)?));
+    }
+  };
+  let host_document_obj = match slots
+    .get(DOCUMENT_URL_GETTER_HOST_DOCUMENT_OBJ_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Ok(Value::String(scope.alloc_string(ABOUT_BLANK_URL)?));
+    }
+  };
+
+  if document_obj != host_document_obj {
+    // For windowless documents, return the document's own URL if stored, otherwise `about:blank`.
+    // Use an *own data property* lookup so documents inheriting from the host document don't
+    // accidentally see the host document URL.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(document_obj))?;
+    let url_key = alloc_key(&mut scope, "URL")?;
+    if let Some(Value::String(url_s)) =
+      scope.heap().object_get_own_data_property_value(document_obj, &url_key)?
+    {
+      return Ok(Value::String(url_s));
+    }
+    return Ok(Value::String(scope.alloc_string(ABOUT_BLANK_URL)?));
+  }
+
+  // Host document: mirror `location.href`.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(location_obj))?;
+  let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(location_obj, &location_url_key)?
+      .unwrap_or(Value::Undefined),
+  )
+}
+
 fn document_document_uri_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -40388,7 +40428,39 @@ fn init_window_globals(
       },
     },
   )?;
-  scope.define_property(document_obj, document_url_key, data_desc(url_v))?;
+
+  // Document.URL (read-only): the current document URL.
+  //
+  // In browsers this is a readonly attribute that reflects the same canonical URL as
+  // `location.href`. Implement it as a getter so scripts cannot desync it via assignment.
+  let document_url_get_slots = [Value::Object(location_obj), Value::Object(document_obj)];
+  let document_url_get_call_id = vm.register_native_call(document_url_get_native)?;
+  let document_url_get_name = scope.alloc_string("get URL")?;
+  scope.push_root(Value::String(document_url_get_name))?;
+  let document_url_get_func = scope.alloc_native_function_with_slots(
+    document_url_get_call_id,
+    None,
+    document_url_get_name,
+    0,
+    &document_url_get_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    document_url_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(document_url_get_func))?;
+  scope.define_property(
+    document_obj,
+    document_url_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(document_url_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
 
   // `Document.documentURI` is a legacy alias for the document URL.
   let document_uri_key = alloc_key(&mut scope, "documentURI")?;

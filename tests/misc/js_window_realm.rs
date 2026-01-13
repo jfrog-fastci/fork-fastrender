@@ -1214,6 +1214,38 @@ fn history_push_state_updates_location_without_navigation() -> Result<()> {
 }
 
 #[test]
+fn document_url_is_read_only_and_tracks_location_href() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script(
+      r#"(function () {
+  if (document.URL !== location.href) return false;
+  history.pushState(null, '', '#a');
+  if (document.URL !== location.href) return false;
+
+  const before = document.URL;
+  document.URL = 'https://evil/';
+  if (document.URL !== before) return false;
+
+  let strictOk = true;
+  try {
+    (function () { 'use strict'; document.URL = 'https://evil2/'; })();
+  } catch (e) {
+    strictOk = e instanceof TypeError;
+  }
+  if (document.URL !== before) return false;
+  return strictOk;
+})()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn history_push_state_clones_objects() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
