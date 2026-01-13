@@ -48,7 +48,7 @@ use crate::style::inline_axis_positive;
 use crate::style::types::{Direction, WritingMode};
 use std::cell::{Cell, RefCell};
 use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
@@ -296,24 +296,107 @@ impl Ord for FloatKey {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FloatEventKind {
-  Start,
-  End,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct FloatEvent {
   y: f32,
-  kind: FloatEventKind,
   float_id: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveEdgeSetKind {
+  /// Represents active left floats by their (right_edge -> max_bottom) constraint.
+  Left,
+  /// Represents active right floats by their (left_edge -> max_bottom) constraint.
+  Right,
+}
+
+/// Coalesced active rectangular floats for one side of the float context.
+///
+/// For each distinct constraining edge (right-edge for left floats, left-edge for right floats),
+/// tracks the maximum bottom among floats with that edge. This allows many floats that share the
+/// same edge (a common pattern on float-heavy pages) to be represented as a single entry.
+///
+/// Expiration is handled lazily: when the currently constraining edge has `bottom <= current_y` (or
+/// `bottom`/`current_y` are NaN), the edge entry is pruned and the next-most-constraining edge is
+/// inspected.
+#[derive(Debug, Clone)]
+struct ActiveEdgeSet {
+  kind: ActiveEdgeSetKind,
+  /// Map from constraining edge -> max bottom for that edge.
+  ///
+  /// We intentionally keep only one entry per edge so the active set size is bounded by the number
+  /// of *distinct edges*, not the number of floats.
+  edges: BTreeMap<FloatKey, f32>,
+}
+
+impl ActiveEdgeSet {
+  fn new(kind: ActiveEdgeSetKind) -> Self {
+    Self {
+      kind,
+      edges: BTreeMap::new(),
+    }
+  }
+
+  fn insert(&mut self, edge: f32, bottom: f32) {
+    let key = FloatKey(edge);
+    match self.edges.get_mut(&key) {
+      Some(existing) => {
+        // Use `>` so NaNs never win: NaN bottoms should behave as already-ended, and we don't want a
+        // single NaN to poison the entire edge bucket.
+        if bottom > *existing || existing.is_nan() {
+          *existing = bottom;
+        }
+      }
+      None => {
+        self.edges.insert(key, bottom);
+      }
+    }
+
+    if profile_enabled() {
+      let len = self.edges.len() as u64;
+      match self.kind {
+        ActiveEdgeSetKind::Left => {
+          FLOAT_ACTIVE_LEFT_MAX_EDGES.fetch_max(len, AtomicOrdering::Relaxed);
+        }
+        ActiveEdgeSetKind::Right => {
+          FLOAT_ACTIVE_RIGHT_MAX_EDGES.fetch_max(len, AtomicOrdering::Relaxed);
+        }
+      }
+    }
+  }
+
+  /// Returns the current most-constraining edge and its relaxation bottom, pruning stale entries.
+  fn peek_constraining(&mut self, current_y: f32) -> Option<(f32, f32)> {
+    loop {
+      let (edge_key, bottom) = match self.kind {
+        ActiveEdgeSetKind::Left => self.edges.iter().next_back().map(|(k, v)| (*k, *v)),
+        ActiveEdgeSetKind::Right => self.edges.iter().next().map(|(k, v)| (*k, *v)),
+      }?;
+
+      // A float is active for y < bottom. Use `bottom > current_y` rather than `bottom <= current_y`
+      // so NaNs are treated as ended (matching the previous event-driven behavior where advancing to
+      // NaN/inf would process all end events and leave no active floats).
+      if bottom > current_y {
+        return Some((edge_key.0, bottom));
+      }
+
+      match self.kind {
+        ActiveEdgeSetKind::Left => {
+          self.edges.pop_last();
+          profile_count_active_left_prune(1);
+        }
+        ActiveEdgeSetKind::Right => {
+          self.edges.pop_first();
+          profile_count_active_right_prune(1);
+        }
+      }
+    }
+  }
 }
 
 impl PartialEq for FloatEvent {
   fn eq(&self, other: &Self) -> bool {
-    self.y.to_bits() == other.y.to_bits()
-      && self.kind == other.kind
-      && self.float_id == other.float_id
+    self.y.to_bits() == other.y.to_bits() && self.float_id == other.float_id
   }
 }
 
@@ -328,11 +411,7 @@ impl PartialOrd for FloatEvent {
 impl Ord for FloatEvent {
   fn cmp(&self, other: &Self) -> Ordering {
     match self.y.total_cmp(&other.y) {
-      Ordering::Equal => match (self.kind, other.kind) {
-        (FloatEventKind::Start, FloatEventKind::End) => Ordering::Less,
-        (FloatEventKind::End, FloatEventKind::Start) => Ordering::Greater,
-        _ => self.float_id.cmp(&other.float_id),
-      },
+      Ordering::Equal => self.float_id.cmp(&other.float_id),
       other => other,
     }
   }
@@ -346,38 +425,28 @@ struct FloatSweepState {
   /// constrained (i.e. whether any floats start inside the queried range).
   ///
   /// This is kept as a separate min-heap so `edges_in_range_min_width_with_state` can avoid
-  /// scanning through long runs of end events (which can only relax constraints) when the caller's
-  /// `y` is constant and many floats share a start edge.
+  /// scanning through unrelated start events when the caller's `y` is constant and many floats
+  /// share a start edge.
   pending_start_events: BinaryHeap<Reverse<FloatEvent>>,
-  active: Vec<bool>,
-  /// Active left floats, ordered by:
-  /// 1) greatest right edge (most constraining)
-  /// 2) greatest bottom edge (so we skip over shorter floats that don't relax constraints)
-  active_left: BinaryHeap<(FloatKey, FloatKey, usize)>,
-  /// Active right floats, ordered by:
-  /// 1) smallest left edge (most constraining)
-  /// 2) greatest bottom edge (so we skip over shorter floats that don't relax constraints)
-  active_right: BinaryHeap<(Reverse<FloatKey>, FloatKey, usize)>,
+  /// Coalesced active rectangular left floats (right_edge -> max_bottom).
+  active_left: ActiveEdgeSet,
+  /// Coalesced active rectangular right floats (left_edge -> max_bottom).
+  active_right: ActiveEdgeSet,
   active_shape_left: Vec<usize>,
   active_shape_right: Vec<usize>,
 }
 
 impl FloatSweepState {
   fn new(float_count: usize, events: &[FloatEvent]) -> Self {
+    let _ = float_count;
     let pending_events = events.iter().copied().map(Reverse).collect();
-    let pending_start_events = events
-      .iter()
-      .filter(|event| event.kind == FloatEventKind::Start)
-      .copied()
-      .map(Reverse)
-      .collect();
+    let pending_start_events = events.iter().copied().map(Reverse).collect();
     Self {
       current_y: f32::NEG_INFINITY,
       pending_events,
       pending_start_events,
-      active: vec![false; float_count],
-      active_left: BinaryHeap::new(),
-      active_right: BinaryHeap::new(),
+      active_left: ActiveEdgeSet::new(ActiveEdgeSetKind::Left),
+      active_right: ActiveEdgeSet::new(ActiveEdgeSetKind::Right),
       active_shape_left: Vec::new(),
       active_shape_right: Vec::new(),
     }
@@ -391,7 +460,6 @@ impl Clone for FloatSweepState {
       current_y: self.current_y,
       pending_events: self.pending_events.clone(),
       pending_start_events: self.pending_start_events.clone(),
-      active: self.active.clone(),
       active_left: self.active_left.clone(),
       active_right: self.active_right.clone(),
       active_shape_left: self.active_shape_left.clone(),
@@ -588,6 +656,10 @@ pub struct FloatProfileStats {
   pub range_boundaries_scanned: u64,
   pub range_cache_segment_splits: u64,
   pub range_cache_segment_merges: u64,
+  pub active_left_prunes: u64,
+  pub active_right_prunes: u64,
+  pub active_left_max_edges: u64,
+  pub active_right_max_edges: u64,
   pub clearance_queries: u64,
   pub clearance_steps: u64,
 }
@@ -599,6 +671,10 @@ static FLOAT_SWEEP_STATE_CLONES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_RANGE_BOUNDARIES_SCANNED: AtomicU64 = AtomicU64::new(0);
 static FLOAT_RANGE_CACHE_SEGMENT_SPLITS: AtomicU64 = AtomicU64::new(0);
 static FLOAT_RANGE_CACHE_SEGMENT_MERGES: AtomicU64 = AtomicU64::new(0);
+static FLOAT_ACTIVE_LEFT_PRUNES: AtomicU64 = AtomicU64::new(0);
+static FLOAT_ACTIVE_RIGHT_PRUNES: AtomicU64 = AtomicU64::new(0);
+static FLOAT_ACTIVE_LEFT_MAX_EDGES: AtomicU64 = AtomicU64::new(0);
+static FLOAT_ACTIVE_RIGHT_MAX_EDGES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_CLEARANCE_QUERIES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_CLEARANCE_STEPS: AtomicU64 = AtomicU64::new(0);
 
@@ -657,6 +733,18 @@ fn profile_count_boundary_step(delta: u64) {
   }
 }
 
+fn profile_count_active_left_prune(delta: u64) {
+  if profile_enabled() {
+    FLOAT_ACTIVE_LEFT_PRUNES.fetch_add(delta, AtomicOrdering::Relaxed);
+  }
+}
+
+fn profile_count_active_right_prune(delta: u64) {
+  if profile_enabled() {
+    FLOAT_ACTIVE_RIGHT_PRUNES.fetch_add(delta, AtomicOrdering::Relaxed);
+  }
+}
+
 fn profile_count_clearance_query() {
   if profile_enabled() {
     FLOAT_CLEARANCE_QUERIES.fetch_add(1, AtomicOrdering::Relaxed);
@@ -685,6 +773,10 @@ pub fn reset_float_profile_counters() {
   FLOAT_RANGE_BOUNDARIES_SCANNED.store(0, AtomicOrdering::Relaxed);
   FLOAT_RANGE_CACHE_SEGMENT_SPLITS.store(0, AtomicOrdering::Relaxed);
   FLOAT_RANGE_CACHE_SEGMENT_MERGES.store(0, AtomicOrdering::Relaxed);
+  FLOAT_ACTIVE_LEFT_PRUNES.store(0, AtomicOrdering::Relaxed);
+  FLOAT_ACTIVE_RIGHT_PRUNES.store(0, AtomicOrdering::Relaxed);
+  FLOAT_ACTIVE_LEFT_MAX_EDGES.store(0, AtomicOrdering::Relaxed);
+  FLOAT_ACTIVE_RIGHT_MAX_EDGES.store(0, AtomicOrdering::Relaxed);
   FLOAT_CLEARANCE_QUERIES.store(0, AtomicOrdering::Relaxed);
   FLOAT_CLEARANCE_STEPS.store(0, AtomicOrdering::Relaxed);
 }
@@ -698,6 +790,10 @@ pub fn float_profile_stats() -> FloatProfileStats {
     range_boundaries_scanned: FLOAT_RANGE_BOUNDARIES_SCANNED.load(AtomicOrdering::Relaxed),
     range_cache_segment_splits: FLOAT_RANGE_CACHE_SEGMENT_SPLITS.load(AtomicOrdering::Relaxed),
     range_cache_segment_merges: FLOAT_RANGE_CACHE_SEGMENT_MERGES.load(AtomicOrdering::Relaxed),
+    active_left_prunes: FLOAT_ACTIVE_LEFT_PRUNES.load(AtomicOrdering::Relaxed),
+    active_right_prunes: FLOAT_ACTIVE_RIGHT_PRUNES.load(AtomicOrdering::Relaxed),
+    active_left_max_edges: FLOAT_ACTIVE_LEFT_MAX_EDGES.load(AtomicOrdering::Relaxed),
+    active_right_max_edges: FLOAT_ACTIVE_RIGHT_MAX_EDGES.load(AtomicOrdering::Relaxed),
     clearance_queries: FLOAT_CLEARANCE_QUERIES.load(AtomicOrdering::Relaxed),
     clearance_steps: FLOAT_CLEARANCE_STEPS.load(AtomicOrdering::Relaxed),
   }
@@ -761,11 +857,14 @@ pub struct FloatContext {
   /// Map from float id -> backing storage (left/right vector + index).
   float_map: Vec<FloatRef>,
 
-  /// Unsorted list of float start/end events.
+  /// Unsorted list of float start events.
   ///
   /// Sweep queries are powered by a per-context heap inside [`FloatSweepState`], which allows
-  /// floats to be added without repeatedly sorting all prior events. The append-only event list is
-  /// kept so the sweep can be rebuilt when queries move backwards.
+  /// floats to be added without repeatedly sorting all prior events. End boundaries are derived
+  /// lazily from the active constraining edges' bottoms (see [`ActiveEdgeSet`]) rather than being
+  /// represented as per-float end events.
+  ///
+  /// The append-only event list is kept so the sweep can be rebuilt when queries move backwards.
   events: Vec<FloatEvent>,
 
   /// Sweep state used to answer monotonic Y queries efficiently.
@@ -901,70 +1000,21 @@ impl FloatContext {
 
   fn apply_event(&self, event: &FloatEvent, state: &mut FloatSweepState) {
     let float = self.float_info(event.float_id);
-    match event.kind {
-      FloatEventKind::Start => {
-        state.active[event.float_id] = true;
-        match float.side {
-          FloatSide::Left => {
-            if float.shape.is_some() {
-              state.active_shape_left.push(event.float_id);
-            } else {
-              state
-                .active_left
-                .push((
-                  FloatKey(float.right_edge()),
-                  FloatKey(float.bottom()),
-                  event.float_id,
-                ));
-            }
-          }
-          FloatSide::Right => {
-            if float.shape.is_some() {
-              state.active_shape_right.push(event.float_id);
-            } else {
-              state
-                .active_right
-                .push((
-                  Reverse(FloatKey(float.left_edge())),
-                  FloatKey(float.bottom()),
-                  event.float_id,
-                ));
-            }
-          }
-        }
-      }
-      FloatEventKind::End => {
-        state.active[event.float_id] = false;
+    match float.side {
+      FloatSide::Left => {
         if float.shape.is_some() {
-          match float.side {
-            FloatSide::Left => {
-              state
-                .active_shape_left
-                .retain(|id| *id != event.float_id && state.active[*id]);
-            }
-            FloatSide::Right => {
-              state
-                .active_shape_right
-                .retain(|id| *id != event.float_id && state.active[*id]);
-            }
-          }
+          state.active_shape_left.push(event.float_id);
+        } else {
+          state.active_left.insert(float.right_edge(), float.bottom());
         }
       }
-    }
-  }
-
-  fn prune_heaps(&self, state: &mut FloatSweepState) {
-    while let Some(&(_, _, id)) = state.active_left.peek() {
-      if state.active[id] {
-        break;
+      FloatSide::Right => {
+        if float.shape.is_some() {
+          state.active_shape_right.push(event.float_id);
+        } else {
+          state.active_right.insert(float.left_edge(), float.bottom());
+        }
       }
-      state.active_left.pop();
-    }
-    while let Some(&(Reverse(_), _, id)) = state.active_right.peek() {
-      if state.active[id] {
-        break;
-      }
-      state.active_right.pop();
     }
   }
 
@@ -985,7 +1035,21 @@ impl FloatContext {
       profile_count_boundary_step(steps as u64);
     }
     state.current_y = target_y;
-    self.prune_heaps(state);
+
+    // Lazily expire `shape-outside` floats by comparing their bottoms to the current sweep y.
+    // Rectangular floats are handled via [`ActiveEdgeSet::peek_constraining`] so we avoid doing work
+    // proportional to the number of floats that ended but never constrained.
+    let current_y = state.current_y;
+    if !state.active_shape_left.is_empty() {
+      state
+        .active_shape_left
+        .retain(|id| self.float_info(*id).bottom() > current_y);
+    }
+    if !state.active_shape_right.is_empty() {
+      state
+        .active_shape_right
+        .retain(|id| self.float_info(*id).bottom() > current_y);
+    }
   }
 
   fn rect_edges_in_containing_block(
@@ -994,16 +1058,17 @@ impl FloatContext {
     containing_left: f32,
     containing_right: f32,
   ) -> (f32, f32) {
+    let current_y = state.current_y;
     let left_edge = state
       .active_left
-      .peek()
-      .map(|(edge, _, _)| edge.0)
+      .peek_constraining(current_y)
+      .map(|(edge, _bottom)| edge)
       .unwrap_or(containing_left)
       .max(containing_left);
     let right_edge = state
       .active_right
-      .peek()
-      .map(|(Reverse(edge), _, _)| edge.0)
+      .peek_constraining(current_y)
+      .map(|(edge, _bottom)| edge)
       .unwrap_or(containing_right)
       .min(containing_right);
     (left_edge, right_edge)
@@ -1100,7 +1165,11 @@ impl FloatContext {
 
     // Range scanning is guarded by the layout deadline, so cache construction must also be.
     let mut counter = 0usize;
-    while cache.segments.last().is_none_or(|seg| seg.end_y < desired_y) {
+    while cache
+      .segments
+      .last()
+      .is_none_or(|seg| seg.end_y < desired_y)
+    {
       if let Err(RenderError::Timeout { elapsed, .. }) =
         check_active_periodic(&mut counter, 256, RenderStage::Layout)
       {
@@ -1109,8 +1178,8 @@ impl FloatContext {
       }
 
       let segment_start = cache.sweep_state.current_y;
-      let segment_end =
-        self.next_float_boundary_after_internal_for_range_cache(&mut cache.sweep_state, segment_start);
+      let segment_end = self
+        .next_float_boundary_after_internal_for_range_cache(&mut cache.sweep_state, segment_start);
       let (left_edge, right_edge) = self.edges_at_in_containing_block_with_state(
         &mut cache.sweep_state,
         segment_start,
@@ -1121,9 +1190,7 @@ impl FloatContext {
       // pages that stack many equally-sized floats: the active set changes at each start/end, but
       // the most-constraining edges often remain constant.
       let can_coalesce = cache.segments.last().is_some_and(|last| {
-        last.end_y == segment_start
-          && last.left_edge == left_edge
-          && last.right_edge == right_edge
+        last.end_y == segment_start && last.left_edge == left_edge && last.right_edge == right_edge
       });
       if can_coalesce {
         cache.segments.last_mut().unwrap().end_y = segment_end;
@@ -1164,24 +1231,25 @@ impl FloatContext {
     // Start with the next boundary induced by the current constraining floats / shapes.
     let mut left_edge = FloatKey(f32::NEG_INFINITY);
     let mut left_bottom = FloatKey(f32::INFINITY);
-    if let Some((edge, bottom, _)) = state.active_left.peek() {
-      left_edge = *edge;
-      left_bottom = *bottom;
+    let current_y = state.current_y;
+    if let Some((edge, bottom)) = state.active_left.peek_constraining(current_y) {
+      left_edge = FloatKey(edge);
+      left_bottom = FloatKey(bottom);
     }
 
     let mut right_edge = FloatKey(f32::INFINITY);
     let mut right_bottom = FloatKey(f32::INFINITY);
-    if let Some((Reverse(edge), bottom, _)) = state.active_right.peek() {
-      right_edge = *edge;
-      right_bottom = *bottom;
+    if let Some((edge, bottom)) = state.active_right.peek_constraining(current_y) {
+      right_edge = FloatKey(edge);
+      right_bottom = FloatKey(bottom);
     }
 
-    let shape_boundary = if state.active_shape_left.is_empty() && state.active_shape_right.is_empty()
-    {
-      FloatKey(f32::INFINITY)
-    } else {
-      FloatKey(self.next_shape_boundary_after(state, y))
-    };
+    let shape_boundary =
+      if state.active_shape_left.is_empty() && state.active_shape_right.is_empty() {
+        FloatKey(f32::INFINITY)
+      } else {
+        FloatKey(self.next_shape_boundary_after(state, y))
+      };
 
     let mut next_end = left_bottom.min(right_bottom).min(shape_boundary);
 
@@ -1428,11 +1496,12 @@ impl FloatContext {
     // those irrelevant boundaries is a primary source of O(n^2) behavior on float-heavy pages.
     let mut next = self.next_float_start_y(state);
 
-    if let Some((_, bottom, _)) = state.active_left.peek() {
-      next = next.min(bottom.0);
+    let current_y = state.current_y;
+    if let Some((_edge, bottom)) = state.active_left.peek_constraining(current_y) {
+      next = next.min(bottom);
     }
-    if let Some((_, bottom, _)) = state.active_right.peek() {
-      next = next.min(bottom.0);
+    if let Some((_edge, bottom)) = state.active_right.peek_constraining(current_y) {
+      next = next.min(bottom);
     }
     if !state.active_shape_left.is_empty() || !state.active_shape_right.is_empty() {
       next = next.min(self.next_shape_boundary_after(state, y));
@@ -1556,25 +1625,16 @@ impl FloatContext {
 
     let start_event = FloatEvent {
       y: start_y,
-      kind: FloatEventKind::Start,
-      float_id: id,
-    };
-    let end_event = FloatEvent {
-      y: end_y,
-      kind: FloatEventKind::End,
       float_id: id,
     };
     self.events.push(start_event);
-    self.events.push(end_event);
 
     // Keep the sweep state usable across interleaved insertions + monotonic queries (the common
     // pattern during BFC layout). Resetting here destroys the incremental sweep and turns
     // float-heavy pages into O(n^2) boundary rescans.
     {
       let mut sweep_state = self.sweep_state.borrow_mut();
-      sweep_state.active.push(false);
       sweep_state.pending_events.push(Reverse(start_event));
-      sweep_state.pending_events.push(Reverse(end_event));
       sweep_state.pending_start_events.push(Reverse(start_event));
       let current_y = sweep_state.current_y;
       self.advance_sweep_to(current_y, &mut sweep_state);
@@ -1590,25 +1650,19 @@ impl FloatContext {
     let mut range_cache = self.range_cache.borrow_mut();
     if affects_range_cache_incrementally {
       let expected_prev_float_count = id;
-      let expected_prev_events_len = self.events.len().saturating_sub(2);
+      let expected_prev_events_len = self.events.len().saturating_sub(1);
       if range_cache.float_count == expected_prev_float_count
         && range_cache.events_len == expected_prev_events_len
-        && range_cache.sweep_state.active.len() == expected_prev_float_count
       {
         range_cache.float_count = self.float_map.len();
         range_cache.events_len = self.events.len();
         if let Some(edge) = rect_edge_for_range_cache {
           range_cache.apply_rect_float(start_y, end_y, side, edge);
         }
-        range_cache.sweep_state.active.push(false);
         range_cache
           .sweep_state
           .pending_events
           .push(Reverse(start_event));
-        range_cache
-          .sweep_state
-          .pending_events
-          .push(Reverse(end_event));
         range_cache
           .sweep_state
           .pending_start_events

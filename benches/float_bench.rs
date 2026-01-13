@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use fastrender::layout::float_context::{FloatContext, FloatSide};
 
 mod common;
@@ -120,12 +120,51 @@ fn bench_range_cache_incremental_updates(c: &mut Criterion) {
   });
 }
 
+fn build_shared_edge_late_prune_context() -> FloatContext {
+  const CONTAINING_WIDTH: f32 = 200.0;
+  const CONSTRAINING_FLOAT_WIDTH: f32 = 80.0;
+  const CONSTRAINING_FLOAT_HEIGHT: f32 = 10_000.0;
+  const NON_CONSTRAINING_FLOAT_WIDTH: f32 = 10.0;
+  const NON_CONSTRAINING_FLOAT_COUNT: usize = 10_000;
+
+  let mut ctx = FloatContext::new(CONTAINING_WIDTH);
+  ctx.add_float_at(
+    FloatSide::Left,
+    0.0,
+    0.0,
+    CONSTRAINING_FLOAT_WIDTH,
+    CONSTRAINING_FLOAT_HEIGHT,
+  );
+  for i in 0..NON_CONSTRAINING_FLOAT_COUNT {
+    ctx.add_float_at(
+      FloatSide::Left,
+      0.0,
+      0.0,
+      NON_CONSTRAINING_FLOAT_WIDTH,
+      (i + 1) as f32,
+    );
+  }
+  ctx
+}
+
+fn bench_shared_edge_late_prune(c: &mut Criterion) {
+  common::bench_print_config_once("float_bench", &[]);
+  c.bench_function("float_shared_edge_late_prune", |b| {
+    b.iter_batched(
+      build_shared_edge_late_prune_context,
+      |ctx| black_box(ctx.available_width_at_y(10_000.0)),
+      BatchSize::LargeInput,
+    )
+  });
+}
+
 criterion_group!(
   float_benches,
   bench_available_width,
   bench_available_width_in_range,
   bench_compute_float_position,
   bench_compute_float_position_overlap_stress,
-  bench_range_cache_incremental_updates
+  bench_range_cache_incremental_updates,
+  bench_shared_edge_late_prune
 );
 criterion_main!(float_benches);
