@@ -419,6 +419,19 @@ fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
   egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
+fn contrast_bw(bg: egui::Color32) -> egui::Color32 {
+  // Simple sRGB luma heuristic. Good enough for choosing a contrasting "halo" color.
+  let r = bg.r() as f32 / 255.0;
+  let g = bg.g() as f32 / 255.0;
+  let b = bg.b() as f32 / 255.0;
+  let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  if luma > 0.5 {
+    egui::Color32::BLACK
+  } else {
+    egui::Color32::WHITE
+  }
+}
+
 fn group_color_egui(color: TabGroupColor) -> Color32 {
   let (r, g, b) = color.rgb();
   Color32::from_rgb(r, g, b)
@@ -493,7 +506,7 @@ fn paint_drag_placeholder(
   pulse_t: f32,
 ) {
   let rounding = visuals.widgets.inactive.rounding;
-  let stroke_color = group_color.unwrap_or(visuals.widgets.active.bg_stroke.color);
+  let stroke_color = group_color.unwrap_or(visuals.selection.stroke.color);
   let fill_alpha = (DRAG_GAP_BASE_ALPHA + DRAG_GAP_PULSE_EXTRA_ALPHA * pulse_t).clamp(0.0, 1.0);
   let stroke_alpha = (0.25 + 0.35 * pulse_t).clamp(0.0, 1.0);
 
@@ -3626,14 +3639,23 @@ pub(super) fn tab_strip_ui(
         motion.durations.tab_drag_indicator,
       );
 
-      let indicator_color =
-        dragged_group_color.unwrap_or(ui.visuals().widgets.active.bg_stroke.color);
-      let stroke = Stroke::new(2.0, with_alpha(indicator_color, alpha));
       let y1 = tab_strip_rect.top() + 1.0;
       let y2 = tab_strip_rect.bottom() - 1.0;
-      ui.painter()
-        .with_clip_rect(group_clip_rect)
-        .line_segment([Pos2::new(drop_x, y1), Pos2::new(drop_x, y2)], stroke);
+
+      // Use the tab group's accent color (when present) and fall back to the global selection
+      // stroke (accent) rather than the generic widget border. This keeps the insertion indicator
+      // consistent with the active-tab underline and other chrome highlights.
+      let indicator_color = dragged_group_color.unwrap_or(ui.visuals().selection.stroke.color);
+
+      // Add a subtle high-contrast "halo" so even dark group colors remain visible in dark themes
+      // (and vice versa).
+      let halo_color = contrast_bw(ui.visuals().panel_fill);
+      let halo_stroke = Stroke::new(3.0, with_alpha(halo_color, alpha * 0.55));
+      let inner_stroke = Stroke::new(2.0, with_alpha(indicator_color, alpha));
+
+      let painter = ui.painter().with_clip_rect(group_clip_rect);
+      painter.line_segment([Pos2::new(drop_x, y1), Pos2::new(drop_x, y2)], halo_stroke);
+      painter.line_segment([Pos2::new(drop_x, y1), Pos2::new(drop_x, y2)], inner_stroke);
     }
 
     // Floating preview.
