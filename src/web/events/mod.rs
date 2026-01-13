@@ -253,6 +253,14 @@ pub struct Event {
   /// This is populated by host-driven UI input dispatch (e.g. `mousedown`, `mousemove`, ...), and
   /// is used by JS bindings to synthesize `MouseEvent` objects with appropriate fields.
   pub mouse: Option<MouseEvent>,
+  /// Drag-and-drop `DataTransfer` payload for `DragEvent`-backed event types.
+  ///
+  /// When present, JS bindings should synthesize a `DragEvent` (not a `MouseEvent`) and expose this
+  /// value via `event.dataTransfer`.
+  ///
+  /// This is intentionally a raw JS value so embeddings can provide a lightweight host object
+  /// without implementing the full HTML `DataTransfer` interface yet.
+  pub drag_data_transfer: Option<JsValue>,
   pub(crate) in_passive_listener: bool,
 }
 
@@ -323,6 +331,7 @@ impl Event {
       detail: None,
       storage: None,
       mouse: None,
+      drag_data_transfer: None,
       in_passive_listener: false,
     }
   }
@@ -359,6 +368,7 @@ impl Event {
     self.event_phase = EventPhase::None;
     self.storage = None;
     self.mouse = None;
+    self.drag_data_transfer = None;
   }
 
   /// Legacy CustomEvent initializer (`CustomEvent.prototype.initCustomEvent`).

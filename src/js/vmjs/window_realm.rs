@@ -2825,6 +2825,7 @@ const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
 const UI_EVENT_PROTOTYPE_KEY: &str = "__fastrender_ui_event_prototype";
 const MOUSE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_mouse_event_prototype";
+const DRAG_EVENT_PROTOTYPE_KEY: &str = "__fastrender_drag_event_prototype";
 const KEYBOARD_EVENT_PROTOTYPE_KEY: &str = "__fastrender_keyboard_event_prototype";
 const FOCUS_EVENT_PROTOTYPE_KEY: &str = "__fastrender_focus_event_prototype";
 const INPUT_EVENT_PROTOTYPE_KEY: &str = "__fastrender_input_event_prototype";
@@ -16211,6 +16212,259 @@ fn mouse_event_constructor_impl(
   Ok(Value::Object(obj))
 }
 
+fn drag_event_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "DragEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn drag_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  let mut composed = false;
+
+  let mut detail = 0.0f64;
+  let mut view = Value::Null;
+
+  let mut screen_x = 0.0f64;
+  let mut screen_y = 0.0f64;
+  let mut client_x = 0.0f64;
+  let mut client_y = 0.0f64;
+  let mut button = 0.0f64;
+  let mut buttons = 0.0f64;
+  let mut ctrl_key = false;
+  let mut shift_key = false;
+  let mut alt_key = false;
+  let mut meta_key = false;
+  let mut related_target = Value::Null;
+  let mut data_transfer = Value::Null;
+
+  if let Some(init_value) = args.get(1).copied() {
+    if let Value::Object(init_obj) = init_value {
+      let bubbles_key = alloc_key(scope, "bubbles")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
+        bubbles = scope.heap().to_boolean(value)?;
+      }
+
+      let cancelable_key = alloc_key(scope, "cancelable")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      {
+        cancelable = scope.heap().to_boolean(value)?;
+      }
+
+      let composed_key = alloc_key(scope, "composed")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
+        composed = scope.heap().to_boolean(value)?;
+      }
+
+      let detail_key = alloc_key(scope, "detail")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &detail_key)?
+      {
+        let mut n = scope.heap_mut().to_number(value)?;
+        if !n.is_finite() || n.is_nan() {
+          n = 0.0;
+        }
+        detail = n.trunc();
+      }
+
+      let view_key = alloc_key(scope, "view")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &view_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          view = value;
+        }
+      }
+
+      let screen_x_key = alloc_key(scope, "screenX")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &screen_x_key)?
+      {
+        screen_x = scope.heap_mut().to_number(value)?;
+      }
+      let screen_y_key = alloc_key(scope, "screenY")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &screen_y_key)?
+      {
+        screen_y = scope.heap_mut().to_number(value)?;
+      }
+
+      let client_x_key = alloc_key(scope, "clientX")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &client_x_key)?
+      {
+        client_x = scope.heap_mut().to_number(value)?;
+      }
+      let client_y_key = alloc_key(scope, "clientY")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &client_y_key)?
+      {
+        client_y = scope.heap_mut().to_number(value)?;
+      }
+
+      let button_key = alloc_key(scope, "button")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &button_key)?
+      {
+        button = scope.heap_mut().to_number(value)?;
+      }
+      let buttons_key = alloc_key(scope, "buttons")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &buttons_key)?
+      {
+        buttons = scope.heap_mut().to_number(value)?;
+      }
+
+      let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &ctrl_key_key)?
+      {
+        ctrl_key = scope.heap().to_boolean(value)?;
+      }
+      let shift_key_key = alloc_key(scope, "shiftKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &shift_key_key)?
+      {
+        shift_key = scope.heap().to_boolean(value)?;
+      }
+      let alt_key_key = alloc_key(scope, "altKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &alt_key_key)?
+      {
+        alt_key = scope.heap().to_boolean(value)?;
+      }
+      let meta_key_key = alloc_key(scope, "metaKey")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &meta_key_key)?
+      {
+        meta_key = scope.heap().to_boolean(value)?;
+      }
+
+      let related_target_key = alloc_key(scope, "relatedTarget")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &related_target_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          related_target = value;
+        }
+      }
+
+      let data_transfer_key = alloc_key(scope, "dataTransfer")?;
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &data_transfer_key)?
+      {
+        if !matches!(value, Value::Undefined) {
+          data_transfer = value;
+        }
+      }
+    }
+  }
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  define_event_default_properties(scope, obj)?;
+
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(obj, detail_key, data_desc(Value::Number(detail)))?;
+  let view_key = alloc_key(scope, "view")?;
+  scope.define_property(obj, view_key, data_desc(view))?;
+
+  let screen_x_key = alloc_key(scope, "screenX")?;
+  scope.define_property(obj, screen_x_key, data_desc(Value::Number(screen_x)))?;
+  let screen_y_key = alloc_key(scope, "screenY")?;
+  scope.define_property(obj, screen_y_key, data_desc(Value::Number(screen_y)))?;
+  let client_x_key = alloc_key(scope, "clientX")?;
+  scope.define_property(obj, client_x_key, data_desc(Value::Number(client_x)))?;
+  let client_y_key = alloc_key(scope, "clientY")?;
+  scope.define_property(obj, client_y_key, data_desc(Value::Number(client_y)))?;
+  let button_key = alloc_key(scope, "button")?;
+  scope.define_property(obj, button_key, data_desc(Value::Number(button)))?;
+  let buttons_key = alloc_key(scope, "buttons")?;
+  scope.define_property(obj, buttons_key, data_desc(Value::Number(buttons)))?;
+
+  let ctrl_key_key = alloc_key(scope, "ctrlKey")?;
+  scope.define_property(obj, ctrl_key_key, data_desc(Value::Bool(ctrl_key)))?;
+  let shift_key_key = alloc_key(scope, "shiftKey")?;
+  scope.define_property(obj, shift_key_key, data_desc(Value::Bool(shift_key)))?;
+  let alt_key_key = alloc_key(scope, "altKey")?;
+  scope.define_property(obj, alt_key_key, data_desc(Value::Bool(alt_key)))?;
+  let meta_key_key = alloc_key(scope, "metaKey")?;
+  scope.define_property(obj, meta_key_key, data_desc(Value::Bool(meta_key)))?;
+
+  let related_target_key = alloc_key(scope, "relatedTarget")?;
+  scope.define_property(obj, related_target_key, data_desc(related_target))?;
+
+  let data_transfer_key = alloc_key(scope, "dataTransfer")?;
+  scope.define_property(obj, data_transfer_key, read_only_data_desc(data_transfer))?;
+
+  brand_event_object(scope, obj, BrandedEventKind::DragEvent)?;
+  set_event_initialized(scope, obj, true)?;
+
+  Ok(Value::Object(obj))
+}
+
 fn promise_rejection_event_constructor_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -16800,6 +17054,22 @@ fn mouse_event_constructor_construct_native(
   mouse_event_constructor_impl(scope, ctor, args)
 }
 
+fn drag_event_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  drag_event_constructor_impl(scope, ctor, args)
+}
+
 fn promise_rejection_event_constructor_construct_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -16958,6 +17228,7 @@ fn ui_event_init_ui_event_native(
     Some(
       BrandedEventKind::UIEvent
         | BrandedEventKind::MouseEvent
+        | BrandedEventKind::DragEvent
         | BrandedEventKind::KeyboardEvent
         | BrandedEventKind::FocusEvent
         | BrandedEventKind::InputEvent
@@ -17052,7 +17323,7 @@ fn mouse_event_init_mouse_event_native(
   };
   if !matches!(
     branded_event_kind(scope, event_obj)?,
-    Some(BrandedEventKind::MouseEvent)
+    Some(BrandedEventKind::MouseEvent | BrandedEventKind::DragEvent)
   ) {
     return Err(VmError::TypeError(
       "MouseEvent.initMouseEvent must be called on a MouseEvent object",
@@ -21047,6 +21318,7 @@ enum BrandedEventKind {
   KeyboardEvent = 8,
   FocusEvent = 9,
   InputEvent = 10,
+  DragEvent = 11,
 }
 
 impl BrandedEventKind {
@@ -21064,6 +21336,7 @@ impl BrandedEventKind {
         8 => Some(Self::KeyboardEvent),
         9 => Some(Self::FocusEvent),
         10 => Some(Self::InputEvent),
+        11 => Some(Self::DragEvent),
         _ => None,
       },
       _ => None,
@@ -23110,6 +23383,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       CustomEvent,
       StorageEvent,
       MouseEvent,
+      DragEvent,
       KeyboardEvent,
       FocusEvent,
       InputEvent,
@@ -23117,8 +23391,15 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
 
     let wants_storage_event =
       event.storage.is_some() || (event.type_ == "storage" && event.detail.is_none());
+    let wants_drag_event = event.drag_data_transfer.is_some()
+      || matches!(
+        event.type_.as_str(),
+        "drag" | "dragstart" | "dragend" | "dragenter" | "dragleave" | "dragover" | "drop"
+      );
     let interface = if wants_storage_event {
       EventInterface::StorageEvent
+    } else if wants_drag_event {
+      EventInterface::DragEvent
     } else if event.detail.is_some() {
       EventInterface::CustomEvent
     } else if event.mouse.is_some()
@@ -23151,6 +23432,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       EventInterface::StorageEvent => (BrandedEventKind::StorageEvent, STORAGE_EVENT_PROTOTYPE_KEY),
       EventInterface::CustomEvent => (BrandedEventKind::CustomEvent, CUSTOM_EVENT_PROTOTYPE_KEY),
       EventInterface::MouseEvent => (BrandedEventKind::MouseEvent, MOUSE_EVENT_PROTOTYPE_KEY),
+      EventInterface::DragEvent => (BrandedEventKind::DragEvent, DRAG_EVENT_PROTOTYPE_KEY),
       EventInterface::KeyboardEvent => (BrandedEventKind::KeyboardEvent, KEYBOARD_EVENT_PROTOTYPE_KEY),
       EventInterface::FocusEvent => (BrandedEventKind::FocusEvent, FOCUS_EVENT_PROTOTYPE_KEY),
       EventInterface::InputEvent => (BrandedEventKind::InputEvent, INPUT_EVENT_PROTOTYPE_KEY),
@@ -23215,6 +23497,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
           CUSTOM_EVENT_PROTOTYPE_KEY => "document is missing required CustomEvent prototype",
           UI_EVENT_PROTOTYPE_KEY => "document is missing required UIEvent prototype",
           MOUSE_EVENT_PROTOTYPE_KEY => "document is missing required MouseEvent prototype",
+          DRAG_EVENT_PROTOTYPE_KEY => "document is missing required DragEvent prototype",
           KEYBOARD_EVENT_PROTOTYPE_KEY => "document is missing required KeyboardEvent prototype",
           FOCUS_EVENT_PROTOTYPE_KEY => "document is missing required FocusEvent prototype",
           INPUT_EVENT_PROTOTYPE_KEY => "document is missing required InputEvent prototype",
@@ -23265,6 +23548,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     if matches!(
       interface,
       EventInterface::MouseEvent
+        | EventInterface::DragEvent
         | EventInterface::KeyboardEvent
         | EventInterface::FocusEvent
         | EventInterface::InputEvent
@@ -23315,7 +23599,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     }
 
     match interface {
-      EventInterface::MouseEvent => {
+      EventInterface::MouseEvent | EventInterface::DragEvent => {
         let mouse = event.mouse.unwrap_or_default();
 
         // `detail` is exposed on UIEvent-derived types (MouseEvent, KeyboardEvent, ...). When a
@@ -23405,6 +23689,15 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
           related_target_key,
           read_only_data_desc(Value::Null),
         )?;
+
+        if interface == EventInterface::DragEvent {
+          let data_transfer_key = alloc_key(scope, "dataTransfer")?;
+          scope.define_property(
+            event_obj,
+            data_transfer_key,
+            read_only_data_desc(event.drag_data_transfer.unwrap_or(Value::Null)),
+          )?;
+        }
       }
       EventInterface::KeyboardEvent => {
         let empty = scope.alloc_string("")?;
@@ -25813,6 +26106,7 @@ fn document_create_event_native(
     CustomEvent,
     UIEvent,
     MouseEvent,
+    DragEvent,
     KeyboardEvent,
     FocusEvent,
     InputEvent,
@@ -25829,6 +26123,8 @@ fn document_create_event_native(
     Kind::UIEvent
   } else if name.eq_ignore_ascii_case("MouseEvent") {
     Kind::MouseEvent
+  } else if name.eq_ignore_ascii_case("DragEvent") {
+    Kind::DragEvent
   } else if name.eq_ignore_ascii_case("KeyboardEvent") {
     Kind::KeyboardEvent
   } else if name.eq_ignore_ascii_case("FocusEvent") {
@@ -25853,6 +26149,7 @@ fn document_create_event_native(
     Kind::CustomEvent => CUSTOM_EVENT_PROTOTYPE_KEY,
     Kind::UIEvent => UI_EVENT_PROTOTYPE_KEY,
     Kind::MouseEvent => MOUSE_EVENT_PROTOTYPE_KEY,
+    Kind::DragEvent => DRAG_EVENT_PROTOTYPE_KEY,
     Kind::KeyboardEvent => KEYBOARD_EVENT_PROTOTYPE_KEY,
     Kind::FocusEvent => FOCUS_EVENT_PROTOTYPE_KEY,
     Kind::InputEvent => INPUT_EVENT_PROTOTYPE_KEY,
@@ -25897,7 +26194,12 @@ fn document_create_event_native(
   }
   if matches!(
     kind,
-    Kind::UIEvent | Kind::MouseEvent | Kind::KeyboardEvent | Kind::FocusEvent | Kind::InputEvent
+    Kind::UIEvent
+      | Kind::MouseEvent
+      | Kind::DragEvent
+      | Kind::KeyboardEvent
+      | Kind::FocusEvent
+      | Kind::InputEvent
   ) {
     let detail_key = alloc_key(scope, "detail")?;
     scope.define_property(obj, detail_key, data_desc(Value::Number(0.0)))?;
@@ -25945,6 +26247,7 @@ fn document_create_event_native(
     Kind::CustomEvent => BrandedEventKind::CustomEvent,
     Kind::UIEvent => BrandedEventKind::UIEvent,
     Kind::MouseEvent => BrandedEventKind::MouseEvent,
+    Kind::DragEvent => BrandedEventKind::DragEvent,
     Kind::KeyboardEvent => BrandedEventKind::KeyboardEvent,
     Kind::FocusEvent => BrandedEventKind::FocusEvent,
     Kind::InputEvent => BrandedEventKind::InputEvent,
@@ -25960,7 +26263,7 @@ fn document_create_event_native(
   let initialized_key = alloc_key(scope, EVENT_INITIALIZED_KEY)?;
   scope.define_property(obj, initialized_key, data_desc(Value::Bool(false)))?;
 
-  if matches!(kind, Kind::MouseEvent) {
+  if matches!(kind, Kind::MouseEvent | Kind::DragEvent) {
     let screen_x_key = alloc_key(scope, "screenX")?;
     scope.define_property(obj, screen_x_key, data_desc(Value::Number(0.0)))?;
     let screen_y_key = alloc_key(scope, "screenY")?;
@@ -25983,6 +26286,10 @@ fn document_create_event_native(
     scope.define_property(obj, meta_key, data_desc(Value::Bool(false)))?;
     let related_target_key = alloc_key(scope, "relatedTarget")?;
     scope.define_property(obj, related_target_key, data_desc(Value::Null))?;
+  }
+  if matches!(kind, Kind::DragEvent) {
+    let data_transfer_key = alloc_key(scope, "dataTransfer")?;
+    scope.define_property(obj, data_transfer_key, read_only_data_desc(Value::Null))?;
   }
   if matches!(kind, Kind::KeyboardEvent) {
     let empty = scope.alloc_string("")?;
@@ -40510,6 +40817,12 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(mouse_event_proto, Some(ui_event_proto))?;
 
+  let drag_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(drag_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(drag_event_proto, Some(mouse_event_proto))?;
+
   let init_ui_event_call_id = vm.register_native_call(ui_event_init_ui_event_native)?;
   let init_ui_event_name = scope.alloc_string("initUIEvent")?;
   scope.push_root(Value::String(init_ui_event_name))?;
@@ -41225,6 +41538,39 @@ fn init_window_globals(
     data_desc(Value::Object(mouse_event_ctor_func)),
   )?;
 
+  let drag_event_ctor_call_id = vm.register_native_call(drag_event_constructor_native)?;
+  let drag_event_ctor_construct_id =
+    vm.register_native_construct(drag_event_constructor_construct_native)?;
+  let drag_event_ctor_name = scope.alloc_string("DragEvent")?;
+  scope.push_root(Value::String(drag_event_ctor_name))?;
+  let drag_event_ctor_func = scope.alloc_native_function(
+    drag_event_ctor_call_id,
+    Some(drag_event_ctor_construct_id),
+    drag_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    drag_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(drag_event_ctor_func))?;
+  scope.define_property(
+    drag_event_ctor_func,
+    prototype_key,
+    ctor_link_desc(Value::Object(drag_event_proto)),
+  )?;
+  scope.define_property(
+    drag_event_proto,
+    constructor_key,
+    ctor_link_desc(Value::Object(drag_event_ctor_func)),
+  )?;
+  let drag_event_ctor_key = alloc_key(&mut scope, "DragEvent")?;
+  scope.define_property(
+    global,
+    drag_event_ctor_key,
+    data_desc(Value::Object(drag_event_ctor_func)),
+  )?;
+
   let storage_event_ctor_call_id = vm.register_native_call(storage_event_constructor_native)?;
   let storage_event_ctor_construct_id =
     vm.register_native_construct(storage_event_constructor_construct_native)?;
@@ -41484,6 +41830,12 @@ fn init_window_globals(
     document_obj,
     mouse_event_proto_key,
     data_desc(Value::Object(mouse_event_proto)),
+  )?;
+  let drag_event_proto_key = alloc_key(&mut scope, DRAG_EVENT_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    drag_event_proto_key,
+    data_desc(Value::Object(drag_event_proto)),
   )?;
   let keyboard_event_proto_key = alloc_key(&mut scope, KEYBOARD_EVENT_PROTOTYPE_KEY)?;
   scope.define_property(
@@ -53140,6 +53492,183 @@ mod tests {
            __log[9] === 'dblclick|true|15|30|0|0|2|false|false|false|false' &&\n\
            __log[10] === 'contextmenu|true|14|28|2|0|0|false|false|true|false';\n\
          })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn host_dom_event_dispatch_synthesizes_drag_events() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "globalThis.__log = [];\n\
+       globalThis.__dt = { foo: 123 };\n\
+       globalThis.__create = (() => {\n\
+         try {\n\
+           const e = document.createEvent('DragEvent');\n\
+           const ok1 = (e instanceof DragEvent);\n\
+           const ok2 = ('dataTransfer' in e);\n\
+           const ok3 = (e.dataTransfer === null);\n\
+           const ok4 = (typeof e.initMouseEvent === 'function');\n\
+           let ok5 = false;\n\
+           try {\n\
+             e.initMouseEvent('dragstart', true, true, globalThis, 0, 0, 0, 0, 0, false, false, false, false, 0, null);\n\
+             ok5 = true;\n\
+           } catch (e) {}\n\
+           return [ok1, ok2, ok3, ok4, ok5].join('|');\n\
+         } catch (e) {\n\
+           return 'throw';\n\
+         }\n\
+       })();\n\
+       const target = document.getElementById('target');\n\
+       function cap(e) {\n\
+         __log.push([\n\
+           e.type,\n\
+           (e instanceof DragEvent),\n\
+           (e instanceof MouseEvent),\n\
+           (e.dataTransfer === __dt),\n\
+           (e.dataTransfer === null),\n\
+           String(e.dataTransfer ? e.dataTransfer.foo : null),\n\
+         ].join('|'));\n\
+       }\n\
+       target.addEventListener('dragstart', cap);\n\
+       target.addEventListener('dragover', cap);\n\
+       target.addEventListener('drop', cap);\n\
+       target.addEventListener('dragend', cap);",
+    )?;
+
+    let data_transfer = realm.exec_script("__dt")?;
+
+    struct DummyHost;
+    impl WindowRealmHost for DummyHost {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+      }
+    }
+
+    let mut realm_slot = Some(realm);
+    let mut vm_host_ctx = ();
+    let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
+      Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
+    let mut invoker = WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+      &mut realm_slot,
+      &mut vm_host_slot,
+      &mut webidl_bindings_host_slot,
+    );
+
+    let target = host.dom().get_element_by_id("target").expect("missing #target");
+
+    let mut dragstart = web_events::Event::new(
+      "dragstart",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    dragstart.is_trusted = true;
+    dragstart.mouse = Some(web_events::MouseEvent {
+      client_x: 1.0,
+      client_y: 2.0,
+      button: 0,
+      buttons: 1,
+      detail: 0,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: None,
+    });
+    dragstart.drag_data_transfer = Some(data_transfer);
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut dragstart,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("dragstart dispatch should succeed");
+
+    let mut dragover = web_events::Event::new(
+      "dragover",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    dragover.is_trusted = true;
+    dragover.mouse = dragstart.mouse;
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut dragover,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("dragover dispatch should succeed");
+
+    let mut drop = web_events::Event::new(
+      "drop",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    drop.is_trusted = true;
+    drop.mouse = dragstart.mouse;
+    drop.drag_data_transfer = Some(data_transfer);
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut drop,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("drop dispatch should succeed");
+
+    let mut dragend = web_events::Event::new(
+      "dragend",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    dragend.is_trusted = true;
+    dragend.mouse = dragstart.mouse;
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(target).normalize(),
+      &mut dragend,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("dragend dispatch should succeed");
+
+    let realm = realm_slot.as_mut().expect("expected realm slot");
+    let create_v = realm.exec_script("__create")?;
+    let create_s = get_string(realm.heap(), create_v);
+    assert_eq!(create_s, "true|true|true|true|true");
+    let ok = realm.exec_script(
+      "(() => {\n\
+         return __log.length === 4 &&\n\
+           __log[0] === 'dragstart|true|true|true|false|123' &&\n\
+           __log[1] === 'dragover|true|true|false|true|null' &&\n\
+           __log[2] === 'drop|true|true|true|false|123' &&\n\
+           __log[3] === 'dragend|true|true|false|true|null';\n\
+       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
