@@ -61,6 +61,10 @@ fn compile_and_call0(source: &str, func_name: &str) -> Result<Value, VmError> {
   result
 }
 
+fn run_f0(source: &str) -> Result<Value, VmError> {
+  compile_and_call0(source, "f")
+}
+
 #[test]
 fn compiled_closure_capture_semantics() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -4043,6 +4047,122 @@ fn compiled_strict_equality_treats_nan_as_unequal_to_itself() -> Result<(), VmEr
   scope.push_root(f)?;
   let result = vm.call_without_host(&mut scope, f, Value::Undefined, &[])?;
   assert_eq!(result, Value::Bool(false));
+  Ok(())
+}
+
+#[test]
+fn compiled_bigint_arithmetic_and_strict_equality() -> Result<(), VmError> {
+  let result = run_f0(
+    r#"
+      function f() { return (1n + 2n) === 3n; }
+    "#,
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_relational_string_compare_uses_abstract_relational_comparison() -> Result<(), VmError> {
+  let result = run_f0(
+    r#"
+      function f() { return "a" < "b"; }
+    "#,
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_relational_string_bigint_parse_semantics() -> Result<(), VmError> {
+  let result = run_f0(
+    r#"
+      function f() { return "9007199254740993" > 9007199254740992n; }
+    "#,
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_bitwise_or_operator_works() -> Result<(), VmError> {
+  let result = run_f0(
+    r#"
+      function f() { return (5 | 2); }
+    "#,
+  )?;
+  assert_eq!(result, Value::Number(7.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_nullish_assignment() -> Result<(), VmError> {
+  let result = run_f0(
+    r#"
+      function f() { let x = null; x ??= 5; return x; }
+    "#,
+  )?;
+  assert_eq!(result, Value::Number(5.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_bigint_mixing_throws_type_error() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() { return 1n - 1; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let err = {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+    vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])
+      .unwrap_err()
+  };
+
+  match err {
+    VmError::TypeError(msg) => assert_eq!(msg, "Cannot mix BigInt and other types"),
+    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+      let Value::Object(obj) = value else {
+        panic!("expected thrown object, got {value:?}");
+      };
+
+      // Root the thrown value across key allocation.
+      let mut check_scope = heap.scope();
+      check_scope.push_root(Value::Object(obj))?;
+      let key_s = check_scope.alloc_string("message")?;
+      check_scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      let Some(desc) = check_scope.heap().object_get_own_property(obj, &key)? else {
+        panic!("expected message property on thrown value");
+      };
+      let vm_js::PropertyKind::Data { value: msg, .. } = desc.kind else {
+        panic!("expected data property for message");
+      };
+      let Value::String(msg_s) = msg else {
+        panic!("expected message to be a string, got {msg:?}");
+      };
+      let msg = check_scope.heap().get_string(msg_s)?.to_utf8_lossy();
+      assert_eq!(msg, "Cannot mix BigInt and other types");
+    }
+    other => panic!("expected TypeError, got {other:?}"),
+  }
+
+  realm.teardown(&mut heap);
   Ok(())
 }
 
