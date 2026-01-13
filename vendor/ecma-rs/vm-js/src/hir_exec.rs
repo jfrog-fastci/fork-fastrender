@@ -3485,10 +3485,36 @@ impl<'vm> HirEvaluator<'vm> {
     for prop in &obj.properties {
       self.vm.tick()?;
       match prop {
-        hir_js::ObjectProperty::KeyValue { key, value, .. } => {
+        hir_js::ObjectProperty::KeyValue {
+          key,
+          value,
+          method,
+          ..
+        } => {
+          // Spec-ish name inference: for methods and anonymous function definitions used as property
+          // values, apply `SetFunctionName` with the property key.
+          //
+          // This is intentionally syntactic (based on the HIR expression kind), not dynamic (based
+          // on the runtime value), so e.g. `{ x: someFunc }` does not rename `someFunc` even if its
+          // current `.name` is empty.
+          let is_anonymous_function_def = {
+            let expr = self.get_expr(body, *value)?;
+            match &expr.kind {
+              hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
+              _ => false,
+            }
+          };
+
           let key = self.eval_object_key(&mut scope, body, key)?;
           root_property_key(&mut scope, key)?;
           let v = self.eval_expr(&mut scope, body, *value)?;
+          if *method || is_anonymous_function_def {
+            if let Value::Object(func_obj) = v {
+              if scope.heap().get_function(func_obj).is_ok() {
+                crate::function_properties::set_function_name(&mut scope, func_obj, key, None)?;
+              }
+            }
+          }
           let _ = scope.create_data_property(obj_val, key, v)?;
         }
         hir_js::ObjectProperty::Spread(expr_id) => {
