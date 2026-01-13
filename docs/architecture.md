@@ -45,3 +45,8 @@ attributes into real `src`/`srcset`/`poster` attributes). See
 ## Accessibility output
 
 `FastRender::accessibility_tree` / `accessibility_tree_json` expose a static accessibility tree derived from the styled DOM (`src/accessibility.rs`), covering HTML/ARIA roles, names, descriptions, and core state flags.
+
+The windowed `browser` app (feature `browser_ui`) also exposes **chrome** accessibility to OS assistive
+tech via **AccessKit** (egui + accesskit-winit). See
+[`docs/chrome_accessibility.md`](chrome_accessibility.md) for the AccessKit mapping/debugging notes
+and how this relates to the renderer-side `AccessibilityNode` export.
