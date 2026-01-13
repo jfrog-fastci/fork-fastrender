@@ -8,6 +8,18 @@ pub enum IpcError {
   #[error("I/O error during IPC: {0}")]
   Io(#[source] std::io::Error),
 
+  /// Caller-provided parameters were invalid (e.g. impossible viewport or buffer sizes).
+  ///
+  /// This is used by IPC helpers that are shared between the trusted browser and untrusted
+  /// renderer, where some errors are not strictly "protocol validation" failures but still need to
+  /// surface a descriptive message.
+  #[error("invalid IPC parameters: {message}")]
+  InvalidParameters { message: String },
+
+  /// The remote side violated an agreed-upon invariant (e.g. inconsistent shared memory mapping).
+  #[error("IPC protocol violation: {message}")]
+  ProtocolViolation { message: String },
+
   #[error("IPC protocol error: frame length was zero")]
   ZeroLength,
 
