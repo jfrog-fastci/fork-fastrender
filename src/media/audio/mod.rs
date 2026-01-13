@@ -37,6 +37,9 @@ pub mod convert;
 pub mod drift;
 pub mod mixer;
 pub mod queue;
+#[cfg(test)]
+pub mod preroll;
+pub mod test_signal;
 pub mod timed_queue;
 pub mod types;
 #[cfg(feature = "audio_wav")]

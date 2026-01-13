@@ -203,7 +203,7 @@ fn apply_signed_offset_frames(base_frame: u64, offset_ns: i64, sample_rate: u32)
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::media::audio::TimedAudioSegment;
+  use crate::media::audio::{test_signal, AudioStreamConfig, TimedAudioSegment};
   use std::sync::atomic::AtomicU64;
   use std::sync::Arc;
 
@@ -309,11 +309,11 @@ mod tests {
       sample_rate_hz: 10,
     };
     let output_info = AudioOutputInfo {
-      sample_rate_hz: 10,
-      channels: 1,
+      config: AudioStreamConfig::new(10, 1),
       callback_frames: None,
       // Latency of 200ms = 2 frames.
-      estimated_latency: Duration::from_millis(200),
+      estimated_output_latency: Duration::from_millis(200),
+      backend_name: "test",
     };
 
     let mut out = vec![0.0; 2];
@@ -348,5 +348,55 @@ mod tests {
     // frames_written=4 => next buffer should start at frame 4 (samples 5 and 6).
     mixer.mix_into_from_output_frames(&mut out, &clock, 2);
     assert_eq!(out, vec![5.0, 6.0]);
+  }
+
+  #[test]
+  fn mixer_sums_streams_with_gain() {
+    let sample_rate = 1_000;
+    let channels = 1;
+    let duration = Duration::from_millis(5);
+    let impulse = test_signal::impulse(duration, sample_rate, channels);
+    let frames = impulse.len() / channels as usize;
+
+    let mut mixer = AudioMixer::new(channels, sample_rate, Duration::from_secs(1));
+    mixer.add_stream(
+      1,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 0.5,
+      },
+    );
+    mixer.add_stream(
+      2,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 0.5,
+      },
+    );
+
+    for id in [1_u64, 2_u64] {
+      mixer
+        .stream_queue_mut(id)
+        .unwrap()
+        .push_segment(TimedAudioSegment {
+          start_pts: Duration::ZERO,
+          samples: impulse.clone(),
+          channels,
+          sample_rate,
+        })
+        .unwrap();
+    }
+
+    let mut out = vec![0.0; frames * channels as usize];
+    mixer.mix_into_frames(&mut out, 0, frames);
+
+    assert_eq!(out.len(), frames * channels as usize);
+    assert_eq!(out[0], 1.0, "0.5 + 0.5 gain should sum to full-scale");
+    assert!(out[1..].iter().all(|v| *v == 0.0));
+
+    // Once drained, subsequent mixes should produce silence.
+    let mut out2 = vec![1.0; frames * channels as usize];
+    mixer.mix_into_frames(&mut out2, frames as u64, frames);
+    assert!(out2.iter().all(|v| *v == 0.0));
   }
 }

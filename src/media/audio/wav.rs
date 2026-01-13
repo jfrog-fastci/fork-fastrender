@@ -366,3 +366,49 @@ fn f32_to_i16(sample: f32) -> i16 {
   let sample = sanitize_sample(sample);
   (sample * i16::MAX as f32) as i16
 }
+
+#[cfg(test)]
+mod tests {
+  use super::WavAudioBackend;
+  use crate::media::audio::{test_signal, AudioBackend, AudioStreamConfig};
+  use std::time::Duration;
+
+  #[test]
+  fn wav_backend_writes_expected_pcm_samples() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("out.wav");
+
+    let sample_rate = 8_000;
+    let channels = 2;
+    let duration = Duration::from_millis(10);
+    let samples = test_signal::impulse(duration, sample_rate, channels);
+
+    {
+      let backend = WavAudioBackend::new_with_config(
+        &path,
+        AudioStreamConfig::new(sample_rate, channels),
+      )
+      .expect("backend");
+      let sink = backend.create_sink();
+      let accepted = sink.push_interleaved_f32(&samples);
+      assert_eq!(accepted, samples.len());
+    }
+
+    let mut reader = hound::WavReader::open(&path).expect("reader");
+    let spec = reader.spec();
+    assert_eq!(spec.channels, channels);
+    assert_eq!(spec.sample_rate, sample_rate);
+    assert_eq!(spec.bits_per_sample, 16);
+    assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+
+    let out: Vec<i16> = reader
+      .samples::<i16>()
+      .map(|s| s.expect("sample"))
+      .collect();
+    assert_eq!(out.len(), samples.len());
+
+    assert_eq!(out[0], i16::MAX);
+    assert_eq!(out[1], i16::MAX);
+    assert!(out[2..].iter().all(|v| *v == 0));
+  }
+}
