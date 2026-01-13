@@ -16,7 +16,7 @@
 #![cfg(windows)]
 
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{c_void, OsStr};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -24,9 +24,6 @@ use std::path::PathBuf;
 use windows_sys::Win32::Foundation::{
   CloseHandle, GetLastError, SetHandleInformation, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER,
   HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-};
-use windows_sys::Win32::Security::Authentication::Identity::{
-  CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{
@@ -288,6 +285,97 @@ fn sid_to_string(sid: *mut std::ffi::c_void) -> Result<String, String> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// AppContainer dynamic loader
+// -----------------------------------------------------------------------------
+//
+// AppContainer entrypoints are not present on older Windows releases. If we link them directly, the
+// test binary may fail to start due to a missing import. Resolve them dynamically so the test can
+// fall back to restricted-token sandboxing.
+
+type HRESULT = i32;
+type HMODULE = isize;
+
+type CreateAppContainerProfileFn = unsafe extern "system" fn(
+  app_container_name: *const u16,
+  display_name: *const u16,
+  description: *const u16,
+  capabilities: *mut c_void,
+  capability_count: u32,
+  app_container_sid: *mut *mut c_void,
+) -> HRESULT;
+
+type DeriveAppContainerSidFromAppContainerNameFn =
+  unsafe extern "system" fn(app_container_name: *const u16, app_container_sid: *mut *mut c_void)
+    -> HRESULT;
+
+#[link(name = "kernel32")]
+extern "system" {
+  fn LoadLibraryW(name: *const u16) -> HMODULE;
+  fn GetProcAddress(module: HMODULE, proc_name: *const i8) -> *mut c_void;
+  fn FreeLibrary(module: HMODULE) -> i32;
+}
+
+#[derive(Debug)]
+struct UserenvModule(HMODULE);
+
+impl Drop for UserenvModule {
+  fn drop(&mut self) {
+    unsafe {
+      if self.0 != 0 {
+        let _ = FreeLibrary(self.0);
+      }
+    }
+  }
+}
+
+#[derive(Debug)]
+struct UserenvApis {
+  _module: UserenvModule,
+  create_app_container_profile: CreateAppContainerProfileFn,
+  derive_app_container_sid_from_app_container_name: DeriveAppContainerSidFromAppContainerNameFn,
+}
+
+unsafe fn get_userenv_proc<T>(module: HMODULE, symbol: &'static [u8], name: &'static str) -> Result<T, String> {
+  let proc = GetProcAddress(module, symbol.as_ptr() as *const i8);
+  if proc.is_null() {
+    let err = GetLastError();
+    return Err(format!(
+      "userenv.dll missing required AppContainer symbol {name} (GetProcAddress err={err})"
+    ));
+  }
+  Ok(std::mem::transmute_copy(&proc))
+}
+
+unsafe fn load_userenv_apis() -> Result<UserenvApis, String> {
+  let dll_w = wide_null_str("userenv.dll");
+  let module = LoadLibraryW(dll_w.as_ptr());
+  if module == 0 {
+    let err = GetLastError();
+    return Err(format!("LoadLibraryW(userenv.dll) failed (err={err})"));
+  }
+  let module_guard = UserenvModule(module);
+
+  let create_app_container_profile = get_userenv_proc::<CreateAppContainerProfileFn>(
+    module,
+    b"CreateAppContainerProfile\0",
+    "CreateAppContainerProfile",
+  )?;
+
+  let derive_app_container_sid_from_app_container_name =
+    get_userenv_proc::<DeriveAppContainerSidFromAppContainerNameFn>(
+      module,
+      b"DeriveAppContainerSidFromAppContainerName\0",
+      "DeriveAppContainerSidFromAppContainerName",
+    )?;
+
+  Ok(UserenvApis {
+    _module: module_guard,
+    create_app_container_profile,
+    derive_app_container_sid_from_app_container_name,
+  })
+}
+
 fn wide_null(s: &OsStr) -> Vec<u16> {
   let mut wide: Vec<u16> = s.encode_wide().collect();
   wide.push(0);
@@ -348,6 +436,8 @@ fn spawn_appcontainer_child(parent_pid: u32, test_filter: &str) -> Result<u32, S
   let current_dir = system32_dir();
 
   unsafe {
+    let userenv = load_userenv_apis()?;
+
     // Ensure the AppContainer profile exists (best-effort; older Windows builds may not support
     // AppContainer at all).
     let mut appcontainer_sid = std::ptr::null_mut();
@@ -355,7 +445,7 @@ fn spawn_appcontainer_child(parent_pid: u32, test_filter: &str) -> Result<u32, S
     let display_name_w = wide_null_str("FastRender sandbox test");
     let description_w = wide_null_str("FastRender sandbox test AppContainer profile");
 
-    let create_hr = CreateAppContainerProfile(
+    let create_hr = (userenv.create_app_container_profile)(
       appcontainer_name_w.as_ptr(),
       display_name_w.as_ptr(),
       description_w.as_ptr(),
@@ -373,7 +463,7 @@ fn spawn_appcontainer_child(parent_pid: u32, test_filter: &str) -> Result<u32, S
         );
       }
       appcontainer_sid = std::ptr::null_mut();
-      let derive_hr = DeriveAppContainerSidFromAppContainerName(
+      let derive_hr = (userenv.derive_app_container_sid_from_app_container_name)(
         appcontainer_name_w.as_ptr(),
         &mut appcontainer_sid,
       );
