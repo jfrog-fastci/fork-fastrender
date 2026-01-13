@@ -103,6 +103,7 @@ fn about_pages_render_and_have_titles() {
     ("about:help", "Help"),
     ("about:version", "Version"),
     ("about:gpu", "GPU"),
+    ("about:test-layout-stress", "Layout Stress Test"),
   ] {
     ui_tx
       .send(navigate_msg(
