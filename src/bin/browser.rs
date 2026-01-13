@@ -785,6 +785,71 @@ fn truncate_utf8_string_in_place(value: &mut String, max_bytes: usize) {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
+const NEW_WINDOW_ERROR_DETAIL_MAX_BYTES: usize = 200;
+
+/// Sanitize/truncate an internal error message for display in a chrome toast.
+///
+/// This is intentionally small + single-line:
+/// - Collapses whitespace/control chars into single spaces.
+/// - Clamps to [`NEW_WINDOW_ERROR_DETAIL_MAX_BYTES`] bytes without splitting UTF-8 codepoints.
+/// - Adds an ellipsis when truncation occurs (and there is room).
+#[cfg(any(test, feature = "browser_ui"))]
+fn format_new_window_error_detail(raw: &str) -> String {
+  if NEW_WINDOW_ERROR_DETAIL_MAX_BYTES == 0 {
+    return String::new();
+  }
+
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return String::new();
+  }
+
+  // Avoid allocating based on `raw.len()` (could be very large). Pre-allocate up to the limit.
+  let mut out = String::with_capacity(NEW_WINDOW_ERROR_DETAIL_MAX_BYTES.min(128));
+  let mut pending_space = false;
+  let mut truncated = false;
+
+  for ch in raw.chars() {
+    if ch.is_whitespace() || ch.is_control() {
+      pending_space = true;
+      continue;
+    }
+
+    if pending_space && !out.is_empty() {
+      if out.len() + 1 > NEW_WINDOW_ERROR_DETAIL_MAX_BYTES {
+        truncated = true;
+        break;
+      }
+      out.push(' ');
+    }
+    pending_space = false;
+
+    let ch_len = ch.len_utf8();
+    if out.len() + ch_len > NEW_WINDOW_ERROR_DETAIL_MAX_BYTES {
+      truncated = true;
+      break;
+    }
+    out.push(ch);
+  }
+
+  if truncated && !out.is_empty() {
+    const ELLIPSIS: char = '…';
+    let ellipsis_len = ELLIPSIS.len_utf8();
+    if out.len() + ellipsis_len > NEW_WINDOW_ERROR_DETAIL_MAX_BYTES {
+      truncate_utf8_string_in_place(
+        &mut out,
+        NEW_WINDOW_ERROR_DETAIL_MAX_BYTES.saturating_sub(ellipsis_len),
+      );
+    }
+    if !out.is_empty() {
+      out.push(ELLIPSIS);
+    }
+  }
+
+  out
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 fn sanitize_anchor_css_rect(rect: fastrender::geometry::Rect) -> fastrender::geometry::Rect {
   const MAX_ABS_POS: f32 = 1_000_000.0;
   const MAX_SIZE: f32 = 1_000_000.0;
@@ -3421,9 +3486,9 @@ mod tests {
 
   #[test]
   fn worker_wake_notify_coalesces() {
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
 
     let pending = Arc::new(AtomicBool::new(false));
     let coalescer = fastrender::ui::WorkerWakeCoalescer::new(Arc::clone(&pending));
@@ -3441,9 +3506,9 @@ mod tests {
 
   #[test]
   fn worker_wake_begin_drain_rearms_notify() {
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
 
     let pending = Arc::new(AtomicBool::new(false));
     let coalescer = fastrender::ui::WorkerWakeCoalescer::new(Arc::clone(&pending));
@@ -3464,8 +3529,8 @@ mod tests {
 
   #[test]
   fn worker_wake_coalesces_across_threads() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
 
     let pending = Arc::new(AtomicBool::new(false));
@@ -3505,6 +3570,29 @@ mod tests {
     b.join().expect("thread B should join");
 
     assert_eq!(callback_calls.load(Ordering::SeqCst), 2);
+  }
+
+  #[test]
+  fn new_window_error_detail_sanitizes_whitespace_and_controls() {
+    assert_eq!(
+      format_new_window_error_detail("  failed:\n\tbad\u{0000} thing  "),
+      "failed: bad thing"
+    );
+    assert_eq!(format_new_window_error_detail(" \t\r\n "), "");
+  }
+
+  #[test]
+  fn new_window_error_detail_truncates_and_appends_ellipsis() {
+    let long = "a".repeat(NEW_WINDOW_ERROR_DETAIL_MAX_BYTES + 32);
+    let detail = format_new_window_error_detail(&long);
+    assert!(
+      detail.len() <= NEW_WINDOW_ERROR_DETAIL_MAX_BYTES,
+      "expected detail to be clamped to max bytes"
+    );
+    assert!(
+      detail.ends_with('…'),
+      "expected clamped detail to end with ellipsis, got {detail:?}"
+    );
   }
 }
 
@@ -5611,6 +5699,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(window) => window,
           Err(err) => {
+            if let Some(win) = windows.get_mut(&from_id) {
+              win
+                .app
+                .toast_new_window_error(format_args!("create window: {err}"));
+            }
             eprintln!("failed to create new window: {err}");
             return;
           }
@@ -5623,6 +5716,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name) {
             Ok(v) => v,
             Err(err) => {
+              if let Some(win) = windows.get_mut(&from_id) {
+                win
+                  .app
+                  .toast_new_window_error(format_args!("spawn worker: {err}"));
+              }
               eprintln!("failed to spawn browser worker for new window: {err}");
               return;
             }
@@ -5640,7 +5738,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: download_dir.clone(),
         }) {
+          if let Some(win) = windows.get_mut(&from_id) {
+            win.app.toast_new_window_error(format_args!(
+              "send download directory: {err}"
+            ));
+          }
           eprintln!("failed to send download dir to new window worker: {err}");
+          return;
         }
 
         let mut app = match App::new(
@@ -5665,6 +5769,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(app) => app,
           Err(err) => {
+            if let Some(win) = windows.get_mut(&from_id) {
+              win
+                .app
+                .toast_new_window_error(format_args!("init window UI: {err}"));
+            }
             eprintln!("failed to create new window app: {err}");
             return;
           }
@@ -5711,6 +5820,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(v) => v,
           Err(err) => {
+            if let Some(win) = windows.get_mut(&from_id) {
+              win.app.toast_new_window_error(format_args!(
+                "spawn worker bridge thread: {err}"
+              ));
+            }
             eprintln!("failed to spawn new window bridge thread: {err}");
             return;
           }
@@ -5768,6 +5882,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(window) => window,
           Err(err) => {
+            if let Some(win) = windows.get_mut(&from_id) {
+              win
+                .app
+                .toast_new_window_error(format_args!("create window: {err}"));
+            }
             eprintln!("failed to create new window: {err}");
             return;
           }
@@ -5780,6 +5899,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name) {
             Ok(v) => v,
             Err(err) => {
+              if let Some(win) = windows.get_mut(&from_id) {
+                win
+                  .app
+                  .toast_new_window_error(format_args!("spawn worker: {err}"));
+              }
               eprintln!("failed to spawn browser worker for new window: {err}");
               return;
             }
@@ -5797,7 +5921,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: download_dir.clone(),
         }) {
+          if let Some(win) = windows.get_mut(&from_id) {
+            win.app.toast_new_window_error(format_args!(
+              "send download directory: {err}"
+            ));
+          }
           eprintln!("failed to send download dir to new window worker: {err}");
+          return;
         }
 
         let mut app = match App::new(
@@ -5822,6 +5952,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(app) => app,
           Err(err) => {
+            if let Some(win) = windows.get_mut(&from_id) {
+              win
+                .app
+                .toast_new_window_error(format_args!("init window UI: {err}"));
+            }
             eprintln!("failed to create new window app: {err}");
             return;
           }
@@ -5863,6 +5998,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(v) => v,
           Err(err) => {
+            if let Some(win) = windows.get_mut(&from_id) {
+              win.app.toast_new_window_error(format_args!(
+                "spawn worker bridge thread: {err}"
+              ));
+            }
             eprintln!("failed to spawn new window bridge thread: {err}");
             return;
           }
@@ -13271,6 +13411,19 @@ impl App {
     let tab_id = self.browser_state.active_tab_id()?;
     let state = self.tab_notifications.get(&tab_id)?;
     state.warning_toast.next_deadline()
+  }
+
+  fn toast_new_window_error(&mut self, err: impl std::fmt::Display) {
+    use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
+    let now = std::time::Instant::now();
+    let detail = format_new_window_error_detail(&err.to_string());
+    let text = if detail.is_empty() {
+      "Failed to open new window".to_string()
+    } else {
+      format!("Failed to open new window\n{detail}")
+    };
+    self.chrome_toast.show(ToastKind::Error, text, now, TOAST_DEFAULT_TTL);
+    self.window.request_redraw();
   }
 
   fn show_chrome_toast(&mut self, text: &str) {
