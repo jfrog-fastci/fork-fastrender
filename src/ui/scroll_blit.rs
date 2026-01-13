@@ -124,37 +124,14 @@ fn fragment_tree_has_scroll_driven_animations(tree: &FragmentTree) -> bool {
 
 fn effective_scroll_state_for_paint_like_scroll_blit(
   mut tree: FragmentTree,
-  mut scroll_state: ScrollState,
+  scroll_state: ScrollState,
   scrollport_viewport: Size,
 ) -> ScrollState {
-  // Mirror the subset of `api::paint_fragment_tree_with_state` that can adjust the effective scroll
-  // offset before painting:
-  // - scroll snap
-  // - sanitization + clamping to scroll bounds
-  let snap_result = crate::scroll::apply_scroll_snap(&mut tree, &scroll_state);
-  scroll_state = snap_result.state;
-
-  scroll_state.viewport = Point::new(
-    if scroll_state.viewport.x.is_finite() {
-      scroll_state.viewport.x
-    } else {
-      0.0
-    },
-    if scroll_state.viewport.y.is_finite() {
-      scroll_state.viewport.y
-    } else {
-      0.0
-    },
-  );
-
-  if let Some(bounds) = crate::scroll::build_scroll_chain(&tree.root, scrollport_viewport, &[])
-    .last()
-    .map(|state| state.bounds)
-  {
-    scroll_state.viewport = bounds.clamp(scroll_state.viewport);
-  }
-
-  scroll_state
+  crate::scroll::resolve_effective_scroll_state_for_paint_mut(
+    &mut tree,
+    scroll_state,
+    scrollport_viewport,
+  )
 }
 
 /// Computes a scroll-blit plan, or returns a structured reason why the fast-path is unavailable.
