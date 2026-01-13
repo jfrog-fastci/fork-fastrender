@@ -47,6 +47,142 @@ fn extract_fast_array_elems3(
 }
 
 #[test]
+fn array_buffer_ctor_roots_options_across_gc_in_toindex() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const length = { valueOf() { ({});
+        return 8;
+      }};
+      const options = { get maxByteLength() { return 16; } };
+      return [length, options, undefined];
+    })()"#,
+  )?;
+
+  let [length_val, options_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_buffer();
+  let new_target = Value::Object(callee);
+  let args = [length_val, options_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::array_buffer_constructor_construct(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    &args,
+    new_target,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected constructor to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(buf_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "ArrayBuffer constructor returned non-object",
+    ));
+  };
+
+  let byte_length = builtins::array_buffer_prototype_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(buf_obj),
+    &[],
+  )?;
+  assert_eq!(byte_length, Value::Number(8.0));
+
+  let max_byte_length = builtins::array_buffer_prototype_max_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(buf_obj),
+    &[],
+  )?;
+  assert_eq!(max_byte_length, Value::Number(16.0));
+
+  Ok(())
+}
+
+#[test]
+fn array_buffer_slice_roots_this_across_gc_in_tonumber() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const buf = new ArrayBuffer(8);
+      const begin = { valueOf() { ({});
+        return 0;
+      }};
+      return [buf, begin, undefined];
+    })()"#,
+  )?;
+
+  let [buf_val, begin_val, end_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_buffer();
+  let args = [begin_val, end_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::array_buffer_prototype_slice(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    buf_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected slice to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(slice_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "ArrayBuffer.prototype.slice returned non-object",
+    ));
+  };
+
+  let byte_length = builtins::array_buffer_prototype_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(slice_obj),
+    &[],
+  )?;
+  assert_eq!(byte_length, Value::Number(8.0));
+
+  Ok(())
+}
+
+#[test]
 fn typed_array_ctor_roots_array_buffer_across_gc_in_toindex() -> Result<(), VmError> {
   let mut rt = new_runtime_with_tiny_gc()?;
 
@@ -253,4 +389,3 @@ fn data_view_ctor_roots_byte_length_across_gc_in_toindex() -> Result<(), VmError
 
   Ok(())
 }
-
