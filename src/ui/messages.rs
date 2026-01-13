@@ -275,6 +275,16 @@ pub enum UiToWorker {
   SetMediaPreferences {
     prefs: BrowserMediaPreferences,
   },
+  /// Configure whether the worker should emit [`WorkerToUi::DebugLog`] messages.
+  ///
+  /// When disabled, the worker should suppress debug-log emission entirely so production runs that
+  /// do not display the debug log UI do not pay for high-volume debug-log message delivery.
+  ///
+  /// This does **not** affect user-facing error reporting: critical problems should continue to be
+  /// surfaced via [`WorkerToUi::Warning`], navigation failure, etc.
+  SetDebugLogEnabled {
+    enabled: bool,
+  },
   CreateTab {
     tab_id: TabId,
     /// Optional URL to navigate immediately after creating the tab.

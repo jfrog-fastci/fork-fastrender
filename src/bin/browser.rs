@@ -3010,6 +3010,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let renderer_backend =
       fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name)?;
 
+    // Enable/disable debug-log message traffic up-front so production browsing sessions that do not
+    // show the debug log UI do not pay for high-volume `DebugLog` delivery.
+    ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDebugLogEnabled {
+      enabled: debug_log_ui_enabled(),
+    })?;
+
     // Set the download directory once during startup, before any `CreateTab { initial_url: Some(..) }`
     // messages trigger a navigation.
     renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
@@ -3466,6 +3472,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
           };
 
+        if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDebugLogEnabled {
+          enabled: debug_log_ui_enabled(),
+        }) {
+          eprintln!("failed to send debug log setting to new window worker: {err}");
+        }
+
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: download_dir.clone(),
         }) {
@@ -3604,6 +3616,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               return;
             }
           };
+
+        if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDebugLogEnabled {
+          enabled: debug_log_ui_enabled(),
+        }) {
+          eprintln!("failed to send debug log setting to new window worker: {err}");
+        }
 
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: download_dir.clone(),
@@ -6925,6 +6943,7 @@ impl App {
 
     let tab_id = match &msg {
       UiToWorker::SetMediaPreferences { .. } => None,
+      UiToWorker::SetDebugLogEnabled { .. } => None,
       UiToWorker::SetDownloadDirectory { .. } => None,
       UiToWorker::CreateTab { tab_id, .. }
       | UiToWorker::NewTab { tab_id, .. }
@@ -6985,13 +7004,13 @@ impl App {
           | UiToWorker::StopLoading { .. } => cancel.bump_nav(),
           // Repaint-driving events should cancel in-flight paints so we don't waste time rendering
           // intermediate frames (e.g. rapid scroll/resize/typing).
-           UiToWorker::Tick { .. }
-           | UiToWorker::ViewportChanged { .. }
-           | UiToWorker::Scroll { .. }
-           | UiToWorker::ScrollTo { .. }
-           | UiToWorker::PointerMove { .. }
-           | UiToWorker::PointerDown { .. }
-           | UiToWorker::PointerUp { .. }
+          UiToWorker::Tick { .. }
+          | UiToWorker::ViewportChanged { .. }
+          | UiToWorker::Scroll { .. }
+          | UiToWorker::ScrollTo { .. }
+          | UiToWorker::PointerMove { .. }
+          | UiToWorker::PointerDown { .. }
+          | UiToWorker::PointerUp { .. }
           | UiToWorker::DropFiles { .. }
           | UiToWorker::SelectDropdownChoose { .. }
           | UiToWorker::SelectDropdownCancel { .. }
@@ -7014,13 +7033,14 @@ impl App {
           | UiToWorker::FindPrev { .. }
           | UiToWorker::FindStop { .. }
           | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
-           // Tab-management messages should not force cancellation.
-           UiToWorker::SetMediaPreferences { .. }
-           | UiToWorker::ContextMenuRequest { .. }
-           | UiToWorker::CreateTab { .. }
-           | UiToWorker::NewTab { .. }
-           | UiToWorker::CloseTab { .. }
-           | UiToWorker::SetActiveTab { .. }
+          // Tab-management messages should not force cancellation.
+          UiToWorker::SetMediaPreferences { .. }
+          | UiToWorker::SetDebugLogEnabled { .. }
+          | UiToWorker::ContextMenuRequest { .. }
+          | UiToWorker::CreateTab { .. }
+          | UiToWorker::NewTab { .. }
+          | UiToWorker::CloseTab { .. }
+          | UiToWorker::SetActiveTab { .. }
           | UiToWorker::SetDownloadDirectory { .. }
           | UiToWorker::Copy { .. }
           | UiToWorker::SelectAll { .. }
@@ -14101,19 +14121,25 @@ impl App {
       if !menu_commands.is_empty() {
         let mut chrome_actions = Vec::new();
         for cmd in menu_commands {
-          match cmd {
-            fastrender::ui::MenuCommand::ToggleDebugLogPanel => {
-              if !self.debug_log_ui_enabled {
-                self.debug_log_ui_enabled = true;
-                self.debug_log_ui_open = true;
-              } else {
-                self.debug_log_ui_open = !self.debug_log_ui_open;
+            match cmd {
+              fastrender::ui::MenuCommand::ToggleDebugLogPanel => {
+                let prev_enabled = self.debug_log_ui_enabled;
+                if !self.debug_log_ui_enabled {
+                  self.debug_log_ui_enabled = true;
+                  self.debug_log_ui_open = true;
+                } else {
+                  self.debug_log_ui_open = !self.debug_log_ui_open;
+                }
+                if self.debug_log_ui_enabled != prev_enabled {
+                  self.send_worker_msg(fastrender::ui::UiToWorker::SetDebugLogEnabled {
+                    enabled: self.debug_log_ui_enabled,
+                  });
+                }
               }
-            }
-            fastrender::ui::MenuCommand::ToggleHistoryPanel => {
-              self.history_panel_open = !self.history_panel_open;
-              if self.history_panel_open {
-                self.bookmarks_panel_open = false;
+              fastrender::ui::MenuCommand::ToggleHistoryPanel => {
+                self.history_panel_open = !self.history_panel_open;
+                if self.history_panel_open {
+                  self.bookmarks_panel_open = false;
                 self.downloads_panel_open = false;
                 self.downloads_panel_request_focus = false;
                 self.bookmarks_manager.clear_transient();

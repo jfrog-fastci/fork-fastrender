@@ -1197,6 +1197,7 @@ struct BrowserRuntime {
   factory: FastRenderFactory,
   base_runtime_toggles: Arc<RuntimeToggles>,
   runtime_toggles: Arc<RuntimeToggles>,
+  debug_log_enabled: bool,
   media_prefs: BrowserMediaPreferences,
   limits: BrowserLimits,
   download_dir: PathBuf,
@@ -1297,6 +1298,7 @@ impl BrowserRuntime {
       factory,
       runtime_toggles: Arc::clone(&base_runtime_toggles),
       base_runtime_toggles,
+      debug_log_enabled: false,
       media_prefs: BrowserMediaPreferences::default(),
       limits: BrowserLimits::from_env(),
       download_dir: crate::ui::downloads::default_download_dir(),
@@ -1391,6 +1393,11 @@ impl BrowserRuntime {
       }
 
       for msg in output.msgs {
+        // `DebugLog` traffic can be very high volume. When the UI has not opted in, suppress it
+        // entirely so we don't waste wakeups/channel traffic on messages that will never be shown.
+        if !self.debug_log_enabled && matches!(&msg, WorkerToUi::DebugLog { .. }) {
+          continue;
+        }
         let _ = self.ui_tx.send(msg);
       }
     }
@@ -1561,6 +1568,9 @@ impl BrowserRuntime {
             tab.force_repaint = true;
           }
         }
+      }
+      UiToWorker::SetDebugLogEnabled { enabled } => {
+        self.debug_log_enabled = enabled;
       }
       UiToWorker::CreateTab {
         tab_id,
@@ -2197,11 +2207,13 @@ impl BrowserRuntime {
     if let Err(err) = std::fs::create_dir_all(&path) {
       // Best-effort: keep the worker running even if the directory is invalid. Attach the message
       // to an existing tab if possible so front-ends can surface it.
-      if let Some(tab_id) = self.active_tab.or_else(|| self.tabs.keys().next().copied()) {
-        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-          tab_id,
-          line: format!("failed to create download dir {}: {err}", path.display()),
-        });
+      if self.debug_log_enabled {
+        if let Some(tab_id) = self.active_tab.or_else(|| self.tabs.keys().next().copied()) {
+          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("failed to create download dir {}: {err}", path.display()),
+          });
+        }
       }
       return;
     }
@@ -2626,10 +2638,12 @@ impl BrowserRuntime {
         };
 
         let Some(nav_url) = nav_url else {
-          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-            tab_id,
-            line: format!("ignoring BackForward navigation to unknown URL: {requested_url}"),
-          });
+          if self.debug_log_enabled {
+            let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("ignoring BackForward navigation to unknown URL: {requested_url}"),
+            });
+          }
           return;
         };
 
@@ -2779,10 +2793,12 @@ impl BrowserRuntime {
                 Ok(Some(offset)) => offset,
                 Ok(None) => Point::ZERO,
                 Err(err) => {
-                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                    tab_id,
-                    line: format!("fragment navigation scroll failed: {err}"),
-                  });
+                  if self.debug_log_enabled {
+                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                      tab_id,
+                      line: format!("fragment navigation scroll failed: {err}"),
+                    });
+                  }
                   tab.scroll_state.viewport
                 }
               }
@@ -3777,24 +3793,26 @@ impl BrowserRuntime {
              meta_key: modifiers.meta(),
              related_target: None,
            };
-          if let Err(err) = js_tab.dispatch_mouse_event(
-            node_id,
-            "mousedown",
-            web_events::EventInit {
-              bubbles: true,
-              cancelable: true,
-              composed: false,
-            },
-            mouse,
-          ) {
-            let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-              tab_id,
-              line: format!("js mousedown event dispatch failed: {err}"),
-            });
-          }
-        }
-      }
-    }
+           if let Err(err) = js_tab.dispatch_mouse_event(
+             node_id,
+             "mousedown",
+             web_events::EventInit {
+               bubbles: true,
+               cancelable: true,
+               composed: false,
+             },
+             mouse,
+           ) {
+             if self.debug_log_enabled {
+               let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                 tab_id,
+                 line: format!("js mousedown event dispatch failed: {err}"),
+               });
+             }
+           }
+         }
+       }
+     }
     if changed {
       // Preserve existing repaint behaviour for interaction-engine state changes.
       tab.cancel.bump_paint();
@@ -3884,10 +3902,12 @@ impl BrowserRuntime {
               },
               mouse,
             ) {
-              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                tab_id,
-                line: format!("js mouseup event dispatch failed: {err}"),
-              });
+              if self.debug_log_enabled {
+                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                  tab_id,
+                  line: format!("js mouseup event dispatch failed: {err}"),
+                });
+              }
             }
           }
         }
@@ -4120,10 +4140,12 @@ impl BrowserRuntime {
             },
             mouse,
           ) {
-            let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-              tab_id,
-              line: format!("js mouseup event dispatch failed: {err}"),
-            });
+            if self.debug_log_enabled {
+              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                tab_id,
+                line: format!("js mouseup event dispatch failed: {err}"),
+              });
+            }
           }
         }
       }
@@ -4173,10 +4195,12 @@ impl BrowserRuntime {
           ) {
             Ok(allowed) => default_allowed = allowed,
             Err(err) => {
-              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                tab_id,
-                line: format!("js {click_type} event dispatch failed: {err}"),
-              });
+              if self.debug_log_enabled {
+                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                  tab_id,
+                  line: format!("js {click_type} event dispatch failed: {err}"),
+                });
+              }
             }
           }
         }
@@ -4220,10 +4244,12 @@ impl BrowserRuntime {
               },
               mouse,
             ) {
-              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                tab_id,
-                line: format!("js dblclick event dispatch failed: {err}"),
-              });
+              if self.debug_log_enabled {
+                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                  tab_id,
+                  line: format!("js dblclick event dispatch failed: {err}"),
+                });
+              }
             }
           }
         }
@@ -4253,10 +4279,12 @@ impl BrowserRuntime {
               match js_tab.dispatch_submit_event(form_node) {
                 Ok(allowed) => default_allowed = allowed,
                 Err(err) => {
-                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                    tab_id,
-                    line: format!("js submit event dispatch failed: {err}"),
-                  });
+                  if self.debug_log_enabled {
+                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                      tab_id,
+                      line: format!("js submit event dispatch failed: {err}"),
+                    });
+                  }
                 }
               }
             }
@@ -4720,10 +4748,12 @@ impl BrowserRuntime {
               }
             }
             Err(err) => {
-              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                tab_id,
-                line: format!("js contextmenu event dispatch failed: {err}"),
-              });
+              if self.debug_log_enabled {
+                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                  tab_id,
+                  line: format!("js contextmenu event dispatch failed: {err}"),
+                });
+              }
             }
           }
         }
@@ -5295,10 +5325,12 @@ impl BrowserRuntime {
             match js_tab.dispatch_click_event(node_id) {
               Ok(allowed) => default_allowed = allowed,
               Err(err) => {
-                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                  tab_id,
-                  line: format!("js click event dispatch failed: {err}"),
-                });
+                if self.debug_log_enabled {
+                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                    tab_id,
+                    line: format!("js click event dispatch failed: {err}"),
+                  });
+                }
               }
             }
           }
@@ -5346,10 +5378,12 @@ impl BrowserRuntime {
                 match js_tab.dispatch_submit_event(form_node) {
                   Ok(allowed) => default_allowed = allowed,
                   Err(err) => {
-                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                      tab_id,
-                      line: format!("js submit event dispatch failed: {err}"),
-                    });
+                    if self.debug_log_enabled {
+                      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                        tab_id,
+                        line: format!("js submit event dispatch failed: {err}"),
+                      });
+                    }
                   }
                 }
               }
@@ -5760,6 +5794,7 @@ impl BrowserRuntime {
     committed_url: &str,
     viewport_css: (u32, u32),
     dpr: f32,
+    debug_log_enabled: bool,
     msgs: &mut Vec<WorkerToUi>,
   ) {
     // `BrowserTab` navigations are powered by the resource fetcher (http/file/data); it does not
@@ -5799,10 +5834,12 @@ impl BrowserRuntime {
         tab.js_dom_mapping_miss_logged = false;
         tab.js_dom_dirty = false;
         tab.js_dom_mutation_generation = 0;
-        msgs.push(WorkerToUi::DebugLog {
-          tab_id,
-          line: format!("js tab navigation failed: {err}"),
-        });
+        if debug_log_enabled {
+          msgs.push(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("js tab navigation failed: {err}"),
+          });
+        }
       } else {
         tab.js_dom_dirty = false;
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
@@ -5823,19 +5860,23 @@ impl BrowserRuntime {
     ) {
       Ok(tab) => tab,
       Err(err) => {
-        msgs.push(WorkerToUi::DebugLog {
-          tab_id,
-          line: format!("failed to create JS tab: {err}"),
-        });
+        if debug_log_enabled {
+          msgs.push(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("failed to create JS tab: {err}"),
+          });
+        }
         return;
       }
     };
 
     if let Err(err) = js_tab.navigate_to_url(committed_url, options) {
-      msgs.push(WorkerToUi::DebugLog {
-        tab_id,
-        line: format!("js tab navigation failed: {err}"),
-      });
+      if debug_log_enabled {
+        msgs.push(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("js tab navigation failed: {err}"),
+        });
+      }
       return;
     }
     let generation = js_tab.dom().mutation_generation();
@@ -6220,6 +6261,7 @@ impl BrowserRuntime {
             &committed_url,
             viewport_css,
             dpr,
+            self.debug_log_enabled,
             &mut msgs,
           );
 
@@ -6351,6 +6393,7 @@ impl BrowserRuntime {
       &committed_url,
       viewport_css,
       dpr,
+      self.debug_log_enabled,
       &mut msgs,
     );
 
@@ -6757,10 +6800,12 @@ impl BrowserRuntime {
         if cancel_callback() {
           should_retry = true;
         } else {
-          msgs.push(WorkerToUi::DebugLog {
-            tab_id,
-            line: format!("paint error: {err}"),
-          });
+          if self.debug_log_enabled {
+            msgs.push(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("paint error: {err}"),
+            });
+          }
         }
         None
       }
