@@ -69,7 +69,7 @@ FastRender currently exposes **two** “tab-like” host containers:
 
 - `fastrender::api::BrowserDocumentJs` (implementation: `src/api/browser_document_js.rs`)
   - couples `BrowserDocumentDom2` with the `vm-js`-backed `VmJsRuntime` used for WebIDL scaffolding,
-  - exposes an `EventLoop<BrowserDocumentJs>` (tasks + microtasks + timers + `requestAnimationFrame`) and a `run_until_stable(...)` driver,
+  - exposes an `EventLoop<BrowserDocumentJs>` (tasks + microtasks + timers + `requestAnimationFrame` + `requestIdleCallback`) and a `run_until_stable(...)` driver,
   - does **not** (by itself) execute the HTML `<script>` processing model yet.
 
 `BrowserTab` is the intended integration point for “HTML + DOM + JS + rendering”. The executor trait
