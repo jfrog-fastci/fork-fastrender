@@ -524,8 +524,8 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Ctrl/Cmd+Shift+A | Search tabs / quick switcher |
 | Ctrl/Cmd+W | Close active tab (no-op if only one tab) |
 | Ctrl/Cmd+F4 | Close active tab (no-op if only one tab) |
-| Ctrl/Cmd+Tab | Next tab |
-| Ctrl/Cmd+Shift+Tab | Previous tab |
+| Ctrl+Tab | Next tab (Cmd+Tab is reserved by the macOS app switcher) |
+| Ctrl+Shift+Tab | Previous tab (Cmd+Shift+Tab is reserved by the macOS app switcher) |
 | Ctrl/Cmd+1..9 (9 = last tab) | Activate tab by number |
 | Ctrl/Cmd+PageUp | Previous tab |
 | Ctrl/Cmd+PageDown | Next tab |
