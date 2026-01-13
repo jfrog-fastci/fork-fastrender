@@ -9413,6 +9413,9 @@ mod tests {
     )?;
     // Drain lifecycle tasks scheduled during construction so tests start from a fully idle tab.
     tab.event_loop.clear_all_pending_work();
+    // Clear the initial render dirtiness so `next_tick_due_in` reflects scheduler state rather than
+    // the first-paint requirement.
+    let _ = tab.render_if_needed()?;
     Ok(tab)
   }
 
@@ -9438,7 +9441,7 @@ mod tests {
   }
 
   #[test]
-  fn next_tick_due_in_returns_animation_frame_interval_for_pending_raf() -> Result<()> {
+  fn next_tick_due_in_returns_raf_cadence_for_pending_raf() -> Result<()> {
     use crate::js::clock::VirtualClock;
 
     let clock = Arc::new(VirtualClock::new());
@@ -9451,7 +9454,7 @@ mod tests {
 
     assert_eq!(
       tab.next_tick_due_in(),
-      Some(tab.js_execution_options().animation_frame_interval)
+      Some(RAF_TICK_CADENCE)
     );
     Ok(())
   }
