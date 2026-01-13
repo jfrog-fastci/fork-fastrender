@@ -16,6 +16,8 @@
 //!
 //! The log message usually includes the denied operation and path.
 
+pub use super::seatbelt::escape_seatbelt_string_literal;
+
 use std::ffi::{CStr, CString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -264,15 +266,10 @@ const RENDERER_SYSTEM_FONTS_PROFILE: &str = r#"(version 1)
 "#;
 
 fn sbpl_quote(value: &str) -> String {
-  let mut out = String::with_capacity(value.len() + 2);
+  let escaped = escape_seatbelt_string_literal(value);
+  let mut out = String::with_capacity(escaped.len() + 2);
   out.push('"');
-  for ch in value.chars() {
-    match ch {
-      '\\' => out.push_str("\\\\"),
-      '"' => out.push_str("\\\""),
-      _ => out.push(ch),
-    }
-  }
+  out.push_str(&escaped);
   out.push('"');
   out
 }

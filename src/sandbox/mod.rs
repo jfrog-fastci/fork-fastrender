@@ -116,6 +116,11 @@ pub mod spawn;
 
 pub use fd_sanitizer::{close_fds_except, set_cloexec_on_fds_except};
 use std::env::VarError;
+/// Seatbelt (macOS) profile string utilities.
+///
+/// These helpers are pure string logic and are unit-tested on all platforms.
+pub mod seatbelt;
+
 #[cfg(target_os = "linux")]
 mod linux_prelude;
 

@@ -18,6 +18,7 @@ fn main() {
 mod macos {
   use clap::{Parser, ValueEnum};
   use fastrender::ipc::shmem::generate_shmem_id;
+  use fastrender::sandbox::macos::escape_seatbelt_string_literal;
   use std::collections::BTreeSet;
   use std::ffi::{CStr, CString};
   use std::fs;
@@ -209,8 +210,8 @@ mod macos {
   }
 
   fn build_profile(mode: SandboxMode, temp_dir: &PathBuf) -> (String, u64) {
-    // NOTE: Seatbelt string escaping is C-like; we keep it minimal and only escape quotes and
-    // backslashes in the dynamically injected temp-dir path.
+    // NOTE: Seatbelt string escaping is C-like; always escape dynamic paths before embedding them
+    // into profile source strings.
     let temp_dir_variants = seatbelt_path_variants(temp_dir);
     match mode {
       SandboxMode::Strict => (
@@ -248,10 +249,10 @@ mod macos {
 
   fn seatbelt_path_variants(path: &PathBuf) -> Vec<String> {
     let mut variants = BTreeSet::new();
-    variants.insert(escape_seatbelt_string(&path.to_string_lossy()));
+    variants.insert(escape_seatbelt_string_literal(&path.to_string_lossy()));
 
     if let Ok(canonical) = path.canonicalize() {
-      variants.insert(escape_seatbelt_string(&canonical.to_string_lossy()));
+      variants.insert(escape_seatbelt_string_literal(&canonical.to_string_lossy()));
     }
 
     // macOS path aliases: `/etc`, `/tmp`, and `/var` typically resolve into `/private/*`.
@@ -270,10 +271,6 @@ mod macos {
     }
 
     variants.into_iter().collect()
-  }
-
-  fn escape_seatbelt_string(raw: &str) -> String {
-    raw.replace('\\', r"\\").replace('"', r#"\""#)
   }
 
   fn probe_read_passwd() -> ActionResult {
