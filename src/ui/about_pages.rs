@@ -3072,13 +3072,22 @@ mod tests {
     assert_eq!(snapshot.open_tabs.len(), 1);
     assert_eq!(snapshot.open_tabs[0].url, "https://tab.example/");
     assert_eq!(snapshot.chrome_accent, accent);
-    assert_eq!(snapshot.session_path.as_deref(), Some("/tmp/session<test>.json"));
+    assert_eq!(
+      snapshot.session_path.as_deref(),
+      Some("/tmp/session<test>.json")
+    );
     assert_eq!(
       snapshot.bookmarks_path.as_deref(),
       Some("/tmp/bookmarks<test>.json")
     );
-    assert_eq!(snapshot.history_path.as_deref(), Some("/tmp/history<test>.json"));
-    assert_eq!(snapshot.download_dir.as_deref(), Some("/tmp/downloads<test>"));
+    assert_eq!(
+      snapshot.history_path.as_deref(),
+      Some("/tmp/history<test>.json")
+    );
+    assert_eq!(
+      snapshot.download_dir.as_deref(),
+      Some("/tmp/downloads<test>")
+    );
 
     set_about_page_snapshot(before);
   }
@@ -3133,6 +3142,10 @@ mod tests {
       ABOUT_ERROR,
       ABOUT_HISTORY,
       ABOUT_BOOKMARKS,
+      ABOUT_TEST_SCROLL,
+      ABOUT_TEST_HEAVY,
+      ABOUT_TEST_LAYOUT_STRESS,
+      ABOUT_TEST_FORM,
     ] {
       assert!(
         suggestions.contains(&url),
