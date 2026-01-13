@@ -14304,6 +14304,55 @@ mod tests {
   }
 
   #[test]
+  fn overflow_auto_child_enters_convergence_loop_when_classic_scrollbars_enabled() {
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_CLASSIC_SCROLLBARS".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        reset_overflow_auto_child_layout_passes();
+
+        let mut parent_style = ComputedStyle::default();
+        parent_style.display = Display::Block;
+
+        let mut child_style = ComputedStyle::default();
+        child_style.display = Display::Block;
+        child_style.overflow_y = Overflow::Auto;
+        child_style.height = Some(Length::px(50.0));
+
+        // No overflow needed; classic scrollbar mode should still execute the convergence pass for
+        // overflow:auto blocks (legacy behavior).
+        let mut inner_style = ComputedStyle::default();
+        inner_style.display = Display::Block;
+        inner_style.height = Some(Length::px(10.0));
+
+        let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+        let child = BoxNode::new_block(
+          Arc::new(child_style),
+          FormattingContextType::Block,
+          vec![inner],
+        );
+        let parent = BoxNode::new_block(
+          Arc::new(parent_style),
+          FormattingContextType::Block,
+          vec![child],
+        );
+
+        let fc = BlockFormattingContext::new();
+        let constraints = LayoutConstraints::definite_width(200.0);
+        fc.layout(&parent, &constraints).unwrap();
+
+        assert_eq!(
+          overflow_auto_child_layout_passes(),
+          1,
+          "expected classic scrollbar mode to re-enable the overflow:auto convergence loop"
+        );
+      },
+    );
+  }
+
+  #[test]
   fn padding_offsets_in_flow_children() {
     let mut parent_style = ComputedStyle::default();
     parent_style.display = Display::Block;
