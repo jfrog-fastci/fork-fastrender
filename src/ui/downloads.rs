@@ -1,4 +1,36 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
+/// Resolve the base download directory given a set of optional overrides.
+///
+/// Precedence (highest → lowest):
+/// 1. CLI override
+/// 2. Environment/runtime override (e.g. `FASTR_BROWSER_DOWNLOAD_DIR`)
+/// 3. OS downloads directory (e.g. via `directories::UserDirs`)
+/// 4. Fallback (typically the current working directory)
+///
+/// This is a pure helper: callers supply the OS downloads directory and fallback path, so it can be
+/// unit-tested without touching global state.
+pub fn resolve_download_directory(
+  cli_override: Option<&Path>,
+  env_override: Option<&OsStr>,
+  os_downloads_dir: Option<&Path>,
+  cwd_fallback: &Path,
+) -> PathBuf {
+  if let Some(path) = cli_override.filter(|p| !p.as_os_str().is_empty()) {
+    return path.to_path_buf();
+  }
+
+  if let Some(raw) = env_override.filter(|raw| !raw.is_empty()) {
+    return PathBuf::from(raw);
+  }
+
+  if let Some(path) = os_downloads_dir {
+    return path.to_path_buf();
+  }
+
+  cwd_fallback.to_path_buf()
+}
 
 /// Return the `.part` path used while writing a download.
 ///
@@ -153,18 +185,12 @@ fn default_download_dir_from_sources(
 ) -> PathBuf {
   // Prefer the browser CLI/env knob, but keep the old `FASTR_DOWNLOAD_DIR` key as an alias for
   // existing test setups.
-  if let Some(raw) = browser_env
+  let env_override = browser_env
     .filter(|raw| !raw.is_empty())
     .or_else(|| legacy_env.filter(|raw| !raw.is_empty()))
-  {
-    return PathBuf::from(raw);
-  }
+    .map(OsStr::new);
 
-  if let Some(dir) = user_downloads {
-    return dir.to_path_buf();
-  }
-
-  cwd.to_path_buf()
+  resolve_download_directory(None, env_override, user_downloads, cwd)
 }
 
 /// Resolve the base download directory for the browser UI worker.
@@ -175,7 +201,6 @@ fn default_download_dir_from_sources(
 /// `FASTR_BROWSER_DOWNLOAD_DIR` runtime toggle (or the legacy `FASTR_DOWNLOAD_DIR` alias).
 pub fn default_download_dir() -> PathBuf {
   let toggles = crate::debug::runtime::runtime_toggles();
-
   let browser_env = toggles.get("FASTR_BROWSER_DOWNLOAD_DIR");
   let legacy_env = toggles.get("FASTR_DOWNLOAD_DIR");
 
@@ -231,7 +256,10 @@ mod tests {
   #[test]
   fn sanitize_avoids_windows_device_names() {
     assert_eq!(sanitize_download_filename("CON"), "_CON".to_string());
-    assert_eq!(sanitize_download_filename("con.txt"), "_con.txt".to_string());
+    assert_eq!(
+      sanitize_download_filename("con.txt"),
+      "_con.txt".to_string()
+    );
     assert_eq!(sanitize_download_filename("LPT9"), "_LPT9".to_string());
   }
 
@@ -307,6 +335,51 @@ mod tests {
     assert_eq!(
       missing_path_toast_message(&missing),
       Some("File not found: missing.txt".to_string())
+    );
+  }
+
+  #[test]
+  fn resolve_download_directory_cli_wins() {
+    let cli = PathBuf::from("cli");
+    let os = PathBuf::from("os");
+    let cwd = PathBuf::from("cwd");
+    assert_eq!(
+      resolve_download_directory(Some(&cli), Some(OsStr::new("env")), Some(&os), &cwd),
+      cli
+    );
+  }
+
+  #[test]
+  fn resolve_download_directory_env_wins_when_no_cli() {
+    let os = PathBuf::from("os");
+    let cwd = PathBuf::from("cwd");
+    assert_eq!(
+      resolve_download_directory(None, Some(OsStr::new("env")), Some(&os), &cwd),
+      PathBuf::from("env")
+    );
+  }
+
+  #[test]
+  fn resolve_download_directory_os_downloads_wins_when_no_overrides() {
+    let os = PathBuf::from("os");
+    let cwd = PathBuf::from("cwd");
+    assert_eq!(resolve_download_directory(None, None, Some(&os), &cwd), os);
+  }
+
+  #[test]
+  fn resolve_download_directory_falls_back_to_cwd() {
+    let cwd = PathBuf::from("cwd");
+    assert_eq!(resolve_download_directory(None, None, None, &cwd), cwd);
+  }
+
+  #[test]
+  fn resolve_download_directory_ignores_empty_overrides() {
+    let empty_cli = PathBuf::new();
+    let os = PathBuf::from("os");
+    let cwd = PathBuf::from("cwd");
+    assert_eq!(
+      resolve_download_directory(Some(&empty_cli), Some(OsStr::new("")), Some(&os), &cwd),
+      os
     );
   }
 }
