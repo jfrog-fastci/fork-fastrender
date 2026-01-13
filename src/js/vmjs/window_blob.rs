@@ -394,14 +394,42 @@ fn blob_ctor_construct(
         append_bytes_limited(&mut bytes, &blob.bytes)?;
         continue;
       }
+
+      // BufferSource parts (ArrayBuffer / ArrayBufferView).
+      //
+      // Real browsers treat detached and out-of-bounds views as empty (byteLength === 0) rather
+      // than throwing. Be similarly forgiving so transfer-list patterns like:
+      // `structuredClone(buf, { transfer: [buf] }); new Blob([buf])`
+      // do not unexpectedly throw.
       if scope.heap().is_array_buffer_object(obj) {
+        if scope.heap().is_detached_array_buffer(obj)? {
+          continue;
+        }
         let data = scope.heap().array_buffer_data(obj)?;
         append_bytes_limited(&mut bytes, data)?;
         continue;
       }
       if scope.heap().is_uint8_array_object(obj) {
-        let data = scope.heap().uint8_array_data(obj)?;
-        append_bytes_limited(&mut bytes, data)?;
+        // Use non-throwing typed-array introspection helpers so detached/out-of-bounds views are
+        // treated as empty rather than throwing.
+        let byte_len = scope.heap().typed_array_byte_length(obj)?;
+        if byte_len == 0 {
+          continue;
+        }
+        let byte_offset = scope.heap().typed_array_byte_offset(obj)?;
+        let buf = scope.heap().typed_array_buffer(obj)?;
+        // Detached backing buffers should be treated as empty for Blob construction.
+        if scope.heap().is_detached_array_buffer(buf)? {
+          continue;
+        }
+        let data = scope.heap().array_buffer_data(buf)?;
+        let Some(end) = byte_offset.checked_add(byte_len) else {
+          return Err(VmError::OutOfMemory);
+        };
+        let Some(slice) = data.get(byte_offset..end) else {
+          continue;
+        };
+        append_bytes_limited(&mut bytes, slice)?;
         continue;
       }
     }
@@ -1170,6 +1198,64 @@ mod tests {
   }
 
   #[test]
+  fn blob_ctor_treats_detached_buffers_as_empty() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      r#"
+(() => {
+  // Detach the buffer via the structured clone transfer list.
+  if (typeof structuredClone !== "function") {
+    return "skip";
+  }
+
+  const buf = new ArrayBuffer(4);
+  const view = new Uint8Array(buf);
+  structuredClone(buf, { transfer: [buf] }); // Detaches `buf`.
+  if (buf.byteLength !== 0) {
+    return "transfer did not detach";
+  }
+
+  try {
+    const b = new Blob([buf]);
+    if (b.size !== 0) {
+      return "ArrayBuffer size was " + b.size;
+    }
+  } catch (e) {
+    return "ArrayBuffer threw " + (e && e.name ? e.name : String(e));
+  }
+
+  try {
+    const b = new Blob([view]);
+    if (b.size !== 0) {
+      return "Uint8Array size was " + b.size;
+    }
+  } catch (e) {
+    return "Uint8Array threw " + (e && e.name ? e.name : String(e));
+  }
+
+  return "ok";
+})()
+"#,
+    )?;
+
+    let Value::String(s) = result else {
+      return Err(VmError::InvariantViolation(
+        "expected string result from detached ArrayBuffer empty Blob test",
+      ));
+    };
+
+    let value = realm.heap().get_string(s)?.to_utf8_lossy();
+    if value != "skip" {
+      assert_ne!(value, "transfer did not detach");
+      assert_eq!(value, "ok");
+    }
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
   fn blob_ctor_does_not_crash_on_detached_array_buffer() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
@@ -1213,7 +1299,7 @@ mod tests {
         let name = realm.heap().get_string(s)?.to_utf8_lossy();
         if name != "skip" {
           assert_ne!(name, "transfer did not detach");
-          assert!(name.contains("Blob:"), "expected Blob result, got {name:?}");
+          assert!(name.contains("Blob:ok"), "expected Blob result, got {name:?}");
           assert!(
             name.contains("TextDecoder:"),
             "expected TextDecoder result, got {name:?}"

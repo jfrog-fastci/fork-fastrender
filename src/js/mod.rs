@@ -592,6 +592,69 @@ mod vmjs {
       Ok(())
     }
   }
+
+  pub mod window_blob {
+    use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+    use vm_js::{Value, VmError};
+
+    #[test]
+    fn blob_ctor_treats_detached_buffers_as_empty() -> Result<(), VmError> {
+      let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+      let result = realm.exec_script(
+        r#"
+(() => {
+  // Detach the buffer via the structured clone transfer list.
+  if (typeof structuredClone !== "function") {
+    return "skip";
+  }
+
+  const buf = new ArrayBuffer(4);
+  const view = new Uint8Array(buf);
+  structuredClone(buf, { transfer: [buf] }); // Detaches `buf`.
+  if (buf.byteLength !== 0) {
+    return "transfer did not detach";
+  }
+
+  try {
+    const b = new Blob([buf]);
+    if (b.size !== 0) {
+      return "ArrayBuffer size was " + b.size;
+    }
+  } catch (e) {
+    return "ArrayBuffer threw " + (e && e.name ? e.name : String(e));
+  }
+
+  try {
+    const b = new Blob([view]);
+    if (b.size !== 0) {
+      return "Uint8Array size was " + b.size;
+    }
+  } catch (e) {
+    return "Uint8Array threw " + (e && e.name ? e.name : String(e));
+  }
+
+  return "ok";
+})()
+"#,
+      )?;
+
+      let Value::String(s) = result else {
+        return Err(VmError::InvariantViolation(
+          "expected string result from Blob detached-buffer shim test",
+        ));
+      };
+
+      let value = realm.heap().get_string(s)?.to_utf8_lossy();
+      if value != "skip" {
+        assert_ne!(value, "transfer did not detach");
+        assert_eq!(value, "ok");
+      }
+
+      realm.teardown();
+      Ok(())
+    }
+  }
 }
 
 // HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
