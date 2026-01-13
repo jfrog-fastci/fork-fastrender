@@ -440,6 +440,13 @@ struct FindInPageWorkerState {
   active_match_index: Option<usize>,
 }
 
+struct HitTestFragmentTreeCache {
+  tree: Arc<crate::FragmentTree>,
+  prepared_fragment_tree_ptr: *const crate::FragmentTree,
+  scroll_viewport: Point,
+  scroll_elements: HashMap<usize, Point>,
+}
+
 struct TabState {
   history: TabHistory,
   loading: bool,
@@ -466,6 +473,7 @@ struct TabState {
   /// True when the next paint was triggered by a tick message and we should coalesce any
   /// immediately-following tick events before rendering.
   tick_coalesce: bool,
+  hit_test_fragment_tree_cache: Option<HitTestFragmentTreeCache>,
   document: Option<BrowserDocument>,
   js_tab: Option<BrowserTab>,
   /// Cached mapping from renderer pre-order ids (used by hit-testing/layout) back into the `dom2`
@@ -532,6 +540,7 @@ impl TabState {
       scroll_coalesce: false,
       next_paint_is_scroll: false,
       tick_coalesce: false,
+      hit_test_fragment_tree_cache: None,
       document: None,
       js_tab: None,
       js_dom_mapping_generation: 0,
@@ -577,6 +586,43 @@ impl TabState {
       return;
     };
     js_tab.set_scroll_state(self.scroll_state.clone());
+  }
+
+  fn hit_test_fragment_tree_for_scroll(
+    &mut self,
+    doc: &BrowserDocument,
+    scroll: &ScrollState,
+  ) -> Option<Arc<crate::FragmentTree>> {
+    // Fast path: when there is no viewport or element scroll, the prepared fragment tree can be
+    // used directly for hit testing without cloning.
+    if scroll.viewport == Point::ZERO && scroll.elements.is_empty() {
+      self.hit_test_fragment_tree_cache = None;
+      return None;
+    }
+
+    let Some(prepared) = doc.prepared() else {
+      self.hit_test_fragment_tree_cache = None;
+      return None;
+    };
+    let prepared_fragment_tree_ptr = prepared.fragment_tree() as *const crate::FragmentTree;
+
+    if let Some(cache) = self.hit_test_fragment_tree_cache.as_ref() {
+      if cache.prepared_fragment_tree_ptr == prepared_fragment_tree_ptr
+        && cache.scroll_viewport == scroll.viewport
+        && cache.scroll_elements == scroll.elements
+      {
+        return Some(Arc::clone(&cache.tree));
+      }
+    }
+
+    let tree = Arc::new(prepared.fragment_tree_for_geometry(scroll));
+    self.hit_test_fragment_tree_cache = Some(HitTestFragmentTreeCache {
+      tree: Arc::clone(&tree),
+      prepared_fragment_tree_ptr,
+      scroll_viewport: scroll.viewport,
+      scroll_elements: scroll.elements.clone(),
+    });
+    Some(tree)
   }
 }
 
@@ -714,18 +760,6 @@ fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Poin
     };
     Point::new(-sx - 1.0, -sy - 1.0)
   }
-}
-
-fn fragment_tree_for_hit_testing(
-  doc: &BrowserDocument,
-  scroll: &ScrollState,
-) -> Option<crate::FragmentTree> {
-  if scroll.viewport == Point::ZERO && scroll.elements.is_empty() {
-    return None;
-  }
-  doc
-    .prepared()
-    .map(|prepared| prepared.fragment_tree_for_geometry(scroll))
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -2899,20 +2933,20 @@ impl BrowserRuntime {
 
           if let Some(pointer_css) = pointer_pos_css {
             // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
-            // gesture for numeric stepping (instead of scrolling the page).
-            let scroll_snapshot = tab.scroll_state.clone();
-            let engine = &mut tab.interaction;
-            let hit_tree = fragment_tree_for_hit_testing(doc, &scroll_snapshot);
-            if let Ok(step_result) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-              let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
-              let step_result = engine.wheel_step_number_input(
-                dom,
-                box_tree,
-                hit_tree,
-                &scroll_snapshot,
-                Point::new(pointer_css.0, pointer_css.1),
-                delta_y,
-              );
+             // gesture for numeric stepping (instead of scrolling the page).
+             let scroll_snapshot = tab.scroll_state.clone();
+             let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, &scroll_snapshot);
+             let engine = &mut tab.interaction;
+             if let Ok(step_result) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+               let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
+               let step_result = engine.wheel_step_number_input(
+                 dom,
+                 box_tree,
+                 fragment_tree,
+                 &scroll_snapshot,
+                 Point::new(pointer_css.0, pointer_css.1),
+                 delta_y,
+               );
               let changed = step_result.unwrap_or(false);
               (changed, step_result)
             }) {
@@ -4675,10 +4709,10 @@ impl BrowserRuntime {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
+      let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
       let engine = &mut tab.interaction;
-      let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+        let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
         let (changed, hit, hover_is_drop_target) = engine.pointer_move_and_hit_and_drop_target(
           dom,
           box_tree,
@@ -5142,16 +5176,16 @@ impl BrowserRuntime {
     };
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+    let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
     let engine = &mut tab.interaction;
-    let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
 
     let (changed, target_id, target_element_id) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+        let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
 
          let (changed, hit) = if matches!(button, PointerButton::Primary | PointerButton::Middle) {
-           engine.pointer_down_with_click_count_and_hit(
-             dom,
+            engine.pointer_down_with_click_count_and_hit(
+              dom,
              box_tree,
              fragment_tree,
              scroll,
@@ -5303,7 +5337,7 @@ impl BrowserRuntime {
       let js_mutation_generation_before_dispatch =
         tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
       let mut dispatched_dom_event = false;
-      let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
+      let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
 
       let (target_id, target_element_id) = if tab.last_pointer_pos_css == Some(pos_css) {
         (
@@ -5312,7 +5346,7 @@ impl BrowserRuntime {
         )
       } else {
         match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+          let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
 
           let page_point = viewport_point.translate(scroll.viewport);
           let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
@@ -5421,8 +5455,8 @@ impl BrowserRuntime {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
+      let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, &scroll_snapshot);
       let engine = &mut tab.interaction;
-      let hit_tree = fragment_tree_for_hit_testing(doc, &scroll_snapshot);
       let (
         dom_changed,
         action,
@@ -5436,7 +5470,7 @@ impl BrowserRuntime {
         form_submitter,
         form_submitter_element_id,
       ) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+        let hit_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
         let (dom_changed, action, up_hit) = engine.pointer_up_with_scroll_and_hit(
           dom,
           box_tree,
@@ -6216,7 +6250,7 @@ impl BrowserRuntime {
 
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
-    let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
+    let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
 
     // ---------------------------------------------------------------------------
     // JS `drop` event dispatch
@@ -6227,7 +6261,7 @@ impl BrowserRuntime {
     // `preventDefault()`, suppress the default file-input selection.
     let (drop_target_id, drop_target_element_id) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+        let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
 
         let page_point = viewport_point.translate(scroll.viewport);
         let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
@@ -6302,7 +6336,7 @@ impl BrowserRuntime {
 
     let engine = &mut tab.interaction;
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+      let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
 
       let changed =
         engine.drop_files_with_scroll(dom, box_tree, fragment_tree, scroll, viewport_point, &paths);
@@ -6389,11 +6423,11 @@ impl BrowserRuntime {
       text_control_readonly: bool,
     }
 
+    let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
     let engine = &mut tab.interaction;
-    let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
     let (changed, hit_info) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+        let hit_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
         let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
         let box_index = crate::interaction::hit_test::BoxIndex::new(box_tree);
         let hit = crate::interaction::hit_test::hit_test_dom_with_indices(
