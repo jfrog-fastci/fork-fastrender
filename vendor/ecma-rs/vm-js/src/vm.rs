@@ -143,11 +143,15 @@ pub(crate) fn coerce_error_to_throw_with_stack(
   let stack = || vm.capture_stack();
 
   match err {
-    VmError::ThrowWithStack { .. } => err,
-    VmError::Throw(value) => VmError::ThrowWithStack {
-      value,
-      stack: stack(),
-    },
+    VmError::ThrowWithStack { value, stack } => {
+      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      VmError::ThrowWithStack { value, stack }
+    }
+    VmError::Throw(value) => {
+      let stack = stack();
+      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      VmError::ThrowWithStack { value, stack }
+    }
 
     VmError::Unimplemented(reason) => {
       let original = VmError::Unimplemented(reason);
@@ -156,10 +160,11 @@ pub(crate) fn coerce_error_to_throw_with_stack(
         Err(_) => return original,
       };
       match crate::error_object::new_error(scope, intr.error_prototype(), "Error", message.as_str()) {
-        Ok(value) => VmError::ThrowWithStack {
-          value,
-          stack: stack(),
-        },
+        Ok(value) => {
+          let stack = stack();
+          crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+          VmError::ThrowWithStack { value, stack }
+        }
         Err(_) => original,
       }
     }
@@ -167,20 +172,22 @@ pub(crate) fn coerce_error_to_throw_with_stack(
     VmError::TypeError(message) => {
       let original = VmError::TypeError(message);
       match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
-        Ok(value) => VmError::ThrowWithStack {
-          value,
-          stack: stack(),
-        },
+        Ok(value) => {
+          let stack = stack();
+          crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+          VmError::ThrowWithStack { value, stack }
+        }
         Err(_) => original,
       }
     }
     VmError::RangeError(message) => {
       let original = VmError::RangeError(message);
       match crate::error_object::new_error(scope, intr.range_error_prototype(), "RangeError", message) {
-        Ok(value) => VmError::ThrowWithStack {
-          value,
-          stack: stack(),
-        },
+        Ok(value) => {
+          let stack = stack();
+          crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+          VmError::ThrowWithStack { value, stack }
+        }
         Err(_) => original,
       }
     }
@@ -188,10 +195,11 @@ pub(crate) fn coerce_error_to_throw_with_stack(
       let original = VmError::NotCallable;
       let message = "value is not callable";
       match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
-        Ok(value) => VmError::ThrowWithStack {
-          value,
-          stack: stack(),
-        },
+        Ok(value) => {
+          let stack = stack();
+          crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+          VmError::ThrowWithStack { value, stack }
+        }
         Err(_) => original,
       }
     }
@@ -199,10 +207,11 @@ pub(crate) fn coerce_error_to_throw_with_stack(
       let original = VmError::NotConstructable;
       let message = "value is not a constructor";
       match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
-        Ok(value) => VmError::ThrowWithStack {
-          value,
-          stack: stack(),
-        },
+        Ok(value) => {
+          let stack = stack();
+          crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+          VmError::ThrowWithStack { value, stack }
+        }
         Err(_) => original,
       }
     }
@@ -210,10 +219,11 @@ pub(crate) fn coerce_error_to_throw_with_stack(
       let original = VmError::PrototypeCycle;
       let message = "prototype cycle";
       match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
-        Ok(value) => VmError::ThrowWithStack {
-          value,
-          stack: stack(),
-        },
+        Ok(value) => {
+          let stack = stack();
+          crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+          VmError::ThrowWithStack { value, stack }
+        }
         Err(_) => original,
       }
     }
@@ -221,10 +231,11 @@ pub(crate) fn coerce_error_to_throw_with_stack(
       let original = VmError::PrototypeChainTooDeep;
       let message = "prototype chain too deep";
       match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
-        Ok(value) => VmError::ThrowWithStack {
-          value,
-          stack: stack(),
-        },
+        Ok(value) => {
+          let stack = stack();
+          crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+          VmError::ThrowWithStack { value, stack }
+        }
         Err(_) => original,
       }
     }
@@ -232,10 +243,11 @@ pub(crate) fn coerce_error_to_throw_with_stack(
       let original = VmError::InvalidPropertyDescriptorPatch;
       let message = "invalid property descriptor patch: cannot mix data and accessor fields";
       match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
-        Ok(value) => VmError::ThrowWithStack {
-          value,
-          stack: stack(),
-        },
+        Ok(value) => {
+          let stack = stack();
+          crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+          VmError::ThrowWithStack { value, stack }
+        }
         Err(_) => original,
       }
     }

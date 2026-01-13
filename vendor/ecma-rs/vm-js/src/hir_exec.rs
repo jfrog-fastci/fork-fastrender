@@ -2953,17 +2953,12 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::StmtKind::Empty | hir_js::StmtKind::Debugger => Ok(Flow::empty()),
     };
 
-    // Improve stack traces for compiled *module* execution by attributing thrown exceptions to the
-    // currently executing HIR statement span (similar to `exec.rs::eval_stmt_labelled`).
+    // Attach `Error.stack` and annotate stack traces for compiled (HIR) execution by attributing
+    // thrown exceptions to the currently executing HIR statement span (similar to
+    // `exec.rs::eval_stmt_labelled`).
     //
-    // This is intentionally scoped to module execution so broader HIR stack-trace semantics (e.g.
-    // call-site locations) can be addressed separately.
-    if !matches!(
-      self.vm.get_active_script_or_module(),
-      Some(ScriptOrModule::Module(_))
-    ) {
-      return res;
-    }
+    // This is the primary stack capture point for the compiled executor so `try/catch` inside JS
+    // can observe a populated `e.stack` when exceptions originate from HIR execution.
 
     // Only annotate throw-completions: termination/OOM/etc must propagate untouched.
     let Err(err) = res else {
@@ -2995,6 +2990,7 @@ impl<'vm> HirEvaluator<'vm> {
       VmError::Throw(value) => {
         let mut stack = self.vm.capture_stack();
         update_top_frame(&mut stack);
+        crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
         Err(VmError::ThrowWithStack { value, stack })
       }
       VmError::ThrowWithStack { value, mut stack } => {
@@ -3003,6 +2999,7 @@ impl<'vm> HirEvaluator<'vm> {
         if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
           update_top_frame(&mut stack);
         }
+        crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
         Err(VmError::ThrowWithStack { value, stack })
       }
       other => Err(other),
