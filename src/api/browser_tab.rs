@@ -1070,6 +1070,104 @@ impl BrowserTabHost {
     self.document.dom()
   }
 
+  /// Mutate the live form-control state for a text-like control.
+  ///
+  /// This updates the DOM's **internal** value state (e.g. `HTMLInputElement.value`) rather than
+  /// only the serialized content attributes.
+  ///
+  /// This helper is intended for trusted UI integrations (e.g. accessibility action routing for the
+  /// renderer-chrome browser UI). Callers are expected to dispatch appropriate DOM events (`input`,
+  /// `change`) after the mutation so JS observers see the new value.
+  ///
+  /// Currently supported:
+  /// - `<input>` (HTML namespace): updates via `dom2::Document::set_input_value`.
+  /// - `<textarea>` (HTML namespace): updates via `dom2::Document::set_textarea_value`.
+  ///
+  /// `<select>` is not supported yet; callers should implement selection changes via
+  /// `dom2::Document::set_option_selected`.
+  fn set_text_control_value(&mut self, node_id: NodeId, value: &str) -> Result<bool> {
+    let value = value.to_string();
+    self.mutate_dom(|dom| {
+      if node_id.index() >= dom.nodes_len() {
+        return (
+          Err(Error::Other(format!(
+            "set_text_control_value: invalid node id {node_id:?}"
+          ))),
+          false,
+        );
+      }
+
+      let kind = &dom.node(node_id).kind;
+      let NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } = kind
+      else {
+        return (
+          Err(Error::Other(format!(
+            "set_text_control_value: node {node_id:?} is not an element"
+          ))),
+          false,
+        );
+      };
+
+      // Only support HTML form controls for now. This matches the dom2 form-control state model.
+      if !dom.is_html_case_insensitive_namespace(namespace) {
+        return (
+          Err(Error::Other(format!(
+            "set_text_control_value: unsupported namespace {namespace:?} for element <{tag_name}>"
+          ))),
+          false,
+        );
+      }
+
+      if tag_name.eq_ignore_ascii_case("input") {
+        match dom.set_input_value(node_id, &value) {
+          Ok(changed) => return (Ok(changed), changed),
+          Err(err) => {
+            return (
+              Err(Error::Other(format!(
+                "set_text_control_value: failed to set <input> value: {err:?}"
+              ))),
+              false,
+            );
+          }
+        }
+      }
+
+      if tag_name.eq_ignore_ascii_case("textarea") {
+        match dom.set_textarea_value(node_id, &value) {
+          Ok(changed) => return (Ok(changed), changed),
+          Err(err) => {
+            return (
+              Err(Error::Other(format!(
+                "set_text_control_value: failed to set <textarea> value: {err:?}"
+              ))),
+              false,
+            );
+          }
+        }
+      }
+
+      if tag_name.eq_ignore_ascii_case("select") {
+        return (
+          Err(Error::Other(
+            "set_text_control_value: <select> SetValue not supported yet".to_string(),
+          )),
+          false,
+        );
+      }
+
+      (
+        Err(Error::Other(format!(
+          "set_text_control_value: unsupported element <{tag_name}>"
+        ))),
+        false,
+      )
+    })
+  }
+
   pub(crate) fn document_write_state_mut(&mut self) -> &mut DocumentWriteState {
     &mut self.document_write_state
   }
@@ -7186,6 +7284,41 @@ impl BrowserTab {
     let preorder = mapping.preorder_for_node_id(node_id)?;
     let raw = NonZeroU128::new(preorder as u128)?;
     Some(AccessKitNodeId(raw))
+  }
+
+  /// Decode an AccessKit node id and perform a `SetValue` action on the corresponding DOM node.
+  #[cfg(feature = "a11y_accesskit")]
+  pub fn dispatch_accesskit_set_value_action(
+    &mut self,
+    target: AccessKitNodeId,
+    value: &str,
+  ) -> Result<()> {
+    let Some(node_id) = self.dom2_node_for_accesskit_node_id(target) else {
+      return Ok(());
+    };
+    self.dispatch_set_value_action(node_id, value)
+  }
+
+  /// Perform an accessibility-driven "set value" action on a form control.
+  ///
+  /// This is intended for AccessKit-style integrations (e.g. screen readers setting the value of
+  /// the renderer-chrome address bar).
+  ///
+  /// Behavior:
+  /// 1. Mutates the DOM's internal form-control state (`HTMLInputElement.value`,
+  ///    `HTMLTextAreaElement.value`).
+  /// 2. Dispatches a trusted bubbling `input` event targeted at the control so JS observers can
+  ///    react and read the new value from `event.target.value`.
+  ///
+  /// `change` is *not* dispatched here because for text controls browsers typically fire it on
+  /// commit/blur rather than on every value update. Embeddings can choose to dispatch `change`
+  /// separately when they implement those higher-level semantics.
+  pub fn dispatch_set_value_action(&mut self, node_id: NodeId, value: &str) -> Result<()> {
+    let changed = self.host.set_text_control_value(node_id, value)?;
+    if changed {
+      let _ = self.dispatch_input_event(node_id)?;
+    }
+    Ok(())
   }
   /// Dispatch a trusted DOM event at `target`.
   ///
@@ -13360,6 +13493,68 @@ mod tests {
         writable: true,
       },
     }
+  }
+
+  #[test]
+  fn accesskit_set_value_updates_dom_state_and_dispatches_input_event() -> Result<()> {
+    let mut tab = BrowserTab::from_html_with_vmjs_executor(
+      "<!doctype html><html><body></body></html>",
+      RenderOptions::default(),
+    )?;
+
+    // Create an input element whose current value starts as "old".
+    let input_id = tab.host.mutate_dom(|dom| {
+      let input = dom.create_element("input", "");
+      dom.set_attribute(input, "id", "x").expect("set_attribute");
+      dom
+        .set_attribute(input, "value", "old")
+        .expect("set_attribute");
+      let body = dom.body().expect("expected <body>");
+      dom.append_child(body, input).expect("append_child");
+      (input, true)
+    });
+
+    assert_eq!(tab.dom().input_value(input_id).expect("input_value"), "old");
+
+    // Install an `input` listener that reads `event.target.value`. This specifically verifies that
+    // the form-control state is updated *before* the trusted `input` event is dispatched.
+    {
+      let host = &mut tab.host;
+      let event_loop = &mut tab.event_loop;
+
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (host_ctx, realm) = host.vm_host_and_window_realm()?;
+      realm
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+          globalThis.__seen = '';
+          const el = document.getElementById('x');
+          el.addEventListener('input', (e) => { globalThis.__seen = e.target.value; });
+          "#,
+        )
+        .map_err(|err| Error::Other(err.to_string()))?;
+      if let Some(err) = hooks.finish(realm.heap_mut()) {
+        return Err(err);
+      }
+    }
+
+    tab.dispatch_set_value_action(input_id, "new")?;
+
+    assert_eq!(tab.dom().input_value(input_id).expect("input_value"), "new");
+
+    let realm = tab
+      .host
+      .executor
+      .window_realm_mut()
+      .expect("expected vm-js WindowRealm");
+    let seen = realm
+      .exec_script("globalThis.__seen")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    assert_eq!(value_to_string(realm, seen), "new");
+    Ok(())
   }
 
   #[test]
