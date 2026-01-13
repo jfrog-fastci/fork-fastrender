@@ -89,6 +89,9 @@ The desktop `browser` UI enables AccessKit for **egui widgets** (browser chrome)
     [`src/ui/accesskit_bridge.rs`](../src/ui/accesskit_bridge.rs)
   - Action routing (screen reader “press/focus/set value” → `InteractionEngine`):
     [`src/ui/fast_accesskit_actions.rs`](../src/ui/fast_accesskit_actions.rs)
+  - Experimental runtime toggle: `FASTR_BROWSER_RENDERER_CHROME=1` (see
+    [env-vars.md](env-vars.md#appearance--accessibility--debugging-browser-ux) and
+    [chrome_accessibility.md](chrome_accessibility.md)).
 
 Page content is currently rendered as a bitmap in an egui panel, so screen readers can only see the
 chrome tree today.
