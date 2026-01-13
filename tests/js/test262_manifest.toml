@@ -1487,6 +1487,18 @@ status = "xfail"
 reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
 
 [[expectations]]
+id = "built-ins/RegExp/unicode_restricted_character_class_escape.js"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/S15.10.2.15_A1_T*.js"
+status = "pass"
+
+[[expectations]]
+id = "staging/sm/RegExp/unicode-class-range.js"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/String/prototype/match/**"
 status = "pass"
 

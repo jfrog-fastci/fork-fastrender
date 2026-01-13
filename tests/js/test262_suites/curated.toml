@@ -203,6 +203,10 @@ include = [
   "built-ins/Set/**/*.js",
   "built-ins/JSON/**/*.js",
   "built-ins/Math/**/*.js",
+  # RegExp: character class range validation (unicode + legacy Sputnik coverage).
+  "built-ins/RegExp/unicode_restricted_character_class_escape.js",
+  "built-ins/RegExp/S15.10.2.15_A1_T*.js",
+  "staging/sm/RegExp/unicode-class-range.js",
   "built-ins/Function/prototype/apply/**/*.js",
   "staging/sm/Function/15.3.4.3-01.js",
   "built-ins/RegExp/prototype/flags/**/*.js",
