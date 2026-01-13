@@ -7488,6 +7488,7 @@ impl App {
             self.bookmarks_panel_open = false;
             self.page_has_focus = false;
           } else {
+            self.downloads_panel_request_focus = false;
             self.page_has_focus = self.should_restore_page_focus();
           }
           self.window.request_redraw();
@@ -8133,29 +8134,27 @@ impl App {
             self.history_panel_open = !self.history_panel_open;
             if self.history_panel_open {
               self.bookmarks_panel_open = false;
+              self.downloads_panel_open = false;
+              self.downloads_panel_request_focus = false;
               self.bookmarks_manager.clear_transient();
               self.history_panel_request_focus_search = true;
               self.page_has_focus = false;
             } else {
-              self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
-                && !self.bookmarks_panel_open
-                && !self.browser_state.chrome.tab_search.open
-                && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
+              self.page_has_focus = self.should_restore_page_focus();
             }
           }
           fastrender::ui::MenuCommand::ToggleBookmarksPanel => {
             self.bookmarks_panel_open = !self.bookmarks_panel_open;
             if self.bookmarks_panel_open {
               self.history_panel_open = false;
+              self.downloads_panel_open = false;
+              self.downloads_panel_request_focus = false;
               self.history_panel_request_focus_search = false;
               self.bookmarks_manager.request_focus_search();
               self.page_has_focus = false;
             } else {
               self.bookmarks_manager.clear_transient();
-              self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
-                && !self.history_panel_open
-                && !self.browser_state.chrome.tab_search.open
-                && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
+              self.page_has_focus = self.should_restore_page_focus();
             }
           }
           fastrender::ui::MenuCommand::ToggleBookmarkThisPage => {
@@ -8367,17 +8366,11 @@ impl App {
     if close_bookmarks_panel {
       self.bookmarks_panel_open = false;
       self.bookmarks_manager.clear_transient();
-      self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
-        && !self.history_panel_open
-        && !self.browser_state.chrome.tab_search.open
-        && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
+      self.page_has_focus = self.should_restore_page_focus();
     }
     if close_history_panel {
       self.history_panel_open = false;
-      self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
-        && !self.bookmarks_panel_open
-        && !self.browser_state.chrome.tab_search.open
-        && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
+      self.page_has_focus = self.should_restore_page_focus();
     }
     if !panel_actions.is_empty() {
       session_dirty |= self.handle_chrome_actions(panel_actions);
@@ -8405,6 +8398,7 @@ impl App {
       && !ctx.wants_keyboard_input()
     {
       self.downloads_panel_open = false;
+      self.downloads_panel_request_focus = false;
       self.page_has_focus = self.should_restore_page_focus();
     }
     if self.downloads_panel_open {
