@@ -5367,7 +5367,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   fn spawn_worker_ui_bridge(
     window_id: WindowId,
-    renderer_backend: fastrender::ui::ThreadRendererBackend,
+    renderer_backend: fastrender::ui::RendererBackendHandle,
     event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     worker_wake_coalescer: Arc<fastrender::ui::WorkerWakeCoalescer>,
     worker_wake_counters: Option<Arc<WorkerWakeHudCounters>>,
