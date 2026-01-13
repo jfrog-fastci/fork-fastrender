@@ -149,6 +149,9 @@ run inside a Job Object (kill-on-close, active-process cap) for lifecycle safety
 To debug why AppContainer/restricted-token spawning is failing, enable verbose sandbox logs:
 
 - `FASTR_LOG_SANDBOX=1`
+- `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1`: opt into inheriting the full parent environment for the
+  sandboxed child (disables environment sanitization and the default `TEMP`/`TMP` override; debug
+  only).
 
 Value parsing details:
 

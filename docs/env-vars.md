@@ -107,7 +107,9 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - Note: the production Windows sandbox launcher in `src/sandbox/windows.rs` does **not** currently read this env var.
 - `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` – **Windows-only**: opt into inheriting the full parent environment when spawning sandboxed renderer children.
   - By default `src/sandbox/windows.rs` builds a sanitized environment block to avoid leaking secrets
-    (and to ensure TEMP/TMP point at an AppContainer-writable location).
+    and overrides `TEMP`/`TMP` to a sandbox-accessible temp directory.
+    - In AppContainer mode this is typically `GetAppContainerFolderPath(AppContainerSid)\\Temp`
+      (fallback: `C:\\Windows\\Temp`).
   - This is intended for local debugging only.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
 

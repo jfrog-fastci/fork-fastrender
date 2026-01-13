@@ -538,8 +538,10 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
 - `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1`: opt into inheriting the full parent environment for the
   sandboxed child.
   - By default `src/sandbox/windows.rs` builds a sanitized environment block (so secrets from the
-    browser process environment are not leaked into the renderer, and so TEMP/TMP point at an
-    AppContainer-writable location).
+    browser process environment are not leaked into the renderer) and overrides `TEMP`/`TMP` to a
+    sandbox-accessible temp directory.
+    - In AppContainer mode this is typically `GetAppContainerFolderPath(AppContainerSid)\\Temp`
+      (fallback: `C:\\Windows\\Temp`).
   - This is intended for local debugging only.
 - `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`: opt in to running without the full Windows sandbox when
   required primitives are missing or sandbox startup fails.
@@ -625,6 +627,9 @@ Repo reality (`src/sandbox/windows.rs::spawn_appcontainer`):
   **not** inherit the parent process CWD (including on relocation retries). In the main spawner this
   is typically the AppContainer profile storage folder returned by `GetAppContainerFolderPath`
   (fallback: `C:\\Windows\\System32`).
+- The sanitized environment overrides `TEMP`/`TMP` to a sandbox-accessible temp directory.
+  - In AppContainer mode this is typically `GetAppContainerFolderPath(AppContainerSid)\\Temp`
+    (fallback: `C:\\Windows\\Temp`).
 
 Enable `FASTR_LOG_SANDBOX=1` to see which path was taken.
 
