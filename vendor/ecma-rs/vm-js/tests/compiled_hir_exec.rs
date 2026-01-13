@@ -209,6 +209,27 @@ fn compiled_for_loop_let_labelled_continue_captures_each_iteration_value() -> Re
 }
 
 #[test]
+fn compiled_for_loop_let_body_mutation_is_visible_to_closure() -> Result<(), VmError> {
+  // Closures capture the *binding*, not a copy of the value. Mutating the loop variable inside the
+  // iteration after creating the closure should be visible to that closure.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let g;
+        for (let i = 0; i < 1; i = i + 1) {
+          g = function() { return i; };
+          i = 5;
+        }
+        return g();
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(5.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_for_of_let_creates_per_iteration_envs() -> Result<(), VmError> {
   // `for (let x of ...)` should create a fresh lexical binding each iteration so closures capture
   // the value from the iteration when they were created.
