@@ -56,7 +56,6 @@ mod csp_script_enforcement;
 mod script_crossorigin_cors;
 mod history_navigation;
 mod js_diagnostics;
-#[cfg(feature = "quickjs")]
 mod js_rendering;
 mod js_time;
 mod render_fixtures_js;
