@@ -16939,10 +16939,24 @@ impl App {
       let before_history_open = self.history_panel_open;
       let before_bookmarks_open = self.bookmarks_panel_open;
 
+      // Treat any open popup/modal UI as a reason to skip best-effort downloads auto-open.
+      let other_popup_open = self.open_select_dropdown.is_some()
+        || self.open_date_time_picker.is_some()
+        || self.open_color_picker.is_some()
+        || self.open_file_picker.is_some()
+        || self.open_media_controls.is_some()
+        || self.open_context_menu.is_some()
+        || self.pending_context_menu_request.is_some()
+        || self.browser_state.chrome.open_tab_context_menu.is_some()
+        || self.clear_browsing_data_dialog_open;
+
       let output = fastrender::ui::downloads_panel_policy::on_download_started(
         fastrender::ui::downloads_panel_policy::DownloadsPanelPolicyInput {
           window_is_active,
           chrome_has_text_focus: self.chrome_has_text_focus,
+          address_bar_has_focus: self.browser_state.chrome.address_bar_has_focus,
+          clear_browsing_data_dialog_open: self.clear_browsing_data_dialog_open,
+          other_popup_open,
           history_panel_open: self.history_panel_open,
           bookmarks_panel_open: self.bookmarks_panel_open,
           downloads_panel_open: self.downloads_panel_open,
