@@ -32,9 +32,8 @@ fn scroll_to_burst_applies_last_position() {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
   .expect("initial FrameReady");
-  let _ = super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
+  // The worker does not guarantee a `ScrollStateUpdated` after navigation; drain follow-up messages
+  // instead of waiting for one.
   let _ = drain_for(&ui_rx, Duration::from_millis(200));
 
   // Fire a burst of ScrollTo messages and ensure the last position wins.
@@ -93,9 +92,8 @@ fn scroll_to_burst_produces_single_frame_under_slow_render() {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
   .expect("initial FrameReady");
-  let _ = super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
+  // The worker does not guarantee a `ScrollStateUpdated` after navigation; drain follow-up messages
+  // instead of waiting for one.
   let _ = drain_for(&ui_rx, Duration::from_millis(200));
 
   // Trigger a paint job and wait until it begins so our ScrollTo burst is guaranteed to arrive
