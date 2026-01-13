@@ -488,6 +488,54 @@ fn accessibility_form_landmark_role_is_exposed_with_title_name() {
 }
 
 #[test]
+fn accessibility_form_landmark_role_presentation_disallowed_by_global_aria_is_exposed() {
+  let html = r##"
+    <html>
+      <body>
+        <form id="f" role="presentation" aria-invalid="true" title="FormTitle">
+          <input />
+        </form>
+      </body>
+    </html>
+  "##;
+  let tree = render_accessibility_json(html);
+  let node = find_json_node(&tree, "f").expect("form is present");
+  assert_eq!(node.get("role").and_then(|v| v.as_str()), Some("form"));
+  assert_eq!(node.get("name").and_then(|v| v.as_str()), Some("FormTitle"));
+  assert_eq!(
+    node
+      .get("states")
+      .and_then(|s| s.get("invalid"))
+      .and_then(|v| v.as_bool()),
+    Some(true)
+  );
+}
+
+#[test]
+fn accessibility_form_landmark_role_presentation_disallowed_when_focusable_is_exposed() {
+  let html = r##"
+    <html>
+      <body>
+        <form id="f" role="presentation" tabindex="0" title="FormTitle">
+          <input />
+        </form>
+      </body>
+    </html>
+  "##;
+  let tree = render_accessibility_json(html);
+  let node = find_json_node(&tree, "f").expect("form is present");
+  assert_eq!(node.get("role").and_then(|v| v.as_str()), Some("form"));
+  assert_eq!(node.get("name").and_then(|v| v.as_str()), Some("FormTitle"));
+  assert_eq!(
+    node
+      .get("states")
+      .and_then(|s| s.get("focusable"))
+      .and_then(|v| v.as_bool()),
+    Some(true)
+  );
+}
+
+#[test]
 fn accessibility_summary_role_presentation_disallowed_falls_back_to_button() {
   let html = r##"
     <html>

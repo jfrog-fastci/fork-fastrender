@@ -950,7 +950,8 @@ impl<'a, 'state> BuildContext<'a, 'state> {
                 // Note: `allow_name_from_content = Some(false)` is also used for other callers
                 // (e.g. determining whether `section`/`form` should expose implicit landmark roles),
                 // so only apply this suppression when the element actually declares a
-                // presentational role token.
+                // presentational role token *and* the token could be honored (i.e., it's not
+                // immediately disallowed by global ARIA attributes or focusability).
                 let has_presentational_role_attr = node
                   .node
                   .get_attribute_ref("role")
@@ -960,7 +961,18 @@ impl<'a, 'state> BuildContext<'a, 'state> {
                         || token.eq_ignore_ascii_case("presentation")
                     })
                   });
-                if frame.allow_name_from_content == Some(false) && has_presentational_role_attr {
+                let presentational_globally_allowed = !has_global_aria_attributes(&node.node);
+                let locally_focusable = focusable_for_presentational_role(&node.node, &[]);
+                // Elements that can be disabled via ancestor `<fieldset disabled>` can appear
+                // focusable when ancestors are unavailable (e.g. `tabindex="0"`), even though the
+                // browser will treat them as disabled and thus allow the presentational role.
+                let focusability_may_depend_on_ancestors = supports_disabled(&node.node);
+
+                if frame.allow_name_from_content == Some(false)
+                  && has_presentational_role_attr
+                  && presentational_globally_allowed
+                  && (!locally_focusable || focusability_may_depend_on_ancestors)
+                {
                   pending = Some(None);
                 } else {
                   frame.step = NodeStep::Element(ElementStep::LabelAssociation);
