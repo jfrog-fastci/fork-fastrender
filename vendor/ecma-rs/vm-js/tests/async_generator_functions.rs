@@ -48,9 +48,13 @@ fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> 
 }
 
 fn async_generator_execution_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  // Detect runtime support (call semantics), not just parsing/prototype wiring.
-  match rt.exec_script("async function* __ag_support() { yield 1; } __ag_support();") {
-    Ok(_) => Ok(true),
+  // Detect runtime support, not just parsing/prototype wiring: `.next()` must return a Promise.
+  match rt.exec_script("async function* __ag_support() { yield 1; } __ag_support().next();") {
+    Ok(_) => {
+      // Avoid leaking Promise jobs into subsequent assertions.
+      rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+      Ok(true)
+    }
     Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
     Err(err) => Err(err),
   }

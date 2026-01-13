@@ -2,7 +2,10 @@ use crate::destructure::{bind_assignment_target, bind_pattern, BindingKind};
 use crate::error_object::new_error;
 use crate::fallible_alloc::box_try_new_vm;
 use crate::for_in::ForInEnumerator;
-use crate::heap::{GeneratorContinuation, GeneratorState, Trace, Tracer};
+use crate::heap::{
+  AsyncGeneratorContinuation, AsyncGeneratorState, GeneratorContinuation, GeneratorState, Trace,
+  Tracer,
+};
 use crate::iterator;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
@@ -31248,10 +31251,6 @@ pub(crate) fn run_ecma_function(
   env.set_source_info(source, base_offset, prefix_len);
 
   if func.stx.generator {
-    if func.stx.async_ {
-      return Err(VmError::Unimplemented("async generator functions"));
-    }
-
     let intr = vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
@@ -31280,7 +31279,13 @@ pub(crate) fn run_ecma_function(
     init_scope.push_root(proto_value)?;
     let proto_obj = match proto_value {
       Value::Object(o) => o,
-      _ => intr.generator_prototype(),
+      _ => {
+        if func.stx.async_ {
+          intr.async_generator_prototype()
+        } else {
+          intr.generator_prototype()
+        }
+      }
     };
 
     let mut boxed_args: Vec<Value> = Vec::new();
@@ -31294,22 +31299,41 @@ pub(crate) fn run_ecma_function(
     let mut gen_env = env.clone();
     gen_env.lexical_root = None;
 
-    let cont = GeneratorContinuation {
-      env: gen_env,
-      strict,
-      this,
-      new_target,
-      func: func.clone(),
-      args: boxed_args.into_boxed_slice(),
-      frames: VecDeque::new(),
-    };
+    if func.stx.async_ {
+      let cont = AsyncGeneratorContinuation {
+        env: gen_env,
+        strict,
+        this,
+        new_target,
+        func: func.clone(),
+        args: boxed_args.into_boxed_slice(),
+      };
 
-    let gen_obj = init_scope.alloc_generator_with_prototype(
-      Some(proto_obj),
-      GeneratorState::SuspendedStart,
-      Some(box_try_new_vm(cont)?),
-    )?;
-    return Ok((Value::Object(gen_obj), this));
+      let gen_obj = init_scope.alloc_async_generator_with_prototype(
+        Some(proto_obj),
+        AsyncGeneratorState::SuspendedStart,
+        Some(box_try_new_vm(cont)?),
+        VecDeque::new(),
+      )?;
+      return Ok((Value::Object(gen_obj), this));
+    } else {
+      let cont = GeneratorContinuation {
+        env: gen_env,
+        strict,
+        this,
+        new_target,
+        func: func.clone(),
+        args: boxed_args.into_boxed_slice(),
+        frames: VecDeque::new(),
+      };
+
+      let gen_obj = init_scope.alloc_generator_with_prototype(
+        Some(proto_obj),
+        GeneratorState::SuspendedStart,
+        Some(box_try_new_vm(cont)?),
+      )?;
+      return Ok((Value::Object(gen_obj), this));
+    }
   }
 
   let Some(body) = &func.stx.body else {

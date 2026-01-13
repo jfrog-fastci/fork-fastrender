@@ -129,6 +129,19 @@ pub(crate) enum GeneratorState {
   Completed,
 }
 
+/// Async generator object state (ECMA-262 shaped).
+///
+/// Note: async generator *runtime* semantics are implemented incrementally; this enum models the
+/// spec-visible internal slot `[[AsyncGeneratorState]]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AsyncGeneratorState {
+  SuspendedStart,
+  SuspendedYield,
+  Executing,
+  AwaitingReturn,
+  Completed,
+}
+
 /// Heap configuration and memory limits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeapLimits {
@@ -1268,6 +1281,7 @@ impl Heap {
           | HeapObject::WeakSet(_)
           | HeapObject::FinalizationRegistry(_)
           | HeapObject::Generator(_)
+          | HeapObject::AsyncGenerator(_)
       )
     )
   }
@@ -1323,10 +1337,11 @@ impl Heap {
   /// This is the spec-shaped "brand check" for async generator objects (i.e. objects with async
   /// generator internal slots).
   ///
-  /// Note: async generator objects are not yet implemented in `vm-js`, so this currently always
-  /// returns `false`.
-  pub fn is_async_generator_object(&self, _obj: GcObject) -> bool {
-    false
+  pub fn is_async_generator_object(&self, obj: GcObject) -> bool {
+    matches!(
+      self.get_heap_object(obj.0),
+      Ok(HeapObject::AsyncGenerator(_))
+    )
   }
 
   /// Returns `true` if `obj` currently points to a live ArrayBuffer object allocation.
@@ -2172,7 +2187,8 @@ impl Heap {
         | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
         | HeapObject::FinalizationRegistry(_)
-        | HeapObject::Generator(_),
+        | HeapObject::Generator(_)
+        | HeapObject::AsyncGenerator(_),
       ) => {
         self.slots[idx].host_slots = Some(slots);
         Ok(())
@@ -2202,7 +2218,8 @@ impl Heap {
         | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
         | HeapObject::FinalizationRegistry(_)
-        | HeapObject::Generator(_),
+        | HeapObject::Generator(_)
+        | HeapObject::AsyncGenerator(_),
       ) => Ok(self.slots[idx].host_slots),
       _ => Err(VmError::invalid_handle()),
     }
@@ -2229,7 +2246,8 @@ impl Heap {
         | HeapObject::WeakMap(_)
         | HeapObject::WeakSet(_)
         | HeapObject::FinalizationRegistry(_)
-        | HeapObject::Generator(_),
+        | HeapObject::Generator(_)
+        | HeapObject::AsyncGenerator(_),
       ) => {
         self.slots[idx].host_slots = None;
         Ok(())
@@ -2361,6 +2379,7 @@ impl Heap {
       HeapObject::Function(f) => Ok(&f.base),
       HeapObject::RegExp(r) => Ok(&r.base),
       HeapObject::Generator(g) => Ok(&g.object.base),
+      HeapObject::AsyncGenerator(g) => Ok(&g.object.base),
       HeapObject::Promise(p) => Ok(&p.object.base),
       HeapObject::Map(m) => Ok(&m.base),
       HeapObject::Set(s) => Ok(&s.base),
@@ -2381,6 +2400,7 @@ impl Heap {
       HeapObject::Function(f) => Ok(&mut f.base),
       HeapObject::RegExp(r) => Ok(&mut r.base),
       HeapObject::Generator(g) => Ok(&mut g.object.base),
+      HeapObject::AsyncGenerator(g) => Ok(&mut g.object.base),
       HeapObject::Promise(p) => Ok(&mut p.object.base),
       HeapObject::Map(m) => Ok(&mut m.base),
       HeapObject::Set(s) => Ok(&mut s.base),
@@ -3976,6 +3996,10 @@ impl Heap {
       Generator {
         continuation_bytes: usize,
       },
+      AsyncGenerator {
+        continuation_bytes: usize,
+        queue_bytes: usize,
+      },
     }
 
     let (idx, target_kind, property_count) = {
@@ -4132,6 +4156,26 @@ impl Heap {
           },
           g.object.base.properties.len(),
         ),
+        HeapObject::AsyncGenerator(g) => (
+          g.object
+            .base
+            .properties
+            .iter()
+            .position(|prop| self.property_key_eq(&prop.key, key)),
+          TargetKind::AsyncGenerator {
+            continuation_bytes: g
+              .continuation
+              .as_ref()
+              .map(|c| c.heap_size_bytes())
+              .unwrap_or(0),
+            queue_bytes: g
+              .request_queue
+              .capacity()
+              .checked_mul(mem::size_of::<AsyncGeneratorRequest>())
+              .unwrap_or(usize::MAX),
+          },
+          g.object.base.properties.len(),
+        ),
         _ => return Err(VmError::invalid_handle()),
       }
     };
@@ -4176,6 +4220,12 @@ impl Heap {
         continuation_bytes,
       } => ObjectBase::properties_heap_size_bytes_for_count(new_property_count)
         .saturating_add(continuation_bytes),
+      TargetKind::AsyncGenerator {
+        continuation_bytes,
+        queue_bytes,
+      } => ObjectBase::properties_heap_size_bytes_for_count(new_property_count)
+        .saturating_add(continuation_bytes)
+        .saturating_add(queue_bytes),
     };
 
     // Allocate the new property table fallibly so hostile inputs cannot abort the host process
@@ -4244,6 +4294,10 @@ impl Heap {
           buf.extend_from_slice(&g.object.base.properties[..idx]);
           buf.extend_from_slice(&g.object.base.properties[idx + 1..]);
         }
+        Some(HeapObject::AsyncGenerator(g)) => {
+          buf.extend_from_slice(&g.object.base.properties[..idx]);
+          buf.extend_from_slice(&g.object.base.properties[idx + 1..]);
+        }
         _ => return Err(VmError::invalid_handle()),
       }
     }
@@ -4267,6 +4321,7 @@ impl Heap {
       HeapObject::WeakRef(wr) => wr.base.properties = properties,
       HeapObject::FinalizationRegistry(fr) => fr.base.properties = properties,
       HeapObject::Generator(g) => g.object.base.properties = properties,
+      HeapObject::AsyncGenerator(g) => g.object.base.properties = properties,
       _ => return Err(VmError::invalid_handle()),
     }
 
@@ -6693,6 +6748,10 @@ impl Heap {
       Generator {
         continuation_bytes: usize,
       },
+      AsyncGenerator {
+        continuation_bytes: usize,
+        queue_bytes: usize,
+      },
     }
 
     let (target_kind, property_count, old_bytes, existing_idx, array_len) = {
@@ -6925,6 +6984,32 @@ impl Heap {
             None,
           )
         }
+        HeapObject::AsyncGenerator(g) => {
+          let existing_idx = g
+            .object
+            .base
+            .properties
+            .iter()
+            .position(|entry| self.property_key_eq(&entry.key, &key));
+          (
+            TargetKind::AsyncGenerator {
+              continuation_bytes: g
+                .continuation
+                .as_ref()
+                .map(|c| c.heap_size_bytes())
+                .unwrap_or(0),
+              queue_bytes: g
+                .request_queue
+                .capacity()
+                .checked_mul(mem::size_of::<AsyncGeneratorRequest>())
+                .unwrap_or(usize::MAX),
+            },
+            g.object.base.properties.len(),
+            slot.bytes,
+            existing_idx,
+            None,
+          )
+        }
         _ => return Err(VmError::invalid_handle()),
       }
     };
@@ -6972,6 +7057,7 @@ impl Heap {
           Some(HeapObject::WeakSet(ws)) => ws.base.properties[existing_idx].desc = desc,
           Some(HeapObject::FinalizationRegistry(fr)) => fr.base.properties[existing_idx].desc = desc,
           Some(HeapObject::Generator(g)) => g.object.base.properties[existing_idx].desc = desc,
+          Some(HeapObject::AsyncGenerator(g)) => g.object.base.properties[existing_idx].desc = desc,
           _ => return Err(VmError::invalid_handle()),
         }
       }
@@ -7014,6 +7100,12 @@ impl Heap {
             continuation_bytes,
           } => ObjectBase::properties_heap_size_bytes_for_count(new_property_count)
             .saturating_add(continuation_bytes),
+          TargetKind::AsyncGenerator {
+            continuation_bytes,
+            queue_bytes,
+          } => ObjectBase::properties_heap_size_bytes_for_count(new_property_count)
+            .saturating_add(continuation_bytes)
+            .saturating_add(queue_bytes),
         };
 
         // Before allocating, enforce heap limits based on the net growth of this object.
@@ -7044,6 +7136,7 @@ impl Heap {
             Some(HeapObject::WeakSet(ws)) => buf.extend_from_slice(&ws.base.properties),
             Some(HeapObject::FinalizationRegistry(fr)) => buf.extend_from_slice(&fr.base.properties),
             Some(HeapObject::Generator(g)) => buf.extend_from_slice(&g.object.base.properties),
+            Some(HeapObject::AsyncGenerator(g)) => buf.extend_from_slice(&g.object.base.properties),
             _ => return Err(VmError::invalid_handle()),
           }
         }
@@ -7066,6 +7159,7 @@ impl Heap {
           Some(HeapObject::WeakSet(ws)) => ws.base.properties = properties,
           Some(HeapObject::FinalizationRegistry(fr)) => fr.base.properties = properties,
           Some(HeapObject::Generator(g)) => g.object.base.properties = properties,
+          Some(HeapObject::AsyncGenerator(g)) => g.object.base.properties = properties,
           _ => return Err(VmError::invalid_handle()),
         }
 
@@ -8964,6 +9058,27 @@ impl<'a> Scope<'a> {
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
+  pub(crate) fn alloc_async_generator_with_prototype(
+    &mut self,
+    prototype: Option<GcObject>,
+    state: AsyncGeneratorState,
+    continuation: Option<Box<AsyncGeneratorContinuation>>,
+    request_queue: VecDeque<AsyncGeneratorRequest>,
+  ) -> Result<GcObject, VmError> {
+    // Root the prototype during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(proto) = prototype {
+      scope.push_root(Value::Object(proto))?;
+    }
+
+    let gen = JsAsyncGenerator::new(prototype, state, continuation, request_queue);
+    let new_bytes = gen.heap_size_bytes();
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::AsyncGenerator(gen);
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
   /// Allocates a new pending Promise object on the heap.
   pub fn alloc_promise(&mut self) -> Result<GcObject, VmError> {
     self.alloc_promise_with_prototype(None)
@@ -9807,6 +9922,7 @@ enum HeapObject {
   WeakSet(JsWeakSet),
   FinalizationRegistry(JsFinalizationRegistry),
   Generator(JsGenerator),
+  AsyncGenerator(JsAsyncGenerator),
 }
 
 impl Trace for HeapObject {
@@ -9832,6 +9948,7 @@ impl Trace for HeapObject {
       HeapObject::WeakSet(ws) => ws.trace(tracer),
       HeapObject::FinalizationRegistry(fr) => fr.trace(tracer),
       HeapObject::Generator(g) => g.trace(tracer),
+      HeapObject::AsyncGenerator(g) => g.trace(tracer),
     }
   }
 }
@@ -10589,6 +10706,71 @@ impl Trace for GeneratorContinuation {
 }
 
 #[derive(Debug)]
+pub(crate) struct AsyncGeneratorContinuation {
+  pub(crate) env: RuntimeEnv,
+  pub(crate) strict: bool,
+  pub(crate) this: Value,
+  pub(crate) new_target: Value,
+  pub(crate) func: Arc<Node<Func>>,
+  pub(crate) args: Box<[Value]>,
+}
+
+impl AsyncGeneratorContinuation {
+  fn heap_size_bytes(&self) -> usize {
+    let args_bytes = self
+      .args
+      .len()
+      .checked_mul(mem::size_of::<Value>())
+      .unwrap_or(usize::MAX);
+
+    mem::size_of::<Self>()
+      .checked_add(args_bytes)
+      .unwrap_or(usize::MAX)
+  }
+}
+
+impl Trace for AsyncGeneratorContinuation {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.env.trace(tracer);
+    tracer.trace_value(self.this);
+    tracer.trace_value(self.new_target);
+    for v in self.args.iter().copied() {
+      tracer.trace_value(v);
+    }
+  }
+}
+
+#[derive(Debug)]
+pub(crate) enum AsyncGeneratorRequestKind {
+  Next(Value),
+  Return(Value),
+  Throw(Value),
+}
+
+impl Trace for AsyncGeneratorRequestKind {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    match self {
+      AsyncGeneratorRequestKind::Next(v)
+      | AsyncGeneratorRequestKind::Return(v)
+      | AsyncGeneratorRequestKind::Throw(v) => tracer.trace_value(*v),
+    }
+  }
+}
+
+#[derive(Debug)]
+pub(crate) struct AsyncGeneratorRequest {
+  pub(crate) kind: AsyncGeneratorRequestKind,
+  pub(crate) promise: GcObject,
+}
+
+impl Trace for AsyncGeneratorRequest {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.kind.trace(tracer);
+    tracer.trace_value(Value::Object(self.promise));
+  }
+}
+
+#[derive(Debug)]
 struct JsGenerator {
   object: JsObject,
   state: GeneratorState,
@@ -10626,6 +10808,63 @@ impl Trace for JsGenerator {
     self.object.trace(tracer);
     if let Some(cont) = &self.continuation {
       cont.trace(tracer);
+    }
+  }
+}
+
+#[derive(Debug)]
+struct JsAsyncGenerator {
+  object: JsObject,
+  state: AsyncGeneratorState,
+  continuation: Option<Box<AsyncGeneratorContinuation>>,
+  request_queue: VecDeque<AsyncGeneratorRequest>,
+}
+
+impl JsAsyncGenerator {
+  fn new(
+    prototype: Option<GcObject>,
+    state: AsyncGeneratorState,
+    continuation: Option<Box<AsyncGeneratorContinuation>>,
+    request_queue: VecDeque<AsyncGeneratorRequest>,
+  ) -> Self {
+    Self {
+      object: JsObject::new(prototype),
+      state,
+      continuation,
+      request_queue,
+    }
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    let props_bytes = ObjectBase::properties_heap_size_bytes_for_count(
+      self.object.base.property_count(),
+    );
+    let cont_bytes = self
+      .continuation
+      .as_ref()
+      .map(|c| c.heap_size_bytes())
+      .unwrap_or(0);
+    let queue_bytes = self
+      .request_queue
+      .capacity()
+      .checked_mul(mem::size_of::<AsyncGeneratorRequest>())
+      .unwrap_or(usize::MAX);
+
+    props_bytes
+      .checked_add(cont_bytes)
+      .and_then(|b| b.checked_add(queue_bytes))
+      .unwrap_or(usize::MAX)
+  }
+}
+
+impl Trace for JsAsyncGenerator {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    self.object.trace(tracer);
+    if let Some(cont) = &self.continuation {
+      cont.trace(tracer);
+    }
+    for req in self.request_queue.iter() {
+      req.trace(tracer);
     }
   }
 }
