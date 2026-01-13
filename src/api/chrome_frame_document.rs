@@ -89,7 +89,8 @@ impl ChromeFrameDocument {
     let scroll: ScrollState = document.scroll_state();
     let viewport_point = Point::new(pos_css.0, pos_css.1);
     document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scrolled = (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
+      let scrolled =
+        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
       let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
       let changed = interaction.pointer_move(dom, box_tree, fragment_tree, &scroll, viewport_point);
       (changed, changed)
@@ -104,8 +105,9 @@ impl ChromeFrameDocument {
   /// Returns `true` when the interaction state changed (i.e. a rerender is required to clear
   /// hover/active styling).
   pub fn pointer_leave(&mut self) -> bool {
-    let had_hover = !self.interaction.interaction_state().hover_chain.is_empty();
-    let had_active = !self.interaction.interaction_state().active_chain.is_empty();
+    let state = self.interaction.interaction_state();
+    let had_hover = !state.hover_chain().is_empty();
+    let had_active = !state.active_chain().is_empty();
     if !had_hover && !had_active {
       // Still clear internal drag state so future interactions don't carry stale capture state, but
       // avoid forcing a rerender when no pseudo-class-visible state changed.
@@ -171,7 +173,7 @@ mod tests {
       "expected initial background to be black"
     );
     assert!(
-      doc.interaction_state().hover_chain.is_empty(),
+      doc.interaction_state().hover_chain().is_empty(),
       "expected initial hover chain to be empty"
     );
 
@@ -181,7 +183,7 @@ mod tests {
       "expected pointer_move to update hover state"
     );
     assert!(
-      !doc.interaction_state().hover_chain.is_empty(),
+      !doc.interaction_state().hover_chain().is_empty(),
       "expected hover chain to be non-empty after pointer_move"
     );
     let hovered = doc
@@ -199,7 +201,7 @@ mod tests {
       "expected pointer_leave to report a hover/active state change"
     );
     assert!(
-      doc.interaction_state().hover_chain.is_empty(),
+      doc.interaction_state().hover_chain().is_empty(),
       "expected hover chain to be empty after pointer_leave"
     );
     let cleared = doc
