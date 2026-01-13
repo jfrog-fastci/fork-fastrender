@@ -125,20 +125,26 @@ fn click_image_input_submits_form() {
   };
   let submitted = Url::parse(&submitted_url).expect("parse submitted URL");
 
-  let mut has_x = false;
-  let mut has_y = false;
+  let mut x_val: Option<i32> = None;
+  let mut y_val: Option<i32> = None;
   if let Some(query) = submitted.query() {
     for (key, _value) in url::form_urlencoded::parse(query.as_bytes()) {
       if key == "img.x" {
-        has_x = true;
+        x_val = _value.parse::<i32>().ok();
       } else if key == "img.y" {
-        has_y = true;
+        y_val = _value.parse::<i32>().ok();
       }
     }
   }
+  let x = x_val.unwrap_or_else(|| {
+    panic!("expected submitted URL to include integer img.x parameter; got {submitted_url}")
+  });
+  let y = y_val.unwrap_or_else(|| {
+    panic!("expected submitted URL to include integer img.y parameter; got {submitted_url}")
+  });
   assert!(
-    has_x && has_y,
-    "expected submitted URL to include img.x and img.y parameters for <input type=image name=img>; got {submitted_url}"
+    x > 0 && y > 0,
+    "expected img.x/img.y from a pointer click to be > 0; got img.x={x} img.y={y} url={submitted_url}"
   );
 
   support::recv_for_tab(
