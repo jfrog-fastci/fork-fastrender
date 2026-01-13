@@ -170,6 +170,7 @@ mod property;
 mod property_descriptor_ops;
 mod realm;
 mod regexp;
+mod regexp_case_folding;
 mod regexp_unicode_property_strings;
 mod regexp_unicode_resolver;
 mod source;
@@ -348,6 +349,7 @@ pub use crate::property_descriptor_ops::to_property_descriptor_with_host_and_hoo
 pub use crate::realm::Realm;
 pub use crate::regexp::RegExpFlags;
 pub use crate::regexp::RegExpProgram;
+pub use crate::regexp_case_folding::regexp_case_fold;
 pub use crate::source::format_stack_trace;
 pub use crate::source::SourceText;
 pub use crate::source::StackFrame;
