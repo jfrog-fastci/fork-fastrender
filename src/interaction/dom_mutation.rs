@@ -1047,6 +1047,116 @@ pub fn set_select_selected_options(
   changed
 }
 
+/// Move selectedness between two `<option>` descendants of the same `<select>` without clearing any
+/// other selected options.
+///
+/// This is primarily intended for `<select multiple>` keyboard ArrowUp/ArrowDown navigation.
+///
+/// Returns `true` iff any DOM attributes were changed.
+pub fn move_select_option_selection(
+  root: &mut DomNode,
+  select_node_id: usize,
+  from_option_node_id: usize,
+  to_option_node_id: usize,
+) -> bool {
+  let mut index = DomIndex::build(root);
+
+  if super::effective_disabled::is_effectively_inert(select_node_id, &index)
+    || super::effective_disabled::is_effectively_disabled(select_node_id, &index)
+  {
+    return false;
+  }
+
+  let Some(select_ok) = index.with_node_mut(select_node_id, |node| {
+    node
+      .tag_name()
+      .is_some_and(|t| t.eq_ignore_ascii_case("select") && is_html_element(node))
+  }) else {
+    return false;
+  };
+  if !select_ok {
+    return false;
+  }
+
+  fn select_is_ancestor(index: &DomIndex, select_id: usize, mut node_id: usize) -> bool {
+    let mut parent = index.parent.get(node_id).copied().unwrap_or(0);
+    while parent != 0 {
+      if parent == select_id {
+        return true;
+      }
+      node_id = parent;
+      parent = index.parent.get(node_id).copied().unwrap_or(0);
+    }
+    false
+  }
+
+  fn select_is_ancestor_without_disabled_optgroup(
+    index: &mut DomIndex,
+    select_id: usize,
+    option_id: usize,
+  ) -> bool {
+    let mut parent = index.parent.get(option_id).copied().unwrap_or(0);
+    while parent != 0 {
+      if parent == select_id {
+        return true;
+      }
+
+      let disabled_optgroup = index
+        .with_node_mut(parent, |node| {
+          node
+            .tag_name()
+            .is_some_and(|t| t.eq_ignore_ascii_case("optgroup") && is_html_element(node))
+            && node.get_attribute_ref("disabled").is_some()
+        })
+        .unwrap_or(false);
+      if disabled_optgroup {
+        return false;
+      }
+
+      parent = index.parent.get(parent).copied().unwrap_or(0);
+    }
+    false
+  }
+
+  let Some((to_ok, to_disabled)) = index.with_node_mut(to_option_node_id, |node| {
+    let is_option = node
+      .tag_name()
+      .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(node));
+    (is_option, node.get_attribute_ref("disabled").is_some())
+  }) else {
+    return false;
+  };
+  if !to_ok || to_disabled {
+    return false;
+  }
+  if !select_is_ancestor_without_disabled_optgroup(&mut index, select_node_id, to_option_node_id) {
+    return false;
+  }
+
+  let mut changed = false;
+
+  if from_option_node_id != to_option_node_id {
+    let from_is_option = index
+      .with_node_mut(from_option_node_id, |node| {
+        node
+          .tag_name()
+          .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(node))
+      })
+      .unwrap_or(false);
+    if from_is_option && select_is_ancestor(&index, select_node_id, from_option_node_id) {
+      changed |= index
+        .with_node_mut(from_option_node_id, |node| remove_attr(node, "selected"))
+        .unwrap_or(false);
+    }
+  }
+
+  changed |= index
+    .with_node_mut(to_option_node_id, |node| set_bool_attr(node, "selected", true))
+    .unwrap_or(false);
+
+  changed
+}
+
 /// Activate/choose an `<option>` descendant of a `<datalist>` referenced by an `<input list=...>`.
 ///
 /// Returns `true` iff any DOM attributes were changed.

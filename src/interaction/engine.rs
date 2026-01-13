@@ -11629,10 +11629,12 @@ impl InteractionEngine {
         ) && focused_is_select
           && !is_disabled_or_inert(&index, focused)
         {
+          let is_multiple = index
+            .node(focused)
+            .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
+
           if matches!(key, KeyAction::Home | KeyAction::End)
-            && index
-              .node(focused)
-              .is_some_and(|node| node.get_attribute_ref("multiple").is_some())
+            && is_multiple
           {
             // Home/End selection is only supported for single-select controls.
             return changed;
@@ -11722,16 +11724,35 @@ impl InteractionEngine {
             _ => anchor_idx,
           };
 
-          // If we clamped and the anchor was already selected, treat as a no-op (avoids clearing
-          // unrelated selections in multi-select).
-          if next_idx == anchor_idx && last_selected_idx.is_some() {
-            return changed;
-          }
-
           let option_node_id = options[next_idx].0;
           // Keep the Shift range-selection anchor consistent with keyboard-driven selection.
           self.select_listbox_anchor.insert(focused, option_node_id);
-          changed |= self.activate_select_option(dom, focused, option_node_id, false);
+
+          if is_multiple {
+            // MVP multi-select arrow-key behaviour: treat the last selected option as the active
+            // one, and move only that selection to the next enabled option without affecting any
+            // unrelated selected options.
+            let from_option_node_id = options[anchor_idx].0;
+
+            self.ensure_form_default_snapshot_for_control(&index, focused);
+            let dom_changed = dom_mutation::move_select_option_selection(
+              dom,
+              focused,
+              from_option_node_id,
+              option_node_id,
+            );
+            changed |= dom_changed;
+            if dom_changed {
+              changed |= self.mark_user_validity(focused);
+            }
+          } else {
+            // If we clamped and the anchor was already selected, treat as a no-op.
+            if next_idx == anchor_idx && last_selected_idx.is_some() {
+              return changed;
+            }
+
+            changed |= self.activate_select_option(dom, focused, option_node_id, false);
+          }
         }
       }
       KeyAction::Tab | KeyAction::ShiftTab => debug_assert!(false, "handled above"),
