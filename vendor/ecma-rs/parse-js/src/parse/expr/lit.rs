@@ -40,7 +40,7 @@ use crate::num::JsNumber;
 use crate::operator::OperatorName;
 use crate::token::TT;
 use num_bigint::BigInt;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use unicode_ident::is_xid_continue;
 use unicode_ident::is_xid_start;
 pub fn normalise_literal_number(raw: &str) -> Option<JsNumber> {
@@ -1156,26 +1156,8 @@ fn validate_regex_pattern(
   // Whether the immediately preceding token was a quantifier that can accept a `?` non-greedy
   // modifier.
   let mut quantifier_allows_lazy = false;
-  let mut named_capture_groups: HashMap<String, Vec<Vec<(u32, u32)>>> = HashMap::new();
+  let mut named_capture_groups: HashSet<String> = HashSet::new();
   let mut named_backreferences: Vec<(String, usize /* offset */, usize /* len */)> = Vec::new();
-  // Track alternation branches so we can approximate MightBothParticipate (ECMA-262) for duplicate
-  // named capture groups. Duplicates are only early errors when they can both participate in the
-  // same match; groups in disjoint alternation branches are allowed.
-  let mut alt_stack: Vec<(u32 /* frame id */, u32 /* branch */)> = vec![(0, 0)];
-  let mut next_alt_frame_id: u32 = 1;
-
-  fn signatures_mutually_exclusive(a: &[(u32, u32)], b: &[(u32, u32)]) -> bool {
-    let len = a.len().min(b.len());
-    for idx in 0..len {
-      if a[idx].0 != b[idx].0 {
-        break;
-      }
-      if a[idx].1 != b[idx].1 {
-        return true;
-      }
-    }
-    false
-  }
 
   fn unicode_property_of_strings(name: &str) -> bool {
     super::regex_unicode_property::is_unicode_property_of_strings(name)
@@ -3020,28 +3002,11 @@ fn validate_regex_pattern(
             err
           })?;
         if let Some(name) = capture_name {
-          let signature = alt_stack.clone();
-          if let Some(existing) = named_capture_groups.get(&name) {
-            // Early error: duplicate named capture groups are disallowed unless they are in disjoint
-            // alternation branches.
-            for prev in existing {
-              if !signatures_mutually_exclusive(prev, &signature) {
-                return Err(RegexError {
-                  kind: RegexErrorKind::InvalidPattern,
-                  offset: base_offset + i,
-                  len: consumed,
-                });
-              }
-            }
-          }
-          named_capture_groups
-            .entry(name)
-            .or_default()
-            .push(signature);
+          // Duplicate named capture groups are allowed; we only need the set of names for validating
+          // named backreferences.
+          named_capture_groups.insert(name);
         }
         group_stack.push(quantifiable);
-        alt_stack.push((next_alt_frame_id, 0));
-        next_alt_frame_id = next_alt_frame_id.wrapping_add(1);
         prev_can_be_quantified = false;
         quantifier_allows_lazy = false;
         i += consumed;
@@ -3055,7 +3020,6 @@ fn validate_regex_pattern(
             len: 1,
           });
         };
-        alt_stack.pop();
         prev_can_be_quantified = quantifiable;
         quantifier_allows_lazy = false;
         i += ch_len;
@@ -3069,12 +3033,9 @@ fn validate_regex_pattern(
         continue;
       }
       '|' => {
-        // Alternation cannot be quantified. Track the branch index for duplicate-group analysis.
+        // Alternation cannot be quantified.
         prev_can_be_quantified = false;
         quantifier_allows_lazy = false;
-        if let Some((_id, branch)) = alt_stack.last_mut() {
-          *branch = branch.wrapping_add(1);
-        }
         i += ch_len;
         continue;
       }
@@ -3213,7 +3174,7 @@ fn validate_regex_pattern(
   }
 
   for (name, offset, len) in named_backreferences {
-    if !named_capture_groups.contains_key(&name) {
+    if !named_capture_groups.contains(&name) {
       return Err(RegexError {
         kind: RegexErrorKind::InvalidPattern,
         offset,
