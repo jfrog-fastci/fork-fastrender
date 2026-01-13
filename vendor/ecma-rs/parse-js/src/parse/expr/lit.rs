@@ -2104,14 +2104,11 @@ fn validate_regex_pattern(
     // `\c` AsciiLetter.
     if esc == 'c' {
       if after_esc >= pattern.len() {
-        if unicode_mode {
-          return Err(RegexError {
-            kind: RegexErrorKind::InvalidPattern,
-            offset: base_offset + escape_start,
-            len: pattern.len().saturating_sub(escape_start),
-          });
-        }
-        return Ok((after_esc, RegexClassAtom::Single(esc as u32)));
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: base_offset + escape_start,
+          len: pattern.len().saturating_sub(escape_start),
+        });
       }
       let ctrl = pattern[after_esc..].chars().next().unwrap();
       if ctrl.is_ascii_alphabetic() {
@@ -2119,14 +2116,11 @@ fn validate_regex_pattern(
         let value = (upper as u32).saturating_sub(0x40);
         return Ok((after_esc + ctrl.len_utf8(), RegexClassAtom::Single(value)));
       }
-      if unicode_mode {
-        return Err(RegexError {
-          kind: RegexErrorKind::InvalidPattern,
-          offset: base_offset + escape_start,
-          len: after_esc + ctrl.len_utf8() - escape_start,
-        });
-      }
-      return Ok((after_esc, RegexClassAtom::Single(esc as u32)));
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: base_offset + escape_start,
+        len: after_esc + ctrl.len_utf8() - escape_start,
+      });
     }
 
     // `\b` is backspace inside character classes.
@@ -2505,6 +2499,29 @@ fn validate_regex_pattern(
         continue;
       }
 
+      // `\c` must be followed by an ASCII letter in all modes.
+      if esc == 'c' {
+        let after_c = i + esc_len;
+        let Some(control) = pattern[after_c..].chars().next() else {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: after_c.saturating_sub(escape_start),
+          });
+        };
+        if !control.is_ascii_alphabetic() {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: after_c + control.len_utf8() - escape_start,
+          });
+        }
+        i = after_c + control.len_utf8();
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+        continue;
+      }
+
       if unicode_mode {
         // In UnicodeMode (`u`/`v`), escapes must match the strict grammar.
         //
@@ -2545,32 +2562,6 @@ fn validate_regex_pattern(
             quantifier_allows_lazy = false;
           }
           i += esc_len;
-          continue;
-        }
-
-        // CharacterEscape: `c` AsciiLetter
-        if esc == 'c' {
-          let after_c = i + esc_len;
-          if after_c >= pattern.len() {
-            return Err(RegexError {
-              kind: RegexErrorKind::InvalidPattern,
-              offset: base_offset + escape_start,
-              len: pattern.len().saturating_sub(escape_start),
-            });
-          }
-          let ctrl = pattern[after_c..].chars().next().unwrap();
-          if !ctrl.is_ascii_alphabetic() {
-            return Err(RegexError {
-              kind: RegexErrorKind::InvalidPattern,
-              offset: base_offset + escape_start,
-              len: after_c + ctrl.len_utf8() - escape_start,
-            });
-          }
-          i = after_c + ctrl.len_utf8();
-          if !in_charset {
-            prev_can_be_quantified = true;
-            quantifier_allows_lazy = false;
-          }
           continue;
         }
 

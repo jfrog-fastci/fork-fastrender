@@ -169,3 +169,19 @@ fn incomplete_hex_and_unicode_regex_escapes_are_errors_in_unicode_mode() {
     );
   }
 }
+
+#[test]
+fn unicode_mode_invalid_regex_escapes_are_rejected() {
+  for src in ["/\\a/u", "/[\\a]/u", "/\\c!/u", "/\\01/u", "/[\\1]/u"] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+
+  // Still accept valid unicode-mode identity escapes.
+  assert!(parse("/\\^/u").is_ok());
+  assert!(parse("/[\\-]/u").is_ok());
+}
