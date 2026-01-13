@@ -16,6 +16,11 @@ use url::Url;
 /// inline buffers.
 pub const MAX_IPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
+pub mod security;
+pub use security::{
+  BrowserIpcSecurityState, FrameOwnershipViolation, IpcSecurityEvent, RendererToBrowserKind,
+};
+
 /// Identifier for a frame (tab/iframe) hosted inside a renderer process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FrameId(pub u64);
@@ -455,6 +460,16 @@ pub enum RendererToBrowser {
     /// Subframe embeddings present in this frame (to be composited by the browser).
     subframes: Vec<SubframeInfo>,
   },
+  /// The renderer committed a navigation for `frame_id`.
+  NavigationCommitted { frame_id: FrameId, url: String },
+  /// The renderer failed to commit a navigation for `frame_id`.
+  NavigationFailed {
+    frame_id: FrameId,
+    url: String,
+    error: String,
+  },
+  /// Acknowledgement for an input event dispatched to `frame_id`.
+  InputAck { frame_id: FrameId, seq: u64 },
   /// Report a recoverable error related to a specific frame (if any).
   Error {
     frame_id: Option<FrameId>,
