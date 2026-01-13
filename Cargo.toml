@@ -355,6 +355,12 @@ opt-level = 3
 [profile.dev.package.tiny-skia-path]
 opt-level = 3
 
+[profile.dev.package.vm-js]
+# Work around rust-lld undefined hidden symbol failures when linking `vm-js` in the dev profile.
+# This appears to be sensitive to incremental + many codegen units; compiling `vm-js` as a single
+# codegen unit avoids emitting unresolved `.llvm.*` symbols into the rlib.
+codegen-units = 1
+
 [[bench]]
 name = "perf_regressions"
 harness = false
