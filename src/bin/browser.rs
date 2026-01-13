@@ -21234,6 +21234,7 @@ impl App {
     use fastrender::ui::UiToWorker;
 
     let mut session_dirty = false;
+    let mut open_tabs_snapshot_dirty = false;
 
     if !actions.is_empty() {
       self.cancel_select_dropdown();
@@ -21254,9 +21255,13 @@ impl App {
         }
         ChromeAction::NewWindow => {
           // The winit event loop owns native window creation; request a new window via a user event.
-          let _ = self
+          if self
             .event_loop_proxy
-            .send_event(UserEvent::RequestNewWindow(self.window.id()));
+            .send_event(UserEvent::RequestNewWindow(self.window.id()))
+            .is_err()
+          {
+            self.toast_new_window_error("event loop closed");
+          }
         }
         ChromeAction::ToggleFullScreen => {
           use winit::window::Fullscreen;
@@ -21508,44 +21513,6 @@ impl App {
             continue;
           }
 
-          // If this is the last tab in the window, create a replacement tab first so we preserve
-          // the invariant that each window always has at least one tab.
-          if self.browser_state.tabs.len() <= 1 {
-            session_dirty = true;
-            open_tabs_snapshot_dirty = true;
-            let replacement_id = fastrender::ui::TabId::new();
-            let initial_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
-            let mut tab_state =
-              fastrender::ui::BrowserTabState::new(replacement_id, initial_url.clone());
-            tab_state.loading = true;
-            tab_state.unresponsive = false;
-            tab_state.last_worker_msg_at = std::time::SystemTime::now();
-            let cancel = tab_state.cancel.clone();
-            self.tab_cancel.insert(replacement_id, cancel.clone());
-            self.browser_state.push_tab(tab_state, true);
-            self.browser_state.chrome.address_bar_text = initial_url.clone();
-
-            self.viewport_cache_tab = None;
-            self.pointer_captured = false;
-            self.captured_button = fastrender::ui::PointerButton::None;
-            self.cursor_in_page = false;
-            self.hover_sync_pending = true;
-            self.pending_pointer_move = None;
-
-            let _ = self.send_worker_msg(UiToWorker::CreateTab {
-              tab_id: replacement_id,
-              initial_url: Some(initial_url),
-              cancel,
-            });
-            let _ = self.send_worker_msg(UiToWorker::SetActiveTab {
-              tab_id: replacement_id,
-            });
-            let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
-              tab_id: replacement_id,
-              reason: RepaintReason::Explicit,
-            });
-          }
-
           // Capture the detached tab's serializable state before we mutate the window.
           //
           // Note: Session persistence supports pinned tabs + tab groups, so we keep that state when
@@ -21607,12 +21574,55 @@ impl App {
             show_menu_bar: self.browser_state.chrome.show_menu_bar,
             window_state: None,
           };
-          let _ = self
+          if self
             .event_loop_proxy
             .send_event(UserEvent::RequestNewWindowWithSession {
               from_id: self.window.id(),
               window: session_window,
+            })
+            .is_err()
+          {
+            self.toast_new_window_error("event loop closed");
+            continue;
+          }
+
+          // If this is the last tab in the window, create a replacement tab first so we preserve
+          // the invariant that each window always has at least one tab.
+          if self.browser_state.tabs.len() <= 1 {
+            session_dirty = true;
+            open_tabs_snapshot_dirty = true;
+            let replacement_id = fastrender::ui::TabId::new();
+            let initial_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
+            let mut tab_state =
+              fastrender::ui::BrowserTabState::new(replacement_id, initial_url.clone());
+            tab_state.loading = true;
+            tab_state.unresponsive = false;
+            tab_state.last_worker_msg_at = std::time::SystemTime::now();
+            let cancel = tab_state.cancel.clone();
+            self.tab_cancel.insert(replacement_id, cancel.clone());
+            self.browser_state.push_tab(tab_state, true);
+            self.browser_state.chrome.address_bar_text = initial_url.clone();
+
+            self.viewport_cache_tab = None;
+            self.pointer_captured = false;
+            self.captured_button = fastrender::ui::PointerButton::None;
+            self.cursor_in_page = false;
+            self.hover_sync_pending = true;
+            self.pending_pointer_move = None;
+
+            let _ = self.send_worker_msg(UiToWorker::CreateTab {
+              tab_id: replacement_id,
+              initial_url: Some(initial_url),
+              cancel,
             });
+            let _ = self.send_worker_msg(UiToWorker::SetActiveTab {
+              tab_id: replacement_id,
+            });
+            let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
+              tab_id: replacement_id,
+              reason: RepaintReason::Explicit,
+            });
+          }
 
           // Close the tab in the source window.
           session_dirty = true;
