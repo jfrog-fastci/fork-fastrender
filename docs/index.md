@@ -40,7 +40,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Linux IPC (shared memory + FD passing checklist): [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md)
 - Renderer sandbox entrypoint: [renderer_sandbox.md](renderer_sandbox.md)
 - Sandboxing overview (renderer process): [sandboxing.md](sandboxing.md)
-- Linux sandbox design (rlimits, fd hygiene, Landlock + seccomp): [security/sandbox.md](security/sandbox.md)
+- Linux sandbox design (rlimits, fd hygiene, namespaces, Landlock + seccomp): [security/sandbox.md](security/sandbox.md)
 - Windows renderer sandboxing: [windows_sandbox.md](windows_sandbox.md)
 - Windows renderer sandbox quick reference: [security/windows_renderer_sandbox.md](security/windows_renderer_sandbox.md)
 - Linux seccomp allowlist maintenance: [seccomp_allowlist.md](seccomp_allowlist.md)
