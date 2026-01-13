@@ -64,6 +64,10 @@ pub mod a11y;
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;
 
+// Test-only helpers for snapshotting FastRender-generated AccessKit tree updates.
+#[cfg(all(test, feature = "browser_ui"))]
+pub mod accesskit_snapshot;
+
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
 pub mod chrome;
