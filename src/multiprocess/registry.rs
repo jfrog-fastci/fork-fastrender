@@ -134,11 +134,11 @@ impl<S: ProcessSpawner> RendererProcessRegistry<S> {
   /// Return the renderer process ID for `site`, spawning a new renderer process if needed.
   pub fn get_or_spawn(&mut self, site: SiteKey) -> RendererProcessId {
     if let Some(handle) = self.by_site.get(&site) {
-      return handle.id();
+      return ProcessHandle::id(handle);
     }
 
     let handle = self.spawner.spawn(&site);
-    let id = handle.id();
+    let id = ProcessHandle::id(&handle);
 
     debug_assert!(
       !self.by_process.contains_key(&id),
@@ -262,7 +262,7 @@ impl<S: ProcessSpawner> RendererProcessRegistry<S> {
       return;
     };
 
-    handle.terminate();
+    ProcessHandle::terminate(&mut handle);
     record_process_terminated_for_test();
   }
 }
@@ -274,7 +274,7 @@ impl<S: ProcessSpawner> Drop for RendererProcessRegistry<S> {
       return;
     }
     for handle in self.by_site.values_mut() {
-      handle.terminate();
+      ProcessHandle::terminate(handle);
     }
     record_process_terminated_n_for_test(remaining);
   }
