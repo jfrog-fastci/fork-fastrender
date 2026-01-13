@@ -4429,6 +4429,16 @@ fn push_oriented_segment(
   segment.end = run.start + end;
   segment.rotation = rotation;
   segment.vertical = matches!(rotation, RunRotation::None);
+  if segment.vertical {
+    // In vertical typographic modes with `text-orientation: mixed`, upright segments participate in
+    // vertical shaping (`hb_direction = top-to-bottom`). They should not inherit RTL bidi direction
+    // from surrounding sideways text: browsers treat upright content as LTR for bidi reordering so
+    // vertical glyph runs remain in source order.
+    //
+    // Keep the embedding depth (level) stable but ensure it is even (LTR parity).
+    segment.level &= !1;
+    segment.direction = Direction::LeftToRight;
+  }
   out.push(segment);
 }
 

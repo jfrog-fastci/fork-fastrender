@@ -2901,6 +2901,7 @@ impl BrowserDocumentDom2 {
           }
         }
         crate::dom2::NodeKind::Slot {
+        crate::dom2::NodeKind::Slot {
           namespace,
           attributes,
           ..

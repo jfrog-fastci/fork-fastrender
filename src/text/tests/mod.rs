@@ -58,6 +58,7 @@ mod svg_glyph_safety_test;
 mod synthetic_small_caps_mapping_test;
 mod variable_font_metrics_mvar;
 mod vertical_alternates_test;
+mod vertical_mixed_rtl_direction_test;
 mod web_font_cors;
 mod web_font_display;
 mod web_font_swap_render_pipeline;
