@@ -23,29 +23,52 @@ so that changes to the vendored source reliably trigger a rebuild.
 ## Build configuration
 
 `build.rs` runs libvpx's `configure` + `make` inside `OUT_DIR`, using a configuration intended for
-decoding VP8/VP9 without extra tools/tests:
+VP8/VP9 decoding without extra tools/tests.
 
-- `--target=generic-gnu` (portable build; avoids assembler requirements)
+Target selection:
+
+- Linux x86_64: `--target=generic-gnu`
+- macOS x86_64: `--target=x86_64-darwinXX-gcc` (XX is detected from the host and clamped to the
+  libvpx release's known Darwin toolchains)
+- macOS aarch64 (Apple Silicon): `--target=arm64-darwinXX-gcc`
+- Windows x86_64-gnu (MinGW): `--target=x86_64-win64-gcc`
+
+Common flags:
+
+- `--disable-debug-libs` (avoid building `libvpx_g.a`, etc)
 - `--disable-examples --disable-tools --disable-unit-tests --disable-docs`
-- `--enable-vp9 --enable-vp8`
-- `--disable-webm-io`
-- `--disable-libyuv` (avoid building libyuv / C++ compilation)
+- Decoder-only build:
+  - `--enable-vp8-decoder --enable-vp9-decoder`
+  - `--disable-vp8-encoder --disable-vp9-encoder`
+- `--disable-webm-io` (no libwebm dependency)
+- `--disable-libyuv` (avoid C++ compilation)
 - `--enable-static --disable-shared --enable-pic`
+
+To avoid requiring `nasm`/`yasm` on x86/x86_64 targets, `build.rs` disables runtime CPU detection and
+all x86 SIMD feature flags, and sets `AS=true` to bypass assembler auto-detection.
 
 ## Supported targets
 
-Tested (CI/agent):
+Supported (best-effort; CI coverage may vary):
 
 - `x86_64-unknown-linux-gnu`
-
-Best-effort / experimental (not yet CI-covered):
-
 - `x86_64-apple-darwin` (native builds only; cross-compiling the bundled libvpx is not supported)
-- `x86_64-pc-windows-gnu` (MinGW; may require `CROSS` / a MinGW-w64 toolchain)
+- `aarch64-apple-darwin` (native builds only; cross-compiling the bundled libvpx is not supported)
+- `x86_64-pc-windows-gnu` (MinGW; may require `CROSS` / a MinGW-w64 toolchain when cross-compiling)
 
 Unsupported:
 
+- `x86_64-pc-windows-msvc` (MSVC)
 - Linux `musl` targets (use a GNU target or a system libvpx)
+
+Other targets will emit a clear build error (`cargo:warning` + panic) with guidance.
+
+Notes for Windows:
+
+- libvpx's upstream README requires **MSYS2 or Cygwin**. On Windows hosts, this crate runs the
+  vendored `configure` script via `sh`/`bash`, so a POSIX shell must be in `PATH`.
+- When cross-compiling to MinGW from a non-Windows host, you may need to set `CROSS=` or a
+  target-scoped `CC_*` toolchain prefix.
 
 ## ABI helpers
 
