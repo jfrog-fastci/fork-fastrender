@@ -2107,6 +2107,31 @@ impl FloatContext {
 
       if scanned_segments > 0 {
         profile_count_range_boundary_scanned(scanned_segments);
+        profile_update_max_range_boundaries_scanned_per_query(scanned_segments);
+      }
+
+      // Mirror the range-scan logging gate: if this `find_fit` probe ends up scanning an unusually
+      // large number of cached segments, emit a debug dump to help diagnose range-cache
+      // fragmentation.
+      let toggles = runtime::runtime_toggles();
+      if toggles.truthy("FASTR_LOG_FLOAT_CONTEXT") {
+        if let Some(threshold) = toggles
+          .usize("FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER")
+          .filter(|v| *v > 0)
+        {
+          if scanned_segments > threshold as u64 {
+            // Release the range-cache borrow so `debug_dump` can print segments.
+            drop(cache);
+            let mut state = FloatSweepState::new(self.float_map.len(), &self.events);
+            self.advance_sweep_to(y, &mut state);
+            self.debug_dump_with_sweep_state(
+              &format!(
+                "find_fit height=0 y={y:.2} scanned={scanned_segments} threshold={threshold}"
+              ),
+              &state,
+            );
+          }
+        }
       }
       return (y, last_left, last_right);
     }
@@ -2214,6 +2239,28 @@ impl FloatContext {
 
     if scanned_segments > 0 {
       profile_count_range_boundary_scanned(scanned_segments);
+      profile_update_max_range_boundaries_scanned_per_query(scanned_segments);
+    }
+
+    let toggles = runtime::runtime_toggles();
+    if toggles.truthy("FASTR_LOG_FLOAT_CONTEXT") {
+      if let Some(threshold) = toggles
+        .usize("FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER")
+        .filter(|v| *v > 0)
+      {
+        if scanned_segments > threshold as u64 {
+          // Release the range-cache borrow so `debug_dump` can print segments.
+          drop(cache);
+          let mut state = FloatSweepState::new(self.float_map.len(), &self.events);
+          self.advance_sweep_to(y, &mut state);
+          self.debug_dump_with_sweep_state(
+            &format!(
+              "find_fit width={target_width:.2} height={target_height:.2} y={y:.2} scanned={scanned_segments} threshold={threshold}"
+            ),
+            &state,
+          );
+        }
+      }
     }
 
     (y, last_left, last_right)
