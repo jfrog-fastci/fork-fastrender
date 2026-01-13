@@ -54,6 +54,15 @@ fn find_in_margin_boxes<'a>(page: &'a FragmentNode, needle: &str) -> Option<&'a 
     .find_map(|child| find_text(child, needle))
 }
 
+fn find_margin_box_fragment<'a>(page: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
+  let needle = strip_ws(needle);
+  page
+    .children
+    .iter()
+    .skip(1)
+    .find(|child| collected_text_compacted(child).contains(&needle))
+}
+
 fn strip_ws(s: &str) -> String {
   s.chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -350,6 +359,147 @@ fn page_rule_sets_size_and_margins() {
   assert!(
     (content.bounds.height() - 340.0).abs() < 0.1,
     "content bounds should be local to the wrapper"
+  );
+}
+
+#[test]
+fn margin_box_fixed_widths_are_positioned_per_css_page_three_box_algorithm() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            @top-left { width: 30px; content: "A"; }
+            @top-center { width: 40px; content: "B"; }
+            @top-right { width: 30px; content: "C"; }
+          }
+          html, body { margin: 0; padding: 0; }
+        </style>
+      </head>
+      <body>
+        <div style="height: 1px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let a = find_margin_box_fragment(page, "A").expect("expected @top-left margin box");
+  let b = find_margin_box_fragment(page, "B").expect("expected @top-center margin box");
+  let c = find_margin_box_fragment(page, "C").expect("expected @top-right margin box");
+
+  let epsilon = 0.1;
+  assert!(
+    (a.bounds.x() - 40.0).abs() < epsilon,
+    "top-left x mismatch: actual {}, expected 40",
+    a.bounds.x()
+  );
+  assert!(
+    (b.bounds.x() - 80.0).abs() < epsilon,
+    "top-center x mismatch: actual {}, expected 80",
+    b.bounds.x()
+  );
+  assert!(
+    (c.bounds.x() - 130.0).abs() < epsilon,
+    "top-right x mismatch: actual {}, expected 130",
+    c.bounds.x()
+  );
+
+  assert!(
+    (a.bounds.width() - 30.0).abs() < epsilon,
+    "top-left width mismatch: actual {}, expected 30",
+    a.bounds.width()
+  );
+  assert!(
+    (b.bounds.width() - 40.0).abs() < epsilon,
+    "top-center width mismatch: actual {}, expected 40",
+    b.bounds.width()
+  );
+  assert!(
+    (c.bounds.width() - 30.0).abs() < epsilon,
+    "top-right width mismatch: actual {}, expected 30",
+    c.bounds.width()
+  );
+}
+
+#[test]
+fn margin_box_max_width_clamps_used_size() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            @top-center { width: 200px; max-width: 40px; content: "B"; }
+          }
+          html, body { margin: 0; padding: 0; }
+        </style>
+      </head>
+      <body>
+        <div style="height: 1px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let b = find_margin_box_fragment(page, "B").expect("expected @top-center margin box");
+
+  let epsilon = 0.1;
+  assert!(
+    (b.bounds.width() - 40.0).abs() < epsilon,
+    "expected max-width to clamp used size to 40px, got {}",
+    b.bounds.width()
+  );
+}
+
+#[test]
+fn margin_box_min_width_clamps_used_size() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            @top-left { width: 10px; min-width: 50px; content: "A"; }
+          }
+          html, body { margin: 0; padding: 0; }
+        </style>
+      </head>
+      <body>
+        <div style="height: 1px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let a = find_margin_box_fragment(page, "A").expect("expected @top-left margin box");
+
+  let epsilon = 0.1;
+  assert!(
+    (a.bounds.width() - 50.0).abs() < epsilon,
+    "expected min-width to clamp used size to 50px, got {}",
+    a.bounds.width()
   );
 }
 

@@ -4685,14 +4685,15 @@ mod tests {
         margin_boxes.insert(area, box_style);
         running_elements.insert(
           ident.clone(),
-          RunningElementValues {
-            start: Some(FragmentNode::new_text(
-              Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+            RunningElementValues {
+              start: Some(FragmentNode::new_text(
+              // Non-zero bounds so `build_margin_box_children` emits a placeholder replaced box.
+              Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
               ident,
               0.0,
             )),
-            first: None,
-            last: None,
+              first: None,
+              last: None,
           },
         );
       }
