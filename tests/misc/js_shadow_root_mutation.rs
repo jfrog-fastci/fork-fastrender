@@ -47,6 +47,11 @@ fn shadow_root_inserted_as_fragment_open() -> Result<()> {
 
       document.body.appendChild(host);
 
+      // ShadowRoot.remove() must be a no-op (ShadowRoot is never a tree child).
+      sr.remove();
+      if (host.shadowRoot !== sr) throw new Error('shadow root detached via remove()');
+      if (sr.childNodes.length !== 1) throw new Error('shadow root children changed by remove()');
+
       // Inserting a ShadowRoot should behave like inserting a DocumentFragment: its children are
       // moved into the destination and the ShadowRoot is emptied.
       document.body.appendChild(sr);
@@ -102,6 +107,16 @@ fn shadow_root_inserted_as_fragment_closed() -> Result<()> {
 
       document.body.appendChild(host);
       if (host.shadowRoot !== null) throw new Error('closed shadow root should not be exposed on host.shadowRoot');
+
+      // ShadowRoot.remove() must not detach the ShadowRoot from its host, even in closed mode. The
+      // simplest observable check is that a second attachShadow call still fails.
+      sr.remove();
+      try {
+        host.attachShadow({ mode: 'open' });
+        throw new Error('attachShadow after remove() did not throw');
+      } catch (e) {
+        if (!e || e.name !== 'NotSupportedError') throw e;
+      }
 
       document.body.appendChild(sr);
 

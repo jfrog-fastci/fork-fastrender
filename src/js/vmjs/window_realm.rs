@@ -26523,6 +26523,18 @@ fn node_remove_native(
     return Ok(Value::Undefined);
   };
 
+  // ShadowRoot is never a tree child in the DOM Standard. Even though `dom2` stores it as a child
+  // of its host element for internal traversal, JS `ShadowRoot` nodes must not be removable.
+  //
+  // Spec-wise `ShadowRoot.parentNode` is always `null`, so `ShadowRoot.remove()` is a no-op.
+  {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    if matches!(&dom.node(node_id).kind, NodeKind::ShadowRoot { .. }) {
+      return Ok(Value::Undefined);
+    }
+  }
+
   let needs_microtask = {
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
