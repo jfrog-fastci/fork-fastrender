@@ -6259,6 +6259,14 @@ impl BrowserTab {
     self.event_loop.external_task_queue_handle()
   }
 
+  /// Returns the clock used by this tab's event loop.
+  ///
+  /// This can be useful for deterministic embeddings (e.g. virtual-clock driven testing) that need
+  /// to coordinate timer scheduling/driving with the tab's event loop.
+  pub fn clock(&self) -> Arc<dyn crate::js::Clock> {
+    self.event_loop.clock()
+  }
+
   pub fn set_js_execution_options(&mut self, options: JsExecutionOptions) {
     self.host.js_execution_options = options;
     self.host.scheduler.set_options(options);
