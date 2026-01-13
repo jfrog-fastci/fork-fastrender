@@ -1284,7 +1284,7 @@ impl<'vm> HirEvaluator<'vm> {
           Ok(flow) => Ok(flow),
           Err(err) => {
             // Propagate non-catchable VM errors immediately (no catch/finally semantics).
-            if !(err.is_throw_completion() || matches!(err, VmError::RangeError(_))) {
+            if !err.is_throw_completion() {
               return Err(err);
             }
 

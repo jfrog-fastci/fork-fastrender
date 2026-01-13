@@ -142,6 +142,7 @@ impl VmError {
       VmError::Throw(_)
         | VmError::ThrowWithStack { .. }
         | VmError::TypeError(_)
+        | VmError::RangeError(_)
         | VmError::NotCallable
         | VmError::NotConstructable
         | VmError::PrototypeCycle

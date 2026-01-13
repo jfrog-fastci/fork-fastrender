@@ -617,21 +617,24 @@ fn vm_error_to_rejection_reason(
     .intrinsics()
     .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
 
-  let message = match err {
-    VmError::TypeError(message) => message,
-    VmError::NotCallable => "value is not callable",
-    VmError::NotConstructable => "value is not a constructor",
-    VmError::PrototypeCycle => "prototype cycle",
-    VmError::PrototypeChainTooDeep => "prototype chain too deep",
-    VmError::InvalidPropertyDescriptorPatch => {
-      "invalid property descriptor patch: cannot mix data and accessor fields"
+  match err {
+    VmError::TypeError(message) => crate::error_object::new_type_error_object(scope, &intr, message),
+    VmError::RangeError(message) => crate::error_object::new_range_error(scope, intr, message),
+    VmError::NotCallable => crate::error_object::new_type_error_object(scope, &intr, "value is not callable"),
+    VmError::NotConstructable => crate::error_object::new_type_error_object(scope, &intr, "value is not a constructor"),
+    VmError::PrototypeCycle => crate::error_object::new_type_error_object(scope, &intr, "prototype cycle"),
+    VmError::PrototypeChainTooDeep => {
+      crate::error_object::new_type_error_object(scope, &intr, "prototype chain too deep")
     }
+    VmError::InvalidPropertyDescriptorPatch => crate::error_object::new_type_error_object(
+      scope,
+      &intr,
+      "invalid property descriptor patch: cannot mix data and accessor fields",
+    ),
     // `Throw`/`ThrowWithStack` would have been handled by `thrown_value()` above; anything else that
     // claims to be a throw completion should be treated as a non-rejectable fatal error.
-    _ => return Err(err),
-  };
-
-  crate::error_object::new_type_error_object(scope, &intr, message)
+    _ => Err(err),
+  }
 }
 
 fn reject_promise_with_capability(
