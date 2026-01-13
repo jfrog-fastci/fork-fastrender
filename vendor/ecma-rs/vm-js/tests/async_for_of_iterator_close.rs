@@ -17,7 +17,7 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 }
 
 #[test]
-fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_async_for_of_before_await(
+fn iterator_close_get_method_throw_takes_precedence_over_throw_completion_in_async_for_of_before_await(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -55,10 +55,10 @@ fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_async_for_o
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
     let out = rt.exec_script("out")?;
-    // `IteratorClose(iteratorRecord, throwCompletion)` still performs `GetMethod(iterator, "return")`,
-    // but (per ECMA-262 `IteratorClose`) errors thrown while getting/calling `iterator.return` are
-    // ignored when the incoming completion is a throw completion, preserving the original error.
-    assert_eq!(value_to_string(&rt, out), "body1");
+    // Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, `GetMethod(iterator, "return")` is
+    // still performed and any error thrown while getting/calling `iterator.return` overrides the
+    // incoming completion (even when that incoming completion is itself a throw completion).
+    assert_eq!(value_to_string(&rt, out), "getter1");
 
     let closed = rt.exec_script("closed")?;
     assert_eq!(closed, Value::Bool(true));
@@ -71,7 +71,7 @@ fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_async_for_o
 }
 
 #[test]
-fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_async_for_of_after_await(
+fn iterator_close_get_method_throw_takes_precedence_over_throw_completion_in_async_for_of_after_await(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -106,7 +106,7 @@ fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_async_for_o
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
     let out = rt.exec_script("out")?;
-    assert_eq!(value_to_string(&rt, out), "body2");
+    assert_eq!(value_to_string(&rt, out), "getter2");
 
     let closed = rt.exec_script("closed")?;
     assert_eq!(closed, Value::Bool(true));
@@ -119,7 +119,7 @@ fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_async_for_o
 }
 
 #[test]
-fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_async_for_of_binding_error(
+fn iterator_close_get_method_throw_takes_precedence_over_throw_completion_in_async_for_of_binding_error(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -158,7 +158,7 @@ fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_async_for_o
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
     let out = rt.exec_script("out")?;
-    assert_eq!(value_to_string(&rt, out), "ReferenceError");
+    assert_eq!(value_to_string(&rt, out), "close");
 
     let closed = rt.exec_script("closed")?;
     assert_eq!(closed, Value::Bool(true));

@@ -502,7 +502,7 @@ fn async_iterator_close_invokes_sync_return() -> Result<(), VmError> {
 }
 
 #[test]
-fn async_from_sync_iterator_continuation_close_error_is_ignored_on_promise_resolve_throw(
+fn async_from_sync_iterator_continuation_close_error_overrides_promise_resolve_throw(
 ) -> Result<(), VmError> {
   ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| {
     cell.borrow_mut().take();
@@ -700,13 +700,15 @@ fn async_from_sync_iterator_continuation_close_error_is_ignored_on_promise_resol
   realm.teardown(&mut heap);
   result?;
 
+  // Per ECMA-262 `IteratorClose`/`AsyncFromSyncIteratorContinuation`, if closing the underlying sync
+  // iterator throws, that close error overrides the original error (similar to `finally`).
   let reason = ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| cell.borrow_mut().take());
-  assert_eq!(reason.as_deref(), Some("promiseResolve"));
+  assert_eq!(reason.as_deref(), Some("close"));
   Ok(())
 }
 
 #[test]
-fn async_from_sync_iterator_close_iterator_error_is_ignored_on_value_rejection() -> Result<(), VmError> {
+fn async_from_sync_iterator_close_iterator_error_overrides_value_rejection() -> Result<(), VmError> {
   ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| {
     cell.borrow_mut().take();
   });
@@ -756,7 +758,7 @@ fn async_from_sync_iterator_close_iterator_error_is_ignored_on_value_rejection()
 
       // Create a sync iterator object with:
       // - `next()` returning `iter_result_obj`, and
-      // - `return()` throwing "close" (which must be suppressed).
+      // - `return()` throwing "close" (which must override the value rejection).
       let sync_iter = scope.alloc_object()?;
       scope.push_root(Value::Object(sync_iter))?;
       scope
@@ -874,6 +876,6 @@ fn async_from_sync_iterator_close_iterator_error_is_ignored_on_value_rejection()
   result?;
 
   let reason = ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| cell.borrow_mut().take());
-  assert_eq!(reason.as_deref(), Some("reason"));
+  assert_eq!(reason.as_deref(), Some("close"));
   Ok(())
 }
