@@ -24,9 +24,6 @@
 //!
 //! Additional restrictions can be layered over time (namespaces, Landlock, etc.).
 
-#[cfg(target_os = "macos")]
-pub mod macos;
-
 #[cfg(target_os = "linux")]
 use std::io;
 

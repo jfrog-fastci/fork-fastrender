@@ -87,6 +87,7 @@ mod legacy_offset_logical_positioning_alias_test;
 mod logical_shorthand_parsing_test;
 mod margin_invalid_values_ignored_test;
 mod mask_properties_test;
+mod webkit_mask_alias_test;
 mod media_at_rule_query_list_test;
 mod media_invalid_calc;
 mod media_invalid_type;
