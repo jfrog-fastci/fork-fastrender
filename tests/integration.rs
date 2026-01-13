@@ -15,6 +15,7 @@ mod grid;
 mod guards;
 mod iframe;
 mod image_integration;
+mod video_integration;
 mod js;
 mod layout;
 mod media;
