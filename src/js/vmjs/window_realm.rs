@@ -4476,6 +4476,27 @@ pub(crate) fn make_dom_exception(
   Ok(Value::Object(obj))
 }
 
+fn make_dom_exception_in_realm(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  name: &str,
+  message: &str,
+) -> Result<Value, VmError> {
+  if let Some(intr) = vm.intrinsics() {
+    if let Some(global) = vm
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| data.window_obj())
+    {
+      if let Ok(dom_exception) = DomExceptionClassVmJs::install_for_global(vm, scope, global, intr) {
+        if let Ok(value) = dom_exception.new_instance(scope, name, message) {
+          return Ok(value);
+        }
+      }
+    }
+  }
+  make_dom_exception(scope, name, message)
+}
+
 fn sanitize_scroll_coord(n: f64) -> f32 {
   if n.is_nan() {
     return 0.0;
@@ -12336,6 +12357,15 @@ fn document_create_element_native(
     .get_string(tag_value)
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
+
+  if let Err(err) = dom2::validate_element_qualified_name(tag_name.as_ref()) {
+    return Err(VmError::Throw(make_dom_exception_in_realm(
+      vm,
+      scope,
+      err.code(),
+      "",
+    )?));
+  }
 
   let mut dom_ptr =
     dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
@@ -32084,6 +32114,15 @@ fn element_set_attribute_native(
     .get_string(value_value)
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
+
+  if let Err(err) = dom2::validate_attribute_qualified_name(name.as_ref()) {
+    return Err(VmError::Throw(make_dom_exception_in_realm(
+      vm,
+      scope,
+      err.code(),
+      "",
+    )?));
+  }
 
   if is_host_document_id(vm, handle.document_id) {
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {

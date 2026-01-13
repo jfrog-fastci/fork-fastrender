@@ -27,7 +27,7 @@ fn is_valid_namespace_prefix(prefix: &str) -> bool {
     return false;
   }
   !prefix.bytes().any(|b| {
-    is_dom_ascii_whitespace(b) || b == b'\0' || b == b'/' || b == b'>'
+    is_dom_ascii_whitespace(b) || b == b'\0' || b == b'<' || b == b'/' || b == b'>'
   })
 }
 
@@ -36,7 +36,7 @@ fn is_valid_attribute_local_name(name: &str) -> bool {
     return false;
   }
   !name.bytes().any(|b| {
-    is_dom_ascii_whitespace(b) || b == b'\0' || b == b'/' || b == b'=' || b == b'>'
+    is_dom_ascii_whitespace(b) || b == b'\0' || b == b'<' || b == b'/' || b == b'=' || b == b'>'
   })
 }
 
@@ -49,7 +49,7 @@ fn is_valid_element_local_name(name: &str) -> bool {
   // https://dom.spec.whatwg.org/#valid-element-local-name
   if first.is_ascii_alphabetic() {
     return !name.bytes().any(|b| {
-      is_dom_ascii_whitespace(b) || b == b'\0' || b == b'/' || b == b'>'
+      is_dom_ascii_whitespace(b) || b == b'\0' || b == b'<' || b == b'/' || b == b'>'
     });
   }
 
@@ -80,30 +80,37 @@ enum NameContext {
   Attribute,
 }
 
-fn validate_and_extract_with_context(
-  namespace: Option<&str>,
-  qualified_name: &str,
-  context: NameContext,
-) -> Result<ParsedQualifiedName, DomError> {
-  let (prefix, local_name) = match qualified_name.find(':') {
+fn split_qualified_name(qualified_name: &str) -> Result<(Option<&str>, &str), DomError> {
+  match qualified_name.find(':') {
     Some(first_colon) => {
       let last_colon = qualified_name.rfind(':').unwrap_or(first_colon);
       if first_colon != last_colon {
         return Err(DomError::InvalidCharacterError);
       }
       let (prefix, local) = qualified_name.split_at(first_colon);
+      // SAFETY: `split_at` splits on a UTF-8 boundary, and `:` is a single-byte ASCII character.
       let local = &local[1..];
-      if !is_valid_namespace_prefix(prefix) {
-        return Err(DomError::InvalidCharacterError);
-      }
-      (Some(prefix.to_string()), local.to_string())
+      Ok((Some(prefix), local))
     }
-    None => (None, qualified_name.to_string()),
-  };
+    None => Ok((None, qualified_name)),
+  }
+}
+
+fn validate_and_extract_with_context(
+  namespace: Option<&str>,
+  qualified_name: &str,
+  context: NameContext,
+) -> Result<ParsedQualifiedName, DomError> {
+  let (prefix, local_name) = split_qualified_name(qualified_name)?;
+  if let Some(prefix) = prefix {
+    if !is_valid_namespace_prefix(prefix) {
+      return Err(DomError::InvalidCharacterError);
+    }
+  }
 
   let local_name_ok = match context {
-    NameContext::Element => is_valid_element_local_name(&local_name),
-    NameContext::Attribute => is_valid_attribute_local_name(&local_name),
+    NameContext::Element => is_valid_element_local_name(local_name),
+    NameContext::Attribute => is_valid_attribute_local_name(local_name),
   };
   if !local_name_ok {
     return Err(DomError::InvalidCharacterError);
@@ -114,7 +121,7 @@ fn validate_and_extract_with_context(
     return Err(DomError::NamespaceError);
   }
 
-  let prefix_str = prefix.as_deref();
+  let prefix_str = prefix;
 
   // `xml` prefix is reserved for the XML namespace.
   if prefix_str == Some("xml") && namespace != Some(XML_NAMESPACE) {
@@ -133,7 +140,10 @@ fn validate_and_extract_with_context(
     return Err(DomError::NamespaceError);
   }
 
-  Ok(ParsedQualifiedName { prefix, local_name })
+  Ok(ParsedQualifiedName {
+    prefix: prefix.map(|p| p.to_string()),
+    local_name: local_name.to_string(),
+  })
 }
 
 /// Validate and extract a namespace + qualified name for an element (used by `createElementNS()`).
@@ -159,4 +169,36 @@ pub fn validate_attribute_local_name(local_name: &str) -> Result<(), DomError> {
   } else {
     Err(DomError::InvalidCharacterError)
   }
+}
+
+fn validate_qualified_name_with_context(
+  qualified_name: &str,
+  context: NameContext,
+) -> Result<(), DomError> {
+  let (prefix, local_name) = split_qualified_name(qualified_name)?;
+  if let Some(prefix) = prefix {
+    if !is_valid_namespace_prefix(prefix) {
+      return Err(DomError::InvalidCharacterError);
+    }
+  }
+
+  let local_ok = match context {
+    NameContext::Element => is_valid_element_local_name(local_name),
+    NameContext::Attribute => is_valid_attribute_local_name(local_name),
+  };
+  if !local_ok {
+    return Err(DomError::InvalidCharacterError);
+  }
+
+  Ok(())
+}
+
+/// Validate a qualified name for an element in non-namespace DOM APIs (e.g. `Document.createElement`).
+pub fn validate_element_qualified_name(qualified_name: &str) -> Result<(), DomError> {
+  validate_qualified_name_with_context(qualified_name, NameContext::Element)
+}
+
+/// Validate a qualified name for an attribute in non-namespace DOM APIs (e.g. `Element.setAttribute`).
+pub fn validate_attribute_qualified_name(qualified_name: &str) -> Result<(), DomError> {
+  validate_qualified_name_with_context(qualified_name, NameContext::Attribute)
 }
