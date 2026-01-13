@@ -5,6 +5,7 @@
 //! out-of-band via file descriptor (FD) attachments (e.g. shared memory).
 
 use crate::ipc::protocol::cancel::CancelGensSnapshot;
+use crate::ipc::IpcError;
 use bincode::Options;
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// Protocol version for Browser ↔ Renderer messages.
 ///
 /// Bump this when breaking the serialized schema.
-pub const RENDERER_PROTOCOL_VERSION: u32 = 1;
+pub const RENDERER_PROTOCOL_VERSION: u32 = 2;
 
 /// Maximum number of bytes the transport is allowed to decode for a single message payload.
 ///
@@ -26,6 +27,15 @@ pub const RENDERER_IPC_DECODE_LIMIT_BYTES: u64 = 256 * 1024;
 ///
 /// This is an explicit semantic cap in addition to the transport-wide decode limit.
 pub const MAX_URL_BYTES: usize = 8 * 1024;
+
+/// Maximum number of files that can be transferred in a single file-input message.
+pub const FILE_INPUT_MAX_FILES: usize = 16;
+/// Maximum UTF-8 byte length of an individual file name.
+pub const FILE_INPUT_MAX_NAME_BYTES: usize = 256;
+/// Maximum total bytes (sum of `FileMeta.size`) allowed in a single file-input message.
+///
+/// This is defensive: the renderer must still read the actual bytes from the attached FDs until EOF.
+pub const FILE_INPUT_MAX_TOTAL_BYTES_META: u64 = 512 * 1024 * 1024; // 512 MiB
 
 /// Return the canonical bincode options for renderer IPC decoding.
 ///
@@ -120,6 +130,68 @@ impl<'de, const MAX: usize> Deserialize<'de> for BoundedString<MAX> {
 }
 
 pub type UrlString = BoundedString<MAX_URL_BYTES>;
+
+/// File metadata accompanying a read-only FD-attached file payload.
+///
+/// For security, the renderer must treat the accompanying file descriptor as the source of truth:
+/// - Read until EOF for the actual byte length.
+/// - Do **not** attempt to open any host paths (the renderer is expected to be sandboxed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileMeta {
+  /// Basename only (no host paths).
+  pub name: String,
+  /// Best-effort file size in bytes.
+  pub size: u64,
+  /// Best-effort MIME type hint.
+  pub mime: Option<String>,
+}
+
+impl FileMeta {
+  fn validate(&self) -> Result<(), IpcError> {
+    let name_len = self.name.as_bytes().len();
+    if name_len > FILE_INPUT_MAX_NAME_BYTES {
+      return Err(IpcError::FileNameTooLong {
+        len: name_len,
+        max: FILE_INPUT_MAX_NAME_BYTES,
+      });
+    }
+
+    // Enforce "basename only" so the browser can't leak host paths to the renderer.
+    if self.name.contains('/') || self.name.contains('\\') {
+      return Err(IpcError::FileNameNotBasename {
+        name: self.name.clone(),
+      });
+    }
+
+    Ok(())
+  }
+}
+
+fn validate_files(files: &[FileMeta]) -> Result<(), IpcError> {
+  if files.len() > FILE_INPUT_MAX_FILES {
+    return Err(IpcError::TooManyFiles {
+      len: files.len(),
+      max: FILE_INPUT_MAX_FILES,
+    });
+  }
+
+  let mut total: u128 = 0;
+  for file in files {
+    file.validate()?;
+    total += u128::from(file.size);
+  }
+
+  if total > u128::from(FILE_INPUT_MAX_TOTAL_BYTES_META) {
+    let total_u64 = u64::try_from(total).unwrap_or(u64::MAX);
+    return Err(IpcError::TotalFileSizeTooLarge {
+      total: total_u64,
+      max: FILE_INPUT_MAX_TOTAL_BYTES_META,
+    });
+  }
+
+  Ok(())
+}
 
 /// Descriptor for a rendered frame whose pixels are carried out-of-band in an attached FD.
 ///
@@ -226,6 +298,16 @@ pub enum BrowserToRenderer {
     modifiers: u8,
   },
 
+  /// Drop one or more local files onto the page at `pos_css`.
+  ///
+  /// The message must be sent with `files.len()` attached read-only file descriptors, each
+  /// positioned at the start of the file.
+  DropFiles {
+    tab_id: u64,
+    pos_css: (f32, f32),
+    files: Vec<FileMeta>,
+  },
+
   Scroll {
     tab_id: u64,
     delta_css: (f32, f32),
@@ -240,6 +322,16 @@ pub enum BrowserToRenderer {
     modifiers: u8,
   },
 
+  /// User chose one or more files in a file picker popup for an `<input type=file>` control.
+  ///
+  /// The message must be sent with `files.len()` attached read-only file descriptors, each
+  /// positioned at the start of the file.
+  FilePickerChoose {
+    tab_id: u64,
+    input_node_id: u64,
+    files: Vec<FileMeta>,
+  },
+
   /// Close a tab (drop all associated renderer-side state).
   TabClosed { tab_id: u64 },
 
@@ -250,7 +342,19 @@ pub enum BrowserToRenderer {
 impl BrowserToRenderer {
   /// Returns the number of file descriptors that must accompany this message.
   pub fn expected_fds(&self) -> usize {
-    0
+    match self {
+      BrowserToRenderer::FilePickerChoose { files, .. }
+      | BrowserToRenderer::DropFiles { files, .. } => files.len(),
+      _ => 0,
+    }
+  }
+
+  pub fn validate(&self) -> Result<(), IpcError> {
+    match self {
+      BrowserToRenderer::FilePickerChoose { files, .. }
+      | BrowserToRenderer::DropFiles { files, .. } => validate_files(files),
+      _ => Ok(()),
+    }
   }
 }
 
@@ -317,6 +421,28 @@ mod tests {
       gens: CancelGensSnapshot { nav: 1, paint: 2 },
     };
     assert_eq!(msg, roundtrip(&msg));
+
+    let msg = BrowserToRenderer::FilePickerChoose {
+      tab_id: 1,
+      input_node_id: 99,
+      files: vec![FileMeta {
+        name: "a.txt".to_string(),
+        size: 1,
+        mime: None,
+      }],
+    };
+    assert_eq!(msg, roundtrip(&msg));
+
+    let msg = BrowserToRenderer::DropFiles {
+      tab_id: 1,
+      pos_css: (1.0, 2.0),
+      files: vec![FileMeta {
+        name: "b.bin".to_string(),
+        size: 2,
+        mime: Some("application/octet-stream".to_string()),
+      }],
+    };
+    assert_eq!(msg, roundtrip(&msg));
   }
 
   #[test]
@@ -347,7 +473,7 @@ mod tests {
   fn expected_fd_counts() {
     let url = UrlString::try_from("https://example.com/").unwrap();
 
-    let b2r_cases = [
+    let b2r_zero_fd_cases = [
       BrowserToRenderer::Hello {
         version: RENDERER_PROTOCOL_VERSION,
         capabilities: 0,
@@ -403,9 +529,38 @@ mod tests {
       BrowserToRenderer::Shutdown,
     ];
 
-    for msg in b2r_cases {
+    for msg in b2r_zero_fd_cases {
       assert_eq!(msg.expected_fds(), 0, "{msg:?}");
     }
+
+    let msg = BrowserToRenderer::FilePickerChoose {
+      tab_id: 1,
+      input_node_id: 1,
+      files: vec![
+        FileMeta {
+          name: "a.txt".to_string(),
+          size: 0,
+          mime: None,
+        },
+        FileMeta {
+          name: "b.txt".to_string(),
+          size: 0,
+          mime: None,
+        },
+      ],
+    };
+    assert_eq!(msg.expected_fds(), 2);
+
+    let msg = BrowserToRenderer::DropFiles {
+      tab_id: 1,
+      pos_css: (0.0, 0.0),
+      files: vec![FileMeta {
+        name: "c.txt".to_string(),
+        size: 0,
+        mime: None,
+      }],
+    };
+    assert_eq!(msg.expected_fds(), 1);
 
     let r2b_cases = [
       (RendererToBrowser::HelloAck {}, 0),
@@ -446,5 +601,84 @@ mod tests {
     let err = bincode_options().deserialize::<UrlString>(&bytes).unwrap_err();
     let formatted = format!("{err:?}");
     assert!(!formatted.is_empty());
+  }
+}
+
+#[cfg(test)]
+mod file_inputs {
+  use super::*;
+
+  fn file(name: &str, size: u64) -> FileMeta {
+    FileMeta {
+      name: name.to_string(),
+      size,
+      mime: None,
+    }
+  }
+
+  #[test]
+  fn serialization_roundtrip_file_picker_choose() {
+    let msg = BrowserToRenderer::FilePickerChoose {
+      tab_id: 1,
+      input_node_id: 99,
+      files: vec![file("a.txt", 1), file("b.bin", 2)],
+    };
+
+    let bytes = bincode_options().serialize(&msg).expect("serialize");
+    let decoded: BrowserToRenderer = bincode_options().deserialize(&bytes).expect("deserialize");
+    assert_eq!(decoded, msg);
+  }
+
+  #[test]
+  fn serialization_roundtrip_drop_files() {
+    let msg = BrowserToRenderer::DropFiles {
+      tab_id: 2,
+      pos_css: (12.5, 42.0),
+      files: vec![file("c.png", 3)],
+    };
+
+    let bytes = bincode_options().serialize(&msg).expect("serialize");
+    let decoded: BrowserToRenderer = bincode_options().deserialize(&bytes).expect("deserialize");
+    assert_eq!(decoded, msg);
+  }
+
+  #[test]
+  fn expected_fds_matches_file_count() {
+    let msg = BrowserToRenderer::DropFiles {
+      tab_id: 1,
+      pos_css: (0.0, 0.0),
+      files: vec![file("a.txt", 0), file("b.txt", 0), file("c.txt", 0)],
+    };
+    assert_eq!(msg.expected_fds(), 3);
+  }
+
+  #[test]
+  fn validator_rejects_too_many_files() {
+    let mut files = Vec::new();
+    for i in 0..(FILE_INPUT_MAX_FILES + 1) {
+      files.push(file(&format!("f{i}.txt"), 1));
+    }
+
+    let msg = BrowserToRenderer::FilePickerChoose {
+      tab_id: 1,
+      input_node_id: 1,
+      files,
+    };
+
+    let err = msg.validate().expect_err("expected validation failure");
+    assert!(matches!(err, IpcError::TooManyFiles { .. }));
+  }
+
+  #[test]
+  fn validator_rejects_oversized_name() {
+    let name = "a".repeat(FILE_INPUT_MAX_NAME_BYTES + 1);
+    let msg = BrowserToRenderer::DropFiles {
+      tab_id: 1,
+      pos_css: (0.0, 0.0),
+      files: vec![file(&name, 1)],
+    };
+
+    let err = msg.validate().expect_err("expected validation failure");
+    assert!(matches!(err, IpcError::FileNameTooLong { .. }));
   }
 }

@@ -111,6 +111,22 @@ pub enum IpcError {
   #[error("crash reason too long: {len} (max {max})")]
   CrashReasonTooLong { len: usize, max: usize },
 
+  // ==========================================================================
+  // Protocol validation errors (browser → renderer)
+  // ==========================================================================
+
+  #[error("too many files: {len} (max {max})")]
+  TooManyFiles { len: usize, max: usize },
+
+  #[error("file name too long: {len} bytes (max {max})")]
+  FileNameTooLong { len: usize, max: usize },
+
+  #[error("file name must be a basename (no path separators): {name:?}")]
+  FileNameNotBasename { name: String },
+
+  #[error("total file size metadata too large: {total} bytes (max {max})")]
+  TotalFileSizeTooLarge { total: u64, max: u64 },
+
   #[error("arithmetic overflow while validating IPC message")]
   ArithmeticOverflow,
 }
