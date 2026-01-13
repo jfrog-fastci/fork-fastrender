@@ -1509,12 +1509,15 @@ fn tab_ui(
         },
       )
       .on_hover_text("Close tab (Ctrl/Cmd+W)");
+    #[cfg(test)]
+    store_test_close_id(ui.ctx(), tab.id, close_resp.id);
     close_resp.widget_info({
       let label = format!("{}: {}", BrowserIcon::CloseTab.a11y_label(), title);
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
     super::show_tooltip_on_focus(ui, &close_resp, "Close tab (Ctrl/Cmd+W)");
-    close_clicked = close_reveal_target && close_resp.clicked();
+    close_clicked = close_reveal_target
+      && (close_resp.clicked() || super::keyboard_activate(ui, &close_resp));
 
     // Micro-interaction: fade close button hover fill in/out.
     let close_rounding =
@@ -1630,7 +1633,7 @@ fn tab_ui(
       chrome.tab_context_menu_rect = None;
       return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
     }
-  } else if response.clicked() {
+  } else if response.clicked() || super::keyboard_activate(ui, &response) {
     chrome.open_tab_context_menu = None;
     chrome.tab_context_menu_rect = None;
     return (tab_rect, response, Some(ChromeAction::ActivateTab(tab.id)));
@@ -1837,7 +1840,7 @@ fn pinned_tab_ui(
       chrome.tab_context_menu_rect = None;
       return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
     }
-  } else if response.clicked() {
+  } else if response.clicked() || super::keyboard_activate(ui, &response) {
     chrome.open_tab_context_menu = None;
     chrome.tab_context_menu_rect = None;
     return (tab_rect, response, Some(ChromeAction::ActivateTab(tab.id)));
@@ -1861,6 +1864,14 @@ pub(super) fn tab_strip_ui(
   let ctx = ui.ctx().clone();
   let motion_enabled = motion.enabled && ctx.style().animation_time > 0.0;
   let now = ui.input(|i| i.time);
+
+  #[cfg(test)]
+  ui.ctx().data_mut(|d| {
+    d.insert_temp(
+      egui::Id::new("test_tab_strip_close_ids"),
+      Vec::<(TabId, egui::Id)>::new(),
+    );
+  });
 
   // Defensive: if the dragged tab was closed mid-drag, clear the drag state.
   if let Some(dragging_tab_id) = app.chrome.dragging_tab_id {
@@ -3646,6 +3657,18 @@ fn store_test_layout(ctx: &egui::Context, strip_rect: Rect, tab_rects: Vec<Rect>
 }
 
 #[cfg(test)]
+fn store_test_close_id(ctx: &egui::Context, tab_id: TabId, close_id: egui::Id) {
+  let key = egui::Id::new("test_tab_strip_close_ids");
+  ctx.data_mut(|d| {
+    let mut ids = d
+      .get_temp::<Vec<(TabId, egui::Id)>>(key)
+      .unwrap_or_default();
+    ids.push((tab_id, close_id));
+    d.insert_temp(key, ids);
+  });
+}
+
+#[cfg(test)]
 pub(super) fn load_test_layout(ctx: &egui::Context) -> Option<(Rect, Vec<Rect>)> {
   ctx.data(|d| {
     let strip = d.get_temp::<Rect>(egui::Id::new("test_tab_strip_rect"))?;
@@ -3659,18 +3682,46 @@ mod tests {
   use super::*;
   use crate::ui::a11y_test_util;
 
-  fn begin_frame(ctx: &egui::Context) {
+  fn begin_frame(ctx: &egui::Context, events: Vec<egui::Event>) {
     let mut raw = egui::RawInput::default();
-    raw.screen_rect = Some(Rect::from_min_size(
-      Pos2::new(0.0, 0.0),
-      Vec2::new(800.0, 600.0),
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
     ));
     // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
     raw.time = Some(0.0);
     raw.focused = true;
+    raw.events = events;
     ctx.begin_frame(raw);
   }
 
+  fn key_press(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+      key,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers::default(),
+    }
+  }
+
+  fn render_tab_strip(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAction> {
+    egui::CentralPanel::default()
+      .show(ctx, |ui| {
+        let mut favicon_for_tab = |_| None;
+        tab_strip_ui(
+          ui,
+          app,
+          &mut favicon_for_tab,
+          UiMotion::new(false),
+          FocusRingStyle {
+            stroke: egui::Stroke::new(1.0, egui::Color32::WHITE),
+            expand: 0.0,
+            rounding: egui::Rounding::same(0.0),
+          },
+        )
+      })
+      .inner
+  }
   #[test]
   fn tab_a11y_label_formats_active_pinned_loading_error_warning_states() {
     let title = "Example title";
@@ -4206,7 +4257,7 @@ mod tests {
   #[test]
   fn group_chip_width_is_based_on_title_only_and_stable_across_collapsed_state() {
     let ctx = egui::Context::default();
-    begin_frame(&ctx);
+    begin_frame(&ctx, Vec::new());
 
     let mut found_case = false;
     egui::CentralPanel::default().show(&ctx, |ui| {
@@ -4357,6 +4408,50 @@ mod tests {
       compute_tab_insertion_index(f32::INFINITY, &rects, dragged),
       2
     );
+  }
+
+  #[test]
+  fn tab_close_button_is_keyboard_activatable() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once to capture deterministic close ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let close_ids = ctx
+      .data(|d| d.get_temp::<Vec<(TabId, egui::Id)>>(egui::Id::new("test_tab_strip_close_ids")))
+      .expect("expected test_tab_strip_close_ids");
+    let close_id = close_ids
+      .iter()
+      .find_map(|(tab_id, close_id)| (*tab_id == tab_a).then_some(*close_id))
+      .expect("expected close id for active tab");
+
+    for key in [egui::Key::Enter, egui::Key::Space] {
+      ctx.memory_mut(|mem| mem.request_focus(close_id));
+      begin_frame(&ctx, vec![key_press(key)]);
+      let actions = render_tab_strip(&ctx, &mut app);
+      let _ = ctx.end_frame();
+
+      assert!(
+        actions
+          .iter()
+          .any(|action| matches!(action, ChromeAction::CloseTab(id) if *id == tab_a)),
+        "expected ChromeAction::CloseTab({tab_a:?}) for key={key:?}, got {actions:?}"
+      );
+    }
   }
 
   #[test]

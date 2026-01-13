@@ -214,6 +214,19 @@ fn show_tooltip_on_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str
   );
 }
 
+fn keyboard_activate(ui: &egui::Ui, response: &egui::Response) -> bool {
+  if !response.has_focus() {
+    return false;
+  }
+
+  // `egui::Button` supports Enter/Space activation when focused. Many of our chrome widgets are
+  // custom-painted and wired up via `ui.interact`, so explicitly treat Enter/Space as activation.
+  ui.input_mut(|i| {
+    i.consume_key(Default::default(), egui::Key::Enter)
+      || i.consume_key(Default::default(), egui::Key::Space)
+  })
+}
+
 fn egui_modifiers_to_shortcuts_modifiers(modifiers: egui::Modifiers) -> Modifiers {
   // Egui exposes a cross-platform `command` flag (Cmd on macOS, Ctrl elsewhere). For our canonical
   // shortcut mapping we want explicit `ctrl` + `meta`.
@@ -1492,8 +1505,9 @@ pub fn chrome_ui_with_bookmarks(
 
       // When the address bar gains focus in display mode (e.g. via Tab), immediately open the real
       // text field so subsequent typing works (and so we don't drop a batched Tab+Text input frame).
-      let activated_display_mode =
-        !show_text_edit_initial && (bar_response.clicked() || bar_response.has_focus());
+      let activated_by_keyboard = keyboard_activate(ui, &bar_response);
+      let activated_display_mode = !show_text_edit_initial
+        && (bar_response.clicked() || bar_response.has_focus() || activated_by_keyboard);
       if activated_display_mode {
         app.chrome.request_focus_address_bar = true;
         app.chrome.request_select_all_address_bar = true;
@@ -1856,7 +1870,7 @@ pub fn chrome_ui_with_bookmarks(
 
             paint_focus_ring(ui, &downloads_resp, focus_ring);
 
-            if downloads_resp.clicked() {
+            if downloads_resp.clicked() || keyboard_activate(ui, &downloads_resp) {
               actions.push(ChromeAction::ToggleDownloadsPanel);
             }
 
@@ -2037,7 +2051,7 @@ pub fn chrome_ui_with_bookmarks(
               };
               paint_icon_in_rect(ui, rect, icon, ui.spacing().icon_width, color);
               paint_focus_ring(ui, &response, focus_ring);
-              if response.clicked() {
+              if can_toggle && (response.clicked() || keyboard_activate(ui, &response)) {
                 actions.push(ChromeAction::ToggleBookmarkForActiveTab);
               }
             }
@@ -7319,6 +7333,137 @@ mod tests {
       ),
       "expected ChromeAction::OpenClearBrowsingDataDialog, got {actions:?}"
     );
+  }
+
+  #[test]
+  fn address_bar_bookmark_star_is_keyboard_activatable() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let bookmarks = BookmarkStore::default();
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once so the chrome stores test ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+    let bookmark_id = expect_temp_id(&ctx, "chrome_bookmark_star_id");
+
+    for key in [egui::Key::Enter, egui::Key::Space] {
+      ctx.memory_mut(|mem| mem.request_focus(bookmark_id));
+      begin_frame(&ctx, vec![key_press(key)]);
+      let actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+      let _ = ctx.end_frame();
+
+      assert!(
+        actions
+          .iter()
+          .any(|action| matches!(action, ChromeAction::ToggleBookmarkForActiveTab)),
+        "expected ChromeAction::ToggleBookmarkForActiveTab for key={key:?}, got {actions:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn address_bar_downloads_button_is_keyboard_activatable() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once so the chrome stores test ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+    let downloads_id = expect_temp_id(&ctx, "chrome_downloads_button_id");
+
+    for key in [egui::Key::Enter, egui::Key::Space] {
+      ctx.memory_mut(|mem| mem.request_focus(downloads_id));
+      begin_frame(&ctx, vec![key_press(key)]);
+      let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+      let _ = ctx.end_frame();
+
+      assert!(
+        actions
+          .iter()
+          .any(|action| matches!(action, ChromeAction::ToggleDownloadsPanel)),
+        "expected ChromeAction::ToggleDownloadsPanel for key={key:?}, got {actions:?}"
+      );
+    }
+  }
+
+  fn assert_address_bar_select_all(ctx: &egui::Context, address_bar_id: egui::Id, end: usize) {
+    let state =
+      egui::text_edit::TextEditState::load(ctx, address_bar_id).expect("expected TextEdit state");
+    let range = state
+      .ccursor_range()
+      .expect("expected address bar to have a cursor range");
+    assert_eq!(range.primary.index, 0);
+    assert_eq!(range.secondary.index, end);
+  }
+
+  #[test]
+  fn address_bar_display_mode_enter_enters_editing_and_selects_all() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once so the chrome stores test ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    let display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
+    let address_bar_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
+    let end = app.chrome.address_bar_text.chars().count();
+
+    ctx.memory_mut(|mem| mem.request_focus(display_id));
+    begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.address_bar_has_focus, "expected address bar to have focus");
+    assert!(app.chrome.address_bar_editing, "expected address bar to be editing");
+    assert_address_bar_select_all(&ctx, address_bar_id, end);
+  }
+
+  #[test]
+  fn address_bar_display_mode_space_enters_editing_and_selects_all() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once so the chrome stores test ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    let display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
+    let address_bar_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
+    let end = app.chrome.address_bar_text.chars().count();
+
+    ctx.memory_mut(|mem| mem.request_focus(display_id));
+    begin_frame(&ctx, vec![key_press(egui::Key::Space)]);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.address_bar_has_focus, "expected address bar to have focus");
+    assert!(app.chrome.address_bar_editing, "expected address bar to be editing");
+    assert_address_bar_select_all(&ctx, address_bar_id, end);
   }
 
   #[test]
