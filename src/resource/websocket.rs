@@ -1,13 +1,105 @@
 use super::ResourceFetcher;
 use http::header::{HeaderValue, COOKIE, SET_COOKIE};
+use std::io;
 use std::net::TcpStream;
+use std::net::ToSocketAddrs;
+use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::Duration;
+use std::time::Instant;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::handshake::client::Response as ClientResponse;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, WebSocket};
+use tungstenite::WebSocket;
 use url::Url;
 
 pub type ClientSocket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+#[cfg(not(test))]
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+
+fn rustls_client_config() -> Arc<rustls::ClientConfig> {
+  static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+  Arc::clone(CONFIG.get_or_init(|| {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    Arc::new(
+      rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth(),
+    )
+  }))
+}
+
+fn connect_with_timeout(
+  url: &Url,
+  request: tungstenite::handshake::client::Request,
+  timeout: Duration,
+) -> tungstenite::Result<(ClientSocket, ClientResponse)> {
+  let host = url.host_str().ok_or_else(|| {
+    tungstenite::Error::Io(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "WebSocket URL missing host",
+    ))
+  })?;
+
+  let scheme = url.scheme();
+  let tls = matches!(scheme, "wss" | "https");
+  let port = url
+    .port_or_known_default()
+    .or_else(|| if tls { Some(443) } else { Some(80) })
+    .ok_or_else(|| tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidInput, "WebSocket URL missing port")))?;
+
+  let deadline = Instant::now() + timeout;
+  let mut last_err: Option<io::Error> = None;
+
+  let addrs = (host, port)
+    .to_socket_addrs()
+    .map_err(tungstenite::Error::Io)?;
+
+  for addr in addrs {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+      break;
+    }
+
+    match TcpStream::connect_timeout(&addr, remaining) {
+      Ok(stream) => {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // Apply the same wall-clock budget to the tungstenite HTTP handshake and the rustls TLS
+        // handshake (wss://) so renderer teardown cannot hang joining threads blocked on network I/O.
+        let _ = stream.set_read_timeout(Some(remaining));
+        let _ = stream.set_write_timeout(Some(remaining));
+
+        let stream = if tls {
+          let server_name: rustls::pki_types::ServerName<'static> = host
+            .try_into()
+            .map_err(|_| tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidInput, "WebSocket host is not a valid TLS server name")))?;
+          let conn = rustls::ClientConnection::new(rustls_client_config(), server_name)
+            .map_err(|err| tungstenite::Error::Io(io::Error::new(io::ErrorKind::Other, err)))?;
+          let tls_stream = rustls::StreamOwned::new(conn, stream);
+          MaybeTlsStream::Rustls(tls_stream)
+        } else {
+          MaybeTlsStream::Plain(stream)
+        };
+
+        return tungstenite::client::client(request, stream).map_err(|err| match err {
+          tungstenite::handshake::HandshakeError::Failure(err) => err,
+          tungstenite::handshake::HandshakeError::Interrupted(_) => tungstenite::Error::Io(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "WebSocket handshake timed out",
+          )),
+        });
+      }
+      Err(err) => last_err = Some(err),
+    }
+  }
+
+  let err = last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "WebSocket connect timed out"));
+  Err(tungstenite::Error::Io(err))
+}
 
 fn cookie_url_for_ws_url(ws_url: &Url) -> Option<Url> {
   let mut cookie_url = ws_url.clone();
@@ -37,8 +129,8 @@ pub(crate) fn connect_websocket_with_cookies(
   ws_url: &str,
   protocols_header: Option<&str>,
 ) -> tungstenite::Result<(ClientSocket, ClientResponse)> {
-  let parsed = Url::parse(ws_url).ok();
-  let cookie_url = parsed.as_ref().and_then(cookie_url_for_ws_url);
+  let parsed = Url::parse(ws_url).map_err(tungstenite::Error::Url)?;
+  let cookie_url = cookie_url_for_ws_url(&parsed);
 
   let mut request = ws_url.into_client_request()?;
 
@@ -60,7 +152,7 @@ pub(crate) fn connect_websocket_with_cookies(
     }
   }
 
-  let (socket, response) = connect(request)?;
+  let (socket, response) = connect_with_timeout(&parsed, request, WS_CONNECT_TIMEOUT)?;
 
   if let Some(cookie_url) = cookie_url.as_ref() {
     for value in response.headers().get_all(SET_COOKIE) {

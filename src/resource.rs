@@ -70,6 +70,7 @@ pub mod ipc_fetcher;
 pub mod disk_cache;
 pub mod web_fetch;
 pub mod web_url;
+#[cfg(feature = "direct_websocket")]
 pub(crate) mod websocket;
 pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
 pub use file_backend::{FileBackend, NoFileBackend, StdFsFileBackend};

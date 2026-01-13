@@ -2086,4 +2086,74 @@ mod tests {
     server.join().expect("server thread panicked");
     Ok(())
   }
+
+  #[test]
+  fn websocket_connect_timeout_emits_error_and_does_not_hang_teardown() -> Result<()> {
+    let _lock = net_test_lock();
+    // Use a reserved TEST-NET address that should not be reachable in CI. Without an explicit
+    // connect timeout, some OS/network combinations can hang in `connect()` for a long time.
+    let target = "ws://192.0.2.1:9/";
+
+    // Phase 1: ensure the failed connection surfaces `error` + `close` events.
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    host.exec_script(&format!(
+      r#"
+      globalThis.__got_error = false;
+      globalThis.__got_close = false;
+      globalThis.__ws = new WebSocket({target:?});
+      const ws = globalThis.__ws;
+      ws.onerror = function () {{ globalThis.__got_error = true; }};
+      ws.onclose = function () {{ globalThis.__got_close = true; }};
+      "#,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 100,
+        max_microtasks: 1000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let got_error = get_global_prop_utf8(&mut host, "__got_error").unwrap_or_default() == "true";
+      let got_close = get_global_prop_utf8(&mut host, "__got_close").unwrap_or_default() == "true";
+      if got_error && got_close {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__got_error").as_deref(),
+      Some("true"),
+      "expected WebSocket error event to be observed",
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__got_close").as_deref(),
+      Some("true"),
+      "expected WebSocket close event to be observed",
+    );
+
+    drop(host);
+
+    // Phase 2: ensure env teardown (Drop) cannot hang joining the websocket thread even if the
+    // thread is stuck in its connect path.
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    host.exec_script(&format!(
+      r#"globalThis.__ws = new WebSocket({target:?});"#,
+    ))?;
+    let drop_start = Instant::now();
+    drop(host);
+    assert!(
+      drop_start.elapsed() < Duration::from_secs(5),
+      "websocket env teardown took too long (connect timeout not enforced?)",
+    );
+
+    Ok(())
+  }
 }
