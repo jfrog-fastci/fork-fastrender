@@ -16,7 +16,7 @@
     "layout": 7.039264836065573,
     "paint": 32.17949639344262
   },
-  "notes": "Visually good. This page is extremely text-dense, so tiny glyph edge / hinting differences accumulate and inflate diff_percent/SSIM (perceptual) despite matching layout. Minor header `box-shadow` blur falloff differences remain.",
+  "notes": "Visually good. Progress accuracy compares Chrome (system fonts) vs FastRender (bundled fonts); this page uses generic `sans-serif` and is extremely text-dense, so font selection/hinting differences accumulate and inflate diff_percent/SSIM (perceptual) despite matching layout. Minor header `box-shadow` blur falloff differences remain.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 124586,
