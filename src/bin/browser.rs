@@ -4526,14 +4526,17 @@ struct BrowserHud {
   fps: Option<f32>,
   worker_wake_counters: std::sync::Arc<WorkerWakeHudCounters>,
   worker_wake_coalesced_prev: u64,
+  worker_wake_sent_prev: u64,
   worker_stats_sample_start: std::time::Instant,
   worker_msgs_since_sample: u64,
   worker_wakes_since_sample: u64,
   worker_empty_wakes_since_sample: u64,
   worker_max_drain_since_sample: u64,
   worker_drained_total: u64,
+  worker_forwarded_msgs_per_sec: Option<f32>,
   worker_msgs_per_sec: Option<f32>,
   worker_wakes_per_sec: Option<f32>,
+  worker_wake_sent_per_sec: Option<f32>,
   worker_empty_wakes_per_sec: Option<f32>,
   worker_coalesced_wakes_per_sec: Option<f32>,
   worker_pending_msgs_estimate: Option<u64>,
@@ -4557,14 +4560,17 @@ impl BrowserHud {
       fps: None,
       worker_wake_counters: std::sync::Arc::new(WorkerWakeHudCounters::default()),
       worker_wake_coalesced_prev: 0,
+      worker_wake_sent_prev: 0,
       worker_stats_sample_start: std::time::Instant::now(),
       worker_msgs_since_sample: 0,
       worker_wakes_since_sample: 0,
       worker_empty_wakes_since_sample: 0,
       worker_max_drain_since_sample: 0,
       worker_drained_total: 0,
+      worker_forwarded_msgs_per_sec: None,
       worker_msgs_per_sec: None,
       worker_wakes_per_sec: None,
+      worker_wake_sent_per_sec: None,
       worker_empty_wakes_per_sec: None,
       worker_coalesced_wakes_per_sec: None,
       worker_pending_msgs_estimate: None,
@@ -4619,9 +4625,13 @@ impl BrowserHud {
     let empty = self.worker_empty_wakes_since_sample;
     let nonempty_wakes = wakes.saturating_sub(empty);
     let coalesced_delta = coalesced_total.saturating_sub(self.worker_wake_coalesced_prev);
+    let sent_delta = sent_total.saturating_sub(self.worker_wake_sent_prev);
+    let forwarded_delta = coalesced_delta.saturating_add(sent_delta);
 
+    self.worker_forwarded_msgs_per_sec = Some((forwarded_delta as f32 / secs).min(10_000_000.0));
     self.worker_msgs_per_sec = Some((msgs as f32 / secs).min(10_000_000.0));
     self.worker_wakes_per_sec = Some((wakes as f32 / secs).min(10_000_000.0));
+    self.worker_wake_sent_per_sec = Some((sent_delta as f32 / secs).min(10_000_000.0));
     self.worker_empty_wakes_per_sec = Some((empty as f32 / secs).min(10_000_000.0));
     self.worker_coalesced_wakes_per_sec = Some((coalesced_delta as f32 / secs).min(10_000_000.0));
     self.worker_msgs_per_nonempty_wake = if nonempty_wakes > 0 {
@@ -4631,6 +4641,7 @@ impl BrowserHud {
     };
     self.worker_max_drain_recent = self.worker_max_drain_since_sample;
     self.worker_wake_coalesced_prev = coalesced_total;
+    self.worker_wake_sent_prev = sent_total;
 
     self.worker_stats_sample_start = now;
     self.worker_msgs_since_sample = 0;
@@ -8248,23 +8259,30 @@ impl App {
 
     match (
       hud.worker_msgs_per_sec,
+      hud.worker_forwarded_msgs_per_sec,
       hud.worker_wakes_per_sec,
+      hud.worker_wake_sent_per_sec,
       hud.worker_empty_wakes_per_sec,
       hud.worker_coalesced_wakes_per_sec,
       hud.worker_pending_msgs_estimate,
     ) {
-      (Some(msgs), Some(wakes), Some(empty), Some(coalesced), Some(pending))
-        if msgs.is_finite() && wakes.is_finite() && empty.is_finite() && coalesced.is_finite() =>
+      (Some(msgs), Some(in_msgs), Some(wakes), Some(sent), Some(empty), Some(coalesced), Some(pending))
+        if msgs.is_finite()
+          && in_msgs.is_finite()
+          && wakes.is_finite()
+          && sent.is_finite()
+          && empty.is_finite()
+          && coalesced.is_finite() =>
       {
         let _ = writeln!(
           &mut hud.text_buf,
-          "worker: {msgs:.0} msg/s  {wakes:.0} wake/s  {empty:.0} empty/s  {coalesced:.0} coal/s  pend {pending}"
+          "worker: {msgs:.0} msg/s  in {in_msgs:.0}/s  {wakes:.0} wake/s  sent {sent:.0}/s  {empty:.0} empty/s  {coalesced:.0} coal/s  pend {pending}"
         );
       }
       _ => {
         let _ = writeln!(
           &mut hud.text_buf,
-          "worker: - msg/s  - wake/s  - empty/s  - coal/s  pend -"
+          "worker: - msg/s  in -/s  - wake/s  sent -/s  - empty/s  - coal/s  pend -"
         );
       }
     }
