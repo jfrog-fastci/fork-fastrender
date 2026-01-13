@@ -5,7 +5,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Command;
 
-use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
+use fastrender::sandbox::windows::spawn_sandboxed;
 use windows_sys::Win32::Foundation::{
   GetHandleInformation, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
@@ -14,7 +14,6 @@ use windows_sys::Win32::System::Threading::{GetExitCodeProcess, TerminateProcess
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_NO_CHILD_PROCESS_CHILD";
 const CMD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_CMD_EXE";
-const DISABLE_SANDBOX_ENV: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
 
 // Windows error codes we explicitly treat as "cmd.exe could not be found" rather than "sandbox
 // blocked process creation".
