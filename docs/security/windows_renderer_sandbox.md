@@ -22,8 +22,8 @@ This is a quick reference. The full Windows sandbox design is layered as:
 1. **AppContainer (preferred)** with **zero capabilities** (blocks outbound network + most filesystem).
    - Defense in depth: remove the broad `ALL APPLICATION PACKAGES` group (SID `S-1-15-2-1`) from the
      created AppContainer token via `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`
-     (`SpawnConfig::all_application_packages_hardened`, best-effort / retried without on unsupported
-     Windows builds).
+     (`SpawnConfig::all_application_packages_hardened`; enabled by default in `SpawnConfig::default()`;
+     best-effort / retried without on unsupported Windows builds).
 2. **Job object** limits (kill-on-close + active process limit; optional memory cap in `crates/win-sandbox`).
 3. **Handle inheritance allowlisting** (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) to prevent capability leaks.
 4. **Process mitigations** (Win32k lockdown, dynamic code prohibition, etc.) when enabled.

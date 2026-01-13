@@ -217,6 +217,8 @@ and setting:
     access for the renderer.
   - Compatibility: older Windows builds may reject this attribute (`ERROR_NOT_SUPPORTED` /
     `ERROR_INVALID_PARAMETER`). The spawner retries without it.
+  - This hardening is enabled by default for the main `fastrender` Windows renderer spawn helper
+    (`SpawnConfig::default()` sets `all_application_packages_hardened = true`).
 
 This is implemented in `src/sandbox/windows.rs::spawn_appcontainer`.
 
