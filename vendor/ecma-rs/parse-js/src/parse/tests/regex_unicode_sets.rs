@@ -457,3 +457,50 @@ fn parses_other_test262_regexp_v_flag_files() {
     }
   }
 }
+
+#[test]
+fn parses_test262_regexp_v_flag_files() {
+  // Ensure that all test262 RegExp tests that mention `/v` are at least parseable.
+  //
+  // This is intentionally parse-only; vm-js does not yet implement full `/v` execution semantics,
+  // but the broader harness needs these files to reach runtime.
+  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("../test262-semantic/data/test/built-ins/RegExp");
+  if !root.is_dir() {
+    return;
+  }
+
+  fn collect_js_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = std::fs::read_dir(dir).expect("read_dir");
+    for entry in entries {
+      let entry = entry.expect("read_dir entry");
+      let path = entry.path();
+      if path.is_dir() {
+        collect_js_files(&path, out);
+        continue;
+      }
+      if path.extension().and_then(|s| s.to_str()) != Some("js") {
+        continue;
+      }
+      out.push(path);
+    }
+  }
+
+  let mut files = Vec::new();
+  collect_js_files(&root, &mut files);
+  files.sort();
+
+  let opts = ecma_script_opts();
+  for path in files {
+    let src = std::fs::read_to_string(&path).expect("read test262 file");
+    if !src.contains("/v") {
+      continue;
+    }
+    let is_parse_negative = is_test262_parse_negative(&src);
+    match (is_parse_negative, parse_with_options(&src, opts)) {
+      (true, Ok(_)) => panic!("expected {} to fail parsing", path.display()),
+      (false, Err(err)) => panic!("failed to parse {}: {err}", path.display()),
+      _ => {}
+    }
+  }
+}
