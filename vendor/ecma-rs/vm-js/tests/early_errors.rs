@@ -289,6 +289,16 @@ fn escaped_yield_in_class_extends_expression_is_syntax_error() {
 }
 
 #[test]
+fn escaped_eval_assignment_in_class_extends_expression_is_syntax_error() {
+  // Strict-mode early errors (like assignment to `eval`) also apply within the `extends` expression.
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"class C extends (\u0065val = 1) {}"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn eval_early_errors_are_catchable_syntax_error() {
   let mut rt = new_runtime();
   let value = rt
