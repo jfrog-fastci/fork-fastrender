@@ -243,6 +243,9 @@ otherwise a hostile peer can leak FDs in the receiver via repeated truncated mes
 When parsing `SCM_RIGHTS`:
 
 - Enforce a strict **maximum expected FD count** (per-message).
+- Don’t rely on control-buffer sizing alone to enforce this limit: `CMSG_SPACE` rounds up for
+  alignment, so a buffer sized for `N * sizeof(int)` can sometimes still fit `N+1` fds without
+  setting `MSG_CTRUNC`. Always **count** and close extras explicitly.
 - If more FDs are received than expected, **close the extras immediately** and treat the message as invalid (or at minimum treat it as “unexpected/ignore”).
 - Reject malformed control messages (e.g. `cmsg_len < CMSG_LEN(0)` or `cmsg_len` that is not a multiple of `sizeof(int)` for `SCM_RIGHTS`).
 - On any validation/protocol failure *after receiving FDs*, **close all received FDs** before returning an error (avoid FD leaks in the browser).
