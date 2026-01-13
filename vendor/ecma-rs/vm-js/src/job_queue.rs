@@ -7,6 +7,7 @@
 
 use crate::jobs::Job;
 use crate::VmError;
+use crate::VmJobContext;
 use std::collections::VecDeque;
 
 /// A queued microtask job.
@@ -29,8 +30,22 @@ impl JobQueue {
   ///
   /// This uses a fallible reservation (`try_reserve`) so allocator OOM is surfaced as
   /// [`VmError::OutOfMemory`] rather than aborting the process.
-  pub fn try_push(&mut self, job: MicrotaskJob) -> Result<(), VmError> {
-    self.queue.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+  ///
+  /// ## GC rooting
+  ///
+  /// [`Job`]s can own persistent roots. If enqueuing fails (OOM), the job must be discarded so those
+  /// roots are unregistered; otherwise dropping the job would leak roots and trigger debug
+  /// assertions.
+  pub fn try_push(
+    &mut self,
+    ctx: &mut dyn VmJobContext,
+    job: MicrotaskJob,
+  ) -> Result<(), VmError> {
+    if self.queue.try_reserve(1).is_err() {
+      // Ensure we do not drop a job that still owns persistent roots.
+      job.discard(ctx);
+      return Err(VmError::OutOfMemory);
+    }
     // `try_reserve(1)` guarantees `push_back` won't grow/reallocate the buffer.
     self.queue.push_back(job);
     Ok(())
@@ -39,8 +54,8 @@ impl JobQueue {
   /// Enqueues `job` at the back of the queue.
   ///
   /// This is a convenience wrapper around [`JobQueue::try_push`].
-  pub fn push(&mut self, job: MicrotaskJob) -> Result<(), VmError> {
-    self.try_push(job)
+  pub fn push(&mut self, ctx: &mut dyn VmJobContext, job: MicrotaskJob) -> Result<(), VmError> {
+    self.try_push(ctx, job)
   }
 
   pub fn pop(&mut self) -> Option<MicrotaskJob> {

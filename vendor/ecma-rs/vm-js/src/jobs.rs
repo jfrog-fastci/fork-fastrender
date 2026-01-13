@@ -206,6 +206,47 @@ impl Job {
     Ok(id)
   }
 
+  /// Adds multiple persistent roots, keeping all `values` live until the job is run or discarded.
+  ///
+  /// If root registration fails, any roots created by this call are removed and the job is left
+  /// unchanged.
+  ///
+  /// ## GC safety note
+  ///
+  /// Like [`Job::add_root`], this only roots each value *once it is registered*. If allocating one
+  /// root triggers a GC cycle, values that have not yet been registered must still be reachable via
+  /// other roots (for example: stack roots, heap reachability, or embedder-owned persistent roots).
+  pub fn add_roots(
+    &mut self,
+    ctx: &mut dyn VmJobContext,
+    values: &[Value],
+  ) -> Result<(), VmError> {
+    if values.is_empty() {
+      return Ok(());
+    }
+
+    // Pre-reserve to avoid partial updates under OOM while pushing into `self.roots`.
+    self
+      .roots
+      .try_reserve_exact(values.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    let start_len = self.roots.len();
+    for &value in values {
+      match ctx.add_root(value) {
+        Ok(id) => self.roots.push(id),
+        Err(err) => {
+          // Roll back roots created by this call so callers can safely drop the job on error.
+          for id in self.roots.drain(start_len..) {
+            ctx.remove_root(id);
+          }
+          return Err(err);
+        }
+      }
+    }
+    Ok(())
+  }
+
   /// Records an existing persistent root so it will be automatically removed when the job is run
   /// or discarded.
   pub fn try_push_root(&mut self, id: RootId) -> Result<(), VmError> {

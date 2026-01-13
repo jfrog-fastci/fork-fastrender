@@ -122,6 +122,7 @@ fn main() {
     let _keep = &filler;
 
     let mut queue = JobQueue::new();
+    let mut ctx = DummyJobContext;
     let mut count: usize = 0;
     // Bound the loop to avoid accidental infinite runtime if the address-space limit isn't enforced
     // for some reason.
@@ -136,7 +137,7 @@ fn main() {
           process::exit(1);
         }
       };
-      match queue.try_push(job) {
+      match queue.try_push(&mut ctx, job) {
         Ok(()) => count += 1,
         Err(VmError::OutOfMemory) => process::exit(0),
         Err(err) => {
