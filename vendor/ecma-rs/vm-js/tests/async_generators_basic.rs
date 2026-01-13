@@ -15,6 +15,42 @@ fn value_to_utf8(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
+fn value_to_usize(value: Value) -> usize {
+  let Value::Number(n) = value else {
+    panic!("expected number, got {value:?}");
+  };
+  usize::try_from(n as i64).expect("expected length to fit in usize")
+}
+
+fn run_microtask_step(rt: &mut JsRuntime) -> Result<bool, VmError> {
+  // Borrow-splitting: running a job requires `&mut JsRuntime` (as `VmJobContext`) and `&mut dyn
+  // VmHostHooks` (the microtask queue). Move the queue out of the VM temporarily so we can pass it
+  // as the active hooks while still holding `&mut rt`.
+  let mut hooks = std::mem::take(rt.vm.microtask_queue_mut());
+
+  let result = (|| {
+    if !hooks.begin_checkpoint() {
+      return Ok(false);
+    }
+    let Some((_realm, job)) = hooks.pop_front() else {
+      hooks.end_checkpoint();
+      return Ok(false);
+    };
+    let res = job.run(rt, &mut hooks);
+    hooks.end_checkpoint();
+    res?;
+    Ok(true)
+  })();
+
+  // Drain any Promise jobs that were enqueued into the VM-owned queue while it was moved out.
+  while let Some((realm, job)) = rt.vm.microtask_queue_mut().pop_front() {
+    hooks.enqueue_promise_job(job, realm);
+  }
+  *rt.vm.microtask_queue_mut() = hooks;
+
+  result
+}
+
 #[test]
 fn basic_yield_sequencing() -> Result<(), VmError> {
   let mut rt = new_runtime();
@@ -224,13 +260,27 @@ fn return_thenable_then_getter_tick_ordering() -> Result<(), VmError> {
   // `actual.push("start")` must happen before any queued microtasks run.
   assert_eq!(value_to_utf8(&rt, value), r#"["start"]"#);
 
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  // Step the microtask queue one job at a time so the test asserts ordering *across* microtask
+  // turns, matching test262's "ticks" framing.
+  //
+  // - "tick 1" must occur before the thenable `then` getter is accessed.
+  // - The `then` getter must be accessed before "tick 2".
+  for (target_len, expected) in [
+    (2, r#"["start","tick 1"]"#),
+    (3, r#"["start","tick 1","get then"]"#),
+    (4, r#"["start","tick 1","get then","tick 2"]"#),
+  ] {
+    for _ in 0..100 {
+      let len = value_to_usize(rt.exec_script("actual.length")?);
+      if len >= target_len {
+        break;
+      }
+      let ran = run_microtask_step(&mut rt)?;
+      assert!(ran, "expected microtask queue to have pending jobs");
+    }
 
-  let value = rt.exec_script("JSON.stringify(actual)")?;
-  assert_eq!(
-    value_to_utf8(&rt, value),
-    r#"["start","tick 1","get then","tick 2"]"#
-  );
+    let value = rt.exec_script("JSON.stringify(actual)")?;
+    assert_eq!(value_to_utf8(&rt, value), expected);
+  }
   Ok(())
 }
-
