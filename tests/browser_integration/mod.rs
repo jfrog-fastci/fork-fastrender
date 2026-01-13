@@ -79,6 +79,7 @@ mod ui_context_menu;
 mod ui_context_menu_entries;
 mod ui_context_menu_text_caret_right_click;
 mod ui_context_menu_preserves_text_selection;
+mod ui_context_menu_preserves_document_selection;
 mod ui_context_menu_select_all_available;
 mod ui_context_menu_bookmarks;
 mod ui_context_menu_prevent_default;
