@@ -2516,6 +2516,26 @@ fn run_render_page(args: RenderPageArgs) -> Result<()> {
 
 fn run_browser(args: BrowserArgs) -> Result<()> {
   let repo_root = repo_root();
+  if let Some(path) = args.perf_log_out.as_ref() {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+      fs::create_dir_all(parent).with_context(|| {
+        format!(
+          "create perf-log output directory {}",
+          parent.display()
+        )
+      })?;
+    }
+  }
+  if let Some(path) = args.trace_out.as_ref() {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+      fs::create_dir_all(parent).with_context(|| {
+        format!(
+          "create trace output directory {}",
+          parent.display()
+        )
+      })?;
+    }
+  }
   let cmd = xtask::browser::build_browser_command(
     &repo_root,
     &xtask::browser::BrowserCommandArgs {
