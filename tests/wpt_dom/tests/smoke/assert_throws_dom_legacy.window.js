@@ -80,3 +80,21 @@ test(() => {
   });
   assert_equals(err.name, "InvalidStateError", "returns the thrown exception");
 }, "assert_throws_dom(INVALID_STATE_ERR) maps to InvalidStateError");
+
+test(() => {
+  // Some JS DOM shims (or older DOMException implementations) can surface legacy names via
+  // `.name`. Ensure we accept those when the expected value is the modern name.
+  const err = assert_throws_dom("InvalidNodeTypeError", () => {
+    throw { name: "INVALID_NODE_TYPE_ERR" };
+  });
+  assert_equals(err.name, "INVALID_NODE_TYPE_ERR", "returns the thrown exception unmodified");
+}, "assert_throws_dom(InvalidNodeTypeError) accepts legacy thrown name INVALID_NODE_TYPE_ERR");
+
+test(() => {
+  // Ensure the legacy mapping doesn't accidentally accept the wrong error.
+  assert_throws_js(Error, () => {
+    assert_throws_dom("INVALID_NODE_TYPE_ERR", () => {
+      throw { name: "IndexSizeError" };
+    });
+  });
+}, "assert_throws_dom legacy mapping rejects mismatched errors");

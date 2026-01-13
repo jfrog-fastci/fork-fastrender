@@ -44,6 +44,12 @@ status = "xfail"
 reason = "Intentional infinite loop; runner should terminate it deterministically as a timeout."
 
 [[expectations]]
+id = "smoke/dom_collections_prototype_shape.window.js"
+backend = "quickjs"
+status = "xfail"
+reason = "QuickJS backend uses a minimal DOM shim and does not expose NodeList/HTMLCollection constructors yet."
+
+[[expectations]]
 id = "dom/domimplementation_create_html_document.window.js"
 backend = "quickjs"
 status = "xfail"
