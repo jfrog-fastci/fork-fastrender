@@ -3886,19 +3886,23 @@ mod resize_burst_detector_tests {
     assert!(!is_resize_burst_active(None, t0));
     assert!(is_resize_burst_active(Some(t0), t0));
 
-    let near_end = t0 + RESIZE_BURST_TTL - Duration::from_millis(1);
+    let at_end = resize_burst_deadline(Some(t0)).expect("expected deadline for sane Instant");
+    let near_end = at_end
+      .checked_sub(Duration::from_millis(1))
+      .expect("expected to subtract 1ms from deadline");
     assert!(
       is_resize_burst_active(Some(t0), near_end),
       "expected burst to remain active within ttl"
     );
 
-    let at_end = t0 + RESIZE_BURST_TTL;
     assert!(
       !is_resize_burst_active(Some(t0), at_end),
       "expected burst to end at ttl boundary"
     );
 
-    let after_end = t0 + RESIZE_BURST_TTL + Duration::from_millis(1);
+    let after_end = at_end
+      .checked_add(Duration::from_millis(1))
+      .expect("expected to add 1ms past deadline");
     assert!(
       !is_resize_burst_active(Some(t0), after_end),
       "expected burst to end after ttl"
@@ -3919,7 +3923,10 @@ mod resize_burst_detector_tests {
   fn resize_burst_deadline_is_last_event_plus_ttl() {
     let t0 = Instant::now();
     assert_eq!(resize_burst_deadline(None), None);
-    assert_eq!(resize_burst_deadline(Some(t0)), Some(t0 + RESIZE_BURST_TTL));
+    assert_eq!(
+      resize_burst_deadline(Some(t0)),
+      Some(t0.checked_add(RESIZE_BURST_TTL).expect("expected deadline for sane Instant"))
+    );
   }
 }
 
