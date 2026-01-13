@@ -257,15 +257,28 @@ fn interface_named_type_rejects_wrong_interface() {
 }
 
 #[test]
-fn object_conversion_uses_to_object() {
+fn object_conversion_rejects_primitives_without_to_object_boxing() {
   let mut rt = VmJsRuntime::new();
   let ctx = TypeContext::default();
 
-  let converted = convert_to_idl(&mut rt, Value::Bool(true), &IdlType::Object, &ctx).unwrap();
-  let ConvertedValue::Object(obj) = converted else {
+  let err = convert_to_idl(&mut rt, Value::Bool(true), &IdlType::Object, &ctx).unwrap_err();
+  assert_eq!(
+    error_to_string(&mut rt, err),
+    "TypeError: Value is not an object"
+  );
+}
+
+#[test]
+fn object_conversion_accepts_objects_and_preserves_identity() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let obj = rt.alloc_object_value().unwrap();
+  let converted = convert_to_idl(&mut rt, obj, &IdlType::Object, &ctx).unwrap();
+  let ConvertedValue::Object(out) = converted else {
     panic!("expected object, got {converted:?}");
   };
-  assert!(rt.is_object(obj));
+  assert_eq!(out, obj);
 }
 
 #[test]

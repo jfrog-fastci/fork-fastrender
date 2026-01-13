@@ -309,8 +309,16 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
           rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `object`"),
         );
       }
-      let obj = rt.to_object(v)?;
-      Ok(ConvertedValue::Object(obj))
+      // Spec: <https://webidl.spec.whatwg.org/#js-to-object>
+      //
+      // 1. If V is not an Object, throw a TypeError.
+      //
+      // Note: This is intentionally *not* ECMAScript `ToObject`: WebIDL conversions must reject
+      // primitives rather than boxing them.
+      if !rt.is_object(v) {
+        return Err(rt.throw_type_error(conversions_shared::VALUE_IS_NOT_OBJECT));
+      }
+      Ok(ConvertedValue::Object(v))
     }
 
     IdlType::Symbol => {
