@@ -46,6 +46,9 @@ use fastrender::style::media::MediaType;
 use fastrender::tree::box_tree::{BoxNode, BoxType};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::OutputFormat;
+use fastrender::process_supervision::{
+  format_exit_status, summarize_exit_status, ExitStatusSummary, RunningChild as SupervisedChild,
+};
 use fastrender::{
   snapshot_pipeline, BoxTree, DisplayList, FragmentTree, PipelineSnapshot, RenderArtifactRequest,
   RenderArtifacts,
@@ -58,7 +61,7 @@ use std::fs;
 use std::io;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
@@ -66,10 +69,6 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-
-use fastrender::system::process_supervisor::{
-  kill_with_escalation, format_exit_status, summarize_exit_status, ExitStatusSummary,
-};
 
 const DEFAULT_ASSET_CACHE_DIR: &str = "fetches/assets";
 const DEFAULT_RENDER_DIR: &str = "fetches/renders";
@@ -420,10 +419,9 @@ impl WorkerResult {
   }
 }
 
-struct RunningChild {
+struct RunningWorker {
   entry: CachedEntry,
-  started: Instant,
-  child: Child,
+  child: SupervisedChild,
 }
 
 struct RenderOutcome {
@@ -1587,8 +1585,10 @@ fn spawn_worker(
   entry: &CachedEntry,
   soft_timeout_ms: Option<u64>,
   rayon_threads_per_worker: usize,
-) -> io::Result<Child> {
-  build_worker_command(exe, args, entry, soft_timeout_ms, rayon_threads_per_worker)?.spawn()
+) -> io::Result<SupervisedChild> {
+  let child =
+    build_worker_command(exe, args, entry, soft_timeout_ms, rayon_threads_per_worker)?.spawn()?;
+  Ok(SupervisedChild::new(child))
 }
 
 fn read_worker_result(out_dir: &Path, stem: &str) -> Option<PageResult> {
@@ -1676,7 +1676,7 @@ fn run_workers(
   let total_cpus = cpu_budget();
   let rayon_threads_per_worker = default_rayon_threads_per_worker(total_cpus, args.jobs);
   let mut queue: VecDeque<CachedEntry> = VecDeque::from(entries);
-  let mut running: Vec<RunningChild> = Vec::new();
+  let mut running: Vec<RunningWorker> = Vec::new();
   let mut results: Vec<PageResult> = Vec::new();
 
   while !queue.is_empty() || !running.is_empty() {
@@ -1693,35 +1693,34 @@ fn run_workers(
         soft_timeout_ms,
         rayon_threads_per_worker,
       )?;
-      running.push(RunningChild {
+      running.push(RunningWorker {
         entry,
-        started: Instant::now(),
         child,
       });
     }
 
     let mut i = 0usize;
     while i < running.len() {
-      let elapsed = running[i].started.elapsed();
-      let timed_out = elapsed >= hard_timeout;
+      let elapsed = running[i].child.elapsed();
+      let timed_out = running[i].child.hard_timed_out(hard_timeout);
 
       if timed_out {
-        let mut entry = running.swap_remove(i);
-        let _ = kill_with_escalation(&mut entry.child);
+        let RunningWorker { entry, child } = running.swap_remove(i);
+        let _ = child.kill_and_wait();
         append_timeout_stderr_note(
-          &stderr_path_for(&args.out_dir, &entry.entry.cache_stem),
+          &stderr_path_for(&args.out_dir, &entry.cache_stem),
           elapsed,
         );
         let message = format!("hard timeout after {:.2}s", hard_timeout.as_secs_f64());
         write_timeout_artifacts(
           &args.out_dir,
-          &entry.entry.cache_stem,
+          &entry.cache_stem,
           &message,
           elapsed,
           args.diagnostics_json,
         );
         let result = PageResult {
-          name: entry.entry.cache_stem.clone(),
+          name: entry.cache_stem.clone(),
           status: Status::Timeout(message),
           time_ms: elapsed.as_millis(),
           size: None,
@@ -1733,22 +1732,22 @@ fn run_workers(
 
       match running[i].child.try_wait() {
         Ok(Some(status)) => {
-          let entry = running.swap_remove(i);
-          if let Some(result) = read_worker_result(&args.out_dir, &entry.entry.cache_stem) {
+          let RunningWorker { entry, child } = running.swap_remove(i);
+          if let Some(result) = read_worker_result(&args.out_dir, &entry.cache_stem) {
             print_page_status(&result);
             results.push(result);
           } else {
             let summary = summarize_exit_status(&status);
             let message = synthesize_worker_failure_note(summary);
-            let time_ms = entry.started.elapsed().as_millis();
+            let time_ms = child.elapsed().as_millis();
             let mut log = format!(
               "=== {} ===\nCanonical: {}\nStatus: CRASH\n{}\n",
-              entry.entry.cache_stem, entry.entry.stem, message
+              entry.cache_stem, entry.stem, message
             );
-            let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.cache_stem), &log);
+            let _ = fs::write(log_path_for(&args.out_dir, &entry.cache_stem), &log);
             if args.diagnostics_json {
               let diag = DiagnosticsFile {
-                page: entry.entry.cache_stem.clone(),
+                page: entry.cache_stem.clone(),
                 status: "crash".to_string(),
                 error: Some(message.clone()),
                 time_ms,
@@ -1757,14 +1756,14 @@ fn run_workers(
                 summary: None,
               };
               write_stage_json(
-                diagnostics_path_for(&args.out_dir, &entry.entry.cache_stem),
+                diagnostics_path_for(&args.out_dir, &entry.cache_stem),
                 &diag,
                 &mut log,
               );
-              let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.cache_stem), &log);
+              let _ = fs::write(log_path_for(&args.out_dir, &entry.cache_stem), &log);
             }
             let result = PageResult {
-              name: entry.entry.cache_stem.clone(),
+              name: entry.cache_stem.clone(),
               status: Status::Crash(message),
               time_ms,
               size: None,
@@ -1777,17 +1776,17 @@ fn run_workers(
           i += 1;
         }
         Err(_) => {
-          let entry = running.swap_remove(i);
+          let RunningWorker { entry, child } = running.swap_remove(i);
           let message = "worker try_wait failed".to_string();
-          let time_ms = entry.started.elapsed().as_millis();
+          let time_ms = child.elapsed().as_millis();
           let mut log = format!(
             "=== {} ===\nCanonical: {}\nStatus: CRASH\n{}\n",
-            entry.entry.cache_stem, entry.entry.stem, message
+            entry.cache_stem, entry.stem, message
           );
-          let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.cache_stem), &log);
+          let _ = fs::write(log_path_for(&args.out_dir, &entry.cache_stem), &log);
           if args.diagnostics_json {
             let diag = DiagnosticsFile {
-              page: entry.entry.cache_stem.clone(),
+              page: entry.cache_stem.clone(),
               status: "crash".to_string(),
               error: Some(message.clone()),
               time_ms,
@@ -1796,14 +1795,14 @@ fn run_workers(
               summary: None,
             };
             write_stage_json(
-              diagnostics_path_for(&args.out_dir, &entry.entry.cache_stem),
+              diagnostics_path_for(&args.out_dir, &entry.cache_stem),
               &diag,
               &mut log,
             );
-            let _ = fs::write(log_path_for(&args.out_dir, &entry.entry.cache_stem), &log);
+            let _ = fs::write(log_path_for(&args.out_dir, &entry.cache_stem), &log);
           }
           let result = PageResult {
-            name: entry.entry.cache_stem.clone(),
+            name: entry.cache_stem.clone(),
             status: Status::Crash(message),
             time_ms,
             size: None,

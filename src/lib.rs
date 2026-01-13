@@ -238,6 +238,7 @@ pub mod net;
 pub mod network_process;
 pub mod pageset;
 pub mod process_limits;
+pub mod process_supervision;
 pub mod sandbox;
 pub mod site_isolation;
 pub mod shm;
