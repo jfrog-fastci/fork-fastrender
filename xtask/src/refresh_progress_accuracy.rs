@@ -15,7 +15,7 @@ const DEFAULT_VIEWPORT: &str = "1200x800";
 // Some pageset fixtures (notably large news sites like dailymail.co.uk) can take tens of seconds to
 // render; use the same generous timeout as `xtask page-loop` so accuracy refreshes do not spuriously
 // time out.
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Args, Debug)]
 pub struct RefreshProgressAccuracyArgs {

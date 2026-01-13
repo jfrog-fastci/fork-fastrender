@@ -14,12 +14,13 @@
     "layout": 127.05906656935818,
     "paint": 161.07487966666667
   },
-  "notes": "Visually good. Page-loop fixture diffing shows correct overall layout/structure; the very high pixel diff% at tolerance=0 is dominated by raster-level differences vs Chrome/Skia (especially large gradient/blurred backgrounds and text/shadow AA). In local fixture runs, ~65% of pixels match within 1 channel (and ~78% within 2); larger diffs are comparatively sparse and mostly in the gradient-heavy hero/footer regions. No obvious missing layout/cascade primitives identified.",
+  "notes": "Visually good (overall layout/structure matches Chrome). The very high pixel diff% at tolerance=0 is dominated by raster-level differences vs Chrome/Skia (especially large gradient/blurred backgrounds and text/shadow AA). Progress accuracy is computed at 1200×800 using bundled fonts, so font rasterization differences further inflate diffs; with tolerance=1/2, ~60%/~71% of pixels match. Larger diffs are comparatively sparse and mostly in the gradient-heavy hero/footer regions and along text/shadow edges. No obvious missing layout/cascade primitives identified.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 751731,
-    "diff_percent": 78.3053,
-    "perceptual": 0.1058,
+    "diff_pixels": 743630,
+    "diff_percent": 77.4615,
+    "perceptual": 0.2148,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 213,
       "y": 0,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "9e24292ca15621df5a653745fb3bfd6a3ae5d053"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,

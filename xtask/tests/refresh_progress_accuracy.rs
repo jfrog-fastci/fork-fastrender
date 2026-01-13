@@ -44,7 +44,7 @@ fn refresh_progress_accuracy_dry_run_prints_plan_and_wires_progress_dir() {
       && stdout.contains(progress_dir.to_string_lossy().as_ref())
       && stdout.contains(out_dir.to_string_lossy().as_ref())
       && stdout.contains("viewport: 1200x800")
-      && stdout.contains("timeout: 60s")
+      && stdout.contains("timeout: 120s")
       && stdout.contains("sync-progress-accuracy --report")
       && stdout.contains("--progress-dir"),
     "expected dry-run output to include a plan and the progress dir wiring; got:\n{stdout}"
