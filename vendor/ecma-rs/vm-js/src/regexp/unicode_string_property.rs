@@ -1,13 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UnicodeStringProperty {
-  BasicEmoji,
-  EmojiKeycapSequence,
-  RgiEmojiFlagSequence,
-  RgiEmojiModifierSequence,
-  RgiEmojiTagSequence,
-  RgiEmojiZwjSequence,
-  RgiEmoji,
-}
+pub(crate) use crate::regexp_unicode_property_strings::UnicodeStringProperty;
 
 /// Resolve the `\p{...}` / `\P{...}` property name for Unicode **string properties** used by `/v`.
 ///

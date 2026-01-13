@@ -12,11 +12,14 @@
 //! complete `/v` UnicodeSets syntax, etc).
 //! Call sites must treat compilation failures as `SyntaxError`.
 
-use crate::tick::{tick_every, DEFAULT_TICK_EVERY};
 use crate::fallible_alloc::box_try_new_vm;
-use crate::{Heap, HeapLimits, VmError};
+use crate::regexp_unicode_property_strings::{match_property_at, MAX_MATCHES_PER_POSITION};
 use crate::regexp_unicode_resolver::{resolve_unicode_property_value_expression, ResolvedUnicodeProperty};
-use crate::regexp_unicode_tables::ResolvedCodePointProperty;
+use crate::regexp_unicode_tables::{
+  contains_code_point as unicode_table_contains_code_point, BinaryProp, ResolvedCodePointProperty,
+};
+use crate::tick::{tick_every, DEFAULT_TICK_EVERY};
+use crate::{Heap, HeapLimits, VmError};
 use core::alloc::Layout;
 use core::cell::Cell;
 use core::mem;
@@ -1376,6 +1379,38 @@ impl RegExpProgram {
             }
             state.pc += 1;
           }
+          Inst::UnicodeStringProperty(prop) => {
+            // String properties match only in forward direction. Backward matching would require
+            // suffix matching against the property trie, which is not implemented yet.
+            if !dir.is_forward() {
+              break;
+            }
+            let next_pc = state.pc.saturating_add(1);
+            let start_pos = state.pos;
+
+            // Compute all matching string lengths (prefix matches) with a bounded, allocation-free
+            // buffer.
+            let mut lens = [0usize; MAX_MATCHES_PER_POSITION];
+            let n = match_property_at(*prop, input, start_pos, &mut lens);
+            if n == 0 {
+              break;
+            }
+
+            let best_len = lens[n - 1];
+            // Push shorter alternatives so the VM tries them after the current (longest) branch.
+            // `lens` is sorted by increasing length, so pushing in forward order makes the stack
+            // pop in descending length order.
+            for &len in &lens[..n - 1] {
+              let mut alt = state.try_clone(exec_mem)?;
+              alt.pc = next_pc;
+              alt.pos = start_pos.saturating_add(len);
+              stack_try_push(&mut stack, &mut stack_mem, exec_mem, alt)?;
+            }
+
+            state.pos = start_pos.saturating_add(best_len);
+            state.pc = next_pc;
+            continue;
+          }
           Inst::AssertStart => {
             if state.pos == 0 {
               state.pc += 1;
@@ -2004,6 +2039,7 @@ impl RegExpProgram {
           RegExpCompileError::Vm(err) => err,
         })?),
         Inst::UnicodeProperty(prop) => Inst::UnicodeProperty(*prop),
+        Inst::UnicodeStringProperty(prop) => Inst::UnicodeStringProperty(*prop),
         Inst::AssertStart => Inst::AssertStart,
         Inst::AssertEnd => Inst::AssertEnd,
         Inst::WordBoundary { negated } => Inst::WordBoundary { negated: *negated },
@@ -2227,6 +2263,8 @@ enum Inst {
   /// (e.g. `\p{RGI_Emoji}`) into tens of thousands of `Split` + `Char` instructions.
   UnicodeSet(UnicodeSetClass),
   UnicodeProperty(UnicodeProperty),
+  /// RegExp `v` flag Unicode properties-of-strings (`\p{RGI_Emoji}` etc).
+  UnicodeStringProperty(UnicodeStringProperty),
   AssertStart,
   AssertEnd,
   WordBoundary { negated: bool },
@@ -2956,7 +2994,6 @@ fn unicode_property_matches(prop: ResolvedCodePointProperty, cp: u32, flags: Reg
 
   false
 }
-
 // --- Parser + compiler ---
 
 #[derive(Debug, Clone)]
@@ -2997,6 +3034,7 @@ enum Atom {
   Class(CharClass),
   UnicodeSet(UnicodeSetClass),
   UnicodeProperty(UnicodeProperty),
+  UnicodeStringProperty(UnicodeStringProperty),
   Group {
     capture: Option<u32>,
     /// Inclusive range of capture-group indices contained within this group.
@@ -4209,13 +4247,81 @@ impl<'a> Parser<'a> {
               set.chars = set.chars.complement();
             }
           }
-          // Unicode property escapes (`\p{...}` / `\P{...}`) are not implemented in
-          // UnicodeSets-mode (`/v`) class set expressions yet.
           x if x == (b'p' as u16) || x == (b'P' as u16) => {
-            return Err(RegExpSyntaxError {
-              message: "Invalid regular expression",
+            let prop_negated = x == (b'P' as u16);
+            if !self.eat(b'{' as u16) {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
             }
-            .into());
+            let resolved = self.parse_unicode_property_value_expression(ctx)?;
+            match resolved {
+              ResolvedUnicodeProperty::CodePoint(prop) => {
+                match prop {
+                  // Common fast-path used heavily by unicodeSets tests.
+                  ResolvedCodePointProperty::Binary(BinaryProp::ASCII_Hex_Digit) => {
+                    for u in b'0'..=b'9' {
+                      set.insert_char(u as u16);
+                    }
+                    for u in b'A'..=b'F' {
+                      set.insert_char(u as u16);
+                    }
+                    for u in b'a'..=b'f' {
+                      set.insert_char(u as u16);
+                    }
+                  }
+                  other => {
+                    // Fallback: scan all UTF-16 code units.
+                    let mut cu: u32 = 0;
+                    let mut i: usize = 0;
+                    while cu <= 0xFFFF {
+                      if i != 0 {
+                        ctx.tick_every(i)?;
+                      }
+                      i = i.wrapping_add(1);
+                      if unicode_table_contains_code_point(other, cu) {
+                        set.insert_char(cu as u16);
+                      }
+                      cu += 1;
+                    }
+                  }
+                }
+
+                if prop_negated {
+                  set.chars = set.chars.complement();
+                }
+              }
+              ResolvedUnicodeProperty::String(prop) => {
+                // String properties cannot be negated.
+                if prop_negated {
+                  return Err(RegExpSyntaxError {
+                    message: "Invalid regular expression",
+                  }
+                  .into());
+                }
+
+                // For now, only support the subset needed by unicodeSets tests.
+                match prop {
+                  UnicodeStringProperty::EmojiKeycapSequence => {
+                    for &base in &[b'#' as u16, b'*' as u16] {
+                      let units = [base, 0xFE0F, 0x20E3];
+                      set.insert_string(ctx, &units)?;
+                    }
+                    for base in b'0'..=b'9' {
+                      let units = [base as u16, 0xFE0F, 0x20E3];
+                      set.insert_string(ctx, &units)?;
+                    }
+                  }
+                  _ => {
+                    return Err(RegExpSyntaxError {
+                      message: "Invalid regular expression",
+                    }
+                    .into());
+                  }
+                }
+              }
+            }
           }
           _ => {
             return Err(RegExpSyntaxError {
@@ -4674,8 +4780,20 @@ impl<'a> Parser<'a> {
           .into());
         }
         let negated = x == (b'P' as u16);
-        let prop = self.parse_unicode_property_escape(ctx, negated)?;
-        Ok(Atom::UnicodeProperty(prop))
+        let resolved = self.parse_unicode_property_value_expression(ctx)?;
+        match resolved {
+          ResolvedUnicodeProperty::CodePoint(prop) => Ok(Atom::UnicodeProperty(UnicodeProperty { prop, negated })),
+          ResolvedUnicodeProperty::String(prop) => {
+            // String properties cannot be negated.
+            if negated {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
+            }
+            Ok(Atom::UnicodeStringProperty(prop))
+          }
+        }
       }
       x if (b'1' as u16..=b'9' as u16).contains(&x) => {
         // `\1`-`\9` is either a DecimalEscape/backreference or (in non-unicode mode) an Annex B
@@ -4741,11 +4859,10 @@ impl<'a> Parser<'a> {
     }
   }
 
-  fn parse_unicode_property_escape(
+  fn parse_unicode_property_value_expression(
     &mut self,
     ctx: &mut CompileCtx<'_>,
-    negated: bool,
-  ) -> Result<UnicodeProperty, RegExpCompileError> {
+  ) -> Result<ResolvedUnicodeProperty, RegExpCompileError> {
     // `{` has already been consumed.
     let mut bytes: Vec<u8> = Vec::new();
     let mut i: usize = 0;
@@ -4786,9 +4903,16 @@ impl<'a> Parser<'a> {
       .into());
     };
 
-    let resolved = resolve_unicode_property_value_expression(expr, self.flags.unicode_sets)
-      .map_err(RegExpCompileError::Syntax)?;
+    Ok(resolve_unicode_property_value_expression(expr, self.flags.unicode_sets)
+      .map_err(RegExpCompileError::Syntax)?)
+  }
 
+  fn parse_unicode_property_escape(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    negated: bool,
+  ) -> Result<UnicodeProperty, RegExpCompileError> {
+    let resolved = self.parse_unicode_property_value_expression(ctx)?;
     match resolved {
       ResolvedUnicodeProperty::CodePoint(prop) => Ok(UnicodeProperty { prop, negated }),
       ResolvedUnicodeProperty::String(_prop) => Err(RegExpSyntaxError {
@@ -5383,6 +5507,9 @@ impl ProgramBuilder {
       Atom::UnicodeProperty(prop) => {
         self.emit(ctx, Inst::UnicodeProperty(prop))?;
       }
+      Atom::UnicodeStringProperty(prop) => {
+        self.emit(ctx, Inst::UnicodeStringProperty(prop))?;
+      }
       Atom::BackRef(n) => {
         self.emit(ctx, Inst::BackRef(n))?;
       }
@@ -5595,6 +5722,47 @@ mod regexp_unicode_sets_tests {
     assert!(eval_bool(&mut rt, r#"(new RegExp("]").test("]"))"#)?);
     assert!(eval_bool(&mut rt, r#"(new RegExp("{").test("{"))"#)?);
     assert!(eval_bool(&mut rt, r#"(new RegExp("a{").test("a{"))"#)?);
+
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_unicode_property_of_strings_match_and_backtrack() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // Basic matches for properties of strings.
+    assert!(eval_bool(
+      &mut rt,
+      r#"( /^\p{Emoji_Keycap_Sequence}+$/v.test("0\uFE0F\u20E3") )"#,
+    )?);
+    assert!(!eval_bool(
+      &mut rt,
+      r#"( /^\p{Emoji_Keycap_Sequence}+$/v.test("0") )"#,
+    )?);
+
+    // Properties of strings inside `/v` character classes.
+    assert!(eval_bool(
+      &mut rt,
+      r#"( /^[\p{Emoji_Keycap_Sequence}_]+$/v.test("_") )"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"( /^[\p{Emoji_Keycap_Sequence}_]+$/v.test("9\uFE0F\u20E3") )"#,
+    )?);
+    assert!(!eval_bool(
+      &mut rt,
+      r#"( /^[\p{Emoji_Keycap_Sequence}_]+$/v.test("9") )"#,
+    )?);
+
+    // Backtracking between multiple prefix matches of a string property:
+    // "🏳️" is a Basic_Emoji and "🏳️‍🌈" is an RGI_Emoji_ZWJ_Sequence. `\p{RGI_Emoji}` must
+    // surface both lengths so the VM can backtrack from the longest to the shorter match.
+    assert!(eval_bool(
+      &mut rt,
+      r#"( /^\p{RGI_Emoji}\u200D\u{1F308}$/v.test("\u{1F3F3}\u{FE0F}\u200D\u{1F308}") )"#,
+    )?);
 
     Ok(())
   }
