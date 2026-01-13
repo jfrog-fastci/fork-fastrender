@@ -206,6 +206,37 @@ test(() => {
 }, "TreeWalker whatToShow: SHOW_COMMENT skips elements but still descends into their children");
 
 test(() => {
+  clear_children(document.body);
+
+  // Same tree as the `nextNode()` SHOW_COMMENT test, but exercise traverse-siblings algorithms.
+  const root = document.createElement("div");
+  const c1 = document.createComment("c1");
+  const e = document.createElement("span");
+  const c2 = document.createComment("c2");
+  const c3 = document.createComment("c3");
+  e.appendChild(c2);
+  root.appendChild(c1);
+  root.appendChild(e);
+  root.appendChild(c3);
+  document.body.appendChild(root);
+
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT, null);
+
+  // Move to the first accepted node (c1).
+  assert_equals(tw.nextNode(), c1);
+
+  // nextSibling() should treat nodes excluded by whatToShow as FILTER_SKIP: it can descend into the
+  // skipped element sibling to find the next accepted comment.
+  assert_equals(tw.nextSibling(), c2);
+  assert_equals(tw.nextSibling(), c3);
+
+  // previousSibling() should similarly descend into skipped siblings.
+  assert_equals(tw.previousSibling(), c2);
+  assert_equals(tw.previousSibling(), c1);
+  assert_equals(tw.previousSibling(), null);
+}, "TreeWalker traverse-siblings: nodes excluded by whatToShow behave like FILTER_SKIP (descend to accepted descendants)");
+
+test(() => {
   const frag = document.createDocumentFragment();
   const a = document.createElement("div");
   const b = document.createElement("div");
