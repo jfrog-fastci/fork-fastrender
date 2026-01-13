@@ -21,6 +21,7 @@ pub mod network;
 pub mod protocol;
 pub mod received_frame;
 pub mod shm;
+pub mod sync;
 #[cfg(target_os = "linux")]
 pub mod unix_seqpacket;
 pub mod websocket;

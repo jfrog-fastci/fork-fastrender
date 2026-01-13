@@ -9,6 +9,7 @@
 //! `ipc::protocol::renderer::BrowserToRenderer::FrameAck { frame_seq }`).
 
 use crate::ipc::IpcError;
+use crate::ipc::sync;
 use crate::paint::pixmap::MAX_PIXMAP_BYTES;
 use memmap2::MmapMut;
 use serde::{Deserialize, Serialize};
@@ -206,6 +207,10 @@ impl BrowserFramePool {
   }
 
   pub fn buffer_bytes(&self, index: u32) -> Option<&[u8]> {
+    // The browser must not speculatively read from the shared memory buffer before it has observed
+    // the corresponding `FrameReady` message. Pair with the renderer-side Release fence in
+    // `RendererFramePool::mark_sent`.
+    sync::shm_consume_frame();
     let idx = usize::try_from(index).ok()?;
     self.buffers.get(idx).map(ShmemRegion::as_bytes)
   }
@@ -310,6 +315,15 @@ impl RendererFramePool {
         "mark_sent for buffer {idx} that is not currently acquired for writing"
       )));
     }
+
+    // Publish pixel writes performed by the renderer before it sends `FrameReady` for this buffer.
+    //
+    // The pixels live in shared memory, but the readiness signal is delivered via a separate IPC
+    // channel. A Release fence here (paired with an Acquire fence in
+    // `BrowserFramePool::buffer_bytes`) prevents store/load reordering across the message boundary,
+    // ensuring that once the browser receives `FrameReady`, it sees a fully-written frame.
+    sync::shm_publish_frame();
+
     if !self.in_use.insert(idx) {
       return Err(protocol_violation(format!(
         "mark_sent for buffer {idx} that is already in_use"
@@ -440,5 +454,30 @@ mod tests {
     renderer.mark_sent(idx1).unwrap();
 
     assert!(renderer.acquire().is_none());
+  }
+
+  #[test]
+  fn shm_fences_invoked_on_publish_and_consume() {
+    let publish_before = crate::ipc::sync::shm_publish_count_for_test();
+    let consume_before = crate::ipc::sync::shm_consume_count_for_test();
+
+    let browser = BrowserFramePool::new_for_viewport(1, (32, 16), 1.0).unwrap();
+    let mut renderer =
+      RendererFramePool::install(browser.generation, browser.descriptors().to_vec()).unwrap();
+
+    let (idx, buf, _) = renderer.acquire().unwrap();
+    buf[0] = 0xAB;
+    renderer.mark_sent(idx).unwrap();
+    assert!(
+      crate::ipc::sync::shm_publish_count_for_test() > publish_before,
+      "expected renderer publish fence to run when marking buffer sent"
+    );
+
+    let bytes = browser.buffer_bytes(idx).unwrap();
+    assert_eq!(bytes[0], 0xAB);
+    assert!(
+      crate::ipc::sync::shm_consume_count_for_test() > consume_before,
+      "expected browser consume fence to run when reading buffer bytes"
+    );
   }
 }
