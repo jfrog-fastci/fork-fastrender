@@ -6,8 +6,15 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn value_to_string(rt: &JsRuntime, value: Value) -> String {
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  rt.heap.get_string(s).unwrap().to_utf8_lossy()
+}
+
 #[test]
-fn promise_all_close_error_overrides_promise_resolve_throw() -> Result<(), VmError> {
+fn promise_all_close_error_is_suppressed_for_promise_resolve_throw() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -38,7 +45,9 @@ fn promise_all_close_error_overrides_promise_resolve_throw() -> Result<(), VmErr
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let value = rt.exec_script("out && out.name === 'TypeError'")?;
-  assert_eq!(value, Value::Bool(true));
+  // Per ECMA-262 `IteratorClose`, errors thrown while getting/calling `iterator.return` are
+  // suppressed for throw completions (the original throw is preserved).
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "bad promise resolve");
   Ok(())
 }

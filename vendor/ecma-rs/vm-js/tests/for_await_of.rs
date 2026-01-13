@@ -1199,7 +1199,7 @@ fn for_await_of_throw_suppresses_getmethod_abrupt_when_iterator_return_getter_th
 }
 
 #[test]
-fn for_await_over_sync_iterator_rejected_value_close_error_overrides_reason_and_closes_iterator(
+fn for_await_over_sync_iterator_rejected_value_close_error_is_suppressed_for_value_rejection_and_closes_iterator(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -1240,7 +1240,9 @@ fn for_await_over_sync_iterator_rejected_value_close_error_overrides_reason_and_
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "close");
+  // Per ECMA-262 `IteratorClose`, errors thrown while getting/calling `iterator.return` are
+  // suppressed for throw completions (the original rejection reason is preserved).
+  assert_eq!(value_to_string(&rt, value), "boom");
 
   let value = rt.exec_script("returnCalls")?;
   let Value::Number(return_calls) = value else {

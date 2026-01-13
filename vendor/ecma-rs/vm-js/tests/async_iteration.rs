@@ -502,7 +502,7 @@ fn async_iterator_close_invokes_sync_return() -> Result<(), VmError> {
 }
 
 #[test]
-fn async_from_sync_iterator_continuation_close_error_overrides_promise_resolve_throw(
+fn async_from_sync_iterator_continuation_close_error_is_suppressed_for_promise_resolve_throw(
 ) -> Result<(), VmError> {
   ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| {
     cell.borrow_mut().take();
@@ -701,14 +701,15 @@ fn async_from_sync_iterator_continuation_close_error_overrides_promise_resolve_t
   result?;
 
   // Per ECMA-262 `IteratorClose`/`AsyncFromSyncIteratorContinuation`, if closing the underlying sync
-  // iterator throws, that close error overrides the original error (similar to `finally`).
+  // iterator throws while the incoming completion is a throw completion, the close error is
+  // suppressed and the original error is preserved.
   let reason = ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| cell.borrow_mut().take());
-  assert_eq!(reason.as_deref(), Some("close"));
+  assert_eq!(reason.as_deref(), Some("promiseResolve"));
   Ok(())
 }
 
 #[test]
-fn async_from_sync_iterator_close_iterator_error_overrides_value_rejection() -> Result<(), VmError> {
+fn async_from_sync_iterator_close_iterator_error_is_suppressed_for_value_rejection() -> Result<(), VmError> {
   ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| {
     cell.borrow_mut().take();
   });
@@ -758,7 +759,8 @@ fn async_from_sync_iterator_close_iterator_error_overrides_value_rejection() -> 
 
       // Create a sync iterator object with:
       // - `next()` returning `iter_result_obj`, and
-      // - `return()` throwing "close" (which must override the value rejection).
+      // - `return()` throwing "close" (which must be suppressed so the value rejection is
+      //   preserved).
       let sync_iter = scope.alloc_object()?;
       scope.push_root(Value::Object(sync_iter))?;
       scope
@@ -876,6 +878,6 @@ fn async_from_sync_iterator_close_iterator_error_overrides_value_rejection() -> 
   result?;
 
   let reason = ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| cell.borrow_mut().take());
-  assert_eq!(reason.as_deref(), Some("close"));
+  assert_eq!(reason.as_deref(), Some("reason"));
   Ok(())
 }

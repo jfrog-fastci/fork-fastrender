@@ -18,13 +18,15 @@ pub enum CloseCompletionKind {
   /// Closing on a *throw* completion.
   ///
   /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, `GetMethod(iterator, "return")` and
-  /// `Call(return, iterator)` are still performed when possible and any error thrown while
-  /// getting/calling `iterator.return` overrides the incoming completion (even when the incoming
-  /// completion is itself a throw completion).
+  /// `Call(return, iterator)` are still performed when possible. However, if the incoming
+  /// completion is itself a throw completion, any error thrown while getting/calling
+  /// `iterator.return` is **suppressed** in favour of the original throw completion.
   ///
-  /// If closing succeeds, the incoming throw completion "wins" and the non-object return-result
-  /// TypeError check is skipped (because the incoming throw completion is returned before that
-  /// check is performed).
+  /// This is observable in user code because the `return` getter is still invoked, but its thrown
+  /// value does not replace the original exception.
+  ///
+  /// The non-object return-result TypeError check is also skipped for throw completions (because
+  /// the incoming throw completion is returned before that check is performed).
   ///
   /// Note: `vm-js` has non-catchable VM failures (OOM/termination/etc). Those are still propagated
   /// even when closing on a throw completion.
