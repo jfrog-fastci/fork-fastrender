@@ -185,6 +185,7 @@ pub enum WebSocketIpcEvent {
 /// The `cmd_tx` channel should generally be bounded (`sync_channel`) so the renderer can apply
 /// backpressure via `WebSocket.send()` throwing once the queue fills.
 pub struct WindowWebSocketIpcEnv {
+  pub fetcher: Arc<dyn ResourceFetcher>,
   pub document_url: Option<String>,
   pub cmd_tx: mpsc::SyncSender<WebSocketIpcCommand>,
   pub event_rx: mpsc::Receiver<WebSocketIpcEvent>,
@@ -1827,6 +1828,7 @@ pub fn install_window_websocket_ipc_bindings_with_guard<Host: WindowRealmHost + 
   env: WindowWebSocketIpcEnv,
 ) -> Result<WindowWebSocketBindings, VmError> {
   let WindowWebSocketIpcEnv {
+    fetcher,
     document_url,
     cmd_tx,
     event_rx,

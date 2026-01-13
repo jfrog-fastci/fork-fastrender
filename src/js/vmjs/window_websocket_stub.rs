@@ -7,20 +7,23 @@
 //! guards. The JS global `WebSocket` constructor is intentionally *not* installed.
 
 use crate::js::window_realm::WindowRealmHost;
+use crate::resource::ResourceFetcher;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use vm_js::{Heap, Realm, Vm, VmError};
 
 static NEXT_ENV_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub struct WindowWebSocketEnv {
+  pub fetcher: Arc<dyn ResourceFetcher>,
   pub document_url: Option<String>,
 }
 
 impl WindowWebSocketEnv {
-  pub fn for_document(document_url: Option<String>) -> Self {
-    Self { document_url }
+  pub fn for_document(fetcher: Arc<dyn ResourceFetcher>, document_url: Option<String>) -> Self {
+    Self { fetcher, document_url }
   }
 }
 
@@ -90,6 +93,7 @@ pub enum WebSocketIpcEvent {
 /// In stub builds this is accepted and then immediately dropped; the JS global `WebSocket`
 /// constructor is intentionally not installed.
 pub struct WindowWebSocketIpcEnv {
+  pub fetcher: Arc<dyn ResourceFetcher>,
   pub document_url: Option<String>,
   pub cmd_tx: mpsc::SyncSender<WebSocketIpcCommand>,
   pub event_rx: mpsc::Receiver<WebSocketIpcEvent>,

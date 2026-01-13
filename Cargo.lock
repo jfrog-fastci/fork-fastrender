@@ -1806,6 +1806,7 @@ dependencies = [
  "egui-winit",
  "encoding_rs",
  "fastrender-ipc",
+ "fastrender-shmem",
  "filetime",
  "flate2",
  "fontdb 0.23.0",
@@ -1912,6 +1913,14 @@ dependencies = [
  "fastrender-ipc",
  "serde",
  "url",
+]
+
+[[package]]
+name = "fastrender-shmem"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memmap2 0.9.9",
 ]
 
 [[package]]

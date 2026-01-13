@@ -14,6 +14,7 @@ members = [
   "crates/fastrender-renderer",
   "crates/win-sandbox",
   "crates/libvpx-sys-bundled",
+  "crates/fastrender-shmem",
 ]
 # NOTE: WebIDL/JS infrastructure should live in `vendor/ecma-rs/` per
 # instructions/ecma_rs_ownership.md and instructions/webidl_consolidation.md.
@@ -108,6 +109,7 @@ ci = [
 [dependencies]
 fastrender-ipc = { path = "crates/fastrender-ipc" }
 base64 = "0.22"
+fastrender-shmem = { path = "crates/fastrender-shmem" }
 avif-decode = { version = "1.0", default-features = false, optional = true }
 avif-parse = { version = "1.4", optional = true }
 arboard = { version = "3.6", optional = true }

@@ -7,11 +7,13 @@
 //! - [`frame_tree`]: low-level browsing-context tree representation keyed by [`FrameToken`], with
 //!   configurable iframe depth limiting (used by future OOPIF + site isolation plumbing).
 //! - [`compositor`]: composition of child frame pixmaps into the final tab surface.
+//! - [`shmem`]: shared-memory helpers (Linux `memfd_create` + FD inheritance, etc.).
 
 pub mod compositor;
 pub mod frame_tree;
 pub mod registry;
 pub mod subframes;
+pub mod shmem;
 
 pub use frame_tree::{EmbeddingGeometry, FrameNodeStatus, FrameToken};
 pub use registry::{
