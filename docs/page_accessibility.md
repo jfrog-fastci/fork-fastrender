@@ -141,6 +141,23 @@ There is currently **no** `--include-bounds` flag. If you need bounds today:
   `absolute_bounds_for_box_id` + `styled_node_anchor_css`), or
 - Add a new tool flag and ensure it is covered by unit tests in the geometry modules.
 
+### `dump_accesskit` (browser chrome / OS-facing a11y)
+
+To inspect what the **windowed browser chrome UI** is exposing to the OS via AccessKit (separate
+from the page semantics tree), use `dump_accesskit`:
+
+```bash
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- --help
+```
+
+This tool only reflects the egui widget tree (tabs/address bar/menus). It is useful as a regression
+test/debugging aid when working on screen reader support for the browser UI itself; page content is
+still a bitmap and is not represented in AccessKit yet.
+
+See [chrome_accessibility.md](chrome_accessibility.md) for recommended `dump_accesskit` invocations
+and how to interpret the output.
+
 ## Testing guidance
 
 ### Unit tests: semantics (tree correctness)
