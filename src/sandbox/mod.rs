@@ -502,6 +502,61 @@ pub enum SandboxError {
     source: io::Error,
   },
 
+  // --- Linux preflight diagnostics -------------------------------------------------------------
+
+  /// `prctl(PR_GET_SECCOMP)` failed while probing the current seccomp mode.
+  #[cfg(target_os = "linux")]
+  #[error("failed to query seccomp mode via prctl(PR_GET_SECCOMP): {source}. {guidance}")]
+  GetSeccompModeFailed {
+    #[source]
+    source: io::Error,
+    guidance: String,
+  },
+
+  /// The process is already in `SECCOMP_MODE_STRICT`, which is incompatible with seccomp-bpf.
+  #[cfg(target_os = "linux")]
+  #[error("process is already running under SECCOMP_MODE_STRICT. {guidance}")]
+  AlreadyInStrictSeccompMode { guidance: String },
+
+  /// `prctl(PR_GET_NO_NEW_PRIVS)` failed while probing whether unprivileged seccomp filters are
+  /// allowed.
+  #[cfg(target_os = "linux")]
+  #[error("failed to query no_new_privs via prctl(PR_GET_NO_NEW_PRIVS): {source}. {guidance}")]
+  GetNoNewPrivsFailed {
+    #[source]
+    source: io::Error,
+    guidance: String,
+  },
+
+  /// The `seccomp()` syscall is unavailable on this kernel.
+  #[cfg(target_os = "linux")]
+  #[error("seccomp syscall is unavailable: {source}. {guidance}")]
+  SeccompSyscallUnavailable {
+    #[source]
+    source: io::Error,
+    guidance: String,
+  },
+
+  /// The running kernel does not support a required seccomp return action.
+  #[cfg(target_os = "linux")]
+  #[error("seccomp action {action_name} is not supported by the running kernel. {guidance}")]
+  SeccompActionUnavailable {
+    action_name: &'static str,
+    action: u32,
+    guidance: String,
+  },
+
+  /// The action availability probe itself failed (e.g. blocked by a container policy).
+  #[cfg(target_os = "linux")]
+  #[error("failed to probe seccomp action {action_name} via SECCOMP_GET_ACTION_AVAIL: {source}. {guidance}")]
+  SeccompGetActionAvailFailed {
+    action_name: &'static str,
+    action: u32,
+    #[source]
+    source: io::Error,
+    guidance: String,
+  },
+
   #[error("invalid {var}: expected one of 0, 1, strict, relaxed, or off; got {value:?}")]
   InvalidBoolean0Or1 { var: &'static str, value: String },
 
@@ -556,6 +611,58 @@ fn preflight_status(config: &RendererSandboxConfig, disable_env: Option<&OsStr>)
   }
 
   None
+}
+
+impl SandboxError {
+  /// Optional guidance string for errors that can offer actionable hints.
+  pub fn guidance(&self) -> Option<&str> {
+    match self {
+      #[cfg(target_os = "linux")]
+      SandboxError::GetSeccompModeFailed { guidance, .. }
+      | SandboxError::AlreadyInStrictSeccompMode { guidance }
+      | SandboxError::GetNoNewPrivsFailed { guidance, .. }
+      | SandboxError::SeccompSyscallUnavailable { guidance, .. }
+      | SandboxError::SeccompActionUnavailable { guidance, .. }
+      | SandboxError::SeccompGetActionAvailFailed { guidance, .. } => Some(guidance),
+      _ => None,
+    }
+  }
+}
+
+/// Known seccomp modes returned by `prctl(PR_GET_SECCOMP)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxSeccompMode {
+  Disabled,
+  Strict,
+  Filter,
+  /// A newer/unknown mode value that this build does not understand.
+  Unknown(i32),
+}
+
+/// Kernel layout probe returned by `seccomp(SECCOMP_GET_NOTIF_SIZES, ...)`.
+///
+/// This is *not* required for basic seccomp-bpf filtering today. It is queried opportunistically so
+/// we can gate "broker" (seccomp user notification) mode in the future.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct SeccompNotifSizes {
+  pub seccomp_notif: u16,
+  pub seccomp_notif_resp: u16,
+  pub seccomp_data: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxSandboxPreflight {
+  /// Current process seccomp mode.
+  pub seccomp_mode: LinuxSeccompMode,
+  /// Whether `no_new_privs` is already set for the current process.
+  pub no_new_privs: bool,
+  /// Kernel support for `SECCOMP_RET_KILL_PROCESS` (required by our filters).
+  pub has_kill_process: bool,
+  /// Kernel support for `SECCOMP_RET_ERRNO` (required by our filters).
+  pub has_errno: bool,
+  /// Optional seccomp user notification ABI sizing probe.
+  pub notif_sizes: Option<SeccompNotifSizes>,
 }
 
 /// Parse `FASTR_RENDERER_*` environment variables and apply the renderer sandbox when enabled.
@@ -823,6 +930,135 @@ pub fn apply_renderer_seccomp_denylist_with_report(
   {
     let _ = config;
     Ok((SandboxStatus::Unsupported, report))
+  }
+}
+
+/// Linux-only seccomp/`no_new_privs` compatibility probes.
+///
+/// This helper is intended to run before installing the renderer sandbox so failures are easier to
+/// diagnose (kernel too old, seccomp disabled by container policy, etc.).
+#[cfg(target_os = "linux")]
+pub fn linux_preflight() -> Result<LinuxSandboxPreflight, SandboxError> {
+  let raw_seccomp_mode = linux_seccomp::prctl_get_seccomp_mode().map_err(|source| {
+    let guidance = guidance_for_prctl_get_seccomp(&source);
+    SandboxError::GetSeccompModeFailed { source, guidance }
+  })?;
+
+  let seccomp_mode = match raw_seccomp_mode {
+    0 => LinuxSeccompMode::Disabled,
+    1 => LinuxSeccompMode::Strict,
+    2 => LinuxSeccompMode::Filter,
+    other => LinuxSeccompMode::Unknown(other),
+  };
+
+  if seccomp_mode == LinuxSeccompMode::Strict {
+    return Err(SandboxError::AlreadyInStrictSeccompMode {
+      guidance: "The process is already running in `SECCOMP_MODE_STRICT`, which does not allow installing a seccomp-bpf filter. This usually indicates an extremely restrictive sandbox or container policy; run without the Linux sandbox or loosen the parent sandbox."
+        .to_string(),
+    });
+  }
+
+  let no_new_privs = linux_seccomp::prctl_get_no_new_privs().map_err(|source| {
+    let guidance = guidance_for_prctl_get_no_new_privs(&source);
+    SandboxError::GetNoNewPrivsFailed { source, guidance }
+  })?;
+
+  // Verify the kernel understands the return actions we plan to use.
+  let has_kill_process =
+    match linux_seccomp::seccomp_action_avail(linux_seccomp::SECCOMP_RET_KILL_PROCESS) {
+      Ok(()) => true,
+      Err(err) => {
+        return Err(map_seccomp_action_err(
+          "KILL_PROCESS",
+          linux_seccomp::SECCOMP_RET_KILL_PROCESS,
+          err,
+        ));
+      }
+    };
+  let has_errno = match linux_seccomp::seccomp_action_avail(linux_seccomp::SECCOMP_RET_ERRNO) {
+    Ok(()) => true,
+    Err(err) => {
+      return Err(map_seccomp_action_err(
+        "ERRNO",
+        linux_seccomp::SECCOMP_RET_ERRNO,
+        err,
+      ));
+    }
+  };
+
+  // This is an optional feature probe. Kernels without seccomp user notification support will
+  // error; we ignore the failure for now because basic sandboxing does not rely on this API.
+  let notif_sizes = linux_seccomp::seccomp_get_notif_sizes().ok();
+
+  Ok(LinuxSandboxPreflight {
+    seccomp_mode,
+    no_new_privs,
+    has_kill_process,
+    has_errno,
+    notif_sizes,
+  })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn linux_preflight() -> Result<LinuxSandboxPreflight, SandboxError> {
+  Err(SandboxError::UnsupportedPlatform)
+}
+
+#[cfg(target_os = "linux")]
+fn map_seccomp_action_err(action_name: &'static str, action: u32, err: io::Error) -> SandboxError {
+  let errno = err.raw_os_error().unwrap_or_default();
+  match errno {
+    libc::ENOSYS => SandboxError::SeccompSyscallUnavailable {
+      source: err,
+      guidance: "The `seccomp()` syscall is not available. A kernel older than Linux 3.17 (or one built without CONFIG_SECCOMP) cannot run this sandbox; upgrade the kernel or disable the Linux sandbox."
+        .to_string(),
+    },
+    libc::EOPNOTSUPP => SandboxError::SeccompActionUnavailable {
+      action_name,
+      action,
+      guidance: "The running kernel does not support the requested seccomp return action. For example, `SECCOMP_RET_KILL_PROCESS` requires a relatively recent kernel; upgrade the kernel or adjust the sandbox policy to use an older action."
+        .to_string(),
+    },
+    libc::EPERM => SandboxError::SeccompGetActionAvailFailed {
+      action_name,
+      action,
+      source: err,
+      guidance: "The seccomp syscall appears to be blocked (EPERM). This commonly happens in containers that forbid installing seccomp filters, or when a parent sandbox denies `seccomp()`/`prctl()` calls. Adjust the container security policy to allow seccomp filters."
+        .to_string(),
+    },
+    _ => SandboxError::SeccompGetActionAvailFailed {
+      action_name,
+      action,
+      source: err,
+      guidance: "Failed to probe seccomp support. If running inside a container or under another sandbox, ensure the seccomp syscall is permitted and the kernel is new enough for seccomp-bpf."
+        .to_string(),
+    },
+  }
+}
+
+#[cfg(target_os = "linux")]
+fn guidance_for_prctl_get_seccomp(err: &io::Error) -> String {
+  let errno = err.raw_os_error().unwrap_or_default();
+  match errno {
+    libc::EINVAL | libc::ENOSYS => "The kernel does not appear to support seccomp, or seccomp is disabled at build-time (CONFIG_SECCOMP). Linux < 3.5 likely lacks seccomp-bpf filtering support; upgrade the kernel or disable the Linux sandbox."
+      .to_string(),
+    libc::EPERM => "Querying seccomp mode was blocked (EPERM). This suggests the process is already under a restrictive sandbox that forbids `prctl()`; run outside the sandbox or loosen the container policy."
+      .to_string(),
+    _ => "Querying seccomp mode failed. If running inside a container, confirm the runtime allows `prctl(PR_GET_SECCOMP)` and seccomp is enabled in the kernel."
+      .to_string(),
+  }
+}
+
+#[cfg(target_os = "linux")]
+fn guidance_for_prctl_get_no_new_privs(err: &io::Error) -> String {
+  let errno = err.raw_os_error().unwrap_or_default();
+  match errno {
+    libc::EINVAL | libc::ENOSYS => "The kernel does not support `no_new_privs` (PR_GET_NO_NEW_PRIVS), which is required for unprivileged seccomp filters. Linux < 3.5 likely lacks this feature; upgrade the kernel or disable the Linux sandbox."
+      .to_string(),
+    libc::EPERM => "Querying `no_new_privs` was blocked (EPERM). This suggests the process is already under a restrictive sandbox; run outside the sandbox or loosen the container policy."
+      .to_string(),
+    _ => "Querying `no_new_privs` failed. If running inside a container, confirm the runtime allows `prctl(PR_GET_NO_NEW_PRIVS)` and that the kernel supports seccomp-bpf."
+      .to_string(),
   }
 }
 
@@ -1134,6 +1370,44 @@ mod tests {
       _ => None,
     };
     matches!(errno, Some(code) if code == libc::ENOSYS || code == libc::EINVAL)
+  }
+
+  #[test]
+  fn linux_preflight_smoke() {
+    let result = linux_preflight();
+    match result {
+      Ok(report) => {
+        assert!(
+          !matches!(report.seccomp_mode, LinuxSeccompMode::Unknown(_)),
+          "unexpected unknown seccomp mode: {:?}",
+          report.seccomp_mode
+        );
+        assert!(
+          report.has_errno,
+          "expected SECCOMP_RET_ERRNO to be available when preflight succeeds"
+        );
+        assert!(
+          report.has_kill_process,
+          "expected SECCOMP_RET_KILL_PROCESS to be available when preflight succeeds"
+        );
+        if let Some(sizes) = report.notif_sizes {
+          assert!(sizes.seccomp_data > 0);
+          assert!(sizes.seccomp_notif > 0);
+          assert!(sizes.seccomp_notif_resp > 0);
+        }
+      }
+      Err(err) => {
+        assert!(
+          !matches!(err, SandboxError::UnsupportedPlatform),
+          "linux preflight should not report unsupported platform on Linux"
+        );
+        let guidance = err.guidance().unwrap_or_default();
+        assert!(
+          !guidance.is_empty(),
+          "expected guidance string to be present for sandbox errors"
+        );
+      }
+    }
   }
 
   fn get_rlimit(resource: libc::__rlimit_resource_t) -> (u64, u64) {

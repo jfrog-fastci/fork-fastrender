@@ -12,16 +12,19 @@
 
 use super::{
   NetworkPolicy, RendererSandboxConfig, SandboxError, SandboxStatus, SeccompInstallRejectedReason,
+  SeccompNotifSizes,
 };
 use std::io;
 
 // Values from `linux/seccomp.h`.
 const SECCOMP_SET_MODE_FILTER: u32 = 1;
+const SECCOMP_GET_ACTION_AVAIL: u32 = 2;
+const SECCOMP_GET_NOTIF_SIZES: u32 = 3;
 const SECCOMP_FILTER_FLAG_TSYNC: u32 = 1;
 
-const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+pub(super) const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
-const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
+pub(super) const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Values from `linux/filter.h`.
 const BPF_LD: u16 = 0x00;
@@ -593,4 +596,71 @@ mod tests {
     assert_eq!(status, SandboxStatus::AppliedWithoutTsync);
     assert_eq!(flags_seen, vec![0]);
   }
+}
+
+// --- Preflight helpers ------------------------------------------------------------------------
+
+pub(super) fn prctl_get_seccomp_mode() -> io::Result<i32> {
+  // SAFETY: `prctl` is a process-global syscall. The PR_GET_SECCOMP operation ignores the remaining
+  // arguments.
+  let rc = unsafe { libc::prctl(libc::PR_GET_SECCOMP, 0, 0, 0, 0) };
+  if rc == -1 {
+    return Err(io::Error::last_os_error());
+  }
+  Ok(rc)
+}
+
+pub(super) fn prctl_get_no_new_privs() -> io::Result<bool> {
+  // SAFETY: `prctl` is a process-global syscall. The PR_GET_NO_NEW_PRIVS operation ignores the
+  // remaining arguments.
+  let rc = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
+  if rc == -1 {
+    return Err(io::Error::last_os_error());
+  }
+  Ok(rc != 0)
+}
+
+pub(super) fn seccomp_action_avail(action: u32) -> io::Result<()> {
+  let mut requested_action = action;
+  // SAFETY: `requested_action` is a writable u32 as required by the kernel ABI.
+  let rc = unsafe {
+    seccomp_syscall(
+      SECCOMP_GET_ACTION_AVAIL,
+      0,
+      std::ptr::addr_of_mut!(requested_action).cast(),
+    )
+  };
+  if rc == -1 {
+    return Err(io::Error::last_os_error());
+  }
+  Ok(())
+}
+
+pub(super) fn seccomp_get_notif_sizes() -> io::Result<SeccompNotifSizes> {
+  let mut sizes = SeccompNotifSizes {
+    seccomp_notif: 0,
+    seccomp_notif_resp: 0,
+    seccomp_data: 0,
+  };
+  // SAFETY: `sizes` is a writable struct matching the kernel ABI for `SECCOMP_GET_NOTIF_SIZES`.
+  let rc = unsafe {
+    seccomp_syscall(
+      SECCOMP_GET_NOTIF_SIZES,
+      0,
+      std::ptr::addr_of_mut!(sizes).cast(),
+    )
+  };
+  if rc == -1 {
+    return Err(io::Error::last_os_error());
+  }
+  Ok(sizes)
+}
+
+unsafe fn seccomp_syscall(op: u32, flags: u32, args: *mut libc::c_void) -> libc::c_long {
+  libc::syscall(
+    libc::SYS_seccomp,
+    libc::c_ulong::from(op),
+    libc::c_ulong::from(flags),
+    args,
+  )
 }
