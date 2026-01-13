@@ -19878,6 +19878,285 @@ impl WindowRealmWebIdlBindingsHost {
       Some(receiver_obj),
     ))
   }
+
+  fn node_index_from_wrapper(scope: &mut Scope<'_>, obj: GcObject) -> Result<Option<usize>, VmError> {
+    // Root `obj` while allocating the property key.
+    scope.push_root(Value::Object(obj))?;
+    let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+    match scope.heap().object_get_own_data_property_value(obj, &node_id_key)? {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Ok(Some(n as usize)),
+      _ => Ok(None),
+    }
+  }
+
+  fn document_obj_from_wrapper(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    obj: GcObject,
+  ) -> Result<GcObject, VmError> {
+    // Root `obj` while allocating the property key.
+    scope.push_root(Value::Object(obj))?;
+    let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+    if let Some(Value::Object(document_obj)) =
+      scope.heap().object_get_own_data_property_value(obj, &wrapper_document_key)?
+    {
+      return Ok(document_obj);
+    }
+    Ok(Self::window_and_document_objects(vm)?.1)
+  }
+
+  fn get_or_create_style_shim(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    element_obj: GcObject,
+  ) -> Result<Value, VmError> {
+    // Root `element_obj` while allocating property keys.
+    scope.push_root(Value::Object(element_obj))?;
+    let style_key = alloc_key(scope, "style")?;
+
+    if let Some(existing) = scope
+      .heap()
+      .object_get_own_data_property_value(element_obj, &style_key)?
+    {
+      return Ok(existing);
+    }
+
+    let document_obj = Self::document_obj_from_wrapper(vm, scope, element_obj)?;
+    scope.push_root(Value::Object(document_obj))?;
+
+    let node_index = Self::node_index_from_wrapper(scope, element_obj)?.unwrap_or(0);
+
+    let style_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(style_obj))?;
+
+    scope.heap_mut().object_set_host_slots(
+      style_obj,
+      HostSlots {
+        a: node_index as u64,
+        b: CSS_STYLE_DECL_HOST_TAG,
+      },
+    )?;
+
+    if let Some(Value::Object(proto)) = {
+      let key = alloc_key(scope, CSS_STYLE_DECL_PROTOTYPE_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    } {
+      scope
+        .heap_mut()
+        .object_set_prototype(style_obj, Some(proto))
+        .map_err(|_| VmError::TypeError("failed to set CSSStyleDeclaration prototype"))?;
+    }
+
+    // `__fastrender_node_id`
+    {
+      let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+      scope.define_property(
+        style_obj,
+        node_id_key,
+        data_desc(Value::Number(node_index as f64)),
+      )?;
+    }
+    // `__fastrender_wrapper_document`
+    {
+      let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        style_obj,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(document_obj),
+            writable: false,
+          },
+        },
+      )?;
+    }
+
+    // Retrieve shared method objects installed on the owning document.
+    let style_get_property_value = {
+      let key = alloc_key(scope, STYLE_GET_PROPERTY_VALUE_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_set_property = {
+      let key = alloc_key(scope, STYLE_SET_PROPERTY_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_remove_property = {
+      let key = alloc_key(scope, STYLE_REMOVE_PROPERTY_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_css_text_get = {
+      let key = alloc_key(scope, STYLE_CSS_TEXT_GET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_css_text_set = {
+      let key = alloc_key(scope, STYLE_CSS_TEXT_SET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_display_get = {
+      let key = alloc_key(scope, STYLE_DISPLAY_GET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_display_set = {
+      let key = alloc_key(scope, STYLE_DISPLAY_SET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_cursor_get = {
+      let key = alloc_key(scope, STYLE_CURSOR_GET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_cursor_set = {
+      let key = alloc_key(scope, STYLE_CURSOR_SET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_height_get = {
+      let key = alloc_key(scope, STYLE_HEIGHT_GET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_height_set = {
+      let key = alloc_key(scope, STYLE_HEIGHT_SET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_width_get = {
+      let key = alloc_key(scope, STYLE_WIDTH_GET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+    let style_width_set = {
+      let key = alloc_key(scope, STYLE_WIDTH_SET_KEY)?;
+      object_get_data_property_value(scope.heap(), document_obj, &key)?
+    };
+
+    // Always provide a non-throwing style object in standalone realms. When the internal
+    // `__fastrender_style_*` methods are available (expected), wire them up so the object mutates
+    // the host `dom2::Document` via the existing native shims.
+    if let (
+      Some(Value::Object(get_property_value)),
+      Some(Value::Object(set_property)),
+      Some(Value::Object(remove_property)),
+      Some(Value::Object(css_text_get)),
+      Some(Value::Object(css_text_set)),
+      Some(Value::Object(display_get)),
+      Some(Value::Object(display_set)),
+      Some(Value::Object(cursor_get)),
+      Some(Value::Object(cursor_set)),
+      Some(Value::Object(height_get)),
+      Some(Value::Object(height_set)),
+      Some(Value::Object(width_get)),
+      Some(Value::Object(width_set)),
+    ) = (
+      style_get_property_value,
+      style_set_property,
+      style_remove_property,
+      style_css_text_get,
+      style_css_text_set,
+      style_display_get,
+      style_display_set,
+      style_cursor_get,
+      style_cursor_set,
+      style_height_get,
+      style_height_set,
+      style_width_get,
+      style_width_set,
+    ) {
+      let get_property_value_key = alloc_key(scope, "getPropertyValue")?;
+      scope.define_property(
+        style_obj,
+        get_property_value_key,
+        data_desc(Value::Object(get_property_value)),
+      )?;
+
+      let set_property_key = alloc_key(scope, "setProperty")?;
+      scope.define_property(
+        style_obj,
+        set_property_key,
+        data_desc(Value::Object(set_property)),
+      )?;
+
+      let remove_property_key = alloc_key(scope, "removeProperty")?;
+      scope.define_property(
+        style_obj,
+        remove_property_key,
+        data_desc(Value::Object(remove_property)),
+      )?;
+
+      let css_text_key = alloc_key(scope, "cssText")?;
+      scope.define_property(
+        style_obj,
+        css_text_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(css_text_get),
+            set: Value::Object(css_text_set),
+          },
+        },
+      )?;
+
+      let display_key = alloc_key(scope, "display")?;
+      scope.define_property(
+        style_obj,
+        display_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(display_get),
+            set: Value::Object(display_set),
+          },
+        },
+      )?;
+
+      let cursor_key = alloc_key(scope, "cursor")?;
+      scope.define_property(
+        style_obj,
+        cursor_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(cursor_get),
+            set: Value::Object(cursor_set),
+          },
+        },
+      )?;
+
+      let height_key = alloc_key(scope, "height")?;
+      scope.define_property(
+        style_obj,
+        height_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(height_get),
+            set: Value::Object(height_set),
+          },
+        },
+      )?;
+
+      let width_key = alloc_key(scope, "width")?;
+      scope.define_property(
+        style_obj,
+        width_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(width_get),
+            set: Value::Object(width_set),
+          },
+        },
+      )?;
+    }
+
+    // Cache as an own data property so subsequent reads are stable and bypass any prototype
+    // WebIDL accessors.
+    scope.define_property(element_obj, style_key, data_desc(Value::Object(style_obj)))?;
+
+    Ok(Value::Object(style_obj))
+  }
 }
 
 impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
@@ -19892,6 +20171,53 @@ impl webidl_vm_js::WebIdlBindingsHost for WindowRealmWebIdlBindingsHost {
     args: &[Value],
   ) -> Result<Value, VmError> {
     match (interface, operation, overload) {
+      // --- CSSOM View / layout fallback ------------------------------------------
+      //
+      // `WindowRealm::exec_script(..)` runs scripts without a renderer-backed document, so layout
+      // APIs must be deterministic no-ops rather than querying a layout engine.
+      ("Element" | "HTMLElement", "getBoundingClientRect", 0) => {
+        let _receiver_obj = Self::require_receiver_object(receiver)?;
+        let (window_obj, _document_obj) = Self::window_and_document_objects(vm)?;
+        let rect_obj = crate::js::window_dom_rect::alloc_dom_rect_read_only_from_global(
+          scope,
+          window_obj,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+        )?;
+        Ok(Value::Object(rect_obj))
+      }
+
+      (
+        "Element" | "HTMLElement",
+        "clientTop" | "clientLeft" | "clientWidth" | "clientHeight" | "scrollWidth" | "scrollHeight",
+        0,
+      ) => {
+        let _receiver_obj = Self::require_receiver_object(receiver)?;
+        Ok(Value::Number(0.0))
+      }
+
+      ("Element" | "HTMLElement", "scrollTop" | "scrollLeft", 0) => {
+        let _receiver_obj = Self::require_receiver_object(receiver)?;
+        if args.is_empty() {
+          Ok(Value::Number(0.0))
+        } else {
+          // Setter: deterministic no-op in standalone realms.
+          Ok(Value::Undefined)
+        }
+      }
+
+      ("HTMLElement" | "Element", "offsetWidth" | "offsetHeight" | "offsetLeft" | "offsetTop", 0) => {
+        let _receiver_obj = Self::require_receiver_object(receiver)?;
+        Ok(Value::Number(0.0))
+      }
+
+      ("HTMLElement" | "ElementCSSInlineStyle" | "Element", "style", 0) => {
+        let element_obj = Self::require_receiver_object(receiver)?;
+        Self::get_or_create_style_shim(vm, scope, element_obj)
+      }
+
       ("EventTarget", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
 
@@ -47408,6 +47734,42 @@ mod tests {
       Some("background-color: red; cursor: pointer; height: 10px;")
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_backend_standalone_cssom_layout_fallbacks_do_not_throw() -> Result<(), VmError> {
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+         const el = document.createElement('div');\n\
+         const s1 = el.style;\n\
+         const s2 = el.style;\n\
+         if (!(s1 && typeof s1 === 'object')) return false;\n\
+         if (s1 !== s2) return false;\n\
+         try { el.style.display = 'none'; } catch (e) { return false; }\n\
+         // Layout metric getters/setters must not throw in standalone realms.\n\
+         const metrics = [\n\
+           'clientTop', 'clientLeft', 'clientWidth', 'clientHeight',\n\
+           'scrollWidth', 'scrollHeight', 'scrollTop', 'scrollLeft',\n\
+           'offsetWidth', 'offsetHeight', 'offsetLeft', 'offsetTop',\n\
+         ];\n\
+         for (const p of metrics) {\n\
+           try { void el[p]; } catch (e) { return false; }\n\
+           if (typeof el[p] !== 'number') return false;\n\
+         }\n\
+         try { el.scrollTop = 10; el.scrollLeft = 20; } catch (e) { return false; }\n\
+         let r;\n\
+         try { r = el.getBoundingClientRect(); } catch (e) { return false; }\n\
+         if (!(r instanceof DOMRectReadOnly)) return false;\n\
+         return r.width === 0 && r.height === 0 && r.x === 0 && r.y === 0;\n\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
