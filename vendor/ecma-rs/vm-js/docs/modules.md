@@ -166,8 +166,13 @@ intrinsics, which are installed when creating a [`Realm`](crate::Realm).
 
 If you are using [`JsRuntime`](crate::JsRuntime), it creates a Realm for you.
 
-If you are not using `JsRuntime`, you must ensure the VM has intrinsics (via `Realm::new`) and that
-your module graph is configured with the correct global lexical environment.
+If you are not using `JsRuntime`, you must ensure the VM has intrinsics (via [`Realm::new`](crate::Realm::new)).
+
+Note: [`ModuleGraph::set_global_lexical_env`](crate::ModuleGraph::set_global_lexical_env) can be
+used to wire modules into an embedding’s global lexical environment (so modules can “see” global
+lexical bindings). If you do not have a `GcEnv` for your global lexical environment, leaving it
+unset is still useful: modules will still be able to resolve **global object properties** (built-in
+constructors, `globalThis`, host APIs installed as properties, …).
 
 ### 1. Parse and register the root module
 
@@ -175,15 +180,18 @@ Parse source text into a `SourceTextModuleRecord` and add it to the graph:
 
 ```rust,ignore
 use std::sync::Arc;
-use vm_js::{Heap, HeapLimits, ModuleGraph, SourceText, SourceTextModuleRecord, Vm, VmOptions};
+use vm_js::{Heap, HeapLimits, ModuleGraph, Realm, SourceText, SourceTextModuleRecord, Vm, VmOptions};
 
 let mut vm = Vm::new(VmOptions::default());
 let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
-// If you are not using JsRuntime, you must create a Realm here.
-// let realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+// Create a realm (installs intrinsics + global object).
+let realm = Realm::new(&mut vm, &mut heap)?;
+let realm_id = realm.id();
+let global_object = realm.global_object();
 
 let mut modules = ModuleGraph::new();
+// Optional (if you have a global lexical env): modules.set_global_lexical_env(...);
 
 let source = Arc::new(SourceText::new_charged(&mut heap, "file:///main.js", "import './dep.js';")?);
 let record = SourceTextModuleRecord::parse_source_with_vm(&mut vm, source)?;
@@ -201,9 +209,10 @@ It returns a **Promise** that is fulfilled once the entire static import graph h
 ```rust,ignore
 use vm_js::{HostDefined, load_requested_modules_with_host_and_hooks};
 
+let mut scope = heap.scope();
 let loading_promise = load_requested_modules_with_host_and_hooks(
   &mut vm,
-  &mut heap.scope(),
+  &mut scope,
   &mut modules,
   /* host_ctx */ &mut my_host_ctx,
   /* hooks    */ &mut my_hooks,
@@ -268,7 +277,7 @@ returns a **Promise** (ECMA-262’s “evaluation promise”), even if evaluatio
 let eval_promise = modules.evaluate(
   &mut vm,
   &mut heap,
-  realm.global_object(),
+  global_object,
   realm_id,
   root,
   &mut my_host_ctx,
