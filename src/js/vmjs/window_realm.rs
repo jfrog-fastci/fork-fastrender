@@ -14068,7 +14068,7 @@ fn tree_walker_filter_node(
       .object_get_own_data_property_value(walker_obj, &is_active_key)?,
     Some(Value::Bool(true))
   ) {
-    return Err(VmError::Throw(make_dom_exception(scope, "InvalidStateError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "InvalidStateError", "")?));
   }
 
   let node_type = match &dom.node(node_id).kind {
