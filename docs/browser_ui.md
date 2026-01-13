@@ -7,6 +7,11 @@ This is **feature-gated** so the core renderer can compile without pulling in th
 For a higher-level overview of the `browser` binary (current capabilities, env vars, and how to run
 it), see [browser.md](browser.md).
 
+Note: today, the browser chrome (tabs/address bar/etc) is rendered via **egui**. The long-term
+*renderer chrome* goal is to render the chrome UI using FastRender itself; when that lands, chrome
+UI pages will use a privileged JS bridge (`globalThis.chrome`) documented in
+[`docs/chrome_js_bridge.md`](chrome_js_bridge.md).
+
 ## Build / run
 
 The `browser` binary is behind the Cargo feature `browser_ui` (note the underscore) and is **not**

@@ -228,11 +228,13 @@ This is a minimal, framework-free example of wiring a chrome page to the bridge.
     strip.textContent = "";
 
     for (const tab of state.tabs || []) {
-      const el = document.createElement("button");
       const isActive = tab.active ?? (tab.id === state.activeTabId);
-      el.className = isActive ? "tab active" : "tab";
-      el.textContent = tab.title || tab.url || "New tab";
-      el.onclick = () => chrome.tabs.activateTab(tab.id);
+      const row = document.createElement("div");
+      row.className = isActive ? "tab active" : "tab";
+
+      const label = document.createElement("button");
+      label.textContent = tab.title || tab.url || "New tab";
+      label.onclick = () => chrome.tabs.activateTab(tab.id);
 
       const close = document.createElement("button");
       close.textContent = "×";
@@ -241,8 +243,9 @@ This is a minimal, framework-free example of wiring a chrome page to the bridge.
         chrome.tabs.closeTab(tab.id);
       };
 
-      el.appendChild(close);
-      strip.appendChild(el);
+      row.appendChild(label);
+      row.appendChild(close);
+      strip.appendChild(row);
     }
   }
 
