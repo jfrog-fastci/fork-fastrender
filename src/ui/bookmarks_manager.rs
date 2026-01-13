@@ -1227,9 +1227,19 @@ fn folder_combo_box(
   let response = egui::ComboBox::from_id_source(id_source)
     .selected_text(selected)
     .show_ui(ui, |ui| {
-      for (id, label) in options {
-        ui.selectable_value(value, *id, label);
-      }
+      // Virtualize the dropdown: large bookmark trees can contain thousands of folders and rendering
+      // them all every frame (while the popup is open) can cause noticeable jank.
+      let row_height = ui.spacing().interact_size.y.max(18.0);
+      egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .max_height(row_height * 12.0)
+        .id_source(("bookmarks_manager_folder_combo_box", a11y_label))
+        .show_rows(ui, row_height, options.len(), |ui, row_range| {
+          for idx in row_range {
+            let (id, label) = &options[idx];
+            ui.selectable_value(value, *id, label);
+          }
+        });
     })
     .response;
   response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label));
