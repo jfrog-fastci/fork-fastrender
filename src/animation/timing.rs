@@ -210,10 +210,6 @@ impl AnimationTimingState {
     self.playback_rate
   }
 
-  pub fn pending_playback_rate(&self) -> Option<f64> {
-    self.pending_playback_rate
-  }
-
   pub fn previous_current_time(&self) -> TimeValue {
     self.previous_current_time
   }
@@ -813,7 +809,7 @@ mod tests {
     // With an inactive/unresolved timeline, the current time is unresolved so we
     // cannot preserve it, but the new playback rate should still be applied.
     assert_eq!(state.playback_rate(), 2.0);
-    assert_eq!(state.pending_playback_rate(), None);
+    assert_eq!(state.pending_playback_rate, None);
     assert!(state.current_time_at_timeline_time(TimeValue::UNRESOLVED).is_unresolved());
   }
 
