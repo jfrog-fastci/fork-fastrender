@@ -621,4 +621,57 @@ mod tests {
       "Blocked by Content-Security-Policy (frame-src) for final URL: https://blocked.example/landing"
     );
   }
+
+  #[test]
+  fn frame_src_self_allows_same_origin_and_blocks_cross_origin() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://example.com/".to_string(),
+      vec!["frame-src 'self'".to_string()],
+    );
+
+    let allowed = frame
+      .check_frame_src("https://example.com/child")
+      .expect("expected frame-src 'self' to allow same-origin iframe");
+    assert_eq!(allowed.as_str(), "https://example.com/child");
+
+    let err = frame
+      .check_frame_src("https://evil.example/child")
+      .expect_err("expected frame-src 'self' to block cross-origin iframe");
+    assert_eq!(
+      err,
+      "Blocked by Content-Security-Policy (frame-src) for requested URL: https://evil.example/child"
+    );
+  }
+
+  #[test]
+  fn default_src_applies_to_frame_src_when_frame_src_is_missing() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://example.com/".to_string(),
+      vec!["default-src 'none'".to_string()],
+    );
+
+    let err = frame
+      .check_frame_src("https://example.com/child")
+      .expect_err("expected default-src 'none' to apply to frame-src when frame-src is missing");
+    assert_eq!(
+      err,
+      "Blocked by Content-Security-Policy (frame-src) for requested URL: https://example.com/child"
+    );
+  }
+
+  #[test]
+  fn invalid_frame_src_candidate_reports_invalid_url_diagnostic() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed("https://example.com/".to_string(), Vec::new());
+
+    let err = frame
+      .check_frame_src("http://example.com:99999/")
+      .expect_err("expected invalid URL to be rejected");
+    assert_eq!(
+      err,
+      "Blocked by Content-Security-Policy (frame-src) for requested URL (invalid URL): http://example.com:99999/"
+    );
+  }
 }

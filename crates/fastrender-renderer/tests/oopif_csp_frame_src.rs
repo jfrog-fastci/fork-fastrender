@@ -1,9 +1,9 @@
 mod common;
 
-use common::{net_test_lock, site_key_for_url, RendererProc, TestResponse, TestServer};
+use common::{net_test_lock, RendererProc, TestResponse, TestServer};
 use fastrender_ipc::csp::FrameNode;
 use fastrender_ipc::{
-  composite_subframes, BrowserToRenderer, NavigationContext, ReferrerPolicy, SiteKeyFactory,
+  composite_subframes, BrowserToRenderer, FrameId, NavigationContext, ReferrerPolicy, SiteKeyFactory,
 };
 use std::time::Duration;
 
@@ -21,7 +21,11 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
     return;
   };
   let child_url = child_server.url("frame.html");
-  let child_url_for_parent = child_url.clone();
+  let child_src_for_parent = child_url
+    .strip_prefix("http:")
+    .unwrap_or(child_url.as_str())
+    .to_string();
+  let child_src_for_parent_for_server = child_src_for_parent.clone();
 
   let Some(parent_server) = TestServer::start(
     "oopif_parent_csp_frame_src_none_parent",
@@ -31,7 +35,7 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
           "<!doctype html><html><head>\
            <meta http-equiv=\"Content-Security-Policy\" content=\"frame-src 'none'\">\
            </head><body>\
-           <iframe src=\"{child_url_for_parent}\"></iframe>\
+           <iframe src=\"{child_src_for_parent_for_server}\"></iframe>\
            </body></html>"
         )
         .into_bytes(),
@@ -44,10 +48,19 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
   };
   let parent_url = parent_server.url("index.html");
 
+  let site_keys = SiteKeyFactory::new_with_seed(1);
+  let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
+
   let mut parent_renderer = RendererProc::spawn();
-  let parent_frame = fastrender_ipc::FrameId(1);
+  let parent_frame = FrameId(1);
   parent_renderer.send(&BrowserToRenderer::CreateFrame {
     frame_id: parent_frame,
+  });
+  parent_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: parent_frame,
+    width: 2,
+    height: 2,
+    dpr: 1.0,
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
@@ -55,7 +68,7 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
-      site_key: site_key_for_url(&parent_url),
+      site_key: parent_site_key,
       ..Default::default()
     },
   });
@@ -94,6 +107,10 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
     .src
     .as_deref()
     .expect("expected iframe src to be reported in SubframeInfo");
+  assert_eq!(
+    child_src, child_src_for_parent,
+    "expected SubframeInfo to report raw <iframe src> value"
+  );
 
   // Browser-side enforcement: parent CSP `frame-src 'none'` blocks creating/navigating the child.
   let diag = node
@@ -101,7 +118,7 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
     .expect_err("expected frame-src 'none' to block iframe");
   assert_eq!(
     diag,
-    format!("Blocked by Content-Security-Policy (frame-src) for requested URL: {child_src}")
+    format!("Blocked by Content-Security-Policy (frame-src) for requested URL: {child_url}")
   );
 
   // Since the child frame was blocked, the browser composites no child surface: the iframe region
@@ -177,9 +194,15 @@ fn oopif_parent_csp_frame_src_checked_against_final_redirect_url() {
   let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
 
   let mut parent_renderer = RendererProc::spawn();
-  let parent_frame = fastrender_ipc::FrameId(1);
+  let parent_frame = FrameId(1);
   parent_renderer.send(&BrowserToRenderer::CreateFrame {
     frame_id: parent_frame,
+  });
+  parent_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: parent_frame,
+    width: 2,
+    height: 2,
+    dpr: 1.0,
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
@@ -231,6 +254,12 @@ fn oopif_parent_csp_frame_src_checked_against_final_redirect_url() {
   let child_frame = iframe.child;
   child_renderer.send(&BrowserToRenderer::CreateFrame {
     frame_id: child_frame,
+  });
+  child_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: child_frame,
+    width: 1,
+    height: 1,
+    dpr: 1.0,
   });
   let child_ctx = NavigationContext::for_subframe_navigation_from_info(
     &site_keys,
@@ -295,4 +324,160 @@ fn oopif_parent_csp_frame_src_checked_against_final_redirect_url() {
   child_renderer.shutdown();
   let _ = parent_server.shutdown_and_join();
   let _ = blocked_server.shutdown_and_join();
+}
+
+#[test]
+fn oopif_parent_csp_frame_src_self_allows_same_origin_iframe_navigation() {
+  let _net_guard = net_test_lock();
+
+  let Some(server) = TestServer::start(
+    "oopif_parent_csp_frame_src_self_allows_same_origin",
+    |path| match path {
+      "/index.html" => Some((
+        b"<!doctype html><html><head>\
+          <meta http-equiv=\"Content-Security-Policy\" content=\"frame-src 'self'\">\
+          </head><body>\
+          <iframe src=\"/frame.html\"></iframe>\
+          </body></html>"
+          .to_vec(),
+        "text/html",
+      )),
+      "/frame.html" => Some((b"<!doctype html><p>child</p>".to_vec(), "text/html")),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+
+  let parent_url = server.url("index.html");
+  let expected_child_url = server.url("frame.html");
+
+  let site_keys = SiteKeyFactory::new_with_seed(1);
+  let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
+
+  let mut parent_renderer = RendererProc::spawn();
+  let parent_frame = FrameId(1);
+  parent_renderer.send(&BrowserToRenderer::CreateFrame {
+    frame_id: parent_frame,
+  });
+  parent_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: parent_frame,
+    width: 2,
+    height: 2,
+    dpr: 1.0,
+  });
+  parent_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: parent_frame,
+    url: parent_url.clone(),
+    context: NavigationContext {
+      referrer_url: None,
+      referrer_policy: ReferrerPolicy::default(),
+      site_key: parent_site_key.clone(),
+      ..Default::default()
+    },
+  });
+  parent_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: parent_frame,
+  });
+
+  let ready = parent_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(
+    ready.frame_id, parent_frame,
+    "expected FrameReady for parent (err={:?})",
+    ready.last_error
+  );
+  assert!(
+    !ready.subframes.is_empty(),
+    "expected at least one discovered subframe (err={:?})",
+    ready.last_error
+  );
+
+  let (committed_url, csp_values) = ready
+    .last_committed
+    .clone()
+    .expect("expected NavigationCommitted before FrameReady");
+  assert!(
+    csp_values
+      .iter()
+      .any(|v| v.contains("frame-src") && v.contains("'self'")),
+    "expected renderer to report CSP values via NavigationCommitted, got {csp_values:?}"
+  );
+
+  let mut node = FrameNode::new(parent_frame);
+  node.navigation_committed(committed_url, csp_values);
+
+  let iframe = &ready.subframes[0];
+  let child_src = iframe
+    .src
+    .as_deref()
+    .expect("expected iframe src to be reported in SubframeInfo");
+  assert_eq!(child_src, "/frame.html");
+
+  let resolved = node
+    .check_frame_src(child_src)
+    .expect("expected frame-src 'self' to allow same-origin iframe navigation");
+  assert_eq!(resolved.as_str(), expected_child_url);
+
+  // Browser-side OOPIF implementation: spawn a separate child renderer process and navigate it.
+  let mut child_renderer = RendererProc::spawn();
+  let child_frame = iframe.child;
+  child_renderer.send(&BrowserToRenderer::CreateFrame {
+    frame_id: child_frame,
+  });
+  child_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: child_frame,
+    width: 1,
+    height: 1,
+    dpr: 1.0,
+  });
+  let child_context = NavigationContext::for_subframe_navigation_from_info(
+    &site_keys,
+    resolved.as_str(),
+    Some(&parent_site_key),
+    parent_url.clone(),
+    ReferrerPolicy::default(),
+    iframe,
+  );
+  child_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: child_frame,
+    url: resolved.to_string(),
+    context: child_context,
+  });
+  child_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: child_frame,
+  });
+
+  let child_ready = child_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(
+    child_ready.frame_id, child_frame,
+    "expected FrameReady for child (err={:?})",
+    child_ready.last_error
+  );
+
+  // The child navigation should have resulted in a real HTTP request to /frame.html.
+  server.wait_for_request(
+    |req| req.path == "/frame.html",
+    "expected child renderer to fetch iframe document",
+  );
+
+  // Compositing the child buffer should replace the parent's top-left pixel (identity transform).
+  let composed = composite_subframes(
+    ready.buffer.clone(),
+    std::iter::once((&ready.subframes[0], &child_ready.buffer)),
+  )
+  .expect("composite should succeed");
+  assert_eq!(
+    &composed.rgba8[0..4],
+    &child_ready.buffer.rgba8[0..4],
+    "expected child buffer to be composited over parent"
+  );
+  assert_eq!(
+    &composed.rgba8[4..],
+    &ready.buffer.rgba8[4..],
+    "expected remaining parent pixels to remain unchanged"
+  );
+
+  child_renderer.shutdown();
+  parent_renderer.shutdown();
+  let _ = server.shutdown_and_join();
 }
