@@ -61,6 +61,26 @@ fn generators_or_left_yield_short_circuit_truthy() {
 }
 
 #[test]
+fn generators_or_left_yield_evaluates_rhs_falsy() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) || (yield 2); }
+        var it = g();
+        var r1 = it.next();          // yields 1
+        var r2 = it.next(false);     // left becomes false => evaluate RHS => yields 2
+        var r3 = it.next(123);       // RHS yield value becomes 123; overall result 123
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 2 &&
+        r3.done === true && r3.value === 123
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generators_nullish_coalescing_left_yield_evaluates_rhs_when_nullish() {
   let mut rt = new_runtime();
   let value = rt
@@ -80,3 +100,19 @@ fn generators_nullish_coalescing_left_yield_evaluates_rhs_when_nullish() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generators_nullish_coalescing_left_yield_short_circuit_non_nullish_falsy() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) ?? (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(0);         // 0 is falsy, but not nullish => short-circuit, no second yield
+        r1.done === false && r1.value === 1 && r2.done === true && r2.value === 0
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
