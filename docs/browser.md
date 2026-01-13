@@ -174,7 +174,7 @@ Seatbelt notes (profiles + debugging) live in [sandboxing.md](sandboxing.md).
 
 Debugging note: you can temporarily disable the renderer OS sandbox with
 `FASTR_DISABLE_RENDERER_SANDBOX=1` (platform aliases: `FASTR_WINDOWS_RENDERER_SANDBOX=off`,
-`FASTR_MACOS_RENDERER_SANDBOX=off`). This is **insecure** and prints a warning to stderr; see
+`FASTR_RENDERER_SANDBOX=off`, `FASTR_MACOS_RENDERER_SANDBOX=off`). This is **insecure** and prints a warning to stderr; see
 [sandboxing.md](sandboxing.md) for details.
 
 To debug Windows sandbox spawn failures, set `FASTR_LOG_SANDBOX=1` for verbose sandbox logs.
