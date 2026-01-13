@@ -37551,7 +37551,7 @@ fn range_delete_contents_native(
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
     .ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  {
+  let (mutations, needs_microtask) = {
     // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have exclusive
     // access for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
@@ -37559,9 +37559,24 @@ fn range_delete_contents_native(
       Ok(()) => {}
       Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     }
+    // Range algorithms can mutate multiple parents (removing nodes, splitting Text, etc). Keep any
+    // cached wrapper-owned live collections (`childNodes`, `children`, `<select>.options`) in sync
+    // using the dom2 mutation log.
+    let mutations = dom.take_mutations();
+    let needs_microtask = dom.take_mutation_observer_microtask_needed();
+    (mutations, needs_microtask)
+  };
+
+  if !mutations.child_list_changed.is_empty() {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    for parent in mutations.child_list_changed {
+      sync_cached_child_nodes_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
+      sync_cached_children_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, handle.document_obj, dom, parent)?;
+    }
   }
 
-  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
 
   Ok(Value::Undefined)
@@ -37582,21 +37597,31 @@ fn range_extract_contents_native(
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
     .ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  let fragment_id = {
+  let (fragment_id, mutations, needs_microtask) = {
     // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have exclusive
     // access for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
-    match dom.range_extract_contents(handle.range_id) {
+    let fragment_id = match dom.range_extract_contents(handle.range_id) {
       Ok(id) => id,
       Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-    }
+    };
+    let mutations = dom.take_mutations();
+    let needs_microtask = dom.take_mutation_observer_microtask_needed();
+    (fragment_id, mutations, needs_microtask)
   };
 
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
   let fragment_wrapper = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), fragment_id)?;
 
-  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+  if !mutations.child_list_changed.is_empty() {
+    for parent in mutations.child_list_changed {
+      sync_cached_child_nodes_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
+      sync_cached_children_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, handle.document_obj, dom, parent)?;
+    }
+  }
+
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
 
   Ok(fragment_wrapper)

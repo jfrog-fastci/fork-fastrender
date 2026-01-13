@@ -11605,7 +11605,6 @@ impl BrowserRuntime {
       .document
       .as_ref()
       .and_then(|doc| compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state));
-
     let mut msgs = Vec::new();
     msgs.push(WorkerToUi::NavigationFailed {
       tab_id,
