@@ -82,14 +82,14 @@ impl std::fmt::Debug for ShmemSliceView {
 
 /// An RAII handle for a frame received from the renderer.
 ///
-/// When dropped, this will release the underlying shared frame buffer back to the renderer's pool
-/// via `on_drop_release` (unless disarmed or stale).
+/// When dropped, this will acknowledge the frame back to the renderer via `on_drop_release`
+/// (unless disarmed or stale).
 pub struct ReceivedFrame {
   pub generation: u64,
   pub frame_seq: u64,
   pub meta: FrameMeta,
   pub bytes: ShmemSliceView,
-  /// Optional generation tracker used to suppress releases for stale generations.
+  /// Optional generation tracker used to suppress acks for stale generations.
   ///
   /// If `Some`, `Drop` will only invoke the release callback when
   /// `generation == current_generation.load(...)`.
@@ -127,12 +127,12 @@ impl ReceivedFrame {
     })
   }
 
-  /// Explicitly release the frame buffer now, preventing a subsequent release on drop.
+  /// Explicitly acknowledge the frame now, preventing a subsequent ack on drop.
   pub fn release(&mut self) {
     self.maybe_release();
   }
 
-  /// Prevent any release action on drop (even for the current generation).
+  /// Prevent any ack action on drop (even for the current generation).
   pub fn disarm(&mut self) {
     self.on_drop_release = None;
   }
@@ -195,7 +195,7 @@ mod tests {
   }
 
   #[test]
-  fn dropping_triggers_release_exactly_once() {
+  fn dropping_triggers_ack_exactly_once() {
     let (tx, rx) = mpsc::channel();
     let current_generation = Arc::new(AtomicU64::new(7));
 
@@ -210,7 +210,7 @@ mod tests {
   }
 
   #[test]
-  fn overwriting_in_map_drops_old_frame_and_releases_buffer() {
+  fn overwriting_in_map_drops_old_frame_and_acks() {
     let (tx, rx) = mpsc::channel();
     let current_generation = Arc::new(AtomicU64::new(1));
 
@@ -219,7 +219,7 @@ mod tests {
       123,
       make_frame(1, 10, Arc::clone(&current_generation), tx.clone()),
     );
-    // Overwrite the old frame for the same key; this should drop and release the previous one.
+    // Overwrite the old frame for the same key; this should drop and ack the previous one.
     map.insert(123, make_frame(1, 11, Arc::clone(&current_generation), tx));
 
     assert_eq!(
@@ -252,7 +252,7 @@ mod tests {
   }
 
   #[test]
-  fn stale_generation_is_not_released() {
+  fn stale_generation_is_not_acked() {
     let (tx, rx) = mpsc::channel();
     let current_generation = Arc::new(AtomicU64::new(1));
 
