@@ -1162,8 +1162,6 @@ impl WorkerToUi {
       | WorkerToUi::DebugLog { tab_id, .. }
       | WorkerToUi::SelectDropdownOpened { tab_id, .. }
       | WorkerToUi::SelectDropdownClosed { tab_id }
-      | WorkerToUi::DatalistOpened { tab_id, .. }
-      | WorkerToUi::DatalistClosed { tab_id }
       | WorkerToUi::DateTimePickerOpened { tab_id, .. }
       | WorkerToUi::DateTimePickerClosed { tab_id }
       | WorkerToUi::ColorPickerOpened { tab_id, .. }
