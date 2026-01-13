@@ -402,6 +402,39 @@ fn accessibility_presentational_role_suppresses_semantics() {
 }
 
 #[test]
+fn accessibility_presentational_role_honored_inside_disabled_fieldset_is_omitted() {
+  let html = r##"
+    <html>
+      <body>
+        <fieldset disabled>
+          <input id="x" role="presentation" tabindex="0" placeholder="Hint" />
+        </fieldset>
+      </body>
+    </html>
+  "##;
+  let tree = render_accessibility_json(html);
+  assert!(
+    find_json_node(&tree, "x").is_none(),
+    "input must be omitted when role=presentation is honored via disabled fieldset"
+  );
+}
+
+#[test]
+fn accessibility_presentational_role_disallowed_when_focusable_is_exposed() {
+  let html = r##"
+    <html>
+      <body>
+        <input id="x" role="presentation" tabindex="0" placeholder="Hint" />
+      </body>
+    </html>
+  "##;
+  let tree = render_accessibility_json(html);
+  let node = find_json_node(&tree, "x").expect("input is present");
+  assert_eq!(node.get("role").and_then(|v| v.as_str()), Some("textbox"));
+  assert_eq!(node.get("name").and_then(|v| v.as_str()), Some("Hint"));
+}
+
+#[test]
 fn accessibility_summary_role_presentation_disallowed_falls_back_to_button() {
   let html = r##"
     <html>

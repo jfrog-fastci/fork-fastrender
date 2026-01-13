@@ -937,7 +937,14 @@ impl<'a, 'state> BuildContext<'a, 'state> {
                 }
               }
               ElementStep::Presentational => {
-                if frame.presentational && frame.allow_name_from_content == Some(false) {
+                // The text alternative engine recomputes presentational state without the DOM
+                // ancestor chain, so it cannot always see conditions that cause `role="none"` /
+                // `role="presentation"` to be honored (e.g. form controls disabled via ancestor
+                // `<fieldset disabled>`). `compute_name` passes `allow_name_from_content =
+                // Some(false)` when the caller has already determined the presentational role is
+                // honored; use that signal to suppress all fallback name sources (placeholder/title,
+                // etc.) so the element cannot leak a name and get exposed as a generic node.
+                if frame.allow_name_from_content == Some(false) {
                   pending = Some(None);
                 } else {
                   frame.step = NodeStep::Element(ElementStep::LabelAssociation);
