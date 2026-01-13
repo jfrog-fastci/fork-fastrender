@@ -1297,3 +1297,46 @@ fn range_extract_contents_character_data_collapses_to_start() {
   let child = doc.node(fragment).children[0];
   assert_eq!(doc.text_data(child).unwrap(), "cde");
 }
+
+#[test]
+fn range_delete_contents_detaches_nodes_removed_from_partially_contained_elements() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.create_element("div", "");
+  doc.append_child(doc.root(), root).unwrap();
+
+  // <div><b><i>hello</i><span>mid</span></b><u>world</u></div>
+  let b = doc.create_element("b", "");
+  doc.append_child(root, b).unwrap();
+  let i = doc.create_element("i", "");
+  doc.append_child(b, i).unwrap();
+  let i_text = doc.create_text("hello");
+  doc.append_child(i, i_text).unwrap();
+
+  let span = doc.create_element("span", "");
+  doc.append_child(b, span).unwrap();
+  let span_text = doc.create_text("mid");
+  doc.append_child(span, span_text).unwrap();
+
+  let u = doc.create_element("u", "");
+  doc.append_child(root, u).unwrap();
+  let u_text = doc.create_text("world");
+  doc.append_child(u, u_text).unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, i_text, 1).unwrap(); // inside "hello"
+  doc.range_set_end(range, u_text, 3).unwrap(); // inside "world"
+
+  doc.range_delete_contents(range).unwrap();
+
+  // The <span> node was fully contained in the range and should be removed from the document, with
+  // `parent == None` (deleteContents must not keep removed nodes parented under an internal
+  // DocumentFragment/cloned wrapper).
+  assert!(doc.parent(span).unwrap().is_none());
+
+  // Sanity: boundary text nodes should be updated.
+  assert_eq!(doc.text_data(i_text).unwrap(), "h");
+  assert_eq!(doc.text_data(u_text).unwrap(), "ld");
+
+  // The range collapses to the computed collapse point (between <b> and <u>).
+  assert_range_collapsed(&doc, range, root, 1);
+}

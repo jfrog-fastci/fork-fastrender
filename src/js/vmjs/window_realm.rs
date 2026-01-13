@@ -35310,6 +35310,37 @@ fn range_compare_boundary_points_native(
   }
 }
 
+fn range_delete_contents_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  {
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have exclusive
+    // access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    match dom.range_delete_contents(handle.range_id) {
+      Ok(()) => {}
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+    }
+  }
+
+  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+
+  Ok(Value::Undefined)
+}
+
 fn range_extract_contents_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -49185,6 +49216,21 @@ fn init_window_globals(
         )?;
         scope.push_root(Value::Object(func))?;
         let key = alloc_key(&mut scope, "compareBoundaryPoints")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
+      // Range.prototype.deleteContents()
+      {
+        let call_id = vm.register_native_call(range_delete_contents_native)?;
+        let name_s = scope.alloc_string("deleteContents")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "deleteContents")?;
         scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
       }
 
