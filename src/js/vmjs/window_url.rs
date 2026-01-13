@@ -87,6 +87,32 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
+fn prototype_from_new_target(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  new_target: Value,
+  fallback: GcObject,
+) -> Result<GcObject, VmError> {
+  let Value::Object(ctor) = new_target else {
+    return Ok(fallback);
+  };
+
+  // `new_target.prototype` is ordinary property access and can invoke user code (getters/proxies), so
+  // callers must ensure they are not holding any non-reentrant locks.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(ctor))?;
+  scope.push_root(Value::Object(fallback))?;
+
+  let prototype_key = alloc_key(&mut scope, "prototype")?;
+  let proto_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, ctor, prototype_key)?;
+  match proto_value {
+    Value::Object(obj) => Ok(obj),
+    _ => Ok(fallback),
+  }
+}
+
 const URLSP_ITER_KIND_ENTRIES: u8 = 0;
 const URLSP_ITER_KIND_KEYS: u8 = 1;
 const URLSP_ITER_KIND_VALUES: u8 = 2;
@@ -413,20 +439,18 @@ fn url_construct_native(
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
-  if new_target != Value::Object(callee) {
-    let intrinsics = vm
-      .intrinsics()
-      .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
-    return Err(vm_js::throw_type_error(
-      scope,
-      intrinsics,
-      ILLEGAL_CONSTRUCTOR_ERROR,
-    ));
-  }
+  let (limits, fallback_proto) =
+    with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+      Ok((state.limits.clone(), state.url_proto))
+    })?;
 
-  let limits = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    Ok(state.limits.clone())
-  })?;
+  // WebIDL constructor behavior: `new_target.prototype` is consulted to select the wrapper's
+  // prototype, so subclasses like `class X extends URL {}` produce `X` instances.
+  //
+  // Note: compute this outside `with_realm_state_mut` (which holds the URL registry lock), because
+  // property access can execute user code.
+  let proto = prototype_from_new_target(vm, scope, host, hooks, new_target, fallback_proto)?;
+  scope.push_root(Value::Object(proto))?;
 
   let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let input = value_to_limited_string(
@@ -457,9 +481,7 @@ fn url_construct_native(
 
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let obj = scope.alloc_object()?;
-    scope
-      .heap_mut()
-      .object_set_prototype(obj, Some(state.url_proto))?;
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
     scope.heap_mut().object_set_host_slots(
       obj,
       HostSlots {
@@ -1392,20 +1414,18 @@ fn urlsp_construct_native(
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
-  if new_target != Value::Object(callee) {
-    let intrinsics = vm
-      .intrinsics()
-      .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
-    return Err(vm_js::throw_type_error(
-      scope,
-      intrinsics,
-      ILLEGAL_CONSTRUCTOR_ERROR,
-    ));
-  }
+  let (limits, fallback_proto) =
+    with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+      Ok((state.limits.clone(), state.params_proto))
+    })?;
 
-  let limits = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
-    Ok(state.limits.clone())
-  })?;
+  // WebIDL constructor behavior: `new_target.prototype` is consulted to select the wrapper's
+  // prototype, so subclasses like `class Y extends URLSearchParams {}` produce `Y` instances.
+  //
+  // Note: compute this outside `with_realm_state_mut` (which holds the URL registry lock), because
+  // property access can execute user code.
+  let proto = prototype_from_new_target(vm, scope, host, hooks, new_target, fallback_proto)?;
+  scope.push_root(Value::Object(proto))?;
 
   let init_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let params = match init_value {
@@ -1457,9 +1477,7 @@ fn urlsp_construct_native(
 
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let obj = scope.alloc_object()?;
-    scope
-      .heap_mut()
-      .object_set_prototype(obj, Some(state.params_proto))?;
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
     scope.heap_mut().object_set_host_slots(
       obj,
       HostSlots {
@@ -2731,8 +2749,8 @@ mod tests {
   }
 
   #[test]
-  fn object_prototype_to_string_uses_url_search_params_iterator_to_string_tag() -> Result<(), VmError>
-  {
+  fn object_prototype_to_string_uses_url_search_params_iterator_to_string_tag(
+  ) -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
     let entries = realm.exec_script(
@@ -2756,6 +2774,68 @@ mod tests {
       get_string(realm.heap(), values),
       "[object URLSearchParams Iterator]"
     );
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn url_constructor_supports_subclassing_via_new_target_prototype() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let instanceof_ok = realm.exec_script(
+      "(function(){\
+         class X extends URL {}\
+         const u = new X('https://example.com/');\
+         return (u instanceof X) && (u instanceof URL);\
+       })()",
+    )?;
+    assert_eq!(instanceof_ok, Value::Bool(true));
+
+    let proto_ok = realm.exec_script(
+      "(function(){\
+         class X extends URL {}\
+         const u = new X('https://example.com/');\
+         return Object.getPrototypeOf(u) === X.prototype;\
+       })()",
+    )?;
+    assert_eq!(proto_ok, Value::Bool(true));
+
+    let href = realm.exec_script(
+      "(function(){\
+         class X extends URL {}\
+         const u = new X('https://example.com/');\
+         return u.href;\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), href), "https://example.com/");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn url_search_params_constructor_supports_subclassing_via_new_target_prototype(
+  ) -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let instanceof_ok = realm.exec_script(
+      "(function(){\
+         class Y extends URLSearchParams {}\
+         const p = new Y('a=1');\
+         return (p instanceof Y) && (p instanceof URLSearchParams);\
+       })()",
+    )?;
+    assert_eq!(instanceof_ok, Value::Bool(true));
+
+    let serialized = realm.exec_script(
+      "(function(){\
+         class Y extends URLSearchParams {}\
+         const p = new Y('a=1');\
+         return p.toString();\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), serialized), "a=1");
 
     realm.teardown();
     Ok(())
