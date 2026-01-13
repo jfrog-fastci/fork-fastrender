@@ -5766,9 +5766,14 @@ impl BrowserTab {
         microtask_limits,
         &mut report_error,
         |host, event_loop| {
+          let executor_hook: fn(&mut BrowserTabHost, &mut EventLoop<BrowserTabHost>) -> Result<()> =
+            BrowserTabHost::executor_microtask_checkpoint_hook;
+          if !event_loop
+            .microtask_checkpoint_hooks()
+            .iter()
+            .any(|&hook| std::ptr::fn_addr_eq(hook, executor_hook))
           {
-            let (executor, document) = (&mut host.executor, &mut host.document);
-            executor.after_microtask_checkpoint(document.as_mut(), event_loop)?;
+            BrowserTabHost::executor_microtask_checkpoint_hook(host, event_loop)?;
           }
           host.discover_dynamic_scripts(event_loop)
         },
@@ -5793,9 +5798,14 @@ impl BrowserTab {
         one_task_limits,
         &mut report_error,
         |host, event_loop| {
+          let executor_hook: fn(&mut BrowserTabHost, &mut EventLoop<BrowserTabHost>) -> Result<()> =
+            BrowserTabHost::executor_microtask_checkpoint_hook;
+          if !event_loop
+            .microtask_checkpoint_hooks()
+            .iter()
+            .any(|&hook| std::ptr::fn_addr_eq(hook, executor_hook))
           {
-            let (executor, document) = (&mut host.executor, &mut host.document);
-            executor.after_microtask_checkpoint(document.as_mut(), event_loop)?;
+            BrowserTabHost::executor_microtask_checkpoint_hook(host, event_loop)?;
           }
           host.discover_dynamic_scripts(event_loop)
         },
@@ -8627,6 +8637,32 @@ mod tests {
       "expected after_microtask_checkpoint to run after the implicit post-task checkpoint"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn tick_frame_invokes_executor_after_microtask_checkpoint_once() -> Result<()> {
+    let calls = Rc::new(Cell::new(0));
+    let executor = AfterMicrotaskCheckpointCountingExecutor {
+      calls: Rc::clone(&calls),
+    };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+
+    // Discard any parsing/lifecycle work queued while constructing the tab so this test only
+    // observes checkpoints triggered by `tick_frame`.
+    calls.set(0);
+    tab.event_loop.clear_all_pending_work();
+
+    tab
+      .event_loop
+      .queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+    let _ = tab.tick_frame()?;
+
+    assert_eq!(
+      calls.get(),
+      1,
+      "expected tick_frame to invoke after_microtask_checkpoint once (not twice)"
+    );
     Ok(())
   }
 
