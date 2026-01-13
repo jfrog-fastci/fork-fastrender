@@ -16,7 +16,7 @@
     "layout": 6.0257527500000005,
     "paint": 13.055797625
   },
-  "notes": "",
+  "notes": "Structurally matches Chrome (header, main table layout, rules/borders). Remaining diffs are mostly text rasterization/hinting/AA (many +/-1px edge pixels around glyphs) plus a minor vertical offset of an <hr>-style 1px rule in the top section.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 114441,
@@ -41,7 +41,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "d23a6edde65ed0bca7c81ed95118085f96ac4649"
+    "computed_at_commit": "0683c3427c85d7541ac03bc8711da0c65747d249"
   },
   "hotspot": "paint",
   "failure_stage": null,

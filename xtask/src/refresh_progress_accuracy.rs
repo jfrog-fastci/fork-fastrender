@@ -277,11 +277,6 @@ fn build_fixture_chrome_diff_argv(args: &RefreshProgressAccuracyArgs) -> Result<
 
   argv.push("--viewport".into());
   argv.push(DEFAULT_VIEWPORT.into());
-  // `fixture-chrome-diff` defaults to building release binaries with AVIF support. On fresh agent
-  // clones that can exceed the global 10-minute command timeout (especially due to full `opt-level=3`
-  // builds + link). For accuracy syncing, debug-vs-release output should be identical, so prefer the
-  // faster debug profile to keep `xtask refresh-progress-accuracy` reliably usable.
-  argv.push("--debug".into());
   if args.keep_going {
     argv.push("--keep-going".into());
   }

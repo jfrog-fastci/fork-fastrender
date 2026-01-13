@@ -500,7 +500,6 @@ impl<'a> Parser<'a> {
     }
     Ok(())
   }
-
   pub(crate) fn with_arguments_bound_in_class_init<R>(
     &mut self,
     f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
