@@ -425,6 +425,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::DateTimePickerOpened { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::ColorPickerOpened { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   if let WorkerToUi::FilePickerOpened { tab_id, .. } = msg {
     return Some(*tab_id);
   }
@@ -459,6 +462,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
     return Some(*tab_id);
   }
   if let WorkerToUi::DateTimePickerClosed { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::ColorPickerClosed { tab_id, .. } = msg {
     return Some(*tab_id);
   }
   if let WorkerToUi::FilePickerClosed { tab_id, .. } = msg {
@@ -653,6 +659,24 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
     }
     if let WorkerToUi::DateTimePickerClosed { tab_id } = msg {
       let _ = writeln!(&mut out, "DateTimePickerClosed(tab={})", tab_id.0);
+      continue;
+    }
+    if let WorkerToUi::ColorPickerOpened {
+      tab_id,
+      input_node_id,
+      value,
+      anchor_css,
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "ColorPickerOpened(tab={}, input_node_id={}, value={value:?}, anchor_css={anchor_css:?})",
+        tab_id.0, input_node_id
+      );
+      continue;
+    }
+    if let WorkerToUi::ColorPickerClosed { tab_id } = msg {
+      let _ = writeln!(&mut out, "ColorPickerClosed(tab={})", tab_id.0);
       continue;
     }
     if let WorkerToUi::FilePickerOpened {

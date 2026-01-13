@@ -22,6 +22,7 @@ mod browser_thread_select_dropdown;
 mod browser_thread_select_dropdown_choose;
 mod browser_thread_date_time_picker;
 mod browser_thread_color_picker;
+mod browser_thread_color_picker_opened_value;
 mod browser_thread_file_picker;
 mod browser_thread_worker;
 mod browser_worker_cancel_gens;
