@@ -320,6 +320,14 @@ mod tests {
 
     // Stop-loading uses the canonical chrome-action name (not `stop`).
     assert!(html.contains("chrome-action:stop-loading"));
+
+    // The chrome frame should include the content-frame placeholder exactly once so the host can
+    // reliably target it for compositing/sync.
+    assert_eq!(
+      html.matches(r#"id="content-frame""#).count(),
+      1,
+      "expected exactly one #content-frame placeholder"
+    );
   }
 
   #[test]
