@@ -609,4 +609,106 @@ mod tests {
       "expected no protocol events for valid SubframesDiscovered"
     );
   }
+
+  fn solid_buffer(rgba: [u8; 4]) -> FrameBuffer {
+    FrameBuffer {
+      width: 1,
+      height: 1,
+      rgba8: rgba.to_vec(),
+    }
+  }
+
+  fn simple_slot(child: FrameId) -> crate::SubframeInfo {
+    crate::SubframeInfo {
+      child,
+      src: None,
+      transform: crate::AffineTransform::IDENTITY,
+      clip_stack: Vec::new(),
+      z_index: 0,
+      hit_testable: true,
+      referrer_policy: None,
+      sandbox_flags: crate::SandboxFlags::NONE,
+      opaque_origin: false,
+    }
+  }
+
+  #[test]
+  fn frame_paint_plan_spoofed_frame_id_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let honest = RendererId(1);
+    let attacker = RendererId(2);
+    let frame = FrameId(10);
+    browser.assign_frame(frame, honest);
+
+    let plan = crate::FramePaintPlan {
+      frame_id: frame,
+      layers: vec![solid_buffer([0, 0, 0, 0])],
+      slots: vec![],
+    };
+    browser.handle_renderer_message(attacker, RendererToBrowser::FramePaintPlan(plan));
+
+    assert!(browser.is_process_terminated(attacker));
+    assert!(
+      !browser.is_process_terminated(honest),
+      "protocol violation should not affect other processes"
+    );
+    assert!(
+      browser.latest_frame(frame).is_none(),
+      "spoofed FramePaintPlan must not update presentation state"
+    );
+  }
+
+  #[test]
+  fn frame_paint_plan_invalid_subframe_reference_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(10);
+    let child = FrameId(11);
+
+    browser.assign_frame(parent, renderer);
+    // Browser frame tree says child belongs elsewhere (not `parent`).
+    browser.set_frame_parent(child, FrameId(999));
+
+    let plan = crate::FramePaintPlan {
+      frame_id: parent,
+      layers: vec![solid_buffer([0, 0, 0, 0]), solid_buffer([1, 2, 3, 255])],
+      slots: vec![simple_slot(child)],
+    };
+    browser.handle_renderer_message(renderer, RendererToBrowser::FramePaintPlan(plan));
+
+    assert!(browser.is_process_terminated(renderer));
+    assert!(
+      browser.is_frame_crashed(parent),
+      "terminating the renderer should mark its frames as crashed"
+    );
+  }
+
+  #[test]
+  fn frame_paint_plan_with_valid_children_updates_presentation_state() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(1);
+    let child = FrameId(2);
+
+    browser.assign_frame(parent, renderer);
+    browser.set_frame_parent(child, parent);
+
+    let plan = crate::FramePaintPlan {
+      frame_id: parent,
+      layers: vec![solid_buffer([0, 0, 0, 0]), solid_buffer([9, 8, 7, 255])],
+      slots: vec![simple_slot(child)],
+    };
+    browser.handle_renderer_message(renderer, RendererToBrowser::FramePaintPlan(plan));
+
+    assert!(
+      !browser.is_process_terminated(renderer),
+      "valid FramePaintPlan should not terminate the renderer"
+    );
+    let Some(buffer) = browser.latest_frame(parent) else {
+      panic!("expected FramePaintPlan to update presentation state");
+    };
+    assert_eq!(buffer.width, 1);
+    assert_eq!(buffer.height, 1);
+    assert_eq!(buffer.rgba8, vec![9, 8, 7, 255]);
+  }
 }
