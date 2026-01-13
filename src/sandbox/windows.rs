@@ -1235,6 +1235,18 @@ fn collect_allowlisted_environment(temp_dir: &Path) -> Vec<(String, OsString)> {
   vars.push(("TMP".to_string(), temp.clone()));
   vars.push(("TEMP".to_string(), temp));
 
+  // Unit tests for the Windows sandbox spawn path coordinate via `FASTR_TEST_*` environment
+  // variables. When building the crate's unit tests (`cfg(test)`), allow those test-only markers
+  // through so spawned child test processes can detect their role.
+  if cfg!(test) {
+    for (key, value) in std::env::vars_os() {
+      let key_str = key.to_string_lossy();
+      if key_str.starts_with("FASTR_TEST_") || key_str == "RUST_TEST_THREADS" {
+        vars.push((key_str.to_string(), value));
+      }
+    }
+  }
+
   vars
 }
 
