@@ -39,14 +39,21 @@ fn regexp_unicode_ignore_case_uses_common_case_folding() {
       r#"
       [
         /K/iu.test("k"),
+        /K/iv.test("k"),
         /Ω/iu.test("ω"),
+        /Ω/iv.test("ω"),
         /ſ/iu.test("S"),
+        /ſ/iv.test("S"),
         /ß/iu.test("ss"),
+        /ß/iv.test("ss"),
       ].join(",")
     "#,
     )
     .unwrap();
 
   // K => k (Common), Ω => ω (Common), ſ => s (Common), and ß must not expand to "ss".
-  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true,false");
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "true,true,true,true,true,true,false,false"
+  );
 }
