@@ -448,58 +448,19 @@ impl SourceTextModuleRecord {
     module: ModuleId,
     export_star_set: &mut Vec<ModuleId>,
   ) -> Vec<String> {
-    // 1. If exportStarSet contains module, then
-    if export_star_set.contains(&module) {
-      // a. Return a new empty List.
-      return Vec::new();
+    // Best-effort wrapper around the budgeted implementation.
+    //
+    // The spec algorithms for module exports can be driven by attacker-controlled export lists and
+    // `export *` graphs. Ensure the unbudgeted convenience wrapper does not abort the process on
+    // allocator OOM by using fallible allocations and returning an empty list on `OutOfMemory`.
+    let mut cancel = || Ok(());
+    let mut ctx = ModuleRecordParseCtx::new(&mut cancel);
+    match self.get_exported_names_with_star_set_budgeted(graph, module, export_star_set, &mut ctx) {
+      Ok(names) => names,
+      Err(VmError::OutOfMemory) => Vec::new(),
+      // No other errors are expected without VM cancellation, but keep this wrapper infallible.
+      Err(_) => Vec::new(),
     }
-
-    // 2. Append module to exportStarSet.
-    export_star_set.push(module);
-
-    // 3. Let exportedNames be a new empty List.
-    let mut exported_names = Vec::<String>::new();
-
-    // 4. For each ExportEntry Record e of module.[[LocalExportEntries]], do
-    for entry in &self.local_export_entries {
-      // a. Append e.[[ExportName]] to exportedNames.
-      exported_names.push(entry.export_name.clone());
-    }
-
-    // 5. For each ExportEntry Record e of module.[[IndirectExportEntries]], do
-    for entry in &self.indirect_export_entries {
-      // a. Append e.[[ExportName]] to exportedNames.
-      exported_names.push(entry.export_name.clone());
-    }
-
-    // 6. For each ExportEntry Record e of module.[[StarExportEntries]], do
-    for entry in &self.star_export_entries {
-      // a. Let requestedModule be GetImportedModule(module, e.[[ModuleRequest]]).
-      let Some(requested_module) = graph.get_imported_module(module, &entry.module_request) else {
-        continue;
-      };
-      // b. Let starNames be requestedModule.GetExportedNames(exportStarSet).
-      let star_names =
-        graph
-          .module(requested_module)
-          .get_exported_names_with_star_set(graph, requested_module, export_star_set);
-
-      // c. For each element n of starNames, do
-      for name in star_names {
-        // i. If SameValue(n, "default") is false, then
-        if name == "default" {
-          continue;
-        }
-        // 1. If exportedNames does not contain n, then
-        if !exported_names.contains(&name) {
-          // a. Append n to exportedNames.
-          exported_names.push(name);
-        }
-      }
-    }
-
-    // 7. Return exportedNames.
-    exported_names
   }
 
   fn get_exported_names_with_star_set_budgeted(
@@ -521,6 +482,9 @@ impl SourceTextModuleRecord {
     }
 
     // 2. Append module to exportStarSet.
+    export_star_set
+      .try_reserve_exact(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     export_star_set.push(module);
 
     // 3. Let exportedNames be a new empty List.
@@ -530,14 +494,20 @@ impl SourceTextModuleRecord {
     for entry in &self.local_export_entries {
       ctx.budget_tick()?;
       // a. Append e.[[ExportName]] to exportedNames.
-      exported_names.push(entry.export_name.clone());
+      exported_names
+        .try_reserve_exact(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      exported_names.push(try_string_from_str(entry.export_name.as_str())?);
     }
 
     // 5. For each ExportEntry Record e of module.[[IndirectExportEntries]], do
     for entry in &self.indirect_export_entries {
       ctx.budget_tick()?;
       // a. Append e.[[ExportName]] to exportedNames.
-      exported_names.push(entry.export_name.clone());
+      exported_names
+        .try_reserve_exact(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      exported_names.push(try_string_from_str(entry.export_name.as_str())?);
     }
 
     // 6. For each ExportEntry Record e of module.[[StarExportEntries]], do
@@ -562,6 +532,9 @@ impl SourceTextModuleRecord {
         // 1. If exportedNames does not contain n, then
         if !vec_contains_string_with_budget(&exported_names, &name, ctx)? {
           // a. Append n to exportedNames.
+          exported_names
+            .try_reserve_exact(1)
+            .map_err(|_| VmError::OutOfMemory)?;
           exported_names.push(name);
         }
       }
@@ -607,114 +580,18 @@ impl SourceTextModuleRecord {
     export_name: &str,
     resolve_set: &mut Vec<(ModuleId, String)>,
   ) -> ResolveExportResult {
-    // 1. For each Record { [[Module]], [[ExportName]] } r of resolveSet, do
-    //    a. If module and r.[[Module]] are the same Module Record and SameValue(exportName, r.[[ExportName]]) is true, then
-    //       i. Return null.
-    if resolve_set
-      .iter()
-      .any(|(m, name)| *m == module && name == export_name)
-    {
-      return ResolveExportResult::NotFound;
-    }
-
-    // 2. Append the Record { [[Module]]: module, [[ExportName]]: exportName } to resolveSet.
-    resolve_set.push((module, export_name.to_owned()));
-
-    // 3. For each ExportEntry Record e of module.[[LocalExportEntries]], do
-    for entry in &self.local_export_entries {
-      // a. If SameValue(exportName, e.[[ExportName]]) is true, then
-      if entry.export_name == export_name {
-        // i. Assert: module provides the direct binding for this export.
-        // ii. Return ResolvedBinding Record { [[Module]]: module, [[BindingName]]: e.[[LocalName]] }.
-        return ResolveExportResult::Resolved(ResolvedBinding {
-          module,
-          binding_name: BindingName::Name(entry.local_name.clone()),
-        });
-      }
-    }
-
-    // 4. For each ExportEntry Record e of module.[[IndirectExportEntries]], do
-    for entry in &self.indirect_export_entries {
-      // a. If SameValue(exportName, e.[[ExportName]]) is true, then
-      if entry.export_name == export_name {
-        // i. Let importedModule be GetImportedModule(module, e.[[ModuleRequest]]).
-        let Some(imported_module) = graph.get_imported_module(module, &entry.module_request) else {
-          return ResolveExportResult::NotFound;
-        };
-        // ii. If e.[[ImportName]] is all, then
-        if entry.import_name == ImportName::All {
-          // 1. Return ResolvedBinding Record { [[Module]]: importedModule, [[BindingName]]: namespace }.
-          return ResolveExportResult::Resolved(ResolvedBinding {
-            module: imported_module,
-            binding_name: BindingName::Namespace,
-          });
-        }
-
-        // iii. Else,
-        // 1. Assert: e.[[ImportName]] is a String.
-        // 2. Return importedModule.ResolveExport(e.[[ImportName]], resolveSet).
-        let import_name = match &entry.import_name {
-          ImportName::Name(name) => name,
-          ImportName::All => {
-            debug_assert!(false, "ImportName::All handled above");
-            return ResolveExportResult::NotFound;
-          }
-        };
-        return graph
-          .module(imported_module)
-          .resolve_export_with_set(graph, imported_module, import_name, resolve_set);
-      }
-    }
-
-    // 5. If SameValue(exportName, "default") is true, then
-    if export_name == "default" {
-      // a. Return null.
-      return ResolveExportResult::NotFound;
-    }
-
-    // 6. Let starResolution be null.
-    let mut star_resolution: Option<ResolvedBinding> = None;
-
-    // 7. For each ExportEntry Record e of module.[[StarExportEntries]], do
-    for entry in &self.star_export_entries {
-      // a. Let importedModule be GetImportedModule(module, e.[[ModuleRequest]]).
-      let Some(imported_module) = graph.get_imported_module(module, &entry.module_request) else {
-        continue;
-      };
-      // b. Let resolution be importedModule.ResolveExport(exportName, resolveSet).
-      let resolution = graph
-        .module(imported_module)
-        .resolve_export_with_set(graph, imported_module, export_name, resolve_set);
-
-      // c. If resolution is ambiguous, return ambiguous.
-      if resolution == ResolveExportResult::Ambiguous {
-        return ResolveExportResult::Ambiguous;
-      }
-
-      // d. If resolution is not null, then
-      let ResolveExportResult::Resolved(resolution) = resolution else {
-        continue;
-      };
-
-      // i. If starResolution is null, then
-      let Some(existing) = &star_resolution else {
-        // 1. Set starResolution to resolution.
-        star_resolution = Some(resolution);
-        continue;
-      };
-
-      // ii. Else,
-      // 1. If resolution.[[Module]] and starResolution.[[Module]] are not the same Module Record, return ambiguous.
-      // 2. If resolution.[[BindingName]] is not the same as starResolution.[[BindingName]], return ambiguous.
-      if existing != &resolution {
-        return ResolveExportResult::Ambiguous;
-      }
-    }
-
-    // 8. Return starResolution.
-    match star_resolution {
-      Some(binding) => ResolveExportResult::Resolved(binding),
-      None => ResolveExportResult::NotFound,
+    // Best-effort wrapper around the budgeted implementation.
+    //
+    // Hostile module graphs and large export names can drive allocator OOM in the spec algorithm.
+    // Ensure this infallible wrapper does not abort the process by mapping `OutOfMemory` to
+    // `NotFound`.
+    let mut cancel = || Ok(());
+    let mut ctx = ModuleRecordParseCtx::new(&mut cancel);
+    match self.resolve_export_with_set_budgeted(graph, module, export_name, resolve_set, &mut ctx) {
+      Ok(result) => result,
+      Err(VmError::OutOfMemory) => ResolveExportResult::NotFound,
+      // No other errors are expected without VM cancellation, but keep this wrapper infallible.
+      Err(_) => ResolveExportResult::NotFound,
     }
   }
 
@@ -761,7 +638,7 @@ impl SourceTextModuleRecord {
         // ii. Return ResolvedBinding Record { [[Module]]: module, [[BindingName]]: e.[[LocalName]] }.
         return Ok(ResolveExportResult::Resolved(ResolvedBinding {
           module,
-          binding_name: BindingName::Name(entry.local_name.clone()),
+          binding_name: BindingName::Name(try_string_from_str(entry.local_name.as_str())?),
         }));
       }
     }

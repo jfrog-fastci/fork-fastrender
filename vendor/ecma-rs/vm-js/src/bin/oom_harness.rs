@@ -1,7 +1,7 @@
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vm_js::{
-  Agent, Budget, HeapLimits, Job, JobKind, LoadedModuleRequest, MicrotaskQueue, ModuleGraph,
+  Agent, Budget, HeapLimits, Job, JobKind, LoadedModuleRequest, MicrotaskQueue, ModuleGraph, ModuleId,
   ModuleRequest, ModuleStatus, PropertyDescriptor, PropertyKey, PropertyKind, RootId,
   SourceTextModuleRecord, Value, VmError, VmHostHooks, VmJobContext, VmOptions, MAX_PROTOTYPE_CHAIN,
 };
@@ -53,7 +53,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames"
   );
   process::exit(2);
 }
@@ -303,6 +303,57 @@ fn main() {
       }
     }
   }
+ 
+  if scenario == "moduleGetExportedNames" {
+    // Construct a minimal module record with a single extremely large export name, then run the
+    // `GetExportedNames` algorithm under RLIMIT_AS pressure. Previously infallible `String::clone()`
+    // in the algorithm could abort the process on allocator OOM.
+    let mut record = match SourceTextModuleRecord::parse(agent.heap_mut(), "export const x = 1;") {
+      Ok(record) => record,
+      Err(err) => {
+        eprintln!("oom_harness: failed to parse module record: {err:?}");
+        process::exit(1);
+      }
+    };
+
+    if record.local_export_entries.is_empty() {
+      eprintln!("oom_harness: unexpected empty export entry list");
+      process::exit(1);
+    }
+
+    // Use U+0800 so each character expands to 3 bytes in UTF-8, allowing the test to hit allocator
+    // OOM with smaller `len_code_units` values.
+    let fill = '\u{0800}';
+    let bytes_per = fill.len_utf8();
+    let reserve_bytes = len_code_units.checked_mul(bytes_per).unwrap_or(usize::MAX);
+
+    let mut export_name = String::new();
+    if export_name.try_reserve_exact(reserve_bytes).is_err() {
+      eprintln!("oom_harness: failed to allocate export name string");
+      process::exit(1);
+    }
+    export_name.extend(std::iter::repeat(fill).take(len_code_units));
+    record.local_export_entries[0].export_name = export_name;
+
+    // Keep `filler` alive for the duration of the algorithm run.
+    let _keep = &filler;
+
+    let graph = ModuleGraph::new();
+    let module = ModuleId::from_raw(0);
+
+    match record.get_exported_names_with_vm(agent.vm_mut(), &graph, module) {
+      Err(VmError::OutOfMemory) => process::exit(0),
+      Ok(v) => {
+        eprintln!("oom_harness: unexpected success: {v:?}");
+        process::exit(1);
+      }
+      Err(err) => {
+        eprintln!("oom_harness: unexpected error: {err:?}");
+        process::exit(1);
+      }
+    }
+  }
+
   let needs_global_string = matches!(
     scenario.as_str(),
     "eval"
@@ -561,7 +612,6 @@ fn main() {
       }
     }
   }
-
   match result {
     Err(VmError::OutOfMemory) => process::exit(0),
     Err(VmError::Syntax(_)) if scenario == "labelEarlyError" => process::exit(0),

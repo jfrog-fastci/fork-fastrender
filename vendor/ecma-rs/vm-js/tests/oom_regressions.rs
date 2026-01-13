@@ -162,3 +162,11 @@ fn microtask_checkpoint_many_errors_does_not_abort_on_oom() {
     MICROTASK_FILLER_BYTES,
   );
 }
+
+#[test]
+fn module_get_exported_names_large_export_name_does_not_abort_on_oom() {
+  // `SourceTextModuleRecord::get_exported_names_with_vm` must use fallible string copies for export
+  // names. Large attacker-controlled export names should report `VmError::OutOfMemory` rather than
+  // aborting the process under allocator OOM.
+  run_oom_harness("moduleGetExportedNames", 15_000_000);
+}
