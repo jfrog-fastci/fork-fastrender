@@ -79,7 +79,8 @@ impl WavAudioBackend {
       .checked_add(pcm.len() as u64)
       .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAV data size overflow"))?;
 
-    update_wav_header(&mut writer.file, self.config, writer.data_bytes)?;
+    let data_bytes = writer.data_bytes;
+    update_wav_header(&mut writer.file, self.config, data_bytes)?;
     writer.file.flush()?;
 
     self
@@ -312,4 +313,3 @@ mod tests {
     assert_eq!(bytes.len(), 44 + expected_data_bytes as usize);
   }
 }
-
