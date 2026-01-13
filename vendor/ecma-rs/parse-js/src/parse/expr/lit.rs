@@ -40,6 +40,7 @@ use crate::num::JsNumber;
 use crate::operator::OperatorName;
 use crate::token::TT;
 use num_bigint::BigInt;
+use std::collections::HashSet;
 use unicode_ident::is_xid_continue;
 use unicode_ident::is_xid_start;
 pub fn normalise_literal_number(raw: &str) -> Option<JsNumber> {
@@ -969,7 +970,7 @@ fn regex_parse_unicode_escape_in_identifier(
 fn regex_parse_group_name(
   pattern: &str,
   start: usize,
-) -> Result<usize /* index after `>` */, RegexError> {
+) -> Result<(usize /* index after `>` */, String /* name */), RegexError> {
   let bytes = pattern.as_bytes();
   let mut i = start;
   if i >= bytes.len() {
@@ -979,6 +980,8 @@ fn regex_parse_group_name(
       len: 0,
     });
   }
+
+  let mut name = String::new();
 
   // Parse the first IdentifierStart.
   let ch = pattern[i..].chars().next().unwrap();
@@ -998,8 +1001,10 @@ fn regex_parse_group_name(
         len: consumed,
       });
     }
+    name.push(c);
     i += consumed;
   } else if regex_is_identifier_start(ch) {
+    name.push(ch);
     i += ch.len_utf8();
   } else {
     return Err(RegexError {
@@ -1020,7 +1025,7 @@ fn regex_parse_group_name(
     }
     let ch = pattern[i..].chars().next().unwrap();
     if ch == '>' {
-      return Ok(i + ch.len_utf8());
+      return Ok((i + ch.len_utf8(), name));
     }
     if ch == '\\' {
       let (c, consumed) = regex_parse_unicode_escape_in_identifier(pattern, i)?;
@@ -1031,6 +1036,7 @@ fn regex_parse_group_name(
           len: consumed,
         });
       }
+      name.push(c);
       i += consumed;
     } else {
       if !regex_is_identifier_continue(ch) {
@@ -1040,6 +1046,7 @@ fn regex_parse_group_name(
           len: ch.len_utf8(),
         });
       }
+      name.push(ch);
       i += ch.len_utf8();
     }
   }
@@ -1049,12 +1056,12 @@ fn regex_group_prefix_info(
   pattern: &str,
   start: usize,
   unicode_mode: bool,
-) -> Result<(bool /*quantifiable*/, usize /*consumed*/ ), RegexError> {
+) -> Result<(bool /*quantifiable*/, usize /*consumed*/, Option<String>), RegexError> {
   debug_assert_eq!(pattern.as_bytes()[start], b'(');
   let bytes = pattern.as_bytes();
   if start + 1 >= bytes.len() || bytes[start + 1] != b'?' {
     // Capturing group.
-    return Ok((true, 1));
+    return Ok((true, 1, None));
   }
 
   if start + 2 >= bytes.len() {
@@ -1066,10 +1073,10 @@ fn regex_group_prefix_info(
   }
 
   match bytes[start + 2] {
-    b':' => Ok((true, 3)), // (?:...) non-capturing group
+    b':' => Ok((true, 3, None)), // (?:...) non-capturing group
     // In non-unicode mode, Annex B allows quantifying lookahead groups. Unicode mode (`u`/`v`)
     // uses the stricter grammar where lookaheads are not quantifiable.
-    b'=' | b'!' => Ok((!unicode_mode, 3)), // (?=...) / (?!...) lookahead assertions
+    b'=' | b'!' => Ok((!unicode_mode, 3, None)), // (?=...) / (?!...) lookahead assertions
     b'<' => {
       if start + 3 >= bytes.len() {
         return Err(RegexError {
@@ -1079,12 +1086,12 @@ fn regex_group_prefix_info(
         });
       }
       match bytes[start + 3] {
-        b'=' | b'!' => Ok((!unicode_mode, 4)), // (?<=...) / (?<!...) lookbehind assertions
+        b'=' | b'!' => Ok((!unicode_mode, 4, None)), // (?<=...) / (?<!...) lookbehind assertions
         _ => {
           // Named capturing group: (?<name>...)
           let after_prefix = start + 3;
-          let end = regex_parse_group_name(pattern, after_prefix)?;
-          Ok((true, end - start))
+          let (end, name) = regex_parse_group_name(pattern, after_prefix)?;
+          Ok((true, end - start, Some(name)))
         }
       }
     }
@@ -1155,6 +1162,8 @@ fn validate_regex_pattern(
   // Whether the immediately preceding token was a quantifier that can accept a `?` non-greedy
   // modifier.
   let mut quantifier_allows_lazy = false;
+  let mut named_capture_groups: HashSet<String> = HashSet::new();
+  let mut named_backreferences: Vec<(String, usize /* offset */, usize /* len */)> = Vec::new();
 
   fn unicode_property_of_strings(name: &str) -> bool {
     super::regex_unicode_property::is_unicode_property_of_strings(name)
@@ -2512,24 +2521,15 @@ fn validate_regex_pattern(
             });
           }
           let after_angle = after_k + '<'.len_utf8();
-          let Some(end_rel) = pattern[after_angle..].find('>') else {
-            return Err(RegexError {
-              kind: RegexErrorKind::InvalidPattern,
-              offset: base_offset + escape_start,
-              len: pattern.len().saturating_sub(escape_start),
-            });
-          };
-
-          // Validate the group name itself using the same identifier rules as capture group
-          // definitions. This catches malformed escapes like `\k<\u{}>` and disallows non-`\u`
-          // escapes (e.g. `\k<\x61>`).
-          if let Err(mut err) = regex_parse_group_name(pattern, after_angle) {
-            err.offset += base_offset;
-            return Err(err);
-          }
+          let (end, name) =
+            regex_parse_group_name(pattern, after_angle).map_err(|mut err| {
+              err.offset += base_offset;
+              err
+            })?;
+          named_backreferences.push((name, base_offset + escape_start, end - escape_start));
 
           // Skip until the end of the `\k<name>` sequence.
-          i = after_angle + end_rel + '>'.len_utf8();
+          i = end;
           prev_can_be_quantified = true;
           quantifier_allows_lazy = false;
           continue;
@@ -2777,12 +2777,15 @@ fn validate_regex_pattern(
         continue;
       }
       '(' => {
-        let (quantifiable, consumed) =
+        let (quantifiable, consumed, capture_name) =
           regex_group_prefix_info(pattern, i, unicode_mode).map_err(|mut err| {
             // regex_group_prefix_info reports offsets relative to the pattern slice; translate.
             err.offset += base_offset;
             err
           })?;
+        if let Some(name) = capture_name {
+          named_capture_groups.insert(name);
+        }
         group_stack.push(quantifiable);
         prev_can_be_quantified = false;
         quantifier_allows_lazy = false;
@@ -2941,6 +2944,16 @@ fn validate_regex_pattern(
       offset: base_offset + pattern.len(),
       len: 0,
     });
+  }
+
+  for (name, offset, len) in named_backreferences {
+    if !named_capture_groups.contains(&name) {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset,
+        len,
+      });
+    }
   }
 
   Ok(())

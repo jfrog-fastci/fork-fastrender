@@ -90,6 +90,29 @@ fn regex_named_backreference_non_unicode_escape_in_name_is_rejected() {
 }
 
 #[test]
+fn regex_named_backreference_requires_existing_group_in_unicode_mode() {
+  let err = parse("/\\k<a>/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
+fn regex_named_backreference_requires_existing_group_in_non_unicode_mode() {
+  let err = parse("/(?<a>a)\\k<b>/").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
+fn regex_named_backreference_can_appear_before_group_definition() {
+  parse("/\\k<a>(?<a>a)/u").unwrap();
+}
+
+#[test]
 fn regex_invalid_unicode_escape_in_charset_is_rejected() {
   let err = parse("/[\\u{}]/u").unwrap_err();
   assert_eq!(
