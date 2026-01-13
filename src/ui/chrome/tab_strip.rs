@@ -1460,13 +1460,6 @@ fn tab_ui(
     chrome.tab_context_menu_rect = None;
     return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
   }
-  if response.double_clicked() {
-    if can_close_tabs {
-      chrome.open_tab_context_menu = None;
-      chrome.tab_context_menu_rect = None;
-      return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
-    }
-  }
   if response.clicked_by(egui::PointerButton::Middle) {
     if can_close_tabs {
       chrome.open_tab_context_menu = None;
@@ -1630,13 +1623,6 @@ fn pinned_tab_ui(
       chrome.tab_context_menu_rect = None;
     }
     return (tab_rect, response, None);
-  }
-  if response.double_clicked() {
-    if can_close_tabs {
-      chrome.open_tab_context_menu = None;
-      chrome.tab_context_menu_rect = None;
-      return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
-    }
   }
   if response.clicked_by(egui::PointerButton::Middle) {
     if can_close_tabs {
