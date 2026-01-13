@@ -590,3 +590,71 @@ fn compiled_dynamic_import_requires_module_graph() -> Result<(), VmError> {
   hooks.teardown_jobs(&mut rt);
   Ok(())
 }
+
+#[test]
+fn compiled_dynamic_import_rejects_when_options_not_object() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      var p = import('./m.js', 1);
+    "#,
+  )?;
+
+  let mut hooks = TestHostHooks::new();
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  // Read `p` off the global object.
+  let promise_obj = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("p")?);
+    let promise_value = scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?;
+    let Value::Object(obj) = promise_value else {
+      panic!("import() should assign a Promise object to global `p`");
+    };
+    obj
+  };
+
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  assert_eq!(
+    hooks.pending_count(),
+    0,
+    "host loader should not be invoked"
+  );
+
+  let reason = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  let Value::Object(err_obj) = reason else {
+    panic!("promise rejection reason should be an object");
+  };
+
+  let mut scope = rt.heap.scope();
+  let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
+  let Some(desc) = scope.heap().object_get_own_property(err_obj, &name_key)? else {
+    panic!("TypeError should have a 'name' property");
+  };
+  let PropertyKind::Data { value, .. } = desc.kind else {
+    panic!("TypeError.name should be a data property");
+  };
+  let Value::String(name) = value else {
+    panic!("TypeError.name should be a string");
+  };
+  assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "TypeError");
+
+  drop(scope);
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
