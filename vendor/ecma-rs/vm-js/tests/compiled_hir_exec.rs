@@ -1086,6 +1086,18 @@ fn proxy_set_trap_return_false(
   Ok(Value::Bool(false))
 }
 
+fn proxy_delete_trap_return_false(
+  _vm: &mut Vm,
+  _scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Bool(false))
+}
+
 #[test]
 fn compiled_member_get_dispatches_proxy_get_trap() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -1251,6 +1263,95 @@ fn compiled_member_set_dispatches_proxy_set_trap() -> Result<(), VmError> {
     &[Value::Object(proxy)],
   )?;
   assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_member_delete_dispatches_proxy_delete_trap() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(o) { return delete o.x; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+  let call_id = vm.register_native_call(proxy_delete_trap_return_false)?;
+
+  let mut scope = heap.scope();
+
+  // Target: { x: 1 }
+  let target = scope.alloc_object()?;
+  scope.push_root(Value::Object(target))?;
+  let x_key_s = scope.alloc_string("x")?;
+  scope.push_root(Value::String(x_key_s))?;
+  let x_key = vm_js::PropertyKey::from_string(x_key_s);
+  scope.define_property(
+    target,
+    x_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Number(1.0),
+        writable: true,
+      },
+    },
+  )?;
+
+  // Handler: { deleteProperty: <native trap> }
+  let handler = scope.alloc_object()?;
+  scope.push_root(Value::Object(handler))?;
+  let del_name = scope.alloc_string("deleteProperty")?;
+  scope.push_root(Value::String(del_name))?;
+  let del_fn = scope.alloc_native_function(call_id, None, del_name, 2)?;
+  scope.push_root(Value::Object(del_fn))?;
+  let del_key_s = scope.alloc_string("deleteProperty")?;
+  scope.push_root(Value::String(del_key_s))?;
+  let del_key = vm_js::PropertyKey::from_string(del_key_s);
+  scope.define_property(
+    handler,
+    del_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Object(del_fn),
+        writable: true,
+      },
+    },
+  )?;
+
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  scope.push_root(Value::Object(proxy))?;
+
+  let f_name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    f_name,
+    1,
+  )?;
+
+  // `delete proxy.x` should call the deleteProperty trap. The trap returns false, so in sloppy mode
+  // the delete operator should produce false and the target's property should remain.
+  let result = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Object(proxy)],
+  )?;
+  assert_eq!(result, Value::Bool(false));
+
+  let still_present = scope
+    .heap()
+    .object_get_own_property_with_tick(target, &x_key, || vm.tick())?
+    .is_some();
+  assert!(still_present, "expected target.x to remain when delete trap returns false");
   Ok(())
 }
 
