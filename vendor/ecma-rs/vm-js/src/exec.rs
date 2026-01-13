@@ -31365,16 +31365,60 @@ pub(crate) fn instantiate_module_decls(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   global_object: GcObject,
+  module_id: ModuleId,
   module_env: GcEnv,
   source: Arc<SourceText>,
   stmts: &[Node<Stmt>],
 ) -> Result<(), VmError> {
-  let mut env =
-    RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
-  env.set_source_info(source, 0, 0);
+  // Module instantiation creates bindings and (for function declarations) pre-creates function
+  // objects. Those function objects must capture the instantiating module as `[[ScriptOrModule]]`
+  // so nested operations like dynamic `import()` can correctly determine their referrer.
+  //
+  // The evaluator's function-object allocation logic consults `Vm::get_active_script_or_module` at
+  // creation time, so establish a temporary module execution context while instantiating.
+  if let Some(realm_id) = vm.current_realm().or_else(|| vm.intrinsics_realm()) {
+    let exec_ctx = ExecutionContext {
+      realm: realm_id,
+      script_or_module: Some(ScriptOrModule::Module(module_id)),
+    };
+    let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
+    let vm = &mut *vm_ctx;
 
-  // Module instantiation does not execute code, but reuses the evaluator's hoisting/instantiation
-  // logic to create bindings and pre-create function objects.
+    let mut env =
+      RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+    env.set_source_info(source, 0, 0);
+
+    // Module instantiation does not execute code, but reuses the evaluator's hoisting/instantiation
+    // logic to create bindings and pre-create function objects.
+    let mut dummy_host = ();
+    let mut dummy_hooks = crate::MicrotaskQueue::new();
+    let result = {
+      let mut evaluator = Evaluator {
+        vm,
+        host: &mut dummy_host,
+        hooks: &mut dummy_hooks,
+        env: &mut env,
+        // Modules are always strict mode.
+        strict: true,
+        this: Value::Undefined,
+        new_target: Value::Undefined,
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
+      };
+
+      evaluator.instantiate_stmt_list(scope, stmts)
+    };
+    env.teardown(scope.heap_mut());
+    return result;
+  }
+
+  // Best-effort fallback: allow module instantiation to proceed even when no realm has been
+  // initialized. In this mode, function objects will not capture `[[JobRealm]]`/`[[ScriptOrModule]]`
+  // metadata, so host features like dynamic `import()` may observe a missing referrer.
+  let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+  env.set_source_info(source, 0, 0);
   let mut dummy_host = ();
   let mut dummy_hooks = crate::MicrotaskQueue::new();
   let result = {
@@ -31383,7 +31427,6 @@ pub(crate) fn instantiate_module_decls(
       host: &mut dummy_host,
       hooks: &mut dummy_hooks,
       env: &mut env,
-      // Modules are always strict mode.
       strict: true,
       this: Value::Undefined,
       new_target: Value::Undefined,
@@ -31392,7 +31435,6 @@ pub(crate) fn instantiate_module_decls(
       this_initialized: true,
       this_root_idx: None,
     };
-
     evaluator.instantiate_stmt_list(scope, stmts)
   };
   env.teardown(scope.heap_mut());
@@ -32290,14 +32332,8 @@ mod tests {
     let module_env = scope.env_create(None)?;
     let source = Arc::new(SourceText::new("<inline>", ""));
 
-    let err = instantiate_module_decls(
-      vm,
-      &mut scope,
-      global_object,
-      module_env,
-      source,
-      &stmts,
-    )
+    let module_id = ModuleId::from_raw(0);
+    let err = instantiate_module_decls(vm, &mut scope, global_object, module_id, module_env, source, &stmts)
     .unwrap_err();
     match err {
       VmError::Syntax(_) => Ok(()),

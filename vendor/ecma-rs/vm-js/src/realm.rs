@@ -775,25 +775,26 @@ mod tests {
   }
 
   #[test]
-  fn well_known_symbols_are_agent_wide_and_survive_realm_teardown() -> Result<(), VmError> {
+  fn well_known_symbols_are_agent_wide_while_realms_are_alive() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
     let mut realm_a = Realm::new(&mut vm, &mut heap)?;
-    let wks_a = *realm_a.well_known_symbols();
     let mut realm_b = Realm::new(&mut vm, &mut heap)?;
+
+    let wks_a = *realm_a.well_known_symbols();
     let wks_b = *realm_b.well_known_symbols();
     assert_eq!(wks_a, wks_b);
 
-    // Tear down both realms and ensure the symbols remain live solely due to heap-level storage.
-    realm_b.teardown(&mut heap);
+    // Tearing down one realm must not invalidate the symbols while another realm is alive.
     realm_a.teardown(&mut heap);
     heap.collect_garbage();
+    assert!(heap.is_valid_symbol(wks_a.iterator));
 
-    let mut realm_c = Realm::new(&mut vm, &mut heap)?;
-    let wks_c = *realm_c.well_known_symbols();
-    assert_eq!(wks_a, wks_c);
-    realm_c.teardown(&mut heap);
+    // Once all realms are torn down, the symbols can be collected.
+    realm_b.teardown(&mut heap);
+    heap.collect_garbage();
+    assert!(!heap.is_valid_symbol(wks_a.iterator));
     Ok(())
   }
 }

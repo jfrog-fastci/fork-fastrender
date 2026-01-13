@@ -266,13 +266,14 @@ pub struct Heap {
   // `Symbol.for("vm-js.internal.*")`.
   internal_symbols: InternalSymbols,
 
-  /// ECMAScript well-known symbols (e.g. `Symbol.iterator`) shared across all realms in this heap.
+  /// Cached ECMAScript well-known symbols (e.g. `Symbol.iterator`) for this heap.
   ///
-  /// Per ECMA-262, well-known symbols are **agent-wide**, meaning every realm created within an
-  /// agent observes the same symbol identity (`realmA.Symbol.species === realmB.Symbol.species`).
+  /// These are treated as **agent-wide identities** while they are live: all realms created in
+  /// this heap observe the same `Symbol.*` values.
   ///
-  /// Keeping these symbols on the heap (rather than per-realm intrinsics) ensures stable identity
-  /// across realms and keeps them alive independently of realm teardown (they are traced during GC).
+  /// The heap does **not** automatically keep these alive. Instead, well-known symbols are rooted
+  /// by realms (and any other live objects that reference them), allowing them to be collected once
+  /// all realms and host roots are torn down.
   well_known_symbols: Option<WellKnownSymbols>,
 
   // Commonly-used property key strings (interned for memory efficiency).
@@ -751,30 +752,6 @@ impl Heap {
       ];
       for sym in internal_syms.into_iter().flatten() {
         tracer.trace_value(Value::Symbol(sym));
-      }
-
-      // ECMAScript well-known symbols (agent-wide).
-      if let Some(wks) = self.well_known_symbols {
-        let syms = [
-          wks.async_iterator,
-          wks.async_dispose,
-          wks.dispose,
-          wks.has_instance,
-          wks.is_concat_spreadable,
-          wks.iterator,
-          wks.match_,
-          wks.match_all,
-          wks.replace,
-          wks.search,
-          wks.species,
-          wks.split,
-          wks.to_primitive,
-          wks.to_string_tag,
-          wks.unscopables,
-        ];
-        for sym in syms {
-          tracer.trace_value(Value::Symbol(sym));
-        }
       }
 
       while let Some(id) = tracer.pop_work() {
@@ -5651,15 +5628,73 @@ impl Heap {
 
   /// Returns the ECMAScript well-known symbols for this heap, allocating them lazily.
   ///
-  /// Well-known symbols are specified to be **agent-wide**, meaning all realms created within the
-  /// same agent observe the same `Symbol.*` identities.
+  /// Well-known symbols are specified to be **agent-wide**; while live, all realms created within
+  /// this heap observe the same `Symbol.*` identities.
   pub(crate) fn ensure_well_known_symbols(&mut self) -> Result<WellKnownSymbols, VmError> {
     if let Some(wks) = self.well_known_symbols {
+      // Fast path: cached and still live.
+      let all_valid = self.is_valid_symbol(wks.async_iterator)
+        && self.is_valid_symbol(wks.async_dispose)
+        && self.is_valid_symbol(wks.dispose)
+        && self.is_valid_symbol(wks.has_instance)
+        && self.is_valid_symbol(wks.is_concat_spreadable)
+        && self.is_valid_symbol(wks.iterator)
+        && self.is_valid_symbol(wks.match_)
+        && self.is_valid_symbol(wks.match_all)
+        && self.is_valid_symbol(wks.replace)
+        && self.is_valid_symbol(wks.search)
+        && self.is_valid_symbol(wks.species)
+        && self.is_valid_symbol(wks.split)
+        && self.is_valid_symbol(wks.to_primitive)
+        && self.is_valid_symbol(wks.to_string_tag)
+        && self.is_valid_symbol(wks.unscopables);
+      if all_valid {
+        return Ok(wks);
+      }
+
+      // `well_known_symbols` is a weak-ish cache: entries may become invalid after GC if no realms
+      // (or other roots) keep them alive. Validate each symbol and recreate only the missing ones.
+      //
+      // Root any live symbols while we allocate replacements to avoid GC races.
+      let mut scope = self.scope();
+      let mut ensure = |sym: GcSymbol, desc: &str| -> Result<GcSymbol, VmError> {
+        if scope.heap.is_valid_symbol(sym) {
+          scope.push_root(Value::Symbol(sym))?;
+          Ok(sym)
+        } else {
+          let sym = scope.alloc_symbol(Some(desc))?;
+          scope.push_root(Value::Symbol(sym))?;
+          Ok(sym)
+        }
+      };
+
+      let wks = WellKnownSymbols {
+        async_iterator: ensure(wks.async_iterator, "Symbol.asyncIterator")?,
+        async_dispose: ensure(wks.async_dispose, "Symbol.asyncDispose")?,
+        dispose: ensure(wks.dispose, "Symbol.dispose")?,
+        has_instance: ensure(wks.has_instance, "Symbol.hasInstance")?,
+        is_concat_spreadable: ensure(wks.is_concat_spreadable, "Symbol.isConcatSpreadable")?,
+        iterator: ensure(wks.iterator, "Symbol.iterator")?,
+        match_: ensure(wks.match_, "Symbol.match")?,
+        match_all: ensure(wks.match_all, "Symbol.matchAll")?,
+        replace: ensure(wks.replace, "Symbol.replace")?,
+        search: ensure(wks.search, "Symbol.search")?,
+        species: ensure(wks.species, "Symbol.species")?,
+        split: ensure(wks.split, "Symbol.split")?,
+        to_primitive: ensure(wks.to_primitive, "Symbol.toPrimitive")?,
+        to_string_tag: ensure(wks.to_string_tag, "Symbol.toStringTag")?,
+        unscopables: ensure(wks.unscopables, "Symbol.unscopables")?,
+      };
+
+      scope.heap.well_known_symbols = Some(wks);
       return Ok(wks);
     }
 
-    // Allocate well-known symbols in a temporary rooting scope, then store them on the heap so they
-    // are traced by GC and stable across realms (even if all realms are torn down).
+    // Allocate well-known symbols in a temporary rooting scope, then cache them on the heap so
+    // subsequent realms can reuse the same identities.
+    //
+    // These symbols are kept alive by realm roots (and by any other live objects that reference
+    // them), not by the heap cache itself.
     let mut scope = self.scope();
 
     // Root each newly-created symbol while we allocate the rest of the set, in case allocations

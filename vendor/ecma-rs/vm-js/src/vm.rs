@@ -2398,6 +2398,15 @@ impl Vm {
     self.execution_context_stack.last().map(|ctx| ctx.realm)
   }
 
+  /// Returns the realm id that the VM's currently-installed intrinsics belong to, if known.
+  ///
+  /// This is set by [`Vm::set_intrinsics_for_realm`]. It is useful as a "default realm" in host
+  /// entry points (like module linking/instantiation) that may run without an active execution
+  /// context.
+  pub(crate) fn intrinsics_realm(&self) -> Option<RealmId> {
+    self.intrinsics_realm
+  }
+
   fn terminate(&self, reason: TerminationReason) -> VmError {
     VmError::Termination(Termination::new(reason, self.capture_stack()))
   }

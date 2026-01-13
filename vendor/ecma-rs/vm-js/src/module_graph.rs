@@ -15,7 +15,7 @@ use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
 use crate::{
   cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleId, ModuleRequest,
-  RealmId, RootId, Scope, ScriptOrModule, StackFrame, Value, Vm, VmError,
+  RealmId, RootId, Scope, StackFrame, Value, Vm, VmError,
 };
 use crate::{Heap, VmHost, VmHostHooks};
 use core::mem;
@@ -1611,27 +1611,7 @@ impl ModuleGraph {
       }
 
       // Instantiate local declarations (creates bindings + hoists function objects).
-      //
-      // Per ECMA-262, function/class objects created during ModuleDeclarationInstantiation capture:
-      // - `[[JobRealm]]` (current realm at creation time), and
-      // - `[[ScriptOrModule]]` (active module record).
-      //
-      // Linking can run outside of an execution context stack in common embeddings/tests, so
-      // establish a minimal execution context for this module instantiation so exported declarations
-      // have the correct metadata when later called from host code.
-      let exec_ctx = ExecutionContext {
-        realm: realm_id,
-        script_or_module: Some(ScriptOrModule::Module(module)),
-      };
-      let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
-      instantiate_module_decls(
-        &mut *vm_ctx,
-        scope,
-        global_object,
-        module_env,
-        source,
-        &ast.stx.body,
-      )?;
+      instantiate_module_decls(vm, scope, global_object, module, module_env, source, &ast.stx.body)?;
       Ok(())
     })();
 

@@ -331,14 +331,9 @@ pub fn iterator_close(
     return_key,
   ) {
     Ok(m) => m,
-    Err(err) => {
-      // ECMA-262 `IteratorClose` / `AsyncIteratorClose`: if the incoming completion is a throw
-      // completion, return it before propagating `innerResult` errors.
-      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
-        return Ok(());
-      }
-      return Err(err);
-    }
+    // Spec: if `GetMethod` throws, that abrupt completion overrides the incoming completion (even
+    // when the incoming completion is itself a throw completion).
+    Err(err) => return Err(err),
   };
   let Some(return_method) = return_method else {
     return Ok(());
@@ -354,14 +349,9 @@ pub fn iterator_close(
     &[],
   ) {
     Ok(v) => v,
-    Err(err) => {
-      // ECMA-262 `IteratorClose`: if the incoming completion is a throw completion, return it
-      // before propagating errors produced by calling `iterator.return`.
-      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
-        return Ok(());
-      }
-      return Err(err);
-    }
+    // Spec: if `Call` throws, that abrupt completion overrides the incoming completion (even when
+    // the incoming completion is itself a throw completion).
+    Err(err) => return Err(err),
   };
 
   if completion_kind == CloseCompletionKind::Throw {
@@ -383,15 +373,12 @@ pub fn iterator_close(
   Ok(())
 }
 
-/// `IteratorClose` (ECMA-262) with completion-sensitive error precedence.
+/// `IteratorClose` (ECMA-262) with completion-sensitive return-result checks.
 ///
 /// This is a convenience wrapper for callers that need completion-sensitive `IteratorClose`
 /// semantics but do not want to thread an explicit [`Completion`] value:
 /// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
-/// - If `completion_is_throw` is `true`, any JavaScript exceptions thrown while getting/calling
-///   `iterator.return` are ignored (the incoming throw completion is preserved).
-/// - If `completion_is_throw` is `false`, errors thrown while getting/calling `iterator.return`
-///   override the completion.
+/// - Errors thrown while getting/calling `iterator.return` override the completion.
 /// - If `completion_is_throw` is `true`, the return-result type check is skipped.
 /// - If `completion_is_throw` is `false`, a non-object return result throws a TypeError.
 pub fn iterator_close_strict(
@@ -415,11 +402,9 @@ pub fn iterator_close_strict(
 /// This is the spec-shaped form of iterator closing used by `for..of` and iterator-consuming
 /// algorithms:
 /// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
-/// - If `completion` is a throw completion, JavaScript exceptions thrown while getting/calling
-///   `iterator.return` are ignored and `completion` is returned.
-/// - If `completion` is not a throw completion, errors thrown while getting/calling
-///   `iterator.return` override `completion` and are returned.
-/// - If `completion` is a throw completion, the non-object return-result TypeError check is skipped.
+/// - Errors thrown while getting/calling `iterator.return` override `completion`.
+/// - If `completion` is a throw completion, the non-object return-result TypeError check is
+///   skipped.
 /// - If `completion` is a non-throw completion, a non-object return result throws a TypeError.
 pub fn iterator_close_with_completion(
   vm: &mut Vm,

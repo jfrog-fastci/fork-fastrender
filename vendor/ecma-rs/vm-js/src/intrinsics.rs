@@ -638,7 +638,7 @@ impl Intrinsics {
     scope: &mut Scope<'_>,
     roots: &mut Vec<RootId>,
   ) -> Result<Self, VmError> {
-    let well_known_symbols = scope.heap_mut().ensure_well_known_symbols()?;
+    let well_known_symbols = WellKnownSymbols::init(scope, roots)?;
     let optional_chain_sentinel =
       alloc_rooted_symbol(scope, roots, "vm-js optional chain sentinel")?;
 
@@ -7975,7 +7975,51 @@ impl Intrinsics {
   }
 }
 
-// Note: well-known symbols are now heap-global (see `Heap::ensure_well_known_symbols`).
+impl WellKnownSymbols {
+  fn init(scope: &mut Scope<'_>, roots: &mut Vec<RootId>) -> Result<Self, VmError> {
+    let wks = scope.heap_mut().ensure_well_known_symbols()?;
+
+    // Keep the well-known symbols live for the lifetime of this realm. The heap caches these
+    // symbols to preserve agent-wide identity, but does not keep them alive on its own so they can
+    // be collected once all realms are torn down.
+    //
+    // This is especially important during realm initialization: we allocate well-known symbols
+    // before installing them into the intrinsic object graph, and GC can run while that graph is
+    // still under construction.
+    let values = [
+      Value::Symbol(wks.async_dispose),
+      Value::Symbol(wks.async_iterator),
+      Value::Symbol(wks.dispose),
+      Value::Symbol(wks.has_instance),
+      Value::Symbol(wks.is_concat_spreadable),
+      Value::Symbol(wks.iterator),
+      Value::Symbol(wks.match_),
+      Value::Symbol(wks.match_all),
+      Value::Symbol(wks.replace),
+      Value::Symbol(wks.search),
+      Value::Symbol(wks.species),
+      Value::Symbol(wks.split),
+      Value::Symbol(wks.to_primitive),
+      Value::Symbol(wks.to_string_tag),
+      Value::Symbol(wks.unscopables),
+    ];
+
+    // Root *all* symbols together while we create persistent roots for them. On heaps configured to
+    // collect on every allocation, individual `add_root` calls can trigger GC and collect the other
+    // (not-yet-rooted) well-known symbols.
+    let mut temp = scope.reborrow();
+    temp.push_roots(&values)?;
+
+    roots
+      .try_reserve_exact(values.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for value in values {
+      roots.push(temp.heap_mut().add_root(value)?);
+    }
+
+    Ok(wks)
+  }
+}
 
 #[cfg(test)]
 mod async_generator_intrinsics_tests {
