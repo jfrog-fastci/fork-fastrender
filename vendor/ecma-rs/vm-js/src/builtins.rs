@@ -4324,6 +4324,9 @@ pub fn typed_array_prototype_set(
   // Per ECMA-262, the `offset` argument is coerced via `ToIntegerOrInfinity` *before* detached/
   // out-of-bounds typed array checks are performed.
   let offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root `target` + args across offset coercion. `ToIntegerOrInfinity` can invoke user JS and
+  // trigger GC, and `push_roots` itself may GC while growing the root stack.
+  scope.push_roots(&[Value::Object(target), source_val, offset_val])?;
   let offset = scope.to_integer_or_infinity(vm, host, hooks, offset_val)?;
   if offset < 0.0 {
     return Err(VmError::RangeError(

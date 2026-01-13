@@ -183,6 +183,76 @@ fn array_buffer_slice_roots_this_across_gc_in_tonumber() -> Result<(), VmError> 
 }
 
 #[test]
+fn typed_array_set_roots_inputs_across_gc_in_offset_coercion() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const target = new Uint8Array(4);
+      const source = { length: 3, 0: 1, 1: 2, 2: 3 };
+      const offset = { valueOf() { ({});
+        return 0;
+      }};
+      return [target, source, offset];
+    })()"#,
+  )?;
+
+  let [target_val, source_val, offset_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.uint8_array();
+  let args = [source_val, offset_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::typed_array_prototype_set(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    target_val,
+    &args,
+  )?;
+  assert_eq!(out, Value::Undefined);
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected set() to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(target_obj) = target_val else {
+    return Err(VmError::InvariantViolation(
+      "Uint8Array target value is not an object",
+    ));
+  };
+
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(target_obj, 0)?,
+    Some(Value::Number(1.0))
+  );
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(target_obj, 1)?,
+    Some(Value::Number(2.0))
+  );
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(target_obj, 2)?,
+    Some(Value::Number(3.0))
+  );
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(target_obj, 3)?,
+    Some(Value::Number(0.0))
+  );
+
+  Ok(())
+}
+
+#[test]
 fn typed_array_ctor_roots_array_buffer_across_gc_in_toindex() -> Result<(), VmError> {
   let mut rt = new_runtime_with_tiny_gc()?;
 
