@@ -118,8 +118,9 @@ set -e
 echo "capture_browser_perf_log: browser exit status=${browser_status}, tee exit status=${tee_status}" >&2
 
 echo "capture_browser_perf_log: to summarize:" >&2
-echo "  browser_perf_log_summary --input \"${out_path}\"" >&2
-echo "  (or re-run with: --summary)" >&2
+echo "  bash \"${repo_root}/scripts/run_limited.sh\" --as 64G -- \\" >&2
+echo "    bash \"${repo_root}/scripts/cargo_agent.sh\" run --release --bin browser_perf_log_summary -- --input \"${out_path}\"" >&2
+echo "  (or re-run with: --summary, if browser_perf_log_summary is already built/available)" >&2
 
 find_summary_bin() {
   if [[ -n "${CARGO_BIN_EXE_browser_perf_log_summary:-}" && -x "${CARGO_BIN_EXE_browser_perf_log_summary}" ]]; then
