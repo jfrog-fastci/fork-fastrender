@@ -71,6 +71,9 @@ When debugging sandbox-related issues locally, you can disable the Windows rende
 When sandboxing is disabled, FastRender prints a **warning to stderr** so insecure runs are not
 silent.
 
+Note: this escape hatch disables the *token/AppContainer* restrictions; the renderer may still be
+run inside a Job Object (kill-on-close, active-process cap) for lifecycle safety.
+
 ## Linux sandbox implementation
 
 Linux sandbox code lives in:
