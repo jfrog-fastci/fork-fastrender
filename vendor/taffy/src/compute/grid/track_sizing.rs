@@ -12,6 +12,23 @@ use crate::CompactLength;
 use arrayvec::ArrayVec;
 use core::cmp::Ordering;
 
+#[derive(Clone, Copy)]
+struct PrefixSumMaybe {
+  sum: f32,
+  none: u32,
+}
+
+#[inline(always)]
+fn sum_range(prefix: &[PrefixSumMaybe], range: core::ops::Range<usize>) -> Option<f32> {
+  let start = prefix[range.start];
+  let end = prefix[range.end];
+  if end.none - start.none > 0 {
+    None
+  } else {
+    Some(end.sum - start.sum)
+  }
+}
+
 /// Takes an axis, and a list of grid items sorted firstly by whether they cross a flex track
 /// in the specified axis (items that don't cross a flex track first) and then by the number
 /// of tracks they cross in specified axis (ascending order).
@@ -967,13 +984,14 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
   // extra work when sizing under a definite constraint.
   let needs_max_limit_prefix =
     matches!(axis_available_grid_space, AvailableSpace::MinContent | AvailableSpace::MaxContent);
-  let (max_limit_prefix_sum, max_limit_prefix_none) = if needs_max_limit_prefix {
-    let mut prefix_sum: Vec<f32> = Vec::with_capacity(axis_tracks.len() + 1);
-    let mut prefix_none: Vec<u32> = Vec::with_capacity(axis_tracks.len() + 1);
-    prefix_sum.push(0.0);
-    prefix_none.push(0);
+  let max_limit_prefix = if needs_max_limit_prefix {
+    let mut prefix: Vec<PrefixSumMaybe> = Vec::with_capacity(axis_tracks.len() + 1);
     let mut running_sum = 0.0;
     let mut running_none = 0u32;
+    prefix.push(PrefixSumMaybe {
+      sum: running_sum,
+      none: running_none,
+    });
     for track in axis_tracks.iter() {
       match track
         .max_track_sizing_function
@@ -982,12 +1000,14 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
         Some(v) => running_sum += v,
         None => running_none += 1,
       }
-      prefix_sum.push(running_sum);
-      prefix_none.push(running_none);
+      prefix.push(PrefixSumMaybe {
+        sum: running_sum,
+        none: running_none,
+      });
     }
-    (prefix_sum, prefix_none)
+    prefix
   } else {
-    (Vec::new(), Vec::new())
+    Vec::new()
   };
 
   // Pre-compute the other-axis track-size estimates used for intrinsic measurement.
@@ -997,12 +1017,13 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
   // computed in O(1) while preserving `Option` sum semantics (None if any estimate in the range is
   // None).
   let other_axis_available_space = inner_node_size.get(axis.other());
-  let mut prefix_sum: Vec<f32> = Vec::with_capacity(other_axis_tracks.len() + 1);
-  let mut prefix_none: Vec<u32> = Vec::with_capacity(other_axis_tracks.len() + 1);
-  prefix_sum.push(0.0);
-  prefix_none.push(0);
   let mut running_sum = 0.0;
   let mut running_none = 0u32;
+  let mut prefix: Vec<PrefixSumMaybe> = Vec::with_capacity(other_axis_tracks.len() + 1);
+  prefix.push(PrefixSumMaybe {
+    sum: running_sum,
+    none: running_none,
+  });
   for track in other_axis_tracks.iter() {
     match get_track_size_estimate(track, other_axis_available_space, tree) {
       Some(v) => {
@@ -1012,24 +1033,16 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
         running_none += 1;
       }
     }
-    prefix_sum.push(running_sum);
-    prefix_none.push(running_none);
-  }
-
-  #[inline(always)]
-  fn sum_range(prefix_sum: &[f32], prefix_none: &[u32], range: core::ops::Range<usize>) -> Option<f32> {
-    if prefix_none[range.end] - prefix_none[range.start] > 0 {
-      None
-    } else {
-      Some(prefix_sum[range.end] - prefix_sum[range.start])
-    }
+    prefix.push(PrefixSumMaybe {
+      sum: running_sum,
+      none: running_none,
+    });
   }
 
   let other_axis = axis.other();
   for item in items.iter_mut() {
     let mut available_space = Size::NONE;
-    let other_axis_size =
-      sum_range(&prefix_sum, &prefix_none, item.track_range_excluding_lines(other_axis));
+    let other_axis_size = sum_range(&prefix, item.track_range_excluding_lines(other_axis));
     available_space.set(other_axis, other_axis_size);
     item.available_space_cache = Some(available_space);
   }
@@ -1367,11 +1380,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
         {
           let axis_minimum_size = item_sizer.minimum_contribution(item, axis_tracks);
           let axis_min_content_size = item_sizer.min_content_contribution(item);
-          let limit = sum_range(
-            &max_limit_prefix_sum,
-            &max_limit_prefix_none,
-            item_track_range.clone(),
-          );
+          let limit = sum_range(&max_limit_prefix, item_track_range.clone());
           axis_min_content_size
             .maybe_min(limit)
             .max(axis_minimum_size)
@@ -1522,11 +1531,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
           }
 
           let axis_max_content_size = item_sizer.max_content_contribution(item);
-          let limit = sum_range(
-            &max_limit_prefix_sum,
-            &max_limit_prefix_none,
-            item_track_range.clone(),
-          );
+          let limit = sum_range(&max_limit_prefix, item_track_range.clone());
           let space = axis_max_content_size.maybe_min(limit);
           let tracks = &mut axis_tracks[start..end];
           if space > 0.0 {
@@ -2006,13 +2011,14 @@ fn expand_flexible_tracks<Tree: LayoutPartialTree>(
         .iter()
         .any(|item| item.crosses_flexible_track(axis) && item.available_space_cache.is_none());
 
-      let (other_axis_prefix_sum, other_axis_prefix_none) = if needs_other_axis_estimate {
-        let mut prefix_sum: Vec<f32> = Vec::with_capacity(other_axis_tracks.len() + 1);
-        let mut prefix_none: Vec<u32> = Vec::with_capacity(other_axis_tracks.len() + 1);
-        prefix_sum.push(0.0);
-        prefix_none.push(0);
+      let other_axis_prefix = if needs_other_axis_estimate {
+        let mut prefix: Vec<PrefixSumMaybe> = Vec::with_capacity(other_axis_tracks.len() + 1);
         let mut running_sum = 0.0;
         let mut running_none = 0u32;
+        prefix.push(PrefixSumMaybe {
+          sum: running_sum,
+          none: running_none,
+        });
         for track in other_axis_tracks.iter() {
           match get_track_size_estimate(track, other_axis_available_space, tree) {
             Some(v) => {
@@ -2020,22 +2026,15 @@ fn expand_flexible_tracks<Tree: LayoutPartialTree>(
             }
             None => running_none += 1,
           }
-          prefix_sum.push(running_sum);
-          prefix_none.push(running_none);
+          prefix.push(PrefixSumMaybe {
+            sum: running_sum,
+            none: running_none,
+          });
         }
-        (prefix_sum, prefix_none)
+        Some(prefix)
       } else {
-        (Vec::new(), Vec::new())
+        None
       };
-
-      #[inline(always)]
-      fn sum_range(prefix_sum: &[f32], prefix_none: &[u32], range: core::ops::Range<usize>) -> Option<f32> {
-        if prefix_none[range.end] - prefix_none[range.start] > 0 {
-          None
-        } else {
-          Some(prefix_sum[range.end] - prefix_sum[range.start])
-        }
-      }
 
       // The used flex fraction is the maximum of:
       let flex_fraction = f32_max(
@@ -2068,8 +2067,9 @@ fn expand_flexible_tracks<Tree: LayoutPartialTree>(
             if item.available_space_cache.is_none() {
               debug_assert!(needs_other_axis_estimate);
               let other_axis_size = sum_range(
-                &other_axis_prefix_sum,
-                &other_axis_prefix_none,
+                other_axis_prefix
+                  .as_ref()
+                  .expect("other_axis_prefix must be computed when needs_other_axis_estimate is true"),
                 item.track_range_excluding_lines(other_axis),
               );
               let mut size = Size::NONE;
