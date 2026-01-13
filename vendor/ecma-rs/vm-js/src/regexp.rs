@@ -3085,6 +3085,8 @@ fn count_total_capturing_groups(
   let mut count: u32 = 0;
   #[derive(Clone, Copy)]
   struct ClassScanState {
+    /// Whether this class is negated (`[^...]`).
+    negated: bool,
     /// True immediately after `[` (before any class atom), so `^` may still be a negation marker.
     negation_possible: bool,
     /// True before consuming the first class atom (after optional `^`), so an unescaped `]` is a
@@ -3120,6 +3122,7 @@ fn count_total_capturing_groups(
       if top.negation_possible && u == (b'^' as u16) {
         // `^` as the first code unit after `[` is the negation marker; it does not count as an
         // atom, so `]` may still be literal immediately after it.
+        top.negated = true;
         top.negation_possible = false;
         i = i.saturating_add(1);
         continue;
@@ -3136,6 +3139,7 @@ fn count_total_capturing_groups(
           .try_reserve(1)
           .map_err(|_| RegExpCompileError::OutOfMemory)?;
         class_stack.push(ClassScanState {
+          negated: false,
           negation_possible: true,
           first_atom: true,
         });
@@ -3145,6 +3149,14 @@ fn count_total_capturing_groups(
 
       if u == (b']' as u16) {
         if top.first_atom {
+          // ECMAScript permits `[^]` (a negated empty character class) by treating the `]`
+          // immediately after `^` as the class terminator, *unless* it is followed by another `]`
+          // (in which case the first `]` is intended to be a literal: `[^]]`).
+          if top.negated && units.get(i + 1).copied() != Some(b']' as u16) {
+            class_stack.pop();
+            i = i.saturating_add(1);
+            continue;
+          }
           // Unescaped `]` as the first atom is a literal `]`, not the end of the class.
           top.negation_possible = false;
           top.first_atom = false;
@@ -3177,6 +3189,7 @@ fn count_total_capturing_groups(
         .try_reserve(1)
         .map_err(|_| RegExpCompileError::OutOfMemory)?;
       class_stack.push(ClassScanState {
+        negated: false,
         negation_possible: true,
         first_atom: true,
       });
@@ -3297,8 +3310,13 @@ struct Parser<'a> {
   units: &'a [u16],
   idx: usize,
   flags: RegExpFlags,
-  capture_count: u32,
+  /// Total number of capturing groups in the entire pattern.
+  ///
+  /// In non-UnicodeMode (no `/u` or `/v`), DecimalEscape parsing uses this to decide whether `\1`
+  /// etc is a backreference (including forward references) or an Annex B legacy octal / identity
+  /// escape.
   total_capture_count: u32,
+  capture_count: u32,
   named_capture_groups: Vec<NamedCaptureGroup>,
   backrefs: Vec<u32>,
 }
@@ -3319,8 +3337,8 @@ impl<'a> Parser<'a> {
       units,
       idx: 0,
       flags,
-      capture_count: 0,
       total_capture_count,
+      capture_count: 0,
       named_capture_groups: Vec::new(),
       backrefs: Vec::new(),
     }
