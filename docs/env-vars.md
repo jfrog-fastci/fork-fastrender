@@ -75,8 +75,8 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - `fastrender::sandbox::windows::spawn_sandboxed(...)`: when set to `1`, Windows sandbox spawning
     may fall back to weaker sandboxing (restricted token) or an unsandboxed spawn.
 - `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off` – **macOS-only**: override the Seatbelt renderer profile used by `src/sandbox/macos.rs`.
-  - `pure-computation` is the strict default.
-  - `system-fonts` enables the relaxed system-font allowlist profile.
+  - `pure-computation` is the strict default (aliases: `pure`, `strict`).
+  - `system-fonts` enables the relaxed system-font allowlist profile (aliases: `fonts`, `relaxed`).
 - `FASTR_MACOS_USE_SANDBOX_EXEC=0|1` – **macOS-only**: opt into wrapping spawned subprocesses with `/usr/bin/sandbox-exec` when using `macos_spawn` helpers (debug/legacy; deprecated by Apple).
   - Ignored when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1`, `FASTR_RENDERER_SANDBOX=off`, or `FASTR_MACOS_RENDERER_SANDBOX=off`.
 - `FASTR_DISABLE_WIN_MITIGATIONS=1` – **Windows-only**: disable Win32 *process mitigation policies* applied at process creation (Win32k lockdown, dynamic code prohibition, etc).

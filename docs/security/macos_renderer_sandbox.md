@@ -103,9 +103,9 @@ Set:
 
 Notes:
 
-- `pure-computation` is the strict default.
+- `pure-computation` is the strict default (aliases: `pure`, `strict`).
 - `system-fonts` maps to `MacosSandboxMode::RendererSystemFonts` and is intended for temporary
-  bring-up when bundled fonts are not yet viable.
+  bring-up when bundled fonts are not yet viable (aliases: `fonts`, `relaxed`).
 - `off` disables sandboxing (equivalent to `FASTR_DISABLE_RENDERER_SANDBOX=1`).
 
 ### `sandbox-exec` wrapper gate (debug/legacy)

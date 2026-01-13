@@ -193,6 +193,7 @@ bring-up; do not rely on them in production.
   - `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off`
     - `system-fonts` maps to the relaxed `MacosSandboxMode::RendererSystemFonts` profile (allows
       read-only access to system font paths; still blocks network + user filesystem).
+    - Aliases: `pure`/`strict` for `pure-computation`, `fonts`/`relaxed` for `system-fonts`.
 - Opt into launching a renderer already sandboxed via Apple’s deprecated `sandbox-exec` wrapper
   (debug/legacy; see `src/sandbox/macos_spawn.rs`):
   - `FASTR_MACOS_USE_SANDBOX_EXEC=1`
