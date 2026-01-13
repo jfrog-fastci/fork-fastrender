@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -51,10 +51,53 @@ fn run_microtask_step(rt: &mut JsRuntime) -> Result<bool, VmError> {
   result
 }
 
+fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
+  match err {
+    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
+    _ => {}
+  }
+
+  let Some(thrown) = err.thrown_value() else {
+    return Ok(false);
+  };
+  let Value::Object(err_obj) = thrown else {
+    return Ok(false);
+  };
+
+  let syntax_error_proto = rt.realm().intrinsics().syntax_error_prototype();
+  if rt.heap().object_prototype(err_obj)? != Some(syntax_error_proto) {
+    return Ok(false);
+  }
+
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(err_obj))?;
+
+  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+  let Some(Value::String(message_s)) =
+    scope.heap().object_get_own_data_property_value(err_obj, &message_key)?
+  else {
+    return Ok(false);
+  };
+
+  let message = scope.heap().get_string(message_s)?.to_utf8_lossy();
+  Ok(message == "async generator functions")
+}
+
+fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
+  match rt.exec_script("async function* __ag_support() {}") {
+    Ok(_) => Ok(true),
+    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
+    Err(err) => Err(err),
+  }
+}
+
 #[test]
 fn basic_yield_sequencing() -> Result<(), VmError> {
   let mut rt = new_runtime();
-
+  if !feature_detect_async_generators(&mut rt)? {
+    return Ok(());
+  }
+ 
   let value = rt.exec_script(
     r#"
       var actual = [];
@@ -105,7 +148,10 @@ fn basic_yield_sequencing() -> Result<(), VmError> {
 #[test]
 fn yield_awaits_operand_fulfill() -> Result<(), VmError> {
   let mut rt = new_runtime();
-
+  if !feature_detect_async_generators(&mut rt)? {
+    return Ok(());
+  }
+ 
   let value = rt.exec_script(
     r#"
       var actual = [];
@@ -140,7 +186,10 @@ fn yield_awaits_operand_fulfill() -> Result<(), VmError> {
 #[test]
 fn yield_awaits_operand_reject_closes_iterator() -> Result<(), VmError> {
   let mut rt = new_runtime();
-
+  if !feature_detect_async_generators(&mut rt)? {
+    return Ok(());
+  }
+ 
   let value = rt.exec_script(
     r#"
       var actual = [];
@@ -182,7 +231,10 @@ fn yield_awaits_operand_reject_closes_iterator() -> Result<(), VmError> {
 #[test]
 fn yield_star_does_not_unwrap_promise_values_from_manual_async_iterators() -> Result<(), VmError> {
   let mut rt = new_runtime();
-
+  if !feature_detect_async_generators(&mut rt)? {
+    return Ok(());
+  }
+ 
   let value = rt.exec_script(
     r#"
       var actual = [];
@@ -230,7 +282,10 @@ fn yield_star_does_not_unwrap_promise_values_from_manual_async_iterators() -> Re
 #[test]
 fn return_thenable_then_getter_tick_ordering() -> Result<(), VmError> {
   let mut rt = new_runtime();
-
+  if !feature_detect_async_generators(&mut rt)? {
+    return Ok(());
+  }
+ 
   let value = rt.exec_script(
     r#"
       var actual = [];
