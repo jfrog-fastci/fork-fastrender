@@ -2,8 +2,21 @@
 //!
 //! This is best-effort and intended for a future multiprocess browser architecture where
 //! renderer processes run with substantially reduced OS capabilities.
+//!
+//! ## Environment sanitization
+//!
+//! `CreateProcessW` and `CreateProcessAsUserW` inherit the parent's environment when
+//! `lpEnvironment` is null. Browser processes often contain secrets in environment variables, so
+//! sandboxed renderer children must not inherit the full environment by default.
+//!
+//! This module therefore builds an explicit UTF-16 environment block containing only a small
+//! allowlist of variables required for basic runtime correctness, and passes it to the Windows
+//! process creation APIs.
+//!
+//! Set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` to opt back into inheriting the full environment for
+//! debugging.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::{c_void, OsStr, OsString};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -28,6 +41,11 @@ const ENV_WINDOWS_RENDERER_SANDBOX: &str = "FASTR_WINDOWS_RENDERER_SANDBOX";
 
 /// Enable verbose sandbox logging (primarily for Windows AppContainer spawn debugging).
 const ENV_LOG_SANDBOX: &str = "FASTR_LOG_SANDBOX";
+
+/// Debug escape hatch: allow sandboxed renderer children to inherit the full parent environment.
+///
+/// This is intentionally Windows-only (the variable is ignored on other platforms).
+const ENV_INHERIT_RENDERER_ENV: &str = "FASTR_WINDOWS_SANDBOX_INHERIT_ENV";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WindowsRendererSandboxLevel {
@@ -96,6 +114,10 @@ fn env_var_truthy(raw: Option<&OsStr>) -> bool {
   )
 }
 
+fn should_inherit_renderer_environment() -> bool {
+  env_var_truthy(std::env::var_os(ENV_INHERIT_RENDERER_ENV).as_deref())
+}
+
 fn log_sandbox_disabled_once() {
   static LOGGED: OnceLock<()> = OnceLock::new();
   LOGGED.get_or_init(|| {
@@ -148,8 +170,9 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapAlloc, HeapFree, LocalFree};
 use windows_sys::Win32::System::Threading::{
   CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess,
-  InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
-  CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+  GetExitCodeProcess, InitializeProcThreadAttributeList, ResumeThread, TerminateProcess,
+  UpdateProcThreadAttribute, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED,
+  CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
   PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_LIST,
   PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, STARTUPINFOW,
 };
@@ -175,6 +198,28 @@ pub struct SandboxedChild {
   pub level: WindowsSandboxLevel,
   // Keep any relocated AppContainer executable alive for the lifetime of the child handle.
   _temp_dir: Option<TempDir>,
+}
+
+impl SandboxedChild {
+  /// Wait for the child process to exit, returning its raw exit code.
+  pub fn wait(self) -> io::Result<u32> {
+    let process = self.process.as_raw_handle() as HANDLE;
+    // `INFINITE` and `WAIT_FAILED` are both `u32::MAX` in the Win32 headers.
+    let rc = unsafe { WaitForSingleObject(process, u32::MAX) };
+    if rc == u32::MAX {
+      return Err(io::Error::last_os_error());
+    }
+    if rc != 0 {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!("WaitForSingleObject returned unexpected status {rc}"),
+      ));
+    }
+
+    let mut code: u32 = 0;
+    win32_bool(unsafe { GetExitCodeProcess(process, &mut code as *mut u32) })?;
+    Ok(code)
+  }
 }
 
 #[derive(Debug)]
@@ -528,7 +573,16 @@ fn spawn_appcontainer(
   }
 
   let inherit = if handles.is_empty() { FALSE } else { TRUE };
-  let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+  let env_block = build_renderer_environment_block();
+  let env_ptr = env_block
+    .as_ref()
+    .map_or(std::ptr::null(), |block| block.as_ptr() as *const c_void);
+  let env_flags = if env_block.is_some() {
+    CREATE_UNICODE_ENVIRONMENT
+  } else {
+    0
+  };
+  let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | env_flags;
 
   let mut create_process =
     |image: &Path, flags: u32, current_dir: Option<&Path>| -> io::Result<PROCESS_INFORMATION> {
@@ -557,7 +611,7 @@ fn spawn_appcontainer(
         std::ptr::null(),
         inherit,
         flags,
-        std::ptr::null(),
+        env_ptr,
         current_dir_ptr,
         std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
         &mut pi,
@@ -810,6 +864,15 @@ fn spawn_restricted_token(
   set_low_integrity(restricted.as_raw_handle() as HANDLE)?;
 
   let application_name = wide_from_os(exe.as_os_str());
+  let env_block = build_renderer_environment_block();
+  let env_ptr = env_block
+    .as_ref()
+    .map_or(std::ptr::null(), |block| block.as_ptr() as *const c_void);
+  let env_flags = if env_block.is_some() {
+    CREATE_UNICODE_ENVIRONMENT
+  } else {
+    0
+  };
 
   let handles: Vec<HANDLE> = inherit_handles
     .iter()
@@ -834,7 +897,7 @@ fn spawn_restricted_token(
           std::ptr::null(),
           FALSE,
           flags,
-          std::ptr::null(),
+          env_ptr,
           std::ptr::null(),
           &mut startup,
           &mut pi,
@@ -846,7 +909,7 @@ fn spawn_restricted_token(
       Ok(pi)
     };
 
-    spawn_with_optional_breakaway(parent_in_job, &mut create_process, CREATE_SUSPENDED)?
+    spawn_with_optional_breakaway(parent_in_job, &mut create_process, CREATE_SUSPENDED | env_flags)?
   } else {
     let mut attrs = AttributeList::new(1)?;
     attrs.update_raw(
@@ -858,7 +921,7 @@ fn spawn_restricted_token(
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attrs.list;
-    let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+    let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | env_flags;
 
     let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
       let mut cmdline = build_command_line(exe, args);
@@ -872,7 +935,7 @@ fn spawn_restricted_token(
           std::ptr::null(),
           TRUE,
           flags,
-          std::ptr::null(),
+          env_ptr,
           std::ptr::null(),
           std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
           &mut pi,
@@ -905,6 +968,15 @@ fn spawn_unsandboxed(
 ) -> io::Result<SandboxedChild> {
   let job = JobObject::new()?;
   let application_name = wide_from_os(exe.as_os_str());
+  let env_block = build_renderer_environment_block();
+  let env_ptr = env_block
+    .as_ref()
+    .map_or(std::ptr::null(), |block| block.as_ptr() as *const c_void);
+  let env_flags = if env_block.is_some() {
+    CREATE_UNICODE_ENVIRONMENT
+  } else {
+    0
+  };
 
   let handles: Vec<HANDLE> = inherit_handles
     .iter()
@@ -928,7 +1000,7 @@ fn spawn_unsandboxed(
           std::ptr::null(),
           FALSE,
           flags,
-          std::ptr::null(),
+          env_ptr,
           std::ptr::null(),
           &mut startup,
           &mut pi,
@@ -940,7 +1012,7 @@ fn spawn_unsandboxed(
       Ok(pi)
     };
 
-    spawn_with_optional_breakaway(parent_in_job, &mut create_process, CREATE_SUSPENDED)?
+    spawn_with_optional_breakaway(parent_in_job, &mut create_process, CREATE_SUSPENDED | env_flags)?
   } else {
     let mut attrs = AttributeList::new(1)?;
     attrs.update_raw(
@@ -952,7 +1024,7 @@ fn spawn_unsandboxed(
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attrs.list;
-    let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+    let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | env_flags;
 
     let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
       let mut cmdline = build_command_line(exe, args);
@@ -965,7 +1037,7 @@ fn spawn_unsandboxed(
           std::ptr::null(),
           TRUE,
           flags,
-          std::ptr::null(),
+          env_ptr,
           std::ptr::null(),
           std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
           &mut pi,
@@ -1144,6 +1216,50 @@ fn append_cmd_arg(cmd: &mut Vec<u16>, arg: &OsStr) {
   // Trailing backslashes before the closing quote need to be doubled.
   cmd.extend(std::iter::repeat('\\' as u16).take(backslashes * 2));
   cmd.push('"' as u16);
+}
+
+fn collect_allowlisted_environment(temp_dir: &Path) -> Vec<(String, OsString)> {
+  let mut vars = Vec::new();
+
+  for key in ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT"] {
+    if let Some(value) = std::env::var_os(key) {
+      vars.push((key.to_string(), value));
+    }
+  }
+
+  if let Some(value) = std::env::var_os("RUST_BACKTRACE") {
+    vars.push(("RUST_BACKTRACE".to_string(), value));
+  }
+
+  let temp = temp_dir.as_os_str().to_os_string();
+  vars.push(("TMP".to_string(), temp.clone()));
+  vars.push(("TEMP".to_string(), temp));
+
+  vars
+}
+
+fn environment_block_from_vars(mut vars: Vec<(String, OsString)>) -> Vec<u16> {
+  // Windows expects the environment block to be sorted by key name.
+  vars.sort_by(|(ak, _), (bk, _)| ak.to_ascii_uppercase().cmp(&bk.to_ascii_uppercase()));
+
+  let mut block: Vec<u16> = Vec::new();
+  for (key, value) in vars {
+    block.extend(key.encode_utf16());
+    block.push('=' as u16);
+    block.extend(value.encode_wide());
+    block.push(0);
+  }
+  // Environment blocks are double-NUL terminated.
+  block.push(0);
+  block
+}
+
+fn build_renderer_environment_block() -> Option<Vec<u16>> {
+  if should_inherit_renderer_environment() {
+    return None;
+  }
+  let temp_dir: PathBuf = std::env::temp_dir();
+  Some(environment_block_from_vars(collect_allowlisted_environment(&temp_dir)))
 }
 
 fn hresult_from_win32(err: u32) -> i32 {
