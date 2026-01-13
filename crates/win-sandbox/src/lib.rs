@@ -183,6 +183,9 @@ pub enum WinSandboxError {
 
   #[error("invalid environment variable `{name}`: `{value}`")]
   InvalidEnvVar { name: &'static str, value: String },
+
+  #[error(transparent)]
+  RendererSandboxMode(#[from] RendererSandboxModeError),
 }
 
 impl WinSandboxError {
@@ -384,7 +387,7 @@ pub enum RendererSandboxMode {
   Disabled,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum RendererSandboxModeError {
   #[error(
     "windows renderer sandbox is unavailable ({support}); set FASTR_ALLOW_UNSANDBOXED_RENDERER=1 to allow running without a sandbox"

@@ -17,10 +17,12 @@ pub struct RendererSandbox {
   job: Job,
   appcontainer: AppContainerProfile,
   mitigation_policy: u64,
+  allow_jobless: bool,
 }
 
 pub struct RendererSandboxBuilder {
   allow_unsupported: bool,
+  allow_jobless: bool,
   appcontainer_name: String,
   appcontainer_display_name: String,
   appcontainer_description: String,
@@ -33,6 +35,7 @@ impl RendererSandboxBuilder {
   pub fn new() -> Result<Self> {
     Ok(Self {
       allow_unsupported: false,
+      allow_jobless: false,
       appcontainer_name: DEFAULT_APPCONTAINER_NAME.to_owned(),
       appcontainer_display_name: DEFAULT_APPCONTAINER_DISPLAY_NAME.to_owned(),
       appcontainer_description: DEFAULT_APPCONTAINER_DESCRIPTION.to_owned(),
@@ -44,6 +47,11 @@ impl RendererSandboxBuilder {
 
   pub fn allow_unsupported(mut self, allow: bool) -> Self {
     self.allow_unsupported = allow;
+    self
+  }
+
+  pub fn allow_jobless(mut self, allow: bool) -> Self {
+    self.allow_jobless = allow;
     self
   }
 
@@ -99,13 +107,26 @@ impl RendererSandboxBuilder {
       job,
       appcontainer,
       mitigation_policy: self.mitigation_policy,
+      allow_jobless: self.allow_jobless,
     })
   }
 }
 
 impl RendererSandbox {
   pub fn new_default() -> Result<Self> {
-    RendererSandboxBuilder::new()?.build()
+    let support = crate::SandboxSupport::detect();
+    if support != crate::SandboxSupport::Full && !crate::allow_unsandboxed_renderer() {
+      return Err(crate::RendererSandboxModeError::Unsupported { support }.into());
+    }
+
+    // If the caller explicitly allows running without the full sandbox, configure a best-effort
+    // sandbox that can degrade to jobless/AppContainer-disabled mode if setup fails.
+    let allow_fallback = crate::allow_unsandboxed_renderer();
+    let mut builder = RendererSandboxBuilder::new()?;
+    if allow_fallback {
+      builder = builder.allow_unsupported(true).allow_jobless(true);
+    }
+    builder.build()
   }
 
   pub fn builder() -> Result<RendererSandboxBuilder> {
@@ -465,9 +486,18 @@ fn spawn_windows(
   }
   let mut proc_cleanup = ProcCleanup { pi, cleanup: true };
 
-  sandbox
+  if let Err(err) = sandbox
     .job
-    .assign_process(&RawWin32Handle(proc_cleanup.pi.hProcess))?;
+    .assign_process(&RawWin32Handle(proc_cleanup.pi.hProcess))
+  {
+    if sandbox.allow_jobless {
+      eprintln!(
+        "warning: win-sandbox renderer: AssignProcessToJobObject failed ({err}); continuing without job limits (kill-on-close + active-process cap)"
+      );
+    } else {
+      return Err(err);
+    }
+  }
 
   let resume = unsafe { ResumeThread(proc_cleanup.pi.hThread) };
   if resume == u32::MAX {
