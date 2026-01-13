@@ -100,20 +100,27 @@ fn apply_linux_env_overrides(
 ) -> Result<Option<RendererSandboxConfig>, RendererSandboxError> {
   let defaults = env_sandbox::RendererSandboxConfig {
     enabled: true,
-    seccomp: !matches!(config.seccomp, crate::sandbox::RendererSeccompPolicy::Disabled),
-    landlock: !matches!(config.landlock, crate::sandbox::RendererLandlockPolicy::Disabled),
+    seccomp: !matches!(
+      config.seccomp,
+      crate::sandbox::RendererSeccompPolicy::Disabled
+    ),
+    landlock: !matches!(
+      config.landlock,
+      crate::sandbox::RendererLandlockPolicy::Disabled
+    ),
     // Not currently applied here; `std::process::Command` uses internal exec-error pipes that make
     // "close all fds except stdio" from `pre_exec` tricky. (A post-exec close_fds layer can be
     // applied by renderer entrypoints that use stdio-only IPC.)
     close_fds: false,
   };
 
-  let env_cfg = env_sandbox::RendererSandboxConfig::from_env_with_defaults(defaults).map_err(|err| {
-    RendererSandboxError::InvalidSandboxEnvVar {
-      var: err.var(),
-      value: err.value().to_string(),
-    }
-  })?;
+  let env_cfg =
+    env_sandbox::RendererSandboxConfig::from_env_with_defaults(defaults).map_err(|err| {
+      RendererSandboxError::InvalidSandboxEnvVar {
+        var: err.var(),
+        value: err.value().to_string(),
+      }
+    })?;
 
   if !env_cfg.enabled {
     log_linux_renderer_sandbox_disabled_once();
@@ -124,7 +131,9 @@ fn apply_linux_env_overrides(
 
   config.seccomp = if env_cfg.seccomp {
     match config.seccomp {
-      crate::sandbox::RendererSeccompPolicy::Disabled => crate::sandbox::RendererSeccompPolicy::RendererDefault,
+      crate::sandbox::RendererSeccompPolicy::Disabled => {
+        crate::sandbox::RendererSeccompPolicy::RendererDefault
+      }
       other => other,
     }
   } else {
@@ -133,7 +142,9 @@ fn apply_linux_env_overrides(
 
   config.landlock = if env_cfg.landlock {
     match config.landlock {
-      crate::sandbox::RendererLandlockPolicy::Disabled => crate::sandbox::RendererLandlockPolicy::RestrictWrites,
+      crate::sandbox::RendererLandlockPolicy::Disabled => {
+        crate::sandbox::RendererLandlockPolicy::RestrictWrites
+      }
       other => other,
     }
   } else {
@@ -320,6 +331,7 @@ struct LinuxPreExecConfig {
   rlimit_nofile: Option<libc::rlim_t>,
   rlimit_core: Option<libc::rlim_t>,
   rlimit_nproc: Option<libc::rlim_t>,
+  linux_namespaces: crate::sandbox::linux_namespaces::LinuxNamespacesConfig,
   network_policy: crate::sandbox::NetworkPolicy,
   landlock: crate::sandbox::RendererLandlockPolicy,
   seccomp: crate::sandbox::RendererSeccompPolicy,
@@ -345,6 +357,7 @@ impl LinuxPreExecConfig {
         .nproc_limit
         .map(|value| to_rlim_t(value, "RLIMIT_NPROC"))
         .transpose()?,
+      linux_namespaces: config.linux_namespaces,
       network_policy: config.network_policy,
       landlock: config.landlock,
       seccomp: config.seccomp,
@@ -372,6 +385,13 @@ fn linux_pre_exec(cfg: LinuxPreExecConfig) -> std::io::Result<()> {
   // policies), PR_SET_DUMPABLE may fail. Do not abort spawning the renderer just because this knob
   // could not be applied.
   let _ = set_dumpable_0();
+
+  // 0c) Optional namespace isolation.
+  //
+  // This is best-effort and may fail on hosts without sufficient privileges (e.g. user namespaces
+  // disabled). When it succeeds, it provides defense-in-depth beyond the seccomp filter by ensuring
+  // the process starts inside a fresh network namespace where no interfaces are configured.
+  let _ = crate::sandbox::linux_namespaces::apply_namespaces(cfg.linux_namespaces);
 
   // 1) Apply rlimits.
   if let Some(limit) = cfg.rlimit_as {
@@ -877,14 +897,8 @@ mod tests {
       assert_eq!(max_core, 0, "core dumps should be disabled");
 
       let (cur_nproc, max_nproc) = get_rlimit(libc::RLIMIT_NPROC);
-      assert_eq!(
-        cur_nproc, expected_nproc,
-        "RLIMIT_NPROC.cur should match"
-      );
-      assert_eq!(
-        max_nproc, expected_nproc,
-        "RLIMIT_NPROC.max should match"
-      );
+      assert_eq!(cur_nproc, expected_nproc, "RLIMIT_NPROC.cur should match");
+      assert_eq!(max_nproc, expected_nproc, "RLIMIT_NPROC.max should match");
 
       // Validate no_new_privs is set.
       let no_new_privs = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
