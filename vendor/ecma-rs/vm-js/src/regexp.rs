@@ -3311,6 +3311,19 @@ enum Atom {
   UnicodeSet(UnicodeSetClass),
   UnicodeProperty(UnicodeProperty),
   UnicodeStringProperty(UnicodeStringProperty),
+  /// Lookahead assertion that can be quantified in non-UnicodeMode (Annex B).
+  ///
+  /// This is a zero-width matcher (does not advance the input position), but it can contain
+  /// capturing groups whose slots must be reset between iterations when quantified.
+  LookAhead {
+    negative: bool,
+    /// Inclusive range of capture-group indices contained within this assertion.
+    ///
+    /// A value of `0` means "no capture groups" (capture-group indices are 1-based).
+    capture_range_start: u32,
+    capture_range_end: u32,
+    disj: Disjunction,
+  },
   Group {
     capture: Option<u32>,
     /// Inclusive range of capture-group indices contained within this group.
@@ -3739,6 +3752,7 @@ impl<'a> Parser<'a> {
       }
       .into());
     };
+    let unicode_mode = self.flags.has_either_unicode_flag();
 
     // Lookaround assertions: lookahead `(?=...)` / `(?!...)`, lookbehind `(?<=...)` / `(?<!...)`.
     if u == (b'(' as u16) {
@@ -3766,6 +3780,7 @@ impl<'a> Parser<'a> {
 
         if let Some(kind) = self.units.get(self.idx + 2).copied() {
           if kind == (b'=' as u16) || kind == (b'!' as u16) {
+            let captures_before = self.capture_count;
             // Consume "(?=" / "(?!".
             self.idx += 3;
             let disj = self.parse_disjunction(ctx, Some(b')' as u16))?;
@@ -3775,10 +3790,31 @@ impl<'a> Parser<'a> {
               }
               .into());
             }
-            return Ok(Term::Assertion(Assertion::LookAhead {
-              negative: kind == (b'!' as u16),
-              disj,
-            }));
+            let negative = kind == (b'!' as u16);
+
+            // Annex B: In non-UnicodeMode, lookahead assertions can be quantified.
+            // Treat them as an atom so the normal quantifier parser/VM machinery applies.
+            if !unicode_mode {
+              let captures_after = self.capture_count;
+              let (capture_range_start, capture_range_end) = if captures_after > captures_before {
+                (
+                  captures_before.saturating_add(1),
+                  captures_after,
+                )
+              } else {
+                (0, 0)
+              };
+              let atom = Atom::LookAhead {
+                negative,
+                capture_range_start,
+                capture_range_end,
+                disj,
+              };
+              let quant = self.parse_quantifier_if_present(ctx)?;
+              return Ok(Term::Atom(atom, quant));
+            }
+
+            return Ok(Term::Assertion(Assertion::LookAhead { negative, disj }));
           }
         }
       }
@@ -5742,6 +5778,23 @@ impl ProgramBuilder {
           .ok_or(RegExpCompileError::OutOfMemory)?;
         (clear_from_slot, clear_to_slot)
       }
+      Atom::LookAhead {
+        capture_range_start,
+        capture_range_end,
+        ..
+      } if *capture_range_start != 0 && *capture_range_end >= *capture_range_start => {
+        let start = *capture_range_start as usize;
+        let end = *capture_range_end as usize;
+        let clear_from_slot = start
+          .checked_mul(2)
+          .ok_or(RegExpCompileError::OutOfMemory)?;
+        let clear_to_slot = end
+          .checked_add(1)
+          .ok_or(RegExpCompileError::OutOfMemory)?
+          .checked_mul(2)
+          .ok_or(RegExpCompileError::OutOfMemory)?;
+        (clear_from_slot, clear_to_slot)
+      }
       _ => (0, 0),
     };
 
@@ -5796,6 +5849,11 @@ impl ProgramBuilder {
       }
       Atom::UnicodeStringProperty(prop) => {
         self.emit(ctx, Inst::UnicodeStringProperty(prop))?;
+      }
+      Atom::LookAhead { negative, disj, .. } => {
+        // Same instruction as a normal lookahead assertion; this atom form exists so Annex B
+        // quantifiers can apply to lookahead in non-UnicodeMode.
+        self.compile_assertion(ctx, Assertion::LookAhead { negative, disj })?;
       }
       Atom::BackRef(n) => {
         self.emit(ctx, Inst::BackRef(n))?;
