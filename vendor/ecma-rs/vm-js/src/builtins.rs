@@ -18705,7 +18705,8 @@ pub fn string_prototype_locale_compare(
     ));
   }
   let mut scope = scope.reborrow();
-  let a = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let a = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(a))?;
 
   let that = args.get(0).copied().unwrap_or(Value::Undefined);
