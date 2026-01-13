@@ -8043,13 +8043,47 @@ impl App {
         .resizable(true)
         .default_width(360.0)
         .show(&ctx, |ui| {
+          // Simple lerp helpers for subtle hover transitions (honors reduced motion via UiMotion).
+          fn lerp(a: f32, b: f32, t: f32) -> f32 {
+            a + (b - a) * t
+          }
+          fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+            lerp(a as f32, b as f32, t).round().clamp(0.0, 255.0) as u8
+          }
+          fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+            let [ar, ag, ab, aa] = a.to_array();
+            let [br, bg, bb, ba] = b.to_array();
+            egui::Color32::from_rgba_unmultiplied(
+              lerp_u8(ar, br, t),
+              lerp_u8(ag, bg, t),
+              lerp_u8(ab, bb, t),
+              lerp_u8(aa, ba, t),
+            )
+          }
+          fn lerp_stroke(a: egui::Stroke, b: egui::Stroke, t: f32) -> egui::Stroke {
+            egui::Stroke::new(lerp(a.width, b.width, t), lerp_color(a.color, b.color, t))
+          }
+
+          let motion = fastrender::ui::motion::UiMotion::from_ctx(ui.ctx());
+
+          // -------------------------------------------------------------------
+          // Header
+          // -------------------------------------------------------------------
           ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            fastrender::ui::icon_tinted(
+              ui,
+              fastrender::ui::BrowserIcon::History,
+              18.0,
+              ui.visuals().text_color(),
+            );
             ui.heading("History");
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
               let close_resp = fastrender::ui::icon_button(
                 ui,
                 fastrender::ui::BrowserIcon::Close,
-                "Close",
+                "Close (Esc)",
                 true,
               );
               close_resp.widget_info(|| {
@@ -8058,35 +8092,87 @@ impl App {
               if close_resp.clicked() {
                 close_history_panel = true;
               }
+
+              let clear_resp = ui.add(
+                egui::Button::new(
+                  egui::RichText::new("Clear browsing data")
+                    .small()
+                    .color(ui.visuals().hyperlink_color),
+                )
+                .frame(false),
+              );
+              clear_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear browsing data")
+              });
+              let clear_resp = clear_resp.on_hover_text("Clear browsing data…");
+              if clear_resp.clicked() {
+                panel_actions.push(fastrender::ui::ChromeAction::OpenClearBrowsingDataDialog);
+              }
             });
           });
 
-          ui.horizontal(|ui| {
-            let search_id = ui.make_persistent_id("history_panel_search");
-            let search = ui.add(
-              egui::TextEdit::singleline(&mut self.browser_state.chrome.history_search_text)
-                .id(search_id)
-                .hint_text("Search history…")
-                .desired_width(f32::INFINITY),
-            );
-            search.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search history")
-            });
-            if self.history_panel_request_focus_search {
-              search.request_focus();
-              self.history_panel_request_focus_search = false;
-              self.page_has_focus = false;
-            }
-            if search.has_focus() || search.clicked() {
-              self.page_has_focus = false;
-            }
-            if ui.button("Clear browsing data…").clicked() {
-              panel_actions.push(fastrender::ui::ChromeAction::OpenClearBrowsingDataDialog);
-            }
-          });
+          ui.add_space(6.0);
 
+          // -------------------------------------------------------------------
+          // Search pill
+          // -------------------------------------------------------------------
+          let search_id = ui.make_persistent_id("history_panel_search");
+          let mut search_has_focus = false;
+          let pill_rounding = egui::Rounding::same(999.0);
+          let pill_margin = egui::Margin::symmetric(ui.spacing().button_padding.x, ui.spacing().button_padding.y * 0.6);
+          let pill_inner = egui::Frame::none()
+            .fill(ui.visuals().widgets.inactive.bg_fill)
+            .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+            .rounding(pill_rounding)
+            .inner_margin(pill_margin)
+            .show(ui, |ui| {
+              ui.set_width(ui.available_width());
+              ui.horizontal(|ui| {
+                fastrender::ui::icon_tinted(
+                  ui,
+                  fastrender::ui::BrowserIcon::Search,
+                  16.0,
+                  ui.visuals().weak_text_color(),
+                );
+
+                let search = ui.add(
+                  egui::TextEdit::singleline(&mut self.browser_state.chrome.history_search_text)
+                    .id(search_id)
+                    .hint_text("Search history…")
+                    .desired_width(f32::INFINITY)
+                    .frame(false),
+                );
+                search.widget_info(|| {
+                  egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search history")
+                });
+                if self.history_panel_request_focus_search {
+                  search.request_focus();
+                  self.history_panel_request_focus_search = false;
+                  self.page_has_focus = false;
+                }
+                if search.has_focus() || search.clicked() {
+                  self.page_has_focus = false;
+                }
+                search_has_focus = search.has_focus();
+              });
+            });
+
+          // Custom focus ring for the pill when the embedded TextEdit has focus.
+          if search_has_focus {
+            let focus_stroke = ui.visuals().selection.stroke;
+            let expand = 1.0 + focus_stroke.width * 0.5;
+            let rect = pill_inner.response.rect.expand(expand);
+            let rounding = egui::Rounding::same(pill_rounding.nw + expand);
+            ui.painter().rect_stroke(rect, rounding, focus_stroke);
+          }
+
+          ui.add_space(8.0);
           ui.separator();
+          ui.add_space(4.0);
 
+          // -------------------------------------------------------------------
+          // Results list
+          // -------------------------------------------------------------------
           const HISTORY_PANEL_LIMIT: usize = 500;
           let query = self.browser_state.chrome.history_search_text.trim();
           let results: Vec<(usize, &fastrender::ui::GlobalHistoryEntry)> = if query.is_empty() {
@@ -8101,13 +8187,50 @@ impl App {
           };
 
           if results.is_empty() {
-            if self.browser_state.history.entries.is_empty() {
-              ui.label("No history.");
-            } else {
-              ui.label("No results.");
-            }
+            ui.add_space(32.0);
+            ui.vertical_centered(|ui| {
+              ui.add_space(6.0);
+
+              let (title, hint, icon) = if self.browser_state.history.entries.is_empty() {
+                (
+                  "No history yet",
+                  "Pages you visit will appear here.",
+                  fastrender::ui::BrowserIcon::History,
+                )
+              } else {
+                (
+                  "No results",
+                  "Try a different search query.",
+                  fastrender::ui::BrowserIcon::Search,
+                )
+              };
+
+              fastrender::ui::icon_tinted(ui, icon, 34.0, ui.visuals().weak_text_color());
+              ui.add_space(10.0);
+              ui.label(egui::RichText::new(title).strong());
+              ui.label(egui::RichText::new(hint).small().color(ui.visuals().weak_text_color()));
+
+              if !self.browser_state.history.entries.is_empty() && !query.is_empty() {
+                ui.add_space(10.0);
+                if ui.button("Clear search").clicked() {
+                  self.browser_state.chrome.history_search_text.clear();
+                  self.history_panel_request_focus_search = true;
+                  self.page_has_focus = false;
+                }
+              }
+            });
             return;
           }
+
+          let row_padding = egui::vec2(ui.spacing().button_padding.x, ui.spacing().button_padding.y);
+          let title_h = ui.text_style_height(&egui::TextStyle::Body);
+          let small_h = ui.text_style_height(&egui::TextStyle::Small);
+          let row_h = (row_padding.y * 2.0) + title_h + (small_h * 2.0) + 6.0;
+          let rounding = ui.visuals().widgets.inactive.rounding;
+          let base_fill = ui.visuals().widgets.inactive.bg_fill;
+          let hover_fill = ui.visuals().widgets.hovered.bg_fill;
+          let base_stroke = ui.visuals().widgets.inactive.bg_stroke;
+          let hover_stroke = ui.visuals().widgets.hovered.bg_stroke;
 
           egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -8121,29 +8244,103 @@ impl App {
                   .unwrap_or(entry.url.as_str());
                 let url = &entry.url;
 
-                ui.group(|ui| {
-                  ui.label(egui::RichText::new(title).strong());
-                  ui.label(egui::RichText::new(url).small());
+                let ts = Self::format_history_timestamp_ms(entry.visited_at_ms)
+                  .unwrap_or_else(|| "Unknown time".to_string());
 
-                  let ts = entry
-                    .visited_at_ms;
-                  let ts = Self::format_history_timestamp_ms(ts)
-                    .unwrap_or_else(|| "Unknown time".to_string());
-                  ui.label(egui::RichText::new(ts).small());
+                let (_, row_rect) = ui.allocate_space(egui::vec2(ui.available_width(), row_h));
+                let row_id = ui.make_persistent_id(("history_row", idx));
+                let mut row_resp = ui.interact(row_rect, row_id, egui::Sense::click());
 
-                  ui.horizontal(|ui| {
-                    if ui.small_button("Open").clicked() {
-                      panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url.clone()));
-                    }
-                    if ui.small_button("New tab").clicked() {
-                      history_open_in_new_tab = Some(url.clone());
-                    }
-                    if ui.small_button("Delete").clicked() {
+                let hover_t = motion.animate_bool(
+                  ui.ctx(),
+                  row_id.with("hover"),
+                  row_resp.hovered(),
+                  motion.durations.hover_fade,
+                );
+                let fill = lerp_color(base_fill, hover_fill, hover_t);
+                let stroke = lerp_stroke(base_stroke, hover_stroke, hover_t);
+                ui.painter().rect(row_rect, rounding, fill, stroke);
+
+                if row_resp.has_focus() {
+                  let focus_stroke = ui.visuals().selection.stroke;
+                  let expand = 1.0 + focus_stroke.width * 0.5;
+                  let focus_rect = row_rect.expand(expand);
+                  let focus_rounding = egui::Rounding::same(rounding.nw + expand);
+                  ui.painter().rect_stroke(focus_rect, focus_rounding, focus_stroke);
+                }
+
+                row_resp.widget_info({
+                  let label = format!("Open {title}");
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                });
+
+                let mut action_clicked = false;
+                ui.allocate_ui_at_rect(row_rect.shrink2(row_padding), |ui| {
+                  ui.spacing_mut().item_spacing.x = 6.0;
+
+                  ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let delete_resp = fastrender::ui::icon_button(
+                      ui,
+                      fastrender::ui::BrowserIcon::Close,
+                      "Delete",
+                      true,
+                    );
+                    delete_resp.widget_info(|| {
+                      egui::WidgetInfo::labeled(egui::WidgetType::Button, "Delete history entry")
+                    });
+                    if delete_resp.clicked() {
                       history_delete_index = Some(idx);
+                      action_clicked = true;
                     }
+
+                    let new_tab_resp = fastrender::ui::icon_button(
+                      ui,
+                      fastrender::ui::BrowserIcon::OpenInNewTab,
+                      "Open in new tab",
+                      true,
+                    );
+                    if new_tab_resp.clicked() {
+                      history_open_in_new_tab = Some(url.clone());
+                      action_clicked = true;
+                    }
+
+                    let open_resp = ui.small_button("Open");
+                    if open_resp.clicked() {
+                      panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url.clone()));
+                      action_clicked = true;
+                    }
+
+                    // Main text block (fills remaining width).
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                      ui.set_width(ui.available_width());
+                      ui.add(egui::Label::new(egui::RichText::new(title).strong()).wrap(false).truncate(true));
+                      ui.add(
+                        egui::Label::new(
+                          egui::RichText::new(url)
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        )
+                        .wrap(false)
+                        .truncate(true),
+                      );
+                      ui.add(
+                        egui::Label::new(
+                          egui::RichText::new(ts)
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        )
+                        .wrap(false)
+                        .truncate(true),
+                      );
+                    });
                   });
                 });
-                ui.add_space(8.0);
+
+                if row_resp.clicked() && !action_clicked {
+                  panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url.clone()));
+                }
+
+                ui.add_space(6.0);
               }
             });
         });
@@ -8190,40 +8387,86 @@ impl App {
         .show(&ctx, |ui| {
           use fastrender::ui::ClearBrowsingDataRange;
 
-          ui.label("Clear browsing data for this profile.");
-          ui.add_space(10.0);
+          fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
+            let [r, g, b, _] = color.to_array();
+            egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
+          }
 
-          ui.label("Time range:");
-          ui.radio_value(
-            &mut self.clear_browsing_data_range,
-            ClearBrowsingDataRange::LastHour,
-            ClearBrowsingDataRange::LastHour.label(),
-          );
-          ui.radio_value(
-            &mut self.clear_browsing_data_range,
-            ClearBrowsingDataRange::Last24Hours,
-            ClearBrowsingDataRange::Last24Hours.label(),
-          );
-          ui.radio_value(
-            &mut self.clear_browsing_data_range,
-            ClearBrowsingDataRange::Last7Days,
-            ClearBrowsingDataRange::Last7Days.label(),
-          );
-          ui.radio_value(
-            &mut self.clear_browsing_data_range,
-            ClearBrowsingDataRange::AllTime,
-            ClearBrowsingDataRange::AllTime.label(),
-          );
-
-          ui.add_space(10.0);
-          ui.label("This will clear the History panel and Recently visited suggestions.");
-          ui.add_space(12.0);
+          // Header
           ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            fastrender::ui::icon_tinted(
+              ui,
+              fastrender::ui::BrowserIcon::History,
+              20.0,
+              ui.visuals().warn_fg_color,
+            );
+            ui.heading("Clear browsing data");
+          });
+          ui.add_space(6.0);
+          ui.label(
+            egui::RichText::new("Clear browsing data for this profile.")
+              .color(ui.visuals().weak_text_color()),
+          );
+
+          ui.add_space(14.0);
+
+          // Time range selection.
+          ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Time range").strong());
+            ui.add_space(8.0);
+            egui::ComboBox::from_id_source("clear_browsing_data_range_combo")
+              .selected_text(self.clear_browsing_data_range.label())
+              .width(ui.available_width().min(220.0))
+              .show_ui(ui, |ui| {
+                ui.selectable_value(
+                  &mut self.clear_browsing_data_range,
+                  ClearBrowsingDataRange::LastHour,
+                  ClearBrowsingDataRange::LastHour.label(),
+                );
+                ui.selectable_value(
+                  &mut self.clear_browsing_data_range,
+                  ClearBrowsingDataRange::Last24Hours,
+                  ClearBrowsingDataRange::Last24Hours.label(),
+                );
+                ui.selectable_value(
+                  &mut self.clear_browsing_data_range,
+                  ClearBrowsingDataRange::Last7Days,
+                  ClearBrowsingDataRange::Last7Days.label(),
+                );
+                ui.selectable_value(
+                  &mut self.clear_browsing_data_range,
+                  ClearBrowsingDataRange::AllTime,
+                  ClearBrowsingDataRange::AllTime.label(),
+                );
+              });
+          });
+
+          ui.add_space(12.0);
+          ui.group(|ui| {
+            ui.label(egui::RichText::new("This will remove:").strong());
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("• History panel entries").small());
+            ui.label(egui::RichText::new("• Recently visited suggestions").small());
+          });
+
+          ui.add_space(14.0);
+          ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let danger = ui.visuals().error_fg_color;
+            let clear_button = egui::Button::new(
+              egui::RichText::new("Clear")
+                .strong()
+                .color(danger),
+            )
+            .fill(with_alpha(danger, 24))
+            .stroke(egui::Stroke::new(ui.visuals().widgets.inactive.bg_stroke.width, danger));
+
+            if ui.add(clear_button).clicked() {
+              clear_now = true;
               close_dialog = true;
             }
-            if ui.button("Clear").clicked() {
-              clear_now = true;
+
+            if ui.button("Cancel").clicked() {
               close_dialog = true;
             }
           });
