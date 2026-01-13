@@ -42,6 +42,13 @@ const MAX_FILTER_RES: u32 = 4096;
 // resvg's `feTurbulence` implementation overflows/panics for extremely large `numOctaves` values.
 // Clamp to a conservative upper bound to match upstream behavior and avoid pathological work.
 const MAX_TURBULENCE_OCTAVES: u32 = 32;
+// Guard against hostile SVG filter markup that tries to allocate extremely large convolution
+// kernels. SVG 1.1 defaults `order` to 3, so values above these limits are almost certainly
+// accidental or malicious.
+const MAX_CONVOLVE_MATRIX_ORDER: usize = 64;
+const MAX_CONVOLVE_MATRIX_TAPS: usize = 4096;
+// Guard against unbounded allocations / CPU in feComponentTransfer parsing.
+const MAX_COMPONENT_TRANSFER_TABLE_VALUES: usize = 1024;
 const FILTER_DEADLINE_STRIDE: usize = 256;
 const MAX_SVG_FILTER_DEPTH: usize = 128;
 
@@ -2670,6 +2677,7 @@ fn parse_transfer_fn(node: &roxmltree::Node) -> Option<TransferFn> {
       .split(|c: char| c.is_ascii_whitespace() || c == ',')
       .filter(|s| !s.is_empty())
       .filter_map(|v| v.parse::<f32>().ok())
+      .take(MAX_COMPONENT_TRANSFER_TABLE_VALUES)
       .collect::<Vec<f32>>()
   };
   match ty.as_str() {
@@ -2886,16 +2894,53 @@ fn parse_fe_displacement_map(node: &roxmltree::Node) -> Option<FilterPrimitive> 
 
 fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(node.attribute("in"));
-  let order = parse_number_list(node.attribute("order"));
-  let order_x = order.get(0).copied().unwrap_or(3.0).floor().max(1.0) as usize;
-  let order_y = order
-    .get(1)
-    .copied()
-    .unwrap_or(order_x as f32)
-    .floor()
-    .max(1.0) as usize;
-  let kernel = parse_number_list(node.attribute("kernelMatrix"));
-  if kernel.len() != order_x * order_y {
+  let mut order_iter = node
+    .attribute("order")
+    .unwrap_or("")
+    .split(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ','
+    })
+    .filter_map(|v| {
+      let trimmed = trim_ascii_whitespace(v);
+      if trimmed.is_empty() {
+        None
+      } else {
+        trimmed.parse::<f32>().ok()
+      }
+    });
+  let order_x_raw = order_iter.next().unwrap_or(3.0);
+  let order_y_raw = order_iter.next().unwrap_or(order_x_raw);
+  let order_x = order_x_raw.floor().max(1.0) as usize;
+  let order_y = order_y_raw.floor().max(1.0) as usize;
+
+  // Defend against integer overflow and pathological allocations for hostile `order` values.
+  let total_taps = order_x.checked_mul(order_y)?;
+  if order_x > MAX_CONVOLVE_MATRIX_ORDER
+    || order_y > MAX_CONVOLVE_MATRIX_ORDER
+    || total_taps > MAX_CONVOLVE_MATRIX_TAPS
+  {
+    return None;
+  }
+
+  // `kernelMatrix` must contain exactly `order_x * order_y` values. Parse at most one more than
+  // expected so hostile markup cannot force an unbounded allocation for mismatched lists.
+  let kernel = node
+    .attribute("kernelMatrix")
+    .unwrap_or("")
+    .split(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ','
+    })
+    .filter_map(|v| {
+      let trimmed = trim_ascii_whitespace(v);
+      if trimmed.is_empty() {
+        None
+      } else {
+        trimmed.parse::<f32>().ok()
+      }
+    })
+    .take(total_taps + 1)
+    .collect::<Vec<f32>>();
+  if kernel.len() != total_taps {
     return None;
   }
   let divisor = node
