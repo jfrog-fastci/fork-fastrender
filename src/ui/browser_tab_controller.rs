@@ -812,7 +812,6 @@ impl BrowserTabController {
     } else {
       0.0
     };
-
     let (box_tree_ptr, fragment_tree_ptr, hit_tree) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
@@ -820,8 +819,7 @@ impl BrowserTabController {
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
       let fragment_tree_ptr =
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
-      let hit_tree = (self.scroll_state.viewport != Point::ZERO
-        || !self.scroll_state.elements.is_empty())
+      let hit_tree = (self.scroll_state.viewport != Point::ZERO || !self.scroll_state.elements.is_empty())
         .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state));
       (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
@@ -831,14 +829,45 @@ impl BrowserTabController {
     let fragment_tree_unscrolled = unsafe { &*fragment_tree_ptr };
     let fragment_tree_before = hit_tree.as_ref().unwrap_or(fragment_tree_unscrolled);
 
+    let mut textarea_scroll: Option<(usize, f32)> = None;
     let mut changed = self.document.mutate_dom(|dom| {
-      self.interaction.pointer_move(
+      let changed = self.interaction.pointer_move(
         dom,
         box_tree,
         fragment_tree_before,
         &self.scroll_state,
         viewport_point,
-      )
+      );
+
+      // Textarea selection drag autoscroll: when the pointer moves outside the textarea while
+      // dragging, auto-scroll the textarea so the caret line stays visible.
+      textarea_scroll = self
+        .interaction
+        .active_text_drag()
+        .filter(|(node_id, _)| {
+          crate::dom::find_node_mut_by_preorder_id(dom, *node_id)
+            .and_then(|node| node.tag_name())
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
+        })
+        .and_then(|(_node_id, box_id)| {
+          crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+            dom,
+            self.interaction.interaction_state(),
+            box_tree,
+            fragment_tree_before,
+            &self.scroll_state,
+          )
+          .map(|(resolved_box_id, next_y)| {
+            let target_box_id = if resolved_box_id == box_id {
+              box_id
+            } else {
+              resolved_box_id
+            };
+            (target_box_id, next_y)
+          })
+        });
+
+      changed
     });
 
     let mut scroll_changed = false;
@@ -882,11 +911,44 @@ impl BrowserTabController {
       }
     }
 
-    if changed || scroll_changed {
-      self.paint_if_needed()
-    } else {
-      Ok(Vec::new())
+    let mut out = Vec::new();
+    if let Some((box_id, next_scroll_y)) = textarea_scroll {
+      let prev_scroll = self.scroll_state.clone();
+      let current = prev_scroll.element_offset(box_id);
+      let mut next_offset = current;
+      next_offset.y = next_scroll_y;
+      if !next_offset.x.is_finite() {
+        next_offset.x = 0.0;
+      }
+      if !next_offset.y.is_finite() {
+        next_offset.y = 0.0;
+      }
+
+      if next_offset != current {
+        let mut next = prev_scroll.clone();
+        if next_offset == Point::ZERO {
+          next.elements.remove(&box_id);
+        } else {
+          next.elements.insert(box_id, next_offset);
+        }
+        next.update_deltas_from(&prev_scroll);
+        self.scroll_state = next;
+        self.document.set_scroll_state(self.scroll_state.clone());
+        scroll_changed = true;
+
+        out.push(WorkerToUi::ScrollStateUpdated {
+          tab_id: self.tab_id,
+          scroll: self.scroll_state.clone(),
+        });
+        self.last_reported_scroll_state = self.scroll_state.clone();
+      }
     }
+
+    if changed || scroll_changed {
+      out.extend(self.paint_if_needed()?);
+    }
+
+    Ok(out)
   }
 
   fn handle_drop_files(

@@ -6248,16 +6248,6 @@ impl InteractionEngine {
     None
   }
 
-  /// Return the currently active text-control selection drag, if any.
-  ///
-  /// This is `Some((node_id, box_id))` while the user is dragging the caret/selection within a
-  /// focused `<input>`/`<textarea>` via a pointer gesture (e.g. click-drag).
-  ///
-  /// The drag state is cleared on pointer up, focus changes, and `clear_pointer_state`.
-  pub fn active_text_drag(&self) -> Option<(usize, usize)> {
-    self.text_drag.map(|state| (state.node_id, state.box_id))
-  }
-
   /// Returns true while the user is extending a document selection via a pointer drag.
   ///
   /// This tracks "click and drag to select text" gestures in normal document content (outside of
@@ -7190,6 +7180,15 @@ impl InteractionEngine {
   /// `dom2` form control state) synchronized while the user drags the slider.
   pub fn active_range_drag_node_id(&self) -> Option<usize> {
     self.range_drag.map(|state| state.node_id)
+  }
+
+  /// Returns the `(node_id, box_id)` for an active text-control selection drag.
+  ///
+  /// This corresponds to the user holding the primary pointer button down inside a focused
+  /// `<input>`/`<textarea>` and moving the pointer to extend the selection (i.e. not text
+  /// drag-and-drop).
+  pub fn active_text_drag(&self) -> Option<(usize, usize)> {
+    self.text_drag.map(|state| (state.node_id, state.box_id))
   }
 
   fn sync_text_edit_paint_state(&mut self) -> bool {

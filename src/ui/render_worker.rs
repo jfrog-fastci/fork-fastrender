@@ -6177,7 +6177,15 @@ impl BrowserRuntime {
         0.0
       };
 
-    let (changed, hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id, next_scroll) = {
+    let (
+      changed,
+      hovered_url,
+      cursor,
+      hovered_dom_node_id,
+      hovered_dom_element_id,
+      textarea_scroll,
+      next_scroll,
+    ) = {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
@@ -6221,7 +6229,14 @@ impl BrowserRuntime {
           hit_test_fragment_tree_for_scroll_cached(&mut tab.hit_test_fragment_tree_cache, doc, scroll)
         });
       let engine = &mut tab.interaction;
-      let (changed, hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id) =
+      let (
+        changed,
+        hovered_url,
+        cursor,
+        hovered_dom_node_id,
+        hovered_dom_element_id,
+        textarea_scroll,
+      ) =
         match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let fragment_tree_before = hit_tree_before.as_deref().unwrap_or(fragment_tree);
           let (mut changed, mut hit, mut hover_is_drop_target) =
@@ -6253,6 +6268,35 @@ impl BrowserRuntime {
             fragment_tree_for_cursor = fragment_tree_after;
             scroll_for_cursor = scroll_after;
           }
+          // Textarea selection drag autoscroll: while dragging a selection/caret in a textarea,
+          // moving the pointer outside the control should scroll it so the caret line stays
+          // visible.
+          let textarea_scroll = engine
+            .active_text_drag()
+            .filter(|(node_id, _)| {
+              crate::dom::find_node_mut_by_preorder_id(dom, *node_id)
+                .is_some_and(|node| dom_is_textarea(node))
+            })
+            .and_then(|(_node_id, box_id)| {
+              crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+                dom,
+                engine.interaction_state(),
+                box_tree,
+                fragment_tree_for_cursor,
+                scroll_for_cursor,
+              )
+              .map(|(resolved_box_id, next_y)| {
+                // Prefer the drag-state box id, but fall back to the box id resolved from the
+                // current box tree if they ever diverge.
+                let target_box_id = if resolved_box_id == box_id {
+                  box_id
+                } else {
+                  resolved_box_id
+                };
+                (target_box_id, next_y)
+              })
+            });
+
           let drag_drop_active = engine.drag_drop_active_kind().is_some();
           let page_point = viewport_point.translate(scroll_for_cursor.viewport);
           let drag_cursor_hint = if pointer_in_page {
@@ -6329,6 +6373,7 @@ impl BrowserRuntime {
               cursor,
               hovered_dom_node_id,
               hovered_dom_element_id,
+              textarea_scroll,
             ),
           )
         }) {
@@ -6342,6 +6387,7 @@ impl BrowserRuntime {
         cursor,
         hovered_dom_node_id,
         hovered_dom_element_id,
+        textarea_scroll,
         next_scroll,
       )
     };
@@ -6353,6 +6399,44 @@ impl BrowserRuntime {
         };
         doc.set_scroll_state(next_scroll.clone());
         tab.scroll_state = next_scroll;
+        tab.sync_js_scroll_state();
+        tab.history.update_scroll_state(&tab.scroll_state);
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
+        tab.last_reported_scroll_state = tab.scroll_state.clone();
+        scroll_changed = true;
+      }
+    }
+
+    if let Some((box_id, next_scroll_y)) = textarea_scroll {
+      let Some(doc) = tab.document.as_mut() else {
+        return;
+      };
+      let prev_scroll = tab.scroll_state.clone();
+      let current = prev_scroll.element_offset(box_id);
+      let mut next_offset = current;
+      next_offset.y = next_scroll_y;
+      if !next_offset.x.is_finite() {
+        next_offset.x = 0.0;
+      }
+      if !next_offset.y.is_finite() {
+        next_offset.y = 0.0;
+      }
+
+      if next_offset != current {
+        let mut next = prev_scroll.clone();
+        if next_offset == Point::ZERO {
+          next.elements.remove(&box_id);
+        } else {
+          next.elements.insert(box_id, next_offset);
+        }
+        next.update_deltas_from(&prev_scroll);
+        doc.set_scroll_state(next.clone());
+        tab.scroll_state = next;
         tab.sync_js_scroll_state();
         tab.history.update_scroll_state(&tab.scroll_state);
         let _ = self

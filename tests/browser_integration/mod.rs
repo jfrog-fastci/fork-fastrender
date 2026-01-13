@@ -266,6 +266,7 @@ mod ui_worker_zoom;
 mod multiprocess_shared_renderer_process_crash;
 mod worker_harness;
 mod ui_text_control_pointer_selection;
+mod ui_textarea_drag_autoscroll;
 mod untrusted_worker_messages;
 #[cfg(feature = "browser_ui")]
 mod renderer_chrome_address_bar_sync;
