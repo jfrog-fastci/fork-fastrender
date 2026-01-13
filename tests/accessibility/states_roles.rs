@@ -173,6 +173,43 @@ fn focus_states_use_interaction_state_hints() {
 }
 
 #[test]
+fn native_select_combobox_expanded_state_tracks_open_dropdown_overlay() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="s">
+          <option selected>A</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let ids = enumerate_dom_ids(&dom);
+  let select = find_dom_by_id(&dom, "s").expect("select");
+  let select_id = *ids.get(&(select as *const DomNode)).expect("select id");
+
+  let interaction_state = InteractionState {
+    open_select_dropdown: Some(select_id),
+    ..InteractionState::default()
+  };
+  let tree = renderer
+    .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
+    .expect("accessibility tree");
+  let select = find_by_id(&tree, "s").expect("select node");
+  assert_eq!(select.role, "combobox");
+  assert_eq!(select.states.expanded, Some(true));
+
+  let interaction_state = InteractionState::default();
+  let tree = renderer
+    .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
+    .expect("accessibility tree");
+  let select = find_by_id(&tree, "s").expect("select node");
+  assert_eq!(select.states.expanded, Some(false));
+}
+
+#[test]
 fn native_single_select_all_disabled_defaults_to_first() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"

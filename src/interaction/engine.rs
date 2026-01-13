@@ -6591,6 +6591,15 @@ impl InteractionEngine {
     }
   }
 
+  /// Clear any tracked open native `<select>` dropdown popup.
+  ///
+  /// The dropdown overlay itself is owned by the UI/front-end; the worker tracks this bit of state
+  /// so downstream systems (notably accessibility export) can reflect whether a native combobox is
+  /// currently expanded.
+  pub fn close_select_dropdown(&mut self) {
+    self.state.open_select_dropdown = None;
+  }
+
   /// Debug/test helper: validate internal interaction invariants.
   ///
   /// This is intentionally a no-op in non-debug builds so it can be called liberally by fuzz-like
@@ -6633,6 +6642,17 @@ impl InteractionEngine {
     self.state.debug_assert_chain_caches_consistent();
     for (&id, _) in &self.state.form_state().file_inputs {
       check_node_id("file_inputs", id);
+    }
+
+    if let Some(open_id) = self.state.open_select_dropdown {
+      check_node_id("open_select_dropdown", open_id);
+      debug_assert!(
+        index
+          .node(open_id)
+          .and_then(|node| node.tag_name())
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("select")),
+        "open_select_dropdown node id {open_id} is not a <select> element"
+      );
     }
 
     if let Some(id) = self.pointer_down_target {
@@ -9901,6 +9921,7 @@ impl InteractionEngine {
             if let Some((_, control, _, _)) = snapshot.as_ref() {
               let is_dropdown = !control.multiple && control.size == 1;
               if is_dropdown {
+                self.state.open_select_dropdown = Some(target_id);
                 action = InteractionAction::OpenSelectDropdown {
                   select_node_id: target_id,
                   control: control.clone(),
@@ -12879,6 +12900,7 @@ impl InteractionEngine {
             if !disabled {
               let is_dropdown = !control.multiple && control.size == 1;
               if is_dropdown {
+                self.state.open_select_dropdown = Some(focused);
                 action = InteractionAction::OpenSelectDropdown {
                   select_node_id: focused,
                   control,
@@ -13110,6 +13132,7 @@ impl InteractionEngine {
             if !disabled {
               let is_dropdown = !control.multiple && control.size == 1;
               if is_dropdown {
+                self.state.open_select_dropdown = Some(focused);
                 action = InteractionAction::OpenSelectDropdown {
                   select_node_id: focused,
                   control,
@@ -13368,6 +13391,7 @@ impl InteractionEngine {
             if !disabled {
               let is_dropdown = !control.multiple && control.size == 1;
               if is_dropdown {
+                self.state.open_select_dropdown = Some(focused);
                 action = InteractionAction::OpenSelectDropdown {
                   select_node_id: focused,
                   control,
@@ -13588,6 +13612,7 @@ impl InteractionEngine {
             if !disabled {
               let is_dropdown = !control.multiple && control.size == 1;
               if is_dropdown {
+                self.state.open_select_dropdown = Some(focused);
                 action = InteractionAction::OpenSelectDropdown {
                   select_node_id: focused,
                   control,

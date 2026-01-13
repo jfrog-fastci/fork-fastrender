@@ -1935,7 +1935,8 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
           let busy = attr_truthy(&node.node, "aria-busy");
           let modal = compute_modal(&node.node);
           let current = parse_aria_current(&node.node);
-          let expanded = compute_expanded(node, role.as_deref(), dom_ancestors.as_slice());
+          let expanded =
+            compute_expanded(node, role.as_deref(), dom_ancestors.as_slice(), ctx.interaction_state);
           let mut has_popup = parse_has_popup(&node.node);
           if has_popup.is_none()
             && node
@@ -4353,7 +4354,12 @@ fn compute_readonly(node: &DomNode, _role: Option<&str>, element_ref: &ElementRe
   native_readonly || aria_readonly == Some(true)
 }
 
-fn compute_expanded(node: &StyledNode, role: Option<&str>, ancestors: &[&DomNode]) -> Option<bool> {
+fn compute_expanded(
+  node: &StyledNode,
+  role: Option<&str>,
+  ancestors: &[&DomNode],
+  interaction_state: Option<&InteractionState>,
+) -> Option<bool> {
   if let Some(expanded) = parse_expanded(&node.node) {
     return Some(expanded);
   }
@@ -4388,6 +4394,15 @@ fn compute_expanded(node: &StyledNode, role: Option<&str>, ancestors: &[&DomNode
         }
         return Some(parent.get_attribute_ref("open").is_some());
       }
+    }
+  }
+
+  // Native `<select>` dropdowns (single select + size==1) are represented as `role=combobox`.
+  // The popup UI is owned by the front-end, so we consult `InteractionState` to determine whether
+  // the combobox is currently expanded.
+  if role == Some("combobox") && tag == "select" && is_html_element(&node.node) {
+    if let Some(state) = interaction_state {
+      return Some(state.open_select_dropdown == Some(node.node_id));
     }
   }
 
@@ -5067,7 +5082,7 @@ mod tests {
     };
 
     assert_eq!(
-      compute_expanded(&svg_details, None, &[]),
+      compute_expanded(&svg_details, None, &[], None),
       None,
       "non-HTML namespace elements must not inherit HTML <details> expanded semantics"
     );

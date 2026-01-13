@@ -4491,6 +4491,9 @@ impl BrowserRuntime {
         // The browser UI typically owns the dropdown overlay state, so cancellation is a no-op on
         // the worker side. Emit `SelectDropdownClosed` anyway so front-ends that expect an explicit
         // close notification can dismiss the popup deterministically.
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+          tab.interaction.close_select_dropdown();
+        }
         let _ = self
           .ui_tx
           .send(WorkerToUiMsg::Single(WorkerToUi::SelectDropdownClosed {
@@ -8910,6 +8913,7 @@ impl BrowserRuntime {
     };
 
     let engine = &mut tab.interaction;
+    engine.close_select_dropdown();
     let dom_changed = doc
       .mutate_dom(|dom| engine.activate_select_option(dom, select_node_id, option_node_id, false));
     if dom_changed {
@@ -9063,6 +9067,7 @@ impl BrowserRuntime {
     });
 
     if should_close {
+      engine.close_select_dropdown();
       let _ = self
         .ui_tx
         .send(WorkerToUiMsg::Single(WorkerToUi::SelectDropdownClosed {

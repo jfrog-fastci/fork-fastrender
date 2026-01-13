@@ -645,6 +645,13 @@ pub struct InteractionState {
   focus_chain: Vec<usize>,
   focus_chain_membership: FxHashSet<usize>,
 
+  /// The pre-order DOM id of the `<select>` element whose dropdown popup is currently open, if any.
+  ///
+  /// This is used to represent the open/closed state of native dropdown selects (single-select
+  /// `<select>` controls with `multiple` absent and `size == 1`) whose popup UI is owned by the
+  /// front-end.
+  pub open_select_dropdown: Option<usize>,
+
   /// The element under the pointer and its element ancestors (used for `:hover` matching).
   hover_chain: Vec<usize>,
   hover_chain_membership: FxHashSet<usize>,
@@ -1222,6 +1229,7 @@ impl Default for InteractionState {
       active_chain: Vec::new(),
       active_chain_membership: FxHashSet::default(),
       visited_links: FxHashSet::default(),
+      open_select_dropdown: None,
       ime_preedit: None,
       text_edit: None,
       form_state: FormState::default(),
@@ -1248,6 +1256,7 @@ impl Clone for InteractionState {
       active_chain: self.active_chain.clone(),
       active_chain_membership: self.active_chain_membership.clone(),
       visited_links: self.visited_links.clone(),
+      open_select_dropdown: self.open_select_dropdown,
       ime_preedit: self.ime_preedit.clone(),
       text_edit: self.text_edit,
       form_state: self.form_state.clone(),
