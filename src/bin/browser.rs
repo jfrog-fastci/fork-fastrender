@@ -5727,6 +5727,10 @@ impl App {
         }
       };
 
+    // When the popup first opens, force keyboard focus into it so keyboard-only workflows (and
+    // screen reader focus) work without requiring an extra click.
+    let request_initial_focus = self.open_date_time_picker_rect.is_none();
+
     let mut anchor_pos_points = fallback_anchor_points;
     if let Some(mapping) = self.page_input_mapping {
       if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
@@ -5828,6 +5832,25 @@ impl App {
             let days_in_month = chrono::Datelike::day(&last_day);
             let weekday_idx = chrono::Datelike::weekday(&first_day).num_days_from_monday() as usize;
 
+            let focus_day = if request_initial_focus {
+              let selected_valid = selected_day
+                .as_ref()
+                .filter(|day| (1..=days_in_month).contains(day))
+                .copied();
+              selected_valid.or_else(|| {
+                let today = chrono::Local::now().date_naive();
+                let today_is_visible = chrono::Datelike::year(&today) == *year
+                  && chrono::Datelike::month(&today) == *month;
+                if today_is_visible {
+                  Some(chrono::Datelike::day(&today).min(days_in_month).max(1))
+                } else {
+                  Some(1)
+                }
+              })
+            } else {
+              None
+            };
+
             let week_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
             egui::Grid::new(egui::Id::new(("dt_picker_calendar", tab_id.0, input_node_id)))
               .num_columns(7)
@@ -5846,7 +5869,26 @@ impl App {
 
                 for day in 1..=days_in_month {
                   let selected = *selected_day == Some(day);
-                  let response = ui.selectable_label(selected, day.to_string());
+                  let response = ui
+                    .push_id(
+                      ui.make_persistent_id((
+                        "dt_picker_calendar_day",
+                        tab_id.0,
+                        input_node_id,
+                        *year,
+                        *month,
+                        day,
+                      )),
+                      |ui| ui.selectable_label(selected, day.to_string()),
+                    )
+                    .inner;
+                  response.widget_info({
+                    let label = format!("Select date {:04}-{:02}-{:02}", *year, *month, day);
+                    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                  });
+                  if focus_day == Some(day) {
+                    response.request_focus();
+                  }
                   if response.clicked() {
                     *selected_day = Some(day);
                     action = Some(Action::Choose(format!(
@@ -5872,9 +5914,28 @@ impl App {
           (DateTimeInputKind::Time, DateTimePickerState::Time { hour, minute }) => {
             ui.horizontal(|ui| {
               ui.label("Hour");
-              ui.add(egui::DragValue::new(hour).clamp_range(0..=23));
+              let hour_resp = ui
+                .push_id(
+                  ui.make_persistent_id(("dt_picker_time_hour", tab_id.0, input_node_id)),
+                  |ui| ui.add(egui::DragValue::new(hour).clamp_range(0..=23)),
+                )
+                .inner;
+              hour_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::DragValue, "Hour")
+              });
+              if request_initial_focus {
+                hour_resp.request_focus();
+              }
               ui.label("Minute");
-              ui.add(egui::DragValue::new(minute).clamp_range(0..=59));
+              let minute_resp = ui
+                .push_id(
+                  ui.make_persistent_id(("dt_picker_time_minute", tab_id.0, input_node_id)),
+                  |ui| ui.add(egui::DragValue::new(minute).clamp_range(0..=59)),
+                )
+                .inner;
+              minute_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::DragValue, "Minute")
+              });
             });
             ui.horizontal(|ui| {
               if ui.button("Set").clicked() {
@@ -5898,7 +5959,12 @@ impl App {
               _ => "",
             };
             ui.label(format!("Value ({hint})"));
-            let value_resp = ui.add(egui::TextEdit::singleline(draft).desired_width(180.0));
+            let text_id = ui.make_persistent_id(("dt_picker_text_value", tab_id.0, input_node_id));
+            let value_resp = ui.add(
+              egui::TextEdit::singleline(draft)
+                .id(text_id)
+                .desired_width(180.0),
+            );
             value_resp.widget_info({
               let label = if hint.is_empty() {
                 "Value".to_string()
@@ -5907,6 +5973,9 @@ impl App {
               };
               move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, label.clone())
             });
+            if request_initial_focus {
+              value_resp.request_focus();
+            }
 
             let trimmed = draft.trim();
             let valid = trimmed.is_empty()
