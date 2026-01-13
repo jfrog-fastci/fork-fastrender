@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 pub(crate) fn format_tab_accessible_label(
   title: &str,
   is_active: bool,
@@ -69,10 +71,8 @@ pub(crate) fn format_tab_accessible_label(
   label
 }
 
-use std::sync::Arc;
-
 #[derive(Debug, Clone, Default)]
-pub(crate) struct TabAccessibleLabelCache {
+pub struct TabAccessibleLabelCache {
   entry: Option<TabAccessibleLabelCacheEntry>,
 }
 
@@ -84,7 +84,7 @@ struct TabAccessibleLabelCacheEntry {
 }
 
 impl TabAccessibleLabelCache {
-  pub(crate) fn get_or_update(
+  pub fn get_or_update(
     &mut self,
     title: &str,
     is_active: bool,
@@ -121,9 +121,14 @@ impl TabAccessibleLabelCache {
     let label_arc: Arc<str> = if flags == 0 {
       Arc::clone(&title_arc)
     } else {
-      let label =
-        format_tab_accessible_label(title, is_active, is_pinned, loading, has_error, has_warning);
-      Arc::from(label)
+      Arc::from(format_tab_accessible_label(
+        title,
+        is_active,
+        is_pinned,
+        loading,
+        has_error,
+        has_warning,
+      ))
     };
     self.entry = Some(TabAccessibleLabelCacheEntry {
       title: title_arc,
@@ -240,3 +245,4 @@ mod tests {
     assert_eq!(e.as_ref(), "Example 2 (current tab)");
   }
 }
+

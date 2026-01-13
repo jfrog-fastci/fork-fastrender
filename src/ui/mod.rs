@@ -91,8 +91,8 @@ pub mod chrome_dynamic_asset_fetcher;
 pub mod multiprocess;
 pub mod shutdown_join_tracker;
 
-#[cfg(any(test, feature = "browser_ui"))]
 mod tab_accessible_label;
+pub use tab_accessible_label::TabAccessibleLabelCache;
 
 pub mod a11y_labels;
 
