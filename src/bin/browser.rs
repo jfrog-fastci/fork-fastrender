@@ -12418,7 +12418,7 @@ impl App {
         fastrender::ui::resolve_omnibox_search_query(&self.browser_state.chrome.address_bar_text)
       {
         let needs_remote_suggest_poll = self.browser_state.chrome.remote_search_cache.query != query;
-        self.search_suggest.request(query.to_string());
+        self.search_suggest.request(query);
 
         // Ensure we poll for remote suggestions even when the user pauses typing (the suggest
         // service runs on a background thread).

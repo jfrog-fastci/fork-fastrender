@@ -142,7 +142,7 @@ impl SearchSuggestService {
   /// Request suggestions for `query`.
   ///
   /// This call is non-blocking: it only enqueues work for the background thread.
-  pub fn request(&mut self, query: String) {
+  pub fn request(&mut self, query: &str) {
     let Some(tx) = self.request_tx.as_ref() else {
       return;
     };
@@ -161,7 +161,10 @@ impl SearchSuggestService {
     self.next_gen = self.next_gen.wrapping_add(1);
     let gen = self.next_gen;
     self.latest_gen.store(gen, Ordering::Release);
-    let _ = tx.send(SearchSuggestRequest { gen, query });
+    let _ = tx.send(SearchSuggestRequest {
+      gen,
+      query: query.to_string(),
+    });
   }
 
   /// Non-blocking poll for updates from the worker.
@@ -418,7 +421,7 @@ mod tests {
       timeout_ms: 1000,
       worker_test_hook: None,
     });
-    service.request("rust".to_string());
+    service.request("rust");
 
     let update = poll_update(&service, Duration::from_secs(2)).expect("expected update");
     assert_eq!(update.query, "rust");
@@ -459,13 +462,13 @@ mod tests {
       worker_test_hook: None,
     });
 
-    service.request("slow".to_string());
+    service.request("slow");
     // Wait until the server has observed the first request so we're testing the "late result"
     // cancellation path (rather than debounce collapsing the two keystrokes into one).
     saw_slow_rx
       .recv_timeout(Duration::from_secs(2))
       .expect("expected slow request to hit server");
-    service.request("fast".to_string());
+    service.request("fast");
 
     // We should eventually see "fast", and never see "slow".
     let mut saw_slow = false;
@@ -513,12 +516,12 @@ mod tests {
       worker_test_hook: None,
     });
 
-    service.request("rust".to_string());
+    service.request("rust");
     let update = poll_update(&service, Duration::from_secs(2)).expect("expected initial update");
     assert_eq!(update.query, "rust");
 
     // The UI can redraw without input changes; the service should not re-enqueue identical queries.
-    service.request("rust".to_string());
+    service.request("rust");
     let update = poll_update(&service, Duration::from_millis(700));
     assert!(update.is_none(), "expected redundant request to be suppressed");
 
@@ -541,7 +544,7 @@ mod tests {
       }),
     });
 
-    service.request("rust".to_string());
+    service.request("rust");
     entered_rx
       .recv_timeout(Duration::from_secs(2))
       .expect("expected worker to start handling request");
