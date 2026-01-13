@@ -1047,18 +1047,7 @@ fn readable_stream_start_rejected_native(
   };
 
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
-  // The rejection reason can be any JS value. Converting it to a string may throw (e.g. Symbols, or
-  // custom objects with throwing `toString`). Since this callback is internal plumbing, we must not
-  // let those errors escape; otherwise the stream would remain readable and pending reads would
-  // hang forever.
-  let msg = match scope.heap_mut().to_string(reason) {
-    Ok(reason_string) => match scope.heap().get_string(reason_string) {
-      Ok(s) => s.to_utf8_lossy(),
-      Err(_) => "ReadableStream start rejected".to_string(),
-    },
-    Err(err) if err.is_throw_completion() => "ReadableStream start rejected".to_string(),
-    Err(err) => return Err(err),
-  };
+  let msg = best_effort_reason_string(scope, reason, "ReadableStream start rejected")?;
 
   let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
   if let Some(pending) = pending {
@@ -5777,6 +5766,11 @@ fn best_effort_reason_string(scope: &mut Scope<'_>, reason: Value, fallback: &st
   // The `reason` can be any JS value. Converting it to a string may throw (e.g. Symbols, or custom
   // objects with throwing `toString`). For stream algorithms, we must not let those errors escape,
   // otherwise internal Promise reactions could throw and leave streams in inconsistent states.
+  //
+  // Root the input value for the duration of the conversion: `to_string` can allocate and trigger
+  // GC, and the caller may be passing a value that is not otherwise reachable from the heap.
+  let mut scope = scope.reborrow();
+  scope.push_root(reason)?;
   match scope.heap_mut().to_string(reason) {
     Ok(reason_string) => Ok(scope.heap().get_string(reason_string)?.to_utf8_lossy()),
     Err(err) if err.is_throw_completion() => Ok(fallback.to_string()),
