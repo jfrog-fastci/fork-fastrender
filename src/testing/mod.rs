@@ -129,4 +129,54 @@ mod tests {
     });
     assert!(result.is_err());
   }
+
+  #[test]
+  fn no_merge_conflict_markers_in_rust_sources() {
+    use std::path::{Path, PathBuf};
+
+    fn scan_dir(root: &Path, dir: &Path, hits: &mut Vec<(PathBuf, usize, String)>) {
+      let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|err| panic!("failed to read dir {}: {err}", dir.display()));
+      for entry in entries {
+        let entry = entry.unwrap_or_else(|err| {
+          panic!("failed to read dir entry under {}: {err}", dir.display())
+        });
+        let path = entry.path();
+        if path.is_dir() {
+          scan_dir(root, &path, hits);
+          continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+          continue;
+        }
+        let text = std::fs::read_to_string(&path)
+          .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+        for (idx, line) in text.lines().enumerate() {
+          let line = line.trim_end();
+          if line.starts_with("<<<<<<<")
+            || line.starts_with(">>>>>>>")
+            || line.starts_with("|||||||")
+            || line == "======="
+          {
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            hits.push((rel, idx + 1, line.to_string()));
+            break;
+          }
+        }
+      }
+    }
+
+    let root = repo_root();
+    let src_dir = root.join("src");
+    let mut hits: Vec<(PathBuf, usize, String)> = Vec::new();
+    scan_dir(&root, &src_dir, &mut hits);
+
+    if !hits.is_empty() {
+      let mut msg = String::from("merge conflict markers found in Rust sources:\n");
+      for (path, line_no, line) in hits {
+        msg.push_str(&format!("  {}:{}: {}\n", path.display(), line_no, line));
+      }
+      panic!("{msg}");
+    }
+  }
 }
