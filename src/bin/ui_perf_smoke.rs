@@ -63,6 +63,33 @@ struct Args {
   #[arg(long, value_delimiter = ',')]
   only: Option<Vec<String>>,
 
+  /// Additional warmup iterations per scenario.
+  ///
+  /// Each scenario already performs a small built-in warmup to reduce noise; this flag adds extra
+  /// warmup iterations when you want more stable p95 numbers.
+  ///
+  /// Warmup iterations are executed but excluded from reported metrics/statistics.
+  #[arg(long, default_value_t = 0)]
+  warmup: usize,
+
+  /// Override the per-scenario default number of measured iterations.
+  ///
+  /// - `ttfp_newtab`: number of tab open+navigate measurements.
+  /// - `scroll_fixture` / `resize_fixture`: number of scroll/resize actions measured.
+  /// - `input_text`: number of insert+delete cycles measured (2 samples per cycle).
+  #[arg(long)]
+  iterations: Option<usize>,
+
+  /// Run each scenario in its own fresh UI worker thread instance.
+  ///
+  /// This reduces cross-scenario cache effects but increases total runtime.
+  #[arg(long, action = ArgAction::SetTrue)]
+  isolate: bool,
+
+  /// Disable per-scenario isolation (overrides `--isolate` and any future defaults).
+  #[arg(long, action = ArgAction::SetTrue)]
+  no_isolate: bool,
+
   /// Exit with a non-zero status when any scenario fails (status=error|timeout).
   ///
   /// Defaults to enabled when the `CI` environment variable is set, otherwise disabled.
@@ -111,11 +138,22 @@ struct ScenarioSummary {
 #[derive(Clone, Serialize, Deserialize)]
 struct RunConfig {
   rayon_threads: usize,
+  #[serde(default)]
+  warmup: usize,
+  #[serde(default)]
+  isolate: bool,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  iterations: Option<usize>,
 }
 
 impl Default for RunConfig {
   fn default() -> Self {
-    Self { rayon_threads: 1 }
+    Self {
+      rayon_threads: 1,
+      warmup: 0,
+      isolate: false,
+      iterations: None,
+    }
   }
 }
 
@@ -154,11 +192,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   if args.rayon_threads == Some(0) {
     return Err("--rayon-threads must be greater than 0".into());
   }
+  if args.iterations.is_some_and(|n| n == 0) {
+    return Err("--iterations must be positive".into());
+  }
+
+  let isolate_default = false;
+  let isolate = if args.no_isolate {
+    false
+  } else {
+    args.isolate || isolate_default
+  };
 
   if std::env::var_os("FASTR_USE_BUNDLED_FONTS").is_none() {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
   }
-  let rayon_threads = apply_rayon_threads_config(resolve_requested_rayon_threads(args.rayon_threads));
+  let rayon_threads =
+    apply_rayon_threads_config(resolve_requested_rayon_threads(args.rayon_threads));
 
   let scenario_names = selected_scenarios(args.only.as_deref())?;
 
@@ -181,22 +230,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let fail_on_failure = resolve_fail_on_failure(&args);
 
-  let (tx, rx, join) = fastrender::ui::spawn_browser_ui_worker("fastr-ui-perf-smoke-worker")?;
-
   let mut scenarios = Vec::new();
-  for name in &scenario_names {
-    let summary = run_named_scenario(name, &tx, &rx, args.verbose);
-    let failed = summary.status != ScenarioStatus::Ok;
-    scenarios.push(summary);
-    if failed && fail_on_failure {
-      break;
+  let run_config = RunConfig {
+    rayon_threads,
+    warmup: args.warmup,
+    isolate,
+    iterations: args.iterations,
+  };
+
+  if isolate {
+    for name in &scenario_names {
+      let worker_name = format!("fastr-ui-perf-smoke-{name}");
+      let (tx, rx, join) = fastrender::ui::spawn_browser_ui_worker(worker_name)?;
+      let summary = run_named_scenario(name, &tx, &rx, &run_config, args.verbose);
+      let failed = summary.status != ScenarioStatus::Ok;
+      scenarios.push(summary);
+
+      drop(tx);
+      // Best-effort: don't hang indefinitely waiting for the worker thread to exit.
+      let join_result = join_with_timeout(join, Duration::from_secs(5));
+      if let Err(err) = join_result {
+        eprintln!("Warning: failed to join UI worker thread: {err}");
+      }
+
+      if failed && fail_on_failure {
+        break;
+      }
+    }
+  } else {
+    let (tx, rx, join) = fastrender::ui::spawn_browser_ui_worker("fastr-ui-perf-smoke-worker")?;
+    for name in &scenario_names {
+      let summary = run_named_scenario(name, &tx, &rx, &run_config, args.verbose);
+      let failed = summary.status != ScenarioStatus::Ok;
+      scenarios.push(summary);
+      if failed && fail_on_failure {
+        break;
+      }
+    }
+
+    drop(tx);
+    // Best-effort: don't hang indefinitely waiting for the worker thread to exit.
+    let join_result = join_with_timeout(join, Duration::from_secs(5));
+    if let Err(err) = join_result {
+      eprintln!("Warning: failed to join UI worker thread: {err}");
     }
   }
 
   scenarios.sort_by(|a, b| a.name.cmp(&b.name));
   let summary = UiPerfSmokeSummary {
     schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
-    run_config: RunConfig { rayon_threads },
+    run_config,
     scenarios: scenarios.clone(),
   };
 
@@ -259,13 +342,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         exit_code = 1;
       }
     }
-  }
-
-  drop(tx);
-  // Best-effort: don't hang indefinitely waiting for the worker thread to exit.
-  let join_result = join_with_timeout(join, Duration::from_secs(5));
-  if let Err(err) = join_result {
-    eprintln!("Warning: failed to join UI worker thread: {err}");
   }
 
   if exit_code != 0 {
@@ -462,13 +538,14 @@ fn run_named_scenario(
   name: &str,
   tx: &Sender<UiToWorker>,
   rx: &Receiver<WorkerToUi>,
+  run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
   match name {
-    "ttfp_newtab" => run_ttfp_newtab(tx, rx, verbose),
-    "scroll_fixture" => run_scroll_fixture(tx, rx, verbose),
-    "resize_fixture" => run_resize_fixture(tx, rx, verbose),
-    "input_text" => run_input_text_fixture(tx, rx, verbose),
+    "ttfp_newtab" => run_ttfp_newtab(tx, rx, run_config, verbose),
+    "scroll_fixture" => run_scroll_fixture(tx, rx, run_config, verbose),
+    "resize_fixture" => run_resize_fixture(tx, rx, run_config, verbose),
+    "input_text" => run_input_text_fixture(tx, rx, run_config, verbose),
     other => ScenarioSummary {
       name: other.to_string(),
       url: String::new(),
@@ -485,12 +562,14 @@ fn run_named_scenario(
 fn run_ttfp_newtab(
   tx: &Sender<UiToWorker>,
   rx: &Receiver<WorkerToUi>,
+  run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
   let url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
   let viewport_css = DEFAULT_VIEWPORT_CSS;
   let dpr = DEFAULT_DPR;
-  let tab_id = TabId::new();
+  let warmup = run_config.warmup;
+  let iterations = run_config.iterations.unwrap_or(1);
 
   let mut summary = ScenarioSummary {
     name: "ttfp_newtab".to_string(),
@@ -503,35 +582,53 @@ fn run_ttfp_newtab(
     metrics_ms: BTreeMap::new(),
   };
 
-  if let Err(err) = create_and_navigate_tab(tx, tab_id, viewport_css, dpr, &url) {
-    summary.status = ScenarioStatus::Error;
-    summary.error = Some(err.to_string());
-    return summary;
-  }
+  let mut measured = Vec::new();
+  for i in 0..(warmup + iterations) {
+    let tab_id = TabId::new();
+    if let Err(err) = create_and_navigate_tab(tx, tab_id, viewport_css, dpr, &url) {
+      summary.status = ScenarioStatus::Error;
+      summary.error = Some(err.to_string());
+      break;
+    }
 
-  let start = Instant::now();
-  match wait_for_frame(rx, tab_id, ACTION_TIMEOUT) {
-    Ok(_frame) => {
-      let ttfp_ms = round_ms(start.elapsed().as_secs_f64() * 1000.0);
-      summary.samples_ms.push(ttfp_ms);
-      summary.metrics_ms.insert("ttfp_ms".to_string(), ttfp_ms);
-      if verbose {
-        eprintln!("ttfp_newtab: {:.3} ms", ttfp_ms);
+    let start = Instant::now();
+    match wait_for_frame(rx, tab_id, ACTION_TIMEOUT) {
+      Ok(_frame) => {
+        let ttfp_ms = round_ms(start.elapsed().as_secs_f64() * 1000.0);
+        if i >= warmup {
+          measured.push(ttfp_ms);
+          if verbose {
+            eprintln!("ttfp_newtab: {:.3} ms", ttfp_ms);
+          }
+        }
+      }
+      Err(err) => {
+        summary.status = err.status;
+        summary.error = Some(err.message);
       }
     }
-    Err(err) => {
-      summary.status = err.status;
-      summary.error = Some(err.message);
+
+    let _ = tx.send(UiToWorker::CloseTab { tab_id });
+    if summary.status != ScenarioStatus::Ok {
+      break;
     }
   }
 
-  let _ = tx.send(UiToWorker::CloseTab { tab_id });
+  if summary.status == ScenarioStatus::Ok {
+    summary.samples_ms = measured.clone();
+    let mut metrics = latency_metrics("ttfp", &measured);
+    if let Some(p50) = metrics.get("ttfp_p50_ms").copied() {
+      metrics.insert("ttfp_ms".to_string(), p50);
+    }
+    summary.metrics_ms = metrics;
+  }
   summary
 }
 
 fn run_scroll_fixture(
   tx: &Sender<UiToWorker>,
   rx: &Receiver<WorkerToUi>,
+  run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
   let fixture_path = Path::new("tests/pages/fixtures/ui_perf_smoke/index.html");
@@ -593,8 +690,10 @@ fn run_scroll_fixture(
   let mut bounds = frame.scroll_bounds_css;
   let mut direction: f32 = 1.0;
 
-  let mut measured = Vec::new();
-  for i in 0..(SCROLL_WARMUP + SCROLL_SAMPLES) {
+  let warmup = SCROLL_WARMUP + run_config.warmup;
+  let samples = run_config.iterations.unwrap_or(SCROLL_SAMPLES);
+
+  let measured = match collect_measured_samples(warmup, samples, || loop {
     let mut target = scroll_y + direction * SCROLL_DELTA_CSS;
     if target > bounds.max_y {
       target = bounds.max_y;
@@ -608,32 +707,28 @@ fn run_scroll_fixture(
     }
 
     let start = Instant::now();
-    if let Err(err) = tx.send(UiToWorker::ScrollTo {
+    tx.send(UiToWorker::ScrollTo {
       tab_id,
       pos_css: (0.0, target),
-    }) {
-      summary.status = ScenarioStatus::Error;
-      summary.error = Some(format!("failed to send ScrollTo: {err}"));
-      break;
-    }
+    })
+    .map_err(|err| WaitError {
+      status: ScenarioStatus::Error,
+      message: format!("failed to send ScrollTo: {err}"),
+    })?;
 
-    match wait_for_frame(rx, tab_id, ACTION_TIMEOUT) {
-      Ok(next) => {
-        frame = next;
-        scroll_y = frame.scroll_css.1;
-        bounds = frame.scroll_bounds_css;
-        let dt_ms = round_ms(start.elapsed().as_secs_f64() * 1000.0);
-        if i >= SCROLL_WARMUP {
-          measured.push(dt_ms);
-        }
-      }
-      Err(err) => {
-        summary.status = err.status;
-        summary.error = Some(err.message);
-        break;
-      }
+    let next = wait_for_frame(rx, tab_id, ACTION_TIMEOUT)?;
+    frame = next;
+    scroll_y = frame.scroll_css.1;
+    bounds = frame.scroll_bounds_css;
+    return Ok(round_ms(start.elapsed().as_secs_f64() * 1000.0));
+  }) {
+    Ok(measured) => measured,
+    Err(err) => {
+      summary.status = err.status;
+      summary.error = Some(err.message);
+      Vec::new()
     }
-  }
+  };
 
   if summary.status == ScenarioStatus::Ok {
     summary.samples_ms = measured.clone();
@@ -667,6 +762,7 @@ fn run_scroll_fixture(
 fn run_resize_fixture(
   tx: &Sender<UiToWorker>,
   rx: &Receiver<WorkerToUi>,
+  run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
   let fixture_path = Path::new("tests/pages/fixtures/ui_perf_smoke/index.html");
@@ -715,41 +811,43 @@ fn run_resize_fixture(
 
   let small = DEFAULT_VIEWPORT_CSS;
   let large = (1_000, 700);
-  let mut measured = Vec::new();
+  let warmup = RESIZE_WARMUP + run_config.warmup;
+  let samples = run_config.iterations.unwrap_or(RESIZE_SAMPLES);
+  let mut step = 0usize;
 
-  for i in 0..(RESIZE_WARMUP + RESIZE_SAMPLES) {
-    let viewport = if i % 2 == 0 { large } else { small };
+  let measured = match collect_measured_samples(warmup, samples, || {
+    let idx = step;
+    step += 1;
+
+    let viewport = if idx % 2 == 0 { large } else { small };
     let start = Instant::now();
-    if let Err(err) = tx.send(UiToWorker::ViewportChanged {
+    tx.send(UiToWorker::ViewportChanged {
       tab_id,
       viewport_css: viewport,
       dpr,
-    }) {
-      summary.status = ScenarioStatus::Error;
-      summary.error = Some(format!("failed to send ViewportChanged: {err}"));
-      break;
-    }
+    })
+    .map_err(|err| WaitError {
+      status: ScenarioStatus::Error,
+      message: format!("failed to send ViewportChanged: {err}"),
+    })?;
 
-    match wait_for_frame(rx, tab_id, ACTION_TIMEOUT) {
-      Ok(frame) => {
-        let dt_ms = round_ms(start.elapsed().as_secs_f64() * 1000.0);
-        if i >= RESIZE_WARMUP {
-          measured.push(dt_ms);
-        }
-        if verbose {
-          eprintln!(
-            "resize_fixture: viewport_css={}x{} -> frame viewport_css={}x{} dt={:.3}ms",
-            viewport.0, viewport.1, frame.viewport_css.0, frame.viewport_css.1, dt_ms
-          );
-        }
-      }
-      Err(err) => {
-        summary.status = err.status;
-        summary.error = Some(err.message);
-        break;
-      }
+    let frame = wait_for_frame(rx, tab_id, ACTION_TIMEOUT)?;
+    let dt_ms = round_ms(start.elapsed().as_secs_f64() * 1000.0);
+    if verbose && idx >= warmup {
+      eprintln!(
+        "resize_fixture: viewport_css={}x{} -> frame viewport_css={}x{} dt={:.3}ms",
+        viewport.0, viewport.1, frame.viewport_css.0, frame.viewport_css.1, dt_ms
+      );
     }
-  }
+    Ok(dt_ms)
+  }) {
+    Ok(measured) => measured,
+    Err(err) => {
+      summary.status = err.status;
+      summary.error = Some(err.message);
+      Vec::new()
+    }
+  };
 
   if summary.status == ScenarioStatus::Ok {
     summary.viewport_css = small;
@@ -764,6 +862,7 @@ fn run_resize_fixture(
 fn run_input_text_fixture(
   tx: &Sender<UiToWorker>,
   rx: &Receiver<WorkerToUi>,
+  run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
   let fixture_path = Path::new("tests/pages/fixtures/ui_perf_smoke/index.html");
@@ -844,10 +943,13 @@ fn run_input_text_fixture(
 
   let _ = wait_for_frame(rx, tab_id, ACTION_TIMEOUT);
 
-  let mut measured = Vec::new();
+  let warmup_cycles = INPUT_WARMUP + run_config.warmup;
+  let cycles = run_config.iterations.unwrap_or(INPUT_CYCLES);
+
+  let mut measured = Vec::with_capacity(cycles * 2);
 
   // Warm up: insert + delete a character a few times.
-  for _ in 0..INPUT_WARMUP {
+  for _ in 0..warmup_cycles {
     let _ = tx.send(UiToWorker::TextInput {
       tab_id,
       text: "a".to_string(),
@@ -860,7 +962,7 @@ fn run_input_text_fixture(
     let _ = wait_for_frame(rx, tab_id, ACTION_TIMEOUT);
   }
 
-  for cycle in 0..INPUT_CYCLES {
+  for cycle in 0..cycles {
     let start = Instant::now();
     if let Err(err) = tx.send(UiToWorker::TextInput {
       tab_id,
@@ -987,6 +1089,24 @@ fn wait_for_frame(
       }
     }
   }
+}
+
+fn collect_measured_samples<T, E, F>(
+  warmup: usize,
+  iterations: usize,
+  mut measure: F,
+) -> Result<Vec<T>, E>
+where
+  F: FnMut() -> Result<T, E>,
+{
+  for _ in 0..warmup {
+    let _ = measure()?;
+  }
+  let mut out = Vec::with_capacity(iterations);
+  for _ in 0..iterations {
+    out.push(measure()?);
+  }
+  Ok(out)
 }
 
 fn latency_metrics(prefix: &str, samples: &[f64]) -> BTreeMap<String, f64> {
@@ -1119,21 +1239,58 @@ mod tests {
   use clap::Parser;
 
   #[test]
-  fn json_includes_rayon_threads() {
+  fn json_includes_run_config() {
     let summary = UiPerfSmokeSummary {
       schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
-      run_config: RunConfig { rayon_threads: 1 },
+      run_config: RunConfig {
+        rayon_threads: 1,
+        ..RunConfig::default()
+      },
       scenarios: Vec::new(),
     };
 
     let value = serde_json::to_value(&summary).expect("serialize JSON");
     assert_eq!(value["run_config"]["rayon_threads"].as_u64(), Some(1));
+    assert_eq!(value["run_config"]["warmup"].as_u64(), Some(0));
+    assert_eq!(value["run_config"]["isolate"].as_bool(), Some(false));
   }
 
   #[test]
   fn parses_rayon_threads_flag() {
-    let args = Args::try_parse_from(["ui_perf_smoke", "--rayon-threads", "1"])
-      .expect("parse args");
+    let args = Args::try_parse_from(["ui_perf_smoke", "--rayon-threads", "1"]).expect("parse args");
     assert_eq!(args.rayon_threads, Some(1));
+  }
+
+  #[test]
+  fn warmup_samples_are_excluded_from_latency_metrics() {
+    // Warmup sample is an extreme outlier and should not influence the reported metrics.
+    let samples = [1000.0, 10.0, 20.0, 30.0];
+    let mut idx = 0usize;
+    let measured = collect_measured_samples(1, 3, || {
+      let v = samples[idx];
+      idx += 1;
+      Ok::<f64, ()>(v)
+    })
+    .expect("collect");
+
+    assert_eq!(measured, vec![10.0, 20.0, 30.0]);
+    let metrics = latency_metrics("test", &measured);
+    assert_eq!(metrics.get("test_p50_ms").copied(), Some(20.0));
+    assert_eq!(metrics.get("test_p95_ms").copied(), Some(30.0));
+    assert_eq!(metrics.get("test_max_ms").copied(), Some(30.0));
+  }
+
+  #[test]
+  fn warmup_zero_uses_all_samples() {
+    let samples = [10.0, 20.0, 30.0];
+    let mut idx = 0usize;
+    let measured = collect_measured_samples(0, 3, || {
+      let v = samples[idx];
+      idx += 1;
+      Ok::<f64, ()>(v)
+    })
+    .expect("collect");
+
+    assert_eq!(measured, vec![10.0, 20.0, 30.0]);
   }
 }
