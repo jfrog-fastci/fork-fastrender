@@ -424,6 +424,11 @@ fn data_fastr_open(node: &DomNode) -> Option<(bool, bool)> {
 }
 
 fn dialog_top_layer(node: &DomNode) -> Option<TopLayerKind> {
+  // Top-layer dialog semantics are defined by HTML and only apply to elements in the HTML
+  // namespace (including FastRender's `""` representation of the HTML namespace).
+  if !matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE) {
+    return None;
+  }
   if !node
     .tag_name()
     .map(|t| t.eq_ignore_ascii_case("dialog"))
@@ -447,6 +452,10 @@ fn dialog_top_layer(node: &DomNode) -> Option<TopLayerKind> {
 }
 
 fn popover_top_layer(node: &DomNode) -> Option<TopLayerKind> {
+  // Popover semantics are HTML-defined and must not apply to non-HTML-namespace elements (e.g. SVG).
+  if !matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE) {
+    return None;
+  }
   if node.get_attribute_ref("popover").is_none() {
     return None;
   }
@@ -17019,7 +17028,10 @@ fn compute_base_styles<'a>(
     styles.pointer_events = PointerEvents::None;
   }
   styles.top_layer = top_layer_kind(node);
-  if styles.top_layer.is_none()
+  let is_html_namespace =
+    matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE);
+  if is_html_namespace
+    && styles.top_layer.is_none()
     && (node.get_attribute_ref("popover").is_some()
       || node
         .tag_name()
