@@ -4642,6 +4642,18 @@ fn mat4_mul_vec4(m: &Transform3D, v: [f32; 4]) -> Option<[f32; 4]> {
   (x.is_finite() && y.is_finite() && z.is_finite() && w.is_finite()).then_some([x, y, z, w])
 }
 
+fn mat4_transpose_mul_vec4(m: &Transform3D, v: [f32; 4]) -> Option<[f32; 4]> {
+  // Multiply the transpose of `m` by a column vector `v` (i.e. (m^T) * v).
+  if !v.iter().all(|c| c.is_finite()) {
+    return None;
+  }
+  let x = m.m[0] * v[0] + m.m[1] * v[1] + m.m[2] * v[2] + m.m[3] * v[3];
+  let y = m.m[4] * v[0] + m.m[5] * v[1] + m.m[6] * v[2] + m.m[7] * v[3];
+  let z = m.m[8] * v[0] + m.m[9] * v[1] + m.m[10] * v[2] + m.m[11] * v[3];
+  let w = m.m[12] * v[0] + m.m[13] * v[1] + m.m[14] * v[2] + m.m[15] * v[3];
+  (x.is_finite() && y.is_finite() && z.is_finite() && w.is_finite()).then_some([x, y, z, w])
+}
+
 fn decompose_transform_matrix3d(matrix: &Transform3D) -> Option<DecomposedTransform3D> {
   if !matrix.m.iter().all(|v| v.is_finite()) {
     return None;
@@ -4677,7 +4689,9 @@ fn decompose_transform_matrix3d(matrix: &Transform3D) -> Option<DecomposedTransf
   let perspective = if has_perspective {
     let rhs = [m.m[3], m.m[7], m.m[11], m.m[15]];
     let inv = invert_affine_matrix(&perspective_matrix)?;
-    let perspective = mat4_mul_vec4(&inv, rhs)?;
+    // CSS Transforms 2: perspective = multVecMatrix(rhs, transpose(inverse(perspectiveMatrix))).
+    // With column vectors, this is equivalent to (inverse(perspectiveMatrix)^T) * rhs.
+    let perspective = mat4_transpose_mul_vec4(&inv, rhs)?;
 
     // Clear the perspective partition so the remaining decomposition steps see an affine matrix.
     m.m[3] = 0.0;
