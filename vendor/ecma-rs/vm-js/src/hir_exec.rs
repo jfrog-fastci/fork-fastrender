@@ -210,6 +210,29 @@ impl BindingReference {
   }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum OptionalChainEval {
+  /// A normal evaluation result.
+  Value(Value),
+  /// Indicates that an optional chain has short-circuited and the current chain expression should
+  /// evaluate to `undefined`.
+  ///
+  /// This is distinct from `Value::Undefined` so chain continuations like `a?.b.c` can avoid
+  /// confusing an *actual* `undefined` value (e.g. the property value of `a.b`) with an optional
+  /// chain short-circuit (e.g. `a` was nullish).
+  ShortCircuit,
+}
+
+impl OptionalChainEval {
+  #[inline]
+  fn into_value(self) -> Value {
+    match self {
+      OptionalChainEval::Value(v) => v,
+      OptionalChainEval::ShortCircuit => Value::Undefined,
+    }
+  }
+}
+
 fn throw_reference_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
@@ -3337,7 +3360,12 @@ impl<'vm> HirEvaluator<'vm> {
 
             // Optional chaining delete (`delete o?.x`) short-circuits to `true` if the base is
             // nullish and does not evaluate the property expression.
-            let base = self.eval_expr(scope, body, member.object)?;
+            let base = match self.eval_chain_base(scope, body, member.object)? {
+              OptionalChainEval::Value(v) => v,
+              // `delete a?.b.c` is a delete of an optional chain continuation: if the chain short
+              // circuits, the operand is not a reference and `delete` returns true.
+              OptionalChainEval::ShortCircuit => return Ok(Value::Bool(true)),
+            };
             if member.optional && matches!(base, Value::Null | Value::Undefined) {
               return Ok(Value::Bool(true));
             }
@@ -5569,9 +5597,45 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     member: &hir_js::MemberExpr,
   ) -> Result<Value, VmError> {
-    let base = self.eval_expr(scope, body, member.object)?;
+    Ok(self.eval_member_chain(scope, body, member)?.into_value())
+  }
+
+  fn eval_chain_base(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    expr_id: hir_js::ExprId,
+  ) -> Result<OptionalChainEval, VmError> {
+    let expr = self.get_expr(body, expr_id)?;
+    match &expr.kind {
+      hir_js::ExprKind::Member(member) => {
+        // Budget once per expression evaluation.
+        self.vm.tick()?;
+        self.eval_member_chain(scope, body, member)
+      }
+      hir_js::ExprKind::Call(call) => {
+        // Budget once per expression evaluation.
+        self.vm.tick()?;
+        self.eval_call_chain(scope, body, call)
+      }
+      _ => Ok(OptionalChainEval::Value(self.eval_expr(scope, body, expr_id)?)),
+    }
+  }
+
+  fn eval_member_chain(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    member: &hir_js::MemberExpr,
+  ) -> Result<OptionalChainEval, VmError> {
+    // Optional chain continuation semantics: if the base expression short-circuited, the current
+    // member access is not evaluated and the whole chain evaluates to `undefined`.
+    let base = match self.eval_chain_base(scope, body, member.object)? {
+      OptionalChainEval::Value(v) => v,
+      OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+    };
     if member.optional && matches!(base, Value::Null | Value::Undefined) {
-      return Ok(Value::Undefined);
+      return Ok(OptionalChainEval::ShortCircuit);
     }
 
     // Root the base value across key evaluation / boxing / property access.
@@ -5592,7 +5656,14 @@ impl<'vm> HirEvaluator<'vm> {
     // Root the boxed object so host hooks/accessors can allocate freely.
     scope.push_root(Value::Object(obj))?;
 
-    scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, base)
+    Ok(OptionalChainEval::Value(scope.get_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      obj,
+      key,
+      base,
+    )?))
   }
 
   fn assign_to_member(
@@ -5896,6 +5967,15 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     call: &hir_js::CallExpr,
   ) -> Result<Value, VmError> {
+    Ok(self.eval_call_chain(scope, body, call)?.into_value())
+  }
+
+  fn eval_call_chain(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    call: &hir_js::CallExpr,
+  ) -> Result<OptionalChainEval, VmError> {
     // Only support non-spread arguments for now.
     if call.args.iter().any(|arg| arg.spread) {
       return Err(VmError::Unimplemented("spread arguments (hir-js compiled path)"));
@@ -5922,9 +6002,12 @@ impl<'vm> HirEvaluator<'vm> {
       // `new callee(...args)` evaluates the callee as a value (no method-call `this` binding) and
       // invokes `[[Construct]]` with `newTarget = callee` (best-effort; `Reflect.construct` sets
       // `newTarget` explicitly).
-      let callee_value = self.eval_expr(&mut scope, body, call.callee)?;
+      let callee_value = match self.eval_chain_base(&mut scope, body, call.callee)? {
+        OptionalChainEval::Value(v) => v,
+        OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+      };
       if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
-        return Ok(Value::Undefined);
+        return Ok(OptionalChainEval::ShortCircuit);
       }
 
       // Root callee while evaluating args.
@@ -5941,22 +6024,25 @@ impl<'vm> HirEvaluator<'vm> {
       }
 
       // For `new F(...)`, the `newTarget` is `F` itself.
-      return self.vm.construct_with_host_and_hooks(
+      return Ok(OptionalChainEval::Value(self.vm.construct_with_host_and_hooks(
         &mut *self.host,
         &mut scope,
         &mut *self.hooks,
         callee_value,
         args.as_slice(),
         callee_value,
-      );
+      )?));
     }
 
     // Method call detection: `obj.prop(...)` uses `this = obj`.
     let (callee_value, this_value) = match &callee_expr.kind {
       hir_js::ExprKind::Member(member) => {
-        let base = self.eval_expr(&mut scope, body, member.object)?;
+        let base = match self.eval_chain_base(&mut scope, body, member.object)? {
+          OptionalChainEval::Value(v) => v,
+          OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+        };
         if member.optional && matches!(base, Value::Null | Value::Undefined) {
-          return Ok(Value::Undefined);
+          return Ok(OptionalChainEval::ShortCircuit);
         }
         // Root base across `ToObject` + key evaluation + `[[Get]]` in case any step allocates /
         // triggers GC.
@@ -5977,13 +6063,16 @@ impl<'vm> HirEvaluator<'vm> {
         (func, base)
       }
       _ => {
-        let callee_value = self.eval_expr(&mut scope, body, call.callee)?;
+        let callee_value = match self.eval_chain_base(&mut scope, body, call.callee)? {
+          OptionalChainEval::Value(v) => v,
+          OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+        };
         (callee_value, Value::Undefined)
       }
     };
 
     if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
-      return Ok(Value::Undefined);
+      return Ok(OptionalChainEval::ShortCircuit);
     }
 
     // Root callee/this while evaluating args.
@@ -6007,7 +6096,7 @@ impl<'vm> HirEvaluator<'vm> {
       if callee_value == Value::Object(intr.eval()) {
         // Direct eval: execute in the caller's lexical environment (with strictness propagation).
         let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-        return match arg0 {
+        let out = match arg0 {
           Value::String(s) => perform_direct_eval_with_host_and_hooks(
             self.vm,
             &mut scope,
@@ -6018,20 +6107,21 @@ impl<'vm> HirEvaluator<'vm> {
             self.this,
             self.new_target,
             s,
-          ),
-          other => Ok(other),
+          )?,
+          other => other,
         };
+        return Ok(OptionalChainEval::Value(out));
       }
     }
 
-    self.vm.call_with_host_and_hooks(
+    Ok(OptionalChainEval::Value(self.vm.call_with_host_and_hooks(
       &mut *self.host,
       &mut scope,
       &mut *self.hooks,
       callee_value,
       this_value,
       args.as_slice(),
-    )
+    )?))
   }
 
   fn eval_class_expr(
