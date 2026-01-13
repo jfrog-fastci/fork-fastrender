@@ -202,6 +202,11 @@ pub mod session;
 #[cfg(any(test, feature = "browser_ui"))]
 pub mod session_save_scheduler;
 
+// UI-thread trailing-edge debounce used by the windowed browser to persist scroll offsets without
+// triggering expensive session snapshot builds during continuous scrolling.
+#[cfg(any(test, feature = "browser_ui"))]
+pub mod scroll_autosave_debounce;
+
 #[cfg(feature = "browser_ui")]
 pub mod session_autosave;
 
