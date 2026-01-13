@@ -263,28 +263,12 @@ impl GridAxisStyle {
     }
   }
 
-  fn effective_for_grid_container(style: &ComputedStyle, parent_axis: Option<Self>) -> Self {
-    // Subgrid track definitions are inherited from the parent grid and stay in the parent grid's
-    // axis space (even when the subgrid specifies a different `writing-mode`). To keep line names,
-    // gaps, and placement coordinates consistent, treat subgrids as using the parent grid's
-    // writing-mode when mapping CSS grid axes into Taffy's fixed horizontal/vertical axes.
-    //
-    // Directionality (`direction`) only needs to be inherited when the inline axis is inherited
-    // (`grid-template-columns: subgrid` / `grid_column_subgrid`), otherwise the subgrid's own
-    // direction continues to affect its locally-defined columns.
-    if let Some(parent_axis) = parent_axis {
-      if style.grid_row_subgrid || style.grid_column_subgrid {
-        return Self {
-          writing_mode: parent_axis.writing_mode,
-          direction: if style.grid_column_subgrid {
-            parent_axis.direction
-          } else {
-            style.direction
-          },
-        };
-      }
-    }
-
+  fn effective_for_grid_container(style: &ComputedStyle, _parent_axis: Option<Self>) -> Self {
+    // CSS Grid 2 specifies that subgrid line numbering and placement rules obey the subgrid's own
+    // writing mode (https://www.w3.org/TR/css-grid-2/#subgrid-indexing). Even though a subgrid can
+    // inherit track definitions from its parent, the mapping of CSS grid axes into Taffy's fixed
+    // physical axes should follow the subgrid's computed `writing-mode`/`direction` so placement is
+    // interpreted consistently with an independent nested grid.
     Self::from_style(style)
   }
 
@@ -22066,7 +22050,7 @@ mod tests {
   }
 
   #[test]
-  fn convert_style_subgrids_inherit_axes_from_parent_grid() {
+  fn convert_style_subgrids_use_their_own_writing_mode_for_axis_mapping() {
     let gc = GridFormattingContext::new();
 
     let mut parent_style = ComputedStyle::default();
@@ -22089,8 +22073,8 @@ mod tests {
       false,
     );
     assert!(
-      !taffy_style.axes_swapped,
-      "subgrids should map grid axes using the parent grid's writing-mode"
+      taffy_style.axes_swapped,
+      "CSS Grid 2 §#subgrid-indexing: subgrid placement obeys the subgrid's writing-mode"
     );
 
     parent_style.writing_mode = WritingMode::VerticalRl;
@@ -22106,8 +22090,8 @@ mod tests {
       false,
     );
     assert!(
-      taffy_style.axes_swapped,
-      "subgrids should transpose axes when the parent grid uses a vertical writing-mode"
+      !taffy_style.axes_swapped,
+      "subgrid axis mapping should not be forced to match the parent grid's writing-mode"
     );
   }
 
