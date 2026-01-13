@@ -52,6 +52,19 @@ const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
 const DOM_TOKEN_LIST_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMDTL");
+const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG");
+// Must match `window_realm::HOST_OBJECT_ATTR`.
+const ATTR_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMATR");
+// Must match `window_realm::STATIC_RANGE_BRAND_KEY`.
+const STATIC_RANGE_BRAND_KEY: &str = "__fastrender_static_range";
+// Must match `window_realm::STATIC_RANGE_START_CONTAINER_KEY`.
+const STATIC_RANGE_START_CONTAINER_KEY: &str = "__fastrender_static_range_start_container";
+// Must match `window_realm::STATIC_RANGE_START_OFFSET_KEY`.
+const STATIC_RANGE_START_OFFSET_KEY: &str = "__fastrender_static_range_start_offset";
+// Must match `window_realm::STATIC_RANGE_END_CONTAINER_KEY`.
+const STATIC_RANGE_END_CONTAINER_KEY: &str = "__fastrender_static_range_end_container";
+// Must match `window_realm::STATIC_RANGE_END_OFFSET_KEY`.
+const STATIC_RANGE_END_OFFSET_KEY: &str = "__fastrender_static_range_end_offset";
 const NODE_ITERATOR_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMNIT");
 const TREE_WALKER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMTWK");
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
@@ -9927,6 +9940,138 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Undefined)
       }
 
+      ("StaticRange", "constructor", 0) => {
+        let range_obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(range_obj))?;
+
+        let init = args.get(0).copied().unwrap_or(Value::Undefined);
+        let Value::Object(init_obj) = init else {
+          return Err(VmError::TypeError("StaticRange constructor requires an init object"));
+        };
+        scope.push_root(Value::Object(init_obj))?;
+
+        let mut get_required = |name: &str, err: &'static str| -> Result<Value, VmError> {
+          let key = key_from_str(scope, name)?;
+          let value = vm.get(scope, init_obj, key)?;
+          if matches!(value, Value::Undefined) {
+            return Err(VmError::TypeError(err));
+          }
+          Ok(value)
+        };
+
+        let start_container =
+          get_required("startContainer", "StaticRangeInit.startContainer is required")?;
+        let start_offset = get_required("startOffset", "StaticRangeInit.startOffset is required")?;
+        let end_container = get_required("endContainer", "StaticRangeInit.endContainer is required")?;
+        let end_offset = get_required("endOffset", "StaticRangeInit.endOffset is required")?;
+
+        // Root boundary containers across property definition: allocating property keys can GC.
+        scope.push_roots(&[start_container, end_container])?;
+
+        let mut validate_container = |v: Value| -> Result<(), VmError> {
+          if matches!(v, Value::Null | Value::Undefined) {
+            return Err(VmError::TypeError("StaticRangeInit container must be a Node"));
+          }
+          let Value::Object(obj) = v else {
+            return Err(VmError::TypeError("StaticRangeInit container must be a Node"));
+          };
+
+          // Reject Attr nodes (WPT uses `Element.getAttributeNode`).
+          let slots = match scope.heap().object_host_slots(obj) {
+            Ok(slots) => slots,
+            Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+            Err(err) => return Err(err),
+          };
+          if matches!(slots, Some(slots) if slots.b == ATTR_HOST_TAG) {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            return Err(throw_dom_exception(
+              scope,
+              class,
+              "InvalidNodeTypeError",
+              "StaticRangeInit containers must not be Attr nodes",
+            ));
+          }
+
+          // Reject DocumentType nodes.
+          let is_document_type = {
+            let platform = require_dom_platform_mut(vm)?;
+            platform
+              .require_document_type_handle(scope.heap(), Value::Object(obj))
+              .is_ok()
+          };
+          if is_document_type {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            return Err(throw_dom_exception(
+              scope,
+              class,
+              "InvalidNodeTypeError",
+              "StaticRangeInit containers must not be DocumentType nodes",
+            ));
+          }
+
+          {
+            let platform = require_dom_platform_mut(vm)?;
+            platform
+              .require_node_handle(scope.heap(), v)
+              .map_err(|_| VmError::TypeError("StaticRangeInit container must be a Node"))?;
+          }
+          Ok(())
+        };
+
+        validate_container(start_container)?;
+        validate_container(end_container)?;
+
+        let start_offset = match start_offset {
+          Value::Number(n) => to_uint32_f64(n) as u32,
+          _ => 0,
+        };
+        let end_offset = match end_offset {
+          Value::Number(n) => to_uint32_f64(n) as u32,
+          _ => 0,
+        };
+
+        let brand_key = key_from_str(scope, STATIC_RANGE_BRAND_KEY)?;
+        scope.define_property(
+          range_obj,
+          brand_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Bool(true),
+              writable: false,
+            },
+          },
+        )?;
+
+        let start_container_key = key_from_str(scope, STATIC_RANGE_START_CONTAINER_KEY)?;
+        scope.define_property(
+          range_obj,
+          start_container_key,
+          data_property(start_container, false, false, false),
+        )?;
+        let start_offset_key = key_from_str(scope, STATIC_RANGE_START_OFFSET_KEY)?;
+        scope.define_property(
+          range_obj,
+          start_offset_key,
+          data_property(Value::Number(start_offset as f64), false, false, false),
+        )?;
+        let end_container_key = key_from_str(scope, STATIC_RANGE_END_CONTAINER_KEY)?;
+        scope.define_property(
+          range_obj,
+          end_container_key,
+          data_property(end_container, false, false, false),
+        )?;
+        let end_offset_key = key_from_str(scope, STATIC_RANGE_END_OFFSET_KEY)?;
+        scope.define_property(
+          range_obj,
+          end_offset_key,
+          data_property(Value::Number(end_offset as f64), false, false, false),
+        )?;
+
+        Ok(Value::Undefined)
+      }
+
       ("Range", "setStart", 0) | ("Range", "setEnd", 0) => {
         let range_obj = Self::require_receiver_object(receiver)?;
         let weak = WeakGcObject::from(range_obj);
@@ -10885,6 +11030,54 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         0,
       ) => {
         let range_obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(range_obj))?;
+
+        // Support `StaticRange` instances created by the handwritten constructor (used by the
+        // handwritten DOM backend and as a fallback in WebIDL mode until bindings are generated).
+        //
+        // Those objects store their boundary points on own non-configurable data properties and are
+        // branded via `STATIC_RANGE_BRAND_KEY`.
+        let brand_key = key_from_str(scope, STATIC_RANGE_BRAND_KEY)?;
+        let is_static_range = matches!(
+          scope
+            .heap()
+            .object_get_own_data_property_value(range_obj, &brand_key)?,
+          Some(Value::Bool(true))
+        );
+        if is_static_range {
+          let start_container_key = key_from_str(scope, STATIC_RANGE_START_CONTAINER_KEY)?;
+          let start_container = scope
+            .heap()
+            .object_get_own_data_property_value(range_obj, &start_container_key)?
+            .ok_or(VmError::TypeError("Illegal invocation"))?;
+          let start_offset_key = key_from_str(scope, STATIC_RANGE_START_OFFSET_KEY)?;
+          let start_offset = scope
+            .heap()
+            .object_get_own_data_property_value(range_obj, &start_offset_key)?
+            .ok_or(VmError::TypeError("Illegal invocation"))?;
+          let end_container_key = key_from_str(scope, STATIC_RANGE_END_CONTAINER_KEY)?;
+          let end_container = scope
+            .heap()
+            .object_get_own_data_property_value(range_obj, &end_container_key)?
+            .ok_or(VmError::TypeError("Illegal invocation"))?;
+          let end_offset_key = key_from_str(scope, STATIC_RANGE_END_OFFSET_KEY)?;
+          let end_offset = scope
+            .heap()
+            .object_get_own_data_property_value(range_obj, &end_offset_key)?
+            .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+          return match op {
+            "startContainer" => Ok(start_container),
+            "startOffset" => Ok(start_offset),
+            "endContainer" => Ok(end_container),
+            "endOffset" => Ok(end_offset),
+            "collapsed" => Ok(Value::Bool(
+              start_container == end_container && start_offset == end_offset,
+            )),
+            _ => Err(VmError::TypeError("AbstractRange operation mismatch")),
+          };
+        }
+
         let state = self
           .ranges
           .get(&WeakGcObject::from(range_obj))

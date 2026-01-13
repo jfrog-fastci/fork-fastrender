@@ -111,6 +111,12 @@ attributes = ["startContainer", "startOffset", "endContainer", "endOffset", "col
 operations = []
 
 [[interface]]
+name = "StaticRange"
+constructors = true
+attributes = []
+operations = []
+
+[[interface]]
 name = "Range"
 constructors = true
 attributes = []

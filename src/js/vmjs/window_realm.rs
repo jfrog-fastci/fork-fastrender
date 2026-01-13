@@ -61509,6 +61509,94 @@ mod tests {
   }
 
   #[test]
+  fn static_range_constructor_and_abstract_range_attributes_handwritten() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let got = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        if (typeof StaticRange !== 'function') return 'missing StaticRange';
+        if (typeof AbstractRange !== 'function') return 'missing AbstractRange';
+        const el = document.createElement('div');
+        const text = document.createTextNode('hi');
+        el.appendChild(text);
+        document.body.appendChild(el);
+
+        const r = new StaticRange({ startContainer: el, startOffset: 0, endContainer: text, endOffset: 2 });
+        if (!(r instanceof AbstractRange)) return 'instanceof AbstractRange failed';
+        if (r.startContainer !== el) return 'startContainer mismatch';
+        if (r.startOffset !== 0) return 'startOffset mismatch';
+        if (r.endContainer !== text) return 'endContainer mismatch';
+        if (r.endOffset !== 2) return 'endOffset mismatch';
+        if (r.collapsed !== false) return 'collapsed mismatch';
+
+        const r2 = new StaticRange({ startContainer: el, startOffset: 1, endContainer: el, endOffset: 1 });
+        if (r2.collapsed !== true) return 'collapsed true mismatch';
+
+        const dt = document.doctype || document.firstChild;
+        if (dt && dt.nodeType === 10) {
+          try {
+            new StaticRange({ startContainer: dt, startOffset: 0, endContainer: el, endOffset: 0 });
+            return 'expected InvalidNodeTypeError';
+          } catch (e) {
+            if (!e || e.name !== 'InvalidNodeTypeError') return 'wrong error ' + (e && e.name);
+          }
+        }
+
+        return 'ok';
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), got), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn static_range_constructor_and_abstract_range_attributes_webidl() -> Result<(), VmError> {
+    let document = new_host_document_state();
+    let window = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut host = WebIdlTestHost::new(document, window);
+    let got = host.exec_script(
+      r#"(() => {
+        if (typeof StaticRange !== 'function') return 'missing StaticRange';
+        if (typeof AbstractRange !== 'function') return 'missing AbstractRange';
+        const el = document.createElement('div');
+        const text = document.createTextNode('hi');
+        el.appendChild(text);
+        document.body.appendChild(el);
+
+        const r = new StaticRange({ startContainer: el, startOffset: 0, endContainer: text, endOffset: 2 });
+        if (!(r instanceof AbstractRange)) return 'instanceof AbstractRange failed';
+        if (r.startContainer !== el) return 'startContainer mismatch';
+        if (r.startOffset !== 0) return 'startOffset mismatch';
+        if (r.endContainer !== text) return 'endContainer mismatch';
+        if (r.endOffset !== 2) return 'endOffset mismatch';
+        if (r.collapsed !== false) return 'collapsed mismatch';
+
+        const r2 = new StaticRange({ startContainer: el, startOffset: 1, endContainer: el, endOffset: 1 });
+        if (r2.collapsed !== true) return 'collapsed true mismatch';
+
+        const dt = document.doctype || document.firstChild;
+        if (dt && dt.nodeType === 10) {
+          try {
+            new StaticRange({ startContainer: dt, startOffset: 0, endContainer: el, endOffset: 0 });
+            return 'expected InvalidNodeTypeError';
+          } catch (e) {
+            if (!e || e.name !== 'InvalidNodeTypeError') return 'wrong error ' + (e && e.name);
+          }
+        }
+
+        return 'ok';
+      })()"#,
+    )?;
+    assert_eq!(get_string(host.window.heap(), got), "ok");
+    Ok(())
+  }
+
+  #[test]
   fn range_insert_node_splits_text_at_offset_and_updates_end_when_collapsed() -> Result<(), VmError> {
     let mut host = new_host_document_state();
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
@@ -62034,7 +62122,7 @@ mod tests {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
 
-    let clock = Arc::new(VirtualClock::new());
+    let clock: Arc<dyn Clock> = Arc::new(VirtualClock::new());
     let mut config = WindowRealmConfig::new("https://example.com/");
     config.clock = Arc::clone(&clock);
     let mut realm = new_realm(config)?;

@@ -22651,6 +22651,8 @@ mod tests {
       ReplacedType::Video {
         src: "video.mp4".to_string(),
         poster: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: false,
       },
     );
