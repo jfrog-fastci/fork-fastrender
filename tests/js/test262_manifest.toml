@@ -1424,21 +1424,6 @@ status = "xfail"
 reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
 
 [[expectations]]
-id = "built-ins/RegExp/prototype/flags/return-order.js"
-status = "xfail"
-reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
-
-[[expectations]]
-id = "built-ins/RegExp/prototype/flags/this-val-regexp.js"
-status = "xfail"
-reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
-
-[[expectations]]
-id = "built-ins/RegExp/prototype/hasIndices/this-val-regexp.js"
-status = "xfail"
-reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
-
-[[expectations]]
 glob = "built-ins/String/prototype/match/**"
 status = "pass"
 
