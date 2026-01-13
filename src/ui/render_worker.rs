@@ -9340,9 +9340,9 @@ impl BrowserRuntime {
             let focus_consumes_arrows =
               focused_is_input || focused_is_textarea || focused_is_select || focused_is_video_controls;
             let focus_consumes_home_end = focus_consumes_arrows;
-            // PageUp/PageDown are not commonly consumed by media controls, so keep their behaviour
-            // aligned with other non-button form controls.
-            let focus_consumes_page = focused_is_input || focused_is_textarea || focused_is_select;
+            // Suppress PageUp/PageDown fallback scrolling when video controls are focused as well.
+            let focus_consumes_page =
+              focused_is_input || focused_is_textarea || focused_is_select || focused_is_video_controls;
             let allow_scroll = match key {
               crate::interaction::KeyAction::Space | crate::interaction::KeyAction::ShiftSpace => {
                 !focus_consumes_space

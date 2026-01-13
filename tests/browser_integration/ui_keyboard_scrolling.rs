@@ -361,7 +361,6 @@ fn space_scrolls_when_link_is_focused() {
 fn video_controls_consume_space_and_arrow_keys() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
-
   let fastrender::ui::BrowserWorkerHandle { tx, rx, join } =
     spawn_browser_worker().expect("spawn browser worker");
 
@@ -454,69 +453,150 @@ fn video_controls_consume_space_and_arrow_keys() {
   // Drain any messages produced by the baseline scroll.
   let _ = drain_for(&rx, Duration::from_millis(200));
 
-  let assert_no_viewport_scroll_change = |msgs: &[WorkerToUi]| {
-    for msg in msgs {
-      match msg {
-        WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
-          assert!(
-            (scroll.viewport.x - baseline_viewport.x).abs() < 1e-3
-              && (scroll.viewport.y - baseline_viewport.y).abs() < 1e-3,
-            "expected viewport scroll state to remain unchanged (baseline {:?}), got {:?}\nmessages:\n{}",
-            baseline_viewport,
-            scroll.viewport,
-            format_messages(msgs)
-          );
+  let baseline_y = baseline_viewport.y;
+
+  {
+    let assert_no_viewport_scroll_change = |msgs: &[WorkerToUi]| {
+      for msg in msgs {
+        match msg {
+          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+            assert!(
+              (scroll.viewport.x - baseline_viewport.x).abs() < 1e-3
+                && (scroll.viewport.y - baseline_viewport.y).abs() < 1e-3,
+              "expected viewport scroll state to remain unchanged (baseline {:?}), got {:?}\nmessages:\n{}",
+              baseline_viewport,
+              scroll.viewport,
+              format_messages(msgs)
+            );
+          }
+          WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
+            assert!(
+              (frame.scroll_state.viewport.x - baseline_viewport.x).abs() < 1e-3
+                && (frame.scroll_state.viewport.y - baseline_viewport.y).abs() < 1e-3,
+              "expected FrameReady viewport scroll state to remain unchanged (baseline {:?}), got {:?}\nmessages:\n{}",
+              baseline_viewport,
+              frame.scroll_state.viewport,
+              format_messages(msgs)
+            );
+          }
+          _ => {}
         }
-        WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
-          assert!(
-            (frame.scroll_state.viewport.x - baseline_viewport.x).abs() < 1e-3
-              && (frame.scroll_state.viewport.y - baseline_viewport.y).abs() < 1e-3,
-            "expected FrameReady viewport scroll state to remain unchanged (baseline {:?}), got {:?}\nmessages:\n{}",
-            baseline_viewport,
-            frame.scroll_state.viewport,
-            format_messages(msgs)
-          );
-        }
-        _ => {}
       }
-    }
-  };
+    };
 
-  // Space should not trigger worker fallback page scrolling when video controls are focused.
-  tx.send(key_action(
-    tab_id,
-    fastrender::interaction::KeyAction::Space,
-  ))
-  .unwrap();
-  let msgs = drain_for(&rx, Duration::from_secs(1));
-  assert_no_viewport_scroll_change(&msgs);
+    // Space should not trigger worker fallback page scrolling when video controls are focused.
+    tx.send(key_action(
+      tab_id,
+      fastrender::interaction::KeyAction::Space,
+    ))
+    .unwrap();
+    let msgs = drain_for(&rx, Duration::from_secs(1));
+    assert_no_viewport_scroll_change(&msgs);
 
-  // ArrowDown should not trigger worker fallback page scrolling when video controls are focused.
-  tx.send(key_action(
-    tab_id,
-    fastrender::interaction::KeyAction::ArrowDown,
-  ))
-  .unwrap();
-  let msgs = drain_for(&rx, Duration::from_secs(1));
-  assert_no_viewport_scroll_change(&msgs);
+    // ArrowDown should not trigger worker fallback page scrolling when video controls are focused.
+    tx.send(key_action(
+      tab_id,
+      fastrender::interaction::KeyAction::ArrowDown,
+    ))
+    .unwrap();
+    let msgs = drain_for(&rx, Duration::from_secs(1));
+    assert_no_viewport_scroll_change(&msgs);
 
-  // ArrowRight/ArrowLeft should also be consumed by video controls (and must not trigger horizontal
-  // fallback scrolling).
-  tx.send(key_action(
-    tab_id,
-    fastrender::interaction::KeyAction::ArrowRight,
-  ))
-  .unwrap();
-  let msgs = drain_for(&rx, Duration::from_secs(1));
-  assert_no_viewport_scroll_change(&msgs);
+    // ArrowRight/ArrowLeft should also be consumed by video controls (and must not trigger horizontal
+    // fallback scrolling).
+    tx.send(key_action(
+      tab_id,
+      fastrender::interaction::KeyAction::ArrowRight,
+    ))
+    .unwrap();
+    let msgs = drain_for(&rx, Duration::from_secs(1));
+    assert_no_viewport_scroll_change(&msgs);
 
-  tx.send(key_action(
-    tab_id,
-    fastrender::interaction::KeyAction::ArrowLeft,
-  ))
-  .unwrap();
-  let msgs = drain_for(&rx, Duration::from_secs(1));
-  assert_no_viewport_scroll_change(&msgs);
+    tx.send(key_action(
+      tab_id,
+      fastrender::interaction::KeyAction::ArrowLeft,
+    ))
+    .unwrap();
+    let msgs = drain_for(&rx, Duration::from_secs(1));
+    assert_no_viewport_scroll_change(&msgs);
+
+    // PageDown/End should not trigger worker fallback scrolling when video controls are focused.
+    tx.send(key_action(
+      tab_id,
+      fastrender::interaction::KeyAction::PageDown,
+    ))
+    .unwrap();
+    let msgs = drain_for(&rx, Duration::from_secs(1));
+    assert_no_viewport_scroll_change(&msgs);
+
+    tx.send(key_action(tab_id, fastrender::interaction::KeyAction::End))
+      .unwrap();
+    let msgs = drain_for(&rx, Duration::from_secs(1));
+    assert_no_viewport_scroll_change(&msgs);
+  }
+
+  // Scroll the viewport vertically so ArrowUp/PageUp/Home (which would otherwise clamp at y=0) can
+  // be tested as well.
+  tx.send(scroll_msg(tab_id, (0.0, 200.0), None)).unwrap();
+  let baseline_viewport = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { frame, .. } if frame.scroll_state.viewport.y > baseline_y + 50.0
+    )
+  })
+  .and_then(|msg| match msg {
+    WorkerToUi::FrameReady { frame, .. } => Some(frame.scroll_state.viewport),
+    _ => None,
+  })
+  .expect("timed out waiting for vertical scroll baseline");
+
+  // Drain any messages produced by the baseline scroll.
+  let _ = drain_for(&rx, Duration::from_millis(200));
+
+  {
+    let assert_no_viewport_scroll_change = |msgs: &[WorkerToUi]| {
+      for msg in msgs {
+        match msg {
+          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+            assert!(
+              (scroll.viewport.x - baseline_viewport.x).abs() < 1e-3
+                && (scroll.viewport.y - baseline_viewport.y).abs() < 1e-3,
+              "expected viewport scroll state to remain unchanged (baseline {:?}), got {:?}\nmessages:\n{}",
+              baseline_viewport,
+              scroll.viewport,
+              format_messages(msgs)
+            );
+          }
+          WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
+            assert!(
+              (frame.scroll_state.viewport.x - baseline_viewport.x).abs() < 1e-3
+                && (frame.scroll_state.viewport.y - baseline_viewport.y).abs() < 1e-3,
+              "expected FrameReady viewport scroll state to remain unchanged (baseline {:?}), got {:?}\nmessages:\n{}",
+              baseline_viewport,
+              frame.scroll_state.viewport,
+              format_messages(msgs)
+            );
+          }
+          _ => {}
+        }
+      }
+    };
+
+    tx.send(key_action(tab_id, fastrender::interaction::KeyAction::ArrowUp))
+      .unwrap();
+    let msgs = drain_for(&rx, Duration::from_secs(1));
+    assert_no_viewport_scroll_change(&msgs);
+
+    tx.send(key_action(tab_id, fastrender::interaction::KeyAction::PageUp))
+      .unwrap();
+    let msgs = drain_for(&rx, Duration::from_secs(1));
+    assert_no_viewport_scroll_change(&msgs);
+
+    tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Home))
+      .unwrap();
+    let msgs = drain_for(&rx, Duration::from_secs(1));
+    assert_no_viewport_scroll_change(&msgs);
+  }
 
   drop(tx);
   join.join().unwrap();
