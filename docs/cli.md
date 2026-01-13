@@ -63,9 +63,14 @@ and renders frames until the document reaches a quiescent state
 
 Time-based APIs (`setTimeout`, `requestAnimationFrame`, `requestIdleCallback`, `Date.now()`,
 `performance.now()`, etc.) are
-driven by the tab’s monotonic clock (`js::Clock`). The render CLIs drive `run_until_stable` **without
-sleeping** and do not attempt to fast-forward time, so timers that are not already due may not fire
-before the snapshot render (this is intentional for deterministic “load then render” workflows).
+driven by the tab’s monotonic clock (`js::Clock`). Today the render CLIs use the default
+`RealClock` (elapsed wall time since the tab was created), so values like `Date.now()` and
+`performance.now()` can vary across runs/machines.
+
+`run_until_stable` does **not** sleep and does not “fast-forward” the clock to the next scheduled
+timer. Timers only become due if they are scheduled for `<= now` as the clock advances naturally
+while work executes, so long-delay timers may not fire before the snapshot render (even if you have
+frame budget remaining).
 
 For an interactive, real-time loop (sleeping until the next wake-up), see
 [`docs/live_rendering_loop.md`](live_rendering_loop.md). Deterministic embeddings can additionally
