@@ -102,3 +102,19 @@ fn ui_document_selection_copy_serializes_simple_table_with_tabs_and_newlines() {
   assert_eq!(text, "a\tb\nc\td");
 }
 
+#[test]
+fn ui_document_selection_copy_preserves_preformatted_spaces() {
+  let text = run_copy(
+    r#"<!doctype html><meta charset="utf-8"><style>html,body{margin:0;padding:0}</style><pre>hello   world</pre>"#,
+  );
+  assert_eq!(text, "hello   world");
+}
+
+#[test]
+fn ui_document_selection_copy_preserves_preformatted_newlines() {
+  let text = run_copy(
+    r#"<!doctype html><meta charset="utf-8"><style>html,body{margin:0;padding:0}</style><pre>hello
+world</pre>"#,
+  );
+  assert_eq!(text, "hello\nworld");
+}

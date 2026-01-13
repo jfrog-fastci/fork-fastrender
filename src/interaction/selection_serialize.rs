@@ -1,6 +1,7 @@
 use crate::style::computed::Visibility;
 use crate::style::display::Display;
 use crate::style::types::UserSelect;
+use crate::style::types::WhiteSpace;
 use crate::style::types::WritingMode;
 use crate::tree::box_tree::{BoxNode, BoxTree, BoxType, MarkerContent};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -47,40 +48,49 @@ impl DocumentSelectionRange {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LastToken {
-  None,
-  Space,
-  Tab,
-  Newline,
+  CollapsibleSpace,
+  PreservedSpace,
+  StructuralTab,
+  PreservedTab,
+  StructuralNewline,
+  PreservedNewline,
   Text,
 }
 
 struct TextBuilder {
   out: String,
-  last: LastToken,
+  tokens: Vec<LastToken>,
 }
 
 impl TextBuilder {
   fn new() -> Self {
     Self {
       out: String::new(),
-      last: LastToken::None,
+      tokens: Vec::new(),
     }
   }
 
-  fn trim_trailing_spaces_and_tabs(&mut self) {
-    while matches!(self.last, LastToken::Space | LastToken::Tab) {
-      self.out.pop();
-      self.last = self
-        .out
-        .chars()
-        .last()
-        .map(|c| match c {
-          '\n' => LastToken::Newline,
-          '\t' => LastToken::Tab,
-          ' ' => LastToken::Space,
-          _ => LastToken::Text,
-        })
-        .unwrap_or(LastToken::None);
+  fn last(&self) -> Option<LastToken> {
+    self.tokens.last().copied()
+  }
+
+  fn push_char(&mut self, ch: char, tok: LastToken) {
+    self.out.push(ch);
+    self.tokens.push(tok);
+  }
+
+  fn pop_char(&mut self) {
+    let a = self.out.pop();
+    let b = self.tokens.pop();
+    debug_assert_eq!(a.is_some(), b.is_some());
+  }
+
+  fn trim_trailing_collapsible_spaces_and_tabs(&mut self) {
+    while matches!(
+      self.last(),
+      Some(LastToken::CollapsibleSpace | LastToken::StructuralTab)
+    ) {
+      self.pop_char();
     }
   }
 
@@ -88,62 +98,80 @@ impl TextBuilder {
     // Avoid leading whitespace and collapse consecutive spaces.
     if self.out.is_empty()
       || matches!(
-        self.last,
-        LastToken::Space | LastToken::Newline | LastToken::Tab
+        self.last(),
+        Some(
+          LastToken::CollapsibleSpace
+            | LastToken::PreservedSpace
+            | LastToken::StructuralNewline
+            | LastToken::PreservedNewline
+            | LastToken::StructuralTab
+            | LastToken::PreservedTab
+        )
       )
     {
       return;
     }
-    self.out.push(' ');
-    self.last = LastToken::Space;
+    self.push_char(' ', LastToken::CollapsibleSpace);
   }
 
   fn push_tab(&mut self) {
-    if matches!(self.last, LastToken::Tab) {
+    if matches!(self.last(), Some(LastToken::StructuralTab)) {
       return;
     }
-    self.trim_trailing_spaces_and_tabs();
-    self.out.push('\t');
-    self.last = LastToken::Tab;
+    self.trim_trailing_collapsible_spaces_and_tabs();
+    self.push_char('\t', LastToken::StructuralTab);
   }
 
   fn push_newline(&mut self) {
-    if matches!(self.last, LastToken::Newline) {
+    if matches!(self.last(), Some(LastToken::StructuralNewline)) {
       return;
     }
-    self.trim_trailing_spaces_and_tabs();
-    self.out.push('\n');
-    self.last = LastToken::Newline;
+    self.trim_trailing_collapsible_spaces_and_tabs();
+    self.push_char('\n', LastToken::StructuralNewline);
   }
 
-  fn push_text(&mut self, text: &str) {
+  fn push_text_collapsed(&mut self, text: &str) {
     for ch in text.chars() {
       if matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') {
         self.push_space();
       } else {
-        self.out.push(ch);
-        self.last = LastToken::Text;
+        self.push_char(ch, LastToken::Text);
       }
     }
   }
 
-  fn finish(mut self) -> String {
-    // Browsers generally avoid trailing whitespace in clipboard text.
-    self.trim_trailing_spaces_and_tabs();
-    while matches!(self.last, LastToken::Newline) {
-      self.out.pop();
-      self.last = self
-        .out
-        .chars()
-        .last()
-        .map(|c| match c {
-          '\n' => LastToken::Newline,
-          '\t' => LastToken::Tab,
-          ' ' => LastToken::Space,
-          _ => LastToken::Text,
-        })
-        .unwrap_or(LastToken::None);
+  fn push_text_preserved(&mut self, text: &str) {
+    for ch in text.chars() {
+      match ch {
+        '\u{0009}' => self.push_char('\t', LastToken::PreservedTab),
+        '\u{000A}' | '\u{000C}' | '\u{000D}' => self.push_char('\n', LastToken::PreservedNewline),
+        ' ' => self.push_char(' ', LastToken::PreservedSpace),
+        _ => self.push_char(ch, LastToken::Text),
+      }
     }
+  }
+
+  fn push_text(&mut self, text: &str, preserve_whitespace: bool) {
+    if preserve_whitespace {
+      self.push_text_preserved(text);
+    } else {
+      self.push_text_collapsed(text);
+    }
+  }
+
+  fn finish(mut self) -> String {
+    // Browsers generally avoid trailing newlines in clipboard text.
+    //
+    // Note: we intentionally avoid trimming preserved (preformatted) spaces/tabs, since browsers
+    // keep them when selecting `white-space: pre|pre-wrap|break-spaces` content.
+    self.trim_trailing_collapsible_spaces_and_tabs();
+    while matches!(
+      self.last(),
+      Some(LastToken::StructuralNewline | LastToken::PreservedNewline)
+    ) {
+      self.pop_char();
+    }
+    self.trim_trailing_collapsible_spaces_and_tabs();
     self.out
   }
 }
@@ -370,7 +398,10 @@ fn before_enter_box(builder: &mut TextBuilder, ctx: &mut WalkCtx, node: &BoxNode
   // Avoid inserting a newline directly after a table-cell tab separator.
   if display.is_block_level()
     && !builder.out.is_empty()
-    && !matches!(builder.last, LastToken::Newline | LastToken::Tab)
+    && !matches!(
+      builder.last(),
+      Some(LastToken::StructuralNewline | LastToken::StructuralTab)
+    )
   {
     builder.push_newline();
   }
@@ -401,7 +432,11 @@ fn walk_box_tree(
       if visible_box_ids.contains(&node.id) {
         if let Some(text) = slice_text_by_selection(&text_box.text, node.styled_node_id, selection)
         {
-          builder.push_text(text);
+          let preserve_whitespace = matches!(
+            node.style.white_space,
+            WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::BreakSpaces
+          );
+          builder.push_text(text, preserve_whitespace);
         }
       }
     }
@@ -410,7 +445,7 @@ fn walk_box_tree(
       // document, but treat them as not sliceable since the selection endpoints track DOM text
       // nodes, not generated markers.
       if let MarkerContent::Text(text) = &marker.content {
-        builder.push_text(text);
+        builder.push_text(text, false);
       }
     }
     BoxType::LineBreak(_) => {
@@ -435,7 +470,8 @@ fn walk_box_tree(
 /// - Uses layout artifacts (fragment tree + computed display/visibility/user-select/inert).
 /// - Inserts newlines between block-level elements and `<br>`.
 /// - Inserts `\t` between table cells and `\n` between table rows.
-/// - Collapses runs of ASCII whitespace to single spaces.
+/// - Collapses runs of ASCII whitespace to single spaces unless the text box has
+///   `white-space: pre|pre-wrap|break-spaces`.
 pub fn serialize_document_selection(
   box_tree: &BoxTree,
   fragment_tree: &FragmentTree,
