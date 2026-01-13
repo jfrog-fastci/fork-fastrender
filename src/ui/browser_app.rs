@@ -60,11 +60,7 @@ fn derive_site_key_from_url(url: &str) -> Option<SiteKey> {
   if parsed.scheme().eq_ignore_ascii_case("about") {
     return None;
   }
-  Some(crate::site_isolation::site_key_for_navigation(
-    parsed.as_str(),
-    None,
-    false,
-  ))
+  Some(site_key_for_navigation(parsed.as_str(), None, false))
 }
 
 /// Identifier for a chrome tab group.

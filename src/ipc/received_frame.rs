@@ -1,9 +1,13 @@
 use std::ops::Range;
-use std::sync::{mpsc, Arc};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
 
 use super::protocol::renderer::BrowserToRenderer;
 
+/// Callback invoked when a [`ReceivedFrame`] is acknowledged back to the renderer.
+///
+/// The callback receives the `frame_seq` that should be echoed in
+/// [`BrowserToRenderer::FrameAck`].
 pub type FrameAckCallback = Box<dyn FnOnce(u64) + Send + 'static>;
 
 /// Metadata describing a rendered frame that lives in a shared frame-buffer pool.
@@ -200,10 +204,7 @@ mod tests {
     let frame = make_frame(3, 7, Arc::clone(&current_epoch), tx);
     drop(frame);
 
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 3 }
-    );
+    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 3 });
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
@@ -217,16 +218,10 @@ mod tests {
     // Overwrite the old frame for the same key; this should drop and ack the previous one.
     map.insert(123, make_frame(11, 1, Arc::clone(&current_epoch), tx));
 
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 10 }
-    );
+    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 10 });
 
     drop(map);
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 11 }
-    );
+    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 11 });
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
@@ -239,10 +234,7 @@ mod tests {
     frame.ack();
     drop(frame);
 
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 42 }
-    );
+    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 42 });
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 

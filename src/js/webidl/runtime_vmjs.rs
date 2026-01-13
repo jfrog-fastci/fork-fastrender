@@ -2298,7 +2298,7 @@ impl<Host: 'static> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Ho
     }
 
     webidl_js_runtime::JsRuntime::with_stack_roots(self, &[iterable, iterator], |rt| {
-      let next_key = rt.property_key_from_str("next")?;
+      let next_key = webidl_js_runtime::JsRuntime::property_key_from_str(rt, "next")?;
       let next = webidl_js_runtime::JsRuntime::get(rt, iterator, next_key)?;
       if !webidl_js_runtime::JsRuntime::is_callable(rt, next) {
         return Err(webidl_js_runtime::WebIdlJsRuntime::throw_type_error(
@@ -2338,7 +2338,7 @@ impl<Host: 'static> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Ho
               0
             };
 
-            let length_key = rt.property_key_from_str("length")?;
+            let length_key = webidl_js_runtime::JsRuntime::property_key_from_str(rt, "length")?;
             let len_value =
               webidl_js_runtime::JsRuntime::get(rt, iterator_record.iterator, length_key)?;
             let len = webidl_js_runtime::JsRuntime::to_number(rt, len_value)?;
@@ -2378,7 +2378,7 @@ impl<Host: 'static> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Ho
       }
 
       webidl_js_runtime::JsRuntime::with_stack_roots(rt, &[result], |rt| {
-        let done_key = rt.property_key_from_str("done")?;
+        let done_key = webidl_js_runtime::JsRuntime::property_key_from_str(rt, "done")?;
         let done = webidl_js_runtime::JsRuntime::get(rt, result, done_key)?;
         let done = webidl_js_runtime::JsRuntime::to_boolean(rt, done)?;
         if done {
@@ -2386,7 +2386,7 @@ impl<Host: 'static> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Ho
           return Ok(None);
         }
 
-        let value_key = rt.property_key_from_str("value")?;
+        let value_key = webidl_js_runtime::JsRuntime::property_key_from_str(rt, "value")?;
         let value = webidl_js_runtime::JsRuntime::get(rt, result, value_key)?;
         Ok(Some(value))
       })
