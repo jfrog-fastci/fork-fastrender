@@ -18,6 +18,10 @@ code should be prepared for:
 typeof chrome === "undefined"
 ```
 
+Repo reality (today): the in-tree `browser` binary still renders its chrome via **egui**, so it does
+not load a chrome HTML/JS document and does not install this bridge yet (see
+[`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)).
+
 ---
 
 ## Purpose
@@ -80,6 +84,14 @@ typeof chrome === "undefined"
 
 holds in untrusted content.
 
+### Implementation note (in-tree browser)
+
+In the in-tree windowed browser, navigation and tab actions already exist as part of the UI↔worker
+protocol (`UiToWorker::{CreateTab,CloseTab,SetActiveTab,Navigate,GoBack,GoForward,Reload,StopLoading}`
+in [`src/ui/messages.rs`](../src/ui/messages.rs)). A renderer-chrome embedding is expected to
+implement the JS bridge by dispatching to these host-side actions (or an equivalent browser-process
+API), rather than exposing internal state directly.
+
 ---
 
 ## API reference (MVP)
@@ -107,6 +119,8 @@ Tab management within the current window (MVP).
     (commonly `about:newtab`).
 - `chrome.tabs.closeTab(id)`
 - `chrome.tabs.activateTab(id)`
+  - `id` is an **opaque** tab identifier allocated by the host. Treat it as a `Number` that must be
+    a safe integer (`Number.isSafeInteger(id) === true`).
 
 ### State snapshot (optional)
 
@@ -123,6 +137,26 @@ or:
   - Returns a snapshot of open tabs (including which one is active).
 
 Chrome pages should feature-detect which is available.
+
+Recommended minimal shape (embedder-defined, but should be stable within an embedding):
+
+```js
+// chrome.getState() (example)
+{
+  activeTabId: 1,
+  tabs: [
+    {
+      id: 1,
+      active: true,
+      title: "Example Domain",
+      url: "https://example.com/",
+      loading: false,
+      canGoBack: false,
+      canGoForward: false,
+    }
+  ],
+}
+```
 
 ---
 
@@ -143,6 +177,9 @@ Some embeddings may also dispatch additional events (e.g. `chrome-navigation`, `
 If events are not available, chrome pages can fall back to polling via `chrome.getState()` /
 `chrome.tabs.getAll()`.
 
+Recommended: `e.detail` should be the same shape as `chrome.getState()` (or at least contain
+`{ tabs, activeTabId }`) so chrome pages can update with a single handler.
+
 ---
 
 ## Errors and argument validation
@@ -151,6 +188,8 @@ The chrome bridge is privileged, but it still validates inputs:
 
 - Wrong arity / wrong types throw **synchronous** JS exceptions (typically `TypeError`).
   - Example: `chrome.tabs.closeTab("not-a-number")` → throws.
+- Tab ids must be finite safe integers. Non-integers / `NaN` / out-of-range values should throw
+  (recommended: `RangeError`).
 - Invalid/blocked URLs passed to `chrome.navigation.navigate(...)` should throw an exception rather
   than silently doing nothing. The embedder is expected to apply its scheme allowlist (e.g.
   reject `javascript:`).
