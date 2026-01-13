@@ -846,9 +846,13 @@ impl Vm {
 
   /// Discard all queued Promise jobs in the VM-owned microtask queue without running them.
   ///
-  /// This unregisters any persistent roots held by queued jobs. Use this when an embedding needs
-  /// to abandon the queue (for example when aborting execution) while still intending to reuse the
-  /// heap.
+  /// This unregisters any persistent roots held by queued jobs.
+  ///
+  /// In addition, this tears down any in-progress async continuations stored in the VM.
+  ///
+  /// Async continuations (from `async` functions and async module evaluation) are resumed exclusively
+  /// via Promise jobs. If an embedding abandons/discards the microtask queue while intending to
+  /// reuse the heap, leaving suspended continuations in the VM would leak their persistent roots.
   pub fn teardown_microtasks(&mut self, heap: &mut Heap) {
     struct TeardownCtx<'a> {
       heap: &'a mut Heap,
@@ -883,8 +887,25 @@ impl Vm {
       }
     }
 
-    let mut ctx = TeardownCtx { heap };
-    self.microtasks.teardown(&mut ctx);
+    // Discard queued jobs first so their persistent roots are unregistered even if we later hit an
+    // error while tearing down async continuations.
+    {
+      let mut ctx = TeardownCtx { heap: &mut *heap };
+      self.microtasks.teardown(&mut ctx);
+    }
+
+    if self.async_continuations.is_empty() {
+      return;
+    }
+
+    // Tearing down async continuations is a best-effort cleanup path for embeddings that abort
+    // execution and will not resume the event loop. This does *not* settle the associated Promises;
+    // it only unregisters the continuation's persistent roots so the heap can be reused safely.
+    let continuations = mem::take(&mut self.async_continuations);
+    let mut scope = heap.scope();
+    for (_, cont) in continuations {
+      crate::exec::async_teardown_continuation(&mut scope, cont);
+    }
   }
 
   /// Tears down VM-owned state for `realm`.

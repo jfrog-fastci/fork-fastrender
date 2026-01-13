@@ -70,3 +70,40 @@ fn dropping_runtime_after_termination_discards_pending_promise_jobs() -> Result<
   drop(runtime);
   Ok(())
 }
+
+#[test]
+fn teardown_microtasks_aborts_async_continuations() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  // Async/await allocates more internal state than a simple Promise.then(); give it some headroom.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut runtime = JsRuntime::new(vm, heap)?;
+
+  let baseline_roots = runtime.heap.persistent_root_count();
+  assert_eq!(runtime.vm.async_continuation_count(), 0);
+
+  // Create an async continuation that will be resumed by Promise jobs (microtasks).
+  runtime.exec_script("async function f() { await 0; } f();")?;
+  assert!(
+    runtime.vm.async_continuation_count() > 0,
+    "expected async function to suspend and store an async continuation"
+  );
+  assert!(
+    runtime.heap.persistent_root_count() > baseline_roots,
+    "expected async continuation to allocate persistent roots"
+  );
+
+  runtime.teardown_microtasks();
+
+  assert_eq!(
+    runtime.vm.async_continuation_count(),
+    0,
+    "teardown_microtasks should tear down in-progress async continuations"
+  );
+  assert_eq!(
+    runtime.heap.persistent_root_count(),
+    baseline_roots,
+    "expected teardown_microtasks to restore baseline persistent root count"
+  );
+
+  Ok(())
+}
