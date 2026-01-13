@@ -76,6 +76,11 @@ Code map (repo reality):
       - Applies the default renderer mitigation policy via `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`
         (best-effort; escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1`).
       - Does **not** assign the child to a Job object (callers must do that separately).
+    - Manual sandbox probe example (`crates/win-sandbox/examples/probe.rs`)
+      - `cargo run -p win-sandbox --example probe -- --connect-localhost`
+      - Spawns a sandboxed copy of itself and prints observed sandbox state from inside the child
+        (AppContainer + integrity level + Job membership + selected mitigations), with optional
+        filesystem/network probes for quick regression triage.
     - Mitigation policy builder + verifier (`mitigations::*`)
     - Capability detection helpers (`support::*`, `SandboxSupport`) and opt-in policy wrapper
       (`RendererSandboxMode`) used to avoid silent sandbox downgrades on unsupported hosts.
