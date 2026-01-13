@@ -25,6 +25,28 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(is_css_ascii_whitespace)
 }
 
+fn strip_css_comments_to_whitespace(value: &str) -> std::borrow::Cow<'_, str> {
+  if !value.contains("/*") {
+    return std::borrow::Cow::Borrowed(value);
+  }
+
+  let mut out = String::with_capacity(value.len());
+  let mut idx = 0usize;
+  while let Some(rel_start) = value.get(idx..).and_then(|s| s.find("/*")) {
+    let start = idx + rel_start;
+    out.push_str(value.get(idx..start).unwrap_or(""));
+    out.push(' ');
+    let after_start = start + "/*".len();
+    let Some(rel_end) = value.get(after_start..).and_then(|s| s.find("*/")) else {
+      idx = value.len();
+      break;
+    };
+    idx = after_start + rel_end + "*/".len();
+  }
+  out.push_str(value.get(idx..).unwrap_or(""));
+  std::borrow::Cow::Owned(out)
+}
+
 fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
   value
     .split(is_css_ascii_whitespace)
@@ -1240,7 +1262,8 @@ impl<'a> TrackListParser<'a> {
   fn parse_repeat(&mut self) -> Option<ParsedTracks> {
     let inner = self.consume_function_arguments("repeat")?;
     let (count_str, pattern_str) = split_once_comma(&inner)?;
-    let count_str = trim_ascii_whitespace(count_str);
+    let count_str = strip_css_comments_to_whitespace(count_str);
+    let count_str = trim_ascii_whitespace(count_str.as_ref());
     let pattern = parse_track_list(pattern_str);
     if pattern.tracks.is_empty() {
       return None;
@@ -1355,7 +1378,8 @@ fn parse_line_name_list(
     if parser.starts_with_ident("repeat") {
       let inner = parser.consume_function_arguments("repeat")?;
       let (count_str, pattern_str) = split_once_comma(&inner)?;
-      let count_str = trim_ascii_whitespace(count_str);
+      let count_str = strip_css_comments_to_whitespace(count_str);
+      let count_str = trim_ascii_whitespace(count_str.as_ref());
 
       if count_str.is_empty() || !count_str.chars().all(|c| c.is_ascii_digit()) {
         return None;
@@ -1406,18 +1430,35 @@ pub fn parse_subgrid_line_names(input: &str) -> Option<Vec<Vec<String>>> {
 }
 
 fn split_once_comma(input: &str) -> Option<(&str, &str)> {
+  let bytes = input.as_bytes();
   let mut depth: usize = 0;
-  for (idx, ch) in input.char_indices() {
-    match ch {
-      '(' => depth += 1,
-      ')' => depth = depth.saturating_sub(1),
-      ',' if depth == 0 => {
+  let mut idx = 0usize;
+  while idx < bytes.len() {
+    let b = bytes[idx];
+
+    // Treat CSS comments as whitespace so commas inside comments don't terminate the split.
+    if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+      idx += 2;
+      while idx + 1 < bytes.len() && !(bytes[idx] == b'*' && bytes[idx + 1] == b'/') {
+        idx += 1;
+      }
+      idx = idx.saturating_add(2).min(bytes.len());
+      continue;
+    }
+
+    match b {
+      b'(' => depth += 1,
+      b')' => depth = depth.saturating_sub(1),
+      b',' if depth == 0 => {
         let first = trim_ascii_whitespace(input.get(..idx).unwrap_or(""));
-        let second = trim_ascii_whitespace(input.get(idx + ch.len_utf8()..).unwrap_or(""));
+        let second =
+          trim_ascii_whitespace(input.get(idx + ','.len_utf8()..).unwrap_or(""));
         return Some((first, second));
       }
       _ => {}
     }
+
+    idx += 1;
   }
   None
 }

@@ -4,6 +4,7 @@ mod grid_auto_flow_tokenization_test;
 mod grid_line_case_insensitive_test;
 mod grid_shorthand_auto_flow_detection_test;
 mod grid_shorthand_case_insensitive_test;
+mod grid_track_repeat_comments_test;
 mod subgrid_line_names_test;
 mod subgrid_line_names_strict_test;
 
