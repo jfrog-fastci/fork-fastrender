@@ -1146,6 +1146,50 @@ fn compiled_regex_literal_parsing_handles_unicode_sets_v_flag_nested_char_classe
 }
 
 #[test]
+fn compiled_regex_literal_parses_escaped_slash_delimiter() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The pattern contains an escaped `/` delimiter (`\/`). The compiled HIR path must not split the
+  // literal early at that escaped slash.
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f(){ return /a\/b/.test("a/b"); }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_regex_literal_parses_slash_in_character_class() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The pattern contains an unescaped `/` inside a character class (`[/]`). The compiled HIR path
+  // must ignore that slash when searching for the closing delimiter.
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f(){ return /[/]/.test("/"); }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_execution_respects_fuel_budget_in_infinite_loop() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
