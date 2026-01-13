@@ -115,7 +115,10 @@ unsafe fn get_proc<T>(module: HMODULE, symbol: &'static [u8], func: &'static str
       // exported symbol's signature.
       Ok(std::mem::transmute_copy(&proc))
     }
-    None => Err(WinSandboxError::last(func)),
+    None => Err(WinSandboxError::from_code(
+      func,
+      windows_sys::Win32::Foundation::ERROR_PROC_NOT_FOUND,
+    )),
   }
 }
 
