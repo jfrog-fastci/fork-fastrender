@@ -6895,31 +6895,31 @@ impl<'a> Evaluator<'a> {
         }
       };
 
-    // Keep the superclass value alive across subsequent allocations/GC until it becomes reachable
-    // from the class constructor object (via its native `super` slot).
-    //
-    // Without this, `class B extends (class A {}) {}` can lose the ephemeral superclass constructor
-    // to GC between evaluating `extends` and wiring the class constructor/prototype chains.
-    struct RootStackTruncateGuard {
-      heap: *mut Heap,
-      len: usize,
-    }
-    impl Drop for RootStackTruncateGuard {
-      fn drop(&mut self) {
-        // Safety: `heap` remains valid for the duration of `eval_class` and the guard does not
-        // outlive the caller's `scope`.
-        unsafe {
-          (*self.heap).root_stack.truncate(self.len);
+      // Keep the superclass value alive across subsequent allocations/GC until it becomes reachable
+      // from the class constructor object (via its native `super` slot).
+      //
+      // Without this, `class B extends (class A {}) {}` can lose the ephemeral superclass constructor
+      // to GC between evaluating `extends` and wiring the class constructor/prototype chains.
+      struct RootStackTruncateGuard {
+        heap: *mut Heap,
+        len: usize,
+      }
+      impl Drop for RootStackTruncateGuard {
+        fn drop(&mut self) {
+          // Safety: `heap` remains valid for the duration of `eval_class` and the guard does not
+          // outlive the caller's `scope`.
+          unsafe {
+            (*self.heap).root_stack.truncate(self.len);
+          }
         }
       }
-    }
-    let super_root_len = scope.heap().root_stack.len();
-    scope.push_root(super_value)?;
-    let heap_ptr = scope.heap_mut() as *mut Heap;
-    let _super_root_guard = RootStackTruncateGuard {
-      heap: heap_ptr,
-      len: super_root_len,
-    };
+      let super_root_len = scope.heap().root_stack.len();
+      scope.push_root(super_value)?;
+      let heap_ptr = scope.heap_mut() as *mut Heap;
+      let _super_root_guard = RootStackTruncateGuard {
+        heap: heap_ptr,
+        len: super_root_len,
+      };
 
     // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
     // native-slot storage.
