@@ -2,6 +2,8 @@
 
 use selectors::context::QuirksMode;
 
+use crate::dom::DomNode;
+
 use super::{Document, NodeId, NodeKind};
 
 fn find_first_text_child(doc: &Document, parent: NodeId) -> Option<NodeId> {
@@ -11,6 +13,19 @@ fn find_first_text_child(doc: &Document, parent: NodeId) -> Option<NodeId> {
     .iter()
     .copied()
     .find(|&child| doc.node(child).parent == Some(parent) && matches!(doc.node(child).kind, NodeKind::Text { .. }))
+}
+
+fn find_dom_by_id<'a>(root: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+  let mut stack: Vec<&DomNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if node.get_attribute_ref("id") == Some(id) {
+      return Some(node);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
 }
 
 #[test]
@@ -148,4 +163,73 @@ fn form_control_property_setters_record_form_state_mutations() {
   assert!(mutations.attribute_changed.is_empty());
   assert!(mutations.text_changed.is_empty());
   assert!(mutations.child_list_changed.is_empty());
+}
+
+#[test]
+fn renderer_dom_snapshot_projects_runtime_form_control_state() {
+  let html = concat!(
+    "<!doctype html><html><body>",
+    "<input id=t value=foo>",
+    "<input id=c type=checkbox>",
+    "<input id=f type=file>",
+    "<textarea id=ta>hello</textarea>",
+    "<select><option id=o>One</option></select>",
+    "</body></html>",
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let text_input = doc.get_element_by_id("t").expect("text input");
+  let checkbox = doc.get_element_by_id("c").expect("checkbox");
+  let file_input = doc.get_element_by_id("f").expect("file input");
+  let textarea = doc.get_element_by_id("ta").expect("textarea");
+  let option = doc.get_element_by_id("o").expect("option");
+
+  // Mutate runtime state without mutating content attributes.
+  doc.set_input_value(text_input, "bar").unwrap();
+  doc.set_input_checked(checkbox, true).unwrap();
+  doc.set_input_value(file_input, "C:\\secret\\path.txt").unwrap();
+  doc.set_textarea_value(textarea, "world").unwrap();
+  doc.set_option_selected(option, true).unwrap();
+
+  let mut snapshot = doc.to_renderer_dom_with_mapping();
+  doc.project_form_control_state_into_renderer_dom_snapshot(&mut snapshot.dom, &snapshot.mapping);
+
+  let text_node = find_dom_by_id(&snapshot.dom, "t").expect("text input snapshot");
+  assert_eq!(text_node.get_attribute_ref("value"), Some("bar"));
+
+  let checkbox_node = find_dom_by_id(&snapshot.dom, "c").expect("checkbox snapshot");
+  assert!(
+    checkbox_node.get_attribute_ref("checked").is_some(),
+    "checkedness should be projected into `checked` attribute"
+  );
+
+  let file_node = find_dom_by_id(&snapshot.dom, "f").expect("file input snapshot");
+  assert_eq!(
+    file_node.get_attribute_ref("value"),
+    None,
+    "file input value must not be projected into markup attributes"
+  );
+
+  let textarea_node = find_dom_by_id(&snapshot.dom, "ta").expect("textarea snapshot");
+  assert_eq!(
+    textarea_node.get_attribute_ref("data-fastr-value"),
+    Some("world"),
+    "textarea runtime value should be projected into `data-fastr-value`"
+  );
+
+  let option_node = find_dom_by_id(&snapshot.dom, "o").expect("option snapshot");
+  assert!(
+    option_node.get_attribute_ref("selected").is_some(),
+    "option selectedness should be projected into `selected` attribute"
+  );
+
+  // Reset textarea should remove dirty override attribute.
+  doc.reset_textarea(textarea).unwrap();
+  let mut snapshot = doc.to_renderer_dom_with_mapping();
+  doc.project_form_control_state_into_renderer_dom_snapshot(&mut snapshot.dom, &snapshot.mapping);
+  let textarea_node = find_dom_by_id(&snapshot.dom, "ta").expect("textarea snapshot");
+  assert_eq!(
+    textarea_node.get_attribute_ref("data-fastr-value"),
+    None,
+    "non-dirty textarea should not carry `data-fastr-value` override"
+  );
 }

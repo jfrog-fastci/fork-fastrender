@@ -1,4 +1,5 @@
-use super::{Document, DomError, NodeId, NodeKind};
+use super::{Document, DomError, NodeId, NodeKind, RendererDomMapping};
+use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputState {
@@ -36,6 +37,13 @@ fn attrs_has_ci(attrs: &[(String, String)], name: &str) -> bool {
 fn is_input_checkable(type_attr: Option<&str>) -> bool {
   let ty = type_attr.unwrap_or("text");
   ty.eq_ignore_ascii_case("checkbox") || ty.eq_ignore_ascii_case("radio")
+}
+
+#[inline]
+fn trim_ascii_whitespace(value: &str) -> &str {
+  // HTML attribute parsing ignores leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but does
+  // not treat all Unicode whitespace as ignorable (e.g. NBSP).
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
 impl Document {
@@ -528,5 +536,126 @@ impl Document {
       self.bump_mutation_generation_classified();
     }
     Ok(())
+  }
+
+  /// Project runtime form control state (e.g. `.value`, `.checked`) into a renderer DOM snapshot.
+  ///
+  /// `dom2` tracks mutable form control state out-of-markup using internal slots (`InputState`,
+  /// `TextareaState`, `OptionState`). When rendering via the legacy (dom1) pipeline, the renderer
+  /// consumes an immutable [`DomNode`] snapshot that only includes content attributes.
+  ///
+  /// This helper mutates a renderer snapshot in-place so paints reflect live runtime state:
+  /// - `<input>`: mirror current value into `value=` (except `type=file`) and checkedness into
+  ///   `checked` for checkbox/radio inputs.
+  /// - `<textarea>`: mirror edited values into `data-fastr-value` (and remove it when not dirty).
+  /// - `<option>`: mirror selectedness into `selected`.
+  pub(crate) fn project_form_control_state_into_renderer_dom_snapshot(
+    &self,
+    snapshot_dom: &mut DomNode,
+    mapping: &RendererDomMapping,
+  ) {
+    // Avoid recursion for deep DOM trees and to keep preorder ids aligned with
+    // `crate::dom::enumerate_dom_ids`.
+    let mut stack: Vec<*mut DomNode> = vec![snapshot_dom as *mut DomNode];
+    let mut preorder_id: usize = 0;
+
+    while let Some(ptr) = stack.pop() {
+      preorder_id += 1;
+
+      // Safety: pointers are derived from a live `DomNode` tree; we never mutate a node's `children`
+      // vector while pointers into it are stored on the stack.
+      let node = unsafe { &mut *ptr };
+
+      let Some(dom2_id) = mapping.node_id_for_preorder(preorder_id) else {
+        // Mapping should cover the entire snapshot, but be defensive.
+        let len = node.children.len();
+        let children_ptr = node.children.as_mut_ptr();
+        for idx in (0..len).rev() {
+          stack.push(unsafe { children_ptr.add(idx) });
+        }
+        continue;
+      };
+
+      // Apply only to HTML elements in the HTML namespace.
+      let (tag_name, namespace) = match &node.node_type {
+        DomNodeType::Element { tag_name, namespace, .. } => (tag_name.as_str(), namespace.as_str()),
+        _ => {
+          let len = node.children.len();
+          let children_ptr = node.children.as_mut_ptr();
+          for idx in (0..len).rev() {
+            stack.push(unsafe { children_ptr.add(idx) });
+          }
+          continue;
+        }
+      };
+      if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+        let len = node.children.len();
+        let children_ptr = node.children.as_mut_ptr();
+        for idx in (0..len).rev() {
+          stack.push(unsafe { children_ptr.add(idx) });
+        }
+        continue;
+      }
+
+      if tag_name.eq_ignore_ascii_case("input") {
+        let input_type = node
+          .get_attribute_ref("type")
+          .map(trim_ascii_whitespace)
+          .unwrap_or("text");
+        let is_file = input_type.eq_ignore_ascii_case("file");
+
+        if !is_file {
+          if let Some(state) = self
+            .input_states
+            .get(dom2_id.index())
+            .and_then(|s| s.as_ref())
+          {
+            node.set_attribute("value", &state.value);
+          }
+        }
+
+        if is_input_checkable(Some(input_type)) {
+          if let Some(state) = self
+            .input_states
+            .get(dom2_id.index())
+            .and_then(|s| s.as_ref())
+          {
+            node.toggle_bool_attribute("checked", state.checkedness);
+          }
+        }
+      } else if tag_name.eq_ignore_ascii_case("textarea") {
+        if let Some(state) = self
+          .textarea_states
+          .get(dom2_id.index())
+          .and_then(|s| s.as_ref())
+        {
+          if state.dirty_value {
+            node.set_attribute("data-fastr-value", &state.value);
+          } else {
+            // For non-dirty textareas, the current value is derived from descendant text nodes with
+            // HTML-specific normalization (see `crate::dom::textarea_value`); keep `data-fastr-value`
+            // absent so painting follows the default semantics (and doesn't preserve an otherwise
+            // stripped leading newline).
+            node.remove_attribute("data-fastr-value");
+          }
+        }
+      } else if tag_name.eq_ignore_ascii_case("option") {
+        if let Some(state) = self
+          .option_states
+          .get(dom2_id.index())
+          .and_then(|s| s.as_ref())
+        {
+          node.toggle_bool_attribute("selected", state.selectedness);
+        }
+      }
+
+      let len = node.children.len();
+      let children_ptr = node.children.as_mut_ptr();
+      for idx in (0..len).rev() {
+        // SAFETY: `children_ptr` came from `node.children` and the vector is not mutated until after
+        // this node is processed, so these pointers remain valid.
+        stack.push(unsafe { children_ptr.add(idx) });
+      }
+    }
   }
 }

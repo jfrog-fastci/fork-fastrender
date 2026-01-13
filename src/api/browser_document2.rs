@@ -330,7 +330,10 @@ impl BrowserDocument2 {
     if needs_layout {
       let prev_prepared = self.prepared.take();
 
-      let snapshot = self.dom.to_renderer_dom_with_mapping();
+      let mut snapshot = self.dom.to_renderer_dom_with_mapping();
+      self
+        .dom
+        .project_form_control_state_into_renderer_dom_snapshot(&mut snapshot.dom, &snapshot.mapping);
       let mut prepared = match self.prepare_dom_with_options(&snapshot.dom) {
         Ok(prepared) => prepared,
         Err(err) => {

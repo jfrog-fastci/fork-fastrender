@@ -2165,8 +2165,12 @@ impl BrowserDocumentDom2 {
     let options = self.options.clone();
     let dom_generation = self.dom.mutation_generation();
     let snapshot = self.dom.as_ref().to_renderer_dom_with_mapping();
-    let renderer_dom = snapshot.dom;
+    let mut renderer_dom = snapshot.dom;
     let mapping = snapshot.mapping;
+    self
+      .dom
+      .as_ref()
+      .project_form_control_state_into_renderer_dom_snapshot(&mut renderer_dom, &mapping);
     let renderer_dom_ref = &renderer_dom;
     let interaction_state = self.interaction_state.as_ref();
 
