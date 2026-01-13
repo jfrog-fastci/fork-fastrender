@@ -3412,7 +3412,7 @@ impl<'a> Parser<'a> {
               return Ok(CharClassItem::Char(v as u32));
             }
             Ok(CharClassItem::Char(0x0000))
-          }
+            }
           x if (b'1' as u16..=b'7' as u16).contains(&x) => {
             // Annex B legacy octal escapes in character classes.
             if self.flags.has_either_unicode_flag() {

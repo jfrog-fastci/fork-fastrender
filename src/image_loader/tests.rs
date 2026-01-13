@@ -280,40 +280,33 @@ fn svg_subresource_cache_partitions_by_referrer_for_sprites() {
   let subresource_cache: super::SvgSubresourceCache =
     Arc::new(Mutex::new(super::SizedLruCache::new(64, 1024 * 1024)));
 
-  let ctx_a = ResourceContext {
-    document_url: Some("https://example.com/a.svg".to_string()),
-    ..Default::default()
-  };
-  let ctx_b = ResourceContext {
-    document_url: Some("https://example.com/b.svg".to_string()),
-    ..Default::default()
-  };
+  let ctx = ResourceContext::default();
 
   let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><use href="https://example.com/sprite.svg#icon"/></svg>"#;
 
   let out_a_1 = super::inline_svg_use_references(
     svg,
-    "https://example.com/importer.svg",
+    "https://example.com/a.svg",
     &fetcher,
-    Some(&ctx_a),
+    Some(&ctx),
     Some(&subresource_cache),
   )
   .expect("inline <use> (a)")
   .into_owned();
   let out_b = super::inline_svg_use_references(
     svg,
-    "https://example.com/importer.svg",
+    "https://example.com/b.svg",
     &fetcher,
-    Some(&ctx_b),
+    Some(&ctx),
     Some(&subresource_cache),
   )
   .expect("inline <use> (b)")
   .into_owned();
   let out_a_2 = super::inline_svg_use_references(
     svg,
-    "https://example.com/importer.svg",
+    "https://example.com/a.svg",
     &fetcher,
-    Some(&ctx_a),
+    Some(&ctx),
     Some(&subresource_cache),
   )
   .expect("inline <use> (a again)")
@@ -341,41 +334,34 @@ fn svg_subresource_cache_partitions_by_referrer_for_inlined_images() {
   let subresource_cache: super::SvgSubresourceCache =
     Arc::new(Mutex::new(super::SizedLruCache::new(64, 1024 * 1024)));
 
-  let ctx_a = ResourceContext {
-    document_url: Some("https://example.com/a.svg".to_string()),
-    ..Default::default()
-  };
-  let ctx_b = ResourceContext {
-    document_url: Some("https://example.com/b.svg".to_string()),
-    ..Default::default()
-  };
+  let ctx = ResourceContext::default();
 
   let svg =
     r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="https://example.com/img.png" width="1" height="1"/></svg>"#;
 
   let out_a_1 = super::inline_svg_image_references(
     svg,
-    "https://example.com/importer.svg",
+    "https://example.com/a.svg",
     &fetcher,
-    Some(&ctx_a),
+    Some(&ctx),
     Some(&subresource_cache),
   )
   .expect("inline <image> (a)")
   .into_owned();
   let out_b = super::inline_svg_image_references(
     svg,
-    "https://example.com/importer.svg",
+    "https://example.com/b.svg",
     &fetcher,
-    Some(&ctx_b),
+    Some(&ctx),
     Some(&subresource_cache),
   )
   .expect("inline <image> (b)")
   .into_owned();
   let out_a_2 = super::inline_svg_image_references(
     svg,
-    "https://example.com/importer.svg",
+    "https://example.com/a.svg",
     &fetcher,
-    Some(&ctx_a),
+    Some(&ctx),
     Some(&subresource_cache),
   )
   .expect("inline <image> (a again)")
