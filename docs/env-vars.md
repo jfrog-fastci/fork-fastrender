@@ -86,6 +86,11 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - Intended for debugging and compatibility with older/unusual Windows configurations.
 - `FASTR_LOG_SANDBOX=0|1` – **Windows-only**: enable verbose Windows sandbox spawn logging (useful when debugging AppContainer/restricted-token failures).
   - In debug builds, sandbox spawn debug logs are enabled by default; set this in release builds.
+- `FASTR_RENDERER_JOB_MEM_LIMIT_MB=<MiB>` – **Windows-only**: apply a best-effort renderer Job object memory limit.
+  - Parsed by `crates/win-sandbox` (`win_sandbox::renderer::RendererSandboxBuilder`) and the `win-sandbox` probe tool.
+  - Sets `JOB_OBJECT_LIMIT_JOB_MEMORY` (`JOBOBJECT_EXTENDED_LIMIT_INFORMATION::JobMemoryLimit`) in bytes.
+  - Semantics: caps total *committed memory* across all processes in the job (not RSS; not per-process).
+  - Note: `src/sandbox/windows.rs` does **not** currently read this env var.
 - `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` – **Windows-only**: opt into inheriting the full parent environment when spawning sandboxed renderer children.
   - By default `src/sandbox/windows.rs` builds a sanitized environment block to avoid leaking secrets
     (and to ensure TEMP/TMP point at an AppContainer-writable location).

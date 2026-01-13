@@ -48,7 +48,7 @@ mod windows {
   };
   use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-    TokenIsAppContainer, DACL_SECURITY_INFORMATION, PSID, SECURITY_CAPABILITIES,
+    TokenIsAppContainer, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSID, SECURITY_CAPABILITIES,
     TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
@@ -101,6 +101,9 @@ mod windows {
 
   /// Legacy/alternate spelling for disabling the Windows renderer sandbox.
   const ENV_WINDOWS_RENDERER_SANDBOX: &str = "FASTR_WINDOWS_RENDERER_SANDBOX";
+
+  /// Best-effort job memory limit (in MiB) applied to the renderer Job object.
+  const JOB_MEM_LIMIT_ENV: &str = "FASTR_RENDERER_JOB_MEM_LIMIT_MB";
 
   /// Proc thread attribute value for `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`.
   ///
@@ -231,6 +234,31 @@ mod windows {
     )
   }
 
+  fn job_memory_limit_bytes_from_env() -> io::Result<Option<usize>> {
+    match std::env::var(JOB_MEM_LIMIT_ENV) {
+      Ok(raw) => {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed == "0" {
+          return Ok(None);
+        }
+
+        let mb: u64 = trimmed.parse().map_err(|_| {
+          io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid environment variable `{JOB_MEM_LIMIT_ENV}`: `{raw}`"),
+          )
+        })?;
+        let bytes = mb.saturating_mul(1024 * 1024);
+        Ok(Some(bytes.min(usize::MAX as u64) as usize))
+      }
+      Err(std::env::VarError::NotPresent) => Ok(None),
+      Err(std::env::VarError::NotUnicode(_)) => Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("invalid environment variable `{JOB_MEM_LIMIT_ENV}`: <non-unicode>"),
+      )),
+    }
+  }
+
   fn spawn_process_appcontainer(
     exe: &Path,
     args: &[OsString],
@@ -246,7 +274,9 @@ mod windows {
     .map_err(win_err)?;
 
     let job = Job::new(None).map_err(win_err)?;
-    job.set_renderer_limits(None).map_err(win_err)?;
+    job
+      .set_renderer_limits(job_memory_limit_bytes_from_env()?)
+      .map_err(win_err)?;
 
     // Always relocate the image to a temp dir that we can ACL for the AppContainer SID; this avoids
     // common `ERROR_ACCESS_DENIED` failures when running from a dev checkout.
@@ -286,7 +316,9 @@ mod windows {
     let token = RestrictedToken::for_current_process_low_integrity().map_err(win_err)?;
 
     let job = Job::new(None).map_err(win_err)?;
-    job.set_renderer_limits(None).map_err(win_err)?;
+    job
+      .set_renderer_limits(job_memory_limit_bytes_from_env()?)
+      .map_err(win_err)?;
 
     let (pi, used_breakaway) = spawn_with_optional_breakaway(parent_in_job, |flags| {
       spawn_with_attributes(
@@ -313,7 +345,9 @@ mod windows {
   ) -> io::Result<SpawnedChild> {
     // Best-effort: still apply mitigations + job limits even when the sandbox is disabled/fails.
     let job = Job::new(None).map_err(win_err)?;
-    job.set_renderer_limits(None).map_err(win_err)?;
+    job
+      .set_renderer_limits(job_memory_limit_bytes_from_env()?)
+      .map_err(win_err)?;
 
     let (pi, used_breakaway) = spawn_with_optional_breakaway(parent_in_job, |flags| {
       spawn_with_attributes(
