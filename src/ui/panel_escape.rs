@@ -45,9 +45,29 @@ pub fn history_panel_escape_action(
   }
 }
 
+/// Decide whether the Downloads side panel should close when Escape is pressed.
+///
+/// The Downloads panel contains its own search `TextEdit`. When that input consumes Escape to clear
+/// the query, we should *not* also close the panel. Therefore, callers should:
+/// 1) run the panel UI first (so the search field can consume Escape when clearing), then
+/// 2) if Escape is still available, use this helper to decide if the panel should close.
+///
+/// Semantics:
+/// - If another chrome text surface is active (address bar, tab search, find-in-page), do not close
+///   the Downloads panel here (return `false`).
+/// - Otherwise, allow Escape to close the panel (return `true`).
+#[must_use]
+pub fn downloads_panel_should_close_on_escape(
+  address_bar_has_focus: bool,
+  tab_search_open: bool,
+  find_in_page_open: bool,
+) -> bool {
+  !(address_bar_has_focus || tab_search_open || find_in_page_open)
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{history_panel_escape_action, PanelEscapeAction};
+  use super::{downloads_panel_should_close_on_escape, history_panel_escape_action, PanelEscapeAction};
 
   #[test]
   fn non_empty_search_clears() {
@@ -71,5 +91,17 @@ mod tests {
       history_panel_escape_action(true, false, true, false, false),
       PanelEscapeAction::Noop
     );
+  }
+
+  #[test]
+  fn downloads_panel_escape_guard_blocks_global_chrome_inputs() {
+    assert!(!downloads_panel_should_close_on_escape(true, false, false));
+    assert!(!downloads_panel_should_close_on_escape(false, true, false));
+    assert!(!downloads_panel_should_close_on_escape(false, false, true));
+  }
+
+  #[test]
+  fn downloads_panel_escape_guard_allows_close_when_no_global_focus() {
+    assert!(downloads_panel_should_close_on_escape(false, false, false));
   }
 }

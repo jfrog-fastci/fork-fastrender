@@ -200,7 +200,7 @@ pub fn downloads_panel_ui(
       // Allow Escape to close the downloads panel when the search field is focused *and* there is
       // nothing left to clear.
       if search_out.response.has_focus()
-        && ui.input(|i| i.key_pressed(egui::Key::Escape))
+        && ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape))
         && !search_out.cleared
         && search_query.trim().is_empty()
       {

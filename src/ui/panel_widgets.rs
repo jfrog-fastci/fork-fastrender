@@ -198,7 +198,14 @@ pub fn panel_search_field(
   }
 
   // Support Escape-to-clear while focused, similar to many browser UIs.
-  if output.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) && !text.is_empty() {
+  //
+  // Important: consume the Escape key when we clear so outer surfaces (e.g. "Escape closes panel")
+  // can still run when the query is already empty, but won't preempt the clear-on-first-Escape
+  // interaction.
+  if output.response.has_focus()
+    && !text.is_empty()
+    && ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape))
+  {
     text.clear();
     output.cleared = true;
     // Keep focus on the input so keyboard users can continue typing.

@@ -22995,16 +22995,25 @@ impl App {
       }
     }
 
-    if !self.clear_browsing_data_dialog_open
-      && self.downloads_panel_open
-      && ctx.input(|i| i.key_pressed(egui::Key::Escape))
-      && !self.chrome_has_text_focus
+    // Render before handling Escape-to-close so focused panel text inputs (e.g. the Downloads
+    // search field) can consume Escape (to clear) before we interpret it as "close the panel".
+    if self.downloads_panel_open {
+      self.render_downloads_panel(&ctx);
+    }
+    if self.downloads_panel_open
+      && !self.clear_browsing_data_dialog_open
+      && fastrender::ui::panel_escape::downloads_panel_should_close_on_escape(
+        self.browser_state.chrome.address_bar_has_focus,
+        self.browser_state.chrome.tab_search.open,
+        self
+          .browser_state
+          .active_tab()
+          .is_some_and(|tab| tab.find.open),
+      )
+      && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
       self.close_downloads_panel();
       self.page_has_focus = self.should_restore_page_focus();
-    }
-    if self.downloads_panel_open {
-      self.render_downloads_panel(&ctx);
     }
 
     // -----------------------------------------------------------------------------
