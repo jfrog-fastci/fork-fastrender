@@ -24,6 +24,7 @@ mod resource;
 mod multiprocess;
 mod sandbox;
 mod scroll;
+mod security;
 mod ui;
 mod wpt;
 

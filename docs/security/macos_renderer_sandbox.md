@@ -170,3 +170,55 @@ which works for unsigned binaries and can be applied independently of packaging.
 Even after `.app` distribution exists, we still expect to use Seatbelt as a fine-grained,
 per-process sandbox layer for renderer isolation, because it works for unsigned binaries and can be
 tailored more narrowly than coarse app-level entitlements.
+
+---
+
+## Renderer IPC mechanism allowances (Seatbelt SBPL)
+
+The multiprocess renderer↔browser IPC transport choice affects which macOS Seatbelt operations must
+be allowed. FastRender keeps IPC-related allowances behind a small enum so future IPC choices require
+minimal SBPL churn.
+
+Code: `src/security/macos_renderer_sandbox.rs`
+
+```rust
+use fastrender::security::macos_renderer_sandbox::{build_renderer_sbpl, RendererIpcMechanism};
+
+let sbpl = build_renderer_sbpl(RendererIpcMechanism::PipesOnly);
+```
+
+### `PipesOnly`
+
+**Primitive:** anonymous pipes / inherited file descriptors.
+
+**Seatbelt:** typically no dedicated IPC-specific operation is required as long as the browser
+creates the FDs before sandboxing.
+
+### `PosixShm`
+
+**Primitive:** POSIX shared memory (`shm_open`, `shm_unlink`) for large buffers.
+
+**Seatbelt:** allow `ipc-posix-shm`.
+
+### `UnixSocket`
+
+**Primitive:** filesystem-path Unix domain sockets (`AF_UNIX`, `sockaddr_un`).
+
+**Seatbelt:** allow outbound connects:
+
+- `network-outbound (remote unix-socket)`
+
+### `MachPort`
+
+**Primitive:** Mach ports / bootstrap services (likely for `ipc-channel`-style transport).
+
+**Seatbelt:** allow `mach-lookup` (ideally scoped to an allowlist of service names).
+
+### Tests
+
+macOS-only regression tests for these toggles live in:
+
+- `tests/security/macos_renderer_sandbox_ipc.rs`
+
+They spawn a dedicated probe process (`src/bin/macos_renderer_sandbox_ipc_probe.rs`) because applying
+Seatbelt via `sandbox_init` is irreversible.

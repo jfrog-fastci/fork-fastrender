@@ -208,6 +208,7 @@ pub mod style;
 pub mod text;
 mod textarea;
 pub mod tree;
+pub mod security;
 
 // ============================================================================
 // Supporting Modules
