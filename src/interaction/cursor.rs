@@ -3,24 +3,6 @@ use crate::ui::messages::CursorKind;
 
 use super::hit_test::{HitTestKind, HitTestResult};
 
-fn cursor_kind_from_cursor_keyword(keyword: CursorKeyword) -> Option<CursorKind> {
-  Some(match keyword {
-    CursorKeyword::Auto => return None,
-    CursorKeyword::Default => CursorKind::Default,
-    CursorKeyword::None => CursorKind::Hidden,
-    CursorKeyword::Pointer => CursorKind::Pointer,
-    CursorKeyword::Text | CursorKeyword::VerticalText => CursorKind::Text,
-    CursorKeyword::Crosshair => CursorKind::Crosshair,
-    CursorKeyword::NotAllowed | CursorKeyword::NoDrop => CursorKind::NotAllowed,
-    CursorKeyword::Grab => CursorKind::Grab,
-    CursorKeyword::Grabbing => CursorKind::Grabbing,
-    // Concrete cursor keywords that are not currently representable in `ui::CursorKind`.
-    //
-    // Still treat them as concrete overrides (so they suppress `cursor: auto` heuristics).
-    _ => CursorKind::Default,
-  })
-}
-
 /// Determine the desired UI cursor kind for a hit-tested target.
 ///
 /// This is the single authoritative helper for mapping hit-test results to [`CursorKind`].
@@ -34,7 +16,9 @@ pub fn cursor_kind_for_hit(hit: Option<&HitTestResult>) -> CursorKind {
     return CursorKind::Default;
   };
 
-  if let Some(kind) = cursor_kind_from_cursor_keyword(hit.css_cursor) {
+  // A concrete `cursor` value (including ones that degrade to `CursorKind::Default`) must suppress
+  // `cursor: auto` heuristics, so we treat any `Some(...)` return as authoritative.
+  if let Some(kind) = CursorKind::from_css_cursor_keyword(hit.css_cursor) {
     return kind;
   }
 
