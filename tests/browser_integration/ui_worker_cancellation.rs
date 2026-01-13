@@ -4,7 +4,7 @@ use super::support::{create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewp
 use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
 use fastrender::ui::cancel::CancelGens;
-use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_for_test;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -473,6 +473,147 @@ fn rapid_scroll_cancels_stale_paint() {
       .iter()
       .all(|msg| !matches!(msg, WorkerToUi::FrameReady { .. })),
     "unexpected additional FrameReady messages after latest scroll frame: {extra_frame:?}"
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
+fn rapid_ticks_cancel_stale_paint() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let dir = tempdir().expect("temp dir");
+
+  std::fs::write(
+    dir.path().join("anim.html"),
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            html, body { background: rgb(0, 0, 0); }
+            #box {
+              width: 64px;
+              height: 64px;
+              background: rgb(255, 0, 0);
+              animation: fade 100ms linear infinite;
+            }
+            @keyframes fade {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>"#,
+  )
+  .expect("write anim.html");
+
+  let url = url::Url::from_file_path(dir.path().join("anim.html"))
+    .unwrap()
+    .to_string();
+
+  let cancel_gens = CancelGens::new();
+  // Slow down paints so tick bursts have time to cancel in-flight work.
+  let (ui_tx, ui_rx, join) = spawn_ui_worker_for_test("fastr-ui-worker-cancel-tick", Some(50))
+    .expect("spawn ui worker")
+    .split();
+  let tab_id = TabId::new();
+
+  ui_tx
+    .send(create_tab_msg_with_cancel(
+      tab_id,
+      Some(url.clone()),
+      cancel_gens.clone(),
+    ))
+    .unwrap();
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .unwrap();
+
+  // Wait for the initial navigation frame so the document is prepared.
+  let initial = recv_until(&ui_rx, MAX_WAIT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id
+    )
+  });
+  let initial_frame = initial.iter().find_map(|msg| match msg {
+    WorkerToUi::FrameReady { frame, .. } => Some(frame),
+    _ => None,
+  });
+  assert!(
+    initial_frame.is_some_and(|frame| frame.wants_ticks),
+    "expected animation page to request ticks; messages={initial:?}"
+  );
+
+  // Drain any remaining stage/navigation messages before we start the tick assertions.
+  for _ in ui_rx.try_iter() {}
+
+  // Start a tick-driven paint and wait for it to enter the paint stages so we can cancel it
+  // mid-flight.
+  cancel_gens.bump_paint();
+  ui_tx.send(UiToWorker::Tick { tab_id }).unwrap();
+
+  let is_paint_stage = |msg: &WorkerToUi| {
+    matches!(
+      msg,
+      WorkerToUi::Stage { tab_id: msg_tab, stage }
+        if *msg_tab == tab_id
+          && matches!(stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)
+    )
+  };
+  let paint_stage_msgs = recv_until(&ui_rx, MAX_WAIT, |msg| is_paint_stage(msg));
+  assert!(
+    paint_stage_msgs.iter().any(is_paint_stage),
+    "expected paint stage heartbeat during tick repaint (messages={paint_stage_msgs:?})"
+  );
+
+  // Send a burst of ticks; each tick should cancel any in-flight paint so we only render the final
+  // animation state.
+  for _ in 0..5 {
+    cancel_gens.bump_paint();
+    ui_tx.send(UiToWorker::Tick { tab_id }).unwrap();
+  }
+
+  let mut frames = Vec::new();
+  let start = Instant::now();
+  while start.elapsed() < MAX_WAIT && frames.len() < 1 {
+    match ui_rx.recv_timeout(Duration::from_millis(50)) {
+      Ok(WorkerToUi::FrameReady {
+        tab_id: msg_tab,
+        frame,
+      }) if msg_tab == tab_id => {
+        frames.push(frame);
+      }
+      Ok(_) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  assert_eq!(
+    frames.len(),
+    1,
+    "expected exactly one FrameReady after tick burst; frames={} (slow paint should cancel stale frames)",
+    frames.len()
+  );
+
+  // Ensure a stale FrameReady doesn't arrive after the latest frame.
+  let extra_frame = recv_until(&ui_rx, Duration::from_secs(1), |msg| {
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id
+    )
+  });
+  assert!(
+    extra_frame
+      .iter()
+      .all(|msg| !matches!(msg, WorkerToUi::FrameReady { .. })),
+    "unexpected additional FrameReady messages after latest tick frame: {extra_frame:?}"
   );
 
   drop(ui_tx);

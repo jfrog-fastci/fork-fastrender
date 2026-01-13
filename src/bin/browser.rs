@@ -6097,12 +6097,13 @@ impl App {
           | UiToWorker::StopLoading { .. } => cancel.bump_nav(),
           // Repaint-driving events should cancel in-flight paints so we don't waste time rendering
           // intermediate frames (e.g. rapid scroll/resize/typing).
-          UiToWorker::ViewportChanged { .. }
-          | UiToWorker::Scroll { .. }
-          | UiToWorker::ScrollTo { .. }
-          | UiToWorker::PointerMove { .. }
-          | UiToWorker::PointerDown { .. }
-          | UiToWorker::PointerUp { .. }
+           UiToWorker::Tick { .. }
+           | UiToWorker::ViewportChanged { .. }
+           | UiToWorker::Scroll { .. }
+           | UiToWorker::ScrollTo { .. }
+           | UiToWorker::PointerMove { .. }
+           | UiToWorker::PointerDown { .. }
+           | UiToWorker::PointerUp { .. }
           | UiToWorker::DropFiles { .. }
           | UiToWorker::SelectDropdownChoose { .. }
           | UiToWorker::SelectDropdownCancel { .. }
@@ -6124,14 +6125,13 @@ impl App {
           | UiToWorker::FindPrev { .. }
           | UiToWorker::FindStop { .. }
           | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
-          // `Tick` and tab-management messages should not force cancellation.
-          UiToWorker::Tick { .. }
-          | UiToWorker::SetMediaPreferences { .. }
-          | UiToWorker::ContextMenuRequest { .. }
-          | UiToWorker::CreateTab { .. }
-          | UiToWorker::NewTab { .. }
-          | UiToWorker::CloseTab { .. }
-          | UiToWorker::SetActiveTab { .. }
+           // Tab-management messages should not force cancellation.
+           UiToWorker::SetMediaPreferences { .. }
+           | UiToWorker::ContextMenuRequest { .. }
+           | UiToWorker::CreateTab { .. }
+           | UiToWorker::NewTab { .. }
+           | UiToWorker::CloseTab { .. }
+           | UiToWorker::SetActiveTab { .. }
           | UiToWorker::SetDownloadDirectory { .. }
           | UiToWorker::Copy { .. }
           | UiToWorker::SelectAll { .. }
