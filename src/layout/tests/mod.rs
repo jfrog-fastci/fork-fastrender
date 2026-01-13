@@ -60,6 +60,7 @@ mod container_query_scrollbar_gutter;
 mod container_type_establishes_bfc;
 mod containment_intrinsic_inline_size_test;
 mod content_visibility_auto_skip;
+mod css_table_abspos_fill_height_and_vertical_align;
 mod details_open_state;
 mod display_contents;
 mod empty_inline_boxes;
