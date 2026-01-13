@@ -373,6 +373,9 @@ impl ShmemRegion {
         // SAFETY: `dup_fd_cloexec` returns a new owned file descriptor.
         let file = unsafe { File::from_raw_fd(dup) };
         validate_fd_size_and_type(file.as_raw_fd(), *len)?;
+        // Defense-in-depth: ensure size-stability seals are applied before mapping if possible.
+        // This is best-effort; some kernels/sandboxes may make the fd unsealable.
+        let _ = lock_linux_memfd_seals(file.as_raw_fd());
         let mmap = map_file_mut(&file, *len)?;
         Ok(Self {
           len: *len,
@@ -871,6 +874,52 @@ mod tests {
 
     other.as_mut_slice()[1] = b'!';
     assert_eq!(&region.as_slice()[0..4], b"F!SH");
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn linux_memfd_map_applies_size_seals_when_possible() {
+    let c_name = CString::new("fastrender-shmem-test-seals")
+      .expect("static memfd name must not contain NUL bytes");
+    // SAFETY: `memfd_create` is a syscall/FFI boundary; `c_name` is NUL-terminated.
+    let fd =
+      unsafe { libc::memfd_create(c_name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
+    if fd < 0 {
+      let err = io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINVAL) {
+        // Older kernels may not support `MFD_ALLOW_SEALING`; nothing to validate here.
+        return;
+      }
+      panic!("memfd_create failed: {err}");
+    }
+
+    truncate_fd(fd, 4096).expect("truncate memfd");
+    // SAFETY: `fd` is freshly created and owned by us.
+    let file = unsafe { File::from_raw_fd(fd) };
+
+    // This memfd is intentionally unsealed; `ShmemRegion::map` should best-effort apply size seals.
+    let handle = ShmemHandle::LinuxMemfd {
+      fd: file.as_raw_fd(),
+      len: 4096,
+    };
+
+    // SAFETY: `fcntl(F_GET_SEALS)` takes no extra arguments.
+    let seals_before = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+    if seals_before >= 0 {
+      assert_eq!(
+        seals_before & (libc::F_SEAL_SHRINK | libc::F_SEAL_GROW),
+        0,
+        "expected test memfd to start without size seals"
+      );
+    }
+
+    let _region = ShmemRegion::map(&handle).expect("map memfd handle");
+    let seals_after = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+    if seals_after >= 0 {
+      assert!(seals_after & libc::F_SEAL_SHRINK != 0);
+      assert!(seals_after & libc::F_SEAL_GROW != 0);
+      assert!(seals_after & libc::F_SEAL_SEAL != 0);
+    }
   }
 
   #[cfg(target_os = "linux")]
