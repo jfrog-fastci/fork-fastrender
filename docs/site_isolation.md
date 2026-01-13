@@ -356,17 +356,18 @@ child frame’s surface should appear.
 Conceptual structure:
 
 ```rust
-pub struct SubframeEmbed {
+pub struct SubframeInfo {
     pub child: FrameId,
 
-    /// Child viewport in the embedder's CSS pixels (content-box sized).
-    pub rect_css: Rect,
+    /// Affine transform from subframe-local space into the embedder's coordinate space.
+    pub transform: AffineTransform,
 
-    /// Clip shape for the embedded surface (at minimum a rounded rect).
-    pub clip: ClipDescription,
+    /// Clip stack to apply in the embedder's space before drawing the child surface (intersection).
+    /// At minimum this should include overflow clipping + rounded corners (border-radius).
+    pub clip_stack: Vec<ClipItem>,
 
-    /// Z-order key relative to other content in the embedder.
-    pub stacking_key: StackingKey,
+    /// Stable key that defines z-order between subframes.
+    pub z_index: u64,
 }
 ```
 
@@ -540,4 +541,3 @@ Expected:
 - Iframe `SiteKey = Opaque(x)` → process `P(Opaque(x))`
 - Cross-origin relative to parent, therefore OOPIF
 - If process quota prevents creating `P(Opaque(x))`, navigation fails; do not reuse `P(a)`.
-

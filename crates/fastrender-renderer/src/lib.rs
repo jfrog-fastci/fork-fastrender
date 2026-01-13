@@ -134,7 +134,11 @@ impl<T: IpcTransport> RendererMainLoop<T> {
           match frame.render_placeholder(frame_id) {
             Ok(buffer) => {
               self.transport
-                .send(RendererToBrowser::FrameReady { frame_id, buffer })?;
+                .send(RendererToBrowser::FrameReady {
+                  frame_id,
+                  buffer,
+                  subframes: Vec::new(),
+                })?;
             }
             Err(message) => {
               let _ = self.transport.send(RendererToBrowser::Error {
@@ -230,7 +234,17 @@ mod tests {
     for _ in 0..2 {
       let msg = to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap();
       match msg {
-        RendererToBrowser::FrameReady { frame_id, buffer } => ready.push((frame_id, buffer)),
+        RendererToBrowser::FrameReady {
+          frame_id,
+          buffer,
+          subframes,
+        } => {
+          assert!(
+            subframes.is_empty(),
+            "renderer placeholder should not report subframes"
+          );
+          ready.push((frame_id, buffer));
+        }
         other => panic!("unexpected message: {other:?}"),
       }
     }
@@ -281,8 +295,13 @@ mod tests {
       .send(BrowserToRenderer::RequestRepaint { frame_id: frame })
       .unwrap();
     let first = match to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
-      RendererToBrowser::FrameReady { frame_id, buffer } => {
+      RendererToBrowser::FrameReady {
+        frame_id,
+        buffer,
+        subframes,
+      } => {
         assert_eq!(frame_id, frame);
+        assert!(subframes.is_empty());
         buffer
       }
       other => panic!("unexpected message: {other:?}"),
@@ -298,8 +317,13 @@ mod tests {
       .send(BrowserToRenderer::RequestRepaint { frame_id: frame })
       .unwrap();
     let second = match to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
-      RendererToBrowser::FrameReady { frame_id, buffer } => {
+      RendererToBrowser::FrameReady {
+        frame_id,
+        buffer,
+        subframes,
+      } => {
         assert_eq!(frame_id, frame);
+        assert!(subframes.is_empty());
         buffer
       }
       other => panic!("unexpected message: {other:?}"),
