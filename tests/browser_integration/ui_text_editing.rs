@@ -606,6 +606,70 @@ def</textarea>
 }
 
 #[test]
+fn textarea_arrow_down_snaps_to_grapheme_boundary_on_zwj_emoji_line() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (500, 220);
+  let url = "https://example.com/index.html";
+  let emoji = "👨‍👩‍👧‍👦";
+
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body {{ margin: 0; padding: 0; }}
+            #ta {{ position: absolute; left: 0; top: 0; width: 420px; height: 120px; font-family: "Noto Sans Mono"; font-size: 20px; }}
+          </style>
+        </head>
+        <body>
+          <textarea id="ta">abc
+{emoji}</textarea>
+        </body>
+      </html>
+    "#
+  );
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    &html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 20.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Place caret at column 1 in the first line (between 'a' and 'b'), then move down onto the emoji
+  // line. The caret must snap to a grapheme boundary (start/end of the emoji), never inside the ZWJ
+  // sequence.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowRight))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  let value = textarea
+    .get_attribute_ref("data-fastr-value")
+    .expect("expected textarea value after typing X");
+  let left = format!("abc\nX{emoji}");
+  let right = format!("abc\n{emoji}X");
+  assert!(
+    value == left || value == right,
+    "expected ArrowDown caret placement to snap to a grapheme boundary; got {value:?}"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn textarea_home_moves_to_start_of_current_line_not_document() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();

@@ -11497,7 +11497,20 @@ impl InteractionEngine {
                   total_chars
                 };
                 let target_len = target_end.saturating_sub(target_start);
-                edit.caret = target_start + preferred_col.min(target_len);
+                let target_caret_raw = target_start.saturating_add(preferred_col.min(target_len));
+                let grapheme_boundaries = grapheme_cluster_boundaries_char_idx(&current);
+                // Even in the fallback (no-layout) vertical movement path, ensure the caret never
+                // lands inside a grapheme cluster (e.g. ZWJ emoji sequences).
+                let down =
+                  snap_char_idx_down_to_grapheme_boundary(&grapheme_boundaries, target_caret_raw);
+                let up = snap_char_idx_up_to_grapheme_boundary(&grapheme_boundaries, target_caret_raw);
+                edit.caret = if target_caret_raw.saturating_sub(down)
+                  <= up.saturating_sub(target_caret_raw)
+                {
+                  down
+                } else {
+                  up
+                };
                 edit.caret_affinity = CaretAffinity::Downstream;
                 if !extend_selection {
                   edit.selection_anchor = None;
