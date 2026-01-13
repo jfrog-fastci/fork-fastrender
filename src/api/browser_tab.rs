@@ -2402,7 +2402,12 @@ impl BrowserTabHost {
 
     let base_url = self.base_url.clone();
     let (discovered, clear_state): (
-      Vec<(NodeId, String, Option<crate::resource::CorsMode>)>,
+      Vec<(
+        NodeId,
+        String,
+        Option<crate::resource::CorsMode>,
+        ReferrerPolicy,
+      )>,
       Vec<NodeId>,
     ) = {
       let dom = self.document.dom();
@@ -2530,7 +2535,14 @@ impl BrowserTabHost {
             }
           });
 
-        out.push((node_id, url, cors_mode));
+        let effective_referrer_policy = dom
+          .get_attribute(node_id, "referrerpolicy")
+          .ok()
+          .flatten()
+          .and_then(ReferrerPolicy::from_attribute)
+          .unwrap_or(self.document_referrer_policy);
+
+        out.push((node_id, url, cors_mode, effective_referrer_policy));
       }
       (out, clear_state)
     };
@@ -2603,8 +2615,8 @@ impl BrowserTabHost {
       }
     }
 
-    for (node_id, url, cors_mode) in discovered {
-      self.start_image_load(node_id, url, cors_mode, event_loop)?;
+    for (node_id, url, cors_mode, referrer_policy) in discovered {
+      self.start_image_load(node_id, url, cors_mode, referrer_policy, event_loop)?;
     }
 
     Ok(())
@@ -2615,6 +2627,7 @@ impl BrowserTabHost {
     node_id: NodeId,
     url: String,
     cors_mode: Option<crate::resource::CorsMode>,
+    referrer_policy: ReferrerPolicy,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     if self
@@ -2670,7 +2683,7 @@ impl BrowserTabHost {
         if let Some(origin) = host.document_origin.as_ref() {
           req = req.with_client_origin(origin);
         }
-        req = req.with_referrer_policy(host.document_referrer_policy);
+        req = req.with_referrer_policy(referrer_policy);
         if let Some(cors_mode) = cors_mode {
           req = req.with_credentials_mode(cors_mode.credentials_mode());
         }
@@ -18933,6 +18946,101 @@ document.body.appendChild(second);"#,
       calls.iter().any(|(url, policy)| url == dep_url && *policy == ReferrerPolicy::NoReferrer),
       "expected dependency module fetch to use referrerpolicy=no-referrer, got {calls:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn image_prefetch_honors_element_referrerpolicy_overrides() -> Result<()> {
+    #[derive(Clone)]
+    struct RecordingFetcher {
+      entries: Arc<HashMap<String, FetchedResource>>,
+      calls: Arc<Mutex<Vec<(String, ReferrerPolicy)>>>,
+    }
+
+    impl RecordingFetcher {
+      fn new(entries: HashMap<String, FetchedResource>) -> Self {
+        Self {
+          entries: Arc::new(entries),
+          calls: Arc::new(Mutex::new(Vec::new())),
+        }
+      }
+
+      fn calls(&self) -> Vec<(String, ReferrerPolicy)> {
+        self
+          .calls
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .clone()
+      }
+    }
+
+    impl ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self
+          .entries
+          .get(url)
+          .cloned()
+          .ok_or_else(|| Error::Other(format!("missing fetcher entry for {url}")))
+      }
+
+      fn fetch_with_request(&self, req: crate::resource::FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .calls
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .push((req.url.to_string(), req.referrer_policy));
+        self.fetch(req.url)
+      }
+    }
+
+    let document_url = "https://example.invalid/doc.html";
+    let img_override_url = "https://example.invalid/override.png";
+    let video_poster_url = "https://example.invalid/poster.png";
+    let img_default_url = "https://example.invalid/default.png";
+
+    let mut entries: HashMap<String, FetchedResource> = HashMap::new();
+    for url in [img_override_url, video_poster_url, img_default_url] {
+      let mut res =
+        FetchedResource::new(b"img".to_vec(), Some("image/png".to_string()));
+      res.status = Some(200);
+      res.final_url = Some(url.to_string());
+      entries.insert(url.to_string(), res);
+    }
+
+    let fetcher = Arc::new(RecordingFetcher::new(entries));
+    let fetcher_trait: Arc<dyn ResourceFetcher> = fetcher.clone();
+
+    let html = format!(
+      r#"<!doctype html><head><meta name="referrer" content="origin"></head><body>
+        <img src="{img_override_url}" referrerpolicy="no-referrer">
+        <video poster="{video_poster_url}" referrerpolicy="no-referrer"></video>
+        <img src="{img_default_url}">
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_document_url_and_fetcher(
+      &html,
+      document_url,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      fetcher_trait,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let calls = fetcher.calls();
+    assert!(
+      calls.iter().any(|(url, policy)| url == img_override_url && *policy == ReferrerPolicy::NoReferrer),
+      "expected <img referrerpolicy=no-referrer> to override document policy, got {calls:?}"
+    );
+    assert!(
+      calls.iter().any(|(url, policy)| url == video_poster_url && *policy == ReferrerPolicy::NoReferrer),
+      "expected <video poster referrerpolicy=no-referrer> to override document policy, got {calls:?}"
+    );
+    assert!(
+      calls.iter().any(|(url, policy)| url == img_default_url && *policy == ReferrerPolicy::Origin),
+      "expected element without referrerpolicy to use document policy, got {calls:?}"
+    );
+
     Ok(())
   }
 

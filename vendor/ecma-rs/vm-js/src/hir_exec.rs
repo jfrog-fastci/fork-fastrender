@@ -8994,8 +8994,8 @@ impl<'vm> HirEvaluator<'vm> {
         block_body.root_stmts.as_slice(),
       )?;
       self.instantiate_var_decls(&mut block_scope, block_body, block_body.root_stmts.as_slice())?;
-      // Class bodies (including static initialization blocks) are always strict mode, so Annex B
-      // block-function hoisting does not apply.
+      // Class bodies (including static initialization blocks) are always strict mode, so legacy
+      // Annex B block-level function hoisting does not apply.
       self.instantiate_function_decls(
         &mut block_scope,
         block_body,
