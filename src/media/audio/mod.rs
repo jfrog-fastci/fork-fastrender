@@ -15,7 +15,7 @@
 //! and compensate using the estimated latency.
 //!
 //! See `docs/media_clocking.md` for the broader clocking model and recommended sync tolerances.
-
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -620,6 +620,71 @@ pub trait AudioSink: Send + Sync {
   fn set_volume(&self, volume: f32);
 }
 
+struct ThreadLocalConvertState {
+  converter: convert::AudioConverter,
+  buf: Vec<f32>,
+}
+
+impl Default for ThreadLocalConvertState {
+  fn default() -> Self {
+    Self {
+      converter: convert::AudioConverter::new(),
+      buf: Vec::new(),
+    }
+  }
+}
+
+thread_local! {
+  static CONVERT_STATE: RefCell<ThreadLocalConvertState> = RefCell::new(ThreadLocalConvertState::default());
+}
+
+impl dyn AudioSink {
+  /// Like [`AudioSink::push_interleaved_f32`], but accepts an explicit input format.
+  ///
+  /// If `sample_rate_hz` / `channels` do not match the sink's output config, the samples are
+  /// converted (channel remix + linear resampling) before being queued.
+  ///
+  /// Note: the current resampler is a linear-interpolation MVP; it is not band-limited and may
+  /// introduce audible artifacts.
+  pub fn push_interleaved_f32_with_format(
+    &self,
+    samples: &[f32],
+    sample_rate_hz: u32,
+    channels: u16,
+  ) -> usize {
+    if samples.is_empty() || sample_rate_hz == 0 || channels == 0 {
+      return 0;
+    }
+
+    let out_cfg = self.config();
+    if out_cfg.sample_rate_hz == sample_rate_hz && out_cfg.channels == channels {
+      return self.push_interleaved_f32(samples);
+    }
+
+    let in_channels = usize::from(channels);
+    let frames = samples.len() / in_channels;
+    let samples = &samples[..frames * in_channels];
+    if samples.is_empty() {
+      return 0;
+    }
+
+    let out_channels = usize::from(out_cfg.channels.max(1));
+    CONVERT_STATE.with(|cell| {
+      let mut state = cell.borrow_mut();
+      let ThreadLocalConvertState { converter, buf } = &mut *state;
+      converter.convert_f32_into(
+        samples,
+        sample_rate_hz,
+        in_channels,
+        out_cfg.sample_rate_hz,
+        out_channels,
+        buf,
+      );
+      self.push_interleaved_f32(buf.as_slice())
+    })
+  }
+}
+
 pub trait AudioBackend: Send + Sync {
   fn output_config(&self) -> AudioStreamConfig;
 
@@ -696,6 +761,12 @@ impl PcmF32QueueProducer {
   /// Push decoder-provided PCM samples in a variety of common formats/layouts.
   ///
   /// Input is validated and normalized to interleaved `f32` internally before enqueueing.
+  ///
+  /// If the buffer's `(channels, sample_rate)` do not match the queue/device config, this performs
+  /// a best-effort conversion (channel remix + linear resampling).
+  ///
+  /// Note: the current resampler is a linear-interpolation MVP; it is not band-limited and may
+  /// introduce audible artifacts.
   pub fn push_audio(&mut self, buffer: AudioBuffer<'_>) -> Result<(), AudioError> {
     // Treat decoder-provided metadata as untrusted; reject absurd values early before any
     // conversion/normalization work.
@@ -716,66 +787,75 @@ impl PcmF32QueueProducer {
 
     let expected_channels = self.channels();
     let expected_sample_rate_hz = self.sample_rate_hz();
-    if buffer.channels != expected_channels {
-      return Err(AudioError::StreamConfigMismatch {
-        expected_channels,
-        expected_sample_rate_hz,
-        channels: buffer.channels,
-        sample_rate_hz: buffer.sample_rate,
+    let needs_convert =
+      buffer.channels != expected_channels || buffer.sample_rate != expected_sample_rate_hz;
+
+    // Fast path: already interleaved f32 and no remix/resample needed.
+    if let AudioSamples::InterleavedF32(samples) = buffer.data {
+      if buffer.channels == 0 {
+        return Err(AudioError::InvalidChannels {
+          channels: buffer.channels,
+        });
+      }
+      if buffer.sample_rate == 0 {
+        return Err(AudioError::InvalidSampleRate {
+          sample_rate: buffer.sample_rate,
+        });
+      }
+      let data_format = buffer.data.format();
+      let data_layout = buffer.data.layout();
+      if buffer.format != data_format || buffer.layout != data_layout {
+        return Err(AudioError::BufferMetadataMismatch {
+          format: buffer.format,
+          data_format,
+          layout: buffer.layout,
+          data_layout,
+        });
+      }
+      if samples.len() % buffer.channels != 0 {
+        return Err(AudioError::InvalidInterleavedLength {
+          len_samples: samples.len(),
+          channels: buffer.channels,
+        });
+      }
+
+      if !needs_convert {
+        return self.push_pcm_f32(samples, buffer.pts);
+      }
+
+      return CONVERT_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let ThreadLocalConvertState { converter, buf } = &mut *state;
+        converter.convert_f32_into(
+          samples,
+          buffer.sample_rate,
+          buffer.channels,
+          expected_sample_rate_hz,
+          expected_channels,
+          buf,
+        );
+        self.push_pcm_f32(buf.as_slice(), buffer.pts)
       });
     }
 
-    let mut converted: Option<Vec<f32>> = None;
-    let samples: &[f32] = match buffer.data {
-      AudioSamples::InterleavedF32(samples) => {
-        if samples.len() % expected_channels != 0 {
-          return Err(AudioError::InvalidInterleavedLength {
-            len_samples: samples.len(),
-            channels: expected_channels,
-          });
-        }
-        samples
-      }
-      _ => {
-        converted = Some(convert_to_f32_interleaved(&buffer)?);
-        converted.as_ref().unwrap() // fastrender-allow-unwrap
-      }
-    };
-
-    if buffer.sample_rate == expected_sample_rate_hz {
-      return self.push_pcm_f32(samples, buffer.pts);
+    let converted = convert_to_f32_interleaved(&buffer)?;
+    if !needs_convert {
+      return self.push_pcm_f32(&converted, buffer.pts);
     }
 
-    // Resample decoded audio to the queue/device sample rate. This is a simple linear
-    // interpolation resampler (good enough for an MVP); higher-quality band-limited resampling can
-    // be layered later if needed.
-    let input_frames = samples.len() / expected_channels;
-    if input_frames == 0 {
-      return Ok(());
-    }
-
-    let out_frames_u128 =
-      (input_frames as u128).saturating_mul(expected_sample_rate_hz as u128);
-    let out_frames_u128 = out_frames_u128
-      .saturating_add((buffer.sample_rate as u128) / 2)
-      .checked_div(buffer.sample_rate as u128)
-      .unwrap_or(u128::MAX);
-    let out_frames = usize::try_from(out_frames_u128).unwrap_or(usize::MAX);
-    if out_frames > limits::MAX_FRAMES_PER_PUSH {
-      return Err(AudioError::invalid_buffer(format!(
-        "resampled buffer would have {out_frames} frames which exceeds MAX_FRAMES_PER_PUSH {}",
-        limits::MAX_FRAMES_PER_PUSH
-      )));
-    }
-
-    let resampled = resample::resample_interleaved_f32_linear(
-      samples,
-      expected_channels,
-      buffer.sample_rate,
-      expected_sample_rate_hz,
-      out_frames,
-    );
-    self.push_pcm_f32(&resampled, buffer.pts)
+    CONVERT_STATE.with(|cell| {
+      let mut state = cell.borrow_mut();
+      let ThreadLocalConvertState { converter, buf } = &mut *state;
+      converter.convert_f32_into(
+        &converted,
+        buffer.sample_rate,
+        buffer.channels,
+        expected_sample_rate_hz,
+        expected_channels,
+        buf,
+      );
+      self.push_pcm_f32(buf.as_slice(), buffer.pts)
+    })
   }
 
   /// Convenience helper for pushing interleaved `f32` PCM into the queue.

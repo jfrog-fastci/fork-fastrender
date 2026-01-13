@@ -1,3 +1,18 @@
+//! Audio format conversion utilities.
+//!
+//! This module provides:
+//! - **Sample format/layout normalization** for decoder-facing buffers (planar/interleaved, various
+//!   integer formats) via [`convert_to_f32_interleaved`].
+//! - **Channel remixing** between common layouts (mono/stereo, N→stereo).
+//! - **Sample-rate conversion** using a simple linear-interpolation resampler.
+//!
+//! Note: the resampler here is an MVP implementation. It is dependency-free and fast, but it is
+//! not band-limited and can introduce audible artifacts (aliasing / high-frequency loss).
+//!
+//! If we *don't* resample when the decoder output rate doesn't match the output device rate,
+//! playback will run at the wrong speed (perceived as pitch/time changes). These helpers are
+//! intended to make audio output robust in common cases like 44.1kHz↔48kHz and mono↔stereo.
+
 use super::types::{AudioBuffer, AudioSamples};
 use super::limits::{MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use super::AudioError;
@@ -10,6 +25,9 @@ fn u16_to_f32(sample: u16) -> f32 {
   (sample as f32 - 32768.0) / 32768.0
 }
 
+/// Convert an [`AudioBuffer`] into interleaved `f32` PCM.
+///
+/// This validates the buffer's metadata and layout invariants before converting.
 pub fn convert_to_f32_interleaved(buffer: &AudioBuffer<'_>) -> Result<Vec<f32>, AudioError> {
   let max_channels = usize::from(MAX_CHANNELS);
   if buffer.channels == 0 || buffer.channels > max_channels {
@@ -53,12 +71,8 @@ pub fn convert_to_f32_interleaved(buffer: &AudioBuffer<'_>) -> Result<Vec<f32>, 
       Ok(samples.iter().copied().map(u16_to_f32).collect())
     }
     AudioSamples::PlanarF32(planes) => planar_to_f32_interleaved(planes, buffer.channels, |s| s),
-    AudioSamples::PlanarI16(planes) => {
-      planar_to_f32_interleaved(planes, buffer.channels, i16_to_f32)
-    }
-    AudioSamples::PlanarU16(planes) => {
-      planar_to_f32_interleaved(planes, buffer.channels, u16_to_f32)
-    }
+    AudioSamples::PlanarI16(planes) => planar_to_f32_interleaved(planes, buffer.channels, i16_to_f32),
+    AudioSamples::PlanarU16(planes) => planar_to_f32_interleaved(planes, buffer.channels, u16_to_f32),
   }
 }
 
@@ -94,9 +108,7 @@ fn planar_to_f32_interleaved<T: Copy>(
     });
   }
 
-  let frames = planes
-    .first()
-    .map_or(0, |first_plane| first_plane.len());
+  let frames = planes.first().map_or(0, |first_plane| first_plane.len());
 
   for (i, plane) in planes.iter().enumerate() {
     if plane.len() != frames {
@@ -170,6 +182,259 @@ pub(crate) fn sanitize_buffer_in_place(buf: &mut [f32]) {
   }
 }
 
+// ============================================================================
+// Channel remixing
+// ============================================================================
+
+/// Remix interleaved f32 samples from `in_channels` to `out_channels`.
+///
+/// The input is expected to be interleaved frames:
+/// `[ch0, ch1, ... chN, ch0, ch1, ...]`.
+///
+/// Supported conversions (MVP):
+/// - mono → stereo: duplicate
+/// - stereo → mono: average `(L+R)/2`
+/// - N → stereo: weighted downmix using the first two channels as L/R and
+///   mixing remaining channels equally into both.
+///
+/// For other conversions we fall back to a naive mapping.
+pub fn remix_channels_f32_into(
+  input: &[f32],
+  in_channels: usize,
+  out_channels: usize,
+  out: &mut Vec<f32>,
+) {
+  out.clear();
+
+  if in_channels == 0 || out_channels == 0 {
+    return;
+  }
+
+  let in_frames = input.len() / in_channels;
+  if in_frames == 0 {
+    return;
+  }
+
+  out.reserve(in_frames * out_channels);
+
+  // Fast path: identical layout.
+  if in_channels == out_channels {
+    out.extend_from_slice(&input[..in_frames * in_channels]);
+    return;
+  }
+
+  for frame_idx in 0..in_frames {
+    let base = frame_idx * in_channels;
+
+    match (in_channels, out_channels) {
+      (1, 2) => {
+        let s = input[base];
+        out.push(s);
+        out.push(s);
+      }
+      (2, 1) => {
+        let l = input[base];
+        let r = input[base + 1];
+        out.push((l + r) * 0.5);
+      }
+      (_, 1) => {
+        // Average all channels.
+        let mut sum = 0.0f32;
+        for ch in 0..in_channels {
+          sum += input[base + ch];
+        }
+        out.push(sum / in_channels as f32);
+      }
+      (1, _) => {
+        // Upmix mono → N by duplication.
+        let s = input[base];
+        for _ in 0..out_channels {
+          out.push(s);
+        }
+      }
+      (_, 2) => {
+        // N → stereo downmix. Use ch0/ch1 as L/R, and mix remaining channels equally into both
+        // outputs.
+        //
+        // This is intentionally simple: it's "good enough" to make common media (e.g. 5.1) audible
+        // on stereo devices without complicated matrices.
+        let l0 = input[base];
+        let r0 = input[base + 1];
+
+        if in_channels == 2 {
+          out.push(l0);
+          out.push(r0);
+          continue;
+        }
+
+        let mut extra_sum = 0.0f32;
+        for ch in 2..in_channels {
+          extra_sum += input[base + ch];
+        }
+
+        // Each "extra" channel contributes with a reduced gain.
+        let extra_weight = 0.5f32;
+        let norm = 1.0f32 + extra_weight * (in_channels.saturating_sub(2)) as f32;
+        let extra = extra_sum * extra_weight;
+
+        out.push((l0 + extra) / norm);
+        out.push((r0 + extra) / norm);
+      }
+      _ => {
+        // Naive fallback: copy min(in,out) channels, pad remaining with 0.
+        for ch in 0..out_channels {
+          let s = if ch < in_channels { input[base + ch] } else { 0.0 };
+          out.push(s);
+        }
+      }
+    }
+  }
+}
+
+/// Convenience wrapper around [`remix_channels_f32_into`] that allocates a new `Vec`.
+pub fn remix_channels_f32(input: &[f32], in_channels: usize, out_channels: usize) -> Vec<f32> {
+  let mut out = Vec::new();
+  remix_channels_f32_into(input, in_channels, out_channels, &mut out);
+  out
+}
+
+// ============================================================================
+// Resampling
+// ============================================================================
+
+/// Linear-interpolation resampler for interleaved f32 audio.
+///
+/// - `input` is interleaved f32 frames.
+/// - `channels` is the number of interleaved channels in `input`.
+///
+/// This is an MVP resampler; it is not band-limited.
+pub fn resample_f32_into(
+  input: &[f32],
+  in_rate: u32,
+  out_rate: u32,
+  channels: usize,
+  out: &mut Vec<f32>,
+) {
+  out.clear();
+
+  if channels == 0 || in_rate == 0 || out_rate == 0 {
+    return;
+  }
+
+  let in_frames = input.len() / channels;
+  if in_frames == 0 {
+    return;
+  }
+
+  if in_rate == out_rate {
+    out.extend_from_slice(&input[..in_frames * channels]);
+    return;
+  }
+
+  // Compute the number of output frames to preserve duration (within ~1 frame).
+  let out_frames_u64 = ((in_frames as u64) * (out_rate as u64) + (in_rate as u64) / 2) / in_rate as u64;
+  let out_frames = out_frames_u64.max(1) as usize;
+
+  out.reserve(out_frames * channels);
+
+  let step = in_rate as f64 / out_rate as f64;
+  let mut pos = 0.0f64;
+
+  for _ in 0..out_frames {
+    let idx0 = pos.floor() as usize;
+    let frac = (pos - idx0 as f64) as f32;
+
+    let idx0 = idx0.min(in_frames - 1);
+    let idx1 = (idx0 + 1).min(in_frames - 1);
+
+    let base0 = idx0 * channels;
+    let base1 = idx1 * channels;
+
+    for ch in 0..channels {
+      let s0 = input[base0 + ch];
+      let s1 = input[base1 + ch];
+      out.push(s0 + (s1 - s0) * frac);
+    }
+
+    pos += step;
+  }
+}
+
+/// Convenience wrapper around [`resample_f32_into`] that allocates a new `Vec`.
+pub fn resample_f32(input: &[f32], in_rate: u32, out_rate: u32, channels: usize) -> Vec<f32> {
+  let mut out = Vec::new();
+  resample_f32_into(input, in_rate, out_rate, channels, &mut out);
+  out
+}
+
+// ============================================================================
+// High-level conversion helper
+// ============================================================================
+
+/// Helper for converting decoded f32 audio into an output device format.
+///
+/// Stores a reusable scratch buffer so conversion does not allocate per call once warmed up.
+#[derive(Default, Debug)]
+pub struct AudioConverter {
+  scratch: Vec<f32>,
+}
+
+impl AudioConverter {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Convert interleaved f32 audio from `(in_rate, in_channels)` to `(out_rate, out_channels)`.
+  ///
+  /// The output is written into `out`, which is cleared first.
+  pub fn convert_f32_into(
+    &mut self,
+    input: &[f32],
+    in_rate: u32,
+    in_channels: usize,
+    out_rate: u32,
+    out_channels: usize,
+    out: &mut Vec<f32>,
+  ) {
+    // Fast path: identical format.
+    if in_rate == out_rate && in_channels == out_channels {
+      out.clear();
+      if in_channels == 0 {
+        return;
+      }
+      let frames = input.len() / in_channels;
+      out.extend_from_slice(&input[..frames * in_channels]);
+      return;
+    }
+
+    let needs_remix = in_channels != out_channels;
+    let needs_resample = in_rate != out_rate;
+
+    // Prefer doing operations in an order that avoids unnecessary work:
+    // - Downmix (channel reduction) *before* resampling.
+    // - Upmix (channel expansion) *after* resampling.
+    let downmix_first = needs_remix && out_channels <= in_channels;
+
+    match (needs_remix, needs_resample, downmix_first) {
+      (true, true, true) => {
+        remix_channels_f32_into(input, in_channels, out_channels, &mut self.scratch);
+        resample_f32_into(&self.scratch, in_rate, out_rate, out_channels, out);
+      }
+      (true, true, false) => {
+        resample_f32_into(input, in_rate, out_rate, in_channels, &mut self.scratch);
+        remix_channels_f32_into(&self.scratch, in_channels, out_channels, out);
+      }
+      (true, false, _) => {
+        remix_channels_f32_into(input, in_channels, out_channels, out);
+      }
+      (false, true, _) => {
+        resample_f32_into(input, in_rate, out_rate, in_channels, out);
+      }
+      (false, false, _) => unreachable!("handled by early return"),
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -191,12 +456,7 @@ mod tests {
     let right: [i16; 3] = [32767, 0, -32768];
     let planes: [&[i16]; 2] = [&left, &right];
 
-    let buffer = AudioBuffer::new(
-      2,
-      48_000,
-      None,
-      AudioSamples::PlanarI16(&planes),
-    );
+    let buffer = AudioBuffer::new(2, 48_000, None, AudioSamples::PlanarI16(&planes));
 
     let converted = convert_to_f32_interleaved(&buffer).unwrap();
     assert_eq!(converted.len(), 6);
@@ -287,5 +547,65 @@ mod tests {
     assert_eq!(sanitize_sample(-10.0), -1.0);
     assert_eq!(sanitize_sample(0.5), 0.5);
     assert_eq!(sanitize_sample(-0.5), -0.5);
+  }
+
+  #[test]
+  fn remix_mono_to_stereo_duplicates_samples() {
+    // 2 frames mono: [a, b]
+    let input = vec![0.25f32, -0.5f32];
+    let out = remix_channels_f32(&input, 1, 2);
+    assert_eq!(out, vec![0.25, 0.25, -0.5, -0.5]);
+  }
+
+  #[test]
+  fn remix_stereo_to_mono_averages_samples() {
+    // 2 frames stereo: [(L0,R0), (L1,R1)]
+    let input = vec![0.0f32, 1.0f32, 1.0f32, 0.0f32];
+    let out = remix_channels_f32(&input, 2, 1);
+    assert_eq!(out, vec![0.5, 0.5]);
+  }
+
+  #[test]
+  fn resampler_duration_is_preserved_within_one_frame_for_sine() {
+    let in_rate = 44_100u32;
+    let out_rate = 48_000u32;
+    let channels = 1usize;
+
+    // 100ms of a 440Hz sine wave.
+    let duration_s = 0.1f32;
+    let in_frames = (in_rate as f32 * duration_s) as usize;
+
+    let mut input = Vec::with_capacity(in_frames * channels);
+    let freq = 440.0f32;
+    for n in 0..in_frames {
+      let t = n as f32 / in_rate as f32;
+      input.push((2.0 * core::f32::consts::PI * freq * t).sin());
+    }
+
+    let out = resample_f32(&input, in_rate, out_rate, channels);
+
+    let expected_out_frames_u64 =
+      ((in_frames as u64) * (out_rate as u64) + (in_rate as u64) / 2) / (in_rate as u64);
+    let expected_out_frames = expected_out_frames_u64.max(1) as usize;
+
+    let out_frames = out.len() / channels;
+    assert!(
+      out_frames.abs_diff(expected_out_frames) <= 1,
+      "out_frames={out_frames} expected≈{expected_out_frames}"
+    );
+  }
+
+  #[test]
+  fn resampler_edge_cases_do_not_panic() {
+    // Empty input.
+    assert!(resample_f32(&[], 44_100, 48_000, 1).is_empty());
+    // Zero channels.
+    assert!(resample_f32(&[0.0, 1.0], 44_100, 48_000, 0).is_empty());
+    // Zero rates.
+    assert!(resample_f32(&[0.0, 1.0], 0, 48_000, 1).is_empty());
+    assert!(resample_f32(&[0.0, 1.0], 44_100, 0, 1).is_empty());
+    // Non-multiple length should not panic; trailing samples are ignored.
+    let out = resample_f32(&[0.0, 1.0, 2.0], 44_100, 48_000, 2);
+    assert!(out.len() % 2 == 0);
   }
 }
