@@ -13,6 +13,23 @@ Unicode property escapes are extremely **data-driven**, and correctness depends 
 * Supporting **only** the property names/values required by ECMA-262
 * Enforcing **strict matching** (no “loose matching”)
 
+## Implementation status (read this first)
+
+`vm-js` is in the process of moving RegExp Unicode property escape handling to the
+table-driven implementation described in this document.
+
+At the time of writing:
+
+* The **full Unicode v17.0.0 data** needed for spec-compliant property escapes lives in the
+  generated tables (`src/regexp_unicode_tables.rs` and `src/regexp_unicode_property_strings.rs`)
+  and the strict resolver (`src/regexp_unicode_resolver.rs`).
+* The main RegExp parser/compiler in `src/regexp.rs` still contains a small, hand-rolled property
+  escape implementation (currently only `\p{ASCII}` / `\P{ASCII}` and `\p{Script=Han}`), and does
+  not yet support property escapes in all `/v` character-class contexts.
+
+This document describes the **intended ECMA-262 surface** and the **Unicode data update
+procedure** that the table-driven implementation relies on.
+
 ## Spec and test references (bookmark these)
 
 ECMA-262:
@@ -294,9 +311,9 @@ If you’re updating RegExp Unicode property escape support, these are the main 
   lookup for `v`-mode properties of strings (Emoji); generated from test262 `strings/*.js`.
 * `xtask/src/generate_regexp_unicode_property_strings.rs` — generator (parses test262 input files,
   validates the `RGI_Emoji` union, supports `--check`).
-* `vendor/ecma-rs/vm-js/src/regexp_unicode_resolver.rs` — older/unit-test-focused implementation
-  of `UnicodePropertyValueExpression` parsing (name/value vs lone). When changing the main
-  implementation, consider updating/removing this to avoid drift.
+* `vendor/ecma-rs/vm-js/src/regexp_unicode_resolver.rs` — strict (spec-aligned) resolver for
+  `UnicodePropertyValueExpression` parsing (name/value vs lone). Used by unit tests and as a
+  reference while wiring the table-driven property escape implementation into `src/regexp.rs`.
 * Case folding:
   * `vendor/ecma-rs/vm-js/src/regexp.rs` — `canonicalize` implementation for `u`/`v` ignoreCase.
   * `vendor/ecma-rs/vm-js/src/unicode_case_folding.rs` — `scf` table used for `v`-mode
