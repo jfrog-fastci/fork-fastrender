@@ -362,3 +362,49 @@ fn form_state_dom2_projection_maps_file_inputs_and_select_selected() {
     "expected projected select selection to contain option preorder id"
   );
 }
+
+#[test]
+fn interaction_state_dom2_prune_disconnected_clears_state_for_inert_template_contents() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<template id=t><input id=a></template>",
+    "</body></html>",
+  );
+  let doc = crate::dom2::parse_html(html).unwrap();
+
+  let template = doc.get_element_by_id("t").expect("missing template");
+  let input = doc
+    .subtree_preorder(template)
+    .find(|&id| doc.get_attribute(id, "id").unwrap() == Some("a"))
+    .expect("missing input inside template");
+
+  assert!(
+    !doc.is_connected_for_scripting(input),
+    "nodes inside inert <template> contents must be treated as disconnected for scripting"
+  );
+
+  // The renderer snapshot includes inert template contents, so mapping-based pruning alone would not
+  // consider this node detached.
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  assert!(
+    snapshot.mapping.preorder_for_node_id(input).is_some(),
+    "renderer mapping should include inert template contents"
+  );
+
+  let mut state_dom2 = InteractionStateDom2 {
+    focused: Some(input),
+    focus_visible: true,
+    focus_chain: vec![input],
+    hover_chain: vec![input],
+    active_chain: vec![input],
+    ..Default::default()
+  };
+
+  state_dom2.prune_disconnected(&doc);
+  assert_eq!(state_dom2.focused, None);
+  assert!(!state_dom2.focus_visible);
+  assert!(state_dom2.focus_chain.is_empty());
+  assert!(state_dom2.hover_chain.is_empty());
+  assert!(state_dom2.active_chain.is_empty());
+}

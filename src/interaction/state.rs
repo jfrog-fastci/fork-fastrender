@@ -1059,6 +1059,62 @@ pub struct InteractionStateDom2 {
 }
 
 impl InteractionStateDom2 {
+  /// Drop or clear any interaction targets that are not connected for scripting in the live `dom2`
+  /// document.
+  ///
+  /// This is stronger than [`Self::prune_detached`], which only checks whether nodes are reachable
+  /// from the current *renderer snapshot* via [`RendererDomMapping`]. The renderer snapshot includes
+  /// inert `<template>` contents for id stability, but scripting algorithms treat those nodes as
+  /// disconnected; callers that maintain interaction state alongside a live `dom2::Document` should
+  /// prefer this method when responding to DOM mutations.
+  pub fn prune_disconnected(&mut self, dom: &crate::dom2::Document) {
+    let is_connected = |id: NodeId| dom.is_connected_for_scripting(id);
+
+    if self.focused.is_some_and(|id| !is_connected(id)) {
+      self.focused = None;
+      self.focus_visible = false;
+      self.focus_chain.clear();
+      self.ime_preedit = None;
+      self.text_edit = None;
+    } else if self.focused.is_none() {
+      self.focus_visible = false;
+      self.focus_chain.clear();
+      self.ime_preedit = None;
+      self.text_edit = None;
+    } else {
+      self.focus_chain.retain(|&id| is_connected(id));
+      if let Some(focused) = self.focused {
+        if self
+          .ime_preedit
+          .as_ref()
+          .is_some_and(|state| state.node_id != focused || !is_connected(state.node_id))
+        {
+          self.ime_preedit = None;
+        }
+        if self
+          .text_edit
+          .is_some_and(|state| state.node_id != focused || !is_connected(state.node_id))
+        {
+          self.text_edit = None;
+        }
+      }
+    }
+
+    fn prune_hit_chain(chain: &mut Vec<NodeId>, dom: &crate::dom2::Document) {
+      let Some(&root) = chain.first() else {
+        return;
+      };
+      if !dom.is_connected_for_scripting(root) {
+        chain.clear();
+        return;
+      }
+      chain.retain(|&id| dom.is_connected_for_scripting(id));
+    }
+
+    prune_hit_chain(&mut self.hover_chain, dom);
+    prune_hit_chain(&mut self.active_chain, dom);
+  }
+
   /// Drop or clear any interaction targets that are no longer reachable from the document root for
   /// the current renderer snapshot.
   ///
