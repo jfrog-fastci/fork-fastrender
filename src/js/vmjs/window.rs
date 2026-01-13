@@ -7955,6 +7955,7 @@ mod tests {
 
 #[cfg(test)]
 mod import_map_tests {
+  use super::tests::make_host_state;
   use super::WindowHostState;
   use crate::dom2;
   use crate::js::import_maps::{ImportMapError, SpecifierAsUrlKind};
