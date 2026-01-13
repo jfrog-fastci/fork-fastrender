@@ -159,7 +159,13 @@ pub fn depth_sort_checked(items: &[SceneItem]) -> Result<Vec<usize>, RenderError
     }
   }
 
-  Ok(stable_topological_sort(items, &edges, &mut indegree))
+  stable_topological_sort_checked(
+    items,
+    &edges,
+    &mut indegree,
+    deadline_enabled,
+    &mut deadline_counter,
+  )
 }
 
 /// Compute back-to-front draw order for a list of planes.
@@ -360,14 +366,16 @@ fn rect_to_quad(rect: Rect) -> [Point; 4] {
   ]
 }
 
-fn stable_topological_sort(
+fn stable_topological_sort_checked(
   items: &[SceneItem],
   edges: &[Vec<usize>],
   indegree: &mut [usize],
-) -> Vec<usize> {
+  deadline_enabled: bool,
+  deadline_counter: &mut usize,
+) -> Result<Vec<usize>, RenderError> {
   let n = items.len();
   if n == 0 {
-    return Vec::new();
+    return Ok(Vec::new());
   }
 
   let mut remaining = vec![true; n];
@@ -382,16 +390,33 @@ fn stable_topological_sort(
 
   let mut remaining_count = n;
   'sort: while remaining_count > 0 {
+    if deadline_enabled {
+      check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
+    }
     let current = if let Some(Reverse((_, idx))) = queue.pop() {
       if !remaining[idx] {
         continue;
       }
       idx
     } else {
-      let Some(fallback) = (0..n)
-        .filter(|i| remaining[*i])
-        .min_by_key(|i| (items[*i].paint_order, *i))
-      else {
+      let mut fallback: Option<usize> = None;
+      for idx in 0..n {
+        if !remaining[idx] {
+          continue;
+        }
+        if deadline_enabled {
+          check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
+        }
+        match fallback {
+          None => fallback = Some(idx),
+          Some(best) => {
+            if (items[idx].paint_order, idx) < (items[best].paint_order, best) {
+              fallback = Some(idx);
+            }
+          }
+        }
+      }
+      let Some(fallback) = fallback else {
         break 'sort;
       };
       fallback
@@ -406,6 +431,9 @@ fn stable_topological_sort(
     result.push(current);
 
     for &to in &edges[current] {
+      if deadline_enabled {
+        check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
+      }
       if indegree[to] > 0 {
         indegree[to] -= 1;
       }
@@ -415,7 +443,7 @@ fn stable_topological_sort(
     }
   }
 
-  result
+  Ok(result)
 }
 
 #[cfg(test)]
