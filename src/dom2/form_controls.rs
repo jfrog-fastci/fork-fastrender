@@ -620,11 +620,16 @@ impl Document {
       }
 
       if tag_name.eq_ignore_ascii_case("input") {
-        let input_type = node
-          .get_attribute_ref("type")
-          .map(trim_ascii_whitespace)
-          .unwrap_or("text");
-        let is_file = input_type.eq_ignore_ascii_case("file");
+        let (is_file, is_checkable) = {
+          let input_type = node
+            .get_attribute_ref("type")
+            .map(trim_ascii_whitespace)
+            .unwrap_or("text");
+          (
+            input_type.eq_ignore_ascii_case("file"),
+            is_input_checkable(Some(input_type)),
+          )
+        };
 
         if !is_file {
           if let Some(state) = self
@@ -636,7 +641,7 @@ impl Document {
           }
         }
 
-        if is_input_checkable(Some(input_type)) {
+        if is_checkable {
           if let Some(state) = self
             .input_states
             .get(dom2_id.index())
