@@ -253,5 +253,6 @@ mod tests {
       .set_job_memory_limit_bytes(64 * 1024 * 1024)
       .expect("job memory limit");
     job.set_ui_restrictions_headless().expect("ui restrictions");
+    job.terminate(0).expect("terminate job");
   }
 }
