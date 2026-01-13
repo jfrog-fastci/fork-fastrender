@@ -588,8 +588,12 @@ For background and developer workflow:
 - AccessKit plumbing + debugging guide (updates, id stability, coordinate systems):
   [chrome_accessibility.md](chrome_accessibility.md).
 
-Debugging tip: to inspect the OS-facing AccessKit update without running a screen reader, use the
-`dump_accesskit` CLI (requires `--features browser_ui`):
+Debugging tip: to inspect the **egui-produced** AccessKit update (chrome widgets) without running a
+screen reader, use the `dump_accesskit` CLI (requires `--features browser_ui`).
+
+Note: `dump_accesskit` does not run the browser worker, so it does **not** include the injected page
+`PageA11ySnapshot` subtree; use the real windowed `browser` + a platform accessibility inspector to
+debug page nodes.
 
 ```bash
 bash scripts/run_limited.sh --as 64G -- \
