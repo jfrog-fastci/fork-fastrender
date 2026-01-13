@@ -629,17 +629,12 @@ impl<'vm> HirEvaluator<'vm> {
           && self.detect_use_strict_directive(func_body)?
       };
 
-      (
-        length,
-        func_meta.async_,
-        func_meta.generator,
-        body_has_use_strict,
-        def_span,
-      )
+      (length, func_meta.async_, func_meta.generator, body_has_use_strict, def_span)
     };
 
     let is_strict = outer_strict || body_has_use_strict;
     let is_async_generator = is_async && is_generator;
+    // Async and generator functions are not constructable (per spec).
     let is_constructable = is_constructable && !is_async && !is_generator;
 
     // Root inputs across string allocation + function allocation in case either triggers GC.
@@ -967,7 +962,7 @@ impl<'vm> HirEvaluator<'vm> {
     // This enables simple recursion and calling a function before its declaration statement is
     // executed.
     self.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
-    self.instantiate_function_decls(scope, body, body.root_stmts.as_slice())?;
+    self.instantiate_function_decls(scope, body, body.root_stmts.as_slice(), /* annex_b */ false)?;
     // Create `let` / `const` bindings for the entire function body statement list up-front so TDZ
     // + shadowing semantics are correct.
     self.instantiate_lexical_decls(scope, body, body.root_stmts.as_slice(), self.env.lexical_env())?;
@@ -1266,6 +1261,7 @@ impl<'vm> HirEvaluator<'vm> {
     scope: &mut Scope<'_>,
     body: &hir_js::Body,
     stmts: &[hir_js::StmtId],
+    annex_b: bool,
   ) -> Result<(), VmError> {
     for stmt_id in stmts {
       self.vm.tick()?;
@@ -1288,17 +1284,25 @@ impl<'vm> HirEvaluator<'vm> {
           if decl_body.kind != hir_js::BodyKind::Function {
             continue;
           }
+          let Some(func_meta) = decl_body.function.as_ref() else {
+            return Err(VmError::InvariantViolation("function body missing function metadata"));
+          };
+          // Annex B block-function hoisting applies only to ordinary (non-async, non-generator)
+          // function declarations. Async/generator/async-generator declarations remain block-scoped
+          // even in non-strict mode.
+          if annex_b && (func_meta.async_ || func_meta.generator) {
+            continue;
+          }
           let name = self.resolve_name(def.name)?;
-          let func_obj =
-            self.alloc_user_function_object(
-              scope,
-              body_id,
-              name.as_str(),
-              /* is_arrow */ false,
-              /* is_constructable */ true,
-              /* name_binding */ None,
-              EcmaFunctionKind::Decl,
-            )?;
+          let func_obj = self.alloc_user_function_object(
+            scope,
+            body_id,
+            name.as_str(),
+            /* is_arrow */ false,
+            /* is_constructable */ true,
+            /* name_binding */ None,
+            EcmaFunctionKind::Decl,
+          )?;
           // Root the function object while assigning into the environment.
           let mut assign_scope = scope.reborrow();
           assign_scope.push_root(Value::Object(func_obj))?;
@@ -1317,44 +1321,62 @@ impl<'vm> HirEvaluator<'vm> {
         // lexical environment (see `instantiate_block_scoped_function_decls_in_stmt_list`).
         _ if self.strict => {}
         // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
+        //
+        // Note: this applies only to ordinary functions; async/generator functions are instantiated
+        // as block-scoped bindings (see `instantiate_block_scoped_function_decls_in_stmt_list`).
         hir_js::StmtKind::Block(inner) => {
-          self.instantiate_function_decls(scope, body, inner.as_slice())?;
+          self.instantiate_function_decls(scope, body, inner.as_slice(), /* annex_b */ true)?;
         }
         hir_js::StmtKind::If {
           consequent,
           alternate,
           ..
         } => {
-          self.instantiate_function_decls(scope, body, std::slice::from_ref(consequent))?;
+          self.instantiate_function_decls(
+            scope,
+            body,
+            std::slice::from_ref(consequent),
+            /* annex_b */ true,
+          )?;
           if let Some(alt) = alternate {
-            self.instantiate_function_decls(scope, body, std::slice::from_ref(alt))?;
+            self.instantiate_function_decls(scope, body, std::slice::from_ref(alt), /* annex_b */ true)?;
           }
         }
         hir_js::StmtKind::While { body: inner, .. }
         | hir_js::StmtKind::DoWhile { body: inner, .. }
         | hir_js::StmtKind::Labeled { body: inner, .. }
         | hir_js::StmtKind::With { body: inner, .. } => {
-          self.instantiate_function_decls(scope, body, std::slice::from_ref(inner))?;
+          self.instantiate_function_decls(scope, body, std::slice::from_ref(inner), /* annex_b */ true)?;
         }
         hir_js::StmtKind::For { body: inner, .. } => {
-          self.instantiate_function_decls(scope, body, std::slice::from_ref(inner))?;
+          self.instantiate_function_decls(scope, body, std::slice::from_ref(inner), /* annex_b */ true)?;
         }
         hir_js::StmtKind::Try {
           block,
           catch,
           finally_block,
         } => {
-          self.instantiate_function_decls(scope, body, std::slice::from_ref(block))?;
+          self.instantiate_function_decls(scope, body, std::slice::from_ref(block), /* annex_b */ true)?;
           if let Some(catch) = catch {
-            self.instantiate_function_decls(scope, body, std::slice::from_ref(&catch.body))?;
+            self.instantiate_function_decls(
+              scope,
+              body,
+              std::slice::from_ref(&catch.body),
+              /* annex_b */ true,
+            )?;
           }
           if let Some(finally_block) = finally_block {
-            self.instantiate_function_decls(scope, body, std::slice::from_ref(finally_block))?;
+            self.instantiate_function_decls(
+              scope,
+              body,
+              std::slice::from_ref(finally_block),
+              /* annex_b */ true,
+            )?;
           }
         }
         hir_js::StmtKind::Switch { cases, .. } => {
           for case in cases {
-            self.instantiate_function_decls(scope, body, case.consequent.as_slice())?;
+            self.instantiate_function_decls(scope, body, case.consequent.as_slice(), /* annex_b */ true)?;
           }
         }
         _ => {}
@@ -1444,9 +1466,11 @@ impl<'vm> HirEvaluator<'vm> {
     env: GcEnv,
     stmts: &[hir_js::StmtId],
   ) -> Result<(), VmError> {
-    if !self.strict {
-      return Ok(());
-    }
+    // In strict mode, all block-scoped function declarations are instantiated here at block entry.
+    //
+    // In non-strict mode, only async/generator/async-generator function declarations are treated
+    // as block-scoped (Annex B does not apply to these forms). Ordinary function declarations are
+    // handled by var-hoisting in `instantiate_function_decls`.
     for stmt_id in stmts {
       // Tick per statement list entry so large blocks of function declarations cannot be
       // instantiated without consuming fuel.
@@ -1464,6 +1488,12 @@ impl<'vm> HirEvaluator<'vm> {
       };
       let decl_body = self.get_body(body_id)?;
       if decl_body.kind != hir_js::BodyKind::Function {
+        continue;
+      }
+      let Some(func_meta) = decl_body.function.as_ref() else {
+        return Err(VmError::InvariantViolation("function body missing function metadata"));
+      };
+      if !self.strict && !func_meta.async_ && !func_meta.generator {
         continue;
       }
       let name = self.resolve_name(def.name)?;
@@ -7852,7 +7882,7 @@ pub(crate) fn run_compiled_script(
   evaluator.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
 
   // Hoist function declarations so they can be called before their declaration statement.
-  evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice())?;
+  evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice(), /* annex_b */ false)?;
 
   // Create `let` / `const` bindings up-front in the global lexical environment so TDZ + shadowing
   // semantics are correct.
