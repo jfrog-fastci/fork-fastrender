@@ -172,6 +172,11 @@ status = "xfail"
 reason = "NodeIterator traversal/filtering algorithms not implemented yet"
 
 [[expectations]]
+id = "dom/nodeiterator_pre_remove_edges.window.js"
+status = "xfail"
+reason = "NodeIterator pre-remove edge cases (shadow root/template/moves) not fully implemented yet"
+
+[[expectations]]
 id = "dom/document_doctype.window.js"
 backend = "vmjs"
 status = "xfail"
