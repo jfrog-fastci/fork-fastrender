@@ -4141,6 +4141,168 @@ fn compiled_switch_function_fallthrough() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_switch_function_labeled_break_exits_outer_statement() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(x) {
+        let y = 0;
+        outer: {
+          switch (x) {
+            case 1:
+              y = 1;
+              break outer;
+            default:
+              y = 2;
+          }
+          y = 3;
+        }
+        return y;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    1,
+  )?;
+
+  let r1 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(1.0)],
+  )?;
+  assert_eq!(r1, Value::Number(1.0));
+
+  let r9 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(9.0)],
+  )?;
+  assert_eq!(r9, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_switch_function_default_in_middle_falls_through() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(x) {
+        let y = 0;
+        switch (x) {
+          case 1:
+            y = 1;
+            break;
+          default:
+            y = 2;
+          case 3:
+            y = 3;
+        }
+        return y;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    1,
+  )?;
+
+  let r1 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(1.0)],
+  )?;
+  assert_eq!(r1, Value::Number(1.0));
+
+  let r3 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(3.0)],
+  )?;
+  assert_eq!(r3, Value::Number(3.0));
+
+  let r9 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(9.0)],
+  )?;
+  // No match => start at `default`, then fall through to the subsequent `case 3`.
+  assert_eq!(r9, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_switch_function_discriminant_evaluated_once() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        let i = 0;
+        let y = 0;
+        // The discriminant must be evaluated once even when the first case does not match.
+        switch (i++) {
+          case 1:
+            y = 10;
+            break;
+          case 0:
+            y = 20;
+            break;
+          default:
+            y = 30;
+        }
+        return i * 100 + y;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Number(120.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_postfix_update_expression_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

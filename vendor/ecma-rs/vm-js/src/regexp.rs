@@ -3430,7 +3430,7 @@ impl<'a> Parser<'a> {
               return Err(RegExpSyntaxError {
                 message: "Invalid regular expression",
               }
-              .into());
+                .into());
             }
             Ok(CharClassItem::Char(x as u32))
           }

@@ -4047,10 +4047,12 @@ impl<'vm> HirEvaluator<'vm> {
   ) -> Result<Value, VmError> {
     match op {
       hir_js::AssignOp::Assign => {
-        // Spec note: plain assignment targets (identifiers / members) evaluate the reference (and
-        // therefore computed property keys / `with` binding resolution) before evaluating the RHS.
+        // For simple assignment targets (`x = rhs`, `obj[prop] = rhs`), evaluate the assignment
+        // target (including computed property keys / binding resolution) *before* evaluating the
+        // RHS expression.
         //
-        // Destructuring assignment patterns evaluate the RHS first.
+        // Destructuring assignment patterns (`{x} = rhs`, `[a] = rhs`) evaluate the RHS first, then
+        // destructure and assign.
         let pat = self.get_pat(body, target)?;
         match &pat.kind {
           hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_) => {
