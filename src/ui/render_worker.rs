@@ -5151,6 +5151,9 @@ impl BrowserRuntime {
       }
       InteractionAction::TextDrop { target_dom_id, text } => {
         let mut drop_default_allowed = default_allowed;
+        let js_mutation_generation_before_dispatch =
+          tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
+        let mut dispatched_dom_event = false;
         if drop_default_allowed {
           if let Some(js_tab) = tab.js_tab.as_mut() {
             let target = js_dom_node_for_preorder_id_with_log(
@@ -5166,6 +5169,7 @@ impl BrowserRuntime {
               "drop",
             );
             if let Some(node_id) = target {
+              dispatched_dom_event = true;
               // `DragEvent` inherits from `MouseEvent` in the DOM. We don't currently model
               // `dataTransfer`, but exposing a MouseEvent-like shape keeps common `preventDefault()`
               // checks working.
@@ -5205,13 +5209,42 @@ impl BrowserRuntime {
           }
         }
 
+        // When the drop is not prevented, apply the default insertion to dom1 and then mirror the
+        // resulting form-control state into dom2 before running the post-event JS pump. This keeps
+        // dom2 in sync so resyncs from dom2 won't clobber the UI-side insertion, and ensures
+        // microtasks queued by drop handlers observe the updated value (browser-like ordering: drop
+        // handlers run, default action happens, then microtask checkpoint).
+        let mut apply_changed = false;
         if drop_default_allowed {
-          let apply_changed = if let Some(doc) = tab.document.as_mut() {
+          apply_changed = if let Some(doc) = tab.document.as_mut() {
             let engine = &mut tab.interaction;
             doc.mutate_dom(|dom| engine.apply_text_drop(dom, target_dom_id, &text))
           } else {
             false
           };
+
+          if apply_changed {
+            if let (Some(dom_snapshot), Some(js_tab)) = (
+              tab.document.as_ref().map(|doc| doc.dom()),
+              tab.js_tab.as_mut(),
+            ) {
+              let mapping = tab.js_dom_mapping.as_ref();
+              mirror_dom1_form_control_state_into_dom2(
+                js_tab,
+                mapping,
+                dom_snapshot,
+                target_dom_id,
+                mouseup_target_element_id.as_deref(),
+              );
+            }
+          }
+
+          if dispatched_dom_event {
+            if let Some(before) = js_mutation_generation_before_dispatch {
+              self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
+            }
+          }
+
           if dom_changed || scroll_changed || apply_changed {
             tab.needs_repaint = true;
           }
@@ -5219,6 +5252,11 @@ impl BrowserRuntime {
             tab.cancel.bump_paint();
           }
         } else if dom_changed || scroll_changed {
+          if dispatched_dom_event {
+            if let Some(before) = js_mutation_generation_before_dispatch {
+              self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
+            }
+          }
           tab.needs_repaint = true;
         }
       }
