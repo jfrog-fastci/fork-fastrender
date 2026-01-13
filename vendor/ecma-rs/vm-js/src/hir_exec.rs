@@ -10,8 +10,8 @@ use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, 
 use crate::tick::DEFAULT_TICK_EVERY;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
-use std::collections::HashSet;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::sync::Arc;
 use parse_js::num::JsNumber;
 
@@ -521,12 +521,13 @@ impl<'vm> HirEvaluator<'vm> {
       closure_env,
     )?;
 
+    // Root the function object while performing any additional allocations (e.g. `.prototype`
+    // creation) and while assigning metadata that can invoke GC (directly or indirectly).
+    scope.push_root(Value::Object(func_obj))?;
+
     // If this was a named function expression, initialize its name binding now that the function
     // object exists.
     if let Some((env, name)) = name_binding_env {
-      // Root the function object across binding initialization. This is currently allocation-free,
-      // but keep it robust in case env initialization grows to allocate in the future.
-      scope.push_root(Value::Object(func_obj))?;
       scope
         .heap_mut()
         .env_initialize_binding(env, name, Value::Object(func_obj))?;
@@ -538,6 +539,16 @@ impl<'vm> HirEvaluator<'vm> {
       scope
         .heap_mut()
         .set_function_bound_new_target(func_obj, self.new_target)?;
+    }
+
+    // Ordinary functions get a `.prototype` object so `instanceof` works per spec.
+    //
+    // Note: user-defined functions are not currently constructable in the HIR execution engine, but
+    // `OrdinaryHasInstance` requires `C.prototype` to be an object for constructor-like functions
+    // (and throws if it isn't). Creating the prototype object here makes `instanceof` behave like
+    // the AST interpreter.
+    if !is_arrow {
+      let _ = crate::function_properties::make_constructor(&mut scope, func_obj)?;
     }
 
     // Best-effort function `[[Prototype]]` / `[[Realm]]` metadata.
@@ -3717,7 +3728,6 @@ impl<'vm> HirEvaluator<'vm> {
         // return a function that is not reachable from any rooted object (it can be synthesized by
         // the Proxy's `get` trap), and we must keep it alive until the call begins.
         iter_scope.push_root(method)?;
-
         let result = self.vm.call_with_host_and_hooks(
           &mut *self.host,
           &mut iter_scope,
