@@ -4804,6 +4804,24 @@ fn serialized_origin_for_document_url(url: &str) -> String {
   };
   match url.scheme() {
     "http" | "https" => url.origin().ascii_serialization(),
+    // FastRender treats trusted `chrome://` documents as having a tuple origin so internal pages
+    // can safely use same-document navigation APIs like `history.pushState` without collapsing all
+    // `chrome://*` pages into the opaque "null" origin bucket.
+    "chrome" => {
+      let Some(host) = url.host_str() else {
+        return "null".to_string();
+      };
+      let host = host.to_ascii_lowercase();
+      let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+      } else {
+        host
+      };
+      match url.port() {
+        Some(port) => format!("chrome://{host}:{port}"),
+        None => format!("chrome://{host}"),
+      }
+    }
     _ => "null".to_string(),
   }
 }
@@ -6149,7 +6167,7 @@ fn history_state_change_native(
     };
 
     match parsed.scheme() {
-      "http" | "https" | "file" | "data" | "about" => {}
+      "http" | "https" | "file" | "data" | "about" | "chrome" => {}
       other => {
         return Err(VmError::Throw(make_dom_exception(vm, scope,
           "SecurityError",
@@ -6165,14 +6183,8 @@ fn history_state_change_native(
     // multiple schemes share the same serialized origin.
     let current = Url::parse(&current_document_url)
       .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
-    let current_origin = match current.scheme() {
-      "http" | "https" => current.origin().ascii_serialization(),
-      _ => "null".to_string(),
-    };
-    let new_origin = match parsed.scheme() {
-      "http" | "https" => parsed.origin().ascii_serialization(),
-      _ => "null".to_string(),
-    };
+    let current_origin = serialized_origin_for_document_url(&current_document_url);
+    let new_origin = serialized_origin_for_document_url(parsed.as_str());
     if current_origin != new_origin
       || (current_origin == "null" && current.scheme() != parsed.scheme())
     {
@@ -34030,7 +34042,8 @@ fn init_window_globals(
   scope.push_root(Value::String(url_s))?;
   let url_v = Value::String(url_s);
 
-  // HTML's serialized origin is "null" for non-HTTP(S) URLs or opaque origins.
+  // HTML's serialized origin is "null" for opaque origins (and most non-HTTP(S) URLs). FastRender
+  // treats trusted `chrome://` documents as having a non-opaque origin.
   let origin_str = serialized_origin_for_document_url(&config.document_url);
   let origin_s = scope.alloc_string(&origin_str)?;
   scope.push_root(Value::String(origin_s))?;
@@ -51946,6 +51959,24 @@ mod tests {
 
     host.run_until_idle(crate::js::RunLimits::unbounded())?;
     assert_eq!(host.exec_script("__events")?, Value::Number(0.0));
+    Ok(())
+  }
+
+  #[test]
+  fn history_push_state_supports_chrome_urls_with_same_origin_enforcement() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://settings/page"))?;
+    let href =
+      realm.exec_script("history.pushState({}, '', 'chrome://settings/other'); location.href")?;
+    assert_eq!(get_string(realm.heap(), href), "chrome://settings/other");
+
+    let err = realm.exec_script("history.pushState({}, '', 'chrome://other/page')");
+    let err = err.expect_err("expected cross-host chrome history pushState to throw");
+    let obj = unwrap_thrown_object(err);
+    let (vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(obj))?;
+    let name = get_prop(vm, &mut scope, obj, "name")?;
+    assert_eq!(get_string(scope.heap(), name), "SecurityError");
     Ok(())
   }
 
