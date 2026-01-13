@@ -116,7 +116,22 @@ impl AudioStreamFactory for CpalStreamFactory {
 
   fn open_default_stream(&mut self) -> Result<Self::Stream, Self::Error> {
     let host = cpal::default_host();
-    let device = select_output_device(&host, &self.selector)?;
+    let device = match select_output_device(&host, &self.selector) {
+      Ok(device) => device,
+      // If the user-selected device disappears (hotplug), try to keep the browser usable by
+      // switching to the host's default output device instead of immediately failing back to
+      // silence.
+      Err(AudioError::OutputDeviceNotFound { .. })
+        if matches!(&self.selector, DeviceSelector::Device(_)) =>
+      {
+        let device = host
+          .default_output_device()
+          .ok_or(AudioError::NoOutputDevice)?;
+        self.selector = DeviceSelector::Default;
+        device
+      }
+      Err(err) => return Err(err),
+    };
 
     let (stream_config, sample_format, fixed_frames) =
       select_output_stream_config_matching(&device, self.expected)?;
