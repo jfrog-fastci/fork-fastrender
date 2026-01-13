@@ -17612,6 +17612,9 @@ impl App {
         // Best-effort popup UX: if a wheel scroll happens outside an open picker/dropdown, close
         // it; if it happens inside the popup, treat the wheel as UI-only (handled by egui) and do
         // not forward it to the page worker.
+        //
+        // Note: media controls are intentionally excluded so the overlay can stay attached while
+        // scrolling the page.
         let mut wheel_blocked_by_popup = false;
         if self.open_select_dropdown.is_some() {
           if self
@@ -17643,17 +17646,6 @@ impl App {
             wheel_blocked_by_popup = true;
           } else {
             self.cancel_file_picker();
-            self.window.request_redraw();
-          }
-        }
-        if self.open_media_controls.is_some() {
-          if self
-            .open_media_controls_rect
-            .is_some_and(|rect| rect.contains(pos_points))
-          {
-            wheel_blocked_by_popup = true;
-          } else {
-            self.close_media_controls();
             self.window.request_redraw();
           }
         }
@@ -21347,8 +21339,11 @@ impl App {
         self.trusted_about_prepared.remove(&active_tab);
       }
 
-      // Best-effort popup UX: when a native wheel scroll happens outside an open picker/dropdown,
-      // close it (matching typical browser behaviour).
+      // Best-effort popup UX: when a wheel scroll happens outside an open picker/dropdown, close it
+      // (matching typical browser behaviour).
+      //
+      // Note: media controls are intentionally excluded so the overlay can stay attached while
+      // scrolling the page.
       let mut wheel_blocked_by_popup = false;
       if !self.wheel_events_buf.is_empty() && !self.clear_browsing_data_dialog_open {
         if let Some(pos_points) = ctx.input(|i| i.pointer.hover_pos()) {
@@ -21380,16 +21375,6 @@ impl App {
               wheel_blocked_by_popup = true;
             } else {
               self.cancel_file_picker();
-            }
-          }
-          if self.open_media_controls.is_some() {
-            if self
-              .open_media_controls_rect
-              .is_some_and(|rect| rect.contains(pos_points))
-            {
-              wheel_blocked_by_popup = true;
-            } else {
-              self.close_media_controls();
             }
           }
         }
