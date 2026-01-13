@@ -9687,11 +9687,19 @@ fn sync_child_nodes_array(
   children
     .try_reserve(dom.node(node_id).children.len())
     .map_err(|_| VmError::OutOfMemory)?;
+  // `dom2` stores a `ShadowRoot` as a child of its host element (often at index 0) so that the
+  // renderer can traverse the composed tree. Node traversal APIs (`childNodes`, `firstChild`, etc)
+  // must never expose that shadow root through the light-DOM child list.
+  let filter_shadow_roots = !matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. });
   for &child in dom.node(node_id).children.iter() {
     if child.index() >= dom.nodes_len() {
       continue;
     }
-    if dom.node(child).parent != Some(node_id) {
+    let child_node = dom.node(child);
+    if child_node.parent != Some(node_id) {
+      continue;
+    }
+    if filter_shadow_roots && matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
       continue;
     }
     children.push(child);
@@ -24622,6 +24630,113 @@ fn node_traversal_getter(
   }
 }
 
+fn node_is_shadow_root(dom: &dom2::Document, node_id: NodeId) -> bool {
+  matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. })
+}
+
+fn node_parent_node_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Option<NodeId> {
+  // ShadowRoot's parentNode is always null (the host relationship is exposed separately).
+  if node_is_shadow_root(dom, node_id) {
+    return None;
+  }
+  dom.parent_node(node_id)
+}
+
+fn node_first_child_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Option<NodeId> {
+  // ShadowRoot exposes its shadow tree children normally.
+  if node_is_shadow_root(dom, node_id) {
+    return dom.first_child(node_id);
+  }
+
+  // Light DOM traversal: skip ShadowRoot nodes stored under their host element.
+  for &child in dom.node(node_id).children.iter() {
+    if child.index() >= dom.nodes_len() {
+      continue;
+    }
+    let child_node = dom.node(child);
+    if child_node.parent != Some(node_id) {
+      continue;
+    }
+    if matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    return Some(child);
+  }
+  None
+}
+
+fn node_last_child_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Option<NodeId> {
+  if node_is_shadow_root(dom, node_id) {
+    return dom.last_child(node_id);
+  }
+
+  for &child in dom.node(node_id).children.iter().rev() {
+    if child.index() >= dom.nodes_len() {
+      continue;
+    }
+    let child_node = dom.node(child);
+    if child_node.parent != Some(node_id) {
+      continue;
+    }
+    if matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    return Some(child);
+  }
+  None
+}
+
+fn node_previous_sibling_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Option<NodeId> {
+  // ShadowRoot is not part of the light DOM sibling list.
+  if node_is_shadow_root(dom, node_id) {
+    return None;
+  }
+
+  let parent = dom.parent_node(node_id)?;
+  let parent_is_shadow_root = node_is_shadow_root(dom, parent);
+  let parent_node = dom.node(parent);
+  let pos = parent_node.children.iter().position(|&c| c == node_id)?;
+  for &sib in parent_node.children[..pos].iter().rev() {
+    if sib.index() >= dom.nodes_len() {
+      continue;
+    }
+    let sib_node = dom.node(sib);
+    if sib_node.parent != Some(parent) {
+      continue;
+    }
+    if !parent_is_shadow_root && matches!(sib_node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    return Some(sib);
+  }
+  None
+}
+
+fn node_next_sibling_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Option<NodeId> {
+  if node_is_shadow_root(dom, node_id) {
+    return None;
+  }
+
+  let parent = dom.parent_node(node_id)?;
+  let parent_is_shadow_root = node_is_shadow_root(dom, parent);
+  let parent_node = dom.node(parent);
+  let pos = parent_node.children.iter().position(|&c| c == node_id)?;
+  for &sib in parent_node.children.iter().skip(pos + 1) {
+    if sib.index() >= dom.nodes_len() {
+      continue;
+    }
+    let sib_node = dom.node(sib);
+    if sib_node.parent != Some(parent) {
+      continue;
+    }
+    if !parent_is_shadow_root && matches!(sib_node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    return Some(sib);
+  }
+  None
+}
+
 fn node_parent_node_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -24631,7 +24746,7 @@ fn node_parent_node_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  node_traversal_getter(vm, scope, host, this, |dom, node| dom.parent_node(node))
+  node_traversal_getter(vm, scope, host, this, node_parent_node_for_traversal)
 }
 
 fn node_first_child_get_native(
@@ -24643,7 +24758,7 @@ fn node_first_child_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  node_traversal_getter(vm, scope, host, this, |dom, node| dom.first_child(node))
+  node_traversal_getter(vm, scope, host, this, node_first_child_for_traversal)
 }
 
 fn node_previous_sibling_get_native(
@@ -24655,9 +24770,7 @@ fn node_previous_sibling_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  node_traversal_getter(vm, scope, host, this, |dom, node| {
-    dom.previous_sibling(node)
-  })
+  node_traversal_getter(vm, scope, host, this, node_previous_sibling_for_traversal)
 }
 
 fn node_next_sibling_get_native(
@@ -24669,7 +24782,7 @@ fn node_next_sibling_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  node_traversal_getter(vm, scope, host, this, |dom, node| dom.next_sibling(node))
+  node_traversal_getter(vm, scope, host, this, node_next_sibling_for_traversal)
 }
 
 fn node_node_type_get_native(
@@ -25386,6 +25499,11 @@ fn node_parent_element_get_native(
     .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
   let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
+  // ShadowRoot is not part of the parent chain for `parentElement` (or `parentNode`).
+  if node_is_shadow_root(dom, node_id) {
+    return Ok(Value::Null);
+  }
+
   let Some(parent_id) = dom.parent_node(node_id) else {
     return Ok(Value::Null);
   };
@@ -25418,7 +25536,7 @@ fn node_last_child_get_native(
     .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
   let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  let Some(child_id) = dom.last_child(node_id) else {
+  let Some(child_id) = node_last_child_for_traversal(dom, node_id) else {
     return Ok(Value::Null);
   };
   let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
@@ -25446,7 +25564,9 @@ fn node_has_child_nodes_native(
   };
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-  Ok(Value::Bool(dom.first_child(handle.node_id).is_some()))
+  Ok(Value::Bool(
+    node_first_child_for_traversal(dom, handle.node_id).is_some(),
+  ))
 }
 
 fn node_get_root_node_native(
@@ -25528,9 +25648,35 @@ fn node_contains_native(
 
   let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  Ok(Value::Bool(
-    dom.ancestors(other_id).any(|ancestor| ancestor == node_id),
-  ))
+  // WHATWG DOM: `Node.contains` must not cross shadow boundaries. In particular, an element host
+  // does not "contain" nodes inside its shadow tree, and `document.contains(nodeInShadow)` is false.
+  //
+  // dom2 stores ShadowRoot nodes under their host element, so naive ancestor traversal would cross
+  // the boundary. Implement the spec-shaped variant by stopping when we reach a ShadowRoot, unless
+  // that ShadowRoot is the searched-for ancestor.
+  if node_id.index() >= dom.nodes_len() || other_id.index() >= dom.nodes_len() {
+    return Ok(Value::Bool(false));
+  }
+  let mut current = Some(other_id);
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while remaining > 0 {
+    remaining -= 1;
+    let Some(id) = current else {
+      break;
+    };
+    if id == node_id {
+      return Ok(Value::Bool(true));
+    }
+    if id.index() >= dom.nodes_len() {
+      break;
+    }
+    if matches!(dom.node(id).kind, NodeKind::ShadowRoot { .. }) {
+      break;
+    }
+    current = dom.parent_node(id);
+  }
+
+  Ok(Value::Bool(false))
 }
 
 fn node_child_nodes_get_native(
@@ -47950,6 +48096,113 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_traversal_accessors_hide_shadow_root_from_host_element() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const host = document.createElement('div');\n\
+        document.body.appendChild(host);\n\
+        const shadow = host.attachShadow({ mode: 'open' });\n\
+        const inShadow = document.createElement('span');\n\
+        shadow.appendChild(inShadow);\n\
+\n\
+        if (host.shadowRoot !== shadow) return 'shadowRoot getter';\n\
+\n\
+        // Host light DOM traversal must not expose the shadow root.\n\
+        if (host.childNodes.length !== 0) return 'host.childNodes.length=' + host.childNodes.length;\n\
+        if (host.firstChild !== null) return 'host.firstChild';\n\
+        if (host.lastChild !== null) return 'host.lastChild';\n\
+        if (host.hasChildNodes()) return 'host.hasChildNodes';\n\
+\n\
+        const a = document.createElement('p');\n\
+        const b = document.createElement('p');\n\
+        host.appendChild(a);\n\
+        host.appendChild(b);\n\
+        if (host.childNodes.length !== 2) return 'host.childNodes.length2=' + host.childNodes.length;\n\
+        if (host.childNodes[0] !== a) return 'host.childNodes[0]';\n\
+        if (host.childNodes[1] !== b) return 'host.childNodes[1]';\n\
+        if (host.firstChild !== a) return 'host.firstChild2';\n\
+        if (host.lastChild !== b) return 'host.lastChild2';\n\
+        if (!host.hasChildNodes()) return 'host.hasChildNodes2';\n\
+        if (a.previousSibling !== null) return 'a.previousSibling';\n\
+        if (a.nextSibling !== b) return 'a.nextSibling';\n\
+        if (b.previousSibling !== a) return 'b.previousSibling';\n\
+        if (b.nextSibling !== null) return 'b.nextSibling';\n\
+\n\
+        // ShadowRoot itself is a boundary: no parent/sibling traversal.\n\
+        if (shadow.parentNode !== null) return 'shadow.parentNode';\n\
+        if (shadow.parentElement !== null) return 'shadow.parentElement';\n\
+        if (shadow.previousSibling !== null) return 'shadow.previousSibling';\n\
+        if (shadow.nextSibling !== null) return 'shadow.nextSibling';\n\
+        if (shadow.childNodes.length !== 1 || shadow.childNodes[0] !== inShadow) return 'shadow.childNodes';\n\
+        if (shadow.firstChild !== inShadow) return 'shadow.firstChild';\n\
+        if (shadow.lastChild !== inShadow) return 'shadow.lastChild';\n\
+\n\
+        // Node.contains must not cross the shadow boundary.\n\
+        if (host.contains(inShadow)) return 'host.contains(shadow)';\n\
+        if (document.contains(inShadow)) return 'document.contains(shadow)';\n\
+        if (!shadow.contains(inShadow)) return 'shadow.contains(shadow)';\n\
+\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn closed_shadow_root_cannot_be_discovered_via_node_traversal() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const host = document.createElement('div');\n\
+        document.body.appendChild(host);\n\
+        const shadow = host.attachShadow({ mode: 'closed' });\n\
+        const inShadow = document.createElement('span');\n\
+        shadow.appendChild(inShadow);\n\
+\n\
+        if (host.shadowRoot !== null) return 'host.shadowRoot should be null';\n\
+\n\
+        // The closed shadow root must not appear in light DOM traversal.\n\
+        if (host.childNodes.length !== 0) return 'host.childNodes.length=' + host.childNodes.length;\n\
+        if (host.firstChild !== null) return 'host.firstChild';\n\
+        if (host.lastChild !== null) return 'host.lastChild';\n\
+        if (host.hasChildNodes()) return 'host.hasChildNodes';\n\
+\n\
+        const a = document.createElement('p');\n\
+        host.appendChild(a);\n\
+        if (host.firstChild !== a) return 'host.firstChild2';\n\
+        if (a.previousSibling !== null) return 'a.previousSibling';\n\
+\n\
+        // ShadowRoot semantics are the same regardless of mode.\n\
+        if (shadow.parentNode !== null) return 'shadow.parentNode';\n\
+        if (shadow.parentElement !== null) return 'shadow.parentElement';\n\
+        if (shadow.previousSibling !== null) return 'shadow.previousSibling';\n\
+        if (shadow.nextSibling !== null) return 'shadow.nextSibling';\n\
+\n\
+        // Node.contains must not cross the shadow boundary, even for closed roots.\n\
+        if (host.contains(inShadow)) return 'host.contains(shadow)';\n\
+        if (document.contains(inShadow)) return 'document.contains(shadow)';\n\
+        if (!shadow.contains(inShadow)) return 'shadow.contains(shadow)';\n\
+\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 
