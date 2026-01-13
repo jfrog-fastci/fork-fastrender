@@ -462,6 +462,42 @@ mod tests {
   }
 
   #[test]
+  fn wrap_command_with_sandbox_exec_rewrites_argv_including_params() {
+    if !Path::new(SANDBOX_EXEC_PATH).is_file() {
+      eprintln!("skipping: {SANDBOX_EXEC_PATH} is missing");
+      return;
+    }
+
+    let sbpl = "(version 1)\n(allow default)\n";
+    let home = "/Users/Test User";
+    let tmpdir = "/var/folders/xx/Some Tmp";
+
+    let mut cmd = Command::new("/usr/bin/true");
+    cmd.env("HOME", home).env("TMPDIR", tmpdir);
+    wrap_command_with_sandbox_exec(&mut cmd, sbpl).expect("wrap command");
+
+    assert_eq!(cmd.get_program(), OsStr::new(SANDBOX_EXEC_PATH));
+    let args: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().into_owned())
+      .collect();
+
+    // argv should be:
+    // sandbox-exec -D HOME=... -D TMPDIR=... -p <sbpl> -- /usr/bin/true
+    assert!(
+      args.len() >= 8,
+      "expected at least 8 argv entries, got {args:?}"
+    );
+    assert_eq!(args[0], "-D");
+    assert_eq!(args[1], format!("HOME={home}"));
+    assert_eq!(args[2], "-D");
+    assert_eq!(args[3], format!("TMPDIR={tmpdir}"));
+    assert_eq!(args[4], "-p");
+    assert_eq!(args[6], "--");
+    assert_eq!(args[7], "/usr/bin/true");
+  }
+
+  #[test]
   fn sandbox_exec_blocks_network_bind() {
     const CHILD_ENV: &str = "FASTR_TEST_SANDBOX_EXEC_CHILD";
     const EXPECT_ENV: &str = "FASTR_TEST_SANDBOX_EXEC_EXPECT_BIND_OK";
