@@ -7655,14 +7655,16 @@ impl App {
               }
 
               ShortcutAction::ToggleFullScreen => {
-                let next = if self.window.fullscreen().is_some() {
-                  None
+                let currently_fullscreen = self.window.fullscreen().is_some();
+                if currently_fullscreen {
+                  self.window.set_fullscreen(None);
                 } else {
-                  Some(winit::window::Fullscreen::Borderless(
-                    self.window.current_monitor(),
-                  ))
-                };
-                self.window.set_fullscreen(next);
+                  let monitor =
+                    self.window.current_monitor().or_else(|| self.window.primary_monitor());
+                  self
+                    .window
+                    .set_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));
+                }
                 self.window.request_redraw();
                 return;
               }
