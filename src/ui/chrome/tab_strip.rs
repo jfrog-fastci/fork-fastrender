@@ -1881,7 +1881,7 @@ pub(super) fn tab_strip_ui(
         .ctx()
         .data(|d| d.get_temp::<egui::Id>(scroll_state_id_key));
       let mut current_offset_x = stored_scroll_state_id
-        .and_then(|id| egui::scroll_area::State::load(unpinned_ui.ctx(), id).map(|state| state.offset.x))
+        .and_then(|id| egui::scroll_area::State::load(unpinned_ui.ctx(), id).map(|s| s.offset.x))
         .unwrap_or(0.0);
       if !current_offset_x.is_finite() {
         current_offset_x = 0.0;
@@ -1946,7 +1946,9 @@ pub(super) fn tab_strip_ui(
 
         // Programmatically set the scroll offset for this frame.
         if let Some(scroll_state_id) = stored_scroll_state_id {
-          if let Some(mut scroll_state) = egui::scroll_area::State::load(unpinned_ui.ctx(), scroll_state_id) {
+          if let Some(mut scroll_state) =
+            egui::scroll_area::State::load(unpinned_ui.ctx(), scroll_state_id)
+          {
             scroll_state.offset.x = desired_scroll_offset_x;
             scroll_state.store(unpinned_ui.ctx(), scroll_state_id);
           }
