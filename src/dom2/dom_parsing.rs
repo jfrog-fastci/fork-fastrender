@@ -32,7 +32,7 @@ fn element_context(
       attributes,
       ..
     } => Ok(("slot", namespace.as_str(), attributes.as_slice())),
-    _ => Err(DomError::InvalidNodeType),
+    _ => Err(DomError::InvalidNodeTypeError),
   }
 }
 

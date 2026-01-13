@@ -9,7 +9,7 @@ fn validate_element_like(doc: &Document, element: NodeId) -> DomResult<()> {
 
   match node.kind {
     NodeKind::Element { .. } | NodeKind::Slot { .. } => Ok(()),
-    _ => Err(DomError::InvalidNodeType),
+    _ => Err(DomError::InvalidNodeTypeError),
   }
 }
 
@@ -114,7 +114,7 @@ impl Document {
       return Err(DomError::NotFoundError);
     };
     if !matches!(node.kind, NodeKind::ShadowRoot { .. }) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
     Ok(super::serialization::serialize_children(self, shadow_root))
   }
@@ -162,7 +162,7 @@ impl Document {
       return Err(DomError::NotFoundError);
     };
     if !matches!(node.kind, NodeKind::ShadowRoot { .. }) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
 
     // Context element for fragment parsing: the shadow root's host.
@@ -217,7 +217,7 @@ impl Document {
         self.create_element("body", HTML_NAMESPACE)
       }
       Some(NodeKind::Element { .. } | NodeKind::Slot { .. }) => parent,
-      Some(_) => return Err(DomError::InvalidNodeType),
+      Some(_) => return Err(DomError::InvalidNodeTypeError),
       None => return Err(DomError::NotFoundError),
     };
 

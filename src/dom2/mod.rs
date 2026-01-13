@@ -833,7 +833,7 @@ impl Document {
   pub fn script_already_started(&self, node: NodeId) -> Result<bool, DomError> {
     let node = self.node_checked(node)?;
     if !self.kind_is_html_script(&node.kind) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
     Ok(node.script_already_started)
   }
@@ -846,7 +846,7 @@ impl Document {
       self.kind_is_html_script(&node.kind)
     };
     if !is_script {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
     let node = self.node_checked_mut(node)?;
     node.script_already_started = value;
@@ -856,7 +856,7 @@ impl Document {
   pub fn script_force_async(&self, node: NodeId) -> Result<bool, DomError> {
     let node = self.node_checked(node)?;
     if !self.kind_is_html_script(&node.kind) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
     Ok(node.script_force_async)
   }
@@ -867,7 +867,7 @@ impl Document {
       self.kind_is_html_script(&node.kind)
     };
     if !is_script {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
     let node = self.node_checked_mut(node)?;
     node.script_force_async = value;
@@ -877,7 +877,7 @@ impl Document {
   pub fn script_parser_document(&self, node: NodeId) -> Result<bool, DomError> {
     let node = self.node_checked(node)?;
     if !self.kind_is_html_script(&node.kind) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
     Ok(node.script_parser_document)
   }
@@ -887,7 +887,7 @@ impl Document {
       self.kind_is_html_script(&node.kind)
     };
     if !is_script {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
     let node = self.node_checked_mut(node)?;
     node.script_parser_document = value;

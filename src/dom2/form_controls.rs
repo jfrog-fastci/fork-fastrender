@@ -131,7 +131,7 @@ impl Document {
       .input_states
       .get(node.index())
       .and_then(|s| s.as_ref())
-      .ok_or(DomError::InvalidNodeType)
+      .ok_or(DomError::InvalidNodeTypeError)
   }
 
   fn input_state_mut(&mut self, node: NodeId) -> Result<&mut InputState, DomError> {
@@ -139,7 +139,7 @@ impl Document {
       .input_states
       .get_mut(node.index())
       .and_then(|s| s.as_mut())
-      .ok_or(DomError::InvalidNodeType)
+      .ok_or(DomError::InvalidNodeTypeError)
   }
 
   fn textarea_state(&self, node: NodeId) -> Result<&TextareaState, DomError> {
@@ -147,7 +147,7 @@ impl Document {
       .textarea_states
       .get(node.index())
       .and_then(|s| s.as_ref())
-      .ok_or(DomError::InvalidNodeType)
+      .ok_or(DomError::InvalidNodeTypeError)
   }
 
   fn textarea_state_mut(&mut self, node: NodeId) -> Result<&mut TextareaState, DomError> {
@@ -155,7 +155,7 @@ impl Document {
       .textarea_states
       .get_mut(node.index())
       .and_then(|s| s.as_mut())
-      .ok_or(DomError::InvalidNodeType)
+      .ok_or(DomError::InvalidNodeTypeError)
   }
 
   fn option_state(&self, node: NodeId) -> Result<&OptionState, DomError> {
@@ -163,7 +163,7 @@ impl Document {
       .option_states
       .get(node.index())
       .and_then(|s| s.as_ref())
-      .ok_or(DomError::InvalidNodeType)
+      .ok_or(DomError::InvalidNodeTypeError)
   }
 
   fn option_state_mut(&mut self, node: NodeId) -> Result<&mut OptionState, DomError> {
@@ -171,7 +171,7 @@ impl Document {
       .option_states
       .get_mut(node.index())
       .and_then(|s| s.as_mut())
-      .ok_or(DomError::InvalidNodeType)
+      .ok_or(DomError::InvalidNodeTypeError)
   }
 
   pub(crate) fn sync_form_control_state_after_attr_mutation(
@@ -445,7 +445,7 @@ impl Document {
       NodeKind::Element { tag_name, namespace, .. }
         if self.is_html_case_insensitive_namespace(namespace)
           && tag_name.eq_ignore_ascii_case("textarea") => {}
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     }
 
     // Minimal default value: concatenate descendant text node data in tree order.
@@ -474,7 +474,7 @@ impl Document {
       NodeKind::Element { tag_name, namespace, .. }
         if self.is_html_case_insensitive_namespace(namespace)
           && tag_name.eq_ignore_ascii_case("form") => {}
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     }
 
     // Minimal: reset descendant <input>, <textarea>, and <option> elements.

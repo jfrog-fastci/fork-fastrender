@@ -125,7 +125,7 @@ fn clone_node_shallow_from_other_document(
         // work. The cloned `Document` node must remain detached: `Document` nodes cannot be inserted
         // into a tree.
         if parent.is_some() {
-          return Err(DomError::InvalidNodeType);
+          return Err(DomError::InvalidNodeTypeError);
         }
         NodeKind::Document {
           quirks_mode: *quirks_mode,

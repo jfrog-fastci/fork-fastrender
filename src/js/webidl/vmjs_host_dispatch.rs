@@ -6833,6 +6833,14 @@ mod window_document_tests {
     };
     assert_dom_exception_name(&mut scope, thrown, "NotFoundError")?;
 
+    let err = throw_dom_error(&mut scope, class, DomError::InvalidNodeTypeError);
+    let VmError::Throw(thrown) = err else {
+      return Err(VmError::TypeError(
+        "expected throw_dom_error to return VmError::Throw",
+      ));
+    };
+    assert_dom_exception_name(&mut scope, thrown, "InvalidNodeTypeError")?;
+
     drop(scope);
     realm.teardown(&mut heap);
     Ok(())

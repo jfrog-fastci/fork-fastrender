@@ -133,9 +133,9 @@ fn class_list_errors_on_non_elements() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let text = make_text(&mut doc, "x");
 
-  assert_eq!(doc.class_list_tokens(text), Err(DomError::InvalidNodeType));
+  assert_eq!(doc.class_list_tokens(text), Err(DomError::InvalidNodeTypeError));
   assert_eq!(
     doc.class_list_add(text, &["a"]),
-    Err(DomError::InvalidNodeType)
+    Err(DomError::InvalidNodeTypeError)
   );
 }

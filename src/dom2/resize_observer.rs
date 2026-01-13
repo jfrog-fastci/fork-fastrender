@@ -161,7 +161,7 @@ impl Document {
   ) -> Result<(), DomError> {
     let target_node = self.node_checked(target)?;
     if !is_resize_observer_target_kind(&target_node.kind) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
 
     // Remove any existing registration for (target, observer).

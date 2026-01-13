@@ -277,7 +277,7 @@ impl Document {
   pub fn slot_assign(&mut self, slot: NodeId, nodes: &[NodeId]) -> Result<(), DomError> {
     self.node_checked(slot)?;
     if !matches!(self.node(slot).kind, NodeKind::Slot { .. }) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
 
     // 1. For each node in this slot's current manually assigned nodes: clear its manual assignment.
@@ -296,7 +296,7 @@ impl Document {
     for &node in nodes {
       self.node_checked(node)?;
       if !node_is_slottable(&self.node(node).kind) {
-        return Err(DomError::InvalidNodeType);
+        return Err(DomError::InvalidNodeTypeError);
       }
 
       if !seen.insert(node) {

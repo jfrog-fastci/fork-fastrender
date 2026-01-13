@@ -42,7 +42,7 @@ fn ensure_element_or_slot(doc: &Document, node: NodeId) -> Result<(), DomError> 
   };
   match &node_ref.kind {
     NodeKind::Element { .. } | NodeKind::Slot { .. } => Ok(()),
-    _ => Err(DomError::InvalidNodeType),
+    _ => Err(DomError::InvalidNodeTypeError),
   }
 }
 

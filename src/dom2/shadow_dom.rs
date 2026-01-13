@@ -163,7 +163,7 @@ impl Document {
       } => (tag_name.as_str(), namespace.as_str()),
       // `attachShadow()` is not permitted on `<slot>` elements.
       NodeKind::Slot { .. } => return Err(DomError::NotSupportedError),
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
 
     if !self.is_html_case_insensitive_namespace(namespace) || !is_valid_shadow_host_name(tag_name) {

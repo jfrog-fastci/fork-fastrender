@@ -448,7 +448,7 @@ impl Document {
   ) -> DomResult<()> {
     let node_kind = &self.node_checked(node)?.kind;
     if matches!(node_kind, &NodeKind::Doctype { .. }) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
 
     let node_len = self.node_length(node)?;

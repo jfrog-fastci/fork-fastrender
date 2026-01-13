@@ -913,7 +913,7 @@ fn set_inner_html_preserves_shadow_root() {
   // ShadowRoot has no outerHTML in the web platform.
   assert_eq!(
     doc.outer_html(shadow_root),
-    Err(super::DomError::InvalidNodeType)
+    Err(super::DomError::InvalidNodeTypeError)
   );
 
   doc.set_inner_html(host, "<b>new</b>").unwrap();

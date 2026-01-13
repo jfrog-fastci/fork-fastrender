@@ -449,7 +449,7 @@ impl Document {
 
     // `Document` nodes cannot be inserted into the tree.
     if matches!(child_kind, NodeKind::Document { .. }) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
 
     // Leaf nodes cannot accept children.
@@ -888,7 +888,7 @@ impl Document {
     let node = self.node_checked(node)?;
     match &node.kind {
       NodeKind::Text { content } => Ok(content.as_str()),
-      _ => Err(DomError::InvalidNodeType),
+      _ => Err(DomError::InvalidNodeTypeError),
     }
   }
 
@@ -896,7 +896,7 @@ impl Document {
     let node = self.node_checked(node)?;
     match &node.kind {
       NodeKind::Comment { content } => Ok(content.as_str()),
-      _ => Err(DomError::InvalidNodeType),
+      _ => Err(DomError::InvalidNodeTypeError),
     }
   }
 
@@ -904,7 +904,7 @@ impl Document {
     let node = self.node_checked(node)?;
     match &node.kind {
       NodeKind::ProcessingInstruction { data, .. } => Ok(data.as_str()),
-      _ => Err(DomError::InvalidNodeType),
+      _ => Err(DomError::InvalidNodeTypeError),
     }
   }
 
@@ -932,7 +932,7 @@ impl Document {
       NodeKind::ProcessingInstruction { data, .. } => {
         (ReplaceTarget::ProcessingInstruction, data.clone())
       }
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
 
     let is_text_node = matches!(target_kind, ReplaceTarget::Text);
@@ -994,7 +994,7 @@ impl Document {
   pub fn set_character_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     match self.replace_data(node, 0, usize::MAX, data) {
       Ok(changed) => Ok(changed),
-      Err(DomError::InvalidNodeType) => Ok(false),
+      Err(DomError::InvalidNodeTypeError) => Ok(false),
       Err(err) => Err(err),
     }
   }
@@ -1011,7 +1011,7 @@ impl Document {
         }
         content.clone()
       }
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
 
     let has_live_subscribers = self.live_mutation.has_subscribers();
@@ -1033,7 +1033,7 @@ impl Document {
     {
       let node = self.node_checked_mut(node_id)?;
       let NodeKind::Text { content } = &mut node.kind else {
-        return Err(DomError::InvalidNodeType);
+        return Err(DomError::InvalidNodeTypeError);
       };
       content.clear();
       content.push_str(data);
@@ -1055,7 +1055,7 @@ impl Document {
         }
         content.clone()
       }
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
 
     let has_live_subscribers = self.live_mutation.has_subscribers();
@@ -1077,7 +1077,7 @@ impl Document {
     {
       let node = self.node_checked_mut(node_id)?;
       let NodeKind::Comment { content } = &mut node.kind else {
-        return Err(DomError::InvalidNodeType);
+        return Err(DomError::InvalidNodeTypeError);
       };
       content.clear();
       content.push_str(data);
@@ -1104,7 +1104,7 @@ impl Document {
         }
         value.clone()
       }
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
 
     let has_live_subscribers = self.live_mutation.has_subscribers();
@@ -1126,7 +1126,7 @@ impl Document {
     {
       let node = self.node_checked_mut(node_id)?;
       let NodeKind::ProcessingInstruction { data: value, .. } = &mut node.kind else {
-        return Err(DomError::InvalidNodeType);
+        return Err(DomError::InvalidNodeTypeError);
       };
       value.clear();
       value.push_str(data);
@@ -1160,7 +1160,7 @@ impl Document {
       self.nodes[shadow_root.index()].kind,
       NodeKind::ShadowRoot { .. }
     ) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
 
     struct RestoreGuard {

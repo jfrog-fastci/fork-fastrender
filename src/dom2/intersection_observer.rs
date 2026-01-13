@@ -168,13 +168,13 @@ impl Document {
   ) -> Result<(), DomError> {
     let target_node = self.node_checked(target)?;
     if !is_intersection_observer_target_kind(&target_node.kind) {
-      return Err(DomError::InvalidNodeType);
+      return Err(DomError::InvalidNodeTypeError);
     }
 
     if let Some(root) = init.root {
       let root_node = self.node_checked(root)?;
       if !is_intersection_observer_root_kind(&root_node.kind) {
-        return Err(DomError::InvalidNodeType);
+        return Err(DomError::InvalidNodeTypeError);
       }
     }
 

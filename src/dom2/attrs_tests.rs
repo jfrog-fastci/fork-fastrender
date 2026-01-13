@@ -128,11 +128,11 @@ fn set_attribute_errors_on_non_element_nodes() {
 
   assert_eq!(
     doc.set_attribute(text, "id", "a"),
-    Err(DomError::InvalidNodeType)
+    Err(DomError::InvalidNodeTypeError)
   );
   assert_eq!(
     doc.remove_attribute(text, "id"),
-    Err(DomError::InvalidNodeType)
+    Err(DomError::InvalidNodeTypeError)
   );
 }
 
@@ -147,8 +147,8 @@ fn text_data_editing_works_and_errors_on_non_text_nodes() {
   assert_eq!(doc.set_text_data(text, "world").unwrap(), true);
   assert_eq!(doc.text_data(text).unwrap(), "world");
 
-  assert_eq!(doc.text_data(el), Err(DomError::InvalidNodeType));
-  assert_eq!(doc.set_text_data(el, "x"), Err(DomError::InvalidNodeType));
+  assert_eq!(doc.text_data(el), Err(DomError::InvalidNodeTypeError));
+  assert_eq!(doc.set_text_data(el, "x"), Err(DomError::InvalidNodeTypeError));
 }
 
 #[test]

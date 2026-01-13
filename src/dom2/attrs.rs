@@ -23,7 +23,7 @@ impl Document {
         attributes,
         ..
       } => (namespace.as_str(), attributes.as_slice()),
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
     let is_html = self.is_html_case_insensitive_namespace(namespace);
     Ok(
@@ -38,14 +38,14 @@ impl Document {
     let node = self.node_checked(node)?;
     let namespace = match &node.kind {
       NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => namespace.as_str(),
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
     let is_html = self.is_html_case_insensitive_namespace(namespace);
     let attrs = match &node.kind {
       NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => {
         attributes.as_slice()
       }
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
     Ok(
       attrs
@@ -67,7 +67,7 @@ impl Document {
         attributes,
         ..
       } => (namespace.as_str(), attributes.as_slice()),
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
     let is_html = self.is_html_case_insensitive_namespace(namespace);
     if is_html {
@@ -94,7 +94,7 @@ impl Document {
         NodeKind::Slot { namespace, .. } => {
           (self.is_html_case_insensitive_namespace(namespace), false)
         }
-        _ => return Err(DomError::InvalidNodeType),
+        _ => return Err(DomError::InvalidNodeTypeError),
       }
     };
 
@@ -102,7 +102,7 @@ impl Document {
       let node = self.node_checked_mut(node_id)?;
       let attrs = match &mut node.kind {
         NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
-        _ => return Err(DomError::InvalidNodeType),
+        _ => return Err(DomError::InvalidNodeTypeError),
       };
 
       if let Some((_, existing)) = attrs
@@ -165,7 +165,7 @@ impl Document {
         NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => {
           self.is_html_case_insensitive_namespace(namespace)
         }
-        _ => return Err(DomError::InvalidNodeType),
+        _ => return Err(DomError::InvalidNodeTypeError),
       }
     };
 
@@ -173,7 +173,7 @@ impl Document {
       let node = self.node_checked_mut(node_id)?;
       let attrs = match &mut node.kind {
         NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
-        _ => return Err(DomError::InvalidNodeType),
+        _ => return Err(DomError::InvalidNodeTypeError),
       };
 
       if let Some(idx) = attrs
@@ -239,7 +239,7 @@ impl Document {
           NodeKind::Slot { namespace, .. } => {
             (self.is_html_case_insensitive_namespace(namespace), false)
           }
-          _ => return Err(DomError::InvalidNodeType),
+          _ => return Err(DomError::InvalidNodeTypeError),
         }
       };
 
@@ -247,7 +247,7 @@ impl Document {
         let node = self.node_checked_mut(node_id)?;
         let attrs = match &mut node.kind {
           NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
-          _ => return Err(DomError::InvalidNodeType),
+          _ => return Err(DomError::InvalidNodeTypeError),
         };
         if attrs
           .iter()
