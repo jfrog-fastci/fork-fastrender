@@ -2360,10 +2360,15 @@ fn connect_websocket_with_timeouts(
   // -------------------------------------------------------------------------
   match &stream {
     tungstenite::stream::MaybeTlsStream::Plain(s) => {
-      let _ = s.set_nonblocking(true);
+      s
+        .set_nonblocking(true)
+        .map_err(|err| ws_fail_io("configure WebSocket handshake", err))?;
     }
     tungstenite::stream::MaybeTlsStream::Rustls(s) => {
-      let _ = s.get_ref().set_nonblocking(true);
+      s
+        .get_ref()
+        .set_nonblocking(true)
+        .map_err(|err| ws_fail_io("configure WebSocket handshake", err))?;
     }
     #[allow(unreachable_patterns)]
     _ => {}
