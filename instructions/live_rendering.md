@@ -92,20 +92,19 @@ Parse HTML → Style → Layout → Paint → Display
 
 ### 3. Animations don't animate
 
-- CSS `animation` and `transition` are parsed but don't progress
-- `requestAnimationFrame` callbacks may never fire
-- Animated GIFs may show only first frame
-- Video doesn't play (see `video_support.md` and the A/V clocking model in `docs/media_clocking.md`)
+- In the **one-shot** render pipeline, time-based CSS animations/transitions resolve to a
+  deterministic single-frame state unless the host explicitly drives time.
+- `requestAnimationFrame` callbacks require a JS-capable runtime (`BrowserTab`) and a tick loop
+  (`tick_frame` / `next_wake_time`); they are not executed by `FastRender::render_*`.
+- Video/audio playback needs a real-time clocking model; see `video_support.md` and the A/V clocking
+  model in `docs/media_clocking.md`.
 
 ### 4. Event loop isn't running
 
-The browser's event loop is the heart of dynamic rendering:
-- Microtasks (Promise callbacks)
-- Macrotasks (timers, I/O)
-- Animation frames
-- User input events
+The **one-shot** render APIs (`FastRender::render_*`) do not include an HTML event loop.
 
-Without it, JS-driven pages can't function.
+JS-capable containers (`BrowserTab`, `BrowserDocumentJs`) do include an event loop (tasks +
+microtasks + timers + rAF), but **embedders must drive it** (see `docs/live_rendering_loop.md`).
 
 ## Architecture changes needed
 
