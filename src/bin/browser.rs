@@ -296,8 +296,7 @@ mod open_typed_in_new_tab_tests {
   #[test]
   fn typed_open_in_new_tab_creates_and_activates_tab() {
     let mut browser_state = BrowserAppState::new();
-    // Avoid colliding with `TabId::new()` (used by `open_typed_in_new_tab_state`) which starts at 1.
-    let tab_a = TabId(1_000_000);
+    let tab_a = TabId::new();
     browser_state.push_tab(
       BrowserTabState::new(tab_a, "https://example.org/".to_string()),
       true,
@@ -344,7 +343,7 @@ mod open_typed_in_new_tab_tests {
   #[test]
   fn typed_fragment_open_in_new_tab_joins_against_active_url() {
     let mut browser_state = BrowserAppState::new();
-    let tab_a = TabId(1);
+    let tab_a = TabId::new();
     browser_state.push_tab(
       BrowserTabState::new(tab_a, "https://example.org/path?x=1".to_string()),
       true,
@@ -381,7 +380,7 @@ mod open_typed_in_new_tab_tests {
   #[test]
   fn typed_open_in_new_tab_rejects_disallowed_scheme() {
     let mut browser_state = BrowserAppState::new();
-    let tab_a = TabId(1);
+    let tab_a = TabId::new();
     browser_state.push_tab(
       BrowserTabState::new(tab_a, "about:newtab".to_string()),
       true,
@@ -405,7 +404,7 @@ mod open_typed_in_new_tab_tests {
   #[test]
   fn typed_search_query_open_in_new_tab_resolves_to_search_url() {
     let mut browser_state = BrowserAppState::new();
-    let tab_a = TabId(1);
+    let tab_a = TabId::new();
     browser_state.push_tab(
       BrowserTabState::new(tab_a, "about:newtab".to_string()),
       true,
@@ -439,7 +438,7 @@ mod open_typed_in_new_tab_tests {
   #[test]
   fn typed_open_in_new_tab_rejects_empty_input() {
     let mut browser_state = BrowserAppState::new();
-    let tab_a = TabId(1);
+    let tab_a = TabId::new();
     browser_state.push_tab(
       BrowserTabState::new(tab_a, "about:newtab".to_string()),
       true,
