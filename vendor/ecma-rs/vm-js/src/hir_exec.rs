@@ -7,7 +7,6 @@ use crate::for_in::ForInEnumerator;
 use crate::iterator;
 use crate::module_loading;
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
-use crate::tick::DEFAULT_TICK_EVERY;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::cmp::Ordering;
@@ -217,50 +216,6 @@ fn concat_strings(
   }
 
   scope.alloc_string_from_u16_vec(units)
-}
-
-fn vec_try_extend_utf16_from_str_with_ticks(
-  out: &mut Vec<u16>,
-  s: &str,
-  mut tick: impl FnMut() -> Result<(), VmError>,
-) -> Result<(), VmError> {
-  // Extend `out` with the UTF-16 encoding of `s` using fallible allocation and periodic ticks.
-  //
-  // We buffer into a fixed-size stack array so we can:
-  // - use `Vec::try_reserve` to avoid panicking on OOM, and
-  // - tick periodically so large template literal segments can't perform long stretches of
-  //   uninterruptible work.
-  let mut buf = [0u16; DEFAULT_TICK_EVERY];
-  let mut buf_len = 0usize;
-  let mut need_tick = false;
-
-  for unit in s.encode_utf16() {
-    if need_tick {
-      tick()?;
-      need_tick = false;
-    }
-
-    buf[buf_len] = unit;
-    buf_len += 1;
-
-    if buf_len == buf.len() {
-      out
-        .try_reserve(buf_len)
-        .map_err(|_| VmError::OutOfMemory)?;
-      out.extend_from_slice(&buf[..buf_len]);
-      buf_len = 0;
-      // Defer ticking until we know there is at least one more code unit.
-      need_tick = true;
-    }
-  }
-
-  if buf_len != 0 {
-    out
-      .try_reserve(buf_len)
-      .map_err(|_| VmError::OutOfMemory)?;
-    out.extend_from_slice(&buf[..buf_len]);
-  }
-  Ok(())
 }
 
 fn maybe_set_anonymous_function_name(
@@ -2816,31 +2771,33 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     tpl: &hir_js::TemplateLiteral,
   ) -> Result<Value, VmError> {
-    let mut units: Vec<u16> = Vec::new();
+    // Untagged template literal evaluation:
+    //   head + (ToString(expr) + literal)...
+    //
+    // Important: root the accumulator across any operation that can allocate (expression eval,
+    // ToString, and string concatenation).
+    let mut scope = scope.reborrow();
 
-    vec_try_extend_utf16_from_str_with_ticks(&mut units, tpl.head.as_str(), || self.vm.tick())?;
+    let mut out = scope.alloc_string(tpl.head.as_str())?;
 
     for span in &tpl.spans {
-      // Charge budget per span so a template with many expressions can't run unbounded without
-      // consuming fuel/deadline budget.
-      self.vm.tick()?;
+      // Root the accumulator across evaluation/coercion/allocations in this span.
+      let mut span_scope = scope.reborrow();
+      span_scope.push_root(Value::String(out))?;
 
-      let value = self.eval_expr(scope, body, span.expr)?;
-      let value_s = scope.to_string(self.vm, &mut *self.host, &mut *self.hooks, value)?;
+      let value = self.eval_expr(&mut span_scope, body, span.expr)?;
+      let value_s = span_scope.to_string(self.vm, &mut *self.host, &mut *self.hooks, value)?;
 
-      {
-        let heap = scope.heap();
-        vec_try_extend_from_slice_with_ticks(
-          &mut units,
-          heap.get_string(value_s)?.as_code_units(),
-          || self.vm.tick(),
-        )?;
-      }
+      // out += ToString(expr)
+      let out_with_expr = concat_strings(&mut span_scope, out, value_s, || self.vm.tick())?;
+      // Root intermediate concatenation result across allocation of the next literal.
+      span_scope.push_root(Value::String(out_with_expr))?;
 
-      vec_try_extend_utf16_from_str_with_ticks(&mut units, span.literal.as_str(), || self.vm.tick())?;
+      // out += literal
+      let lit_s = span_scope.alloc_string(span.literal.as_str())?;
+      out = concat_strings(&mut span_scope, out_with_expr, lit_s, || self.vm.tick())?;
     }
 
-    let out = scope.alloc_string_from_u16_vec(units)?;
     Ok(Value::String(out))
   }
 
