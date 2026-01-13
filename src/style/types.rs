@@ -4357,6 +4357,75 @@ impl TextWrap {
   }
 }
 
+/// Trimming behavior for the `text-box-trim` / `text-box` properties (CSS Inline Layout Level 3).
+///
+/// This is stored on [`crate::style::ComputedStyle`] as `text_box_trim`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextBoxTrim {
+  None,
+  TrimStart,
+  TrimEnd,
+  TrimBoth,
+}
+
+impl Default for TextBoxTrim {
+  fn default() -> Self {
+    Self::None
+  }
+}
+
+/// Keywords used by the `text-edge` / `text-box-edge` properties.
+///
+/// Spec: <https://www.w3.org/TR/css-inline-3/#text-edge>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextEdgeKeyword {
+  Text,
+  Cap,
+  Ex,
+  Alphabetic,
+  Ideographic,
+  IdeographicInk,
+}
+
+impl TextEdgeKeyword {
+  pub fn parse(keyword: &str) -> Option<Self> {
+    if keyword.eq_ignore_ascii_case("text") {
+      Some(Self::Text)
+    } else if keyword.eq_ignore_ascii_case("cap") {
+      Some(Self::Cap)
+    } else if keyword.eq_ignore_ascii_case("ex") {
+      Some(Self::Ex)
+    } else if keyword.eq_ignore_ascii_case("alphabetic") {
+      Some(Self::Alphabetic)
+    } else if keyword.eq_ignore_ascii_case("ideographic") {
+      Some(Self::Ideographic)
+    } else if keyword.eq_ignore_ascii_case("ideographic-ink") {
+      Some(Self::IdeographicInk)
+    } else {
+      None
+    }
+  }
+}
+
+/// Computed value for `text-box-edge`.
+///
+/// `auto` defers to the UA's inline layout metrics (ultimately derived from `line-fit-edge` in the
+/// spec). When explicit, the value stores separate over/under edge keywords.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextBoxEdge {
+  Auto,
+  Explicit {
+    over: TextEdgeKeyword,
+    under: TextEdgeKeyword,
+  },
+}
+
+impl Default for TextBoxEdge {
+  fn default() -> Self {
+    Self::Auto
+  }
+}
+
 /// Line break strictness
 ///
 /// CSS: `line-break`

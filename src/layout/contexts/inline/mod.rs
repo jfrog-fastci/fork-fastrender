@@ -690,6 +690,8 @@ fn text_inline_item_cache_style_hash(style: &ComputedStyle) -> u64 {
   hash_text_transform(&style.text_transform, &mut hasher);
   hash_enum_discriminant(&style.white_space, &mut hasher);
   hash_enum_discriminant(&style.text_wrap, &mut hasher);
+  style.text_box_trim.hash(&mut hasher);
+  style.text_box_edge.hash(&mut hasher);
   hash_enum_discriminant(&style.line_break, &mut hasher);
   hash_enum_discriminant(&style.hyphens, &mut hasher);
   hash_enum_discriminant(&style.word_break, &mut hasher);

@@ -222,6 +222,8 @@ use types::TextSizeAdjust;
 use types::TextTransform;
 use types::TextUnderlineOffset;
 use types::TextUnderlinePosition;
+use types::TextBoxEdge;
+use types::TextBoxTrim;
 use types::TextWrap;
 use types::TimelineScopeProperty;
 use types::TouchAction;
@@ -1208,6 +1210,8 @@ pub struct ComputedStyle {
   pub text_indent: TextIndent,
   pub text_size_adjust: TextSizeAdjust,
   pub text_wrap: TextWrap,
+  pub text_box_trim: TextBoxTrim,
+  pub text_box_edge: TextBoxEdge,
   pub text_overflow: TextOverflow,
   pub text_decoration: TextDecoration,
   /// Whether a text-decoration line declaration was authored (shorthand or longhand).
@@ -1690,6 +1694,8 @@ impl Default for ComputedStyle {
       letter_spacing: 0.0,
       word_spacing: 0.0,
       text_wrap: TextWrap::Auto,
+      text_box_trim: TextBoxTrim::None,
+      text_box_edge: TextBoxEdge::Auto,
       white_space: WhiteSpace::Normal,
       line_break: LineBreak::Auto,
       tab_size: TabSize::default(),

@@ -5233,6 +5233,8 @@ fn is_inherited_property(name: &str) -> bool {
       | "text-align-last"
       | "text-justify"
       | "text-wrap"
+      | "text-box-edge"
+      | "text-edge"
       | "text-rendering"
       | "-webkit-font-smoothing"
       | "-moz-osx-font-smoothing"
@@ -7408,6 +7410,12 @@ pub(crate) fn apply_property_from_source(
     }
     "text-size-adjust" => styles.text_size_adjust = source.text_size_adjust,
     "text-wrap" => styles.text_wrap = source.text_wrap,
+    "text-box" => {
+      styles.text_box_trim = source.text_box_trim;
+      styles.text_box_edge = source.text_box_edge;
+    }
+    "text-box-trim" | "leading-trim" => styles.text_box_trim = source.text_box_trim,
+    "text-box-edge" | "text-edge" => styles.text_box_edge = source.text_box_edge,
     "text-orientation" => {
       styles.text_orientation = match source.text_orientation {
         crate::style::types::TextOrientation::SidewaysRight => {
@@ -14372,6 +14380,230 @@ fn apply_declaration_with_base_internal_with_order(
       }
       _ => {}
     },
+    "text-box-trim" => {
+      let parsed = match resolved_value {
+        PropertyValue::Keyword(kw) => match kw.to_ascii_lowercase().as_str() {
+          "none" => Some(TextBoxTrim::None),
+          "trim-start" => Some(TextBoxTrim::TrimStart),
+          "trim-end" => Some(TextBoxTrim::TrimEnd),
+          "trim-both" => Some(TextBoxTrim::TrimBoth),
+          _ => None,
+        },
+        _ => None,
+      };
+      if let Some(value) = parsed {
+        styles.text_box_trim = value;
+      }
+    }
+    "leading-trim" => {
+      let parsed = match resolved_value {
+        PropertyValue::Keyword(kw) => match kw.to_ascii_lowercase().as_str() {
+          "normal" | "none" => Some(TextBoxTrim::None),
+          "start" => Some(TextBoxTrim::TrimStart),
+          "end" => Some(TextBoxTrim::TrimEnd),
+          "both" => Some(TextBoxTrim::TrimBoth),
+          _ => None,
+        },
+        _ => None,
+      };
+      if let Some(value) = parsed {
+        styles.text_box_trim = value;
+      }
+    }
+    "text-box-edge" | "text-edge" => {
+      let tokens: Option<Vec<&str>> = match resolved_value {
+        PropertyValue::Keyword(kw) => Some(split_ascii_whitespace(kw).collect()),
+        PropertyValue::Multiple(values) => {
+          let mut out = Vec::with_capacity(values.len());
+          for value in values {
+            let PropertyValue::Keyword(part) = value else {
+              return;
+            };
+            out.push(part.as_str());
+          }
+          Some(out)
+        }
+        _ => None,
+      };
+
+      let Some(tokens) = tokens else {
+        return;
+      };
+      if tokens.is_empty() {
+        return;
+      }
+
+      let parsed = if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("auto") {
+        Some(TextBoxEdge::Auto)
+      } else if tokens.len() == 1 {
+        // Legacy `text-edge: cap` is common; treat it as `cap alphabetic` which matches author
+        // intent (trim to caps over and alphabetic baseline under).
+        match TextEdgeKeyword::parse(tokens[0]) {
+          Some(keyword) => {
+            let (over, under) = match keyword {
+              TextEdgeKeyword::Cap | TextEdgeKeyword::Ex => (keyword, TextEdgeKeyword::Alphabetic),
+              TextEdgeKeyword::Alphabetic => (TextEdgeKeyword::Text, TextEdgeKeyword::Alphabetic),
+              TextEdgeKeyword::Text
+              | TextEdgeKeyword::Ideographic
+              | TextEdgeKeyword::IdeographicInk => (keyword, keyword),
+            };
+            Some(TextBoxEdge::Explicit { over, under })
+          }
+          None => None,
+        }
+      } else if tokens.len() == 2 {
+        match (
+          TextEdgeKeyword::parse(tokens[0]),
+          TextEdgeKeyword::parse(tokens[1]),
+        ) {
+          (Some(over), Some(under)) => {
+            let over_ok = matches!(
+              over,
+              TextEdgeKeyword::Text
+                | TextEdgeKeyword::Ideographic
+                | TextEdgeKeyword::IdeographicInk
+                | TextEdgeKeyword::Cap
+                | TextEdgeKeyword::Ex
+            );
+            let under_ok = matches!(
+              under,
+              TextEdgeKeyword::Text
+                | TextEdgeKeyword::Ideographic
+                | TextEdgeKeyword::IdeographicInk
+                | TextEdgeKeyword::Alphabetic
+            );
+            (over_ok && under_ok).then_some(TextBoxEdge::Explicit { over, under })
+          }
+          _ => None,
+        }
+      } else {
+        None
+      };
+
+      if let Some(value) = parsed {
+        styles.text_box_edge = value;
+      }
+    }
+    "text-box" => {
+      let tokens: Option<Vec<&str>> = match resolved_value {
+        PropertyValue::Keyword(kw) => Some(split_ascii_whitespace(kw).collect()),
+        PropertyValue::Multiple(values) => {
+          let mut out = Vec::with_capacity(values.len());
+          for value in values {
+            let PropertyValue::Keyword(part) = value else {
+              return;
+            };
+            out.push(part.as_str());
+          }
+          Some(out)
+        }
+        _ => None,
+      };
+
+      let Some(mut tokens) = tokens else {
+        return;
+      };
+      if tokens.is_empty() {
+        return;
+      }
+
+      if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("normal") {
+        styles.text_box_trim = TextBoxTrim::None;
+        styles.text_box_edge = TextBoxEdge::Auto;
+        return;
+      }
+
+      // `text-box` grammar: <<'text-box-trim'>> || <<'text-box-edge'>> (order-independent).
+      // Missing trim => `trim-both` (not the initial value).
+      // Missing edge => `auto` (initial value).
+      let mut trim_token_idx: Option<usize> = None;
+      for (idx, token) in tokens.iter().enumerate() {
+        if matches!(
+          token.to_ascii_lowercase().as_str(),
+          "none" | "trim-start" | "trim-end" | "trim-both"
+        ) {
+          if trim_token_idx.replace(idx).is_some() {
+            // Multiple trim keywords.
+            return;
+          }
+        }
+      }
+
+      let trim = if let Some(idx) = trim_token_idx {
+        let token = tokens[idx];
+        match token.to_ascii_lowercase().as_str() {
+          "none" => TextBoxTrim::None,
+          "trim-start" => TextBoxTrim::TrimStart,
+          "trim-end" => TextBoxTrim::TrimEnd,
+          "trim-both" => TextBoxTrim::TrimBoth,
+          _ => return,
+        }
+      } else {
+        TextBoxTrim::TrimBoth
+      };
+
+      if let Some(idx) = trim_token_idx {
+        tokens.remove(idx);
+      }
+
+      let edge = if tokens.is_empty() {
+        TextBoxEdge::Auto
+      } else {
+        // Reuse `text-box-edge` parsing rules for the shorthand.
+        let parsed = if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("auto") {
+          Some(TextBoxEdge::Auto)
+        } else if tokens.len() == 1 {
+          match TextEdgeKeyword::parse(tokens[0]) {
+            Some(keyword) => {
+              let (over, under) = match keyword {
+                TextEdgeKeyword::Cap | TextEdgeKeyword::Ex => (keyword, TextEdgeKeyword::Alphabetic),
+                TextEdgeKeyword::Alphabetic => (TextEdgeKeyword::Text, TextEdgeKeyword::Alphabetic),
+                TextEdgeKeyword::Text
+                | TextEdgeKeyword::Ideographic
+                | TextEdgeKeyword::IdeographicInk => (keyword, keyword),
+              };
+              Some(TextBoxEdge::Explicit { over, under })
+            }
+            None => None,
+          }
+        } else if tokens.len() == 2 {
+          match (
+            TextEdgeKeyword::parse(tokens[0]),
+            TextEdgeKeyword::parse(tokens[1]),
+          ) {
+            (Some(over), Some(under)) => {
+              let over_ok = matches!(
+                over,
+                TextEdgeKeyword::Text
+                  | TextEdgeKeyword::Ideographic
+                  | TextEdgeKeyword::IdeographicInk
+                  | TextEdgeKeyword::Cap
+                  | TextEdgeKeyword::Ex
+              );
+              let under_ok = matches!(
+                under,
+                TextEdgeKeyword::Text
+                  | TextEdgeKeyword::Ideographic
+                  | TextEdgeKeyword::IdeographicInk
+                  | TextEdgeKeyword::Alphabetic
+              );
+              (over_ok && under_ok).then_some(TextBoxEdge::Explicit { over, under })
+            }
+            _ => None,
+          }
+        } else {
+          None
+        };
+
+        match parsed {
+          Some(value) => value,
+          None => return,
+        }
+      };
+
+      styles.text_box_trim = trim;
+      styles.text_box_edge = edge;
+    }
     "text-orientation" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
