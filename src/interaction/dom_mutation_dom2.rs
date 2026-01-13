@@ -35,113 +35,9 @@ fn is_input_of_type(dom: &Document, input: NodeId, ty: &str) -> bool {
     .eq_ignore_ascii_case(ty)
 }
 
-fn node_self_is_inert_dom2(dom: &Document, node: NodeId) -> bool {
-  // `<template>` contents are always inert. In `dom2` this is modelled by marking the `<template>`
-  // element as `inert_subtree`; treat the template element itself as inert as well.
-  if dom.node(node).inert_subtree {
-    return true;
-  }
-
-  match &dom.node(node).kind {
-    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
-    _ => return false,
-  }
-
-  if dom.has_attribute(node, "inert").unwrap_or(false) {
-    return true;
-  }
-  dom
-    .get_attribute(node, "data-fastr-inert")
-    .ok()
-    .flatten()
-    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-}
-
-fn is_effectively_inert_dom2(dom: &Document, node: NodeId) -> bool {
-  dom
-    .ancestors(node)
-    .any(|ancestor| node_self_is_inert_dom2(dom, ancestor))
-}
-
-fn is_html_fieldset(dom: &Document, node: NodeId) -> bool {
-  is_html_element_tag(dom, node, "fieldset")
-}
-
-fn is_html_legend(dom: &Document, node: NodeId) -> bool {
-  is_html_element_tag(dom, node, "legend")
-}
-
-fn is_fieldset_disabled_candidate(dom: &Document, node: NodeId) -> bool {
-  if !dom.is_html_document() {
-    return false;
-  }
-  let NodeKind::Element {
-    tag_name,
-    namespace,
-    ..
-  } = &dom.node(node).kind
-  else {
-    return false;
-  };
-  if !dom.is_html_case_insensitive_namespace(namespace) {
-    return false;
-  }
-  tag_name.eq_ignore_ascii_case("input")
-    || tag_name.eq_ignore_ascii_case("select")
-    || tag_name.eq_ignore_ascii_case("textarea")
-    || tag_name.eq_ignore_ascii_case("button")
-}
-
-fn fieldset_first_legend_child(dom: &Document, fieldset: NodeId) -> Option<NodeId> {
-  debug_assert!(is_html_fieldset(dom, fieldset));
-  dom.node(fieldset).children.iter().copied().find(|&child| {
-    dom.node(child).parent == Some(fieldset) && is_html_legend(dom, child)
-  })
-}
-
-fn is_effectively_disabled_dom2(dom: &Document, node: NodeId) -> bool {
-  // Only elements can be disabled.
-  match &dom.node(node).kind {
-    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
-    _ => return false,
-  }
-
-  // `disabled` on the element itself disables it.
-  if dom.has_attribute(node, "disabled").unwrap_or(false) {
-    return true;
-  }
-
-  // Only form-associated controls are affected by `fieldset[disabled]`.
-  if !is_fieldset_disabled_candidate(dom, node) {
-    return false;
-  }
-
-  // Walk ancestors; `<fieldset disabled>` is the only ancestor-based disabledness we model (with the
-  // first-legend exception).
-  let mut ancestors: Vec<NodeId> = Vec::new();
-  for current in dom.ancestors(node) {
-    ancestors.push(current);
-
-    if is_html_fieldset(dom, current) && dom.has_attribute(current, "disabled").unwrap_or(false) {
-      match fieldset_first_legend_child(dom, current) {
-        Some(first_legend) => {
-          // If the first legend is on the ancestor chain, the control is inside that legend and is
-          // *not* disabled by this fieldset.
-          let in_first_legend = ancestors.iter().any(|&id| id == first_legend);
-          if !in_first_legend {
-            return true;
-          }
-        }
-        None => return true,
-      }
-    }
-  }
-
-  false
-}
-
 fn effective_disabled_dom2(dom: &Document, node: NodeId) -> bool {
-  is_effectively_inert_dom2(dom, node) || is_effectively_disabled_dom2(dom, node)
+  super::effective_disabled_dom2::is_effectively_inert(node, dom)
+    || super::effective_disabled_dom2::is_effectively_disabled(node, dom)
 }
 
 fn tree_root_boundary(dom: &Document, node: NodeId) -> NodeId {
@@ -224,7 +120,9 @@ pub fn activate_radio(dom: &mut Document, radio: NodeId) -> bool {
     .to_string();
 
   let active_form = form_owner(dom, radio);
-  let active_root = active_form.is_none().then(|| tree_root_boundary(dom, radio));
+  let active_root = active_form
+    .is_none()
+    .then(|| tree_root_boundary(dom, radio));
 
   let mut changed = false;
 
@@ -245,11 +143,7 @@ pub fn activate_radio(dom: &mut Document, radio: NodeId) -> bool {
       continue;
     }
 
-    let candidate_name = dom
-      .get_attribute(id, "name")
-      .ok()
-      .flatten()
-      .unwrap_or("");
+    let candidate_name = dom.get_attribute(id, "name").ok().flatten().unwrap_or("");
     if candidate_name != group_name {
       continue;
     }
@@ -409,9 +303,7 @@ pub fn activate_select_option(
   let option_selected = dom.option_selected(option).ok().unwrap_or(false);
 
   if select_multiple && toggle_multi {
-    return dom
-      .set_option_selected(option, !option_selected)
-      .is_ok();
+    return dom.set_option_selected(option, !option_selected).is_ok();
   }
 
   // Replacement selection (single-select and non-toggle multiple-select).
@@ -562,8 +454,8 @@ mod tests {
 
   #[test]
   fn range_ratio_clamps_and_aligns_to_step_without_mutating_value_attribute() {
-    let mut dom = crate::dom2::parse_html(r#"<input id="r" type="range" min="0" max="10" step="3">"#)
-      .unwrap();
+    let mut dom =
+      crate::dom2::parse_html(r#"<input id="r" type="range" min="0" max="10" step="3">"#).unwrap();
     let r = dom.get_element_by_id("r").unwrap();
 
     assert_eq!(dom.get_attribute(r, "value").unwrap(), None);
@@ -582,4 +474,3 @@ mod tests {
     assert_eq!(dom.get_attribute(r, "value").unwrap(), None);
   }
 }
-
