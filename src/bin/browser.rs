@@ -3248,6 +3248,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // We ran out of budget; queue another wake event so the remaining messages are drained
             // soon, but only after returning control to the event loop.
             if !win.worker_wake_pending.swap(true, Ordering::AcqRel) {
+              if hud_enabled {
+                if let Some(hud) = win.app.hud.as_mut() {
+                  hud.record_worker_followup_wake();
+                }
+              }
               let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
             }
           }
@@ -4840,12 +4845,14 @@ struct BrowserHud {
   worker_msgs_since_sample: u64,
   worker_wakes_since_sample: u64,
   worker_empty_wakes_since_sample: u64,
+  worker_followup_wakes_since_sample: u64,
   worker_max_drain_since_sample: u64,
   worker_drained_total: u64,
   worker_forwarded_msgs_per_sec: Option<f32>,
   worker_msgs_per_sec: Option<f32>,
   worker_wakes_per_sec: Option<f32>,
   worker_wake_sent_per_sec: Option<f32>,
+  worker_followup_wakes_per_sec: Option<f32>,
   worker_empty_wakes_per_sec: Option<f32>,
   worker_coalesced_wakes_per_sec: Option<f32>,
   worker_pending_msgs_estimate: Option<u64>,
@@ -4874,12 +4881,14 @@ impl BrowserHud {
       worker_msgs_since_sample: 0,
       worker_wakes_since_sample: 0,
       worker_empty_wakes_since_sample: 0,
+      worker_followup_wakes_since_sample: 0,
       worker_max_drain_since_sample: 0,
       worker_drained_total: 0,
       worker_forwarded_msgs_per_sec: None,
       worker_msgs_per_sec: None,
       worker_wakes_per_sec: None,
       worker_wake_sent_per_sec: None,
+      worker_followup_wakes_per_sec: None,
       worker_empty_wakes_per_sec: None,
       worker_coalesced_wakes_per_sec: None,
       worker_pending_msgs_estimate: None,
@@ -4904,6 +4913,11 @@ impl BrowserHud {
     if drained_msgs == 0 {
       self.worker_empty_wakes_since_sample = self.worker_empty_wakes_since_sample.saturating_add(1);
     }
+  }
+
+  fn record_worker_followup_wake(&mut self) {
+    self.worker_followup_wakes_since_sample =
+      self.worker_followup_wakes_since_sample.saturating_add(1);
   }
 
   fn maybe_sample_worker_rates(&mut self, now: std::time::Instant) {
@@ -4932,6 +4946,7 @@ impl BrowserHud {
     let msgs = self.worker_msgs_since_sample;
     let wakes = self.worker_wakes_since_sample;
     let empty = self.worker_empty_wakes_since_sample;
+    let followup = self.worker_followup_wakes_since_sample;
     let nonempty_wakes = wakes.saturating_sub(empty);
     let coalesced_delta = coalesced_total.saturating_sub(self.worker_wake_coalesced_prev);
     let sent_delta = sent_total.saturating_sub(self.worker_wake_sent_prev);
@@ -4941,6 +4956,7 @@ impl BrowserHud {
     self.worker_msgs_per_sec = Some((msgs as f32 / secs).min(10_000_000.0));
     self.worker_wakes_per_sec = Some((wakes as f32 / secs).min(10_000_000.0));
     self.worker_wake_sent_per_sec = Some((sent_delta as f32 / secs).min(10_000_000.0));
+    self.worker_followup_wakes_per_sec = Some((followup as f32 / secs).min(10_000_000.0));
     self.worker_empty_wakes_per_sec = Some((empty as f32 / secs).min(10_000_000.0));
     self.worker_coalesced_wakes_per_sec = Some((coalesced_delta as f32 / secs).min(10_000_000.0));
     self.worker_msgs_per_nonempty_wake = if nonempty_wakes > 0 {
@@ -4956,6 +4972,7 @@ impl BrowserHud {
     self.worker_msgs_since_sample = 0;
     self.worker_wakes_since_sample = 0;
     self.worker_empty_wakes_since_sample = 0;
+    self.worker_followup_wakes_since_sample = 0;
     self.worker_max_drain_since_sample = 0;
   }
 }
@@ -8852,11 +8869,33 @@ impl App {
       }
     }
 
-    match (hud.worker_msgs_per_nonempty_wake, hud.worker_max_drain_recent) {
-      (Some(msg_per_wake), max_drain) if msg_per_wake.is_finite() => {
+    match (
+      hud.worker_msgs_per_nonempty_wake,
+      hud.worker_max_drain_recent,
+      hud.worker_followup_wakes_per_sec,
+    ) {
+      (Some(msg_per_wake), max_drain, Some(followup))
+        if msg_per_wake.is_finite() && followup.is_finite() =>
+      {
         let _ = writeln!(
           &mut hud.text_buf,
-          "drain: last {}  max {}  msg/nonempty_wake {msg_per_wake:.2}",
+          "drain: last {}  max {}  msg/nonempty_wake {msg_per_wake:.2}  fup_wake {followup:.0}/s",
+          hud.worker_last_drain,
+          max_drain
+        );
+      }
+      (Some(msg_per_wake), max_drain, _) if msg_per_wake.is_finite() => {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "drain: last {}  max {}  msg/nonempty_wake {msg_per_wake:.2}  fup_wake -/s",
+          hud.worker_last_drain,
+          max_drain
+        );
+      }
+      (_, max_drain, Some(followup)) if followup.is_finite() => {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "drain: last {}  max {}  msg/nonempty_wake -  fup_wake {followup:.0}/s",
           hud.worker_last_drain,
           max_drain
         );
@@ -8864,7 +8903,7 @@ impl App {
       _ => {
         let _ = writeln!(
           &mut hud.text_buf,
-          "drain: last {}  max {}  msg/nonempty_wake -",
+          "drain: last {}  max {}  msg/nonempty_wake -  fup_wake -/s",
           hud.worker_last_drain,
           hud.worker_max_drain_recent
         );
