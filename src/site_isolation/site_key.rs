@@ -68,6 +68,40 @@ impl SiteKeyFactory {
   /// - `data:`: always opaque.
   /// - Unparseable/unsupported URLs: opaque.
   pub fn site_key_for_navigation(&self, url: &str, parent: Option<&SiteKey>) -> SiteKey {
+    // `blob:` URLs (e.g. `blob:https://example.com/uuid`) inherit their origin from the embedded
+    // URL. Treat same-origin blob navigations as the same `SiteKey` to avoid unnecessary process
+    // swaps/churn for `URL.createObjectURL()` results.
+    if url
+      .as_bytes()
+      .get(..5)
+      .is_some_and(|head| head.eq_ignore_ascii_case(b"blob:"))
+    {
+      // Per the URL Standard's "blob URL parser", the origin of a blob URL is the origin of the
+      // parsed embedded URL. If the embedded URL is `null` or fails to parse (e.g. `blob:null/...`)
+      // treat it as opaque.
+      let embedded = &url[5..];
+      let Ok(parsed_embedded) = Url::parse(embedded) else {
+        return self.new_opaque();
+      };
+
+      // Blob origins do not inherit from the navigating frame; only `about:blank` / `about:srcdoc`
+      // do. Derive the site key solely from the embedded URL.
+      let scheme = parsed_embedded.scheme();
+      return match scheme {
+        "http" | "https" => {
+          if parsed_embedded.host_str().is_none() {
+            self.new_opaque()
+          } else {
+            origin_from_url(parsed_embedded.as_str()).map_or_else(|| self.new_opaque(), SiteKey::Origin)
+          }
+        }
+        "file" => SiteKey::Origin(Self::file_origin().clone()),
+        "about" => self.new_opaque(),
+        "data" => self.new_opaque(),
+        _ => self.new_opaque(),
+      };
+    }
+
     let parsed = match Url::parse(url) {
       Ok(parsed) => parsed,
       Err(_) => return self.new_opaque(),
@@ -139,6 +173,26 @@ mod tests {
   }
 
   #[test]
+  fn blob_urls_inherit_embedded_origin() {
+    let factory = SiteKeyFactory::new_with_seed(1);
+
+    let blob = factory.site_key_for_navigation("blob:https://a.test/1", None);
+    let https = factory.site_key_for_navigation("https://a.test/", None);
+    assert_eq!(blob, https);
+
+    let other = factory.site_key_for_navigation("https://b.test/", None);
+    assert_ne!(blob, other);
+  }
+
+  #[test]
+  fn blob_null_urls_are_opaque() {
+    let factory = SiteKeyFactory::new_with_seed(9);
+
+    let key = factory.site_key_for_navigation("blob:null/1", None);
+    assert_eq!(key, SiteKey::Opaque(9));
+  }
+
+  #[test]
   fn file_urls_map_to_a_single_origin_key() {
     let factory = SiteKeyFactory::new_with_seed(1);
 
@@ -157,6 +211,22 @@ mod tests {
 
     let srcdoc = factory.site_key_for_navigation("about:srcdoc", Some(&parent));
     assert_eq!(srcdoc, parent);
+  }
+
+  #[test]
+  fn blob_child_frame_site_key_matches_embedded_origin() {
+    let factory = SiteKeyFactory::new_with_seed(1);
+
+    let parent = factory.site_key_for_navigation("https://a.test/", None);
+    let same_origin_blob = factory.site_key_for_navigation("blob:https://a.test/1", Some(&parent));
+    assert_eq!(same_origin_blob, parent);
+
+    let cross_origin_blob = factory.site_key_for_navigation("blob:https://b.test/1", Some(&parent));
+    assert_ne!(cross_origin_blob, parent);
+
+    let opaque_blob = factory.site_key_for_navigation("blob:null/1", Some(&parent));
+    assert_ne!(opaque_blob, parent);
+    assert!(matches!(opaque_blob, SiteKey::Opaque(_)));
   }
 
   #[test]
