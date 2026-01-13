@@ -2046,7 +2046,6 @@ fn read_session_file_bounded(path: &Path) -> Result<Option<String>, String> {
     .map(Some)
     .map_err(|err| format!("failed to decode {} as UTF-8: {err}", path.display()))
 }
-
 /// Attempt to read + parse a session file. Missing file is not an error.
 ///
 /// If the primary session file is missing, unreadable, corrupt, or too large, we will attempt to
