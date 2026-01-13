@@ -3,7 +3,35 @@
 use crate::dom::{DomNode, DomNodeType};
 use selectors::context::QuirksMode;
 
-use super::{Document, NodeKind, SlotAssignmentMode};
+use super::{Document, NodeId, NodeKind, SlotAssignmentMode};
+
+fn find_node_id_by_attr_id_anywhere(doc: &Document, id: &str) -> Option<NodeId> {
+  for index in 0..doc.nodes_len() {
+    let node_id = NodeId::from_index(index);
+    let node = doc.node(node_id);
+    let attributes = match &node.kind {
+      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+      _ => continue,
+    };
+    if attributes
+      .iter()
+      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+    {
+      return Some(node_id);
+    }
+  }
+  None
+}
+
+fn find_first_node_matching(doc: &Document, predicate: impl Fn(&NodeKind) -> bool) -> Option<NodeId> {
+  for index in 0..doc.nodes_len() {
+    let node_id = NodeId::from_index(index);
+    if predicate(&doc.node(node_id).kind) {
+      return Some(node_id);
+    }
+  }
+  None
+}
 
 fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
   match node_type {
@@ -43,6 +71,92 @@ fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
     DomNodeType::Text { content } => NodeKind::Text {
       content: content.clone(),
     },
+  }
+}
+
+#[test]
+fn renderer_dom_mapping_public_api_matches_snapshot_mapping() {
+  // Include nodes that exist in dom2 but are dropped from renderer snapshots (doctype + comments),
+  // plus synthetic renderer nodes (`<wbr>` ZWSP child), inert `<template>` contents, and declarative
+  // shadow roots.
+  let html = concat!(
+    "<!DOCTYPE html>",
+    "<!-- before -->",
+    "<html><head><!-- head --></head><body>",
+    "<!-- body -->",
+    "<template id=t><div id=in-template>tmpl</div></template>",
+    "<div id=host>",
+    "<template shadowroot=open>",
+    "<div id=in-shadow><span>shadow</span></div>",
+    "</template>",
+    "<p>light</p>",
+    "</div>",
+    "<wbr id=w>",
+    "</body></html>",
+  );
+
+  let mut doc = super::parse_html(html).unwrap();
+
+  // Create a detached node (reachable via `NodeId` but not attached under the document root).
+  let detached = doc.push_node(
+    NodeKind::Element {
+      tag_name: "div".to_string(),
+      namespace: "".to_string(),
+      prefix: None,
+      attributes: Vec::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+
+  let mapping_only = doc.renderer_dom_mapping();
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  let renderer_ids = crate::dom::enumerate_dom_ids(&snapshot.dom);
+
+  // The mapping-only API should exactly match the mapping returned alongside a full renderer
+  // snapshot for every renderer preorder id.
+  for preorder_id in 1..=renderer_ids.len() {
+    assert_eq!(
+      mapping_only.node_id_for_preorder(preorder_id),
+      snapshot.mapping.node_id_for_preorder(preorder_id),
+      "preorder mapping mismatch at renderer id {preorder_id}"
+    );
+  }
+
+  // Also verify the reverse mapping matches for a representative subset of `NodeId`s, including
+  // nodes that are dropped from the renderer snapshot and detached nodes.
+  let doctype = find_first_node_matching(&doc, |k| matches!(k, NodeKind::Doctype { .. }))
+    .expect("expected a doctype node in dom2 document");
+  let comment = find_first_node_matching(&doc, |k| matches!(k, NodeKind::Comment { .. }))
+    .expect("expected a comment node in dom2 document");
+  let shadow_root = find_first_node_matching(&doc, |k| matches!(k, NodeKind::ShadowRoot { .. }))
+    .expect("expected a shadow root node in dom2 document");
+
+  let wbr = doc.get_element_by_id("w").expect("missing `<wbr id=w>`");
+  let template = doc.get_element_by_id("t").expect("missing `<template id=t>`");
+  let in_template =
+    find_node_id_by_attr_id_anywhere(&doc, "in-template").expect("missing `#in-template`");
+  let in_shadow =
+    find_node_id_by_attr_id_anywhere(&doc, "in-shadow").expect("missing `#in-shadow`");
+
+  let sample_node_ids = [
+    doc.root(),
+    doctype,
+    comment,
+    template,
+    in_template,
+    shadow_root,
+    in_shadow,
+    wbr,
+    detached,
+  ];
+
+  for node_id in sample_node_ids {
+    assert_eq!(
+      mapping_only.preorder_for_node_id(node_id),
+      snapshot.mapping.preorder_for_node_id(node_id),
+      "reverse mapping mismatch for node {node_id:?}"
+    );
   }
 }
 

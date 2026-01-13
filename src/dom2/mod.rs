@@ -1852,6 +1852,17 @@ impl Document {
     }
   }
 
+  /// Build a renderer preorder ↔ `dom2` [`NodeId`] mapping without cloning a renderer [`DomNode`]
+  /// snapshot tree.
+  ///
+  /// This mirrors the preorder traversal semantics used by [`Document::to_renderer_dom_with_mapping`]
+  /// (1-based preorder ids as produced by [`crate::dom::enumerate_dom_ids`], including inert template
+  /// contents + declarative shadow roots, and mapping synthetic nodes such as `<wbr>`'s implicit ZWSP
+  /// child back to the owning real `NodeId`).
+  pub fn renderer_dom_mapping(&self) -> RendererDomMapping {
+    self.build_renderer_preorder_mapping()
+  }
+
   pub fn query_selector(
     &mut self,
     selectors: &str,
