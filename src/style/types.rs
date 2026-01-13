@@ -4071,13 +4071,52 @@ impl TextDecorationSkipSpaces {
   }
 }
 
+/// Adjusts the start/end endpoints of line text decorations drawn by a decorating box.
+///
+/// CSS: `text-decoration-inset` (CSS Text Decoration Module Level 4)
+///
+/// The computed value is `auto` or an absolute length (font/viewport-relative units are resolved
+/// during cascade in `style::cascade::resolve_absolute_lengths`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TextDecorationInset {
+  /// UA-defined inset that should introduce a small visible separation between adjacent identical
+  /// underlined elements.
+  Auto,
+  /// Explicit start/end inset lengths (positive trims inward, negative extends outward).
+  Lengths { start: Length, end: Length },
+}
+
+impl Default for TextDecorationInset {
+  fn default() -> Self {
+    // Initial value per spec.
+    Self::Lengths {
+      start: Length::px(0.0),
+      end: Length::px(0.0),
+    }
+  }
+}
+
+impl TextDecorationInset {
+  pub fn is_zero(self) -> bool {
+    match self {
+      Self::Auto => false,
+      Self::Lengths { start, end } => start.to_px() == 0.0 && end.to_px() == 0.0,
+    }
+  }
+}
+
 /// Resolved text-decoration to apply after propagation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedTextDecoration {
+  /// Stable identity of the decorating box that introduced this decoration.
+  ///
+  /// This is used at paint time to distinguish adjacent decorations that are otherwise identical.
+  pub origin_id: usize,
   pub decoration: TextDecoration,
   pub skip_ink: TextDecorationSkipInk,
   pub underline_offset: TextUnderlineOffset,
   pub underline_position: TextUnderlinePosition,
+  pub inset: TextDecorationInset,
 }
 
 /// Thickness of text decorations

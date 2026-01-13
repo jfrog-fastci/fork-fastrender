@@ -294,7 +294,7 @@ pub struct DisplayListBuilder {
   error: Option<RenderError>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct LineDecorationContext {
   inline_vertical: bool,
   block_baseline: f32,
@@ -302,6 +302,16 @@ struct LineDecorationContext {
   line_inline_end: f32,
   skip_inline_start: f32,
   skip_inline_end: f32,
+  /// Precomputed run-edge information for `text-decoration-inset` application.
+  ///
+  /// Keyed by the address of the leaf fragment (`&FragmentNode as *const _ as usize`).
+  inset_edges: Option<Arc<HashMap<usize, FragmentDecorationEdges>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct FragmentDecorationEdges {
+  starts: Vec<usize>,
+  ends: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1076,7 +1086,7 @@ impl DisplayListBuilder {
   }
 
   fn line_decoration_clip_range(&self, inline_start: f32, inline_len: f32) -> Option<(f32, f32)> {
-    let ctx = self.line_decoration_ctx?;
+    let ctx = self.line_decoration_ctx.as_ref()?;
     if inline_len <= 0.0 {
       return None;
     }
@@ -1099,6 +1109,13 @@ impl DisplayListBuilder {
     } else {
       Some((rel_start, rel_end))
     }
+  }
+
+  fn line_decoration_inset_edges(&self, fragment: &FragmentNode) -> Option<FragmentDecorationEdges> {
+    let ctx = self.line_decoration_ctx.as_ref()?;
+    let map = ctx.inset_edges.as_ref()?;
+    let key = fragment as *const FragmentNode as usize;
+    map.get(&key).cloned()
   }
 
   fn build_line_decoration_context(
@@ -1159,6 +1176,7 @@ impl DisplayListBuilder {
 
     let mut skip_inline_start = 0.0;
     let mut skip_inline_end = 0.0;
+    let mut inset_edges: Option<Arc<HashMap<usize, FragmentDecorationEdges>>> = None;
     if let Some(style) = style_hint {
       let inline_forward = inline_axis_positive(style.writing_mode, style.direction);
       #[derive(Clone, Copy)]
@@ -1174,6 +1192,7 @@ impl DisplayListBuilder {
         inline_vertical: bool,
         best_min: &mut Option<TextLeaf<'a>>,
         best_max: &mut Option<TextLeaf<'a>>,
+        leaves: &mut Vec<TextLeaf<'a>>,
       ) {
         // This used to recurse directly on `fragment.children`, which meant adversarially deep
         // inline fragment chains inside a line box could stack overflow. Use an explicit stack so
@@ -1192,6 +1211,11 @@ impl DisplayListBuilder {
 
           match fragment.content {
             FragmentContent::Text { .. } => {
+              leaves.push(TextLeaf {
+                fragment,
+                inline_start,
+                inline_end,
+              });
               if let Some(existing) = best_min.as_ref() {
                 if inline_start < existing.inline_start {
                   *best_min = Some(TextLeaf {
@@ -1247,6 +1271,7 @@ impl DisplayListBuilder {
 
       let mut min_text: Option<TextLeaf<'_>> = None;
       let mut max_text: Option<TextLeaf<'_>> = None;
+      let mut all_text: Vec<TextLeaf<'_>> = Vec::new();
       for child in line.children.iter() {
         visit(
           child,
@@ -1254,6 +1279,7 @@ impl DisplayListBuilder {
           inline_vertical,
           &mut min_text,
           &mut max_text,
+          &mut all_text,
         );
       }
 
@@ -1322,6 +1348,113 @@ impl DisplayListBuilder {
           0.0
         };
       }
+
+      // ---------------------------------------------------------------------------
+      // `text-decoration-inset` run boundary detection
+      // ---------------------------------------------------------------------------
+      let mut has_any_inset = false;
+      #[derive(Clone)]
+      struct LeafDecorations {
+        key: usize,
+        inline_start: f32,
+        inline_end: f32,
+        origin_ids: Vec<usize>,
+      }
+
+      let mut leaves: Vec<LeafDecorations> = Vec::with_capacity(all_text.len());
+      for leaf in all_text.iter() {
+        let key = leaf.fragment as *const FragmentNode as usize;
+        let Some(style) = leaf.fragment.style.as_deref() else {
+          leaves.push(LeafDecorations {
+            key,
+            inline_start: leaf.inline_start,
+            inline_end: leaf.inline_end,
+            origin_ids: Vec::new(),
+          });
+          continue;
+        };
+
+        let origin_ids: Vec<usize> = if !style.applied_text_decorations.is_empty() {
+          if style
+            .applied_text_decorations
+            .iter()
+            .any(|deco| !deco.inset.is_zero())
+          {
+            has_any_inset = true;
+          }
+          style
+            .applied_text_decorations
+            .iter()
+            .map(|deco| deco.origin_id)
+            .collect()
+        } else if !style.text_decoration.lines.is_empty() {
+          if !style.text_decoration_inset.is_zero() {
+            has_any_inset = true;
+          }
+          vec![style as *const ComputedStyle as usize]
+        } else {
+          Vec::new()
+        };
+
+        leaves.push(LeafDecorations {
+          key,
+          inline_start: leaf.inline_start,
+          inline_end: leaf.inline_end,
+          origin_ids,
+        });
+      }
+
+      if has_any_inset && !leaves.is_empty() {
+        // Sort leaves in inline progression order so we can detect run boundaries by comparing
+        // decoration sets across adjacent leaf fragments.
+        leaves.sort_by(|a, b| {
+          let (a_pos, b_pos) = if inline_forward {
+            (a.inline_start, b.inline_start)
+          } else {
+            // When inline progression is negative (e.g. RTL), compare by the physical inline end.
+            (-a.inline_end, -b.inline_end)
+          };
+          a_pos
+            .partial_cmp(&b_pos)
+            .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut edges: HashMap<usize, FragmentDecorationEdges> = HashMap::new();
+        for idx in 0..leaves.len() {
+          let prev = if idx > 0 {
+            leaves[idx - 1].origin_ids.as_slice()
+          } else {
+            &[]
+          };
+          let cur = leaves[idx].origin_ids.as_slice();
+          let next = if idx + 1 < leaves.len() {
+            leaves[idx + 1].origin_ids.as_slice()
+          } else {
+            &[]
+          };
+
+          if cur.is_empty() {
+            continue;
+          }
+
+          let mut entry = FragmentDecorationEdges::default();
+          for origin_id in cur {
+            if !prev.contains(origin_id) {
+              entry.starts.push(*origin_id);
+            }
+            if !next.contains(origin_id) {
+              entry.ends.push(*origin_id);
+            }
+          }
+          if !entry.starts.is_empty() || !entry.ends.is_empty() {
+            edges.insert(leaves[idx].key, entry);
+          }
+        }
+
+        if !edges.is_empty() {
+          inset_edges = Some(Arc::new(edges));
+        }
+      }
     }
 
     LineDecorationContext {
@@ -1331,6 +1464,7 @@ impl DisplayListBuilder {
       line_inline_end,
       skip_inline_start,
       skip_inline_end,
+      inset_edges,
     }
   }
 
@@ -2582,7 +2716,7 @@ impl DisplayListBuilder {
               absolute_rect.origin.y - element_scroll.y,
             );
 
-            let prev_line_decoration_ctx = self.line_decoration_ctx;
+            let prev_line_decoration_ctx = self.line_decoration_ctx.clone();
             if let FragmentContent::Line { baseline } = &frame.fragment.content {
               self.line_decoration_ctx =
                 Some(self.build_line_decoration_context(frame.fragment, child_offset, *baseline));
@@ -2852,7 +2986,7 @@ impl DisplayListBuilder {
               .as_mut()
               .expect("entered fragment frame missing data"); // fastrender-allow-unwrap
             data.children_painted = self.list.len() != data.before_children;
-            data.prev_line_decoration_ctx
+            data.prev_line_decoration_ctx.clone()
           };
           self.line_decoration_ctx = prev_line_decoration_ctx;
           frame.stage = Stage::Exit;
@@ -3145,7 +3279,7 @@ impl DisplayListBuilder {
               absolute_rect.origin.x - element_scroll.x,
               absolute_rect.origin.y - element_scroll.y,
             );
-            let prev_line_decoration_ctx = self.line_decoration_ctx;
+            let prev_line_decoration_ctx = self.line_decoration_ctx.clone();
             if let FragmentContent::Line { baseline } = &frame.fragment.content {
               self.line_decoration_ctx = Some(self.build_line_decoration_context(
                 frame.fragment,
@@ -3255,7 +3389,7 @@ impl DisplayListBuilder {
 
           if !data.skip_contents {
             children_painted = self.list.len() != data.before_children;
-            self.line_decoration_ctx = data.prev_line_decoration_ctx;
+            self.line_decoration_ctx = data.prev_line_decoration_ctx.clone();
 
             if let Some(table_borders) = frame.fragment.table_borders.as_ref() {
               let mut origin = data.absolute_rect.origin;
@@ -6743,7 +6877,7 @@ impl DisplayListBuilder {
       scroll_state: self.scroll_state.clone(),
       max_iframe_depth: self.max_iframe_depth,
       skip_stacking_context_children: self.skip_stacking_context_children,
-      line_decoration_ctx: self.line_decoration_ctx,
+      line_decoration_ctx: self.line_decoration_ctx.clone(),
       error: self.error.clone(),
     }
   }
@@ -7044,9 +7178,11 @@ impl DisplayListBuilder {
           };
           let decoration_baseline = self
             .line_decoration_ctx
+            .as_ref()
             .map(|ctx| ctx.block_baseline)
             .unwrap_or(baseline_block);
           let clip = self.line_decoration_clip_range(inline_start, inline_len);
+          let inset_edges = self.line_decoration_inset_edges(fragment);
           self.emit_text_decorations(
             style,
             runs_ref,
@@ -7055,6 +7191,7 @@ impl DisplayListBuilder {
             decoration_baseline,
             inline_vertical,
             clip,
+            inset_edges.as_ref(),
           );
         }
       }
@@ -8059,7 +8196,7 @@ impl DisplayListBuilder {
           }
         }
 
-        if let (Some(style), Some(ctx)) = (style_for_image, self.line_decoration_ctx) {
+        if let (Some(style), Some(ctx)) = (style_for_image, self.line_decoration_ctx.clone()) {
           let mut fallback_decorations: Option<[ResolvedTextDecoration; 1]> = None;
           let (ancestor_decorations, own_decorations) =
             Self::split_text_decorations(style, &mut fallback_decorations);
@@ -8087,6 +8224,7 @@ impl DisplayListBuilder {
               ctx.block_baseline,
               ctx.inline_vertical,
               clip,
+              None,
             );
           }
 
@@ -8108,13 +8246,16 @@ impl DisplayListBuilder {
               ctx.block_baseline,
               ctx.inline_vertical,
               clip,
+              None,
             );
           }
         }
       }
 
       FragmentContent::Block { .. } | FragmentContent::Inline { .. } => {
-        if let (Some(style), Some(ctx)) = (fragment.style.as_deref(), self.line_decoration_ctx) {
+        if let (Some(style), Some(ctx)) =
+          (fragment.style.as_deref(), self.line_decoration_ctx.clone())
+        {
           if style.display.is_inline_level() {
             if style.display.establishes_formatting_context() {
               let mut fallback_decorations: Option<[ResolvedTextDecoration; 1]> = None;
@@ -8144,6 +8285,7 @@ impl DisplayListBuilder {
                   ctx.block_baseline,
                   ctx.inline_vertical,
                   clip,
+                  None,
                 );
               }
 
@@ -8195,6 +8337,7 @@ impl DisplayListBuilder {
                   ctx.block_baseline,
                   ctx.inline_vertical,
                   clip,
+                  None,
                 );
               }
               if end_edge > 0.0 {
@@ -8208,6 +8351,7 @@ impl DisplayListBuilder {
                   ctx.block_baseline,
                   ctx.inline_vertical,
                   clip,
+                  None,
                 );
               }
             }
@@ -11047,6 +11191,7 @@ impl DisplayListBuilder {
     block_baseline: f32,
     inline_vertical: bool,
     clip: Option<(f32, f32)>,
+    inset_edges: Option<&FragmentDecorationEdges>,
   ) {
     if !style.applied_text_decorations.is_empty() {
       self.emit_text_decorations_for_decorations(
@@ -11058,6 +11203,7 @@ impl DisplayListBuilder {
         block_baseline,
         inline_vertical,
         clip,
+        inset_edges,
       );
       return;
     }
@@ -11067,10 +11213,12 @@ impl DisplayListBuilder {
     }
 
     let decorations = [ResolvedTextDecoration {
+      origin_id: style as *const ComputedStyle as usize,
       decoration: style.text_decoration.clone(),
       skip_ink: style.text_decoration_skip_ink,
       underline_offset: style.text_underline_offset,
       underline_position: style.text_underline_position,
+      inset: style.text_decoration_inset,
     }];
     self.emit_text_decorations_for_decorations(
       style,
@@ -11081,6 +11229,7 @@ impl DisplayListBuilder {
       block_baseline,
       inline_vertical,
       clip,
+      inset_edges,
     );
   }
 
@@ -11094,6 +11243,7 @@ impl DisplayListBuilder {
     block_baseline: f32,
     inline_vertical: bool,
     clip: Option<(f32, f32)>,
+    inset_edges: Option<&FragmentDecorationEdges>,
   ) {
     if inline_len <= 0.0 {
       return;
@@ -11136,6 +11286,25 @@ impl DisplayListBuilder {
       return;
     };
 
+    let inline_forward = inline_axis_positive(style.writing_mode, style.direction);
+    let viewport = self
+      .viewport
+      .map(|(vw, vh)| Size::new(vw, vh))
+      .unwrap_or(Size::new(0.0, 0.0));
+
+    let resolve_inset_length_px = |len: Length| -> f32 {
+      resolve_length_with_percentage_metrics(
+        len,
+        None,
+        viewport,
+        style.font_size,
+        style.root_font_size,
+        Some(style),
+        Some(&self.font_ctx),
+      )
+      .unwrap_or_else(|| len.to_px())
+    };
+
     let mut paints = Vec::new();
     let mut min_block = f32::INFINITY;
     let mut max_block = f32::NEG_INFINITY;
@@ -11175,6 +11344,78 @@ impl DisplayListBuilder {
       const GRAMMAR_ERROR_COLOR: Rgba = Rgba::rgb(0, 128, 0);
 
       let lines = deco.decoration.lines;
+
+      let (apply_logical_start, apply_logical_end) = inset_edges
+        .map(|edges| {
+          (
+            edges.starts.contains(&deco.origin_id),
+            edges.ends.contains(&deco.origin_id),
+          )
+        })
+        .unwrap_or((false, false));
+
+      let (inset_start_px, inset_end_px) = if apply_logical_start || apply_logical_end {
+        match deco.inset {
+          crate::style::types::TextDecorationInset::Auto => {
+            // `text-decoration-inset: auto` is UA-defined. Use a small, font-size-relative value
+            // (clamped to >=1px) so adjacent identical underlined elements have a visible gap.
+            let font_size = if style.font_size.is_finite() {
+              style.font_size.max(0.0)
+            } else {
+              0.0
+            };
+            let px = (font_size * 0.1).max(1.0);
+            (px, px)
+          }
+          crate::style::types::TextDecorationInset::Lengths { start, end } => (
+            resolve_inset_length_px(start),
+            resolve_inset_length_px(end),
+          ),
+        }
+      } else {
+        (0.0, 0.0)
+      };
+
+      let apply_inset_to_segments =
+        |segments: Option<Vec<(f32, f32)>>| -> Option<Vec<(f32, f32)>> {
+          if !(apply_logical_start || apply_logical_end) {
+            return segments;
+          }
+          if inset_start_px.abs() <= f32::EPSILON && inset_end_px.abs() <= f32::EPSILON {
+            return segments;
+          }
+
+          let (apply_physical_start, physical_start_inset, apply_physical_end, physical_end_inset) =
+            if inline_forward {
+              (
+                apply_logical_start,
+                inset_start_px,
+                apply_logical_end,
+                inset_end_px,
+              )
+            } else {
+              (
+                apply_logical_end,
+                inset_end_px,
+                apply_logical_start,
+                inset_start_px,
+              )
+            };
+
+          let mut segs = segments.unwrap_or_else(|| vec![(0.0, inline_len)]);
+          if segs.is_empty() {
+            return Some(segs);
+          }
+          if apply_physical_start {
+            segs[0].0 += physical_start_inset;
+          }
+          if apply_physical_end {
+            let last = segs.len() - 1;
+            segs[last].1 -= physical_end_inset;
+          }
+          segs.retain(|(start, end)| *end > *start + f32::EPSILON);
+          Some(segs)
+        };
 
       let decoration_color = deco.decoration.color.unwrap_or(style.color);
       let standard_visible = decoration_color.alpha_u8() != 0;
@@ -11233,7 +11474,7 @@ impl DisplayListBuilder {
           stroke: DecorationStroke {
             center,
             thickness,
-            segments: clip_segments(segments),
+            segments: clip_segments(apply_inset_to_segments(segments)),
           },
         });
       }
@@ -11256,7 +11497,7 @@ impl DisplayListBuilder {
           stroke: DecorationStroke {
             center,
             thickness,
-            segments: clip_segments(None),
+            segments: clip_segments(apply_inset_to_segments(None)),
           },
         });
       }
@@ -11279,7 +11520,7 @@ impl DisplayListBuilder {
           stroke: DecorationStroke {
             center,
             thickness,
-            segments: clip_segments(None),
+            segments: clip_segments(apply_inset_to_segments(None)),
           },
         });
       }
@@ -11357,7 +11598,7 @@ impl DisplayListBuilder {
         paint.overline = Some(DecorationStroke {
           center,
           thickness,
-          segments: clip_segments(None),
+          segments: clip_segments(apply_inset_to_segments(None)),
         });
         let half_extent = Self::stroke_half_extent(deco.decoration.style, thickness);
         min_block = min_block.min(center - half_extent);
@@ -11369,7 +11610,7 @@ impl DisplayListBuilder {
         paint.line_through = Some(DecorationStroke {
           center,
           thickness,
-          segments: clip_segments(None),
+          segments: clip_segments(apply_inset_to_segments(None)),
         });
         let half_extent = Self::stroke_half_extent(deco.decoration.style, thickness);
         min_block = min_block.min(center - half_extent);
@@ -11400,11 +11641,41 @@ impl DisplayListBuilder {
       return;
     }
 
+    // If `text-decoration-inset` extended the start/end past the fragment bounds (negative inset),
+    // ensure the culling bounds conservatively include the extended geometry.
+    let mut min_inline = 0.0f32;
+    let mut max_inline = inline_len;
+    for deco in paints.iter() {
+      let mut consider = |stroke: &DecorationStroke| {
+        if let Some(segments) = stroke.segments.as_ref() {
+          for (start, end) in segments {
+            if start.is_finite() {
+              min_inline = min_inline.min(*start);
+            }
+            if end.is_finite() {
+              max_inline = max_inline.max(*end);
+            }
+          }
+        }
+      };
+      if let Some(stroke) = deco.underline.as_ref() {
+        consider(stroke);
+      }
+      if let Some(stroke) = deco.overline.as_ref() {
+        consider(stroke);
+      }
+      if let Some(stroke) = deco.line_through.as_ref() {
+        consider(stroke);
+      }
+    }
+
+    let bounds_inline_start = inline_start + min_inline;
+    let bounds_inline_len = (max_inline - min_inline).max(0.0);
     let block_span = (max_block - min_block).max(0.0);
     let bounds = if inline_vertical {
-      Rect::from_xywh(min_block, inline_start, block_span, inline_len)
+      Rect::from_xywh(min_block, bounds_inline_start, block_span, bounds_inline_len)
     } else {
-      Rect::from_xywh(inline_start, min_block, inline_len, block_span)
+      Rect::from_xywh(bounds_inline_start, min_block, bounds_inline_len, block_span)
     };
     self
       .list
@@ -11425,10 +11696,12 @@ impl DisplayListBuilder {
       style.applied_text_decorations.as_slice()
     } else if !style.text_decoration.lines.is_empty() {
       *fallback = Some([ResolvedTextDecoration {
+        origin_id: style as *const ComputedStyle as usize,
         decoration: style.text_decoration.clone(),
         skip_ink: style.text_decoration_skip_ink,
         underline_offset: style.text_underline_offset,
         underline_position: style.text_underline_position,
+        inset: style.text_decoration_inset,
       }]);
       match fallback.as_ref() {
         Some(arr) => arr.as_slice(),

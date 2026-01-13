@@ -240,6 +240,7 @@ mod text_decoration_underline_metrics;
 mod text_decoration_line_through_golden_test;
 mod text_decoration_spelling_grammar_golden_test;
 mod text_decoration_spelling_grammar_legacy_test;
+mod text_decoration_inset_display_list_test;
 mod text_decoration_skip_display_list_test;
 mod text_decoration_skip_spaces_physical_mapping;
 mod text_decoration_skip_ink_offset_golden_test;

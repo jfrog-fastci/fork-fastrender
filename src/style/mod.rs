@@ -211,6 +211,7 @@ use types::TextBoxEdge;
 use types::TextBoxTrim;
 use types::TextCombineUpright;
 use types::TextDecoration;
+use types::TextDecorationInset;
 use types::TextDecorationSkipBox;
 use types::TextDecorationSkipInk;
 use types::TextDecorationSkipSelf;
@@ -1228,6 +1229,7 @@ pub struct ComputedStyle {
   pub text_decoration_skip_box: TextDecorationSkipBox,
   pub text_decoration_skip_spaces: TextDecorationSkipSpaces,
   pub text_decoration_skip_ink: TextDecorationSkipInk,
+  pub text_decoration_inset: TextDecorationInset,
   pub text_underline_offset: TextUnderlineOffset,
   pub text_underline_position: TextUnderlinePosition,
   pub text_emphasis_style: TextEmphasisStyle,
@@ -1693,6 +1695,7 @@ impl Default for ComputedStyle {
       text_decoration_skip_box: TextDecorationSkipBox::default(),
       text_decoration_skip_spaces: TextDecorationSkipSpaces::default(),
       text_decoration_skip_ink: TextDecorationSkipInk::Auto,
+      text_decoration_inset: TextDecorationInset::default(),
       text_underline_offset: TextUnderlineOffset::default(),
       text_underline_position: TextUnderlinePosition::default(),
       text_emphasis_style: TextEmphasisStyle::default(),

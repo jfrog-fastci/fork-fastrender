@@ -501,6 +501,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "text-combine-upright",
   "text-decoration",
   "text-decoration-color",
+  "text-decoration-inset",
   "text-decoration-line",
   "text-decoration-skip",
   "text-decoration-skip-box",
@@ -2191,6 +2192,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "text-emphasis-skip"
       | "text-decoration-skip-self"
       | "text-decoration-skip-spaces"
+      | "text-decoration-inset"
       | "-webkit-text-stroke"
       | "contain-intrinsic-size"
       | "contain-intrinsic-width"

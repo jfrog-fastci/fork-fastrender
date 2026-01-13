@@ -7473,6 +7473,7 @@ pub(crate) fn apply_property_from_source(
       styles.text_decoration_skip_spaces = source.text_decoration_skip_spaces
     }
     "text-decoration-skip-ink" => styles.text_decoration_skip_ink = source.text_decoration_skip_ink,
+    "text-decoration-inset" => styles.text_decoration_inset = source.text_decoration_inset,
     "text-underline-offset" => styles.text_underline_offset = source.text_underline_offset,
     "text-underline-position" => styles.text_underline_position = source.text_underline_position,
     "text-emphasis-style" => styles.text_emphasis_style = source.text_emphasis_style.clone(),
@@ -14837,6 +14838,11 @@ fn apply_declaration_with_base_internal_with_order(
     "text-decoration-skip-ink" => {
       if let Some(skip) = parse_text_decoration_skip_ink(resolved_value) {
         styles.text_decoration_skip_ink = skip;
+      }
+    }
+    "text-decoration-inset" => {
+      if let Some(inset) = parse_text_decoration_inset(resolved_value) {
+        styles.text_decoration_inset = inset;
       }
     }
     "text-underline-offset" => {
@@ -23599,6 +23605,43 @@ fn parse_text_decoration_color(
       forced_colors,
     ))),
     PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => Some(None),
+    _ => None,
+  }
+}
+
+fn parse_text_decoration_inset(value: &PropertyValue) -> Option<TextDecorationInset> {
+  match value {
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => Some(TextDecorationInset::Auto),
+    PropertyValue::Length(l) => Some(TextDecorationInset::Lengths {
+      start: *l,
+      end: *l,
+    }),
+    PropertyValue::Number(n) if *n == 0.0 => Some(TextDecorationInset::Lengths {
+      start: Length::px(0.0),
+      end: Length::px(0.0),
+    }),
+    PropertyValue::Multiple(values) => {
+      let mut lengths: Vec<Length> = Vec::new();
+      for v in values {
+        match v {
+          PropertyValue::Length(l) => lengths.push(*l),
+          // `<length>` allows unitless 0.
+          PropertyValue::Number(n) if *n == 0.0 => lengths.push(Length::px(0.0)),
+          _ => return None,
+        }
+      }
+      match lengths.len() {
+        1 => Some(TextDecorationInset::Lengths {
+          start: lengths[0],
+          end: lengths[0],
+        }),
+        2 => Some(TextDecorationInset::Lengths {
+          start: lengths[0],
+          end: lengths[1],
+        }),
+        _ => None,
+      }
+    }
     _ => None,
   }
 }

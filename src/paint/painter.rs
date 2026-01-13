@@ -15585,10 +15585,12 @@ impl Painter {
       Cow::Borrowed(style.applied_text_decorations.as_slice())
     } else {
       Cow::Owned(vec![crate::style::types::ResolvedTextDecoration {
+        origin_id: style as *const ComputedStyle as usize,
         decoration: style.text_decoration.clone(),
         skip_ink: style.text_decoration_skip_ink,
         underline_offset: style.text_underline_offset,
         underline_position: style.text_underline_position,
+        inset: style.text_decoration_inset,
       }])
     };
 

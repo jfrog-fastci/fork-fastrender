@@ -16715,7 +16715,7 @@ fn compute_base_styles<'a>(
     ) {
       ua_styles.position_try_registry = tree_scoped_position_try_registry.clone();
     }
-    propagate_text_decorations(node, &mut ua_styles, parent_ua_styles);
+    propagate_text_decorations(node_id, node, &mut ua_styles, parent_ua_styles);
 
     let mut styles = get_default_styles_for_element(node);
     inherit_styles(&mut styles, parent_styles);
@@ -16732,7 +16732,7 @@ fn compute_base_styles<'a>(
     ) {
       styles.position_try_registry = tree_scoped_position_try_registry.clone();
     }
-    propagate_text_decorations(node, &mut styles, parent_styles);
+    propagate_text_decorations(node_id, node, &mut styles, parent_styles);
 
     resolve_container_query_font_size(
       &mut ua_styles,
@@ -16943,7 +16943,7 @@ fn compute_base_styles<'a>(
   // `match-parent` (which would otherwise affect last-line alignment during layout).
   resolve_match_parent_text_align_last(&mut ua_styles, parent_ua_styles, is_root);
   resolve_relative_font_weight(&mut ua_styles, parent_ua_styles);
-  propagate_text_decorations(node, &mut ua_styles, parent_ua_styles);
+  propagate_text_decorations(node_id, node, &mut ua_styles, parent_ua_styles);
 
   resolve_container_query_font_size(
     &mut ua_styles,
@@ -17044,7 +17044,7 @@ fn compute_base_styles<'a>(
   // See UA pass above for why we run the `text-align-last` resolver twice.
   resolve_match_parent_text_align_last(&mut styles, parent_styles, is_root);
   resolve_relative_font_weight(&mut styles, parent_styles);
-  propagate_text_decorations(node, &mut styles, parent_styles);
+  propagate_text_decorations(node_id, node, &mut styles, parent_styles);
 
   resolve_container_query_font_size(
     &mut styles,
@@ -38276,6 +38276,24 @@ pub(crate) fn resolve_absolute_lengths(
   styles.border_spacing_horizontal = resolve_len(styles.border_spacing_horizontal);
   styles.border_spacing_vertical = resolve_len(styles.border_spacing_vertical);
 
+  let resolve_text_decoration_inset =
+    |inset: crate::style::types::TextDecorationInset| -> crate::style::types::TextDecorationInset {
+      match inset {
+        crate::style::types::TextDecorationInset::Auto => inset,
+        crate::style::types::TextDecorationInset::Lengths { start, end } => {
+          crate::style::types::TextDecorationInset::Lengths {
+            start: resolve_len(start),
+            end: resolve_len(end),
+          }
+        }
+      }
+    };
+
+  styles.text_decoration_inset = resolve_text_decoration_inset(styles.text_decoration_inset);
+  for decoration in styles.applied_text_decorations.iter_mut() {
+    decoration.inset = resolve_text_decoration_inset(decoration.inset);
+  }
+
   // Percentage radii remain relative and are handled during paint/layout.
 }
 
@@ -38705,6 +38723,7 @@ pub(crate) fn resolve_container_query_lengths(
   use crate::style::types::ShapeRadius;
   use crate::style::types::StrokeDasharray;
   use crate::style::types::TabSize;
+  use crate::style::types::TextDecorationInset;
   use crate::style::types::TextDecorationThickness;
   use crate::style::types::TextUnderlineOffset;
   use crate::style::types::VerticalAlign;
@@ -39062,6 +39081,16 @@ pub(crate) fn resolve_container_query_lengths(
     }
   }
 
+  fn resolve_text_decoration_inset(
+    inset: &mut TextDecorationInset,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    if let TextDecorationInset::Lengths { start, end } = inset {
+      resolve_len(start);
+      resolve_len(end);
+    }
+  }
+
   fn resolve_line_height(value: &mut LineHeight, resolve_len: &mut impl FnMut(&mut Length)) {
     if let LineHeight::Length(len) = value {
       resolve_len(len);
@@ -39216,6 +39245,7 @@ pub(crate) fn resolve_container_query_lengths(
   resolve_line_height(&mut styles.line_height, &mut resolve_len);
   resolve_len(&mut styles.text_indent.length);
   resolve_text_decoration_thickness(&mut styles.text_decoration.thickness, &mut resolve_len);
+  resolve_text_decoration_inset(&mut styles.text_decoration_inset, &mut resolve_len);
   resolve_text_underline_offset(&mut styles.text_underline_offset, &mut resolve_len);
   resolve_tab_size(&mut styles.tab_size, &mut resolve_len);
   resolve_vertical_align(&mut styles.vertical_align, &mut resolve_len);
@@ -39223,6 +39253,7 @@ pub(crate) fn resolve_container_query_lengths(
   for decoration in styles.applied_text_decorations.iter_mut() {
     resolve_text_decoration_thickness(&mut decoration.decoration.thickness, &mut resolve_len);
     resolve_text_underline_offset(&mut decoration.underline_offset, &mut resolve_len);
+    resolve_text_decoration_inset(&mut decoration.inset, &mut resolve_len);
   }
 
   if let Some(stroke_width) = styles.svg_stroke_width.as_mut() {
@@ -40077,7 +40108,12 @@ fn resolve_relative_font_weight(styles: &mut ComputedStyle, parent: &ComputedSty
   styles.font_weight = styles.font_weight.resolve_relative(parent_weight);
 }
 
-fn propagate_text_decorations(node: &DomNode, styles: &mut ComputedStyle, parent: &ComputedStyle) {
+fn propagate_text_decorations(
+  node_id: usize,
+  node: &DomNode,
+  styles: &mut ComputedStyle,
+  parent: &ComputedStyle,
+) {
   let mut decorations = parent.applied_text_decorations.clone();
 
   if styles.text_decoration_line_specified && styles.text_decoration.lines.is_empty() {
@@ -40117,10 +40153,12 @@ fn propagate_text_decorations(node: &DomNode, styles: &mut ComputedStyle, parent
     styles
       .applied_text_decorations
       .push(crate::style::types::ResolvedTextDecoration {
+        origin_id: node_id,
         decoration: styles.text_decoration.clone(),
         skip_ink: styles.text_decoration_skip_ink,
         underline_offset: styles.text_underline_offset,
         underline_position: styles.text_underline_position,
+        inset: styles.text_decoration_inset,
       });
   }
 }
@@ -40451,7 +40489,7 @@ fn compute_pseudo_element_styles(
   resolve_match_parent_text_align(&mut ua_styles, ua_parent_styles, false);
   resolve_match_parent_text_align_last(&mut ua_styles, ua_parent_styles, false);
   resolve_relative_font_weight(&mut ua_styles, ua_parent_styles);
-  propagate_text_decorations(node, &mut ua_styles, ua_parent_styles);
+  propagate_text_decorations(node_id, node, &mut ua_styles, ua_parent_styles);
   resolve_container_query_font_size(
     &mut ua_styles,
     node_id,
@@ -40499,7 +40537,7 @@ fn compute_pseudo_element_styles(
   resolve_match_parent_text_align(&mut styles, parent_styles, false);
   resolve_match_parent_text_align_last(&mut styles, parent_styles, false);
   resolve_relative_font_weight(&mut styles, parent_styles);
-  propagate_text_decorations(node, &mut styles, parent_styles);
+  propagate_text_decorations(node_id, node, &mut styles, parent_styles);
   resolve_container_query_font_size(
     &mut styles,
     node_id,
@@ -40729,7 +40767,7 @@ fn compute_first_line_styles(
   resolve_match_parent_text_align(&mut ua_styles, base_ua_styles, false);
   resolve_match_parent_text_align_last(&mut ua_styles, base_ua_styles, false);
   resolve_relative_font_weight(&mut ua_styles, base_ua_styles);
-  propagate_text_decorations(node, &mut ua_styles, base_ua_styles);
+  propagate_text_decorations(node_id, node, &mut ua_styles, base_ua_styles);
   resolve_container_query_font_size(
     &mut ua_styles,
     node_id,
@@ -40771,7 +40809,7 @@ fn compute_first_line_styles(
   resolve_match_parent_text_align(&mut styles, base_styles, false);
   resolve_match_parent_text_align_last(&mut styles, base_styles, false);
   resolve_relative_font_weight(&mut styles, base_styles);
-  propagate_text_decorations(node, &mut styles, base_styles);
+  propagate_text_decorations(node_id, node, &mut styles, base_styles);
   resolve_container_query_font_size(
     &mut styles,
     node_id,
@@ -40889,7 +40927,7 @@ fn compute_first_letter_styles(
   resolve_match_parent_text_align(&mut ua_styles, base_ua_styles, false);
   resolve_match_parent_text_align_last(&mut ua_styles, base_ua_styles, false);
   resolve_relative_font_weight(&mut ua_styles, base_ua_styles);
-  propagate_text_decorations(node, &mut ua_styles, base_ua_styles);
+  propagate_text_decorations(node_id, node, &mut ua_styles, base_ua_styles);
   resolve_container_query_font_size(
     &mut ua_styles,
     node_id,
@@ -40931,7 +40969,7 @@ fn compute_first_letter_styles(
   resolve_match_parent_text_align(&mut styles, base_styles, false);
   resolve_match_parent_text_align_last(&mut styles, base_styles, false);
   resolve_relative_font_weight(&mut styles, base_styles);
-  propagate_text_decorations(node, &mut styles, base_styles);
+  propagate_text_decorations(node_id, node, &mut styles, base_styles);
   resolve_container_query_font_size(
     &mut styles,
     node_id,
@@ -41066,7 +41104,7 @@ fn compute_marker_styles(
   resolve_match_parent_text_align(&mut ua_styles, ua_list_item_styles, false);
   resolve_match_parent_text_align_last(&mut ua_styles, ua_list_item_styles, false);
   resolve_relative_font_weight(&mut ua_styles, ua_list_item_styles);
-  propagate_text_decorations(node, &mut ua_styles, ua_list_item_styles);
+  propagate_text_decorations(node_id, node, &mut ua_styles, ua_list_item_styles);
   resolve_container_query_font_size(
     &mut ua_styles,
     node_id,
@@ -41118,7 +41156,7 @@ fn compute_marker_styles(
   resolve_match_parent_text_align(&mut styles, list_item_styles, false);
   resolve_match_parent_text_align_last(&mut styles, list_item_styles, false);
   resolve_relative_font_weight(&mut styles, list_item_styles);
-  propagate_text_decorations(node, &mut styles, list_item_styles);
+  propagate_text_decorations(node_id, node, &mut styles, list_item_styles);
   resolve_container_query_font_size(
     &mut styles,
     node_id,
