@@ -27,6 +27,45 @@ const WSAEACCES: i32 = 10013;
 const WAIT_OBJECT_0: u32 = 0x0000_0000;
 const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
+struct EnvRestore {
+  prev_child: Option<OsString>,
+  prev_port: Option<OsString>,
+  prev_threads: Option<OsString>,
+}
+
+impl EnvRestore {
+  fn install(port: &str) -> Self {
+    let prev_child = std::env::var_os(CHILD_ENV);
+    let prev_port = std::env::var_os(PORT_ENV);
+    let prev_threads = std::env::var_os("RUST_TEST_THREADS");
+
+    std::env::set_var(CHILD_ENV, "1");
+    std::env::set_var(PORT_ENV, port);
+    std::env::set_var("RUST_TEST_THREADS", "1");
+
+    Self {
+      prev_child,
+      prev_port,
+      prev_threads,
+    }
+  }
+}
+
+impl Drop for EnvRestore {
+  fn drop(&mut self) {
+    restore_var(CHILD_ENV, self.prev_child.take());
+    restore_var(PORT_ENV, self.prev_port.take());
+    restore_var("RUST_TEST_THREADS", self.prev_threads.take());
+  }
+}
+
+fn restore_var(key: &str, prev: Option<OsString>) {
+  match prev {
+    Some(value) => std::env::set_var(key, value),
+    None => std::env::remove_var(key),
+  }
+}
+
 struct HandleGuard(HANDLE);
 
 impl Drop for HandleGuard {
@@ -227,13 +266,7 @@ fn appcontainer_denies_network() {
     .expect("listener local addr")
     .port()
     .to_string();
-
-  let prev_child = std::env::var_os(CHILD_ENV);
-  std::env::set_var(CHILD_ENV, "1");
-  let prev_port = std::env::var_os(PORT_ENV);
-  std::env::set_var(PORT_ENV, &port);
-  let prev_threads = std::env::var_os("RUST_TEST_THREADS");
-  std::env::set_var("RUST_TEST_THREADS", "1");
+  let _env_restore = EnvRestore::install(&port);
 
   let exe = std::env::current_exe().expect("current test exe path");
   let args = vec![
@@ -249,17 +282,4 @@ fn appcontainer_denies_network() {
   let status = wait_process(handle, 20_000).expect("wait for sandboxed child");
   assert!(status.success(), "sandboxed child failed (exit={status})");
   drop(listener);
-
-  match prev_child {
-    Some(value) => std::env::set_var(CHILD_ENV, value),
-    None => std::env::remove_var(CHILD_ENV),
-  }
-  match prev_port {
-    Some(value) => std::env::set_var(PORT_ENV, value),
-    None => std::env::remove_var(PORT_ENV),
-  }
-  match prev_threads {
-    Some(value) => std::env::set_var("RUST_TEST_THREADS", value),
-    None => std::env::remove_var("RUST_TEST_THREADS"),
-  }
 }
