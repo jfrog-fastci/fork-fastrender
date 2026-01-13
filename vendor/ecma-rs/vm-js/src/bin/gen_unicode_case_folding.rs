@@ -68,7 +68,21 @@ fn generate_scf_module(path: &Path) -> Result<String, String> {
     let mapping_raw = parts[2];
 
     // Unicode simple case folding uses status C + S (see header of CaseFolding.txt).
-    if status != "C" && status != "S" {
+    //
+    // - C: common case folding mapping
+    // - S: simple case folding mapping
+    // - F: full case folding mapping (multi-code-point; ignore)
+    // - T: Turkic mapping (ignore)
+    let include = match status {
+      "C" | "S" => true,
+      "F" | "T" => false,
+      other => {
+        return Err(format!(
+          "invalid CaseFolding line {line_no}: unknown status {other:?}"
+        ))
+      }
+    };
+    if !include {
       continue;
     }
 
@@ -88,14 +102,17 @@ fn generate_scf_module(path: &Path) -> Result<String, String> {
     let to = parse_hex_code_point(to_raw).map_err(|e| {
       format!("invalid CaseFolding line {line_no}: bad mapping {mapping_raw:?}: {e}")
     })?;
-    if (0xD800..=0xDFFF).contains(&to) {
+    // For C/S mappings, CaseFolding.txt must map one code point to one code point. Treat any
+    // multi-code-point mapping as an error so we do not silently truncate full case folds.
+    if mapping_iter.next().is_some() {
       return Err(format!(
-        "invalid CaseFolding line {line_no}: surrogate code point in mapping target: {mapping_raw:?}"
+        "invalid CaseFolding line {line_no}: expected single code point mapping for status {status:?}, got {mapping_raw:?}"
       ));
     }
-    if mapping_iter.next().is_some() {
-      // Full case folding (multi code point) => ignore for scf.
-      continue;
+    if (0xD800..=0xDFFF).contains(&to) {
+      return Err(format!(
+        "invalid CaseFolding line {line_no}: surrogate code point in mapping target: {to_raw:?}"
+      ));
     }
 
     if from == to {

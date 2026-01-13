@@ -27,7 +27,6 @@ use core::ptr;
 use icu_casemap::{CaseMapperBorrowed, ClosureSink};
 use std::alloc::alloc;
 
-mod case_folding;
 mod unicode_string_property;
 #[cfg(test)]
 pub(crate) use unicode_string_property::{resolve_unicode_string_property, UnicodeStringProperty};
@@ -2642,10 +2641,7 @@ fn canonicalize(flags: RegExpFlags, ch: u32) -> u32 {
     if (0xD800..=0xDFFF).contains(&ch) || ch > 0x10FFFF {
       return ch;
     }
-    if let Some(mapped) = case_folding::simple_case_fold(ch) {
-      return mapped;
-    }
-    return ch;
+    return crate::regexp_case_fold(ch);
   }
 
   // 3. Otherwise, ignoreCase is true with no Unicode flags; treat `ch` as a UTF-16 code unit.
