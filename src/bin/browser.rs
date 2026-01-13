@@ -4997,7 +4997,14 @@ impl ChromeAccessKit {
     let _ = self.adapter.on_event(window, event);
   }
 
+  fn is_active(&self) -> bool {
+    self.adapter.is_active()
+  }
+
   fn update_if_active(&self, updater: impl FnOnce() -> accesskit::TreeUpdate) {
+    if !self.is_active() {
+      return;
+    }
     self.adapter.update_if_active(updater);
   }
 }

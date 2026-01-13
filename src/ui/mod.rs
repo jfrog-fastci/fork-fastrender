@@ -80,6 +80,10 @@ pub mod a11y;
 #[cfg(feature = "browser_ui_base")]
 pub mod compositor_accessibility;
 
+// AccessKit + winit adapter helpers for future renderer-based accessibility trees.
+#[cfg(feature = "browser_ui")]
+pub mod accesskit_bridge;
+
 // Test-only helpers for extracting egui/AccessKit accessibility output.
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;

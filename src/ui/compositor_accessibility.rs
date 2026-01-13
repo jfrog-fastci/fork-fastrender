@@ -71,6 +71,9 @@ impl CompositorAccessibility {
   /// - the UI focus changes between chrome and page,
   /// - the active tab changes (page node name changes).
   pub fn update_if_active(&self, state: &CompositorA11yState) {
+    if !self.adapter.is_active() {
+      return;
+    }
     self.adapter.update_if_active(|| build_tree_update(state));
   }
 }
