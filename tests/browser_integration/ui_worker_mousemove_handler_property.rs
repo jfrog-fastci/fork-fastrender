@@ -1,0 +1,113 @@
+#![cfg(feature = "browser_ui")]
+
+use super::support;
+use fastrender::ui::messages::{PointerButton, TabId, WorkerToUi};
+use fastrender::ui::spawn_ui_worker_with_factory;
+use std::time::Duration;
+
+const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
+
+#[test]
+fn ui_worker_mousemove_handler_property_can_prevent_click_navigation() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let next_url = site.write(
+    "next.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>html, body { margin: 0; padding: 0; background: rgb(0, 255, 0); }</style>
+        </head>
+        <body>next</body>
+      </html>"#,
+  );
+  let index_url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            /* Give the link a predictable hit target so pointer events land on the <a>. */
+            #link { position: absolute; left: 0; top: 0; width: 120px; height: 40px; display: block; background: rgb(255, 0, 0); }
+          </style>
+        </head>
+        <body>
+          <a id="link" href="next.html">next</a>
+          <script>
+            var link = document.getElementById("link");
+            link.onmousemove = function () { window.__moved = true; };
+            link.addEventListener("click", function (ev) {
+              if (window.__moved) ev.preventDefault();
+            });
+          </script>
+        </body>
+      </html>"#,
+  );
+
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-mousemove-handler-property",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId::new();
+
+  ui_tx
+    .send(support::create_tab_msg(tab_id, Some(index_url.clone())))
+    .expect("create tab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (200, 100), 1.0))
+    .expect("viewport");
+
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {index_url}"));
+
+  // Drain any follow-up messages from the initial navigation so assertions only observe the click.
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
+
+  // Move over the link. This should run the `onmousemove` handler property and set `window.__moved`.
+  ui_tx
+    .send(support::pointer_move(tab_id, (10.0, 10.0), PointerButton::None))
+    .expect("pointer move");
+
+  // Click the link. The click handler only prevents default if `onmousemove` ran.
+  ui_tx
+    .send(support::pointer_down(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
+    .expect("pointer down");
+  ui_tx
+    .send(support::pointer_up(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
+    .expect("pointer up");
+
+  let msgs = support::drain_for(&ui_rx, Duration::from_millis(500));
+  assert!(
+    !msgs.iter().any(|msg| {
+      matches!(
+        msg,
+        WorkerToUi::NavigationStarted { .. }
+          | WorkerToUi::NavigationCommitted { .. }
+          | WorkerToUi::NavigationFailed { .. }
+          | WorkerToUi::RequestOpenInNewTab { .. }
+          | WorkerToUi::RequestOpenInNewTabRequest { .. }
+      )
+    }),
+    "expected mousemove handler property to suppress navigation to {next_url}; got:\n{}",
+    support::format_messages(&msgs)
+  );
+
+  drop(ui_tx);
+  join.join().expect("worker join");
+}
+

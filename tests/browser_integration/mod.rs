@@ -140,6 +140,7 @@ mod ui_worker_js_base_url_sync;
 mod ui_worker_cancellation;
 mod ui_worker_chrome_subresource_blocked;
 mod ui_worker_click_prevent_default;
+mod ui_worker_mousemove_handler_property;
 mod ui_worker_color_picker_choose;
 mod ui_worker_crash_hook;
 mod ui_worker_crash_url;

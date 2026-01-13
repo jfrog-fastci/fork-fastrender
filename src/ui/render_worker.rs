@@ -4629,14 +4629,20 @@ impl BrowserRuntime {
 
     if hover_changed {
       let should_mouseout = prev_target.is_some_and(|prev_node_id| {
-        let dom = js_tab.dom();
-        dom.events().has_listeners_for_dispatch(
-          web_events::EventTargetId::Node(prev_node_id),
-          "mouseout",
-          dom,
-          /* bubbles */ true,
-          /* composed */ false,
-        )
+        let has_listeners = {
+          let dom = js_tab.dom();
+          dom.events().has_listeners_for_dispatch(
+            web_events::EventTargetId::Node(prev_node_id),
+            "mouseout",
+            dom,
+            /* bubbles */ true,
+            /* composed */ false,
+          )
+        };
+        has_listeners
+          || js_tab
+            .has_event_handler_property(web_events::EventTargetId::Node(prev_node_id), "mouseout")
+            .unwrap_or(false)
       });
 
       // out on previous target.
@@ -4718,14 +4724,20 @@ impl BrowserRuntime {
         current_target.map(|id| web_events::EventTargetId::Node(id).normalize());
       for &node_id in prev_exited {
         let should_mouseleave = {
-          let dom = js_tab.dom();
-          dom.events().has_listeners_for_dispatch(
-            web_events::EventTargetId::Node(node_id),
-            "mouseleave",
-            dom,
-            /* bubbles */ false,
-            /* composed */ false,
-          )
+          let has_listeners = {
+            let dom = js_tab.dom();
+            dom.events().has_listeners_for_dispatch(
+              web_events::EventTargetId::Node(node_id),
+              "mouseleave",
+              dom,
+              /* bubbles */ false,
+              /* composed */ false,
+            )
+          };
+          has_listeners
+            || js_tab
+              .has_event_handler_property(web_events::EventTargetId::Node(node_id), "mouseleave")
+              .unwrap_or(false)
         };
         if should_mouseleave {
           let mut mouse = mouse_base;
@@ -4745,14 +4757,20 @@ impl BrowserRuntime {
       }
 
       let should_mouseover = current_target.is_some_and(|new_node_id| {
-        let dom = js_tab.dom();
-        dom.events().has_listeners_for_dispatch(
-          web_events::EventTargetId::Node(new_node_id),
-          "mouseover",
-          dom,
-          /* bubbles */ true,
-          /* composed */ false,
-        )
+        let has_listeners = {
+          let dom = js_tab.dom();
+          dom.events().has_listeners_for_dispatch(
+            web_events::EventTargetId::Node(new_node_id),
+            "mouseover",
+            dom,
+            /* bubbles */ true,
+            /* composed */ false,
+          )
+        };
+        has_listeners
+          || js_tab
+            .has_event_handler_property(web_events::EventTargetId::Node(new_node_id), "mouseover")
+            .unwrap_or(false)
       });
 
       // over on new target.
@@ -4780,14 +4798,20 @@ impl BrowserRuntime {
       let related_for_enter = prev_target.map(|id| web_events::EventTargetId::Node(id).normalize());
       for &node_id in current_entered.iter().rev() {
         let should_mouseenter = {
-          let dom = js_tab.dom();
-          dom.events().has_listeners_for_dispatch(
-            web_events::EventTargetId::Node(node_id),
-            "mouseenter",
-            dom,
-            /* bubbles */ false,
-            /* composed */ false,
-          )
+          let has_listeners = {
+            let dom = js_tab.dom();
+            dom.events().has_listeners_for_dispatch(
+              web_events::EventTargetId::Node(node_id),
+              "mouseenter",
+              dom,
+              /* bubbles */ false,
+              /* composed */ false,
+            )
+          };
+          has_listeners
+            || js_tab
+              .has_event_handler_property(web_events::EventTargetId::Node(node_id), "mouseenter")
+              .unwrap_or(false)
         };
         if should_mouseenter {
           let mut mouse = mouse_base;
@@ -4810,14 +4834,20 @@ impl BrowserRuntime {
     // `mousemove` should be dispatched after hover-transition events (`mouseout`/`mouseover`, etc.)
     // for browser-like ordering.
     let should_mousemove = current_target.is_some_and(|target_node_id| {
-      let dom = js_tab.dom();
-      dom.events().has_listeners_for_dispatch(
-        web_events::EventTargetId::Node(target_node_id),
-        "mousemove",
-        dom,
-        /* bubbles */ true,
-        /* composed */ false,
-      )
+      let has_listeners = {
+        let dom = js_tab.dom();
+        dom.events().has_listeners_for_dispatch(
+          web_events::EventTargetId::Node(target_node_id),
+          "mousemove",
+          dom,
+          /* bubbles */ true,
+          /* composed */ false,
+        )
+      };
+      has_listeners
+        || js_tab
+          .has_event_handler_property(web_events::EventTargetId::Node(target_node_id), "mousemove")
+          .unwrap_or(false)
     });
     if should_mousemove {
       if let Some(target_node_id) = current_target {

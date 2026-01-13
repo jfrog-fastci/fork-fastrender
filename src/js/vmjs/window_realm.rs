@@ -24786,6 +24786,131 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     Ok(())
   }
 
+  pub(crate) fn has_event_handler_property(
+    &mut self,
+    target: web_events::EventTargetId,
+    type_: &str,
+  ) -> std::result::Result<bool, web_events::DomError> {
+    let target = target.normalize();
+    match target {
+      web_events::EventTargetId::Window
+      | web_events::EventTargetId::Document
+      | web_events::EventTargetId::Node(_) => {}
+      web_events::EventTargetId::Opaque(_) => return Ok(false),
+    }
+
+    // SAFETY: `BrowserTabHost` stores the returned invoker alongside the owning executor, so the
+    // pointer remains valid for the lifetime of the host. Dispatch is single-threaded and
+    // non-reentrant with respect to other `WindowRealm` borrows.
+    let Some(realm) = unsafe { &mut *self.realm }.as_mut() else {
+      return Ok(false);
+    };
+
+    let Some(mut host_ptr) = (unsafe { *self.vm_host }) else {
+      return Ok(false);
+    };
+    // SAFETY: The embedding stores a stable heap-allocated host context (e.g. `BrowserDocumentDom2`)
+    // for the lifetime of the `WindowRealm` and updates the pointer on navigations.
+    let _host_ctx: &mut dyn VmHost = unsafe { host_ptr.as_mut() };
+
+    // Mirror the host-driven event dispatch invariants: treat this as a "new turn" so a prior
+    // termination state (out of fuel, deadline exceeded, etc.) doesn't prevent simple property
+    // checks.
+    realm.reset_interrupt();
+    let budget = realm.vm_budget_now();
+
+    let realm_id = realm.realm_id;
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut vm = vm.push_budget(budget);
+    vm.tick()
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let mut scope = heap.scope();
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    let window_obj = realm_ref.global_object();
+    let document_obj = {
+      scope
+        .push_root(Value::Object(window_obj))
+        .map_err(|e| web_events::DomError::new(e.to_string()))?;
+      let document_key =
+        alloc_key(&mut scope, "document").map_err(|e| web_events::DomError::new(e.to_string()))?;
+      match vm
+        .get(&mut scope, window_obj, document_key)
+        .map_err(|e| web_events::DomError::new(e.to_string()))?
+      {
+        Value::Object(obj) => obj,
+        _ => return Ok(false),
+      }
+    };
+
+    // Resolve the wrapper object for the target, but avoid creating wrappers unnecessarily: if a
+    // node wrapper doesn't exist yet, no script could have assigned `on{type}` on it.
+    let target_obj = match target {
+      web_events::EventTargetId::Window => window_obj,
+      web_events::EventTargetId::Document => document_obj,
+      web_events::EventTargetId::Node(node_id) => {
+        if node_id.index() == 0 {
+          document_obj
+        } else if let Some(platform) = dom_platform_mut(&mut vm) {
+          let platform_document_obj = {
+            scope
+              .push_root(Value::Object(document_obj))
+              .map_err(|e| web_events::DomError::new(e.to_string()))?;
+            let key = alloc_key(&mut scope, PLATFORM_DOCUMENT_KEY)
+              .map_err(|e| web_events::DomError::new(e.to_string()))?;
+            match scope
+              .heap()
+              .object_get_own_data_property_value(document_obj, &key)
+              .map_err(|e| web_events::DomError::new(e.to_string()))?
+            {
+              Some(Value::Object(obj)) => obj,
+              _ => document_obj,
+            }
+          };
+
+          let document_key = vm_js::WeakGcObject::from(platform_document_obj);
+          match platform.get_existing_wrapper(scope.heap(), document_key, node_id) {
+            Some(obj) => obj,
+            None => return Ok(false),
+          }
+        } else {
+          return Ok(false);
+        }
+      }
+      web_events::EventTargetId::Opaque(_) => return Ok(false),
+    };
+
+    let mut handler_name = String::with_capacity(2 + type_.len());
+    handler_name.push_str("on");
+    handler_name.push_str(type_);
+    scope
+      .push_root(Value::Object(target_obj))
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let handler_key =
+      alloc_key(&mut scope, &handler_name).map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let Some(handler) = scope
+      .heap()
+      .object_get_own_data_property_value(target_obj, &handler_key)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?
+    else {
+      return Ok(false);
+    };
+    if !scope
+      .heap()
+      .is_callable(handler)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?
+    {
+      return Ok(false);
+    }
+
+    Ok(true)
+  }
+
   fn js_value_for_target(
     vm: &mut Vm,
     scope: &mut Scope<'_>,

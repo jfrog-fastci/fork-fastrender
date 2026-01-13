@@ -6258,6 +6258,27 @@ impl BrowserTab {
     host.dispatch_dom_event_in_event_loop(EventTargetId::Node(node_id).normalize(), event, event_loop)
   }
 
+  /// Returns `true` if `target` has an own, callable `on{type_}` event handler property.
+  ///
+  /// This mirrors the `vm-js` host-driven dispatch behavior implemented by
+  /// [`crate::web::events::EventListenerInvoker::invoke_event_handler_property`], and is intended as
+  /// a lightweight query for high-frequency event gating (`mousemove`, `mouseover`, ...).
+  pub fn has_event_handler_property(&mut self, target: EventTargetId, type_: &str) -> Result<bool> {
+    // Only the vm-js invoker supports handler property checks today; other executors treat handler
+    // properties as absent.
+    let Some(any) = self.host.event_invoker.as_any_mut() else {
+      return Ok(false);
+    };
+    let Some(invoker) =
+      any.downcast_mut::<crate::js::window_realm::WindowRealmDomEventListenerInvoker<BrowserTabHost>>()
+    else {
+      return Ok(false);
+    };
+    invoker
+      .has_event_handler_property(target, type_)
+      .map_err(|err| Error::Other(err.to_string()))
+  }
+
   /// Dispatch a trusted `submit` DOM event to `node_id`.
   ///
   /// Returns `true` when the event's default was **not** prevented.
