@@ -258,6 +258,101 @@ impl BrowserTabController {
     }
   }
 
+  /// Handle an accessibility (AccessKit) action targeted at a DOM node.
+  ///
+  /// This is used by UI layers that expose the rendered page via AccessKit to assistive
+  /// technologies.
+  ///
+  /// Behaviour notes:
+  /// - `accesskit::Action::Focus` updates the interaction engine focus state (with
+  ///   `focus_visible=true`) and, when cached layout artifacts are available, scrolls the document
+  ///   so the focused node is visible (matching browser behaviour).
+  /// - `accesskit::Action::ScrollIntoView` scrolls the document to reveal the target node without
+  ///   changing focus. (This mirrors DOM `scrollIntoView()` semantics; AT can request focus
+  ///   separately if desired.)
+  ///
+  /// When no layout artifacts are available yet (e.g. before the first paint), focus updates are
+  /// still applied best-effort but scrolling is skipped.
+  #[cfg(feature = "browser_ui")]
+  pub fn handle_accesskit_action(
+    &mut self,
+    node_id: usize,
+    action: accesskit::Action,
+  ) -> Result<Vec<WorkerToUi>> {
+    match action {
+      accesskit::Action::Focus => self.handle_accesskit_focus(node_id),
+      accesskit::Action::ScrollIntoView => self.handle_accesskit_scroll_into_view(node_id),
+      _ => Ok(Vec::new()),
+    }
+  }
+
+  #[cfg(feature = "browser_ui")]
+  fn handle_accesskit_focus(&mut self, node_id: usize) -> Result<Vec<WorkerToUi>> {
+    let scroll_snapshot = self.scroll_state.clone();
+    let interaction = &mut self.interaction;
+    let document = &mut self.document;
+
+    let mut focus_changed = false;
+    let mut focus_scroll: Option<ScrollState> = None;
+
+    if document.prepared().is_some() {
+      let (changed, scroll) = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let (changed, _action) = interaction.focus_node_id(dom, Some(node_id), true);
+        let scroll = crate::interaction::focus_scroll::scroll_state_for_focus(
+          box_tree,
+          fragment_tree,
+          &scroll_snapshot,
+          node_id,
+        );
+        // `focus_node_id` does not mutate the DOM; avoid invalidating cached layout.
+        (false, (changed, scroll))
+      })?;
+      focus_changed = changed;
+      focus_scroll = scroll;
+    } else {
+      // No layout yet; still update focus best-effort but skip scrolling.
+      document.mutate_dom(|dom| {
+        let (changed, _action) = interaction.focus_node_id(dom, Some(node_id), true);
+        focus_changed = changed;
+        false
+      });
+    }
+
+    let mut scroll_changed = false;
+    if let Some(next_scroll) = focus_scroll {
+      self.scroll_state = next_scroll;
+      self.document.set_scroll_state(self.scroll_state.clone());
+      scroll_changed = true;
+    }
+
+    if focus_changed || scroll_changed {
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
+    }
+  }
+
+  #[cfg(feature = "browser_ui")]
+  fn handle_accesskit_scroll_into_view(&mut self, node_id: usize) -> Result<Vec<WorkerToUi>> {
+    let scroll_snapshot = self.scroll_state.clone();
+    let focus_scroll = self.document.prepared().and_then(|prepared| {
+      crate::interaction::focus_scroll::scroll_state_for_focus(
+        prepared.box_tree(),
+        prepared.fragment_tree(),
+        &scroll_snapshot,
+        node_id,
+      )
+    });
+
+    if let Some(next_scroll) = focus_scroll {
+      self.scroll_state = next_scroll;
+      self.document.set_scroll_state(self.scroll_state.clone());
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
+    }
+  }
+
   fn handle_find_query(&mut self, query: &str, case_sensitive: bool) -> Result<Vec<WorkerToUi>> {
     let query = query.to_string();
     let query_changed = self.find_query != query || self.find_case_sensitive != case_sensitive;
@@ -2172,6 +2267,226 @@ mod select_dropdown_messages_tests {
     assert!(
       option_one_node.get_attribute_ref("selected").is_some(),
       "expected chosen option to have selected attribute"
+    );
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod accesskit_focus_scroll_tests {
+  use super::*;
+  use crate::dom::{enumerate_dom_ids, DomNode};
+  use crate::interaction::element_geometry::element_geometry_for_styled_node_id;
+  use crate::text::font_db::FontConfig;
+  use crate::ui::messages::RepaintReason;
+
+  fn node_id_by_id_attr(root: &DomNode, id_attr: &str) -> usize {
+    let ids = enumerate_dom_ids(root);
+    let mut stack: Vec<&DomNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if node.get_attribute_ref("id").is_some_and(|id| id == id_attr) {
+        return *ids
+          .get(&(node as *const DomNode))
+          .unwrap_or_else(|| panic!("node id missing for element with id={id_attr:?}"));
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    panic!("no element with id attribute {id_attr:?}");
+  }
+
+  fn border_box_for(controller: &BrowserTabController, node_id: usize) -> Rect {
+    let prepared = controller
+      .document()
+      .prepared()
+      .expect("expected prepared layout artifacts");
+    let (geom, _style) = element_geometry_for_styled_node_id(
+      prepared.box_tree(),
+      prepared.fragment_tree(),
+      node_id,
+    )
+    .unwrap_or_else(|| panic!("expected geometry for node_id={node_id}"));
+    geom.border_box
+  }
+
+  #[test]
+  fn accesskit_focus_scrolls_to_reveal_target() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+
+    let tab_id = TabId(1);
+    let viewport_css = (240, 120);
+    let dpr = 1.0;
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #spacer { height: 2000px; }
+            button { font: 16px sans-serif; }
+          </style>
+        </head>
+        <body>
+          <div id="spacer"></div>
+          <button id="target">Target</button>
+        </body>
+      </html>"#;
+
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      renderer,
+      tab_id,
+      html,
+      "https://example.com/",
+      viewport_css,
+      dpr,
+    )
+    .expect("controller from_html_with_renderer");
+
+    // Prime layout artifacts and ensure initial scroll starts at the top.
+    let _ = controller
+      .handle_message(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: RepaintReason::Explicit,
+      })
+      .expect("request repaint");
+    assert_eq!(controller.scroll_state().viewport.y, 0.0);
+
+    let target_node_id = node_id_by_id_attr(controller.document().dom(), "target");
+
+    let before_bounds = border_box_for(&controller, target_node_id);
+    let before_viewport = Rect::from_xywh(
+      controller.scroll_state().viewport.x,
+      controller.scroll_state().viewport.y,
+      viewport_css.0 as f32,
+      viewport_css.1 as f32,
+    );
+    assert!(
+      before_bounds.intersection(before_viewport).is_none(),
+      "expected target to start below the fold (bounds={before_bounds:?}, viewport={before_viewport:?})"
+    );
+    assert!(
+      before_bounds.min_y() > viewport_css.1 as f32,
+      "expected target to be far below the viewport (min_y={}, viewport_h={})",
+      before_bounds.min_y(),
+      viewport_css.1
+    );
+
+    let _ = controller
+      .handle_accesskit_action(target_node_id, accesskit::Action::Focus)
+      .expect("handle accesskit focus");
+
+    assert!(
+      controller.scroll_state().viewport.y > 0.0,
+      "expected focus to scroll down (scroll_y={})",
+      controller.scroll_state().viewport.y
+    );
+    assert!(
+      controller.interaction_state().is_focused(target_node_id),
+      "expected focus state to update for node_id={target_node_id}"
+    );
+
+    let after_bounds = border_box_for(&controller, target_node_id);
+    let after_viewport = Rect::from_xywh(
+      controller.scroll_state().viewport.x,
+      controller.scroll_state().viewport.y,
+      viewport_css.0 as f32,
+      viewport_css.1 as f32,
+    );
+    assert!(
+      after_bounds.intersection(after_viewport).is_some(),
+      "expected focus to scroll target into view (bounds={after_bounds:?}, viewport={after_viewport:?})"
+    );
+
+    let before_distance = before_bounds.min_y() - 0.0;
+    let after_distance = after_bounds.min_y() - controller.scroll_state().viewport.y;
+    assert!(
+      after_distance < before_distance,
+      "expected target bounds to move closer to viewport (before_y={before_distance}, after_y={after_distance})"
+    );
+  }
+
+  #[test]
+  fn accesskit_scroll_into_view_scrolls_without_changing_focus() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+
+    let tab_id = TabId(1);
+    let viewport_css = (240, 120);
+    let dpr = 1.0;
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #spacer { height: 2000px; }
+            button { font: 16px sans-serif; }
+          </style>
+        </head>
+        <body>
+          <div id="spacer"></div>
+          <button id="target">Target</button>
+        </body>
+      </html>"#;
+
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      renderer,
+      tab_id,
+      html,
+      "https://example.com/",
+      viewport_css,
+      dpr,
+    )
+    .expect("controller from_html_with_renderer");
+
+    let _ = controller
+      .handle_message(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: RepaintReason::Explicit,
+      })
+      .expect("request repaint");
+    assert_eq!(controller.scroll_state().viewport.y, 0.0);
+
+    let target_node_id = node_id_by_id_attr(controller.document().dom(), "target");
+    assert!(
+      controller.interaction_state().focused.is_none(),
+      "expected no initial focus"
+    );
+
+    let before_bounds = border_box_for(&controller, target_node_id);
+    let before_viewport = Rect::from_xywh(0.0, 0.0, viewport_css.0 as f32, viewport_css.1 as f32);
+    assert!(
+      before_bounds.intersection(before_viewport).is_none(),
+      "expected target to start below the fold"
+    );
+
+    let _ = controller
+      .handle_accesskit_action(target_node_id, accesskit::Action::ScrollIntoView)
+      .expect("handle accesskit scroll-into-view");
+
+    assert!(
+      controller.scroll_state().viewport.y > 0.0,
+      "expected ScrollIntoView to scroll down (scroll_y={})",
+      controller.scroll_state().viewport.y
+    );
+    assert!(
+      controller.interaction_state().focused.is_none(),
+      "expected ScrollIntoView not to change focus"
+    );
+
+    let after_bounds = border_box_for(&controller, target_node_id);
+    let after_viewport = Rect::from_xywh(
+      controller.scroll_state().viewport.x,
+      controller.scroll_state().viewport.y,
+      viewport_css.0 as f32,
+      viewport_css.1 as f32,
+    );
+    assert!(
+      after_bounds.intersection(after_viewport).is_some(),
+      "expected ScrollIntoView to reveal target"
     );
   }
 }
