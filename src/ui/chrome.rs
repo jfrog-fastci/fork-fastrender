@@ -7507,14 +7507,14 @@ mod tests {
 
     // Frame 0: render once so the chrome stores test ids.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), true, |_| None);
     let _ = ctx.end_frame();
     let bookmark_id = expect_temp_id(&ctx, "chrome_bookmark_star_id");
 
     for key in [egui::Key::Enter, egui::Key::Space] {
       ctx.memory_mut(|mem| mem.request_focus(bookmark_id));
       begin_frame(&ctx, vec![key_press(key)]);
-      let actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+      let actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), true, |_| None);
       let _ = ctx.end_frame();
 
       assert!(
@@ -7538,14 +7538,14 @@ mod tests {
 
     // Frame 0: render once so the chrome stores test ids.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
     let downloads_id = expect_temp_id(&ctx, "chrome_downloads_button_id");
 
     for key in [egui::Key::Enter, egui::Key::Space] {
       ctx.memory_mut(|mem| mem.request_focus(downloads_id));
       begin_frame(&ctx, vec![key_press(key)]);
-      let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+      let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
       let _ = ctx.end_frame();
 
       assert!(
@@ -7579,7 +7579,7 @@ mod tests {
 
     // Frame 0: render once so the chrome stores test ids.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     let display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
@@ -7588,7 +7588,7 @@ mod tests {
 
     ctx.memory_mut(|mem| mem.request_focus(display_id));
     begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_has_focus, "expected address bar to have focus");
@@ -7608,7 +7608,7 @@ mod tests {
 
     // Frame 0: render once so the chrome stores test ids.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     let display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
@@ -7617,7 +7617,7 @@ mod tests {
 
     ctx.memory_mut(|mem| mem.request_focus(display_id));
     begin_frame(&ctx, vec![key_press(egui::Key::Space)]);
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_has_focus, "expected address bar to have focus");
