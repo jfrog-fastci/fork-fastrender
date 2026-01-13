@@ -196,12 +196,12 @@ mod tests {
   use super::{AudioClock, InterpolatedAudioClock};
   use crate::media::clock::MediaClock;
   use std::sync::Arc;
-  use std::time::Instant;
+  use std::time::{Duration, Instant};
 
   #[test]
   fn audio_clock_output_frames_tracks_frames_and_started_state() {
-    let inner = Arc::new(InterpolatedAudioClock::new(48_000));
-    let clock = AudioClock::OutputFrames { clock: inner.clone() };
+    let raw = Arc::new(InterpolatedAudioClock::new(48_000));
+    let clock = AudioClock::OutputFrames { clock: raw.clone() };
 
     assert!(!clock.is_started());
     assert_eq!(clock.frames(), 0);
@@ -209,20 +209,63 @@ mod tests {
 
     // Simulate a callback that produced 480 frames (10ms at 48kHz).
     let callback_end = Instant::now();
-    inner.on_callback_end_at(callback_end, 480, None);
+    raw.on_callback_end_at(callback_end, 480, None);
 
     assert!(clock.is_started());
     assert_eq!(clock.frames(), 480);
   }
 
   #[test]
-  fn audio_clock_output_frames_large_values_do_not_panic() {
-    let inner = Arc::new(InterpolatedAudioClock::new(48_000));
-    // Large (but still representable) update.
-    inner.on_callback_end(u32::MAX);
-    let clock = AudioClock::OutputFrames { clock: inner };
+  fn audio_clock_output_frames_time_48k() {
+    fn assert_frames_map_to_time(frames_in_callback: u32, expected: Duration) {
+      let raw = Arc::new(InterpolatedAudioClock::new(48_000));
+      let clock = AudioClock::OutputFrames { clock: raw.clone() };
 
+      // Drive the interpolated clock deterministically via explicit callback end instants.
+      let callback_end = Instant::now();
+      raw.on_callback_end_at(callback_end, frames_in_callback, None);
+
+      assert_eq!(clock.frames(), u64::from(frames_in_callback));
+
+      // At exactly the callback end instant, no interpolation is applied; the time should match
+      // `frames / sample_rate` precisely.
+      assert_eq!(raw.now_at(callback_end), expected);
+
+      // `AudioClock::time()` uses `Instant::now()` internally, which is inherently nondeterministic.
+      // Verify it stays within a tight window around a same-thread query.
+      let before = Instant::now();
+      let expected_before = raw.now_at(before);
+      let observed = clock.time();
+      let after = Instant::now();
+      let expected_after = raw.now_at(after);
+      assert!(
+        observed >= expected_before && observed <= expected_after,
+        "time out of bounds: expected {expected_before:?}..={expected_after:?}, got {observed:?}"
+      );
+    }
+
+    assert_frames_map_to_time(48_000, Duration::from_secs(1));
+    assert_frames_map_to_time(24_000, Duration::from_millis(500));
+    assert_frames_map_to_time(1, Duration::from_nanos(20_833));
+  }
+
+  #[test]
+  fn audio_clock_output_frames_large_values_do_not_panic() {
+    let raw = Arc::new(InterpolatedAudioClock::new(48_000));
+    let clock = AudioClock::OutputFrames { clock: raw.clone() };
+
+    // Advance the clock to a frame count where `frames * 1_000_000_000` would overflow a `u64`
+    // (if implemented with non-widening arithmetic).
+    //
     // This should not panic in debug builds due to intermediate overflow.
+    let start = Instant::now();
+    for i in 0..5u32 {
+      raw.on_callback_end_at(start + Duration::from_millis(u64::from(i)), u32::MAX, None);
+    }
+
+    assert_eq!(clock.frames(), u64::from(u32::MAX) * 5);
+
+    let _ = raw.now_at(start + Duration::from_millis(4));
     let _ = clock.time();
   }
 }
