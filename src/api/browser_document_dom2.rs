@@ -5390,8 +5390,8 @@ mod tests {
       prepared.fragment_tree.keyframes.contains_key("fade"),
       "incremental relayout should preserve fragment-tree keyframes metadata"
     );
-    let value =
-      find_first_textarea_control_value(&prepared.box_tree().root).expect("textarea form control value");
+    let value = find_first_textarea_control_value(&prepared.box_tree().root)
+      .expect("textarea form control value");
     assert_eq!(value, "Updated");
     Ok(())
   }
