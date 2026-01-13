@@ -1,7 +1,9 @@
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::process::Command;
+use std::{collections::hash_map::DefaultHasher, path::Path};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -27,6 +29,7 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let src_dir = manifest_dir.join("upstream").join("libvpx");
+    let configure_src_path = src_dir.join("configure");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let build_dir = out_dir.join("libvpx-build");
@@ -57,8 +60,9 @@ fn main() {
     let cc = env::var("CC").unwrap_or_default();
     let cflags = env::var("CFLAGS").unwrap_or_default();
     let ar = env::var("AR").unwrap_or_default();
+    let configure_src_hash = hash_file_contents(&configure_src_path);
     let build_fingerprint = format!(
-        "target={target}\ncc={cc}\ncflags={cflags}\nar={ar}\nconfigure_args={}\n",
+        "target={target}\ncc={cc}\ncflags={cflags}\nar={ar}\nlibvpx_configure_hash={configure_src_hash}\nconfigure_args={}\n",
         configure_args.join(" ")
     );
 
@@ -76,8 +80,7 @@ fn main() {
         }
         fs::create_dir_all(&build_dir).expect("create libvpx build dir");
 
-        let configure = src_dir.join("configure");
-        let mut configure_cmd = Command::new(configure);
+        let mut configure_cmd = Command::new(&configure_src_path);
         configure_cmd
             .current_dir(&build_dir)
             .args(configure_args);
@@ -112,4 +115,11 @@ fn run(mut cmd: Command, desc: &str) {
     if !status.success() {
         panic!("{desc} failed with status: {status}");
     }
+}
+
+fn hash_file_contents(path: &Path) -> u64 {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
