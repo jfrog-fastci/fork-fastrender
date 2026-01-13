@@ -251,7 +251,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("  </div>\n");
 
   // Content frame placeholder.
-  out.push_str("  <div id=\"content-frame\"></div>\n");
+  out.push_str("  <div id=\"content-frame\" class=\"content-frame\"></div>\n");
 
   out.push_str("</body>\n");
   out.push_str("</html>\n");
