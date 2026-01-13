@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::js::webidl::legacy::VmJsRuntime;
 use crate::js::{
-  CurrentScriptHost, CurrentScriptStateHandle, EventLoop, JsExecutionOptions, RealClock,
+  CurrentScriptHost, CurrentScriptStateHandle, EventLoop, ExternalTaskQueueHandle, JsExecutionOptions, RealClock,
   RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason,
   ScriptExecutionLog, ScriptOrchestrator,
 };
@@ -384,6 +384,31 @@ impl BrowserDocumentJs {
           .to_string(),
       )
     })
+  }
+
+  /// Returns a thread-safe handle for queueing tasks onto this document's event loop from other
+  /// threads.
+  ///
+  /// This is the `BrowserDocumentJs` counterpart to [`crate::api::BrowserTab::external_task_queue_handle`].
+  pub fn external_task_queue_handle(&mut self) -> Result<ExternalTaskQueueHandle<Self>> {
+    Ok(self.event_loop_mut()?.external_task_queue_handle())
+  }
+
+  /// Install (or clear) the wake callback invoked when external tasks are queued onto this
+  /// document's event loop from other threads.
+  ///
+  /// See [`crate::js::EventLoop::set_external_wake_callback`] for details.
+  pub fn set_external_wake_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) -> Result<()> {
+    self.event_loop_mut()?.set_external_wake_callback(cb);
+    Ok(())
+  }
+
+  /// Compatibility alias for [`Self::set_external_wake_callback`].
+  pub fn set_external_task_waker(
+    &mut self,
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
+  ) -> Result<()> {
+    self.set_external_wake_callback(waker)
   }
 
   /// Drive the JS event loop and rerender until no more work remains or a limit is hit.
