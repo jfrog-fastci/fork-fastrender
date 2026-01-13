@@ -1,9 +1,9 @@
 use crate::geometry::{Point, Rect, Size};
 use crate::dom::DomNode;
 use crate::html::title::find_document_title;
+use crate::interaction::focus_scroll;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{
-  fragment_tree_with_scroll,
   DateTimeInputKind, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
   InteractionState,
 };
@@ -923,6 +923,8 @@ impl BrowserTabController {
       return Ok(Vec::new());
     }
 
+    let scroll_snapshot = self.scroll_state.clone();
+
     let (box_tree_ptr, fragment_tree_ptr, hit_tree) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
@@ -930,24 +932,25 @@ impl BrowserTabController {
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
       let fragment_tree_ptr =
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
-      let hit_tree = (self.scroll_state.viewport != Point::ZERO
-        || !self.scroll_state.elements.is_empty())
-        .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state));
+      let hit_tree = (scroll_snapshot.viewport != Point::ZERO
+        || !scroll_snapshot.elements.is_empty())
+        .then(|| prepared.fragment_tree_for_geometry(&scroll_snapshot));
       (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
 
     let viewport_point = Point::new(pos_css.0, pos_css.1);
-    let fragment_tree = unsafe { &*fragment_tree_ptr };
-    let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+    let fragment_tree_layout = unsafe { &*fragment_tree_ptr };
+    let fragment_tree_hit = hit_tree.as_ref().unwrap_or(fragment_tree_layout);
 
     let mut action = InteractionAction::None;
     let mut picker_value: Option<String> = None;
+    let mut up_hit: Option<crate::interaction::HitTestResult> = None;
     let changed = self.document.mutate_dom(|dom| {
-      let (dom_changed, next_action) = self.interaction.pointer_up_with_scroll(
+      let (dom_changed, next_action, hit) = self.interaction.pointer_up_with_scroll_and_hit(
         dom,
         unsafe { &*box_tree_ptr },
-        fragment_tree,
-        &self.scroll_state,
+        fragment_tree_hit,
+        &scroll_snapshot,
         viewport_point,
         button,
         modifiers,
@@ -960,8 +963,36 @@ impl BrowserTabController {
           .and_then(|node| crate::dom::input_color_value_string(node));
       }
       action = next_action;
+      up_hit = hit;
       dom_changed
     });
+
+    // Pointer-driven focus changes (e.g. clicking a <label> that focuses a visually-hidden input)
+    // should not unexpectedly scroll away from the clicked content. Only apply focus scroll when
+    // the newly-focused element is the actual hit-test target at the pointer location.
+    let mut scroll_changed = false;
+    if let InteractionAction::FocusChanged {
+      node_id: Some(focused_id),
+    } = &action
+    {
+      let apply_focus_scroll = up_hit
+        .as_ref()
+        .is_some_and(|hit| hit.styled_node_id == *focused_id || hit.dom_node_id == *focused_id);
+      if apply_focus_scroll {
+        if let Some(next_scroll) = focus_scroll::scroll_state_for_focus(
+          unsafe { &*box_tree_ptr },
+          fragment_tree_layout,
+          &scroll_snapshot,
+          *focused_id,
+        ) {
+          if next_scroll != self.scroll_state {
+            self.scroll_state = next_scroll;
+            self.document.set_scroll_state(self.scroll_state.clone());
+            scroll_changed = true;
+          }
+        }
+      }
+    }
 
     match action {
       InteractionAction::Navigate { href } => {
@@ -1168,7 +1199,7 @@ impl BrowserTabController {
         Ok(out)
       }
       _ => {
-        if changed {
+        if changed || scroll_changed {
           self.paint_if_needed()
         } else {
           Ok(Vec::new())
@@ -1375,6 +1406,13 @@ impl BrowserTabController {
   }
 
   fn handle_key_action(&mut self, key: crate::interaction::KeyAction) -> Result<Vec<WorkerToUi>> {
+    // Ensure we have a prepared tree so focus scrolling can compute geometry.
+    if self.document.prepared().is_none() {
+      let _ = self.force_repaint()?;
+    }
+
+    let scroll_snapshot = self.scroll_state.clone();
+
     let mut picker_value: Option<String> = None;
     let result = self
       .document
@@ -1387,16 +1425,63 @@ impl BrowserTabController {
           &self.current_url,
           &self.base_url,
         );
+
         if let InteractionAction::OpenColorPicker { input_node_id } = &action {
           picker_value = crate::dom::find_node_mut_by_preorder_id(dom, *input_node_id)
             .and_then(|node| crate::dom::input_color_value_string(node));
         }
-        (dom_changed, (dom_changed, action))
+
+        let focused = self.interaction.focused_node_id();
+        let (focused_is_input, focused_is_textarea, focused_is_select, focused_is_button) = focused
+          .and_then(|focused_id| {
+            crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
+              (
+                dom_is_input(node),
+                dom_is_textarea(node),
+                dom_is_select(node),
+                dom_is_button(node),
+              )
+            })
+          })
+          .unwrap_or((false, false, false, false));
+
+        let focus_scroll = match &action {
+          InteractionAction::FocusChanged {
+            node_id: Some(node_id),
+          } => focus_scroll::scroll_state_for_focus(box_tree, fragment_tree, &scroll_snapshot, *node_id),
+          _ => None,
+        };
+
+        (
+          dom_changed,
+          (
+            dom_changed,
+            action,
+            focus_scroll,
+            focused_is_input,
+            focused_is_textarea,
+            focused_is_select,
+            focused_is_button,
+          ),
+        )
       });
-    let (changed, action) = match result {
+
+    let (
+      changed,
+      action,
+      focus_scroll,
+      focused_is_input,
+      focused_is_textarea,
+      focused_is_select,
+      focused_is_button,
+    ) = match result {
       Ok(result) => result,
       Err(_) => {
         let mut action = InteractionAction::None;
+        let mut focused_is_input = false;
+        let mut focused_is_textarea = false;
+        let mut focused_is_select = false;
+        let mut focused_is_button = false;
         let mut fallback_picker_value: Option<String> = None;
         let changed = self.document.mutate_dom(|dom| {
           let (dom_changed, next_action) =
@@ -1408,14 +1493,89 @@ impl BrowserTabController {
               .and_then(|node| crate::dom::input_color_value_string(node));
           }
           action = next_action;
+
+          if let Some(focused_id) = self.interaction.focused_node_id() {
+            if let Some(node) = crate::dom::find_node_mut_by_preorder_id(dom, focused_id) {
+              focused_is_input = dom_is_input(node);
+              focused_is_textarea = dom_is_textarea(node);
+              focused_is_select = dom_is_select(node);
+              focused_is_button = dom_is_button(node);
+            }
+          }
+
           dom_changed
         });
         if fallback_picker_value.is_some() {
           picker_value = fallback_picker_value;
         }
-        (changed, action)
+        (
+          changed,
+          action,
+          None,
+          focused_is_input,
+          focused_is_textarea,
+          focused_is_select,
+          focused_is_button,
+        )
       }
     };
+
+    let mut scroll_changed = false;
+    if let Some(next_scroll) = focus_scroll {
+      if next_scroll != self.scroll_state {
+        self.scroll_state = next_scroll;
+        self.document.set_scroll_state(self.scroll_state.clone());
+        scroll_changed = true;
+      }
+    }
+
+    // Basic keyboard scrolling: when scroll keys are pressed and the focused element is not a form
+    // control that would normally consume them, treat the key as a viewport scrolling shortcut.
+    if matches!(action, InteractionAction::None) {
+      let focus_consumes_space =
+        focused_is_input || focused_is_textarea || focused_is_select || focused_is_button;
+      let focus_consumes_arrows = focused_is_input || focused_is_textarea || focused_is_select;
+      let focus_consumes_home_end = focus_consumes_arrows;
+
+      let allow_scroll = match key {
+        crate::interaction::KeyAction::Space | crate::interaction::KeyAction::ShiftSpace => {
+          !focus_consumes_space
+        }
+        crate::interaction::KeyAction::ArrowDown | crate::interaction::KeyAction::ArrowUp => {
+          !focus_consumes_arrows
+        }
+        crate::interaction::KeyAction::Home
+        | crate::interaction::KeyAction::End
+        | crate::interaction::KeyAction::ShiftHome
+        | crate::interaction::KeyAction::ShiftEnd => !focus_consumes_home_end,
+        _ => false,
+      };
+
+      if allow_scroll {
+        // Mirror render_worker behavior by reusing our existing scroll handlers.
+        return match key {
+          crate::interaction::KeyAction::Home | crate::interaction::KeyAction::ShiftHome => {
+            self.handle_scroll_to((self.scroll_state.viewport.x, 0.0))
+          }
+          crate::interaction::KeyAction::End | crate::interaction::KeyAction::ShiftEnd => {
+            self.handle_scroll_to((self.scroll_state.viewport.x, f32::MAX))
+          }
+          crate::interaction::KeyAction::ArrowDown => self.handle_scroll((0.0, 40.0), None),
+          crate::interaction::KeyAction::ArrowUp => self.handle_scroll((0.0, -40.0), None),
+          crate::interaction::KeyAction::Space => {
+            let h = self.viewport_css.1.max(1) as f32;
+            let dy = (h * 0.9).max(1.0);
+            self.handle_scroll((0.0, dy), None)
+          }
+          crate::interaction::KeyAction::ShiftSpace => {
+            let h = self.viewport_css.1.max(1) as f32;
+            let dy = -((h * 0.9).max(1.0));
+            self.handle_scroll((0.0, dy), None)
+          }
+          _ => Ok(Vec::new()),
+        };
+      }
+    }
 
     let mut out = Vec::new();
     match action {
@@ -1523,7 +1683,7 @@ impl BrowserTabController {
       _ => {}
     }
 
-    if changed {
+    if changed || scroll_changed {
       out.extend(self.paint_if_needed()?);
     }
 
@@ -2413,6 +2573,30 @@ mod autofocus_tests {
       "expected focused input to initialize text-edit state (caret/selection)"
     );
   }
+}
+
+fn dom_is_input(node: &crate::dom::DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+}
+
+fn dom_is_textarea(node: &crate::dom::DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
+}
+
+fn dom_is_select(node: &crate::dom::DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
+}
+
+fn dom_is_button(node: &crate::dom::DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
 }
 
 #[cfg(test)]
