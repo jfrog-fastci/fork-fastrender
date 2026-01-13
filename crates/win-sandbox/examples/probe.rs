@@ -43,8 +43,8 @@ mod windows {
   use std::time::{SystemTime, UNIX_EPOCH};
 
   use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, SetHandleInformation, ERROR_ACCESS_DENIED, FALSE, HANDLE_FLAG_INHERIT,
-    INVALID_HANDLE_VALUE, TRUE,
+    CloseHandle, GetLastError, SetHandleInformation, ERROR_ACCESS_DENIED, ERROR_NOT_SUPPORTED,
+    FALSE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, TRUE,
   };
   use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
@@ -113,10 +113,6 @@ mod windows {
   //   ProcThreadAttributeValue(Number, Thread, Input, Additive)
   const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
   const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
-
-  // `NO_INHERITANCE` from `accctrl.h` (0). `windows-sys` does not consistently export it across
-  // targets, so define it here.
-  const NO_INHERITANCE: u32 = 0;
 
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
   enum SandboxMode {
@@ -408,7 +404,53 @@ mod windows {
     }
   }
 
+  fn should_fallback_without_mitigations(err: &io::Error) -> bool {
+    const ERROR_INVALID_PARAMETER: i32 = 87;
+    let not_supported = ERROR_NOT_SUPPORTED as i32;
+    matches!(err.raw_os_error(), Some(ERROR_INVALID_PARAMETER)) || err.raw_os_error() == Some(not_supported)
+  }
+
   fn spawn_with_attributes(
+    appcontainer_sid: Option<PSID>,
+    restricted_token: Option<windows_sys::Win32::Foundation::HANDLE>,
+    exe: &Path,
+    args: &[OsString],
+    inherit_handles: &[RawHandle],
+    mitigation_policy: u64,
+    creation_flags: u32,
+    current_dir: Option<*const u16>,
+  ) -> io::Result<PROCESS_INFORMATION> {
+    match spawn_with_attributes_inner(
+      appcontainer_sid,
+      restricted_token,
+      exe,
+      args,
+      inherit_handles,
+      mitigation_policy,
+      creation_flags,
+      current_dir,
+    ) {
+      Ok(pi) => Ok(pi),
+      Err(err) if mitigation_policy != 0 && should_fallback_without_mitigations(&err) => {
+        eprintln!(
+          "warning: mitigation policy attribute unsupported/rejected ({err}); retrying without mitigations"
+        );
+        spawn_with_attributes_inner(
+          appcontainer_sid,
+          restricted_token,
+          exe,
+          args,
+          inherit_handles,
+          0,
+          creation_flags,
+          current_dir,
+        )
+      }
+      Err(err) => Err(err),
+    }
+  }
+
+  fn spawn_with_attributes_inner(
     appcontainer_sid: Option<PSID>,
     restricted_token: Option<windows_sys::Win32::Foundation::HANDLE>,
     exe: &Path,
