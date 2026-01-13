@@ -1011,6 +1011,25 @@ fn compiled_unary_plus_coerces_object() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_hir_exec_unary_plus_bigint_throws_type_error() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        try {
+          +1n;
+          return false;
+        } catch (e) {
+          return e instanceof TypeError;
+        }
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_relational_comparison_string_uses_lexicographic_order() -> Result<(), VmError> {
   let result = compile_and_call0(
     r#"
