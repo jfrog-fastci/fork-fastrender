@@ -2218,9 +2218,11 @@ mod tests {
       .unwrap();
     assert_eq!(with_url_object, Value::Bool(true));
 
+    // Missing URL should be non-throwing and return `false`.
     let missing_url = host.exec_script("navigator.sendBeacon()").unwrap();
     assert_eq!(missing_url, Value::Bool(false));
 
+    // Overlong URL strings should be rejected deterministically.
     let overlong_url = host
       .exec_script(&format!(
         r#"navigator.sendBeacon("a".repeat({}))"#,
@@ -2228,6 +2230,18 @@ mod tests {
       ))
       .unwrap();
     assert_eq!(overlong_url, Value::Bool(false));
+
+    // URL-ish objects whose `toString` throws must not cause `sendBeacon` to throw.
+    let throwing_url_to_string = host
+      .exec_script(
+        r#"
+        const u = new URL("https://example.invalid/beacon");
+        u.toString = () => { throw new Error("nope"); };
+        navigator.sendBeacon(u);
+        "#,
+      )
+      .unwrap();
+    assert_eq!(throwing_url_to_string, Value::Bool(false));
 
     let throwing_to_string = host
       .exec_script(
@@ -2263,6 +2277,30 @@ mod tests {
     assert_eq!(
       host
         .exec_script("typeof navigator.userAgentData.getHighEntropyValues === 'function'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("typeof navigator.userAgentData.platform === 'string'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("navigator.userAgentData.platform === 'Windows'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("typeof navigator.userAgentData.mobile === 'boolean'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("navigator.userAgentData.getHighEntropyValues([]) instanceof Promise")
         .unwrap(),
       Value::Bool(true)
     );
