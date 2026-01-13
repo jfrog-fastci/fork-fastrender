@@ -222,3 +222,78 @@ test(() => {
   );
   assert_equals(it.nextNode(), root, "Traversal should continue after a filter exception");
 }, "NodeIterator clears the re-entrancy guard when the filter throws");
+
+test(() => {
+  clear_children(document.body);
+
+  const before = document.createElement("div");
+  before.id = "before";
+  const root = document.createElement("div");
+  root.id = "root";
+  const inside = document.createElement("div");
+  inside.id = "inside";
+  root.appendChild(inside);
+  const after = document.createElement("div");
+  after.id = "after";
+
+  document.body.appendChild(before);
+  document.body.appendChild(root);
+  document.body.appendChild(after);
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, null);
+  assert_equals(
+    it.previousNode(),
+    null,
+    "previousNode() at the start should not traverse to nodes outside the iterator root"
+  );
+  assert_equals(it.referenceNode, root);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  assert_equals(it.nextNode(), root);
+  assert_equals(it.nextNode(), inside);
+  assert_equals(it.nextNode(), null, "nextNode() should stop at the iterator root boundary");
+}, "NodeIterator does not traverse to preceding/following nodes outside its root subtree");
+
+test(() => {
+  const { root, a } = make_tree_with_text();
+
+  const filter_skip_root = (node) =>
+    node === root ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT;
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, filter_skip_root);
+  assert_equals(it.nextNode(), a, "FILTER_SKIP on the iterator root should skip returning the root");
+  assert_equals(it.referenceNode, a);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator filter can skip the root and still traverse descendants");
+
+test(() => {
+  const { root, a } = make_tree_with_text();
+
+  let did_reenter = false;
+  let nested_threw = false;
+  let nested_name = "";
+  let it = null;
+
+  const filter = (node) => {
+    // Trigger on the second accepted node so the iterator has already flipped
+    // pointerBeforeReferenceNode to false.
+    if (node === a && !did_reenter) {
+      did_reenter = true;
+      try {
+        it.previousNode();
+      } catch (e) {
+        nested_threw = true;
+        nested_name = e && e.name;
+      }
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, filter);
+
+  assert_equals(it.nextNode(), root);
+  assert_equals(it.nextNode(), a);
+  assert_true(did_reenter, "Filter callback should have attempted a re-entrant previousNode() call");
+  assert_true(nested_threw, "Re-entrant previousNode() should throw");
+  assert_equals(nested_name, "InvalidStateError");
+}, "NodeIterator rejects re-entrant previousNode() calls from the filter callback (InvalidStateError)");

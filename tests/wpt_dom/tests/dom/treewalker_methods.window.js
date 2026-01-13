@@ -99,6 +99,32 @@ test(() => {
 }, "Document.createTreeWalker: whatToShow is converted using ToUint32 (-1 => SHOW_ALL)");
 
 test(() => {
+  clear_children(document.body);
+
+  const before = document.createElement("div");
+  before.id = "before";
+  const root = document.createElement("div");
+  root.id = "root";
+  const inside = document.createElement("div");
+  inside.id = "inside";
+  root.appendChild(inside);
+  const after = document.createElement("div");
+  after.id = "after";
+
+  document.body.appendChild(before);
+  document.body.appendChild(root);
+  document.body.appendChild(after);
+
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+  assert_equals(tw.previousNode(), null, "previousNode() at the root should not traverse outside the root");
+  assert_equals(tw.currentNode, root);
+
+  assert_equals(tw.nextNode(), inside);
+  assert_equals(tw.nextNode(), null, "nextNode() should stop at the root boundary");
+  assert_equals(tw.currentNode, inside, "currentNode remains unchanged when nextNode() returns null");
+}, "TreeWalker does not traverse outside its root subtree");
+
+test(() => {
   const { root, a, a1, a2, b, b1, c } = make_tree();
   const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
 
@@ -158,6 +184,28 @@ test(() => {
   tw_reject.currentNode = root;
   assert_equals(tw_reject.nextNode(), b, "nextNode() should skip rejected subtrees");
 }, "TreeWalker filter return values: FILTER_SKIP descends into children; FILTER_REJECT prunes subtree");
+
+test(() => {
+  clear_children(document.body);
+
+  const root = document.createElement("div");
+  root.id = "root";
+  const a = document.createElement("div");
+  a.id = "a";
+  root.appendChild(a);
+  document.body.appendChild(root);
+
+  const filter = (node) => (node === root ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT);
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+  assert_equals(tw.filter, filter);
+
+  assert_equals(tw.nextNode(), a);
+  assert_equals(tw.parentNode(), null, "parentNode() should not return the root when it is FILTER_SKIP");
+  assert_equals(tw.currentNode, a);
+
+  assert_equals(tw.previousNode(), null, "previousNode() should not return the root when it is FILTER_SKIP");
+  assert_equals(tw.currentNode, a);
+}, "TreeWalker respects FILTER_SKIP on the root (root is a traversal boundary but may be skipped)");
 
 test(() => {
   const { root, a, a2, b } = make_tree();
@@ -289,6 +337,37 @@ test(() => {
   assert_true(nested_threw, "Re-entrant nextNode() should throw");
   assert_equals(nested_name, "InvalidStateError");
 }, "TreeWalker rejects re-entrant nextNode() calls from the filter callback (InvalidStateError)");
+
+test(() => {
+  const { root, a, a1 } = make_tree();
+
+  let did_reenter = false;
+  let nested_threw = false;
+  let nested_name = "";
+  let tw = null;
+
+  const filter = (node) => {
+    // Trigger on a node where `currentNode` is not the root, so parentNode() will run filtering.
+    if (node === a1 && !did_reenter) {
+      did_reenter = true;
+      try {
+        tw.parentNode();
+      } catch (e) {
+        nested_threw = true;
+        nested_name = e && e.name;
+      }
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+
+  assert_equals(tw.nextNode(), a);
+  assert_equals(tw.nextNode(), a1);
+  assert_true(did_reenter, "Filter callback should have attempted a re-entrant parentNode() call");
+  assert_true(nested_threw, "Re-entrant parentNode() should throw");
+  assert_equals(nested_name, "InvalidStateError");
+}, "TreeWalker rejects re-entrant parentNode() calls from the filter callback (InvalidStateError)");
 
 test(() => {
   const { root, a } = make_tree();
