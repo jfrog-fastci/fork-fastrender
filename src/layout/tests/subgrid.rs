@@ -787,6 +787,165 @@ fn column_subgrid_inherits_gaps_for_autoplacement() {
 }
 
 #[test]
+fn subgrid_autospan_prefers_line_name_list_length() {
+  // Matches WPT `subgrid-auto-span-001`: when the subgrid axis has an explicit `<line-name-list>`
+  // (more than the single empty placeholder), auto-placement should treat the subgrid item as
+  // `auto / span (<line-name-list length - 1>)` even when the parent has more tracks.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(50.0)),
+    GridTrack::Length(Length::px(70.0)),
+    GridTrack::Length(Length::px(90.0)),
+  ];
+  parent_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(20.0)),
+  ];
+  parent_style.grid_column_gap = Length::px(10.0);
+  parent_style.justify_content = JustifyContent::Start;
+  parent_style.width = Some(Length::px(230.0));
+  parent_style.height = Some(Length::px(40.0));
+
+  let mut first_style = ComputedStyle::default();
+  first_style.display = Display::Block;
+  first_style.height = Some(Length::px(20.0));
+  let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.grid_column_subgrid = true;
+  subgrid_style.subgrid_column_line_names =
+    vec![vec!["a".into()], vec!["b".into()], vec!["c".into()]];
+  // `grid-template-columns: subgrid ...` stores the same line-name lists on `grid_column_line_names`.
+  subgrid_style.grid_column_line_names = subgrid_style.subgrid_column_line_names.clone();
+  let subgrid = BoxNode::new_block(Arc::new(subgrid_style), FormattingContextType::Grid, vec![]);
+
+  let mut third_style = ComputedStyle::default();
+  third_style.display = Display::Block;
+  third_style.height = Some(Length::px(20.0));
+  let third = BoxNode::new_block(Arc::new(third_style), FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![first, subgrid, third],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(230.0, 60.0))
+    .expect("layout succeeds");
+
+  assert_eq!(fragment.children.len(), 3);
+  let third_fragment = &fragment.children[2];
+  assert_approx(
+    third_fragment.bounds.y(),
+    20.0,
+    "line-name list length should force the subgrid item to span 2 columns, pushing the third item to row 2",
+  );
+}
+
+#[test]
+fn subgrid_autospan_uses_parent_track_count_when_no_line_names() {
+  // Matches WPT `subgrid-nested-writing-mode-001`: when the subgrid axis is plain `subgrid` (no
+  // line-name list provided), auto-placement should treat the subgrid item as spanning the parent's
+  // explicit track count.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(28.0)),
+    GridTrack::Length(Length::px(42.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Auto];
+  parent_style.grid_column_gap = Length::px(5.0);
+  parent_style.justify_content = JustifyContent::Start;
+  parent_style.width = Some(Length::px(75.0));
+
+  let mut outer_style = ComputedStyle::default();
+  outer_style.display = Display::Grid;
+  outer_style.writing_mode = WritingMode::VerticalRl;
+  outer_style.grid_column_subgrid = true;
+  outer_style.grid_row_subgrid = true;
+  outer_style.subgrid_column_line_names = vec![];
+  outer_style.subgrid_row_line_names = vec![];
+  outer_style.grid_column_line_names = outer_style.subgrid_column_line_names.clone();
+  outer_style.grid_row_line_names = outer_style.subgrid_row_line_names.clone();
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.display = Display::Grid;
+  inner_style.writing_mode = WritingMode::VerticalRl;
+  inner_style.grid_column_subgrid = true;
+  inner_style.grid_row_subgrid = true;
+  inner_style.subgrid_column_line_names = vec![];
+  inner_style.subgrid_row_line_names = vec![];
+  inner_style.grid_column_line_names = inner_style.subgrid_column_line_names.clone();
+  inner_style.grid_row_line_names = inner_style.subgrid_row_line_names.clone();
+
+  let mut a_style = ComputedStyle::default();
+  a_style.display = Display::Block;
+  a_style.grid_column_start = 1;
+  a_style.height = Some(Length::px(12.0));
+
+  let mut b_style = ComputedStyle::default();
+  b_style.display = Display::Block;
+  b_style.grid_column_start = 2;
+  b_style.height = Some(Length::px(12.0));
+
+  let a = BoxNode::new_block(Arc::new(a_style), FormattingContextType::Block, vec![]);
+  let b = BoxNode::new_block(Arc::new(b_style), FormattingContextType::Block, vec![]);
+
+  let inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Grid,
+    vec![a, b],
+  );
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Grid,
+    vec![inner],
+  );
+
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![outer],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(75.0, 50.0))
+    .expect("layout succeeds");
+
+  let outer_fragment = &fragment.children[0];
+  assert_eq!(outer_fragment.children.len(), 1);
+  let inner_fragment = &outer_fragment.children[0];
+  assert_eq!(inner_fragment.children.len(), 2);
+
+  assert_approx(
+    outer_fragment.bounds.width(),
+    75.0,
+    "outer subgrid should span both parent columns when auto-placed",
+  );
+  assert_approx(
+    inner_fragment.bounds.width(),
+    75.0,
+    "nested subgrid should also span both inherited columns when auto-placed",
+  );
+
+  let first = &inner_fragment.children[0];
+  let second = &inner_fragment.children[1];
+  assert_approx(first.bounds.x(), 0.0, "first inherited track starts at origin");
+  assert_approx(first.bounds.width(), 28.0, "first inherited track width");
+  assert_approx(
+    second.bounds.x(),
+    33.0,
+    "second inherited track offset includes the parent gap",
+  );
+  assert_approx(second.bounds.width(), 42.0, "second inherited track width");
+}
+
+#[test]
 fn subgrid_column_gap_can_differ_from_parent_gap() {
   fn run(column_gap: Option<(Length, bool)>) -> (f32, f32, f32, f32) {
     let mut parent_style = ComputedStyle::default();

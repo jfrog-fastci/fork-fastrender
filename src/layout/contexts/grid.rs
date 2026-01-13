@@ -106,6 +106,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use taffy::geometry::Line;
+use taffy::geometry::Size as TaffySize;
 use taffy::prelude::TaffyFitContent;
 use taffy::prelude::TaffyMaxContent;
 use taffy::prelude::TaffyMinContent;
@@ -3470,6 +3471,7 @@ impl GridFormattingContext {
                 child_style,
                 Some(root_style),
                 Some(root_axis_style),
+                None,
                 false,
                 false,
                 child.is_replaced(),
@@ -3479,6 +3481,7 @@ impl GridFormattingContext {
               && self.is_simple_grid(root_style, root_children, &mut deadline_counter)?;
             let root_style = std::sync::Arc::new(SendSyncStyle(self.convert_style(
               root_style,
+              None,
               None,
               None,
               simple_grid,
@@ -3588,6 +3591,7 @@ impl GridFormattingContext {
           child_style,
           Some(root_style),
           Some(root_axis_style),
+          None,
           false,
           false,
           child.is_replaced(),
@@ -3597,6 +3601,7 @@ impl GridFormattingContext {
         !has_positioned_children && self.is_simple_grid(root_style, root_children, &mut deadline_counter)?;
       let root_style = std::sync::Arc::new(SendSyncStyle(self.convert_style(
         root_style,
+        None,
         None,
         None,
         simple_grid,
@@ -3746,6 +3751,7 @@ impl GridFormattingContext {
             child_style,
             Some(root_style),
             Some(root_axis_style),
+            None,
             false,
             false,
             child.is_replaced(),
@@ -3755,6 +3761,7 @@ impl GridFormattingContext {
           && self.is_simple_grid(root_style, &in_flow_children, &mut deadline_counter)?;
         let root_style = std::sync::Arc::new(SendSyncStyle(self.convert_style(
           root_style,
+          None,
           None,
           None,
           simple_grid,
@@ -3811,6 +3818,7 @@ impl GridFormattingContext {
       true,
       None,
       None,
+      None,
       Some(root_children),
       positioned_children,
       &mut deadline_counter,
@@ -3825,6 +3833,7 @@ impl GridFormattingContext {
     is_root: bool,
     containing_grid: Option<&ComputedStyle>,
     containing_grid_axis: Option<GridAxisStyle>,
+    containing_grid_line_counts: Option<TaffySize<u16>>,
     children_override: Option<&[&BoxNode]>,
     positioned_children: &mut FxHashMap<TaffyNodeId, Vec<*const BoxNode>>,
     deadline_counter: &mut usize,
@@ -3848,6 +3857,7 @@ impl GridFormattingContext {
         style,
         containing_grid,
         containing_grid_axis,
+        containing_grid_line_counts,
         false,
         false,
         box_node.is_replaced(),
@@ -3962,6 +3972,7 @@ impl GridFormattingContext {
       style,
       containing_grid,
       containing_grid_axis,
+      containing_grid_line_counts,
       simple_grid,
       include_children,
       box_node.is_replaced(),
@@ -3972,6 +3983,16 @@ impl GridFormattingContext {
       GridAxisStyle::effective_for_grid_container(style, containing_grid_axis)
     } else {
       GridAxisStyle::from_style(style)
+    };
+    let line_counts_for_children = if is_grid_container && !simple_grid {
+      Some(self.compute_grid_line_counts_for_container(
+        style,
+        containing_grid,
+        containing_grid_line_counts,
+        axis_style_for_children,
+      ))
+    } else {
+      None
     };
 
     // Subgrid containers with an omitted `<line-name-list>` implicitly span all parent tracks. That
@@ -4037,6 +4058,7 @@ impl GridFormattingContext {
           false,
           Some(containing_grid_for_children),
           Some(axis_style_for_children),
+          line_counts_for_children,
           None,
           positioned_children,
           deadline_counter,
@@ -4061,12 +4083,124 @@ impl GridFormattingContext {
     Ok(node_id)
   }
 
+  fn compute_grid_line_counts_for_container(
+    &self,
+    style: &ComputedStyle,
+    containing_grid: Option<&ComputedStyle>,
+    containing_grid_line_counts: Option<TaffySize<u16>>,
+    axis_style: GridAxisStyle,
+  ) -> TaffySize<u16> {
+    let swap_grid_axes = !axis_style.inline_is_horizontal();
+    let has_parent_grid = containing_grid_line_counts.is_some();
+
+    let (parent_css_col_lines, parent_css_row_lines) = match containing_grid_line_counts {
+      Some(parent) => {
+        if swap_grid_axes {
+          (parent.height, parent.width)
+        } else {
+          (parent.width, parent.height)
+        }
+      }
+      None => (0u16, 0u16),
+    };
+
+    let default_subgrid_span = |names: &[Vec<String>], parent_line_count: u16| -> u16 {
+      if !subgrid_line_name_list_is_omitted(names) {
+        let len = names.len().max(1);
+        let tracks = len.saturating_sub(1).max(1);
+        u16::try_from(tracks).unwrap_or(u16::MAX)
+      } else {
+        parent_line_count.saturating_sub(1).max(1)
+      }
+    };
+
+    let span_from_placement = |start: i32,
+                               end: i32,
+                               raw: Option<&str>,
+                               parent_line_count: u16,
+                               parent_line_names: Option<&[Vec<String>]>,
+                               default_span: u16|
+     -> u16 {
+      if start == 0 && end == 0 && raw.is_none() {
+        return default_span;
+      }
+
+      let line_count = (parent_line_count > 0).then_some(parent_line_count);
+      let resolved =
+        resolve_grid_line_range_from_style(start, end, raw, line_count, parent_line_names);
+      resolved
+        .and_then(|(start_line, end_line)| end_line.checked_sub(start_line))
+        .filter(|span| *span > 0)
+        .unwrap_or(default_span)
+    };
+
+    let area_row_count = style.grid_template_areas.len();
+    let area_col_count = style
+      .grid_template_areas
+      .iter()
+      .map(|row| row.len())
+      .max()
+      .unwrap_or(0);
+
+    let css_column_subgrid = style.grid_column_subgrid && has_parent_grid;
+    let css_row_subgrid = style.grid_row_subgrid && has_parent_grid;
+
+    let parent_column_names = containing_grid.map(|grid| CssGridAxis::Column.line_names(grid));
+    let parent_row_names = containing_grid.map(|grid| CssGridAxis::Row.line_names(grid));
+
+    let css_col_lines = if css_column_subgrid {
+      let default_span =
+        default_subgrid_span(&style.subgrid_column_line_names, parent_css_col_lines);
+      let span = span_from_placement(
+        style.grid_column_start,
+        style.grid_column_end,
+        style.grid_column_raw.as_deref(),
+        parent_css_col_lines,
+        parent_column_names,
+        default_span,
+      );
+      span.saturating_add(1)
+    } else {
+      let tracks = style.grid_template_columns.len().max(area_col_count).max(1);
+      u16::try_from(tracks.saturating_add(1)).unwrap_or(u16::MAX)
+    };
+
+    let css_row_lines = if css_row_subgrid {
+      let default_span = default_subgrid_span(&style.subgrid_row_line_names, parent_css_row_lines);
+      let span = span_from_placement(
+        style.grid_row_start,
+        style.grid_row_end,
+        style.grid_row_raw.as_deref(),
+        parent_css_row_lines,
+        parent_row_names,
+        default_span,
+      );
+      span.saturating_add(1)
+    } else {
+      let tracks = style.grid_template_rows.len().max(area_row_count).max(1);
+      u16::try_from(tracks.saturating_add(1)).unwrap_or(u16::MAX)
+    };
+
+    if swap_grid_axes {
+      TaffySize {
+        width: css_row_lines,
+        height: css_col_lines,
+      }
+    } else {
+      TaffySize {
+        width: css_col_lines,
+        height: css_row_lines,
+      }
+    }
+  }
+
   /// Converts ComputedStyle to Taffy Style
   fn convert_style(
     &self,
     style: &ComputedStyle,
     containing_grid: Option<&ComputedStyle>,
     containing_grid_axis: Option<GridAxisStyle>,
+    containing_grid_line_counts: Option<TaffySize<u16>>,
     simple_grid: bool,
     is_grid_node: bool,
     item_is_replaced: bool,
@@ -4452,84 +4586,93 @@ impl GridFormattingContext {
       } else {
         css_row_subgrid
       };
-
-      let (parent_physical_column_line_count, parent_physical_row_line_count) = if has_parent_grid {
-        if let Some(containing_grid) = containing_grid {
-          let physical_column_line_count = if swap_grid_axes {
-            // CSS rows map to physical columns when axes are swapped.
-            let len = containing_grid.grid_row_line_names.len();
-            let tracks = if len > 0 {
-              len.saturating_sub(1)
+      let (parent_physical_column_line_count, parent_physical_row_line_count) =
+        if let Some(parent_counts) = containing_grid_line_counts {
+          (
+            (parent_counts.width.max(1)) as usize,
+            (parent_counts.height.max(1)) as usize,
+          )
+        } else if has_parent_grid {
+          if let Some(containing_grid) = containing_grid {
+            let physical_column_line_count = if swap_grid_axes {
+              // CSS rows map to physical columns when axes are swapped.
+              let len = containing_grid.grid_row_line_names.len();
+              let tracks = if len > 0 {
+                len.saturating_sub(1)
+              } else {
+                containing_grid.grid_template_rows.len()
+              };
+              tracks.saturating_add(1)
             } else {
-              containing_grid.grid_template_rows.len()
+              let len = containing_grid.grid_column_line_names.len();
+              let tracks = if len > 0 {
+                len.saturating_sub(1)
+              } else {
+                containing_grid.grid_template_columns.len()
+              };
+              tracks.saturating_add(1)
             };
-            tracks.saturating_add(1)
+
+            let physical_row_line_count = if swap_grid_axes {
+              // CSS columns map to physical rows when axes are swapped.
+              let len = containing_grid.grid_column_line_names.len();
+              let tracks = if len > 0 {
+                len.saturating_sub(1)
+              } else {
+                containing_grid.grid_template_columns.len()
+              };
+              tracks.saturating_add(1)
+            } else {
+              let len = containing_grid.grid_row_line_names.len();
+              let tracks = if len > 0 {
+                len.saturating_sub(1)
+              } else {
+                containing_grid.grid_template_rows.len()
+              };
+              tracks.saturating_add(1)
+            };
+
+            (physical_column_line_count.max(1), physical_row_line_count.max(1))
           } else {
-            let len = containing_grid.grid_column_line_names.len();
-            let tracks = if len > 0 {
-              len.saturating_sub(1)
-            } else {
-              containing_grid.grid_template_columns.len()
-            };
-            tracks.saturating_add(1)
-          };
-
-          let physical_row_line_count = if swap_grid_axes {
-            // CSS columns map to physical rows when axes are swapped.
-            let len = containing_grid.grid_column_line_names.len();
-            let tracks = if len > 0 {
-              len.saturating_sub(1)
-            } else {
-              containing_grid.grid_template_columns.len()
-            };
-            tracks.saturating_add(1)
-          } else {
-            let len = containing_grid.grid_row_line_names.len();
-            let tracks = if len > 0 {
-              len.saturating_sub(1)
-            } else {
-              containing_grid.grid_template_rows.len()
-            };
-            tracks.saturating_add(1)
-          };
-
-          (physical_column_line_count.max(1), physical_row_line_count.max(1))
+            (1usize, 1usize)
+          }
         } else {
           (1usize, 1usize)
-        }
-      } else {
-        (1usize, 1usize)
-      };
+        };
 
       if swap_grid_axes {
-        if css_row_subgrid && !css_row_line_names_omitted && !style.subgrid_row_line_names.is_empty() {
-          taffy_style.subgrid_column_names = style.subgrid_row_line_names.clone();
-        } else if css_row_line_names_omitted {
-          taffy_style.subgrid_column_names =
-            vec![Vec::<String>::new(); parent_physical_column_line_count];
+        if css_row_subgrid {
+          if css_row_line_names_omitted {
+            taffy_style.subgrid_column_names =
+              vec![Vec::<String>::new(); parent_physical_column_line_count];
+          } else if !style.subgrid_row_line_names.is_empty() {
+            taffy_style.subgrid_column_names = style.subgrid_row_line_names.clone();
+          }
         }
-        if css_column_subgrid
-          && !css_column_line_names_omitted
-          && !style.subgrid_column_line_names.is_empty()
-        {
-          taffy_style.subgrid_row_names = style.subgrid_column_line_names.clone();
-        } else if css_column_line_names_omitted {
-          taffy_style.subgrid_row_names = vec![Vec::<String>::new(); parent_physical_row_line_count];
+        if css_column_subgrid {
+          if css_column_line_names_omitted {
+            taffy_style.subgrid_row_names =
+              vec![Vec::<String>::new(); parent_physical_row_line_count];
+          } else if !style.subgrid_column_line_names.is_empty() {
+            taffy_style.subgrid_row_names = style.subgrid_column_line_names.clone();
+          }
         }
       } else {
-        if css_column_subgrid
-          && !css_column_line_names_omitted
-          && !style.subgrid_column_line_names.is_empty()
-        {
-          taffy_style.subgrid_column_names = style.subgrid_column_line_names.clone();
-        } else if css_column_line_names_omitted {
-          taffy_style.subgrid_column_names =
-            vec![Vec::<String>::new(); parent_physical_column_line_count];
+        if css_column_subgrid {
+          if css_column_line_names_omitted {
+            taffy_style.subgrid_column_names =
+              vec![Vec::<String>::new(); parent_physical_column_line_count];
+          } else if !style.subgrid_column_line_names.is_empty() {
+            taffy_style.subgrid_column_names = style.subgrid_column_line_names.clone();
+          }
         }
-        if css_row_subgrid && !css_row_line_names_omitted && !style.subgrid_row_line_names.is_empty() {
-          taffy_style.subgrid_row_names = style.subgrid_row_line_names.clone();
-        } else if css_row_line_names_omitted {
-          taffy_style.subgrid_row_names = vec![Vec::<String>::new(); parent_physical_row_line_count];
+        if css_row_subgrid {
+          if css_row_line_names_omitted {
+            taffy_style.subgrid_row_names =
+              vec![Vec::<String>::new(); parent_physical_row_line_count];
+          } else if !style.subgrid_row_line_names.is_empty() {
+            taffy_style.subgrid_row_names = style.subgrid_row_line_names.clone();
+          }
         }
       }
 
@@ -10654,6 +10797,7 @@ impl GridFormattingContext {
         style_override,
         None,
         None,
+        None,
         simple_grid,
         true,
         box_node.is_replaced(),
@@ -14194,6 +14338,7 @@ impl FormattingContext for GridFormattingContext {
         style_override,
         None,
         None,
+        None,
         simple_grid,
         true,
         box_node.is_replaced(),
@@ -16415,6 +16560,7 @@ impl FormattingContext for GridFormattingContext {
         )?;
       let override_taffy_style = self.convert_style(
         style_override,
+        None,
         None,
         None,
         simple_grid,
@@ -21868,7 +22014,7 @@ mod tests {
         // is requested.
         let node = BoxNode::new_block(Arc::new(style.clone()), FormattingContextType::Grid, vec![]);
         let taffy_style =
-          gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
+          gc.convert_style(&node.style, None, None, None, false, true, node.is_replaced());
 
         assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
         assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
@@ -21880,7 +22026,7 @@ mod tests {
         stable.scrollbar_gutter.stable = true;
         let node = BoxNode::new_block(Arc::new(stable), FormattingContextType::Grid, vec![]);
         let taffy_style =
-          gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
+          gc.convert_style(&node.style, None, None, None, false, true, node.is_replaced());
 
         assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
         assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
@@ -21899,14 +22045,14 @@ mod tests {
     style.display = CssDisplay::Grid;
 
     style.writing_mode = WritingMode::HorizontalTb;
-    let taffy_style = gc.convert_style(&style, None, None, false, true, false);
+    let taffy_style = gc.convert_style(&style, None, None, None, false, true, false);
     assert!(
       !taffy_style.axes_swapped,
       "horizontal-tb should not transpose inline/block axes"
     );
 
     style.writing_mode = WritingMode::VerticalRl;
-    let taffy_style = gc.convert_style(&style, None, None, false, true, false);
+    let taffy_style = gc.convert_style(&style, None, None, None, false, true, false);
     assert!(
       taffy_style.axes_swapped,
       "vertical writing-modes should transpose inline/block axes into physical axes"
@@ -21931,6 +22077,7 @@ mod tests {
       &subgrid_style,
       Some(&parent_style),
       Some(parent_axis),
+      None,
       false,
       true,
       false,
@@ -21947,6 +22094,7 @@ mod tests {
       &subgrid_style,
       Some(&parent_style),
       Some(parent_axis),
+      None,
       false,
       true,
       false,
@@ -21987,10 +22135,11 @@ mod tests {
         parent.style.as_ref(),
         &constraints,
         &mut FxHashMap::default(),
-      )
+    )
       .expect("grid conversion");
     // If the fast path is taken, the parent container style should have been converted to block.
-    let taffy_style = gc.convert_style(&parent.style, None, None, true, true, parent.is_replaced());
+    let taffy_style =
+      gc.convert_style(&parent.style, None, None, None, true, true, parent.is_replaced());
     assert_eq!(taffy_style.display, Display::Block);
   }
 
