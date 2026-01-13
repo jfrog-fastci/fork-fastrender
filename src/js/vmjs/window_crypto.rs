@@ -27,12 +27,13 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use vm_js::{
-  new_promise_capability_with_host_and_hooks, new_type_error_object, GcObject, Heap,
-  HostSlots, Intrinsics, PromiseCapability, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  new_promise_capability_with_host_and_hooks, new_range_error, new_type_error_object, GcObject,
+  Heap, HostSlots, Intrinsics, PromiseCapability, PropertyDescriptor, PropertyKey, PropertyKind,
+  Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 const MAX_GET_RANDOM_VALUES_BYTES: usize = 65_536;
+const MAX_DIGEST_INPUT_BYTES: usize = 10 * 1024 * 1024;
 
 // HostSlots tags for platform objects installed by this module.
 //
@@ -704,6 +705,7 @@ fn subtle_unimplemented_native(
   scope.push_root(cap.reject)?;
 
   let err = new_type_error_object(&mut scope, &intr, "Unimplemented")?;
+  let err = scope.push_root(err)?;
   vm.call_with_host_and_hooks(
     &mut *host,
     &mut scope,
@@ -759,6 +761,8 @@ fn subtle_digest_native(
                            cap: PromiseCapability,
                            err_value: Value|
    -> Result<Value, VmError> {
+    // Root `err_value`: `reject` can run user JS and trigger GC.
+    let err_value = scope.push_root(err_value)?;
     vm.call_with_host_and_hooks(
       &mut *host,
       scope,
@@ -786,8 +790,7 @@ fn subtle_digest_native(
         reject_with_value(vm, scope, host, hooks, cap, err_value)
       }
       VmError::RangeError(msg) => {
-        // Minimal compatibility: surface RangeErrors from conversions as TypeError instances.
-        let err_value = new_type_error_object(scope, &intr, msg)?;
+        let err_value = new_range_error(scope, intr, msg)?;
         reject_with_value(vm, scope, host, hooks, cap, err_value)
       }
       other if other.is_throw_completion() => {
@@ -819,6 +822,8 @@ fn subtle_digest_native(
         )?;
         return reject_with_value(vm, &mut scope, &mut *host, &mut *hooks, cap, err);
       }
+      // Root `name_value`: `ToString` can invoke user code and trigger GC.
+      let name_value = scope.push_root(name_value)?;
       let name_string = match scope.to_string(vm, &mut *host, &mut *hooks, name_value) {
         Ok(s) => s,
         Err(err) => return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err),
@@ -863,7 +868,19 @@ fn subtle_digest_native(
       let heap = scope.heap();
       if heap.is_array_buffer_object(obj) {
         match heap.array_buffer_data(obj) {
-          Ok(bytes) => bytes.to_vec(),
+          Ok(bytes) => {
+            if bytes.len() > MAX_DIGEST_INPUT_BYTES {
+              return reject_with_vm_error(
+                vm,
+                &mut scope,
+                &mut *host,
+                &mut *hooks,
+                cap,
+                VmError::RangeError("crypto.subtle.digest input too large"),
+              );
+            }
+            bytes.to_vec()
+          }
           Err(err) => {
             return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err)
           }
@@ -875,6 +892,16 @@ fn subtle_digest_native(
             return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err)
           }
         };
+        if byte_len > MAX_DIGEST_INPUT_BYTES {
+          return reject_with_vm_error(
+            vm,
+            &mut scope,
+            &mut *host,
+            &mut *hooks,
+            cap,
+            VmError::RangeError("crypto.subtle.digest input too large"),
+          );
+        }
         let buf_bytes = match heap.array_buffer_data(buffer_obj) {
           Ok(b) => b,
           Err(err) => {
@@ -889,6 +916,16 @@ fn subtle_digest_native(
         let buffer_obj = heap.data_view_buffer(obj)?;
         let byte_offset = heap.data_view_byte_offset(obj)?;
         let byte_len = heap.data_view_byte_length(obj)?;
+        if byte_len > MAX_DIGEST_INPUT_BYTES {
+          return reject_with_vm_error(
+            vm,
+            &mut scope,
+            &mut *host,
+            &mut *hooks,
+            cap,
+            VmError::RangeError("crypto.subtle.digest input too large"),
+          );
+        }
         let buf_bytes = match heap.array_buffer_data(buffer_obj) {
           Ok(b) => b,
           Err(err) => {
@@ -924,13 +961,14 @@ fn subtle_digest_native(
   scope
     .heap_mut()
     .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+  let ab_val = scope.push_root(Value::Object(ab))?;
   vm.call_with_host_and_hooks(
     &mut *host,
     &mut scope,
     &mut *hooks,
     cap.resolve,
     Value::Undefined,
-    &[Value::Object(ab)],
+    &[ab_val],
   )?;
 
   Ok(cap.promise)
@@ -2679,6 +2717,47 @@ mod tests {
   }
 
   #[test]
+  fn subtle_digest_accepts_uint16array_and_respects_view_byte_offset() {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create realm");
+
+    realm
+      .exec_script(
+        r#"
+        globalThis.__digest_done = false;
+        globalThis.__digest_ab = null;
+        (async () => {
+          const buf = new ArrayBuffer(6);
+          const u8 = new Uint8Array(buf);
+          u8[0] = 0x00; u8[1] = 0x01; u8[2] = 0x02; u8[3] = 0x03; u8[4] = 0x04; u8[5] = 0x05;
+          // View covers bytes [2, 6).
+          const u16 = new Uint16Array(buf, 2, 2);
+          const ab = await crypto.subtle.digest('SHA-256', u16);
+          globalThis.__digest_ab = ab;
+          globalThis.__digest_done = true;
+        })();
+        "#,
+      )
+      .unwrap();
+    realm.perform_microtask_checkpoint().unwrap();
+
+    assert_eq!(
+      realm.exec_script("globalThis.__digest_done").unwrap(),
+      Value::Bool(true)
+    );
+    let ab_val = realm.exec_script("globalThis.__digest_ab").unwrap();
+    let Value::Object(ab_obj) = ab_val else {
+      panic!("expected ArrayBuffer, got {ab_val:?}");
+    };
+    let bytes = realm
+      .heap()
+      .array_buffer_data(ab_obj)
+      .expect("ArrayBuffer data");
+    let expected = Sha256::digest(&[0x02, 0x03, 0x04, 0x05]).to_vec();
+    assert_eq!(bytes, expected.as_slice());
+  }
+
+  #[test]
   fn subtle_digest_accepts_algorithm_object_name_via_prototype_getter() {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
       .expect("create realm");
@@ -2690,6 +2769,39 @@ mod tests {
         globalThis.__digest_ab = null;
         (async () => {
           const alg = Object.create({ get name() { return 'SHA-256'; } });
+          const data = new TextEncoder().encode('abc');
+          const ab = await crypto.subtle.digest(alg, data);
+          globalThis.__digest_ab = ab;
+          globalThis.__digest_done = true;
+        })();
+        "#,
+      )
+      .unwrap();
+    realm.perform_microtask_checkpoint().unwrap();
+
+    assert_eq!(
+      realm.exec_script("globalThis.__digest_done").unwrap(),
+      Value::Bool(true)
+    );
+    let ab_val = realm.exec_script("globalThis.__digest_ab").unwrap();
+    let Value::Object(ab_obj) = ab_val else {
+      panic!("expected ArrayBuffer, got {ab_val:?}");
+    };
+    assert_sha256_abc_digest(&realm, ab_obj);
+  }
+
+  #[test]
+  fn subtle_digest_accepts_algorithm_object_name_via_getter_to_string() {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create realm");
+
+    realm
+      .exec_script(
+        r#"
+        globalThis.__digest_done = false;
+        globalThis.__digest_ab = null;
+        (async () => {
+          const alg = Object.create({ get name() { return new String('SHA-256'); } });
           const data = new TextEncoder().encode('abc');
           const ab = await crypto.subtle.digest(alg, data);
           globalThis.__digest_ab = ab;
@@ -2740,6 +2852,39 @@ mod tests {
     );
     let err_name = realm.exec_script("globalThis.__digest_err_name").unwrap();
     assert_eq!(js_value_to_utf8(realm.heap(), err_name), "NotSupportedError");
+  }
+
+  #[test]
+  fn subtle_digest_rejects_oversize_input_with_range_error() {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create realm");
+
+    let src = format!(
+      r#"
+      globalThis.__digest_done = false;
+      globalThis.__digest_err_name = null;
+      (async () => {{
+        try {{
+          const data = new Uint8Array({});
+          await crypto.subtle.digest('SHA-256', data);
+        }} catch (e) {{
+          globalThis.__digest_err_name = e && e.name;
+        }}
+        globalThis.__digest_done = true;
+      }})();
+      "#,
+      MAX_DIGEST_INPUT_BYTES + 1
+    );
+
+    realm.exec_script(&src).unwrap();
+    realm.perform_microtask_checkpoint().unwrap();
+
+    assert_eq!(
+      realm.exec_script("globalThis.__digest_done").unwrap(),
+      Value::Bool(true)
+    );
+    let err_name = realm.exec_script("globalThis.__digest_err_name").unwrap();
+    assert_eq!(js_value_to_utf8(realm.heap(), err_name), "RangeError");
   }
 
   #[test]
