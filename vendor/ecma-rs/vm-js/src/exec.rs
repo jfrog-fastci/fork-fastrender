@@ -6149,14 +6149,22 @@ impl<'a> Evaluator<'a> {
     // private member expressions can resolve the correct symbol even if the class binding is passed
     // around.
     let mut private_names: Vec<String> = Vec::new();
-    let mut private_name_set: HashSet<String> = HashSet::new();
+    let mut private_name_set: HashSet<&str> = HashSet::new();
     for member in members {
       if let ClassOrObjKey::Direct(key) = &member.stx.key {
-        if key.stx.tt == TT::PrivateMember && private_name_set.insert(key.stx.key.clone()) {
+        if key.stx.tt == TT::PrivateMember {
+          let name = key.stx.key.as_str();
+          if private_name_set.contains(name) {
+            continue;
+          }
+          private_name_set
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          private_name_set.insert(name);
           private_names
             .try_reserve(1)
             .map_err(|_| VmError::OutOfMemory)?;
-          private_names.push(key.stx.key.clone());
+          private_names.push(try_clone_string(name)?);
         }
       }
     }
