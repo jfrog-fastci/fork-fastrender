@@ -1456,11 +1456,6 @@ reason = "vm-js: built-in coverage is still incomplete; tracked via curated test
 
 # --- Map / Set (core built-ins, partially implemented) ---
 [[expectations]]
-glob = "built-ins/Map/groupBy/**"
-status = "xfail"
-reason = "vm-js: Map.groupBy is not implemented."
-
-[[expectations]]
 glob = "built-ins/Map/prototype/getOrInsert/**"
 status = "pass"
 

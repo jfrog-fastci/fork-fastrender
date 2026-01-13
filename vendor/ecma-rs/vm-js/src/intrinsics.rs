@@ -4808,6 +4808,24 @@ impl Intrinsics {
       )?;
     }
 
+    // Map.groupBy
+    {
+      let group_by_call = vm.register_native_call(builtins::map_group_by)?;
+      let group_by_s = scope.alloc_string("groupBy")?;
+      scope.push_root(Value::String(group_by_s))?;
+      let group_by_key = PropertyKey::from_string(group_by_s);
+      let group_by_fn = scope.alloc_native_function(group_by_call, None, group_by_s, 2)?;
+      scope.push_root(Value::Object(group_by_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(group_by_fn, Some(function_prototype))?;
+      scope.define_property(
+        map,
+        group_by_key,
+        data_desc(Value::Object(group_by_fn), true, false, true),
+      )?;
+    }
+
     // `%MapIteratorPrototype%.next`
     {
       let next_call = vm.register_native_call(builtins::map_iterator_next)?;

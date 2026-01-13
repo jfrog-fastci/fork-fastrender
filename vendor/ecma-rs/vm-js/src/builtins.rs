@@ -21665,6 +21665,166 @@ pub fn map_constructor_construct(
   }
 }
 
+pub fn map_group_by(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-map.groupby
+  //
+  // Note: Map.groupBy uses iterator semantics and SameValueZero key equality (including `-0` →
+  // `+0` canonicalization). The callback return value is used directly as the Map key (no
+  // `ToPropertyKey` coercion).
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+
+  let items = args.get(0).copied().unwrap_or(Value::Undefined);
+  let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  // Root inputs up-front: `push_roots` can allocate and trigger GC.
+  scope.push_roots(&[items, callback])?;
+
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("Map.groupBy callback is not callable"));
+  }
+
+  // GroupBy (items, callbackfn, zero)
+  let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, items)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  // Internal map of key -> array (elements), built without invoking userland Map methods.
+  let groups = scope.alloc_map_with_prototype(Some(intr.map_prototype()))?;
+  scope.push_root(Value::Object(groups))?;
+
+  let mut k: u64 = 0;
+  loop {
+    if (k as usize) % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let next_value = match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+      Ok(Some(v)) => v,
+      Ok(None) => break,
+      Err(err) => return Err(err),
+    };
+
+    let step_result: Result<(), VmError> = (|| {
+      // Use a nested scope so per-iteration roots do not accumulate.
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+
+      let idx = Value::Number(k as f64);
+
+      // key = Call(callbackfn, undefined, « value, 𝔽(k) »)
+      let key = vm.call_with_host_and_hooks(
+        host,
+        &mut step_scope,
+        hooks,
+        callback,
+        Value::Undefined,
+        &[next_value, idx],
+      )?;
+
+      // Root the key across subsequent allocations (array creation, map insertion, etc).
+      step_scope.push_root(key)?;
+
+      // Coercion is `zero`: normalize `-0` to `+0` for Map key canonicalization.
+      let key = match key {
+        Value::Number(n) if n == 0.0 => Value::Number(0.0),
+        other => other,
+      };
+
+      // Get or create group array for this key.
+      let group_arr = if let Some(existing) = step_scope.heap().map_get_with_tick(groups, key, || vm.tick())? {
+        existing
+      } else {
+        let arr = step_scope.alloc_array(0)?;
+        step_scope.push_root(Value::Object(arr))?;
+        step_scope
+          .heap_mut()
+          .object_set_prototype(arr, Some(intr.array_prototype()))?;
+
+        step_scope
+          .heap_mut()
+          .map_set_with_tick(groups, key, Value::Object(arr), || vm.tick())?;
+        Value::Object(arr)
+      };
+      step_scope.push_root(group_arr)?;
+
+      let Value::Object(group_arr) = group_arr else {
+        return Err(VmError::Unimplemented("Map.groupBy: group value is not an object"));
+      };
+
+      // Append `next_value` to group array.
+      //
+      // This uses internal array operations (no userland `push`) and preserves iteration order.
+      let len = step_scope.heap().array_length(group_arr)?;
+      let idx_key = step_scope.alloc_array_index_key(len)?;
+      root_property_key(&mut step_scope, idx_key)?;
+      step_scope.create_data_property_or_throw(group_arr, idx_key, next_value)?;
+
+      Ok(())
+    })();
+
+    if let Err(step_err) = step_result {
+      if !iterator_record.done {
+        return Err(iterator_close_on_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          &iterator_record,
+          step_err,
+        ));
+      }
+      return Err(step_err);
+    }
+
+    k = k.saturating_add(1);
+  }
+
+  // Construct(%Map%) after grouping completes, so callback/iterator failures do not trigger Map
+  // construction side effects (spec order).
+  let map = vm.construct_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    Value::Object(intr.map()),
+    &[],
+    Value::Object(intr.map()),
+  )?;
+  let Value::Object(map) = map else {
+    return Err(VmError::Unimplemented("Map.groupBy: Map constructor did not return an object"));
+  };
+  scope.push_root(Value::Object(map))?;
+
+  // Copy grouped entries in insertion order.
+  let mut idx: usize = 0;
+  loop {
+    if idx % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    let len = scope.heap().map_entries_len(groups)?;
+    if idx >= len {
+      break;
+    }
+    let entry = scope.heap().map_entry_at(groups, idx)?;
+    idx = idx.saturating_add(1);
+    let Some((key, value)) = entry else {
+      continue;
+    };
+    scope
+      .heap_mut()
+      .map_set_with_tick(map, key, value, || vm.tick())?;
+  }
+
+  Ok(Value::Object(map))
+}
+
 pub fn set_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
