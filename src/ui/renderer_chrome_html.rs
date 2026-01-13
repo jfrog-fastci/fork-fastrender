@@ -1,0 +1,49 @@
+//! HTML generator for experimental renderer-chrome UI.
+//!
+//! This is an early prototype used to render browser chrome (tabs/address bar) with FastRender
+//! itself. It intentionally keeps data payloads (notably favicons) out of the HTML by using stable
+//! `chrome://` URLs served by [`crate::ui::ChromeDynamicAssetFetcher`].
+
+use crate::ui::browser_app::BrowserAppState;
+use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
+
+fn escape_html(text: &str) -> String {
+  let mut out = String::with_capacity(text.len());
+  for ch in text.chars() {
+    match ch {
+      '&' => out.push_str("&amp;"),
+      '<' => out.push_str("&lt;"),
+      '>' => out.push_str("&gt;"),
+      '"' => out.push_str("&quot;"),
+      '\'' => out.push_str("&#39;"),
+      other => out.push(other),
+    }
+  }
+  out
+}
+
+/// Generate a minimal HTML tab strip.
+///
+/// The structure is intentionally simple for now:
+/// - Each tab has `data-tab-id`.
+/// - Favicons are referenced via a stable `chrome://favicons/<tab_id>.png` URL.
+pub fn tab_strip_html(app: &BrowserAppState) -> String {
+  let active = app.active_tab_id();
+  let mut html = String::new();
+  html.push_str("<div class=\"tab-strip\">");
+  for tab in &app.tabs {
+    let mut class = "tab";
+    if active == Some(tab.id) {
+      class = "tab active";
+    }
+    let title = escape_html(&tab.display_title());
+    let favicon_url = ChromeDynamicAssetFetcher::favicon_url(tab.id);
+    html.push_str(&format!(
+      "<div class=\"{class}\" data-tab-id=\"{}\"><img class=\"tab-favicon\" src=\"{favicon_url}\" alt=\"\" /><span class=\"tab-title\">{title}</span></div>",
+      tab.id.0
+    ));
+  }
+  html.push_str("</div>");
+  html
+}
+

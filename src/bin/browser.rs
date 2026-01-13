@@ -5788,6 +5788,9 @@ struct App {
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_favicons: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
+  /// Dynamic chrome resources (e.g. per-tab favicons) used by the experimental renderer-chrome
+  /// integration.
+  chrome_dynamic_fetcher: fastrender::ui::ChromeDynamicAssetFetcher,
   /// Recently closed tab favicons that are kept alive briefly so tab-close animations can render a
   /// "ghost" closing tab with its original favicon.
   closing_tab_favicons: std::collections::VecDeque<ClosingTabFavicon>,
@@ -6518,6 +6521,9 @@ impl App {
       clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange::default(),
       tab_textures: std::collections::HashMap::new(),
       tab_favicons: std::collections::HashMap::new(),
+      chrome_dynamic_fetcher: fastrender::ui::ChromeDynamicAssetFetcher::new(std::sync::Arc::new(
+        fastrender::resource::HttpFetcher::new(),
+      )),
       closing_tab_favicons: std::collections::VecDeque::new(),
       tab_cancel: std::collections::HashMap::new(),
       pending_scroll_restores: std::collections::HashMap::new(),
@@ -8488,6 +8494,18 @@ impl App {
         let size = tiny_skia::IntSize::from_wh(favicon_ready.width, favicon_ready.height);
         let pixmap = size.and_then(|size| tiny_skia::Pixmap::from_vec(favicon_ready.rgba, size));
         if let Some(pixmap) = pixmap {
+          if let Ok(png_bytes) =
+            fastrender::image_output::encode_image(&pixmap, fastrender::OutputFormat::Png)
+          {
+            // Best-effort: renderer-chrome uses stable `chrome://favicons/<tab_id>.png` URLs instead
+            // of re-encoding large data URLs each frame.
+            let _ = self.chrome_dynamic_fetcher.set_tab_favicon_png(
+              favicon_ready.tab_id,
+              png_bytes,
+              favicon_ready.width,
+              favicon_ready.height,
+            );
+          }
           if let Some(tex) = self.tab_favicons.get_mut(&favicon_ready.tab_id) {
             tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
           } else {
@@ -13890,6 +13908,7 @@ impl App {
             tex.destroy(&mut self.egui_renderer);
           }
           self.move_tab_favicon_into_delayed_destroy(tab_id);
+          self.chrome_dynamic_fetcher.clear_tab_favicon(tab_id);
 
           let was_active = self.browser_state.active_tab_id() == Some(tab_id);
           if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
@@ -13985,14 +14004,15 @@ impl App {
             continue;
           }
 
-           session_dirty = true;
-           self.pending_frame_uploads.remove_tab(tab_id);
-           self.next_media_wakeup.remove(&tab_id);
-           self.last_media_wakeup_tick.remove(&tab_id);
-           if let Some(tex) = self.tab_textures.remove(&tab_id) {
-             tex.destroy(&mut self.egui_renderer);
-           }
-           self.move_tab_favicon_into_delayed_destroy(tab_id);
+          session_dirty = true;
+          self.pending_frame_uploads.remove_tab(tab_id);
+          self.next_media_wakeup.remove(&tab_id);
+          self.last_media_wakeup_tick.remove(&tab_id);
+          if let Some(tex) = self.tab_textures.remove(&tab_id) {
+            tex.destroy(&mut self.egui_renderer);
+          }
+          self.move_tab_favicon_into_delayed_destroy(tab_id);
+          self.chrome_dynamic_fetcher.clear_tab_favicon(tab_id);
 
           let was_active = self.browser_state.active_tab_id() == Some(tab_id);
           if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
@@ -14073,6 +14093,7 @@ impl App {
               tex.destroy(&mut self.egui_renderer);
             }
             self.move_tab_favicon_into_delayed_destroy(closed_tab_id);
+            self.chrome_dynamic_fetcher.clear_tab_favicon(closed_tab_id);
             if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
               cancel.bump_nav();
             }
@@ -14123,6 +14144,7 @@ impl App {
               tex.destroy(&mut self.egui_renderer);
             }
             self.move_tab_favicon_into_delayed_destroy(closed_tab_id);
+            self.chrome_dynamic_fetcher.clear_tab_favicon(closed_tab_id);
             if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
               cancel.bump_nav();
             }

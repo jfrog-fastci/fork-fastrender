@@ -67,6 +67,8 @@ pub mod loading_overlay;
 // Viewport-change throttling is used only by the windowed browser UI.
 pub mod viewport_throttle;
 pub mod notifications;
+pub mod chrome_dynamic_asset_fetcher;
+pub mod renderer_chrome_html;
 pub mod multiprocess;
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -240,6 +242,7 @@ pub use frame_upload::FrameUploadCoalescer;
 pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};
 pub use chrome_action::ChromeAction;
 pub use chrome_action_url::ChromeActionUrl;
+pub use chrome_dynamic_asset_fetcher::{ChromeDynamicAssetFetcher, ChromeDynamicAssetLimits};
 
 pub use crate::select_dropdown;
 pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
