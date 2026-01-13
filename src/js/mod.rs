@@ -33,6 +33,11 @@
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod cookie_jar;
+// `crate::js::chrome_api` is the stable public entrypoint for the privileged chrome-frame JS API.
+// It is implemented as a thin re-export wrapper around `vmjs_chrome_api` (see `src/js/chrome_api.rs`).
+//
+// Keep `chrome_navigation_url` as a separate module for URL validation helpers; do **not** alias it
+// as `chrome_api` here or it will conflict with the real `chrome_api` module.
 pub mod chrome_api;
 pub mod chrome_navigation_url;
 pub mod web_storage;
