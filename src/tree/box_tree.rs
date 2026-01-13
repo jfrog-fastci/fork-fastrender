@@ -767,6 +767,12 @@ pub enum ReplacedType {
     srcdoc: Option<String>,
     /// Optional parsed `referrerpolicy` attribute.
     referrer_policy: Option<ReferrerPolicy>,
+    /// Stable identifier for this iframe element within the document, used to map the DOM node to a
+    /// browser frame identity across re-layouts.
+    ///
+    /// This token is derived from the styled DOM node id (pre-order traversal index) during box
+    /// generation. It is stable as long as the DOM structure is unchanged.
+    frame_token: Option<u64>,
   },
 
   /// `<embed>` element
@@ -3685,6 +3691,7 @@ mod tests {
       src: "https://example.com".to_string(),
       srcdoc: Some("hello world".to_string()),
       referrer_policy: None,
+      frame_token: None,
     };
     assert_eq!(iframe.placeholder_label(), Some("hello world"));
 
@@ -3692,6 +3699,7 @@ mod tests {
       src: "https://example.com".to_string(),
       srcdoc: None,
       referrer_policy: None,
+      frame_token: None,
     };
     assert_eq!(iframe_no_srcdoc.placeholder_label(), Some("iframe"));
   }

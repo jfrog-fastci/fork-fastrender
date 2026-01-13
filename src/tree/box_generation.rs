@@ -7826,6 +7826,10 @@ fn create_replaced_box_from_styled(
       src,
       srcdoc,
       referrer_policy,
+      // Use the styled DOM node id as a stable per-document token. This id is derived from
+      // `dom::enumerate_dom_ids` and remains stable across layout/paint passes as long as the DOM is
+      // unchanged.
+      frame_token: Some(styled.node_id as u64),
     }
   } else if tag.eq_ignore_ascii_case("embed") {
     let src = styled

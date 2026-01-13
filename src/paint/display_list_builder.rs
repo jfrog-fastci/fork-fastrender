@@ -7357,6 +7357,7 @@ impl DisplayListBuilder {
             src,
             srcdoc,
             referrer_policy,
+            frame_token: _,
           } = replaced_type
           {
             if let Some(cache) = self.image_cache.as_ref() {
@@ -21032,6 +21033,7 @@ mod tests {
           src: "about:blank".to_string(),
           srcdoc: Some("<html></html>".to_string()),
           referrer_policy: None,
+          frame_token: None,
         },
       },
       vec![],
@@ -21120,6 +21122,7 @@ mod tests {
           src: "about:blank".to_string(),
           srcdoc: Some("<html></html>".to_string()),
           referrer_policy: None,
+          frame_token: None,
         },
       },
       vec![],

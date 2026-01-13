@@ -269,6 +269,7 @@ impl DOMNode {
         src,
         srcdoc,
         referrer_policy: None,
+        frame_token: None,
       }),
       _ => None,
     }

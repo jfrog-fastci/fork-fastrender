@@ -9015,6 +9015,7 @@ impl Painter {
         srcdoc: Some(html),
         src,
         referrer_policy,
+        ..
       } => {
         if let Some(image) =
           self.render_iframe_srcdoc(html, src, *referrer_policy, content_rect, style)
@@ -9128,6 +9129,7 @@ impl Painter {
         src: content,
         srcdoc: None,
         referrer_policy,
+        ..
       } => {
         if let Some(image) = self.render_iframe_src(content, *referrer_policy, content_rect, style)
         {
@@ -26323,6 +26325,7 @@ mod tests {
           src: String::new(),
           srcdoc: Some(outer),
           referrer_policy: None,
+          frame_token: None,
         },
       },
       vec![],
@@ -26367,6 +26370,7 @@ mod tests {
           src: String::new(),
           srcdoc: Some(html.to_string()),
           referrer_policy: None,
+          frame_token: None,
         },
       },
       vec![],
@@ -26391,6 +26395,7 @@ mod tests {
         src: "   ".to_string(),
         srcdoc: None,
         referrer_policy: None,
+        frame_token: None,
       },
       None,
       None,
