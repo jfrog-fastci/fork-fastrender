@@ -67,6 +67,48 @@ pub enum SandboxStatus {
   Unsupported,
 }
 
+#[cfg(target_os = "macos")]
+fn env_var_truthy(raw: Option<&std::ffi::OsStr>) -> bool {
+  let Some(raw) = raw else {
+    return false;
+  };
+  if raw.is_empty() {
+    return false;
+  }
+  let raw = raw.to_string_lossy();
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+  !matches!(
+    trimmed.to_ascii_lowercase().as_str(),
+    "0" | "false" | "no" | "off"
+  )
+}
+
+/// Return `true` if the renderer sandbox is explicitly disabled via the common debug escape hatches.
+#[cfg(target_os = "macos")]
+fn macos_renderer_sandbox_disabled_via_env() -> bool {
+  if env_var_truthy(std::env::var_os(macos::ENV_DISABLE_RENDERER_SANDBOX).as_deref()) {
+    return true;
+  }
+  let Some(raw) = std::env::var_os(macos::ENV_MACOS_RENDERER_SANDBOX) else {
+    return false;
+  };
+  if raw.is_empty() {
+    return false;
+  }
+  let raw = raw.to_string_lossy();
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+  matches!(
+    trimmed.to_ascii_lowercase().as_str(),
+    "0" | "false" | "no" | "off"
+  )
+}
+
 /// Apply the macOS Seatbelt `pure-computation` sandbox to the current process.
 ///
 /// This is primarily intended for sandboxing untrusted renderer subprocesses. It is a one-way
@@ -323,6 +365,18 @@ pub enum SandboxError {
 /// This is intended to be called very early in renderer process startup (before spawning threads
 /// or initializing libraries that might attempt privileged operations).
 pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxError> {
+  // Ensure the cross-platform debug escape hatch behaves consistently even when callers use the
+  // higher-level `FASTR_RENDERER_*` env parsing below. When this is set, return `Disabled` so
+  // callers don't mistake a "no-op apply" for an installed sandbox.
+  #[cfg(target_os = "macos")]
+  {
+    if macos_renderer_sandbox_disabled_via_env() {
+      // Reuse the macOS module's one-time warning so insecure runs are not silent.
+      let _ = macos::apply_strict_sandbox();
+      return Ok(SandboxStatus::Disabled);
+    }
+  }
+
   let default_enabled = cfg!(target_os = "macos");
   let config = match config::RendererSandboxEnvConfig::from_env(default_enabled) {
     Ok(config) => config,
@@ -330,7 +384,7 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
       eprintln!(
         "fastrender: renderer sandbox configuration error\n\
          error: {err}\n\
-         hint: set FASTR_RENDERER_SANDBOX=off (or 0) to disable sandboxing for debugging"
+         hint: set FASTR_RENDERER_SANDBOX=off (or 0) or FASTR_DISABLE_RENDERER_SANDBOX=1 to disable sandboxing for debugging"
       );
       return Err(err);
     }
@@ -360,7 +414,7 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
             eprintln!(
               "fastrender: failed to load macOS Seatbelt sandbox profile (profile={profile_desc})\n\
                error: {err}\n\
-               hint: set FASTR_RENDERER_SANDBOX=off (or 0) to disable sandboxing for debugging"
+               hint: set FASTR_RENDERER_SANDBOX=off (or 0) or FASTR_DISABLE_RENDERER_SANDBOX=1 to disable sandboxing for debugging"
             );
             return Err(err);
           }
@@ -374,7 +428,7 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
       eprintln!(
         "fastrender: failed to apply macOS Seatbelt sandbox (profile={profile_desc})\n\
          errorbuf: {err}\n\
-         hint: set FASTR_RENDERER_SANDBOX=off (or 0) to disable sandboxing for debugging"
+         hint: set FASTR_RENDERER_SANDBOX=off (or 0) or FASTR_DISABLE_RENDERER_SANDBOX=1 to disable sandboxing for debugging"
       );
       return Err(SandboxError::MacosSeatbeltInitFailed {
         profile: profile_desc,
