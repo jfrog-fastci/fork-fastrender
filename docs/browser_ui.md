@@ -414,7 +414,8 @@ The windowed `browser` app uses a background autosave helper (`SessionAutosave` 
 - **Background autosave:** while the browser is running, it snapshots the current session and
   schedules a debounced background save on “significant” state changes (for example tab navigations,
   tab/window creation/closure, zoom/appearance changes, and window geometry changes).
-- **Clean shutdown:** on a normal exit the final snapshot is written with `did_exit_cleanly=true`.
+- **Clean shutdown:** on a normal exit the final snapshot is written with `did_exit_cleanly=true` and
+  `unclean_exit_streak=0`.
 
 ## Platform polish (window icon, sizing, system theme)
 

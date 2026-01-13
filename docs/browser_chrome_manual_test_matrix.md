@@ -257,6 +257,9 @@ Use `about:test-scroll` → `about:test-form` to build deterministic back/forwar
 If the browser repeatedly crashes during restore, it may stop auto-restoring tabs after a threshold
 and start with a safe `about:newtab` instead (unless `--restore` is used).
 
+- Note: a **clean shutdown** resets the crash-loop streak, so this requires *consecutive* unclean
+  exits without an intervening normal quit.
+
 - [ ] With an isolated session (`--session-path ...`), create a non-trivial session (multiple tabs).
 - [ ] Force *multiple* consecutive unclean exits (repeat the previous steps until the crash-loop
   threshold is exceeded).
@@ -409,7 +412,7 @@ For parity testing, it’s recommended to enable the menu bar on all platforms.
 - [ ] Close Tab (Ctrl/Cmd+W) works.
 - [ ] Save Page… is present but disabled (or shows a clear “not implemented” UX).
 - [ ] Print… is present but disabled (or shows a clear “not implemented” UX).
-- [ ] Quit exits cleanly (session writes `did_exit_cleanly=true`).
+- [ ] Quit exits cleanly (session writes `did_exit_cleanly=true` and resets `unclean_exit_streak=0`).
 
 ### Edit
 
