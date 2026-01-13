@@ -806,7 +806,14 @@ pub(super) fn resolve_item_baselines(
   // Indices of baseline-aligned items in groups with > 1 participants. We store the measured
   // baseline value directly on the item in the relevant `baseline_shim` axis component, and later
   // overwrite it with the computed shim.
-  let mut baseline_entries: Vec<usize> = Vec::with_capacity(baseline_entries_capacity);
+  //
+  // Baseline alignment is relatively uncommon; avoid a heap allocation for the common case of only
+  // a few baseline-aligned items.
+  const STACK_BASELINE_ENTRY_CAPACITY: usize = 32;
+  let mut baseline_entries_stack: ArrayVec<usize, STACK_BASELINE_ENTRY_CAPACITY> = ArrayVec::new();
+  let mut baseline_entries_heap: Option<Vec<usize>> =
+    (baseline_entries_capacity > STACK_BASELINE_ENTRY_CAPACITY)
+      .then(|| Vec::with_capacity(baseline_entries_capacity));
 
   for (idx, item) in items.iter_mut().enumerate() {
     check_layout_abort();
@@ -849,20 +856,23 @@ pub(super) fn resolve_item_baselines(
       AbstractAxis::Inline => item.baseline_shim.y = value,
       AbstractAxis::Block => item.baseline_shim.x = value,
     }
-    baseline_entries.push(idx);
+    match baseline_entries_heap.as_mut() {
+      Some(vec) => vec.push(idx),
+      None => baseline_entries_stack.push(idx),
+    }
     if let Some(entry) = group_stats.get_mut(key as usize) {
       entry.max_baseline = f32_max(entry.max_baseline, value);
     }
   }
 
-  for idx in baseline_entries {
+  let mut apply_shim = |idx: usize| {
     let item = &mut items[idx];
     let key = match other_axis {
       AbstractAxis::Inline => item.column_indexes.start,
       AbstractAxis::Block => item.row_indexes.start,
     };
     let Some(group_max) = group_stats.get(key as usize).map(|s| s.max_baseline) else {
-      continue;
+      return;
     };
     let value = match axis {
       AbstractAxis::Inline => item.baseline_shim.y,
@@ -873,6 +883,16 @@ pub(super) fn resolve_item_baselines(
     match axis {
       AbstractAxis::Inline => item.baseline_shim.y = shim,
       AbstractAxis::Block => item.baseline_shim.x = shim,
+    }
+  };
+
+  if let Some(entries) = baseline_entries_heap {
+    for idx in entries {
+      apply_shim(idx);
+    }
+  } else {
+    for idx in baseline_entries_stack {
+      apply_shim(idx);
     }
   }
 }
