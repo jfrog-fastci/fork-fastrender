@@ -26,6 +26,12 @@ pub enum FdPassingError {
     #[source]
     source: io::Error,
   },
+  #[error("failed to set FD_CLOEXEC on received fd {fd}")]
+  SetCloexecFailed {
+    fd: RawFd,
+    #[source]
+    source: io::Error,
+  },
   #[error("message was truncated (msg_flags={msg_flags:#x})")]
   Truncated { msg_flags: i32 },
   #[error("unexpected ancillary data (level={level}, type={ty})")]
@@ -161,10 +167,28 @@ impl UnixSeqpacket {
   /// file descriptors.
   ///
   /// This uses `recvmsg(..., MSG_CMSG_CLOEXEC)` so any received fds are `FD_CLOEXEC`.
+  ///
+  /// If the kernel/libc rejects `MSG_CMSG_CLOEXEC` (observed as `EINVAL` on some older or
+  /// sandbox-restricted environments), this retries without the flag and sets `FD_CLOEXEC` on the
+  /// received fds via `fcntl`.
   pub fn recv_msg(
     &self,
     max_bytes: usize,
     max_fds: usize,
+  ) -> Result<(Vec<u8>, Vec<OwnedFd>), FdPassingError> {
+    self.recv_msg_impl(max_bytes, max_fds, None)
+  }
+
+  /// Internal recvmsg implementation with a test-only flags override.
+  ///
+  /// When `flags_override` is `Some`, that value is used for the initial `recvmsg` call instead of
+  /// `MSG_CMSG_CLOEXEC`. This allows unit tests to force the "manual CLOEXEC" path even on kernels
+  /// that support `MSG_CMSG_CLOEXEC`.
+  fn recv_msg_impl(
+    &self,
+    max_bytes: usize,
+    max_fds: usize,
+    flags_override: Option<libc::c_int>,
   ) -> Result<(Vec<u8>, Vec<OwnedFd>), FdPassingError> {
     let mut bytes = vec![0u8; max_bytes];
     let mut iov = libc::iovec {
@@ -196,18 +220,40 @@ impl UnixSeqpacket {
     };
 
     let read_len: usize;
+    let mut need_manual_cloexec = false;
     loop {
       // SAFETY: `hdr` points to valid iov/control buffers for the duration of the call.
-      let rc = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, libc::MSG_CMSG_CLOEXEC) };
-      if rc < 0 {
-        let err = io::Error::last_os_error();
-        if err.kind() == io::ErrorKind::Interrupted {
-          continue;
+      let flags = flags_override.unwrap_or(libc::MSG_CMSG_CLOEXEC);
+      let rc = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, flags) };
+      if rc >= 0 {
+        read_len = rc as usize;
+        if (flags & libc::MSG_CMSG_CLOEXEC) == 0 {
+          need_manual_cloexec = true;
         }
-        return Err(FdPassingError::RecvmsgFailed { source: err });
+        break;
       }
-      read_len = rc as usize;
-      break;
+
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+
+      // Runtime fallback: some environments reject MSG_CMSG_CLOEXEC with EINVAL.
+      if err.raw_os_error() == Some(libc::EINVAL) && (flags & libc::MSG_CMSG_CLOEXEC) != 0 {
+        let rc = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, flags & !libc::MSG_CMSG_CLOEXEC) };
+        if rc < 0 {
+          let err = io::Error::last_os_error();
+          if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+          }
+          return Err(FdPassingError::RecvmsgFailed { source: err });
+        }
+        read_len = rc as usize;
+        need_manual_cloexec = true;
+        break;
+      }
+
+      return Err(FdPassingError::RecvmsgFailed { source: err });
     }
 
     bytes.truncate(read_len);
@@ -238,6 +284,28 @@ impl UnixSeqpacket {
       return Err(FdPassingError::Truncated {
         msg_flags: hdr.msg_flags,
       });
+    }
+
+    if need_manual_cloexec {
+      for fd in &received_fds {
+        let raw = fd.as_raw_fd();
+        // SAFETY: `fcntl` is called with a valid file descriptor.
+        let current = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+        if current < 0 {
+          return Err(FdPassingError::SetCloexecFailed {
+            fd: raw,
+            source: io::Error::last_os_error(),
+          });
+        }
+        // SAFETY: `fcntl` is called with a valid file descriptor.
+        let rc = unsafe { libc::fcntl(raw, libc::F_SETFD, current | libc::FD_CLOEXEC) };
+        if rc < 0 {
+          return Err(FdPassingError::SetCloexecFailed {
+            fd: raw,
+            source: io::Error::last_os_error(),
+          });
+        }
+      }
     }
 
     Ok((bytes, received_fds))
@@ -492,5 +560,34 @@ mod tests {
     );
     let after = count_open_fds();
     assert_eq!(after, before, "expected recv_msg error to not leak fds");
+  }
+
+  #[test]
+  fn recvmsg_cloexec_fallback() {
+    let _guard = TEST_LOCK.lock().unwrap();
+
+    let (tx, rx) = UnixSeqpacket::pair().expect("socketpair");
+
+    let shm_payload = b"hello from shm";
+    let shm = SharedMemory::new(shm_payload).expect("memfd");
+
+    tx
+      .send_msg(b"control", &[shm.as_fd()])
+      .expect("send_msg succeeds");
+
+    // Force the fallback path by skipping MSG_CMSG_CLOEXEC on the initial recvmsg call.
+    let (_msg, mut fds) = rx
+      .recv_msg_impl(1024, 1, Some(0))
+      .expect("recv_msg fallback succeeds");
+    assert_eq!(fds.len(), 1);
+
+    let recv_fd = fds.pop().unwrap();
+    let flags = unsafe { libc::fcntl(recv_fd.as_raw_fd(), libc::F_GETFD) };
+    assert!(flags >= 0, "fcntl(F_GETFD) failed: {:?}", io::Error::last_os_error());
+    assert_ne!(
+      flags & libc::FD_CLOEXEC,
+      0,
+      "expected received fd to have FD_CLOEXEC set (fallback path)"
+    );
   }
 }
