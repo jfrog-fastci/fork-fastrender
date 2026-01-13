@@ -28,12 +28,17 @@ mod null_backend;
 mod ring_buffer;
 #[cfg(feature = "audio_cpal")]
 mod thread_priority;
+pub mod mixer;
 pub mod queue;
+pub mod timed_queue;
 
 #[cfg(feature = "audio_cpal")]
 pub use cpal_backend::CpalAudioBackend;
 pub use null_backend::NullAudioBackend;
 pub use queue::{pcm_f32_queue, PcmF32QueueConsumer, PcmF32QueueProducer};
+pub use timed_queue::{PushError, ReadResult, TimedAudioQueue, TimedAudioSegment};
+
+pub use mixer::{AudioMixer, AudioStreamId, AudioStreamParams};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioStreamConfig {
