@@ -15485,11 +15485,11 @@ fn dom_parser_parse_from_string_native(
     ))?
   };
 
-  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let html_value = scope.heap_mut().to_string(html_value)?;
-  let html = scope
+  let markup_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let markup_value = scope.heap_mut().to_string(markup_value)?;
+  let markup = scope
     .heap()
-    .get_string(html_value)
+    .get_string(markup_value)
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
@@ -15501,17 +15501,34 @@ fn dom_parser_parse_from_string_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  if ty.to_ascii_lowercase() != "text/html" {
-    return Err(VmError::TypeError(
-      "DOMParser.parseFromString only supports 'text/html'",
-    ));
-  }
-
-  let dom = dom2::parse_html_with_options(
-    &html,
-    crate::dom::DomParseOptions::with_scripting_enabled(false),
-  )
-  .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?;
+  let ty_lower = ty.trim().to_ascii_lowercase();
+  let dom = match ty_lower.as_str() {
+    "text/html" => dom2::parse_html_with_options(
+      &markup,
+      crate::dom::DomParseOptions::with_scripting_enabled(false),
+    )
+    .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?,
+    // DOMParser XML flavors.
+    "application/xml" | "text/xml" | "application/xhtml+xml" | "image/svg+xml" => {
+      match dom2::parse_xml(&markup) {
+        Ok(dom) => dom,
+        Err(_) => {
+          // Per spec, XML parse errors return a `parsererror` document instead of throwing.
+          dom2::parse_xml("<parsererror/>").unwrap_or_else(|_| {
+            let mut doc = dom2::Document::new_xml();
+            let parsererror = doc.create_element("parsererror", dom2::NULL_NAMESPACE);
+            let _ = doc.append_child(doc.root(), parsererror);
+            doc
+          })
+        }
+      }
+    }
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMParser.parseFromString only supports 'text/html' and XML MIME types",
+      ));
+    }
+  };
 
   // Construct a detached Document wrapper.
   let document_obj = scope.alloc_object_with_prototype(Some(host_document_obj))?;
@@ -41465,13 +41482,11 @@ fn document_content_type_get_native(
   };
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-
   let content_type = if dom.is_html_document() {
     "text/html"
   } else {
     "application/xml"
   };
-
   Ok(Value::String(scope.alloc_string(content_type)?))
 }
 
