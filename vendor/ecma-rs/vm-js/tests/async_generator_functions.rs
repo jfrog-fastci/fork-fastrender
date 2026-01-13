@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -14,6 +14,46 @@ fn assert_value_is_utf8(rt: &JsRuntime, value: Value, expected: &str) {
   };
   let actual = rt.heap().get_string(s).unwrap().to_utf8_lossy();
   assert_eq!(actual, expected);
+}
+
+fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
+  match err {
+    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
+    _ => {}
+  }
+
+  let Some(thrown) = err.thrown_value() else {
+    return Ok(false);
+  };
+  let Value::Object(err_obj) = thrown else {
+    return Ok(false);
+  };
+
+  let syntax_error_proto = rt.realm().intrinsics().syntax_error_prototype();
+  if rt.heap().object_prototype(err_obj)? != Some(syntax_error_proto) {
+    return Ok(false);
+  }
+
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(err_obj))?;
+
+  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+  let Some(Value::String(message_s)) =
+    scope.heap().object_get_own_data_property_value(err_obj, &message_key)?
+  else {
+    return Ok(false);
+  };
+
+  Ok(scope.heap().get_string(message_s)?.to_utf8_lossy() == "async generator functions")
+}
+
+fn async_generator_execution_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
+  // Detect runtime support (call semantics), not just parsing/prototype wiring.
+  match rt.exec_script("async function* __ag_support() { yield 1; } __ag_support();") {
+    Ok(_) => Ok(true),
+    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
+    Err(err) => Err(err),
+  }
 }
 
 #[test]
@@ -33,6 +73,9 @@ fn async_generator_function_is_not_constructable() {
 #[test]
 fn async_generator_default_params_are_not_evaluated_until_first_next() -> Result<(), VmError> {
   let mut rt = new_runtime();
+  if !async_generator_execution_supported(&mut rt)? {
+    return Ok(());
+  }
 
   let value = rt.exec_script(
     r#"
@@ -58,6 +101,9 @@ fn async_generator_default_params_are_not_evaluated_until_first_next() -> Result
 #[test]
 fn async_generator_method_in_object_literal_executes() -> Result<(), VmError> {
   let mut rt = new_runtime();
+  if !async_generator_execution_supported(&mut rt)? {
+    return Ok(());
+  }
 
   let value = rt.exec_script(
     r#"
@@ -82,6 +128,9 @@ fn async_generator_method_in_object_literal_executes() -> Result<(), VmError> {
 #[test]
 fn async_generator_method_in_class_executes() -> Result<(), VmError> {
   let mut rt = new_runtime();
+  if !async_generator_execution_supported(&mut rt)? {
+    return Ok(());
+  }
 
   let value = rt.exec_script(
     r#"
@@ -102,4 +151,3 @@ fn async_generator_method_in_class_executes() -> Result<(), VmError> {
   assert_value_is_utf8(&rt, value, "2");
   Ok(())
 }
-

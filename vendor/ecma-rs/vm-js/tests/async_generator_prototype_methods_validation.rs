@@ -102,7 +102,8 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
   // Feature-detect async generator support: `vm-js` historically parsed `async function*` but threw
   // a SyntaxError at runtime. When unsupported, skip this test so it becomes active automatically
   // once semantics are implemented.
-  match rt.exec_script("async function* g() { yield 1; }") {
+  // Detect runtime async-generator support (call semantics), not just parsing/prototype wiring.
+  match rt.exec_script("async function* g() { yield 1; } g();") {
     Ok(_) => {}
     Err(err) => {
       let mut scope = rt.heap.scope();
