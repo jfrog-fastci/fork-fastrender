@@ -21,10 +21,21 @@ pub enum FrameOwnershipViolation {
     expected: RendererId,
     actual: RendererId,
   },
+  TooManySubframes {
+    parent_frame_id: FrameId,
+    count: usize,
+    max: usize,
+  },
   InvalidSubframe {
     parent_frame_id: FrameId,
     child_frame_id: FrameId,
     expected_parent_frame_id: Option<FrameId>,
+  },
+  ClipStackTooDeep {
+    parent_frame_id: FrameId,
+    child_frame_id: FrameId,
+    depth: usize,
+    max: usize,
   },
   InvalidFrameBuffer {
     frame_id: FrameId,
@@ -241,8 +252,35 @@ impl BrowserIpcSecurityState {
     subframes: &[SubframeInfo],
     message: RendererToBrowserKind,
   ) -> bool {
+    if subframes.len() > crate::MAX_SUBFRAMES_PER_FRAME {
+      self.protocol_violation(
+        sender,
+        parent_frame_id,
+        message,
+        FrameOwnershipViolation::TooManySubframes {
+          parent_frame_id,
+          count: subframes.len(),
+          max: crate::MAX_SUBFRAMES_PER_FRAME,
+        },
+      );
+      return false;
+    }
     for subframe in subframes {
       let child = subframe.child;
+      if subframe.clip_stack.len() > crate::MAX_SUBFRAME_CLIP_STACK_DEPTH {
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::ClipStackTooDeep {
+            parent_frame_id,
+            child_frame_id: child,
+            depth: subframe.clip_stack.len(),
+            max: crate::MAX_SUBFRAME_CLIP_STACK_DEPTH,
+          },
+        );
+        return false;
+      }
       let expected_parent = self.frame_parent.get(&child).copied();
       if expected_parent != Some(parent_frame_id) {
         self.protocol_violation(
@@ -790,6 +828,84 @@ mod tests {
         } if *process_id == renderer && *frame_id == frame
       )),
       "expected InvalidPaintPlan protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn frame_ready_with_too_many_subframes_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(1);
+    browser.assign_frame(parent, renderer);
+
+    let info = simple_slot(FrameId(2));
+    let subframes = vec![info; crate::MAX_SUBFRAMES_PER_FRAME + 1];
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: solid_buffer([0, 0, 0, 255]),
+        subframes,
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::TooManySubframes { .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected TooManySubframes protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn frame_ready_with_deep_clip_stack_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(1);
+    browser.assign_frame(parent, renderer);
+
+    let clip = crate::ClipItem {
+      rect: crate::Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1.0,
+        height: 1.0,
+      },
+      radius: crate::BorderRadius::ZERO,
+    };
+
+    let mut info = simple_slot(FrameId(2));
+    info.clip_stack = vec![clip; crate::MAX_SUBFRAME_CLIP_STACK_DEPTH + 1];
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: solid_buffer([0, 0, 0, 255]),
+        subframes: vec![info],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::ClipStackTooDeep { .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected ClipStackTooDeep protocol event (events={events:?})"
     );
   }
 }

@@ -19,6 +19,20 @@ use url::Url;
 /// inline buffers.
 pub const MAX_IPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
+/// Hard cap on how many subframes (iframes) a single frame may report for browser-side composition
+/// or hit testing.
+///
+/// This is a defense-in-depth limit: the renderer process is untrusted and could otherwise attempt
+/// to force the browser into `O(n log n)` sorts and `O(n)` hit-testing/compositing work on every
+/// frame or input event.
+pub const MAX_SUBFRAMES_PER_FRAME: usize = 256;
+
+/// Hard cap on how many clip items may be supplied for a single subframe.
+///
+/// The browser-side compositor/hit tester walks the entire clip stack, so this cap bounds worst
+/// case CPU usage if a compromised renderer tries to send a pathological clip stack.
+pub const MAX_SUBFRAME_CLIP_STACK_DEPTH: usize = 64;
+
 pub mod csp;
 pub mod security;
 pub use security::{
@@ -1122,6 +1136,10 @@ pub enum CompositeError {
   NonAxisAlignedTransform,
   InvalidTransform,
   BufferSizeMismatch,
+  /// The renderer supplied an excessive number of subframes for a single frame.
+  TooManySubframes,
+  /// The renderer supplied an excessively deep clip stack for a single subframe.
+  ClipStackTooDeep,
 }
 
 fn blend_src_over(dst: &mut [u8; 4], src: [u8; 4]) {
@@ -1205,6 +1223,9 @@ pub fn composite_subframe(
   child: &FrameBuffer,
   info: &SubframeInfo,
 ) -> Result<(), CompositeError> {
+  if info.clip_stack.len() > MAX_SUBFRAME_CLIP_STACK_DEPTH {
+    return Err(CompositeError::ClipStackTooDeep);
+  }
   if parent
     .width
     .checked_mul(parent.height)
@@ -1313,6 +1334,9 @@ pub fn composite_subframes<'a>(
   subframes: impl IntoIterator<Item = (&'a SubframeInfo, &'a FrameBuffer)>,
 ) -> Result<FrameBuffer, CompositeError> {
   let mut list: Vec<_> = subframes.into_iter().collect();
+  if list.len() > MAX_SUBFRAMES_PER_FRAME {
+    return Err(CompositeError::TooManySubframes);
+  }
   list.sort_by_key(|(info, _)| (info.z_index, info.child.0));
   for (info, buffer) in list {
     composite_subframe(&mut parent, buffer, info)?;
@@ -1359,6 +1383,9 @@ pub fn composite_paint_plan<'a>(
 ) -> Result<FrameBuffer, CompositeError> {
   if plan.layers.len() != plan.slots.len() + 1 {
     return Err(CompositeError::BufferSizeMismatch);
+  }
+  if plan.slots.len() > MAX_SUBFRAMES_PER_FRAME {
+    return Err(CompositeError::TooManySubframes);
   }
 
   let mut by_child: HashMap<FrameId, &'a FrameBuffer> = HashMap::new();
@@ -1449,6 +1476,11 @@ impl FrameHitTester {
   pub fn set_subframes(&mut self, parent_frame_id: FrameId, mut subframes: Vec<SubframeInfo>) {
     // Mirror compositor ordering so hit testing respects paint order (topmost = last composited).
     subframes.sort_by_key(|info| (info.z_index, info.child.0));
+    if subframes.len() > MAX_SUBFRAMES_PER_FRAME {
+      // Keep only the topmost subframes to bound worst-case hit-test work. Truncating from the front
+      // preserves highest z-index (paint order) items.
+      subframes = subframes.split_off(subframes.len() - MAX_SUBFRAMES_PER_FRAME);
+    }
     let child_ids: Vec<FrameId> = subframes.iter().map(|info| info.child).collect();
 
     self
@@ -1565,6 +1597,9 @@ fn hit_test_subframe_point(
     return None;
   }
 
+  if info.clip_stack.len() > MAX_SUBFRAME_CLIP_STACK_DEPTH {
+    return None;
+  }
   if !point_in_clip_stack(&info.clip_stack, x, y) {
     return None;
   }
@@ -1984,6 +2019,83 @@ mod compositor_tests {
     let err = composite_paint_plan(plan, std::iter::empty::<(&SubframeInfo, &FrameBuffer)>())
       .expect_err("expected invalid first layer size to be rejected");
     assert_eq!(err, CompositeError::BufferSizeMismatch);
+  }
+
+  #[test]
+  fn composite_subframes_rejects_too_many_subframes() {
+    let parent = solid_buffer(1, 1, [0, 0, 0, 255]);
+    let child = solid_buffer(1, 1, [255, 0, 0, 255]);
+    let info = SubframeInfo {
+      child: FrameId(1),
+      src: None,
+      transform: AffineTransform::IDENTITY,
+      clip_stack: Vec::new(),
+      z_index: 0,
+      hit_testable: true,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
+    };
+
+    let infos = vec![info; MAX_SUBFRAMES_PER_FRAME + 1];
+    let err = composite_subframes(parent, infos.iter().map(|i| (i, &child)))
+      .expect_err("expected too many subframes to be rejected");
+    assert_eq!(err, CompositeError::TooManySubframes);
+  }
+
+  #[test]
+  fn composite_subframe_rejects_clip_stack_too_deep() {
+    let parent = solid_buffer(1, 1, [0, 0, 0, 255]);
+    let child = solid_buffer(1, 1, [255, 0, 0, 255]);
+    let clip = ClipItem {
+      rect: Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1.0,
+        height: 1.0,
+      },
+      radius: BorderRadius::ZERO,
+    };
+    let info = SubframeInfo {
+      child: FrameId(1),
+      src: None,
+      transform: AffineTransform::IDENTITY,
+      clip_stack: vec![clip; MAX_SUBFRAME_CLIP_STACK_DEPTH + 1],
+      z_index: 0,
+      hit_testable: true,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
+    };
+
+    let err = composite_subframes(parent, [(&info, &child)])
+      .expect_err("expected deep clip stack to be rejected");
+    assert_eq!(err, CompositeError::ClipStackTooDeep);
+  }
+
+  #[test]
+  fn composite_paint_plan_rejects_too_many_slots() {
+    let slot = SubframeInfo {
+      child: FrameId(1),
+      src: None,
+      transform: AffineTransform::IDENTITY,
+      clip_stack: Vec::new(),
+      z_index: 0,
+      hit_testable: true,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
+    };
+    let layer = solid_buffer(1, 1, [0, 0, 0, 0]);
+    let plan = FramePaintPlan {
+      frame_id: FrameId(1),
+      layers: vec![layer; MAX_SUBFRAMES_PER_FRAME + 2],
+      slots: vec![slot; MAX_SUBFRAMES_PER_FRAME + 1],
+    };
+
+    let err = composite_paint_plan(plan, std::iter::empty::<(&SubframeInfo, &FrameBuffer)>())
+      .expect_err("expected too many slots to be rejected");
+    assert_eq!(err, CompositeError::TooManySubframes);
   }
 
   #[test]
