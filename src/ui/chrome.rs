@@ -1483,8 +1483,14 @@ pub fn chrome_ui_with_bookmarks(
       let warning = active_tab.and_then(|t| t.warning.as_deref());
 
       let downloads = app.downloads.aggregate_progress();
+      let downloads_panel_open = app.chrome.downloads_panel_open;
+      let downloads_toggle_label = if downloads_panel_open {
+        "Hide downloads"
+      } else {
+        "Show downloads"
+      };
       let downloads_hover = if downloads.active_count == 0 {
-        std::borrow::Cow::Borrowed("Show downloads")
+        std::borrow::Cow::Borrowed(downloads_toggle_label)
       } else if let Some(total) = downloads.total_bytes {
         let count = if downloads.active_count > 1 {
           format!(" ({})", downloads.active_count)
@@ -1492,7 +1498,7 @@ pub fn chrome_ui_with_bookmarks(
           String::new()
         };
         std::borrow::Cow::Owned(format!(
-          "Downloading…{count} {} / {}",
+          "{downloads_toggle_label}: Downloading…{count} {} / {}",
           format_bytes(downloads.received_bytes),
           format_bytes(total)
         ))
@@ -1503,7 +1509,7 @@ pub fn chrome_ui_with_bookmarks(
           String::new()
         };
         std::borrow::Cow::Owned(format!(
-          "Downloading…{count} {}",
+          "{downloads_toggle_label}: Downloading…{count} {}",
           format_bytes(downloads.received_bytes)
         ))
       };
@@ -5029,6 +5035,101 @@ mod tests {
         "expected AccessKit name {expected:?} in chrome output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
       );
     }
+  }
+
+  #[test]
+  fn downloads_button_accesskit_label_reflects_panel_open_state() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // Closed.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+    let output = ctx.end_frame();
+
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    assert!(
+      names.iter().any(|n| n == "Show downloads"),
+      "expected downloads button to expose \"Show downloads\" when closed.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+    );
+
+    // Open.
+    app.chrome.downloads_panel_open = true;
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+    let output = ctx.end_frame();
+
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    assert!(
+      names.iter().any(|n| n == "Hide downloads"),
+      "expected downloads button to expose \"Hide downloads\" when open.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  #[test]
+  fn hamburger_menu_items_show_hide_labels_reflect_panel_open_state() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // Frame 0: render once so the chrome stores the menu button rect.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = ctx.end_frame();
+    let menu_button_rect = expect_temp_rect(&ctx, "chrome_menu_button_rect");
+
+    // Frame 1: click the menu button to open the menu.
+    begin_frame(&ctx, left_click_at(menu_button_rect.center()));
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let output = ctx.end_frame();
+
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    for expected in ["Show history panel", "Show bookmarks manager"] {
+      assert!(
+        names.iter().any(|n| n == expected),
+        "expected hamburger menu label {expected:?}.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
+
+    // Frame 2: toggle history panel open state; menu item label should switch to "Hide history panel".
+    app.chrome.history_panel_open = true;
+    app.chrome.bookmarks_manager_open = false;
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let output = ctx.end_frame();
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    assert!(
+      names.iter().any(|n| n == "Hide history panel"),
+      "expected hamburger menu history label to switch to \"Hide history panel\".\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+    );
+
+    // Frame 3: toggle bookmarks manager open state; menu item label should switch accordingly.
+    app.chrome.history_panel_open = false;
+    app.chrome.bookmarks_manager_open = true;
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let output = ctx.end_frame();
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    assert!(
+      names.iter().any(|n| n == "Hide bookmarks manager"),
+      "expected hamburger menu bookmarks manager label to switch to \"Hide bookmarks manager\".\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+    );
   }
 
   #[test]

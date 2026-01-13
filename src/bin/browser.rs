@@ -8557,7 +8557,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
               // Only redraw when the history deltas could affect visible chrome/about UI.
               let needs_redraw_due_to_history = needs_redraw_for_update
-                && (win.app.history_panel_open
+                && (win.app.browser_state.chrome.history_panel_open
                   || omnibox_changed_due_to_history
                   || about_history_visible);
               if needs_redraw_due_to_history
@@ -9537,7 +9537,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Only redraw when a bookmark update could affect visible UI in this window. (About pages
         // are handled separately via the throttled snapshot rebuild below.)
         let needs_redraw_due_to_bookmarks = needs_redraw_for_update
-          && (win.app.bookmarks_panel_open
+          && (win.app.browser_state.chrome.bookmarks_manager_open
             || win.app.browser_state.chrome.bookmarks_bar_visible
             || star_state_changed
             || omnibox_changed_due_to_bookmarks);
@@ -9674,7 +9674,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // Only redraw when the history update could affect visible chrome/about UI.
         let needs_redraw_due_to_history = needs_redraw_for_update
-          && (win.app.history_panel_open || about_history_visible || omnibox_changed_due_to_history);
+          && (win.app.browser_state.chrome.history_panel_open
+            || about_history_visible
+            || omnibox_changed_due_to_history);
         if needs_redraw_due_to_history && !(win.app.window_occluded || win.app.window_minimized) {
           win.app.window.request_redraw();
         }
@@ -13391,10 +13393,7 @@ struct App {
   profile_bookmarks_flush_requested: bool,
   profile_history_dirty: bool,
   profile_history_flush_requested: bool,
-  history_panel_open: bool,
   history_panel_request_focus_search: bool,
-  bookmarks_panel_open: bool,
-  downloads_panel_open: bool,
   downloads_panel_request_focus: bool,
   downloads_panel_search_query: String,
   clear_browsing_data_dialog_open: bool,
@@ -14496,10 +14495,7 @@ impl App {
       profile_bookmarks_flush_requested: false,
       profile_history_dirty: false,
       profile_history_flush_requested: false,
-      history_panel_open: false,
       history_panel_request_focus_search: false,
-      bookmarks_panel_open: false,
-      downloads_panel_open: false,
       downloads_panel_request_focus: false,
       downloads_panel_search_query: String::new(),
       clear_browsing_data_dialog_open: false,
@@ -18041,9 +18037,9 @@ impl App {
     }
 
     if matches!(&msg, fastrender::ui::WorkerToUi::DownloadStarted { .. }) {
-      let before_downloads_open = self.downloads_panel_open;
-      let before_history_open = self.history_panel_open;
-      let before_bookmarks_open = self.bookmarks_panel_open;
+      let before_downloads_open = self.browser_state.chrome.downloads_panel_open;
+      let before_history_open = self.browser_state.chrome.history_panel_open;
+      let before_bookmarks_open = self.browser_state.chrome.bookmarks_manager_open;
 
       // Treat any open popup/modal UI as a reason to skip best-effort downloads auto-open.
       let other_popup_open = self.open_select_dropdown.is_some()
@@ -18063,21 +18059,22 @@ impl App {
           address_bar_has_focus: self.browser_state.chrome.address_bar_has_focus,
           clear_browsing_data_dialog_open: self.clear_browsing_data_dialog_open,
           other_popup_open,
-          history_panel_open: self.history_panel_open,
-          bookmarks_panel_open: self.bookmarks_panel_open,
-          downloads_panel_open: self.downloads_panel_open,
+          history_panel_open: self.browser_state.chrome.history_panel_open,
+          bookmarks_panel_open: self.browser_state.chrome.bookmarks_manager_open,
+          downloads_panel_open: self.browser_state.chrome.downloads_panel_open,
           downloads_panel_request_focus: self.downloads_panel_request_focus,
         },
       );
 
-      self.history_panel_open = output.history_panel_open;
-      self.bookmarks_panel_open = output.bookmarks_panel_open;
-      self.downloads_panel_open = output.downloads_panel_open;
+      self.browser_state.chrome.history_panel_open = output.history_panel_open;
+      self.browser_state.chrome.bookmarks_manager_open = output.bookmarks_panel_open;
+      self.browser_state.chrome.downloads_panel_open = output.downloads_panel_open;
       self.downloads_panel_request_focus = output.downloads_panel_request_focus;
 
-      let opened_downloads_panel = !before_downloads_open && self.downloads_panel_open;
-      let closed_other_panels = (before_history_open && !self.history_panel_open)
-        || (before_bookmarks_open && !self.bookmarks_panel_open);
+      let opened_downloads_panel =
+        !before_downloads_open && self.browser_state.chrome.downloads_panel_open;
+      let closed_other_panels = (before_history_open && !self.browser_state.chrome.history_panel_open)
+        || (before_bookmarks_open && !self.browser_state.chrome.bookmarks_manager_open);
 
       if opened_downloads_panel || closed_other_panels {
         // Match `ChromeAction::ToggleDownloadsPanel`: downloads share the right-side panel space
@@ -18529,7 +18526,9 @@ impl App {
         .find(|d| d.download_id == download_id);
 
       let download_event = match (trigger, entry) {
-        (DownloadToastTrigger::Started { .. }, Some(entry)) if !self.downloads_panel_open => {
+        (DownloadToastTrigger::Started { .. }, Some(entry))
+          if !self.browser_state.chrome.downloads_panel_open =>
+        {
           Some(DownloadEvent::Started {
             file_name: entry.file_name.clone(),
           })
@@ -20716,8 +20715,8 @@ impl App {
       image_url: image_url.as_deref(),
       page_url,
       bookmarks: &self.bookmarks,
-      history_panel_open: self.history_panel_open,
-      bookmarks_panel_open: self.bookmarks_panel_open,
+      history_panel_open: self.browser_state.chrome.history_panel_open,
+      bookmarks_panel_open: self.browser_state.chrome.bookmarks_manager_open,
       can_copy,
       can_cut,
       can_paste,
@@ -21108,12 +21107,12 @@ impl App {
             filename_hint: None,
           });
           // Downloads are shown in the right-side panel, so close other panels that share that space.
-          self.history_panel_open = false;
-          self.bookmarks_panel_open = false;
-          if !self.downloads_panel_open {
+          self.browser_state.chrome.history_panel_open = false;
+          self.browser_state.chrome.bookmarks_manager_open = false;
+          if !self.browser_state.chrome.downloads_panel_open {
             self.downloads_panel_request_focus = true;
           }
-          self.downloads_panel_open = true;
+          self.browser_state.chrome.downloads_panel_open = true;
         } else {
           self.show_chrome_toast_kind(
             fastrender::ui::ToastKind::Warning,
@@ -21152,14 +21151,14 @@ impl App {
             filename_hint: None,
           });
           // Downloads are shown in the right-side panel, so close other panels that share that space.
-          self.history_panel_open = false;
-          self.bookmarks_panel_open = false;
+          self.browser_state.chrome.history_panel_open = false;
+          self.browser_state.chrome.bookmarks_manager_open = false;
           self.history_panel_request_focus_search = false;
           self.bookmarks_manager.clear_transient();
-          if !self.downloads_panel_open {
+          if !self.browser_state.chrome.downloads_panel_open {
             self.downloads_panel_request_focus = true;
           }
-          self.downloads_panel_open = true;
+          self.browser_state.chrome.downloads_panel_open = true;
           self.clear_page_focus();
         } else {
           self.show_chrome_toast_kind(
@@ -21183,8 +21182,8 @@ impl App {
           let action = PageContextMenuAction::BookmarkLink(url);
           let result = apply_page_context_menu_action(
             &mut self.bookmarks,
-            &mut self.history_panel_open,
-            &mut self.bookmarks_panel_open,
+            &mut self.browser_state.chrome.history_panel_open,
+            &mut self.browser_state.chrome.bookmarks_manager_open,
             &action,
           );
           if result.bookmarks_changed {
@@ -21204,8 +21203,8 @@ impl App {
           let action = PageContextMenuAction::BookmarkPage(url);
           let result = apply_page_context_menu_action(
             &mut self.bookmarks,
-            &mut self.history_panel_open,
-            &mut self.bookmarks_panel_open,
+            &mut self.browser_state.chrome.history_panel_open,
+            &mut self.browser_state.chrome.bookmarks_manager_open,
             &action,
           );
           if result.bookmarks_changed {
@@ -21223,8 +21222,8 @@ impl App {
         let action = PageContextMenuAction::ToggleHistoryPanel;
         let result = apply_page_context_menu_action(
           &mut self.bookmarks,
-          &mut self.history_panel_open,
-          &mut self.bookmarks_panel_open,
+          &mut self.browser_state.chrome.history_panel_open,
+          &mut self.browser_state.chrome.bookmarks_manager_open,
           &action,
         );
         if result.bookmarks_changed {
@@ -21236,8 +21235,8 @@ impl App {
         let action = PageContextMenuAction::ToggleBookmarksPanel;
         let result = apply_page_context_menu_action(
           &mut self.bookmarks,
-          &mut self.history_panel_open,
-          &mut self.bookmarks_panel_open,
+          &mut self.browser_state.chrome.history_panel_open,
+          &mut self.browser_state.chrome.bookmarks_manager_open,
           &action,
         );
         if result.bookmarks_changed {
@@ -21253,7 +21252,7 @@ impl App {
   }
 
   fn close_downloads_panel(&mut self) {
-    self.downloads_panel_open = false;
+    self.browser_state.chrome.downloads_panel_open = false;
     self.downloads_panel_request_focus = false;
     self.downloads_panel_search_query.clear();
   }
@@ -22937,9 +22936,9 @@ impl App {
   fn should_restore_page_focus(&self) -> bool {
     should_restore_page_focus_for_state(
       self.browser_state.chrome.address_bar_has_focus,
-      self.bookmarks_panel_open,
-      self.history_panel_open,
-      self.downloads_panel_open,
+      self.browser_state.chrome.bookmarks_manager_open,
+      self.browser_state.chrome.history_panel_open,
+      self.browser_state.chrome.downloads_panel_open,
       self.clear_browsing_data_dialog_open,
       self.set_home_page_dialog_open,
       self.browser_state.chrome.tab_search.open,
@@ -23230,15 +23229,15 @@ impl App {
       .active_tab()
       .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()));
 
-    needs_redraw_for_profile_update_state(
-      update,
-      ProfileUpdateRedrawState {
-        bookmarks_panel_open: self.bookmarks_panel_open,
-        history_panel_open: self.history_panel_open,
-        bookmarks_bar_visible: self.browser_state.chrome.bookmarks_bar_visible,
-        omnibox_open: self.browser_state.chrome.omnibox.open,
-        active_tab_url,
-        bookmarks: &self.bookmarks,
+      needs_redraw_for_profile_update_state(
+        update,
+        ProfileUpdateRedrawState {
+          bookmarks_panel_open: self.browser_state.chrome.bookmarks_manager_open,
+          history_panel_open: self.browser_state.chrome.history_panel_open,
+          bookmarks_bar_visible: self.browser_state.chrome.bookmarks_bar_visible,
+          omnibox_open: self.browser_state.chrome.omnibox.open,
+          active_tab_url,
+          bookmarks: &self.bookmarks,
       },
     )
   }
@@ -25777,14 +25776,14 @@ impl App {
           self.window.request_redraw();
         }
         ChromeAction::ToggleDownloadsPanel => {
-          let next = !self.downloads_panel_open;
+          let next = !self.browser_state.chrome.downloads_panel_open;
+          self.browser_state.chrome.downloads_panel_open = next;
           if next {
-            self.downloads_panel_open = true;
             self.downloads_panel_request_focus = true;
             // Keep the right-side panel area exclusive: downloads share the same side panel space as
             // history/bookmarks.
-            self.history_panel_open = false;
-            self.bookmarks_panel_open = false;
+            self.browser_state.chrome.history_panel_open = false;
+            self.browser_state.chrome.bookmarks_manager_open = false;
             self.history_panel_request_focus_search = false;
             self.bookmarks_manager.clear_transient();
             self.clear_page_focus();
@@ -25819,9 +25818,9 @@ impl App {
           self.window.request_redraw();
         }
         ChromeAction::ToggleHistoryPanel => {
-          self.history_panel_open = !self.history_panel_open;
-          if self.history_panel_open {
-            self.bookmarks_panel_open = false;
+          self.browser_state.chrome.history_panel_open = !self.browser_state.chrome.history_panel_open;
+          if self.browser_state.chrome.history_panel_open {
+            self.browser_state.chrome.bookmarks_manager_open = false;
             self.close_downloads_panel();
             self.bookmarks_manager.clear_transient();
             self.history_panel_request_focus_search = true;
@@ -25832,9 +25831,10 @@ impl App {
           self.window.request_redraw();
         }
         ChromeAction::ToggleBookmarksManager => {
-          self.bookmarks_panel_open = !self.bookmarks_panel_open;
-          if self.bookmarks_panel_open {
-            self.history_panel_open = false;
+          self.browser_state.chrome.bookmarks_manager_open =
+            !self.browser_state.chrome.bookmarks_manager_open;
+          if self.browser_state.chrome.bookmarks_manager_open {
+            self.browser_state.chrome.history_panel_open = false;
             self.close_downloads_panel();
             self.bookmarks_manager.request_focus_search();
             // While the manager is open, do not forward keyboard focus to the page. The manager
@@ -27275,8 +27275,8 @@ impl App {
         &self.browser_state,
         fastrender::ui::MenuBarState {
           debug_log_open: self.debug_log_ui_enabled && self.debug_log_ui_open,
-          history_panel_open: self.history_panel_open,
-          bookmarks_panel_open: self.bookmarks_panel_open,
+          history_panel_open: self.browser_state.chrome.history_panel_open,
+          bookmarks_panel_open: self.browser_state.chrome.bookmarks_manager_open,
           page_bookmarked,
         },
         self.chrome_has_text_focus,
@@ -27300,9 +27300,10 @@ impl App {
               }
             }
             fastrender::ui::MenuCommand::ToggleHistoryPanel => {
-              self.history_panel_open = !self.history_panel_open;
-              if self.history_panel_open {
-                self.bookmarks_panel_open = false;
+              self.browser_state.chrome.history_panel_open =
+                !self.browser_state.chrome.history_panel_open;
+              if self.browser_state.chrome.history_panel_open {
+                self.browser_state.chrome.bookmarks_manager_open = false;
                 self.close_downloads_panel();
                 self.bookmarks_manager.clear_transient();
                 self.history_panel_request_focus_search = true;
@@ -27312,9 +27313,10 @@ impl App {
               }
             }
             fastrender::ui::MenuCommand::ToggleBookmarksPanel => {
-              self.bookmarks_panel_open = !self.bookmarks_panel_open;
-              if self.bookmarks_panel_open {
-                self.history_panel_open = false;
+              self.browser_state.chrome.bookmarks_manager_open =
+                !self.browser_state.chrome.bookmarks_manager_open;
+              if self.browser_state.chrome.bookmarks_manager_open {
+                self.browser_state.chrome.history_panel_open = false;
                 self.close_downloads_panel();
                 self.history_panel_request_focus_search = false;
                 self.bookmarks_manager.request_focus_search();
@@ -27348,8 +27350,8 @@ impl App {
               let egui_target = self.chrome_has_text_focus;
               let should_route_to_egui_text_input = egui_target
                 || self.browser_state.chrome.tab_search.open
-                || self.bookmarks_panel_open
-                || self.history_panel_open
+                || self.browser_state.chrome.bookmarks_manager_open
+                || self.browser_state.chrome.history_panel_open
                 || self
                   .browser_state
                   .active_tab()
@@ -27439,16 +27441,7 @@ impl App {
       }
     }
 
-    // Keep browser-agnostic chrome state in sync with the windowed UI's side panel visibility so
-    // `chrome_ui` can expose accurate labels/state to assistive tech (e.g. the hamburger menu toggle
-    // items).
-    self.browser_state.chrome.history_panel_open = self.history_panel_open;
-    self.browser_state.chrome.bookmarks_manager_open = self.bookmarks_panel_open;
-
     let appearance_before = self.browser_state.appearance.clone();
-    // Mirror front-end side panel state into the shared chrome model so the egui toolbar can expose
-    // expanded/collapsed state to AccessKit (screen readers).
-    self.browser_state.chrome.downloads_panel_open = self.downloads_panel_open;
     let chrome_actions = if self.renderer_chrome_enabled {
       // Renderer-chrome (FastRender HTML/CSS chrome). This is intentionally incremental: only the
       // tab strip is rendered today, and interactions are hosted in Rust (no JS).
@@ -27543,8 +27536,8 @@ impl App {
       .active_tab()
       .is_some_and(|tab| tab.find.open);
 
-    if self.bookmarks_panel_open && !close_bookmarks_panel {
-      let mut output = fastrender::ui::panels::bookmarks_manager_side_panel(
+    if self.browser_state.chrome.bookmarks_manager_open && !close_bookmarks_panel {
+      let output = fastrender::ui::panels::bookmarks_manager_side_panel(
         &ctx,
         fastrender::ui::panels::BookmarksManagerInput {
           state: &mut self.bookmarks_manager,
@@ -27630,7 +27623,7 @@ impl App {
           }
         }
       }
-    } else if self.history_panel_open && !close_history_panel {
+    } else if self.browser_state.chrome.history_panel_open && !close_history_panel {
       let output = fastrender::ui::panels::history_panel_ui(
         &ctx,
         fastrender::ui::panels::HistoryPanelInput {
@@ -27665,9 +27658,10 @@ impl App {
     // panel".
     if !(self.clear_browsing_data_dialog_open
       || self.set_home_page_dialog_open)
-      && (self.bookmarks_panel_open || self.history_panel_open)
+      && (self.browser_state.chrome.bookmarks_manager_open
+        || self.browser_state.chrome.history_panel_open)
     {
-      if self.history_panel_open {
+      if self.browser_state.chrome.history_panel_open {
         match fastrender::ui::panel_escape::history_panel_escape_action(
           ctx.wants_keyboard_input(),
           self.browser_state.chrome.history_search_text.is_empty(),
@@ -27691,7 +27685,7 @@ impl App {
         }
       }
 
-      if self.bookmarks_panel_open {
+      if self.browser_state.chrome.bookmarks_manager_open {
         match fastrender::ui::panel_escape::bookmarks_panel_escape_action(
           ctx.wants_keyboard_input(),
           self.bookmarks_manager.search.is_empty(),
@@ -27716,12 +27710,12 @@ impl App {
     }
 
     if close_bookmarks_panel {
-      self.bookmarks_panel_open = false;
+      self.browser_state.chrome.bookmarks_manager_open = false;
       self.bookmarks_manager.clear_transient();
       self.set_page_focus(self.should_restore_page_focus());
     }
     if close_history_panel {
-      self.history_panel_open = false;
+      self.browser_state.chrome.history_panel_open = false;
       self.set_page_focus(self.should_restore_page_focus());
     }
     if !panel_actions.is_empty() {
@@ -27759,10 +27753,10 @@ impl App {
 
     // Render before handling Escape-to-close so focused panel text inputs (e.g. the Downloads
     // search field) can consume Escape (to clear) before we interpret it as "close the panel".
-    if self.downloads_panel_open {
+    if self.browser_state.chrome.downloads_panel_open {
       self.render_downloads_panel(&ctx);
     }
-    if self.downloads_panel_open
+    if self.browser_state.chrome.downloads_panel_open
       && !(self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open)
       && fastrender::ui::panel_escape::downloads_panel_should_close_on_escape(
         self.browser_state.chrome.address_bar_has_focus,
