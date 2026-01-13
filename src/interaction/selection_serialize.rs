@@ -123,12 +123,17 @@ pub(crate) fn cmp_point_dom2(
       .then_with(|| a.char_offset.cmp(&b.char_offset)),
     (Some(_), None) => Ordering::Less,
     (None, Some(_)) => Ordering::Greater,
-    // Deterministic fallback for detached/unmapped nodes.
-    (None, None) => a
-      .node_id
-      .index()
-      .cmp(&b.node_id.index())
-      .then_with(|| a.char_offset.cmp(&b.char_offset)),
+    // When both endpoints are unmappable in the current snapshot, there is no meaningful DOM order.
+    //
+    // `dom2::NodeId::index()` is a stable arena index, **not** a DOM tree order key, so avoid using
+    // it for ordering. Treat distinct unmappable nodes as unordered and let callers prune them.
+    (None, None) => {
+      if a.node_id == b.node_id {
+        a.char_offset.cmp(&b.char_offset)
+      } else {
+        Ordering::Equal
+      }
+    }
   }
 }
 

@@ -57,6 +57,7 @@ pub use html_parse::{parse_html, parse_html_with_options};
 pub use cross_document::{clone_node_into_document, clone_node_into_document_deep, AdoptedSubtree};
 pub use xml_parse::parse_xml;
 pub use range::{BoundaryPoint, RangeId};
+pub(crate) use range::cmp_dom2_nodes;
 
 pub use mutation_observer::{
   MutationObserverAgent, MutationObserverId, MutationObserverInit, MutationObserverLimits, MutationRecord,

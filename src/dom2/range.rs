@@ -2,6 +2,33 @@ use super::{Document, DomError, DomResult, LiveRangeId, NodeId, NodeKind};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+/// Compare two dom2 nodes in *current DOM tree order* with WHATWG DOM Range ShadowRoot semantics.
+///
+/// This is a lightweight wrapper around the tree-order logic used by Range algorithms:
+/// - Only nodes in the same Range tree root (Document or ShadowRoot) are comparable.
+/// - Detached nodes are treated as unordered (`Ordering::Equal`) so callers can prune them.
+///
+/// Callers **must** handle the `Ordering::Equal` fallback case for distinct nodes (e.g. by dropping
+/// selection points/ranges that are disconnected or cross a shadow boundary).
+pub(crate) fn cmp_dom2_nodes(dom: &Document, a: NodeId, b: NodeId) -> Ordering {
+  if a == b {
+    return Ordering::Equal;
+  }
+
+  // Treat detached/out-of-bounds nodes as unordered.
+  if !dom.is_connected(a) || !dom.is_connected(b) {
+    return Ordering::Equal;
+  }
+
+  // Range algorithms treat ShadowRoot as the root of a separate tree, so do not attempt to order
+  // nodes across shadow boundaries.
+  if dom.tree_root_for_range(a) != dom.tree_root_for_range(b) {
+    return Ordering::Equal;
+  }
+
+  dom.compare_tree_order_for_range(a, b)
+}
+
 /// A DOM boundary point (node, offset) used by Range algorithms.
 ///
 /// Spec: https://dom.spec.whatwg.org/#concept-range-bp

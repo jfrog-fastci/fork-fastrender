@@ -10,6 +10,7 @@ use crate::interaction::state::{
   DocumentSelectionStateDom2, FileSelection, FormStateDom2, ImePreeditStateDom2,
   TextEditPaintStateDom2,
 };
+use crate::{dom::ShadowRootMode, dom2::SlotAssignmentMode};
 use crate::text::caret::CaretAffinity;
 use rustc_hash::FxHashSet;
 use std::path::PathBuf;
@@ -42,9 +43,9 @@ fn document_selection_dom2_from_preorder_tracks_dom_mutations() {
     anchor: start_pre,
     focus: end_pre,
   });
-
+ 
   let selection_dom2 =
-    DocumentSelectionStateDom2::from_preorder(&selection_preorder, &snapshot1.mapping)
+    DocumentSelectionStateDom2::from_preorder(&selection_preorder, &doc, &snapshot1.mapping)
       .expect("convert selection to dom2");
   let DocumentSelectionStateDom2::Ranges(ranges_dom2) = &selection_dom2 else {
     panic!("expected dom2 selection to be a range");
@@ -464,4 +465,102 @@ fn interaction_state_dom2_prune_disconnected_clears_state_for_inert_template_con
   assert!(state_dom2.focus_chain.is_empty());
   assert!(state_dom2.hover_chain.is_empty());
   assert!(state_dom2.active_chain.is_empty());
+}
+
+#[test]
+fn document_selection_ranges_dom2_normalize_uses_dom_tree_order_not_node_id_index() {
+  let mut doc = crate::dom2::parse_html("<!doctype html><html><body></body></html>").unwrap();
+  let body = doc.body().expect("body");
+
+  let container = doc.create_element("div", "");
+  doc.append_child(body, container).unwrap();
+
+  // Create nodes in one order (t1 then t2)...
+  let t1 = doc.create_text("A");
+  let t2 = doc.create_text("B");
+  // ...but insert them in the opposite DOM order (t2 before t1).
+  doc.append_child(container, t1).unwrap();
+  doc.insert_before(container, t2, Some(t1)).unwrap();
+
+  assert!(
+    t1.index() < t2.index(),
+    "test invariant: node ids are creation-order (t1 < t2)"
+  );
+
+  let mut selection = DocumentSelectionRangesDom2 {
+    ranges: vec![DocumentSelectionRangeDom2 {
+      start: DocumentSelectionPointDom2 {
+        node_id: t1,
+        char_offset: 0,
+      },
+      end: DocumentSelectionPointDom2 {
+        node_id: t2,
+        char_offset: 0,
+      },
+    }],
+    primary: 0,
+    anchor: DocumentSelectionPointDom2 {
+      node_id: t1,
+      char_offset: 0,
+    },
+    focus: DocumentSelectionPointDom2 {
+      node_id: t2,
+      char_offset: 0,
+    },
+  };
+
+  selection.normalize(&doc);
+
+  assert_eq!(selection.ranges.len(), 1);
+  assert_eq!(selection.ranges[0].start.node_id, t2);
+  assert_eq!(selection.ranges[0].end.node_id, t1);
+}
+
+#[test]
+fn document_selection_ranges_dom2_normalize_drops_cross_shadow_root_ranges() {
+  let mut doc = crate::dom2::parse_html("<!doctype html><div id=host></div>").unwrap();
+  let host = doc.get_element_by_id("host").expect("host element");
+  let shadow = doc
+    .attach_shadow_root(
+      host,
+      ShadowRootMode::Open,
+      /* clonable */ false,
+      /* serializable */ false,
+      /* delegates_focus */ false,
+      SlotAssignmentMode::Named,
+    )
+    .unwrap();
+
+  let light_text = doc.create_text("light");
+  doc.append_child(host, light_text).unwrap();
+  let shadow_text = doc.create_text("shadow");
+  doc.append_child(shadow, shadow_text).unwrap();
+
+  let mut selection = DocumentSelectionRangesDom2 {
+    ranges: vec![DocumentSelectionRangeDom2 {
+      start: DocumentSelectionPointDom2 {
+        node_id: light_text,
+        char_offset: 0,
+      },
+      end: DocumentSelectionPointDom2 {
+        node_id: shadow_text,
+        char_offset: 0,
+      },
+    }],
+    primary: 0,
+    anchor: DocumentSelectionPointDom2 {
+      node_id: light_text,
+      char_offset: 0,
+    },
+    focus: DocumentSelectionPointDom2 {
+      node_id: shadow_text,
+      char_offset: 0,
+    },
+  };
+
+  selection.normalize(&doc);
+  assert!(
+    selection.ranges.is_empty(),
+    "cross-shadow-root selection ranges should be pruned"
+  );
 }

@@ -114,8 +114,12 @@ impl DocumentSelectionState {
 
 /// Document selection state backed by `dom2::NodeId` endpoints.
 ///
-/// `dom2::NodeId` values are stable across DOM mutations, but their numeric indices do not reflect
-/// DOM order. Any logic that compares endpoints must use the current renderer preorder mapping.
+/// `dom2::NodeId` values are stable across DOM mutations, but their numeric indices do **not**
+/// reflect DOM tree order.
+///
+/// Any logic that compares endpoints must use the current DOM tree order (e.g.
+/// [`crate::dom2::cmp_dom2_nodes`]) rather than `NodeId::index()`. When projecting the selection
+/// into renderer preorder space, use [`RendererDomMapping`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DocumentSelectionStateDom2 {
   /// The entire rendered document (excluding non-selectable/hidden content).
@@ -185,13 +189,14 @@ impl DocumentSelectionStateDom2 {
   /// mutations using `dom2::NodeId`.
   pub fn from_preorder(
     selection: &DocumentSelectionState,
+    dom: &crate::dom2::Document,
     mapping: &RendererDomMapping,
   ) -> Option<Self> {
     match selection {
       DocumentSelectionState::All => Some(DocumentSelectionStateDom2::All),
       DocumentSelectionState::Ranges(ranges) => {
         let mut dom2 = DocumentSelectionRangesDom2::from_preorder(ranges, mapping)?;
-        dom2.normalize(mapping);
+        dom2.normalize(dom);
         Some(DocumentSelectionStateDom2::Ranges(dom2))
       }
     }
@@ -220,7 +225,33 @@ impl DocumentSelectionStateDom2 {
           ranges.anchor = first.start;
           ranges.focus = first.end;
         }
-        ranges.normalize(mapping);
+
+        // Repair primary index based on the current anchor/focus span. This uses the preorder
+        // mapping because we do not have access to the live `dom2::Document` here.
+        let primary_span = DocumentSelectionRangeDom2 {
+          start: ranges.anchor,
+          end: ranges.focus,
+        }
+        .normalized(mapping);
+
+        if let Some(idx) = ranges
+          .ranges
+          .iter()
+          .copied()
+          .position(|r| {
+            let r = r.normalized(mapping);
+            cmp_point_dom2(r.start, primary_span.start, mapping) != Ordering::Greater
+              && cmp_point_dom2(r.end, primary_span.end, mapping) != Ordering::Less
+          })
+        {
+          ranges.primary = idx;
+        } else {
+          // Fallback: clamp primary into bounds and update anchor/focus to match.
+          ranges.primary = ranges.primary.min(ranges.ranges.len().saturating_sub(1));
+          let primary = ranges.ranges[ranges.primary];
+          ranges.anchor = primary.start;
+          ranges.focus = primary.end;
+        }
         true
       }
     }
@@ -383,38 +414,107 @@ impl DocumentSelectionRangesDom2 {
     })
   }
 
+  fn cmp_point(
+    dom: &crate::dom2::Document,
+    a: DocumentSelectionPointDom2,
+    b: DocumentSelectionPointDom2,
+  ) -> Ordering {
+    let node_cmp = crate::dom2::cmp_dom2_nodes(dom, a.node_id, b.node_id);
+    if node_cmp != Ordering::Equal {
+      return node_cmp;
+    }
+    // If nodes are unordered (e.g. detached or cross-shadow), treat the points as unordered too.
+    if a.node_id != b.node_id {
+      return Ordering::Equal;
+    }
+    a.char_offset.cmp(&b.char_offset)
+  }
+
+  fn normalize_range(
+    dom: &crate::dom2::Document,
+    mut range: DocumentSelectionRangeDom2,
+  ) -> Option<DocumentSelectionRangeDom2> {
+    // Drop detached/out-of-bounds nodes.
+    if !dom.is_connected(range.start.node_id) || !dom.is_connected(range.end.node_id) {
+      return None;
+    }
+
+    // Range ordering/merging is only defined within a single Range tree root (Document or
+    // ShadowRoot). Cross-root selections are currently dropped.
+    if dom.tree_root_for_range(range.start.node_id) != dom.tree_root_for_range(range.end.node_id) {
+      return None;
+    }
+
+    match Self::cmp_point(dom, range.start, range.end) {
+      Ordering::Greater => {
+        std::mem::swap(&mut range.start, &mut range.end);
+      }
+      Ordering::Equal if range.start.node_id != range.end.node_id => {
+        // Unordered endpoints (detached/cross-shadow) should be pruned rather than using a bogus
+        // ordering.
+        return None;
+      }
+      _ => {}
+    }
+
+    Some(range)
+  }
+
   fn range_contains_range(
+    dom: &crate::dom2::Document,
     outer: &DocumentSelectionRangeDom2,
     inner: &DocumentSelectionRangeDom2,
-    mapping: &RendererDomMapping,
   ) -> bool {
-    cmp_point_dom2(outer.start, inner.start, mapping) != Ordering::Greater
-      && cmp_point_dom2(outer.end, inner.end, mapping) != Ordering::Less
+    Self::cmp_point(dom, outer.start, inner.start) != Ordering::Greater
+      && Self::cmp_point(dom, outer.end, inner.end) != Ordering::Less
   }
 
   /// Ensure `ranges` are normalized, sorted, and non-overlapping (merging overlap/adjacency).
   ///
-  /// Also repairs `primary` to point at the range containing the current anchor/focus span.
-  pub fn normalize(&mut self, mapping: &RendererDomMapping) {
+  /// This mirrors `DocumentSelectionRanges::normalize`, but uses DOM tree order rather than
+  /// `NodeId::index()` ordering.
+  pub fn normalize(&mut self, dom: &crate::dom2::Document) {
     if self.ranges.is_empty() {
       self.primary = 0;
       return;
     }
 
-    for range in &mut self.ranges {
-      *range = range.normalized(mapping);
+    let mut normalized: Vec<DocumentSelectionRangeDom2> = Vec::with_capacity(self.ranges.len());
+    for range in self.ranges.drain(..) {
+      if let Some(range) = Self::normalize_range(dom, range) {
+        normalized.push(range);
+      }
+    }
+    self.ranges = normalized;
+
+    if self.ranges.is_empty() {
+      self.primary = 0;
+      return;
+    }
+
+    // `cmp_dom2_nodes` yields `Ordering::Equal` for nodes in different Range tree roots (Document
+    // vs ShadowRoot). That is intentional so callers can prune cross-boundary selections, but it
+    // also means we must ensure the selection only contains ranges from a single comparable root
+    // before we sort/merge.
+    let selection_root = dom.tree_root_for_range(self.ranges[0].start.node_id);
+    self
+      .ranges
+      .retain(|r| dom.tree_root_for_range(r.start.node_id) == selection_root);
+    if self.ranges.is_empty() {
+      self.primary = 0;
+      return;
     }
 
     self.ranges.sort_by(|a, b| {
-      cmp_point_dom2(a.start, b.start, mapping).then_with(|| cmp_point_dom2(a.end, b.end, mapping))
+      Self::cmp_point(dom, a.start, b.start).then_with(|| Self::cmp_point(dom, a.end, b.end))
     });
 
     let mut merged: Vec<DocumentSelectionRangeDom2> = Vec::with_capacity(self.ranges.len());
     for range in self.ranges.drain(..) {
       if let Some(last) = merged.last_mut() {
         // Merge when overlapping or adjacent.
-        if cmp_point_dom2(range.start, last.end, mapping) != Ordering::Greater {
-          if cmp_point_dom2(range.end, last.end, mapping) == Ordering::Greater {
+        if Self::cmp_point(dom, range.start, last.end) != Ordering::Greater {
+          if Self::cmp_point(dom, range.end, last.end) == Ordering::Greater {
             last.end = range.end;
           }
           continue;
@@ -425,24 +525,31 @@ impl DocumentSelectionRangesDom2 {
     self.ranges = merged;
 
     // Repair primary index based on the current anchor/focus span.
-    let primary_span = DocumentSelectionRangeDom2 {
-      start: self.anchor,
-      end: self.focus,
+    let primary_span = Self::normalize_range(
+      dom,
+      DocumentSelectionRangeDom2 {
+        start: self.anchor,
+        end: self.focus,
+      },
+    )
+    .filter(|span| dom.tree_root_for_range(span.start.node_id) == selection_root);
+
+    if let Some(primary_span) = primary_span {
+      if let Some(idx) = self
+        .ranges
+        .iter()
+        .position(|r| Self::range_contains_range(dom, r, &primary_span))
+      {
+        self.primary = idx;
+        return;
+      }
     }
-    .normalized(mapping);
-    if let Some(idx) = self
-      .ranges
-      .iter()
-      .position(|r| Self::range_contains_range(r, &primary_span, mapping))
-    {
-      self.primary = idx;
-    } else {
-      // Fallback: clamp primary into bounds and update anchor/focus to match.
-      self.primary = self.primary.min(self.ranges.len().saturating_sub(1));
-      let primary = self.ranges[self.primary];
-      self.anchor = primary.start;
-      self.focus = primary.end;
-    }
+
+    // Fallback: clamp primary into bounds and update anchor/focus to match.
+    self.primary = self.primary.min(self.ranges.len().saturating_sub(1));
+    let primary = self.ranges[self.primary];
+    self.anchor = primary.start;
+    self.focus = primary.end;
   }
 }
 
