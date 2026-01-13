@@ -177,6 +177,7 @@ mod spec_ops;
 mod string;
 mod symbol;
 mod tick;
+mod unicode_case_folding;
 mod value;
 mod vm;
 
@@ -188,6 +189,10 @@ mod regexp_unicode_property_strings_tests;
 #[cfg(test)]
 #[path = "../tests/unit/regexp_unicode_resolver.rs"]
 mod regexp_unicode_resolver_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/scf.rs"]
+mod scf_tests;
 
 pub use crate::handle::EnvRootId;
 
