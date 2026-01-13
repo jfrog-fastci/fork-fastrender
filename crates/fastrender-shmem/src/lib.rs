@@ -326,6 +326,7 @@ impl ShmemRegion {
         let dup = dup_fd_cloexec(*fd)?;
         // SAFETY: `dup_fd_cloexec` returns a new owned file descriptor.
         let file = unsafe { File::from_raw_fd(dup) };
+        validate_fd_size_and_type(file.as_raw_fd(), *len)?;
         let mmap = map_file_mut(&file, *len)?;
         Ok(Self {
           len: *len,
@@ -429,6 +430,44 @@ fn ensure_nonzero_len(len: usize) -> io::Result<()> {
       "shared memory region length must be non-zero",
     ));
   }
+  Ok(())
+}
+
+#[cfg(unix)]
+fn validate_fd_size_and_type(fd: RawFd, expected_len: usize) -> io::Result<()> {
+  let mut st: libc::stat = unsafe { std::mem::zeroed() };
+  // SAFETY: `fstat` writes to `st` when the pointer is valid.
+  let rc = unsafe { libc::fstat(fd, &mut st) };
+  if rc != 0 {
+    return Err(io::Error::last_os_error());
+  }
+
+  // `S_ISREG` is a macro in libc; implement the check directly to avoid relying on macro exports.
+  if (st.st_mode & libc::S_IFMT) != libc::S_IFREG {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      format!("shmem fd is not a regular file (mode=0o{:o})", st.st_mode),
+    ));
+  }
+
+  if st.st_size < 0 {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      format!("shmem fd reported a negative size ({})", st.st_size),
+    ));
+  }
+  let actual_len: u64 = st.st_size as u64;
+  let expected_len_u64: u64 = expected_len
+    .try_into()
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "shmem length too large"))?;
+
+  if actual_len != expected_len_u64 {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      format!("shared memory size mismatch: expected {expected_len_u64}, got {actual_len}"),
+    ));
+  }
+
   Ok(())
 }
 
@@ -820,6 +859,34 @@ mod tests {
     // Clean up our manually-duplicated fd.
     unsafe {
       libc::close(target_fd);
+    }
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn posix_shm_map_rejects_size_mismatch() {
+    let id = generate_shmem_id();
+    let (_file, name) = create_posix_shm_file(&id, 4097).expect("create posix shm");
+    let _guard = PosixUnlinkGuard::new(name);
+
+    let handle = ShmemHandle::PosixShm { id, len: 4096 };
+    match ShmemRegion::map(&handle) {
+      Ok(_) => panic!("expected map to fail due to size mismatch"),
+      Err(err) => assert_eq!(err.kind(), io::ErrorKind::InvalidData),
+    }
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn linux_memfd_map_rejects_size_mismatch() {
+    let file = create_linux_memfd_file(4096).expect("create memfd file");
+    let handle = ShmemHandle::LinuxMemfd {
+      fd: file.as_raw_fd(),
+      len: 4097,
+    };
+    match ShmemRegion::map(&handle) {
+      Ok(_) => panic!("expected map to fail due to size mismatch"),
+      Err(err) => assert_eq!(err.kind(), io::ErrorKind::InvalidData),
     }
   }
 
