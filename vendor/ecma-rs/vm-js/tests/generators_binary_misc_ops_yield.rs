@@ -25,6 +25,42 @@ fn bitwise_or_with_yield_in_both_operands() {
 }
 
 #[test]
+fn bitwise_and_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) & (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(6);
+        var r3 = it.next(3);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn bitwise_xor_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) ^ (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(5);
+        var r3 = it.next(1);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === 4
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn left_shift_with_yield_in_rhs() {
   let mut rt = new_runtime();
   let value = rt
@@ -52,6 +88,23 @@ fn unsigned_right_shift_with_yield_in_rhs() {
         it.next();
         var r = it.next(0);
         r.done === true && r.value === 4294967295
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn signed_right_shift_with_yield_in_rhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return 8 >> (yield 1); }
+        var it = g();
+        it.next();
+        var r = it.next(2);
+        r.done === true && r.value === 2
       "#,
     )
     .unwrap();
@@ -133,4 +186,3 @@ fn bigint_unsigned_right_shift_throws_type_error_under_yield() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
-
