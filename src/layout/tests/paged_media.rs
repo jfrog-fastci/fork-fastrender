@@ -2804,9 +2804,9 @@ fn abspos_break_before_after_do_not_force_page_break() {
         </style>
       </head>
       <body>
-        <div class="blk">A</div>
+        <div class="blk">MAIN_A</div>
         <div id="abs">ABS</div>
-        <div class="blk">B</div>
+        <div class="blk">MAIN_B</div>
       </body>
     </html>
   "#;
@@ -2823,8 +2823,14 @@ fn abspos_break_before_after_do_not_force_page_break() {
     1,
     "break-before/after must not apply to absolutely-positioned boxes"
   );
-  assert!(find_text(page_roots[0], "A").is_some(), "A should be on page 1");
-  assert!(find_text(page_roots[0], "B").is_some(), "B should be on page 1");
+  assert!(
+    find_text(page_roots[0], "MAIN_A").is_some(),
+    "MAIN_A should be on page 1"
+  );
+  assert!(
+    find_text(page_roots[0], "MAIN_B").is_some(),
+    "MAIN_B should be on page 1"
+  );
 }
 
 #[test]
@@ -2847,8 +2853,8 @@ fn forced_break_inside_abspos_does_not_paginate_main_flow() {
         </style>
       </head>
       <body>
-        <div class="blk">A</div>
-        <div class="blk">B</div>
+        <div class="blk">MAIN_A</div>
+        <div class="blk">MAIN_B</div>
         <div id="abs">
           <div id="abs1" class="abs-item">ABS1</div>
           <div id="abs2" class="abs-item">ABS2</div>
@@ -2869,8 +2875,14 @@ fn forced_break_inside_abspos_does_not_paginate_main_flow() {
     2,
     "forced breaks inside abspos should create continuation pages without splitting the main flow"
   );
-  assert!(find_text(page_roots[0], "A").is_some(), "A should be on page 1");
-  assert!(find_text(page_roots[0], "B").is_some(), "B should be on page 1");
+  assert!(
+    find_text(page_roots[0], "MAIN_A").is_some(),
+    "MAIN_A should be on page 1"
+  );
+  assert!(
+    find_text(page_roots[0], "MAIN_B").is_some(),
+    "MAIN_B should be on page 1"
+  );
   assert!(
     find_text(page_roots[0], "ABS2").is_none(),
     "ABS2 should not appear on page 1"
@@ -2879,8 +2891,14 @@ fn forced_break_inside_abspos_does_not_paginate_main_flow() {
     find_text(page_roots[1], "ABS2").is_some(),
     "ABS2 should appear on page 2"
   );
-  assert!(find_text(page_roots[1], "A").is_none(), "A should not be on page 2");
-  assert!(find_text(page_roots[1], "B").is_none(), "B should not be on page 2");
+  assert!(
+    find_text(page_roots[1], "MAIN_A").is_none(),
+    "MAIN_A should not be on page 2"
+  );
+  assert!(
+    find_text(page_roots[1], "MAIN_B").is_none(),
+    "MAIN_B should not be on page 2"
+  );
 }
 
 #[test]
