@@ -11,7 +11,7 @@
 //!   `/usr/bin/sandbox-exec` so the renderer starts sandboxed.
 
 use crate::sandbox::{RendererSandboxConfig, RendererSandboxError};
-use std::process::Command;
+use std::process::{Child, Command, Output};
 
 #[cfg(all(unix, target_os = "linux"))]
 use std::os::unix::process::CommandExt;
@@ -20,6 +20,49 @@ use std::sync::OnceLock;
 
 #[cfg(all(unix, target_os = "linux"))]
 use crate::system::renderer_sandbox as env_sandbox;
+
+/// A configured renderer command that can be spawned, abstracting over platform-specific sandboxing
+/// mechanisms.
+///
+/// On macOS, sandboxing may be applied by wrapping the original program invocation in
+/// `/usr/bin/sandbox-exec` (when explicitly enabled via env vars). That requires owning a temporary
+/// profile file until `spawn()`, so the configured command is an owned wrapper rather than a
+/// modified `std::process::Command`.
+#[derive(Debug)]
+pub enum RendererSpawnCommand {
+  Plain(Command),
+  #[cfg(target_os = "macos")]
+  SandboxExec(crate::sandbox_exec::SandboxExecCommand),
+}
+
+impl RendererSpawnCommand {
+  /// Mutable access to the underlying `Command` for configuration (env vars, stdio, etc).
+  pub fn command_mut(&mut self) -> &mut Command {
+    match self {
+      Self::Plain(cmd) => cmd,
+      #[cfg(target_os = "macos")]
+      Self::SandboxExec(cmd) => cmd.command_mut(),
+    }
+  }
+
+  /// Spawn the configured command.
+  pub fn spawn(&mut self) -> std::io::Result<Child> {
+    match self {
+      Self::Plain(cmd) => cmd.spawn(),
+      #[cfg(target_os = "macos")]
+      Self::SandboxExec(cmd) => cmd.spawn(),
+    }
+  }
+
+  /// Run the configured command to completion and capture its output.
+  pub fn output(&mut self) -> std::io::Result<Output> {
+    match self {
+      Self::Plain(cmd) => cmd.output(),
+      #[cfg(target_os = "macos")]
+      Self::SandboxExec(cmd) => cmd.output(),
+    }
+  }
+}
 
 /// Configure `cmd` so the spawned renderer process is sandboxed as early as possible.
 ///
@@ -41,10 +84,13 @@ use crate::system::renderer_sandbox as env_sandbox;
 ///
 /// The implementation below intentionally uses only direct syscalls / libc
 /// functions and stack-allocated data.
+///
+/// Returns a [`RendererSpawnCommand`] wrapper so macOS can keep any `sandbox-exec` temp profile file
+/// alive until `spawn()`.
 pub fn configure_renderer_command(
-  cmd: &mut Command,
+  mut cmd: Command,
   config: RendererSandboxConfig,
-) -> Result<(), RendererSandboxError> {
+) -> Result<RendererSpawnCommand, RendererSandboxError> {
   #[cfg(all(unix, target_os = "linux"))]
   {
     let Some(config) = apply_linux_env_overrides(config)? else {
@@ -57,7 +103,7 @@ pub fn configure_renderer_command(
     unsafe {
       cmd.pre_exec(move || linux_pre_exec(cfg));
     }
-    return Ok(());
+    return Ok(RendererSpawnCommand::Plain(cmd));
   }
 
   #[cfg(target_os = "macos")]
@@ -68,18 +114,21 @@ pub fn configure_renderer_command(
     // This is a debug/legacy mechanism: Apple has deprecated `sandbox-exec` and may remove it in
     // future macOS releases.
     let _ = config;
-    crate::sandbox::macos_spawn::maybe_wrap_command_with_sandbox_exec(
-      cmd,
+    let wrapped = crate::sandbox::macos_spawn::maybe_wrap_command_with_sandbox_exec(
+      &cmd,
       crate::sandbox::macos::RELAXED_SYSTEM_ALLOWLIST_PROFILE,
     )
     .map_err(|source| RendererSandboxError::MacosSandboxExecWrapFailed { source })?;
-    return Ok(());
+    return Ok(match wrapped {
+      Some(cmd) => RendererSpawnCommand::SandboxExec(cmd),
+      None => RendererSpawnCommand::Plain(cmd),
+    });
   }
 
   #[cfg(not(any(all(unix, target_os = "linux"), target_os = "macos")))]
   {
-    let _ = (cmd, config);
-    return Ok(());
+    let _ = config;
+    return Ok(RendererSpawnCommand::Plain(cmd));
   }
 }
 
@@ -181,15 +230,17 @@ mod tests {
       return;
     }
 
-    let mut cmd = Command::new("/usr/bin/true");
-    configure_renderer_command(&mut cmd, RendererSandboxConfig::default())
+    let cmd = Command::new("/usr/bin/true");
+    let cmd = configure_renderer_command(cmd, RendererSandboxConfig::default())
       .expect("configure_renderer_command should succeed");
-
-    assert_eq!(
-      cmd.get_program(),
-      OsStr::new("/usr/bin/sandbox-exec"),
-      "expected command to be wrapped under sandbox-exec"
-    );
+    match cmd {
+      RendererSpawnCommand::SandboxExec(cmd) => assert_eq!(
+        cmd.get_program(),
+        OsStr::new("/usr/bin/sandbox-exec"),
+        "expected command to be wrapped under sandbox-exec"
+      ),
+      RendererSpawnCommand::Plain(_) => panic!("expected sandbox-exec wrapper to be returned"),
+    }
 
     restore_env(prev_gate, prev_disable, prev_profile);
   }
@@ -976,7 +1027,7 @@ mod tests {
       .arg(test_name)
       .arg("--nocapture");
 
-    configure_renderer_command(&mut cmd, config).expect("configure sandbox");
+    let mut cmd = configure_renderer_command(cmd, config).expect("configure sandbox");
 
     let output = cmd.output().expect("spawn sandboxed child test process");
     assert!(
