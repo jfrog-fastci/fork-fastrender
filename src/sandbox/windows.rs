@@ -18,7 +18,7 @@
 
 use std::ffi::{c_void, OsStr, OsString};
 use std::io;
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -46,6 +46,12 @@ const ENV_LOG_SANDBOX: &str = "FASTR_LOG_SANDBOX";
 ///
 /// This is intentionally Windows-only (the variable is ignored on other platforms).
 const ENV_INHERIT_RENDERER_ENV: &str = "FASTR_WINDOWS_SANDBOX_INHERIT_ENV";
+
+/// Conservative fallback CWD when the AppContainer profile storage folder cannot be queried.
+const FALLBACK_APPCONTAINER_CWD: &str = r"C:\Windows\System32";
+
+/// Conservative fallback temp directory when the AppContainer profile storage folder cannot be queried.
+const FALLBACK_APPCONTAINER_TEMP: &str = r"C:\Windows\Temp";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WindowsRendererSandboxLevel {
@@ -543,6 +549,18 @@ fn spawn_appcontainer(
   let name = wide_from_str("FastRender.Renderer");
   let sid = AppContainerSid::new(&name)?;
 
+  // Ensure the sandboxed child starts in a directory it can access and has a writable temp dir.
+  //
+  // By default, the child would inherit the parent's CWD and TMP/TEMP, which frequently point at
+  // user profile paths that an AppContainer cannot access (causing surprising failures in
+  // dependencies that write temp files, scan fonts, etc).
+  let (current_dir, sandbox_temp_dir) = resolve_appcontainer_working_dirs(sid.sid);
+  let current_dir_wide = wide_from_os(current_dir.as_os_str());
+  let env_block = build_renderer_environment_block_for_temp_dir(&sandbox_temp_dir);
+  let env_ptr = env_block
+    .as_ref()
+    .map_or(std::ptr::null(), |block| block.as_ptr() as *const c_void);
+
   let mut capabilities = SECURITY_CAPABILITIES {
     AppContainerSid: sid.sid,
     Capabilities: std::ptr::null_mut(),
@@ -573,10 +591,6 @@ fn spawn_appcontainer(
   }
 
   let inherit = if handles.is_empty() { FALSE } else { TRUE };
-  let env_block = build_renderer_environment_block();
-  let env_ptr = env_block
-    .as_ref()
-    .map_or(std::ptr::null(), |block| block.as_ptr() as *const c_void);
   let env_flags = if env_block.is_some() {
     CREATE_UNICODE_ENVIRONMENT
   } else {
@@ -589,14 +603,17 @@ fn spawn_appcontainer(
     let application_name = wide_from_os(image.as_os_str());
     let mut cmdline = build_command_line(image, args);
 
-    // When `lpCurrentDirectory` is null, Windows inherits the parent's current directory. For
-    // AppContainer tokens this can fail with `ERROR_ACCESS_DENIED` if the parent CWD is a dev repo
-    // directory without an `ALL APPLICATION PACKAGES` / AppContainer SID ACE. When we take the
-    // relocation/ACL remediation path we explicitly set the CWD to the temp directory we control.
+    // Always set a known-good current directory:
+    // - AppContainer tokens often cannot access the parent's CWD (e.g. a repo/build directory).
+    // - Many dependencies probe or use relative paths (including `.`) during startup.
+    //
+    // When the executable relocation/ACL remediation path is taken, we allow overriding the CWD to
+    // the temp directory we control.
     let current_dir_w = current_dir.map(|dir| wide_from_os(dir.as_os_str()));
-    let current_dir_ptr = current_dir_w
-      .as_ref()
-      .map_or(std::ptr::null(), |wide| wide.as_ptr());
+    let current_dir_ptr = match current_dir_w.as_ref() {
+      Some(wide) => wide.as_ptr(),
+      None => current_dir_wide.as_ptr(),
+    };
 
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
@@ -1170,6 +1187,84 @@ fn wide_from_str(value: &str) -> Vec<u16> {
   wide
 }
 
+// -----------------------------------------------------------------------------
+// AppContainer working directory + temp directory helpers
+// -----------------------------------------------------------------------------
+
+type GetAppContainerFolderPathFn =
+  unsafe extern "system" fn(appcontainer_sid: *mut c_void, path: *mut *mut u16) -> i32;
+
+struct GetAppContainerFolderPathApi {
+  // Keep `userenv.dll` loaded for the lifetime of the process.
+  _userenv: isize,
+  func: GetAppContainerFolderPathFn,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+  fn LoadLibraryW(name: *const u16) -> isize;
+  fn GetProcAddress(module: isize, proc_name: *const i8) -> *mut c_void;
+}
+
+#[link(name = "ole32")]
+extern "system" {
+  fn CoTaskMemFree(pv: *mut c_void);
+}
+
+fn get_appcontainer_folder_path_api() -> Option<&'static GetAppContainerFolderPathApi> {
+  static API: OnceLock<Option<GetAppContainerFolderPathApi>> = OnceLock::new();
+  API
+    .get_or_init(|| unsafe {
+      let userenv = wide_from_str("userenv.dll");
+      let module = LoadLibraryW(userenv.as_ptr());
+      if module == 0 {
+        return None;
+      }
+      let proc = GetProcAddress(module, b"GetAppContainerFolderPath\0".as_ptr() as *const i8);
+      if proc.is_null() {
+        return None;
+      }
+      let func: GetAppContainerFolderPathFn = std::mem::transmute(proc);
+      Some(GetAppContainerFolderPathApi {
+        _userenv: module,
+        func,
+      })
+    })
+    .as_ref()
+}
+
+fn resolve_appcontainer_working_dirs(appcontainer_sid: *mut c_void) -> (PathBuf, PathBuf) {
+  if let Some(api) = get_appcontainer_folder_path_api() {
+    let mut raw_path: *mut u16 = std::ptr::null_mut();
+    // SAFETY: `raw_path` is an out param; `appcontainer_sid` comes from a derived AppContainer SID.
+    let hr = unsafe { (api.func)(appcontainer_sid, &mut raw_path) };
+    if hr >= 0 && !raw_path.is_null() {
+      let app_dir = unsafe { take_and_free_cotaskmem_wstr(raw_path) };
+      let temp_dir = app_dir.join("Temp");
+      if std::fs::create_dir_all(&temp_dir).is_ok() {
+        return (app_dir, temp_dir);
+      }
+    }
+  }
+
+  // `GetAppContainerFolderPath` unavailable or failed: fall back to conservative system dirs.
+  let cwd = PathBuf::from(FALLBACK_APPCONTAINER_CWD);
+  let temp = PathBuf::from(FALLBACK_APPCONTAINER_TEMP);
+  let _ = std::fs::create_dir_all(&temp);
+  (cwd, temp)
+}
+
+unsafe fn take_and_free_cotaskmem_wstr(ptr: *mut u16) -> PathBuf {
+  let mut len = 0usize;
+  while *ptr.add(len) != 0 {
+    len += 1;
+  }
+  let slice = std::slice::from_raw_parts(ptr, len);
+  let os = OsString::from_wide(slice);
+  CoTaskMemFree(ptr.cast());
+  PathBuf::from(os)
+}
+
 fn build_command_line(exe: &Path, args: &[OsString]) -> Vec<u16> {
   let mut cmd: Vec<u16> = Vec::new();
   append_cmd_arg(&mut cmd, exe.as_os_str());
@@ -1266,12 +1361,18 @@ fn environment_block_from_vars(mut vars: Vec<(String, OsString)>) -> Vec<u16> {
   block
 }
 
-fn build_renderer_environment_block() -> Option<Vec<u16>> {
+fn build_renderer_environment_block_for_temp_dir(temp_dir: &Path) -> Option<Vec<u16>> {
   if should_inherit_renderer_environment() {
     return None;
   }
+  Some(environment_block_from_vars(collect_allowlisted_environment(
+    temp_dir,
+  )))
+}
+
+fn build_renderer_environment_block() -> Option<Vec<u16>> {
   let temp_dir: PathBuf = std::env::temp_dir();
-  Some(environment_block_from_vars(collect_allowlisted_environment(&temp_dir)))
+  build_renderer_environment_block_for_temp_dir(&temp_dir)
 }
 
 fn hresult_from_win32(err: u32) -> i32 {

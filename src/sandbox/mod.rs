@@ -48,13 +48,13 @@ pub enum SandboxStatus {
 ///
 /// Today this is only supported on macOS (Seatbelt). On other platforms this returns
 /// `io::ErrorKind::Unsupported`.
-pub fn apply_pure_computation_sandbox() -> std::io::Result<()> {
+pub fn apply_pure_computation_sandbox() -> io::Result<()> {
   #[cfg(target_os = "macos")]
   return macos::apply_pure_computation_sandbox();
 
   #[cfg(not(target_os = "macos"))]
-  return Err(std::io::Error::new(
-    std::io::ErrorKind::Unsupported,
+  return Err(io::Error::new(
+    io::ErrorKind::Unsupported,
     "pure-computation sandboxing is only supported on macOS",
   ));
 }
@@ -166,7 +166,6 @@ mod linux_seccomp;
 
 #[cfg(target_os = "macos")]
 pub mod macos_spawn;
-
 #[cfg(target_os = "windows")]
 pub mod windows;
 
