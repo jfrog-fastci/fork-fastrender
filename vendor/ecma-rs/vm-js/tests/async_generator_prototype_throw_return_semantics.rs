@@ -146,6 +146,60 @@ fn async_generator_throw_on_completed_generator_rejects_with_argument() -> Resul
 }
 
 #[test]
+fn async_generator_throw_on_suspended_start_does_not_await_promise_argument() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = match rt.exec_script(
+    r#"
+      var log = "";
+      var out = 0;
+      async function* g() { log += "body"; yield 1; }
+      var it = g();
+      var p = Promise.resolve("x");
+
+      it.throw(p).then(
+        function () { log += "bad"; },
+        function (e) {
+          log += "catch";
+          out = (e === p) ? 1 : 2;
+        }
+      );
+
+      log
+    "#,
+  ) {
+    Ok(value) => value,
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+    Err(err) => return Err(err),
+  };
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let log = rt.exec_script("log")?;
+  assert_eq!(value_to_string(&rt, log), "catch");
+  let out = rt.exec_script("out")?;
+  assert_eq!(out, Value::Number(1.0));
+
+  rt.exec_script(
+    r#"
+      it.next().then(function (r) {
+        log += "|done:" + r.done + ",value:" + r.value;
+      });
+    "#,
+  )?;
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let log = rt.exec_script("log")?;
+  assert_eq!(value_to_string(&rt, log), "catch|done:true,value:undefined");
+  assert!(
+    rt.vm.microtask_queue().is_empty(),
+    "expected microtask queue to be empty after checkpoint"
+  );
+  Ok(())
+}
+
+#[test]
 fn async_generator_throw_can_be_caught_inside_generator() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
