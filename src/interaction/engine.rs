@@ -6496,6 +6496,14 @@ impl InteractionEngine {
     self.state.focused
   }
 
+  /// Returns the `<input type="range">` node id currently being dragged by the pointer, if any.
+  ///
+  /// This is a UI-layer integration hook so external code can keep higher-level state (e.g. JS
+  /// `dom2` form control state) synchronized while the user drags the slider.
+  pub fn active_range_drag_node_id(&self) -> Option<usize> {
+    self.range_drag.map(|state| state.node_id)
+  }
+
   fn sync_text_edit_paint_state(&mut self) -> bool {
     let next = self
       .text_edit

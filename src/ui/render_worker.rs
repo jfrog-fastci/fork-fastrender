@@ -4579,6 +4579,28 @@ impl BrowserRuntime {
       tab.needs_repaint = true;
     }
 
+    // `<input type="range">` updates its value continuously while dragging. Mirror those UI-driven
+    // value changes into dom2 so JS reads the live value and dom2→dom1 resync can't clobber the
+    // slider state.
+    if changed {
+      if let (Some(range_node_id), Some(dom_snapshot), Some(js_tab)) = (
+        tab.interaction.active_range_drag_node_id(),
+        tab.document.as_ref().map(|doc| doc.dom()),
+        tab.js_tab.as_mut(),
+      ) {
+        let element_id = dom_node_by_preorder_id(dom_snapshot, range_node_id)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          range_node_id,
+          element_id,
+        );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+      }
+    }
+
     Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, hovered_url, cursor);
 
     // ---------------------------------------------------------------------------
@@ -4942,6 +4964,28 @@ impl BrowserRuntime {
         Ok(changed) => changed,
         Err(_) => return,
       };
+
+    // `<input type="range">` updates its value on pointer down (jumping the knob to the click
+    // position) and then continuously during drag. Mirror the initial change into dom2 before we
+    // dispatch `"mousedown"` so JS can observe the updated value.
+    if changed {
+      if let (Some(range_node_id), Some(js_tab)) = (
+        tab.interaction.active_range_drag_node_id(),
+        tab.js_tab.as_mut(),
+      ) {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, range_node_id)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          range_node_id,
+          element_id,
+        );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+      }
+    }
 
     if let Some(target_id) = target_id {
       let pointer_buttons = tab.pointer_buttons;
@@ -7173,8 +7217,6 @@ impl BrowserRuntime {
       }
 
       let mut default_allowed = true;
-      let js_mutation_generation_before_dispatch =
-        tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
       let mut dispatched_dom_event = false;
 
       // Keyboard activation should dispatch a cancelable `"click"` event on the activated element
@@ -7206,20 +7248,74 @@ impl BrowserRuntime {
         }
       }
 
+      // If activation triggers a form submission attempt, dispatch a cancelable `"submit"` event
+      // on the form owner and honor `preventDefault()` before committing the navigation.
+      let mut submit_source_id: Option<usize> = None;
+      let mut submit_source_element_id: Option<&str> = None;
+      if let Some(submitter_id) = form_submitter {
+        submit_source_id = Some(submitter_id);
+        submit_source_element_id = form_submitter_element_id.as_deref();
+      } else if focused_is_text_input
+        && matches!(key, crate::interaction::KeyAction::Enter)
+        && matches!(
+          action,
+          InteractionAction::Navigate { .. }
+            | InteractionAction::OpenInNewTab { .. }
+            | InteractionAction::NavigateRequest { .. }
+            | InteractionAction::OpenInNewTabRequest { .. }
+        )
+      {
+        submit_source_id = focused;
+        submit_source_element_id = focused_element_id.as_deref();
+      }
+
       // Mirror UI-driven form control changes (dom1) into dom2 before dispatching click/submit.
+      //
+      // This covers both:
+      // - keyboard activation (click/submit), and
+      // - text editing key actions (backspace/delete/range stepping/etc) where no DOM event is
+      //   dispatched but dom2 still needs to observe the updated state.
       if changed {
-        if let (Some(target_id), Some(js_tab)) = (click_target_id, tab.js_tab.as_mut()) {
+        if let Some(js_tab) = tab.js_tab.as_mut() {
           let dom_snapshot = doc.dom();
-          mirror_dom1_form_control_state_into_dom2(
-            js_tab,
-            tab.js_dom_mapping.as_ref(),
-            dom_snapshot,
-            target_id,
-            click_target_element_id,
-          );
+          let mapping = tab.js_dom_mapping.as_ref();
+          if let Some(focused_id) = focused {
+            mirror_dom1_form_control_state_into_dom2(
+              js_tab,
+              mapping,
+              dom_snapshot,
+              focused_id,
+              focused_element_id.as_deref(),
+            );
+          }
+          if let Some(target_id) = click_target_id {
+            mirror_dom1_form_control_state_into_dom2(
+              js_tab,
+              mapping,
+              dom_snapshot,
+              target_id,
+              click_target_element_id,
+            );
+          }
+          if let Some(source_id) = submit_source_id {
+            mirror_dom1_form_control_state_into_dom2(
+              js_tab,
+              mapping,
+              dom_snapshot,
+              source_id,
+              submit_source_element_id,
+            );
+          }
+          // Keep the worker's cached JS mutation generation in sync with dom2 edits caused by
+          // mirroring UI-driven form control state (dom1 → dom2). This prevents the paint pipeline
+          // from treating these internal sync writes as "external" JS mutations that require a full
+          // dom2 → dom1 resnapshot.
           tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
         }
       }
+
+      let js_mutation_generation_before_dispatch =
+        tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
 
       if let Some(target_id) = click_target_id {
         if let Some(js_tab) = tab.js_tab.as_mut() {
@@ -7252,39 +7348,9 @@ impl BrowserRuntime {
         }
       }
 
-      // If activation triggers a form submission attempt, dispatch a cancelable `"submit"` event
-      // on the form owner and honor `preventDefault()` before committing the navigation.
-      let mut submit_source_id: Option<usize> = None;
-      let mut submit_source_element_id: Option<&str> = None;
-      if let Some(submitter_id) = form_submitter {
-        submit_source_id = Some(submitter_id);
-        submit_source_element_id = form_submitter_element_id.as_deref();
-      } else if focused_is_text_input
-        && matches!(key, crate::interaction::KeyAction::Enter)
-        && matches!(
-          action,
-          InteractionAction::Navigate { .. }
-            | InteractionAction::OpenInNewTab { .. }
-            | InteractionAction::NavigateRequest { .. }
-            | InteractionAction::OpenInNewTabRequest { .. }
-        )
-      {
-        submit_source_id = focused;
-        submit_source_element_id = focused_element_id.as_deref();
-      }
-
       if default_allowed {
         if let Some(source_id) = submit_source_id {
           if let Some(js_tab) = tab.js_tab.as_mut() {
-            let dom_snapshot = doc.dom();
-            mirror_dom1_form_control_state_into_dom2(
-              js_tab,
-              tab.js_dom_mapping.as_ref(),
-              dom_snapshot,
-              source_id,
-              submit_source_element_id,
-            );
-            tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
             let source_node =
               js_dom_node_for_preorder_id_with_log(
                 &self.ui_tx,
