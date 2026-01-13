@@ -270,3 +270,27 @@ fn parse_track_list_does_not_panic_on_unicode_prefix() {
   let parsed = parse_track_list("€€€repeat(2, 1fr)");
   assert!(parsed.tracks.is_empty());
 }
+
+#[test]
+fn parses_subgrid_repeat_line_names() {
+  let parsed = parse_subgrid_line_names("subgrid repeat(2, [a])").expect("should parse");
+  assert_eq!(
+    parsed,
+    vec![vec!["a".to_string()], vec!["a".to_string()]]
+  );
+}
+
+#[test]
+fn parses_subgrid_repeat_line_names_mixed() {
+  let parsed =
+    parse_subgrid_line_names("subgrid [start] repeat(2, [mid]) [end]").expect("should parse");
+  assert_eq!(
+    parsed,
+    vec![
+      vec!["start".to_string()],
+      vec!["mid".to_string()],
+      vec!["mid".to_string()],
+      vec!["end".to_string()]
+    ]
+  );
+}

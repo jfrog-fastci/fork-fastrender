@@ -1253,6 +1253,27 @@ impl<'a> TrackListParser<'a> {
 ///
 /// Returns any bracketed line name lists that appear alongside the `subgrid` keyword.
 pub fn parse_subgrid_line_names(input: &str) -> Option<Vec<Vec<String>>> {
+  fn parse_line_names_group(input: &str) -> Option<Vec<Vec<String>>> {
+    let mut parser = TrackListParser::new(input);
+    let mut line_names: Vec<Vec<String>> = Vec::new();
+    while !parser.is_eof() {
+      parser.skip_whitespace();
+      if parser.is_eof() {
+        break;
+      }
+      if let Some(names) = parser.consume_bracketed_names() {
+        line_names.push(names);
+        continue;
+      }
+      return None;
+    }
+    if line_names.is_empty() {
+      None
+    } else {
+      Some(line_names)
+    }
+  }
+
   let mut parser = TrackListParser::new(input);
   let mut line_names: Vec<Vec<String>> = Vec::new();
   let mut saw_subgrid = false;
@@ -1270,6 +1291,30 @@ pub fn parse_subgrid_line_names(input: &str) -> Option<Vec<Vec<String>>> {
     if parser.starts_with_ident("subgrid") {
       saw_subgrid = true;
       parser.pos += "subgrid".len();
+      continue;
+    }
+
+    // CSS Grid 2: `repeat(<integer>, <line-names>+)` in subgrid line name lists.
+    //
+    // Note: `repeat(auto-fill, ...)` is currently unsupported.
+    if parser.starts_with_ident("repeat") {
+      let inner = parser.consume_function_arguments("repeat")?;
+      let (count_str, names_str) = split_once_comma(&inner)?;
+      let count_str = trim_ascii_whitespace(count_str);
+
+      if count_str.eq_ignore_ascii_case("auto-fill") {
+        return None;
+      }
+
+      let repeat_count: usize = count_str.parse().ok()?;
+      if repeat_count == 0 {
+        return None;
+      }
+
+      let group = parse_line_names_group(names_str)?;
+      for _ in 0..repeat_count {
+        line_names.extend(group.iter().cloned());
+      }
       continue;
     }
 
