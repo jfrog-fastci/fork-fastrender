@@ -102,6 +102,7 @@ impl RendererSandboxBuilder {
     if let Some(limit) = self.job_memory_limit_bytes {
       job.set_job_memory_limit_bytes(limit)?;
     }
+    job.set_ui_restrictions_headless()?;
 
     Ok(RendererSandbox {
       job,
