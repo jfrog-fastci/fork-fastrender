@@ -652,6 +652,101 @@ mod global_session_settings_tests {
   }
 }
 
+#[cfg(test)]
+mod profile_autosave_flush_tracker_tests {
+  use super::{
+    ProfileAutosaveFlushFailure, ProfileAutosaveFlushTracker, PROFILE_AUTOSAVE_FLUSH_TIMEOUT,
+  };
+  use std::sync::mpsc;
+  use std::time::{Duration, Instant};
+
+  #[test]
+  fn flush_ack_completes_and_clears_pending() {
+    let (tx, rx) = mpsc::channel::<fastrender::ui::AutosaveMsg>();
+    let mut tracker = ProfileAutosaveFlushTracker::new(PROFILE_AUTOSAVE_FLUSH_TIMEOUT);
+    let now = Instant::now();
+
+    assert_eq!(tracker.request_flush(Some(&tx), now), None);
+
+    let ack_tx = match rx.recv().expect("expected flush message") {
+      fastrender::ui::AutosaveMsg::Flush(ack_tx) => ack_tx,
+      other => panic!("unexpected message: {other:?}"),
+    };
+    ack_tx.send(()).expect("ack send should succeed");
+
+    assert_eq!(tracker.poll(Some(&tx), now), None);
+    assert!(tracker.next_deadline().is_none());
+  }
+
+  #[test]
+  fn flush_requests_are_coalesced_into_single_follow_up() {
+    let (tx, rx) = mpsc::channel::<fastrender::ui::AutosaveMsg>();
+    let mut tracker = ProfileAutosaveFlushTracker::new(PROFILE_AUTOSAVE_FLUSH_TIMEOUT);
+    let now = Instant::now();
+
+    assert_eq!(tracker.request_flush(Some(&tx), now), None);
+    assert_eq!(tracker.request_flush(Some(&tx), now), None);
+
+    let ack_tx_first = match rx.recv().expect("expected first flush") {
+      fastrender::ui::AutosaveMsg::Flush(ack_tx) => ack_tx,
+      other => panic!("unexpected message: {other:?}"),
+    };
+    assert!(rx.try_recv().is_err(), "expected no second flush yet");
+
+    ack_tx_first.send(()).unwrap();
+    assert_eq!(tracker.poll(Some(&tx), now), None);
+
+    let ack_tx_second = match rx.recv().expect("expected follow-up flush") {
+      fastrender::ui::AutosaveMsg::Flush(ack_tx) => ack_tx,
+      other => panic!("unexpected message: {other:?}"),
+    };
+    ack_tx_second.send(()).unwrap();
+    assert_eq!(tracker.poll(Some(&tx), now), None);
+    assert!(tracker.next_deadline().is_none());
+  }
+
+  #[test]
+  fn flush_timeout_reports_failure_and_clears_pending() {
+    let (tx, rx) = mpsc::channel::<fastrender::ui::AutosaveMsg>();
+    let mut tracker = ProfileAutosaveFlushTracker::new(Duration::from_millis(50));
+    let now = Instant::now();
+
+    assert_eq!(tracker.request_flush(Some(&tx), now), None);
+    let _ack_tx = match rx.recv().expect("expected flush message") {
+      fastrender::ui::AutosaveMsg::Flush(ack_tx) => ack_tx,
+      other => panic!("unexpected message: {other:?}"),
+    };
+
+    let later = now + Duration::from_millis(60);
+    assert_eq!(
+      tracker.poll(Some(&tx), later),
+      Some(ProfileAutosaveFlushFailure::Timeout)
+    );
+    assert!(tracker.next_deadline().is_none());
+  }
+
+  #[test]
+  fn flush_disconnect_reports_failure() {
+    let (tx, rx) = mpsc::channel::<fastrender::ui::AutosaveMsg>();
+    let mut tracker = ProfileAutosaveFlushTracker::new(PROFILE_AUTOSAVE_FLUSH_TIMEOUT);
+    let now = Instant::now();
+
+    assert_eq!(tracker.request_flush(Some(&tx), now), None);
+    match rx.recv().expect("expected flush message") {
+      fastrender::ui::AutosaveMsg::Flush(_ack_tx) => {
+        // Drop without acknowledging.
+      }
+      other => panic!("unexpected message: {other:?}"),
+    };
+
+    assert_eq!(
+      tracker.poll(Some(&tx), now),
+      Some(ProfileAutosaveFlushFailure::Disconnected)
+    );
+    assert!(tracker.next_deadline().is_none());
+  }
+}
+
 #[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug, Clone, Copy)]
 struct DrainBudget {
@@ -756,6 +851,137 @@ fn drain_mpsc_receiver_with_budget<T>(
         };
       }
     }
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProfileAutosaveFlushFailure {
+  Timeout,
+  Disconnected,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+const PROFILE_AUTOSAVE_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl ProfileAutosaveFlushFailure {
+  fn severity(self) -> u8 {
+    match self {
+      Self::Timeout => 1,
+      Self::Disconnected => 2,
+    }
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug)]
+struct PendingProfileAutosaveFlush {
+  ack_rx: std::sync::mpsc::Receiver<()>,
+  deadline: std::time::Instant,
+}
+
+/// Tracks in-flight `AutosaveMsg::Flush` requests without blocking the UI thread.
+///
+/// Flush requests can be triggered by user actions (e.g. clearing browsing data) and are best-effort:
+/// we queue them to the autosave thread and show a user-facing toast if the acknowledgement does not
+/// arrive promptly.
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug)]
+struct ProfileAutosaveFlushTracker {
+  pending: Option<PendingProfileAutosaveFlush>,
+  queued: bool,
+  timeout: std::time::Duration,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl ProfileAutosaveFlushTracker {
+  fn new(timeout: std::time::Duration) -> Self {
+    Self {
+      pending: None,
+      queued: false,
+      timeout,
+    }
+  }
+
+  fn next_deadline(&self) -> Option<std::time::Instant> {
+    self.pending.as_ref().map(|pending| pending.deadline)
+  }
+
+  /// Request an autosave flush.
+  ///
+  /// If another flush is already in-flight, the request is coalesced and a single follow-up flush is
+  /// sent once the current one completes (or times out).
+  fn request_flush(
+    &mut self,
+    autosave_tx: Option<&std::sync::mpsc::Sender<fastrender::ui::AutosaveMsg>>,
+    now: std::time::Instant,
+  ) -> Option<ProfileAutosaveFlushFailure> {
+    self.queued = true;
+    self.maybe_start_flush(autosave_tx, now)
+  }
+
+  /// Poll the in-flight flush ack (if any).
+  ///
+  /// Returns a failure when the ack times out or the autosave thread disconnects.
+  fn poll(
+    &mut self,
+    autosave_tx: Option<&std::sync::mpsc::Sender<fastrender::ui::AutosaveMsg>>,
+    now: std::time::Instant,
+  ) -> Option<ProfileAutosaveFlushFailure> {
+    use std::sync::mpsc::TryRecvError;
+
+    let mut failure: Option<ProfileAutosaveFlushFailure> = None;
+
+    if let Some(pending) = self.pending.take() {
+      match pending.ack_rx.try_recv() {
+        Ok(()) => {
+          // Flush ack received.
+        }
+        Err(TryRecvError::Empty) => {
+          if now >= pending.deadline {
+            failure = Some(ProfileAutosaveFlushFailure::Timeout);
+          } else {
+            self.pending = Some(pending);
+          }
+        }
+        Err(TryRecvError::Disconnected) => {
+          failure = Some(ProfileAutosaveFlushFailure::Disconnected);
+        }
+      }
+    }
+
+    let start_failure = self.maybe_start_flush(autosave_tx, now);
+
+    match (failure, start_failure) {
+      (None, None) => None,
+      (Some(a), None) | (None, Some(a)) => Some(a),
+      (Some(a), Some(b)) => Some(if b.severity() > a.severity() { b } else { a }),
+    }
+  }
+
+  fn maybe_start_flush(
+    &mut self,
+    autosave_tx: Option<&std::sync::mpsc::Sender<fastrender::ui::AutosaveMsg>>,
+    now: std::time::Instant,
+  ) -> Option<ProfileAutosaveFlushFailure> {
+    if self.pending.is_some() || !self.queued {
+      return None;
+    }
+    self.queued = false;
+
+    let Some(tx) = autosave_tx else {
+      return Some(ProfileAutosaveFlushFailure::Disconnected);
+    };
+
+    let (ack_tx, ack_rx) = std::sync::mpsc::channel::<()>();
+    if tx.send(fastrender::ui::AutosaveMsg::Flush(ack_tx)).is_err() {
+      return Some(ProfileAutosaveFlushFailure::Disconnected);
+    }
+
+    let deadline = now.checked_add(self.timeout).unwrap_or(now);
+    self.pending = Some(PendingProfileAutosaveFlush { ack_rx, deadline });
+    None
   }
 }
 
@@ -6501,6 +6727,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok((worker_msgs, worker_wake_pending, bridge_join))
   }
 
+  fn show_profile_autosave_flush_failure(
+    windows: &mut HashMap<WindowId, BrowserWindow>,
+    window_order: &[WindowId],
+    active_window_id: Option<WindowId>,
+    failure: ProfileAutosaveFlushFailure,
+  ) {
+    use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
+    let (kind, text) = match failure {
+      ProfileAutosaveFlushFailure::Timeout => (
+        ToastKind::Warning,
+        "Timed out waiting for profile save; changes may not be written to disk yet.",
+      ),
+      ProfileAutosaveFlushFailure::Disconnected => (
+        ToastKind::Error,
+        "Profile autosave disconnected; changes may not be saved.",
+      ),
+    };
+
+    let Some(target_id) = active_window_id
+      .filter(|id| windows.contains_key(id))
+      .or_else(|| window_order.iter().copied().find(|id| windows.contains_key(id)))
+    else {
+      return;
+    };
+
+    if let Some(win) = windows.get_mut(&target_id) {
+      win
+        .app
+        .chrome_toast
+        .show(kind, text.to_string(), std::time::Instant::now(), TOAST_DEFAULT_TTL);
+      win.app.window.request_redraw();
+    }
+  }
+
   let appearance_env = fastrender::ui::appearance::AppearanceEnvOverrides::from_env();
   let startup_appearance = startup_session.appearance.clone();
   let startup_applied_appearance = startup_appearance
@@ -6994,6 +7254,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       .set_session_autosave_status(session_autosave_status.clone());
     win.app.window.request_redraw();
   }
+  let mut profile_autosave_flush_tracker =
+    ProfileAutosaveFlushTracker::new(PROFILE_AUTOSAVE_FLUSH_TIMEOUT);
 
   if !startup_profile_notifications.is_empty() {
     let toast_text = startup_profile_notifications.join("\n\n");
@@ -8292,6 +8554,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Synchronize profile state (bookmarks/history) across all windows.
+    let mut flush_requested = false;
     let mut history_update: Option<(WindowId, fastrender::ui::GlobalHistoryStore, bool)> = None;
 
     // Safety net: if a code path mutates `BookmarkStore` without recording deltas, the multi-window
@@ -8333,7 +8596,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         win.app.profile_history_dirty = false;
         let flush = win.app.profile_history_flush_requested;
         win.app.profile_history_flush_requested = false;
-        history_update = Some((*id, win.app.browser_state.history.clone(), flush));
+        history_update = Some(match history_update {
+          Some((_, _, existing_flush)) => (*id, win.app.browser_state.history.clone(), existing_flush || flush),
+          None => (*id, win.app.browser_state.history.clone(), flush),
+        });
       }
     }
 
@@ -8342,7 +8608,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .last()
         .expect("non-empty bookmark dirty list"); // fastrender-allow-unwrap
 
-      let (deltas, flush) = match windows.get_mut(&source_window_id) {
+      let (deltas, mut flush) = match windows.get_mut(&source_window_id) {
         Some(win) => {
           let flush = win.app.profile_bookmarks_flush_requested;
           win.app.profile_bookmarks_flush_requested = false;
@@ -8359,11 +8625,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
           }
           if let Some(win) = windows.get_mut(id) {
+            flush |= win.app.profile_bookmarks_flush_requested;
             win.app.pending_bookmark_deltas.clear();
             win.app.profile_bookmarks_flush_requested = false;
           }
         }
       }
+
+      flush_requested |= flush;
 
       let apply_outcome = global_bookmarks.apply_deltas(&deltas);
       let mut force_full_sync = apply_outcome.is_err() || dirty_bookmark_windows.len() > 1;
@@ -8492,12 +8761,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           // on every bookmark mutation batch.
           let _ = tx.send(fastrender::ui::AutosaveMsg::ApplyBookmarkDeltas(deltas));
         }
-
-        if flush {
-          let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-          let _ = tx.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
-          let _ = done_rx.recv_timeout(std::time::Duration::from_millis(200));
-        }
       }
     }
 
@@ -8510,6 +8773,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
         &global_history,
       );
+      flush_requested |= flush;
       if let Some(tx) = profile_autosave_tx.as_ref() {
         if flush {
           let now = std::time::Instant::now();
@@ -8518,9 +8782,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               global_history.clone(),
             ));
           }
-          let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-          let _ = tx.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
-          let _ = done_rx.recv_timeout(std::time::Duration::from_millis(200));
         }
       }
       for (id, win) in windows.iter_mut() {
@@ -8665,6 +8926,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &text);
         win.app.window.request_redraw();
       }
+    }
+
+    if flush_requested {
+      let now = std::time::Instant::now();
+      if let Some(failure) =
+        profile_autosave_flush_tracker.request_flush(profile_autosave_tx.as_ref(), now)
+      {
+        show_profile_autosave_flush_failure(
+          &mut windows,
+          &window_order,
+          active_window_id,
+          failure,
+        );
+      }
+    }
+
+    // Poll for completed/timed-out autosave flushes without blocking the UI thread.
+    if let Some(failure) =
+      profile_autosave_flush_tracker.poll(profile_autosave_tx.as_ref(), std::time::Instant::now())
+    {
+      show_profile_autosave_flush_failure(&mut windows, &window_order, active_window_id, failure);
     }
 
     if matches!(
@@ -8813,6 +9095,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Ensure we wake up to enforce shutdown join timeouts even when all live windows are idle.
     if let Some(deadline) = shutdown_join_tracker.next_deadline() {
+      *control_flow = match *control_flow {
+        ControlFlow::Wait => ControlFlow::WaitUntil(deadline),
+        ControlFlow::WaitUntil(existing) => ControlFlow::WaitUntil(existing.min(deadline)),
+        other => other,
+      };
+    }
+
+    if let Some(deadline) = profile_autosave_flush_tracker.next_deadline() {
       *control_flow = match *control_flow {
         ControlFlow::Wait => ControlFlow::WaitUntil(deadline),
         ControlFlow::WaitUntil(existing) => ControlFlow::WaitUntil(existing.min(deadline)),
