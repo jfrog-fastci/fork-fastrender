@@ -24,6 +24,20 @@ fn find_function_body(script: &Arc<CompiledScript>, name: &str) -> hir_js::BodyI
   panic!("function body not found for name={name:?}");
 }
 
+fn assert_compiled_script_bigint(source: &str, expected: i128) -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", source)?;
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap_mut().scope();
+  let expected = scope.alloc_bigint_from_i128(expected)?;
+  assert!(result.same_value(Value::BigInt(expected), scope.heap()));
+  Ok(())
+}
+
 #[test]
 fn compiled_closure_capture_semantics() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -2118,6 +2132,91 @@ fn compiled_bigint_add_assign_executes() -> Result<(), VmError> {
   let expected = scope.alloc_bigint_from_u128(3)?;
   assert!(result.same_value(Value::BigInt(expected), scope.heap()));
   Ok(())
+}
+
+#[test]
+fn compiled_bigint_subtract_operator_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint("5n - 2n", 3)
+}
+
+#[test]
+fn compiled_bigint_multiply_operator_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint("3n * 4n", 12)
+}
+
+#[test]
+fn compiled_bigint_divide_operator_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint("7n / 2n", 3)
+}
+
+#[test]
+fn compiled_bigint_remainder_operator_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint("7n % 2n", 1)
+}
+
+#[test]
+fn compiled_bigint_exponent_operator_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint("2n ** 3n", 8)
+}
+
+#[test]
+fn compiled_bigint_sub_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let i = 5n;
+      i -= 2n;
+      i
+    "#,
+    3,
+  )
+}
+
+#[test]
+fn compiled_bigint_mul_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let i = 3n;
+      i *= 4n;
+      i
+    "#,
+    12,
+  )
+}
+
+#[test]
+fn compiled_bigint_div_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let i = 7n;
+      i /= 2n;
+      i
+    "#,
+    3,
+  )
+}
+
+#[test]
+fn compiled_bigint_rem_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let i = 7n;
+      i %= 2n;
+      i
+    "#,
+    1,
+  )
+}
+
+#[test]
+fn compiled_bigint_exponent_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let i = 2n;
+      i **= 3n;
+      i
+    "#,
+    8,
+  )
 }
 
 #[test]

@@ -3023,40 +3023,115 @@ impl<'vm> HirEvaluator<'vm> {
         self.addition_operator(scope, l, r)
       }
       hir_js::BinaryOp::Subtract => {
-        // Root operands across `ToPrimitive`/`ToNumber`, which can invoke user code and allocate.
+        // Use `ToNumeric` (BigInt support).
         let mut scope = scope.reborrow();
         scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Number(ln - rn))
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a - b)),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.sub(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::Multiply => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Number(ln * rn))
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a * b)),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              let mut tick = || self.vm.tick();
+              a.mul_with_tick(b, &mut tick)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::Divide => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Number(ln / rn))
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a / b)),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_zero() {
+                return Err(VmError::RangeError("Division by zero"));
+              }
+              let mut tick = || self.vm.tick();
+              let (q, _r) = a.div_mod_with_tick(b, &mut tick)?;
+              q
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::Remainder => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Number(ln % rn))
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a % b)),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_zero() {
+                return Err(VmError::RangeError("Division by zero"));
+              }
+              let mut tick = || self.vm.tick();
+              let (_q, r) = a.div_mod_with_tick(b, &mut tick)?;
+              r
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::Exponent => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[l, r])?;
-        let base = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let exp = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Number(base.powf(exp)))
+        let base = self.to_numeric(&mut scope, l)?;
+        let exp = self.to_numeric(&mut scope, r)?;
+        match (base, exp) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a.powf(b))),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_negative() {
+                return Err(VmError::RangeError("BigInt exponent must be >= 0"));
+              }
+              let mut tick = || self.vm.tick();
+              a.pow_with_tick(b, &mut tick)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::ShiftLeft => {
         let mut tick = || self.vm.tick();
@@ -3652,44 +3727,114 @@ impl<'vm> HirEvaluator<'vm> {
     match op {
       hir_js::AssignOp::AddAssign => self.addition_operator(scope, left, right),
       hir_js::AssignOp::SubAssign => {
-        // Root operands while performing `ToNumber`, which can invoke user code.
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        Ok(Value::Number(
-          scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?
-            - scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?,
-        ))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a - b)),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.sub(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::MulAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        Ok(Value::Number(
-          scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?
-            * scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?,
-        ))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a * b)),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              let mut tick = || self.vm.tick();
+              a.mul_with_tick(b, &mut tick)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::DivAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        Ok(Value::Number(
-          scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?
-            / scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?,
-        ))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a / b)),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_zero() {
+                return Err(VmError::RangeError("Division by zero"));
+              }
+              let mut tick = || self.vm.tick();
+              let (q, _r) = a.div_mod_with_tick(b, &mut tick)?;
+              q
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::RemAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        Ok(Value::Number(
-          scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?
-            % scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?,
-        ))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a % b)),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_zero() {
+                return Err(VmError::RangeError("Division by zero"));
+              }
+              let mut tick = || self.vm.tick();
+              let (_q, r) = a.div_mod_with_tick(b, &mut tick)?;
+              r
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::ExponentAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let base = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let exp = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        Ok(Value::Number(base.powf(exp)))
+        let base = self.to_numeric(&mut scope, left)?;
+        let exp = self.to_numeric(&mut scope, right)?;
+        match (base, exp) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a.powf(b))),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_negative() {
+                return Err(VmError::RangeError("BigInt exponent must be >= 0"));
+              }
+              let mut tick = || self.vm.tick();
+              a.pow_with_tick(b, &mut tick)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       _ => Err(VmError::Unimplemented(
         "compound assignment operator (hir-js compiled path)",
