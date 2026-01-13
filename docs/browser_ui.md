@@ -211,6 +211,7 @@ The browser persists a lightweight session file for restoring state across resta
 - Default location: a per-user config directory (via `directories`), e.g.
   `~/.config/fastrender/fastrender_session.json` on Linux.
 - Override: `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json`.
+- Fallback (if the OS config directory cannot be determined): `./fastrender_session.json`.
 
 To avoid corrupting the session file, the `browser` process also acquires a lock file for the
 session path. If another `browser` process is already running with the same session path, a second
@@ -445,6 +446,8 @@ FastRender’s experimental desktop browser UI supports **bookmarks** and a basi
 - **Persistence**:
   - Bookmarks and history are stored as JSON files under the per-user FastRender config directory
     (for example `~/.config/fastrender/` on Linux).
+    - Fallback (if the OS config directory cannot be determined): `./fastrender_bookmarks.json` and
+      `./fastrender_history.json`.
   - Override the default paths with:
     - `FASTR_BROWSER_BOOKMARKS_PATH`
     - `FASTR_BROWSER_HISTORY_PATH`
