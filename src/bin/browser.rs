@@ -4653,6 +4653,20 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
+struct OpenMediaControls {
+  tab_id: fastrender::ui::TabId,
+  /// Node id of the underlying `<video>`/`<audio>` element.
+  media_node_id: usize,
+  /// Bounding box of the media element in viewport CSS coordinates.
+  ///
+  /// Used for click-away/toggle-close behaviour: clicking the underlying element while the overlay
+  /// is open should close it without forwarding the click back to the page (preventing immediate
+  /// reopen).
+  anchor_css: fastrender::geometry::Rect,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
 struct PendingContextMenuRequest {
   tab_id: fastrender::ui::TabId,
   pos_css: (f32, f32),
@@ -5596,12 +5610,15 @@ struct App {
   open_color_picker_rect: Option<egui::Rect>,
   open_file_picker: Option<OpenFilePicker>,
   open_file_picker_rect: Option<egui::Rect>,
+  open_media_controls: Option<OpenMediaControls>,
+  open_media_controls_rect: Option<egui::Rect>,
   debug_log: std::collections::VecDeque<String>,
   debug_log_ui_enabled: bool,
   debug_log_ui_open: bool,
   debug_log_filter: String,
   debug_log_overlay_rect: Option<egui::Rect>,
   debug_log_overlay_pointer_capture: bool,
+  media_controls_overlay_pointer_capture: bool,
   hud: Option<BrowserHud>,
 
   tab_notifications: std::collections::HashMap<fastrender::ui::TabId, TabNotificationUiState>,
@@ -5873,6 +5890,9 @@ impl App {
         .open_file_picker_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
+        .open_media_controls_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
         .open_context_menu_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
@@ -5891,6 +5911,7 @@ impl App {
         .chrome_toast_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self.debug_log_overlay_pointer_capture
+      || self.media_controls_overlay_pointer_capture
   }
 
   fn cursor_over_overlay_scrollbars(&self, pos_points: egui::Pos2) -> bool {
@@ -6240,6 +6261,8 @@ impl App {
       open_color_picker_rect: None,
       open_file_picker: None,
       open_file_picker_rect: None,
+      open_media_controls: None,
+      open_media_controls_rect: None,
       bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState::default(),
       debug_log: std::collections::VecDeque::new(),
       debug_log_ui_enabled,
@@ -6247,6 +6270,7 @@ impl App {
       debug_log_filter: String::new(),
       debug_log_overlay_rect: None,
       debug_log_overlay_pointer_capture: false,
+      media_controls_overlay_pointer_capture: false,
       hud,
       tab_notifications: std::collections::HashMap::new(),
       warning_toast_rect: None,
@@ -7260,6 +7284,27 @@ impl App {
     self.close_file_picker();
   }
 
+  fn close_media_controls(&mut self) {
+    self.open_media_controls = None;
+    self.open_media_controls_rect = None;
+
+    if self.media_controls_overlay_pointer_capture {
+      self.media_controls_overlay_pointer_capture = false;
+      if let Some(pos_points) = self.last_cursor_pos_points {
+        if self
+          .page_rect_points
+          .is_some_and(|page_rect| page_rect.contains(pos_points))
+          && !self.cursor_over_egui_overlay(pos_points)
+        {
+          // Pointer capture ended with the cursor over the page. Re-sync hover state so the worker
+          // immediately sees the current hover target without waiting for another CursorMoved event.
+          self.hover_sync_pending = true;
+          self.window.request_redraw();
+        }
+      }
+    }
+  }
+
   fn launch_native_file_picker_dialog(
     &self,
     tab_id: fastrender::ui::TabId,
@@ -7344,7 +7389,6 @@ impl App {
     self.pending_scroll.clear();
     self.pending_scroll_drag = None;
   }
-
   fn flush_pending_pointer_move(&mut self) {
     let Some(msg) = self.pending_pointer_move.take() else {
       return;
@@ -11256,6 +11300,7 @@ impl App {
         // pointer drags.
         self.debug_log_overlay_pointer_capture = false;
         self.touch_gesture.reset();
+        self.media_controls_overlay_pointer_capture = false;
         if self.open_select_dropdown.is_some() {
           self.cancel_select_dropdown();
           self.window.request_redraw();
@@ -11270,6 +11315,10 @@ impl App {
         }
         if self.open_file_picker.is_some() {
           self.cancel_file_picker();
+          self.window.request_redraw();
+        }
+        if self.open_media_controls.is_some() {
+          self.close_media_controls();
           self.window.request_redraw();
         }
         if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
@@ -11304,6 +11353,7 @@ impl App {
         // position so hover updates are not suppressed by stale dropdown rect checks.
         self.last_cursor_pos_points = None;
         self.debug_log_overlay_pointer_capture = false;
+        self.media_controls_overlay_pointer_capture = false;
         if had_cursor_near_scrollbars {
           self
             .overlay_scrollbar_visibility
@@ -11930,6 +11980,28 @@ impl App {
           return;
         }
 
+        if self.media_controls_overlay_pointer_capture {
+          if matches!(state, ElementState::Released)
+            && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+          {
+            self.media_controls_overlay_pointer_capture = false;
+            if let Some(pos_points) = self.last_cursor_pos_points {
+              if self
+                .page_rect_points
+                .is_some_and(|page_rect| page_rect.contains(pos_points))
+                && !self.cursor_over_egui_overlay(pos_points)
+              {
+                // Pointer capture ended with the cursor over the page. Re-sync hover state so the
+                // worker immediately sees the current hover target without waiting for another
+                // CursorMoved event.
+                self.hover_sync_pending = true;
+                self.window.request_redraw();
+              }
+            }
+          }
+          return;
+        }
+
         if self.scrollbar_drag.is_some() {
           if matches!(state, ElementState::Released)
             && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
@@ -12099,6 +12171,39 @@ impl App {
           self.cancel_file_picker();
           self.window.request_redraw();
           if clicked_input_control {
+            return;
+          }
+        }
+
+        if matches!(state, ElementState::Pressed) && self.open_media_controls.is_some() {
+          // If the media controls overlay is open, clicks inside it are handled by egui.
+          if self
+            .open_media_controls_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            if matches!(mapped_button, fastrender::ui::PointerButton::Primary) {
+              // Track the press so the corresponding release is also suppressed even if the overlay
+              // moves/resizes under the cursor.
+              self.media_controls_overlay_pointer_capture = true;
+            }
+            return;
+          }
+
+          // Close the overlay before processing the click so we don't require a second click to
+          // interact with the underlying page/chrome.
+          //
+          // Special-case: clicking the underlying media element itself should typically just toggle
+          // the overlay closed (don't immediately reopen it by forwarding the click to the page).
+          let clicked_media_element = self.open_media_controls.as_ref().is_some_and(|controls| {
+            self
+              .page_input_mapping
+              .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
+              .is_some_and(|rect_points| rect_points.contains(pos_points))
+          });
+
+          self.close_media_controls();
+          self.window.request_redraw();
+          if clicked_media_element {
             return;
           }
         }
