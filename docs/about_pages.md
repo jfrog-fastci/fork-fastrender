@@ -16,6 +16,14 @@ able to fetch arbitrary `chrome://...` resources.
 If you add/remove an internal page, keep this document consistent with the `ABOUT_*` constants and
 `ABOUT_PAGE_URLS` in `src/ui/about_pages.rs`.
 
+## Opening `about:` pages
+
+- Type an `about:` URL directly into the browser address bar (omnibox), e.g. `about:gpu`.
+- Omnibox autocomplete suggests built-in `about:` pages when the user starts typing `about...` (it is
+  backed by `ABOUT_PAGE_URLS`).
+- Some pages support a `?q=` query parameter for filtering/search (notably `about:history`,
+  `about:bookmarks`, and `about:processes`).
+
 ## Built-in pages (user-facing + debugging)
 
 | URL | Purpose / expected content |
