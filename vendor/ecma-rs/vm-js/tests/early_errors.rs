@@ -232,6 +232,38 @@ fn escaped_eval_as_import_binding_identifier_is_syntax_error() {
 }
 
 #[test]
+fn escaped_await_as_nested_function_decl_name_in_async_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"async function f(){ function \u0061wait() {} }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_await_as_class_name_in_module_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"class \u0061wait {}"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_yield_as_function_name_in_strict_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"function \u0079ield() { "use strict"; }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_yield_as_class_name_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#"class \u0079ield {}"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn eval_early_errors_are_catchable_syntax_error() {
   let mut rt = new_runtime();
   let value = rt

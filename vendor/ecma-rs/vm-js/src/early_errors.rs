@@ -252,6 +252,14 @@ enum LexicalNameKind {
   Other,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FuncNameKind {
+  /// A function declaration name, which is bound in the surrounding scope.
+  Decl,
+  /// A named function expression name, which is bound within the function itself.
+  Expr,
+}
+
 impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn new(tick: &'a mut F) -> Self {
     Self {
@@ -285,11 +293,33 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     loc: Loc,
     name: &str,
   ) -> Result<(), VmError> {
+    self.validate_reserved_identifier_flags(
+      ctx.strict,
+      ctx.is_module,
+      ctx.await_is_reserved,
+      ctx.yield_is_reserved,
+      loc,
+      name,
+    )
+  }
+
+  fn validate_reserved_identifier_flags(
+    &mut self,
+    strict: bool,
+    is_module: bool,
+    await_is_reserved: bool,
+    yield_is_reserved: bool,
+    loc: Loc,
+    name: &str,
+  ) -> Result<(), VmError> {
     let reserved = match name {
       // `yield` is reserved in strict mode code and within generator bodies.
-      "yield" => ctx.strict || ctx.yield_is_reserved,
-      // `await` is reserved in async contexts, module top-level, and class static blocks.
-      "await" => ctx.await_is_reserved,
+      "yield" => strict || yield_is_reserved,
+      // `await` is reserved in:
+      // - Module code (everywhere, even inside non-async nested functions),
+      // - async function bodies/params, and
+      // - class static initialization blocks.
+      "await" => is_module || await_is_reserved,
       _ => false,
     };
     if reserved {
@@ -1073,24 +1103,30 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Stmt::Import(import) => {
         // Import declarations require local binding identifiers, not binding patterns.
         if let Some(default) = &import.stx.default {
-          self.step()?;
           if !matches!(&*default.stx.pat.stx, Pat::Id(_)) {
+            self.step()?;
             self.push_error(default.loc, "invalid import binding")?;
+          } else {
+            self.visit_pat(ctx, &default.stx.pat, PatRole::Binding)?;
           }
         }
         if let Some(names) = import.stx.names.as_ref() {
           match names {
             ImportNames::All(pat_decl) => {
-              self.step()?;
               if !matches!(&*pat_decl.stx.pat.stx, Pat::Id(_)) {
+                self.step()?;
                 self.push_error(pat_decl.loc, "invalid import binding")?;
+              } else {
+                self.visit_pat(ctx, &pat_decl.stx.pat, PatRole::Binding)?;
               }
             }
             ImportNames::Specific(list) => {
               for name in list {
-                self.step()?;
                 if !matches!(&*name.stx.alias.stx.pat.stx, Pat::Id(_)) {
+                  self.step()?;
                   self.push_error(name.stx.alias.loc, "invalid import binding")?;
+                } else {
+                  self.visit_pat(ctx, &name.stx.alias.stx.pat, PatRole::Binding)?;
                 }
               }
             }
@@ -1599,16 +1635,24 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx: &mut ControlContext,
     decl: &ClassDecl,
   ) -> Result<(), VmError> {
-    if ctx.strict {
-      if let Some(name) = &decl.name {
-        if is_restricted_identifier(&name.stx.name) {
-          let message = try_format_error_message(
-            "restricted identifier '",
-            name.stx.name.as_str(),
-            "' is not allowed in strict mode",
-          )?;
-          self.push_error(name.loc, message)?;
-        }
+    // Class definitions are always strict mode code, so strict-mode binding restrictions apply
+    // regardless of the surrounding context.
+    if let Some(name) = &decl.name {
+      self.validate_reserved_identifier_flags(
+        /* strict */ true,
+        /* is_module */ ctx.is_module,
+        /* await_is_reserved */ ctx.await_is_reserved,
+        /* yield_is_reserved */ ctx.yield_is_reserved,
+        name.loc,
+        name.stx.name.as_str(),
+      )?;
+      if is_restricted_identifier(&name.stx.name) {
+        let message = try_format_error_message(
+          "restricted identifier '",
+          name.stx.name.as_str(),
+          "' is not allowed in strict mode",
+        )?;
+        self.push_error(name.loc, message)?;
       }
     }
     if let Some(extends) = &decl.extends {
@@ -1622,16 +1666,24 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx: &mut ControlContext,
     expr: &ClassExpr,
   ) -> Result<(), VmError> {
-    if ctx.strict {
-      if let Some(name) = &expr.name {
-        if is_restricted_identifier(&name.stx.name) {
-          let message = try_format_error_message(
-            "restricted identifier '",
-            name.stx.name.as_str(),
-            "' is not allowed in strict mode",
-          )?;
-          self.push_error(name.loc, message)?;
-        }
+    // Class definitions are always strict mode code, so strict-mode binding restrictions apply
+    // regardless of the surrounding context.
+    if let Some(name) = &expr.name {
+      self.validate_reserved_identifier_flags(
+        /* strict */ true,
+        /* is_module */ ctx.is_module,
+        /* await_is_reserved */ ctx.await_is_reserved,
+        /* yield_is_reserved */ ctx.yield_is_reserved,
+        name.loc,
+        name.stx.name.as_str(),
+      )?;
+      if is_restricted_identifier(&name.stx.name) {
+        let message = try_format_error_message(
+          "restricted identifier '",
+          name.stx.name.as_str(),
+          "' is not allowed in strict mode",
+        )?;
+        self.push_error(name.loc, message)?;
       }
     }
     if let Some(extends) = &expr.extends {
@@ -1794,6 +1846,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         &getter.stx.func,
         /* unique */ true,
         /* super_call_allowed */ false,
+        FuncNameKind::Expr,
       ),
       ClassOrObjVal::Setter(setter) => self.visit_func(
         ctx,
@@ -1801,6 +1854,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         &setter.stx.func,
         /* unique */ true,
         /* super_call_allowed */ false,
+        FuncNameKind::Expr,
       ),
       ClassOrObjVal::Method(method) => {
         let is_constructor = !member.static_
@@ -1815,6 +1869,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           &method.stx.func,
           /* unique */ true,
           /* super_call_allowed */ derived && is_constructor,
+          FuncNameKind::Expr,
         )
       }
       ClassOrObjVal::Prop(Some(expr)) => {
@@ -1888,6 +1943,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       &decl.function,
       /* unique */ false,
       /* super_call_allowed */ false,
+      FuncNameKind::Decl,
     )
   }
 
@@ -2216,6 +2272,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     func: &Node<Func>,
     unique_formals: bool,
     super_call_allowed: bool,
+    name_kind: FuncNameKind,
   ) -> Result<(), VmError> {
     self.step()?;
 
@@ -2315,6 +2372,35 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           )?;
           self.push_error(name.loc, message)?;
         }
+      }
+    }
+
+    // `await` and `yield` are reserved identifiers in certain contexts (modules/async/generators).
+    //
+    // Note: function *declarations* and *expressions* differ here:
+    // - Declarations introduce a binding in the surrounding scope (so they inherit outer
+    //   `await`/`yield` reservation).
+    // - Named function expressions bind the name inside the function itself, so they are not
+    //   affected by outer async/generator contexts (but are still affected by module parsing, and
+    //   by the function being async/generator itself).
+    if let Some(name) = name {
+      match name_kind {
+        FuncNameKind::Decl => self.validate_reserved_identifier_flags(
+          /* strict */ func_strict,
+          /* is_module */ ctx.is_module,
+          /* await_is_reserved */ ctx.await_is_reserved,
+          /* yield_is_reserved */ ctx.yield_is_reserved,
+          name.loc,
+          name.stx.name.as_str(),
+        )?,
+        FuncNameKind::Expr => self.validate_reserved_identifier_flags(
+          /* strict */ func_strict,
+          /* is_module */ ctx.is_module,
+          /* await_is_reserved */ func.stx.async_,
+          /* yield_is_reserved */ func.stx.generator,
+          name.loc,
+          name.stx.name.as_str(),
+        )?,
       }
     }
 
@@ -2532,6 +2618,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       &expr.func,
       /* unique */ true,
       /* super_call_allowed */ ctx.super_call_allowed,
+      FuncNameKind::Expr,
     )
   }
 
@@ -2542,6 +2629,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       &expr.func,
       /* unique */ false,
       /* super_call_allowed */ false,
+      FuncNameKind::Expr,
     )
   }
 
@@ -2913,6 +3001,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               &getter.stx.func,
               /* unique */ true,
               /* super_call_allowed */ false,
+              FuncNameKind::Expr,
             )?,
             ClassOrObjVal::Setter(setter) => self.visit_func(
               ctx,
@@ -2920,6 +3009,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               &setter.stx.func,
               /* unique */ true,
               /* super_call_allowed */ false,
+              FuncNameKind::Expr,
             )?,
             ClassOrObjVal::Method(method) => self.visit_func(
               ctx,
@@ -2927,6 +3017,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               &method.stx.func,
               /* unique */ true,
               /* super_call_allowed */ false,
+              FuncNameKind::Expr,
             )?,
             ClassOrObjVal::Prop(Some(expr)) => self.visit_expr(ctx, expr)?,
             ClassOrObjVal::Prop(None) => {}
