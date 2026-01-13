@@ -383,10 +383,12 @@ impl CpalAudioBackend {
             last_progress_at = now;
             consecutive_unhealthy_restarts = 0;
           } else {
-            let callback_frames_hint = fixed_callback_frames.or_else(|| {
+            // Prefer the observed callback size once we have it (e.g. after a stream restart where
+            // the device selected a different buffer size).
+            let callback_frames_hint = {
               let v = last_callback_frames_watchdog.load(Ordering::Relaxed);
-              (v != 0).then_some(v)
-            });
+              if v != 0 { Some(v) } else { fixed_callback_frames }
+            };
             let callback_duration = callback_frames_hint
               .map(|frames| frames_to_duration(sample_rate_hz, frames as u64))
               .unwrap_or(STREAM_RESTART_POLL_INTERVAL);
