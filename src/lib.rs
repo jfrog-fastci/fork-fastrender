@@ -199,6 +199,8 @@ pub mod media;
 
 pub mod accessibility;
 pub mod accessibility_audit;
+#[cfg(feature = "browser_ui")]
+pub mod accesskit_integration;
 pub mod interaction;
 pub mod layout;
 pub mod math;
