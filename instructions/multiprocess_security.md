@@ -160,6 +160,9 @@ See:
 - [`docs/macos_sandbox.md`](../docs/macos_sandbox.md) for debugging tips and the `macos_sandbox_probe` tool.
 - Renderer-focused quick reference: [`docs/security/macos_renderer_sandbox.md`](../docs/security/macos_renderer_sandbox.md)
 
+Windows quick reference:
+- [`docs/security/windows_renderer_sandbox.md`](../docs/security/windows_renderer_sandbox.md)
+
 App Sandbox note: when FastRender is eventually shipped as a macOS `.app`, we expect to sandbox
 the untrusted renderer helper process using **App Sandbox entitlements embedded in the code
 signature**. Placeholder entitlement files live in [`tools/macos/entitlements/`](../tools/macos/entitlements/)
