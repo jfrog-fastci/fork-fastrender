@@ -188,9 +188,6 @@ pub fn apply_renderer_seccomp_denylist() -> Result<SandboxStatus, SandboxError> 
 mod linux_seccomp;
 
 #[cfg(target_os = "macos")]
-pub mod macos;
-
-#[cfg(target_os = "macos")]
 pub mod macos_spawn;
 #[cfg(target_os = "windows")]
 pub mod windows;
