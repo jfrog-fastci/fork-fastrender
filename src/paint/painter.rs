@@ -20487,6 +20487,7 @@ mod tests {
   use crate::style::types::BorderImageSliceValue;
   use crate::style::types::BorderImageSource;
   use crate::style::types::ClipPath;
+  use crate::text::caret::CaretAffinity;
   use crate::style::types::FilterShadow;
   use crate::style::types::ImageRendering;
   use crate::style::types::Isolation;
@@ -20505,7 +20506,6 @@ mod tests {
   use crate::style::types::UrlImage;
   use crate::style::values::Length;
   use crate::style::ComputedStyle;
-  use crate::text::caret::CaretAffinity;
   use crate::text::font_loader::FontContext;
   use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::box_tree::ForeignObjectInfo;

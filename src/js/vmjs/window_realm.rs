@@ -33638,6 +33638,8 @@ fn init_window_globals(
     crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_character_data_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_event_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_custom_event_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_text_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_element_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_bindings_vm_js(vm, heap, realm)?;
@@ -35248,161 +35250,234 @@ fn init_window_globals(
   // Many real-world bundles include the "CustomEvent polyfill" pattern that calls
   // `document.createEvent("CustomEvent")` + `initCustomEvent`. Install these legacy APIs so such
   // scripts can run without immediately aborting.
-  let event_proto = scope.alloc_object()?;
+  let event_proto = if config.dom_bindings_backend == DomBindingsBackend::WebIdl {
+    // When using WebIDL-generated bindings, `Event` is already installed on `globalThis`.
+    // Reuse its existing prototype instead of clobbering the global constructor.
+    let ctor_key = alloc_key(&mut scope, "Event")?;
+    let ctor_value = scope
+      .heap()
+      .object_get_own_data_property_value(global, &ctor_key)?
+      .ok_or(VmError::InvariantViolation(
+        "globalThis is missing required Event constructor",
+      ))?;
+    let Value::Object(ctor_obj) = ctor_value else {
+      return Err(VmError::InvariantViolation(
+        "globalThis.Event is not an object",
+      ));
+    };
+    scope.push_root(Value::Object(ctor_obj))?;
+    let prototype_key = alloc_key(&mut scope, "prototype")?;
+    let proto_value = scope
+      .heap()
+      .object_get_own_data_property_value(ctor_obj, &prototype_key)?
+      .ok_or(VmError::InvariantViolation(
+        "globalThis.Event is missing required prototype",
+      ))?;
+    let Value::Object(proto_obj) = proto_value else {
+      return Err(VmError::InvariantViolation(
+        "globalThis.Event.prototype is not an object",
+      ));
+    };
+    proto_obj
+  } else {
+    scope.alloc_object()?
+  };
   scope.push_root(Value::Object(event_proto))?;
 
   // --- Event.isTrusted ([LegacyUnforgeable]) ---
   //
   // Store the shared native getter on `Event.prototype` so event instance shims can reuse it when
   // defining the unforgeable own accessor property.
-  let is_trusted_get_call_id = vm.register_native_call(event_is_trusted_getter_native)?;
-  let is_trusted_get_name = scope.alloc_string("get isTrusted")?;
-  scope.push_root(Value::String(is_trusted_get_name))?;
-  let is_trusted_get_func =
-    scope.alloc_native_function(is_trusted_get_call_id, None, is_trusted_get_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    is_trusted_get_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(is_trusted_get_func))?;
   let is_trusted_get_key = alloc_key(&mut scope, EVENT_IS_TRUSTED_GETTER_KEY)?;
-  scope.define_property(
-    event_proto,
-    is_trusted_get_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Object(is_trusted_get_func),
-        writable: false,
+  if scope
+    .heap()
+    .object_get_own_property(event_proto, &is_trusted_get_key)?
+    .is_none()
+  {
+    let is_trusted_get_call_id = vm.register_native_call(event_is_trusted_getter_native)?;
+    let is_trusted_get_name = scope.alloc_string("get isTrusted")?;
+    scope.push_root(Value::String(is_trusted_get_name))?;
+    let is_trusted_get_func =
+      scope.alloc_native_function(is_trusted_get_call_id, None, is_trusted_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      is_trusted_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(is_trusted_get_func))?;
+    scope.define_property(
+      event_proto,
+      is_trusted_get_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(is_trusted_get_func),
+          writable: false,
+        },
       },
-    },
-  )?;
+    )?;
+  }
 
-  let init_event_call_id = vm.register_native_call(event_init_event_native)?;
-  let init_event_name = scope.alloc_string("initEvent")?;
-  scope.push_root(Value::String(init_event_name))?;
-  let init_event_func =
-    scope.alloc_native_function(init_event_call_id, None, init_event_name, 3)?;
-  scope.heap_mut().object_set_prototype(
-    init_event_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(init_event_func))?;
   let init_event_key = alloc_key(&mut scope, "initEvent")?;
-  scope.define_property(
-    event_proto,
-    init_event_key,
-    data_desc(Value::Object(init_event_func)),
-  )?;
+  if scope
+    .heap()
+    .object_get_own_property(event_proto, &init_event_key)?
+    .is_none()
+  {
+    let init_event_call_id = vm.register_native_call(event_init_event_native)?;
+    let init_event_name = scope.alloc_string("initEvent")?;
+    scope.push_root(Value::String(init_event_name))?;
+    let init_event_func =
+      scope.alloc_native_function(init_event_call_id, None, init_event_name, 3)?;
+    scope.heap_mut().object_set_prototype(
+      init_event_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(init_event_func))?;
+    scope.define_property(
+      event_proto,
+      init_event_key,
+      data_desc(Value::Object(init_event_func)),
+    )?;
+  }
 
-  let prevent_default_call_id = vm.register_native_call(event_prototype_prevent_default_native)?;
-  let prevent_default_name = scope.alloc_string("preventDefault")?;
-  scope.push_root(Value::String(prevent_default_name))?;
-  let prevent_default_func =
-    scope.alloc_native_function(prevent_default_call_id, None, prevent_default_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    prevent_default_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(prevent_default_func))?;
   let prevent_default_key = alloc_key(&mut scope, "preventDefault")?;
-  scope.define_property(
-    event_proto,
-    prevent_default_key,
-    data_desc(Value::Object(prevent_default_func)),
-  )?;
+  if scope
+    .heap()
+    .object_get_own_property(event_proto, &prevent_default_key)?
+    .is_none()
+  {
+    let prevent_default_call_id = vm.register_native_call(event_prototype_prevent_default_native)?;
+    let prevent_default_name = scope.alloc_string("preventDefault")?;
+    scope.push_root(Value::String(prevent_default_name))?;
+    let prevent_default_func =
+      scope.alloc_native_function(prevent_default_call_id, None, prevent_default_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      prevent_default_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(prevent_default_func))?;
+    scope.define_property(
+      event_proto,
+      prevent_default_key,
+      data_desc(Value::Object(prevent_default_func)),
+    )?;
+  }
 
-  let stop_propagation_call_id =
-    vm.register_native_call(event_prototype_stop_propagation_native)?;
-  let stop_propagation_name = scope.alloc_string("stopPropagation")?;
-  scope.push_root(Value::String(stop_propagation_name))?;
-  let stop_propagation_func =
-    scope.alloc_native_function(stop_propagation_call_id, None, stop_propagation_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    stop_propagation_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(stop_propagation_func))?;
   let stop_propagation_key = alloc_key(&mut scope, "stopPropagation")?;
-  scope.define_property(
-    event_proto,
-    stop_propagation_key,
-    data_desc(Value::Object(stop_propagation_func)),
-  )?;
+  if scope
+    .heap()
+    .object_get_own_property(event_proto, &stop_propagation_key)?
+    .is_none()
+  {
+    let stop_propagation_call_id =
+      vm.register_native_call(event_prototype_stop_propagation_native)?;
+    let stop_propagation_name = scope.alloc_string("stopPropagation")?;
+    scope.push_root(Value::String(stop_propagation_name))?;
+    let stop_propagation_func =
+      scope.alloc_native_function(stop_propagation_call_id, None, stop_propagation_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      stop_propagation_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(stop_propagation_func))?;
+    scope.define_property(
+      event_proto,
+      stop_propagation_key,
+      data_desc(Value::Object(stop_propagation_func)),
+    )?;
+  }
 
-  let stop_immediate_call_id =
-    vm.register_native_call(event_prototype_stop_immediate_propagation_native)?;
-  let stop_immediate_name = scope.alloc_string("stopImmediatePropagation")?;
-  scope.push_root(Value::String(stop_immediate_name))?;
-  let stop_immediate_func =
-    scope.alloc_native_function(stop_immediate_call_id, None, stop_immediate_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    stop_immediate_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(stop_immediate_func))?;
   let stop_immediate_key = alloc_key(&mut scope, "stopImmediatePropagation")?;
-  scope.define_property(
-    event_proto,
-    stop_immediate_key,
-    data_desc(Value::Object(stop_immediate_func)),
-  )?;
+  if scope
+    .heap()
+    .object_get_own_property(event_proto, &stop_immediate_key)?
+    .is_none()
+  {
+    let stop_immediate_call_id =
+      vm.register_native_call(event_prototype_stop_immediate_propagation_native)?;
+    let stop_immediate_name = scope.alloc_string("stopImmediatePropagation")?;
+    scope.push_root(Value::String(stop_immediate_name))?;
+    let stop_immediate_func =
+      scope.alloc_native_function(stop_immediate_call_id, None, stop_immediate_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      stop_immediate_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(stop_immediate_func))?;
+    scope.define_property(
+      event_proto,
+      stop_immediate_key,
+      data_desc(Value::Object(stop_immediate_func)),
+    )?;
+  }
 
   // Event.composedPath()
-  let composed_path_call_id = vm.register_native_call(event_prototype_composed_path_native)?;
-  let composed_path_name = scope.alloc_string("composedPath")?;
-  scope.push_root(Value::String(composed_path_name))?;
-  let composed_path_func =
-    scope.alloc_native_function(composed_path_call_id, None, composed_path_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    composed_path_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(composed_path_func))?;
   let composed_path_key = alloc_key(&mut scope, "composedPath")?;
-  scope.define_property(
-    event_proto,
-    composed_path_key,
-    data_desc(Value::Object(composed_path_func)),
-  )?;
+  if scope
+    .heap()
+    .object_get_own_property(event_proto, &composed_path_key)?
+    .is_none()
+  {
+    let composed_path_call_id = vm.register_native_call(event_prototype_composed_path_native)?;
+    let composed_path_name = scope.alloc_string("composedPath")?;
+    scope.push_root(Value::String(composed_path_name))?;
+    let composed_path_func =
+      scope.alloc_native_function(composed_path_call_id, None, composed_path_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      composed_path_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(composed_path_func))?;
+    scope.define_property(
+      event_proto,
+      composed_path_key,
+      data_desc(Value::Object(composed_path_func)),
+    )?;
+  }
 
   // Legacy Event.returnValue accessor.
-  let return_value_get_call_id = vm.register_native_call(event_prototype_return_value_get_native)?;
-  let return_value_get_name = scope.alloc_string("get returnValue")?;
-  scope.push_root(Value::String(return_value_get_name))?;
-  let return_value_get_func =
-    scope.alloc_native_function(return_value_get_call_id, None, return_value_get_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    return_value_get_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(return_value_get_func))?;
-
-  let return_value_set_call_id = vm.register_native_call(event_prototype_return_value_set_native)?;
-  let return_value_set_name = scope.alloc_string("set returnValue")?;
-  scope.push_root(Value::String(return_value_set_name))?;
-  let return_value_set_func =
-    scope.alloc_native_function(return_value_set_call_id, None, return_value_set_name, 1)?;
-  scope.heap_mut().object_set_prototype(
-    return_value_set_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(return_value_set_func))?;
-
   let return_value_key = alloc_key(&mut scope, "returnValue")?;
-  scope.define_property(
-    event_proto,
-    return_value_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Accessor {
-        get: Value::Object(return_value_get_func),
-        set: Value::Object(return_value_set_func),
+  if scope
+    .heap()
+    .object_get_own_property(event_proto, &return_value_key)?
+    .is_none()
+  {
+    let return_value_get_call_id = vm.register_native_call(event_prototype_return_value_get_native)?;
+    let return_value_get_name = scope.alloc_string("get returnValue")?;
+    scope.push_root(Value::String(return_value_get_name))?;
+    let return_value_get_func =
+      scope.alloc_native_function(return_value_get_call_id, None, return_value_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      return_value_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(return_value_get_func))?;
+
+    let return_value_set_call_id = vm.register_native_call(event_prototype_return_value_set_native)?;
+    let return_value_set_name = scope.alloc_string("set returnValue")?;
+    scope.push_root(Value::String(return_value_set_name))?;
+    let return_value_set_func =
+      scope.alloc_native_function(return_value_set_call_id, None, return_value_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      return_value_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(return_value_set_func))?;
+
+    scope.define_property(
+      event_proto,
+      return_value_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(return_value_get_func),
+          set: Value::Object(return_value_set_func),
+        },
       },
-    },
-  )?;
+    )?;
+  }
 
   let ui_event_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(ui_event_proto))?;
@@ -35428,11 +35503,42 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(input_event_proto, Some(ui_event_proto))?;
 
-  let custom_event_proto = scope.alloc_object()?;
+  let custom_event_proto = if config.dom_bindings_backend == DomBindingsBackend::WebIdl {
+    // Reuse the WebIDL-generated `CustomEvent.prototype` instead of clobbering the global.
+    let ctor_key = alloc_key(&mut scope, "CustomEvent")?;
+    let ctor_value = scope
+      .heap()
+      .object_get_own_data_property_value(global, &ctor_key)?
+      .ok_or(VmError::InvariantViolation(
+        "globalThis is missing required CustomEvent constructor",
+      ))?;
+    let Value::Object(ctor_obj) = ctor_value else {
+      return Err(VmError::InvariantViolation(
+        "globalThis.CustomEvent is not an object",
+      ));
+    };
+    scope.push_root(Value::Object(ctor_obj))?;
+    let prototype_key = alloc_key(&mut scope, "prototype")?;
+    let proto_value = scope
+      .heap()
+      .object_get_own_data_property_value(ctor_obj, &prototype_key)?
+      .ok_or(VmError::InvariantViolation(
+        "globalThis.CustomEvent is missing required prototype",
+      ))?;
+    let Value::Object(proto_obj) = proto_value else {
+      return Err(VmError::InvariantViolation(
+        "globalThis.CustomEvent.prototype is not an object",
+      ));
+    };
+    proto_obj
+  } else {
+    let proto = scope.alloc_object()?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto, Some(event_proto))?;
+    proto
+  };
   scope.push_root(Value::Object(custom_event_proto))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(custom_event_proto, Some(event_proto))?;
 
   let mouse_event_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(mouse_event_proto))?;
@@ -35512,22 +35618,28 @@ fn init_window_globals(
     data_desc(Value::Object(init_focus_event_func)),
   )?;
 
-  let init_custom_event_call_id = vm.register_native_call(custom_event_init_custom_event_native)?;
-  let init_custom_event_name = scope.alloc_string("initCustomEvent")?;
-  scope.push_root(Value::String(init_custom_event_name))?;
-  let init_custom_event_func =
-    scope.alloc_native_function(init_custom_event_call_id, None, init_custom_event_name, 4)?;
-  scope.heap_mut().object_set_prototype(
-    init_custom_event_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(init_custom_event_func))?;
   let init_custom_event_key = alloc_key(&mut scope, "initCustomEvent")?;
-  scope.define_property(
-    custom_event_proto,
-    init_custom_event_key,
-    data_desc(Value::Object(init_custom_event_func)),
-  )?;
+  if scope
+    .heap()
+    .object_get_own_property(custom_event_proto, &init_custom_event_key)?
+    .is_none()
+  {
+    let init_custom_event_call_id = vm.register_native_call(custom_event_init_custom_event_native)?;
+    let init_custom_event_name = scope.alloc_string("initCustomEvent")?;
+    scope.push_root(Value::String(init_custom_event_name))?;
+    let init_custom_event_func =
+      scope.alloc_native_function(init_custom_event_call_id, None, init_custom_event_name, 4)?;
+    scope.heap_mut().object_set_prototype(
+      init_custom_event_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(init_custom_event_func))?;
+    scope.define_property(
+      custom_event_proto,
+      init_custom_event_key,
+      data_desc(Value::Object(init_custom_event_func)),
+    )?;
+  }
 
   let storage_event_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_event_proto))?;
@@ -35659,54 +35771,52 @@ fn init_window_globals(
     dom_parser_key,
     data_desc(Value::Object(dom_parser_ctor_func)),
   )?;
-  let event_ctor_call_id = vm.register_native_call(event_constructor_native)?;
-  let event_ctor_construct_id = vm.register_native_construct(event_constructor_construct_native)?;
-  let event_ctor_name = scope.alloc_string("Event")?;
-  scope.push_root(Value::String(event_ctor_name))?;
-  let event_ctor_func = scope.alloc_native_function(
-    event_ctor_call_id,
-    Some(event_ctor_construct_id),
-    event_ctor_name,
-    1,
-  )?;
-  scope.heap_mut().object_set_prototype(
-    event_ctor_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(event_ctor_func))?;
-  scope.define_property(
-    event_ctor_func,
-    prototype_key,
-    ctor_link_desc(Value::Object(event_proto)),
-  )?;
-  scope.define_property(
-    event_proto,
-    constructor_key,
-    ctor_link_desc(Value::Object(event_ctor_func)),
-  )?;
-  let event_ctor_key = alloc_key(&mut scope, "Event")?;
-  scope.define_property(
-    global,
-    event_ctor_key,
-    data_desc(Value::Object(event_ctor_func)),
-  )?;
-
-  // DOM Event phase constants (Event.NONE .. Event.BUBBLING_PHASE). These are WebIDL `const`s and
-  // must be enumerable + non-writable/non-configurable.
-  for (name, value) in [
-    ("NONE", 0.0),
-    ("CAPTURING_PHASE", 1.0),
-    ("AT_TARGET", 2.0),
-    ("BUBBLING_PHASE", 3.0),
-  ] {
-    let key = alloc_key(&mut scope, name)?;
-    let desc = const_desc(Value::Number(value));
+  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    let event_ctor_call_id = vm.register_native_call(event_constructor_native)?;
+    let event_ctor_construct_id = vm.register_native_construct(event_constructor_construct_native)?;
+    let event_ctor_name = scope.alloc_string("Event")?;
+    scope.push_root(Value::String(event_ctor_name))?;
+    let event_ctor_func = scope.alloc_native_function(
+      event_ctor_call_id,
+      Some(event_ctor_construct_id),
+      event_ctor_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      event_ctor_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(event_ctor_func))?;
     scope.define_property(
       event_ctor_func,
-      key,
-      desc.clone(),
+      prototype_key,
+      ctor_link_desc(Value::Object(event_proto)),
     )?;
-    scope.define_property(event_proto, key, desc)?;
+    scope.define_property(
+      event_proto,
+      constructor_key,
+      ctor_link_desc(Value::Object(event_ctor_func)),
+    )?;
+    let event_ctor_key = alloc_key(&mut scope, "Event")?;
+    scope.define_property(
+      global,
+      event_ctor_key,
+      data_desc(Value::Object(event_ctor_func)),
+    )?;
+
+    // DOM Event phase constants (Event.NONE .. Event.BUBBLING_PHASE). These are WebIDL `const`s and
+    // must be enumerable + non-writable/non-configurable.
+    for (name, value) in [
+      ("NONE", 0.0),
+      ("CAPTURING_PHASE", 1.0),
+      ("AT_TARGET", 2.0),
+      ("BUBBLING_PHASE", 3.0),
+    ] {
+      let key = alloc_key(&mut scope, name)?;
+      let desc = const_desc(Value::Number(value));
+      scope.define_property(event_ctor_func, key, desc.clone())?;
+      scope.define_property(event_proto, key, desc)?;
+    }
   }
 
   let ui_event_ctor_call_id = vm.register_native_call(ui_event_constructor_native)?;
@@ -35840,38 +35950,40 @@ fn init_window_globals(
     data_desc(Value::Object(input_event_ctor_func)),
   )?;
 
-  let custom_event_ctor_call_id = vm.register_native_call(custom_event_constructor_native)?;
-  let custom_event_ctor_construct_id =
-    vm.register_native_construct(custom_event_constructor_construct_native)?;
-  let custom_event_ctor_name = scope.alloc_string("CustomEvent")?;
-  scope.push_root(Value::String(custom_event_ctor_name))?;
-  let custom_event_ctor_func = scope.alloc_native_function(
-    custom_event_ctor_call_id,
-    Some(custom_event_ctor_construct_id),
-    custom_event_ctor_name,
-    1,
-  )?;
-  scope.heap_mut().object_set_prototype(
-    custom_event_ctor_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(custom_event_ctor_func))?;
-  scope.define_property(
-    custom_event_ctor_func,
-    prototype_key,
-    ctor_link_desc(Value::Object(custom_event_proto)),
-  )?;
-  scope.define_property(
-    custom_event_proto,
-    constructor_key,
-    ctor_link_desc(Value::Object(custom_event_ctor_func)),
-  )?;
-  let custom_event_ctor_key = alloc_key(&mut scope, "CustomEvent")?;
-  scope.define_property(
-    global,
-    custom_event_ctor_key,
-    data_desc(Value::Object(custom_event_ctor_func)),
-  )?;
+  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    let custom_event_ctor_call_id = vm.register_native_call(custom_event_constructor_native)?;
+    let custom_event_ctor_construct_id =
+      vm.register_native_construct(custom_event_constructor_construct_native)?;
+    let custom_event_ctor_name = scope.alloc_string("CustomEvent")?;
+    scope.push_root(Value::String(custom_event_ctor_name))?;
+    let custom_event_ctor_func = scope.alloc_native_function(
+      custom_event_ctor_call_id,
+      Some(custom_event_ctor_construct_id),
+      custom_event_ctor_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      custom_event_ctor_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(custom_event_ctor_func))?;
+    scope.define_property(
+      custom_event_ctor_func,
+      prototype_key,
+      ctor_link_desc(Value::Object(custom_event_proto)),
+    )?;
+    scope.define_property(
+      custom_event_proto,
+      constructor_key,
+      ctor_link_desc(Value::Object(custom_event_ctor_func)),
+    )?;
+    let custom_event_ctor_key = alloc_key(&mut scope, "CustomEvent")?;
+    scope.define_property(
+      global,
+      custom_event_ctor_key,
+      data_desc(Value::Object(custom_event_ctor_func)),
+    )?;
+  }
 
   let mouse_event_ctor_call_id = vm.register_native_call(mouse_event_constructor_native)?;
   let mouse_event_ctor_construct_id =

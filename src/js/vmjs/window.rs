@@ -2146,6 +2146,48 @@ mod tests {
       "#,
     )?;
     assert_eq!(out, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn window_realm_webidl_dom_backend_installs_event_and_custom_event_constructors() -> Result<()> {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+
+    // Execute with the full WebIDL bindings host dispatch so `new Event(...)` can call back into the
+    // embedder initialiser path (`VmJsWebIdlBindingsHostDispatch`).
+    let global = realm.global_object();
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+
+    let ok = realm
+      .with_webidl_bindings_host(&mut webidl_host, |realm| {
+        realm.exec_script(
+          "(() => {\n\
+            // Construction and argument plumbing.\n\
+            if (!(new Event('x') instanceof Event)) return false;\n\
+            if (new CustomEvent('x', { detail: 1 }).detail !== 1) return false;\n\
+\n\
+            // Calling without `new` should throw TypeError.\n\
+            try { Event('x'); return false; } catch (e) { if (!(e instanceof TypeError)) return false; }\n\
+            try { CustomEvent('x'); return false; } catch (e) { if (!(e instanceof TypeError)) return false; }\n\
+\n\
+            // LegacyUnforgeable `isTrusted` instance property.\n\
+            const e = new Event('x');\n\
+            if (!Object.prototype.hasOwnProperty.call(e, 'isTrusted')) return false;\n\
+            const desc = Object.getOwnPropertyDescriptor(e, 'isTrusted');\n\
+            if (!desc || desc.configurable !== false) return false;\n\
+            if (Object.getOwnPropertyDescriptor(Event.prototype, 'isTrusted') !== undefined) return false;\n\
+            return true;\n\
+          })()",
+        )
+      })
+      .map_err(|err| vm_error_format::vm_error_to_error(realm.heap_mut(), err))?;
+
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 

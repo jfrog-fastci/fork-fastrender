@@ -41,6 +41,10 @@ const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
 const DOM_TOKEN_LIST_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMDTL");
+const EVENT_BRAND_KEY: &str = "__fastrender_event";
+const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
+const EVENT_INITIALIZED_KEY: &str = "__fastrender_event_initialized";
+const EVENT_IMMEDIATE_STOP_KEY: &str = "__fastrender_event_stop_immediate";
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
 const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 // Must match `window_realm::NODE_ID_KEY`.
@@ -1808,6 +1812,315 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
           }
         }
+      }
+      ("Event", "constructor", 0) => {
+        let obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(obj))?;
+
+        let type_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let init_value = args.get(1).copied().unwrap_or(Value::Undefined);
+
+        let mut bubbles = false;
+        let mut cancelable = false;
+        let mut composed = false;
+        if let Value::Object(init_obj) = init_value {
+          scope.push_root(Value::Object(init_obj))?;
+          let bubbles_key = key_from_str(scope, "bubbles")?;
+          if let Some(v) = scope
+            .heap()
+            .object_get_own_data_property_value(init_obj, &bubbles_key)?
+          {
+            bubbles = scope.heap().to_boolean(v)?;
+          }
+
+          let cancelable_key = key_from_str(scope, "cancelable")?;
+          if let Some(v) = scope
+            .heap()
+            .object_get_own_data_property_value(init_obj, &cancelable_key)?
+          {
+            cancelable = scope.heap().to_boolean(v)?;
+          }
+
+          let composed_key = key_from_str(scope, "composed")?;
+          if let Some(v) = scope
+            .heap()
+            .object_get_own_data_property_value(init_obj, &composed_key)?
+          {
+            composed = scope.heap().to_boolean(v)?;
+          }
+        }
+
+        let type_key = key_from_str(scope, "type")?;
+        scope.define_property(
+          obj,
+          type_key,
+          data_property(type_value, false, false, true),
+        )?;
+
+        let bubbles_key = key_from_str(scope, "bubbles")?;
+        scope.define_property(
+          obj,
+          bubbles_key,
+          data_property(Value::Bool(bubbles), false, false, true),
+        )?;
+
+        let cancelable_key = key_from_str(scope, "cancelable")?;
+        scope.define_property(
+          obj,
+          cancelable_key,
+          data_property(Value::Bool(cancelable), false, false, true),
+        )?;
+
+        let composed_key = key_from_str(scope, "composed")?;
+        scope.define_property(
+          obj,
+          composed_key,
+          data_property(Value::Bool(composed), false, false, true),
+        )?;
+
+        // Default Event fields required by the dom2 dispatch bridge.
+        let target_key = key_from_str(scope, "target")?;
+        scope.define_property(
+          obj,
+          target_key,
+          data_property(Value::Null, false, false, true),
+        )?;
+        let src_element_key = key_from_str(scope, "srcElement")?;
+        scope.define_property(
+          obj,
+          src_element_key,
+          data_property(Value::Null, false, false, true),
+        )?;
+        let current_target_key = key_from_str(scope, "currentTarget")?;
+        scope.define_property(
+          obj,
+          current_target_key,
+          data_property(Value::Null, false, false, true),
+        )?;
+        let event_phase_key = key_from_str(scope, "eventPhase")?;
+        scope.define_property(
+          obj,
+          event_phase_key,
+          data_property(Value::Number(0.0), false, false, true),
+        )?;
+        let time_stamp_key = key_from_str(scope, "timeStamp")?;
+        scope.define_property(
+          obj,
+          time_stamp_key,
+          data_property(Value::Number(0.0), false, false, true),
+        )?;
+
+        // LegacyUnforgeable `isTrusted`: must be an own, non-configurable property.
+        let is_trusted_key = key_from_str(scope, "isTrusted")?;
+        scope.define_property(
+          obj,
+          is_trusted_key,
+          data_property(Value::Bool(false), false, true, false),
+        )?;
+
+        let default_prevented_key = key_from_str(scope, "defaultPrevented")?;
+        scope.define_property(
+          obj,
+          default_prevented_key,
+          data_property(Value::Bool(false), false, false, true),
+        )?;
+        let cancel_bubble_key = key_from_str(scope, "cancelBubble")?;
+        scope.define_property(
+          obj,
+          cancel_bubble_key,
+          data_property(Value::Bool(false), true, false, true),
+        )?;
+        let immediate_stop_key = key_from_str(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+        scope.define_property(
+          obj,
+          immediate_stop_key,
+          data_property(Value::Bool(false), true, false, true),
+        )?;
+
+        let initialized_key = key_from_str(scope, EVENT_INITIALIZED_KEY)?;
+        scope.define_property(
+          obj,
+          initialized_key,
+          data_property(Value::Bool(true), true, false, true),
+        )?;
+
+        // Brand-check for EventTarget.dispatchEvent().
+        let brand_key = key_from_str(scope, EVENT_BRAND_KEY)?;
+        scope.define_property(
+          obj,
+          brand_key,
+          data_property(Value::Bool(true), false, false, false),
+        )?;
+        let kind_key = key_from_str(scope, EVENT_KIND_KEY)?;
+        scope.define_property(
+          obj,
+          kind_key,
+          data_property(Value::Number(0.0), false, false, false),
+        )?;
+
+        Ok(Value::Undefined)
+      }
+      ("CustomEvent", "constructor", 0) => {
+        let obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(obj))?;
+
+        let type_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let init_value = args.get(1).copied().unwrap_or(Value::Undefined);
+
+        let mut bubbles = false;
+        let mut cancelable = false;
+        let mut composed = false;
+        let mut detail = Value::Null;
+        if let Value::Object(init_obj) = init_value {
+          scope.push_root(Value::Object(init_obj))?;
+          let bubbles_key = key_from_str(scope, "bubbles")?;
+          if let Some(v) = scope
+            .heap()
+            .object_get_own_data_property_value(init_obj, &bubbles_key)?
+          {
+            bubbles = scope.heap().to_boolean(v)?;
+          }
+
+          let cancelable_key = key_from_str(scope, "cancelable")?;
+          if let Some(v) = scope
+            .heap()
+            .object_get_own_data_property_value(init_obj, &cancelable_key)?
+          {
+            cancelable = scope.heap().to_boolean(v)?;
+          }
+
+          let composed_key = key_from_str(scope, "composed")?;
+          if let Some(v) = scope
+            .heap()
+            .object_get_own_data_property_value(init_obj, &composed_key)?
+          {
+            composed = scope.heap().to_boolean(v)?;
+          }
+
+          let detail_key = key_from_str(scope, "detail")?;
+          if let Some(v) = scope
+            .heap()
+            .object_get_own_data_property_value(init_obj, &detail_key)?
+          {
+            if !matches!(v, Value::Undefined) {
+              detail = v;
+            }
+          }
+        }
+
+        let type_key = key_from_str(scope, "type")?;
+        scope.define_property(
+          obj,
+          type_key,
+          data_property(type_value, false, false, true),
+        )?;
+        let bubbles_key = key_from_str(scope, "bubbles")?;
+        scope.define_property(
+          obj,
+          bubbles_key,
+          data_property(Value::Bool(bubbles), false, false, true),
+        )?;
+        let cancelable_key = key_from_str(scope, "cancelable")?;
+        scope.define_property(
+          obj,
+          cancelable_key,
+          data_property(Value::Bool(cancelable), false, false, true),
+        )?;
+        let composed_key = key_from_str(scope, "composed")?;
+        scope.define_property(
+          obj,
+          composed_key,
+          data_property(Value::Bool(composed), false, false, true),
+        )?;
+
+        let detail_key = key_from_str(scope, "detail")?;
+        scope.define_property(
+          obj,
+          detail_key,
+          data_property(detail, false, false, true),
+        )?;
+
+        // Default Event fields required by the dom2 dispatch bridge.
+        let target_key = key_from_str(scope, "target")?;
+        scope.define_property(
+          obj,
+          target_key,
+          data_property(Value::Null, false, false, true),
+        )?;
+        let src_element_key = key_from_str(scope, "srcElement")?;
+        scope.define_property(
+          obj,
+          src_element_key,
+          data_property(Value::Null, false, false, true),
+        )?;
+        let current_target_key = key_from_str(scope, "currentTarget")?;
+        scope.define_property(
+          obj,
+          current_target_key,
+          data_property(Value::Null, false, false, true),
+        )?;
+        let event_phase_key = key_from_str(scope, "eventPhase")?;
+        scope.define_property(
+          obj,
+          event_phase_key,
+          data_property(Value::Number(0.0), false, false, true),
+        )?;
+        let time_stamp_key = key_from_str(scope, "timeStamp")?;
+        scope.define_property(
+          obj,
+          time_stamp_key,
+          data_property(Value::Number(0.0), false, false, true),
+        )?;
+
+        // LegacyUnforgeable `isTrusted`: must be an own, non-configurable property.
+        let is_trusted_key = key_from_str(scope, "isTrusted")?;
+        scope.define_property(
+          obj,
+          is_trusted_key,
+          data_property(Value::Bool(false), false, true, false),
+        )?;
+
+        let default_prevented_key = key_from_str(scope, "defaultPrevented")?;
+        scope.define_property(
+          obj,
+          default_prevented_key,
+          data_property(Value::Bool(false), false, false, true),
+        )?;
+        let cancel_bubble_key = key_from_str(scope, "cancelBubble")?;
+        scope.define_property(
+          obj,
+          cancel_bubble_key,
+          data_property(Value::Bool(false), true, false, true),
+        )?;
+        let immediate_stop_key = key_from_str(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+        scope.define_property(
+          obj,
+          immediate_stop_key,
+          data_property(Value::Bool(false), true, false, true),
+        )?;
+
+        let initialized_key = key_from_str(scope, EVENT_INITIALIZED_KEY)?;
+        scope.define_property(
+          obj,
+          initialized_key,
+          data_property(Value::Bool(true), true, false, true),
+        )?;
+
+        // Brand-check for EventTarget.dispatchEvent().
+        let brand_key = key_from_str(scope, EVENT_BRAND_KEY)?;
+        scope.define_property(
+          obj,
+          brand_key,
+          data_property(Value::Bool(true), false, false, false),
+        )?;
+        let kind_key = key_from_str(scope, EVENT_KIND_KEY)?;
+        scope.define_property(
+          obj,
+          kind_key,
+          data_property(Value::Number(1.0), false, false, false),
+        )?;
+
+        Ok(Value::Undefined)
       }
       ("EventTarget", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;

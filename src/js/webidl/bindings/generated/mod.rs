@@ -85,6 +85,78 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn js_to_dict_custom_event_init(
+    rt: &mut BindingsRuntime<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<Value, VmError> {
+    let _ = (&mut *host, &mut *hooks);
+    if matches!(value, Value::Undefined | Value::Null) {
+      let obj = rt.alloc_object()?;
+      return Ok(Value::Object(obj));
+    }
+    let Value::Object(input) = value else {
+      return Err(rt.throw_type_error("expected object for dictionary CustomEventInit"));
+    };
+    rt.scope.push_root(Value::Object(input))?;
+    let out_obj = rt.alloc_object()?;
+    {
+      let key = rt.property_key("bubbles")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "bubbles",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("cancelable")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "cancelable",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("composed")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "composed",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("detail")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = v;
+        rt.define_data_property_str(
+          out_obj,
+          "detail",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    Ok(Value::Object(out_obj))
+  }
+
+  #[allow(dead_code)]
   fn js_to_dict_element_creation_options(
     rt: &mut BindingsRuntime<'_>,
     host: &mut dyn VmHost,
@@ -126,6 +198,65 @@ pub mod window {
         rt.define_data_property_str(
           out_obj,
           "is",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    Ok(Value::Object(out_obj))
+  }
+
+  #[allow(dead_code)]
+  fn js_to_dict_event_init(
+    rt: &mut BindingsRuntime<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<Value, VmError> {
+    let _ = (&mut *host, &mut *hooks);
+    if matches!(value, Value::Undefined | Value::Null) {
+      let obj = rt.alloc_object()?;
+      return Ok(Value::Object(obj));
+    }
+    let Value::Object(input) = value else {
+      return Err(rt.throw_type_error("expected object for dictionary EventInit"));
+    };
+    rt.scope.push_root(Value::Object(input))?;
+    let out_obj = rt.alloc_object()?;
+    {
+      let key = rt.property_key("bubbles")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "bubbles",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("cancelable")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "cancelable",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("composed")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "composed",
           converted,
           DataPropertyAttributes::new(true, true, true),
         )?;
@@ -196,6 +327,79 @@ pub mod window {
     let rt = &mut rt;
     let _ = (host, hooks, callee, args, new_target);
     Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn custom_event_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn custom_event_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let default_proto =
+      rt.require_native_object_slot(callee, 0, "CustomEvent constructor missing prototype slot")?;
+    let wrapper_proto =
+      rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
+    let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
+
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v1, Value::Undefined) {
+        let default_value = {
+          let obj = rt.alloc_object()?;
+          Value::Object(obj)
+        };
+        js_to_dict_custom_event_init(rt, host, hooks, default_value)?
+      } else {
+        js_to_dict_custom_event_init(rt, host, hooks, v1)?
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        Some(Value::Object(obj)),
+        "CustomEvent",
+        "constructor",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Object(obj))
+    }
   }
 
   #[allow(dead_code)]
@@ -2844,6 +3048,79 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn event_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn event_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let default_proto =
+      rt.require_native_object_slot(callee, 0, "Event constructor missing prototype slot")?;
+    let wrapper_proto =
+      rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
+    let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
+
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v1, Value::Undefined) {
+        let default_value = {
+          let obj = rt.alloc_object()?;
+          Value::Object(obj)
+        };
+        js_to_dict_event_init(rt, host, hooks, default_value)?
+      } else {
+        js_to_dict_event_init(rt, host, hooks, v1)?
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        Some(Value::Object(obj)),
+        "Event",
+        "constructor",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Object(obj))
+    }
+  }
+
+  #[allow(dead_code)]
   fn event_target_add_event_listener(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -5431,6 +5708,111 @@ pub mod window {
     Ok(())
   }
 
+  pub fn install_custom_event_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (_ctor_custom_event, proto_custom_event) = {
+      let ctor_key = rt.property_key("CustomEvent")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          custom_event_call_without_new,
+          Some(custom_event_construct),
+          "CustomEvent",
+          1,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "CustomEvent",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    let parent_proto = {
+      let ctor_key = rt.property_key("Event")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_custom_event, Some(parent_proto))?;
+    }
+
+    Ok(())
+  }
+
   pub fn install_dom_token_list_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
@@ -7161,6 +7543,201 @@ pub mod window {
           Value::Object(get),
           set,
           AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
+  pub fn install_event_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (ctor_event, proto_event) = {
+      let ctor_key = rt.property_key("Event")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          event_call_without_new,
+          Some(event_construct),
+          "Event",
+          1,
+          &slots,
+        )?;
+        rt.define_data_property_str(global, "Event", Value::Object(ctor_obj), global_var_attrs)?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("AT_TARGET")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_event,
+          "AT_TARGET",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_event,
+          "AT_TARGET",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("BUBBLING_PHASE")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_event,
+          "BUBBLING_PHASE",
+          Value::Number(3.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_event,
+          "BUBBLING_PHASE",
+          Value::Number(3.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("CAPTURING_PHASE")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_event,
+          "CAPTURING_PHASE",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_event,
+          "CAPTURING_PHASE",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("NONE")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_event,
+          "NONE",
+          Value::Number(0.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_event,
+          "NONE",
+          Value::Number(0.0),
+          DataPropertyAttributes::CONST,
         )?;
       }
     }
@@ -9319,6 +9896,8 @@ pub mod window {
     install_event_target_bindings_vm_js(vm, heap, realm)?;
     install_node_bindings_vm_js(vm, heap, realm)?;
     install_character_data_bindings_vm_js(vm, heap, realm)?;
+    install_event_bindings_vm_js(vm, heap, realm)?;
+    install_custom_event_bindings_vm_js(vm, heap, realm)?;
     install_dom_token_list_bindings_vm_js(vm, heap, realm)?;
     install_document_bindings_vm_js(vm, heap, realm)?;
     install_document_fragment_bindings_vm_js(vm, heap, realm)?;
@@ -9414,6 +9993,137 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
+  fn js_to_dict_custom_event_init(
+    rt: &mut BindingsRuntime<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<Value, VmError> {
+    let _ = (&mut *host, &mut *hooks);
+    if matches!(value, Value::Undefined | Value::Null) {
+      let obj = rt.alloc_object()?;
+      return Ok(Value::Object(obj));
+    }
+    let Value::Object(input) = value else {
+      return Err(rt.throw_type_error("expected object for dictionary CustomEventInit"));
+    };
+    rt.scope.push_root(Value::Object(input))?;
+    let out_obj = rt.alloc_object()?;
+    {
+      let key = rt.property_key("bubbles")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "bubbles",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("cancelable")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "cancelable",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("composed")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "composed",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("detail")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = v;
+        rt.define_data_property_str(
+          out_obj,
+          "detail",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    Ok(Value::Object(out_obj))
+  }
+
+  #[allow(dead_code)]
+  fn js_to_dict_event_init(
+    rt: &mut BindingsRuntime<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<Value, VmError> {
+    let _ = (&mut *host, &mut *hooks);
+    if matches!(value, Value::Undefined | Value::Null) {
+      let obj = rt.alloc_object()?;
+      return Ok(Value::Object(obj));
+    }
+    let Value::Object(input) = value else {
+      return Err(rt.throw_type_error("expected object for dictionary EventInit"));
+    };
+    rt.scope.push_root(Value::Object(input))?;
+    let out_obj = rt.alloc_object()?;
+    {
+      let key = rt.property_key("bubbles")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "bubbles",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("cancelable")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "cancelable",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("composed")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "composed",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    Ok(Value::Object(out_obj))
+  }
+
+  #[allow(dead_code)]
   fn js_to_dict_event_listener_options(
     rt: &mut BindingsRuntime<'_>,
     host: &mut dyn VmHost,
@@ -9444,6 +10154,152 @@ pub mod worker {
       }
     }
     Ok(Value::Object(out_obj))
+  }
+
+  #[allow(dead_code)]
+  fn custom_event_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn custom_event_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let default_proto =
+      rt.require_native_object_slot(callee, 0, "CustomEvent constructor missing prototype slot")?;
+    let wrapper_proto =
+      rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
+    let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
+
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v1, Value::Undefined) {
+        let default_value = {
+          let obj = rt.alloc_object()?;
+          Value::Object(obj)
+        };
+        js_to_dict_custom_event_init(rt, host, hooks, default_value)?
+      } else {
+        js_to_dict_custom_event_init(rt, host, hooks, v1)?
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        Some(Value::Object(obj)),
+        "CustomEvent",
+        "constructor",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Object(obj))
+    }
+  }
+
+  #[allow(dead_code)]
+  fn event_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn event_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let default_proto =
+      rt.require_native_object_slot(callee, 0, "Event constructor missing prototype slot")?;
+    let wrapper_proto =
+      rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
+    let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
+
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v1, Value::Undefined) {
+        let default_value = {
+          let obj = rt.alloc_object()?;
+          Value::Object(obj)
+        };
+        js_to_dict_event_init(rt, host, hooks, default_value)?
+      } else {
+        js_to_dict_event_init(rt, host, hooks, v1)?
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        Some(Value::Object(obj)),
+        "Event",
+        "constructor",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Object(obj))
+    }
   }
 
   #[allow(dead_code)]
@@ -10618,6 +11474,306 @@ pub mod worker {
     }
   }
 
+  pub fn install_custom_event_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (_ctor_custom_event, proto_custom_event) = {
+      let ctor_key = rt.property_key("CustomEvent")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          custom_event_call_without_new,
+          Some(custom_event_construct),
+          "CustomEvent",
+          1,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "CustomEvent",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    let parent_proto = {
+      let ctor_key = rt.property_key("Event")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_custom_event, Some(parent_proto))?;
+    }
+
+    Ok(())
+  }
+
+  pub fn install_event_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (ctor_event, proto_event) = {
+      let ctor_key = rt.property_key("Event")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          event_call_without_new,
+          Some(event_construct),
+          "Event",
+          1,
+          &slots,
+        )?;
+        rt.define_data_property_str(global, "Event", Value::Object(ctor_obj), global_var_attrs)?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("AT_TARGET")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_event,
+          "AT_TARGET",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_event,
+          "AT_TARGET",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("BUBBLING_PHASE")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_event,
+          "BUBBLING_PHASE",
+          Value::Number(3.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_event,
+          "BUBBLING_PHASE",
+          Value::Number(3.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("CAPTURING_PHASE")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_event,
+          "CAPTURING_PHASE",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_event,
+          "CAPTURING_PHASE",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("NONE")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_event,
+          "NONE",
+          Value::Number(0.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_event, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_event,
+          "NONE",
+          Value::Number(0.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
   pub fn install_event_target_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
@@ -11264,6 +12420,8 @@ pub mod worker {
     heap: &mut Heap,
     realm: &Realm,
   ) -> Result<(), VmError> {
+    install_event_bindings_vm_js(vm, heap, realm)?;
+    install_custom_event_bindings_vm_js(vm, heap, realm)?;
     install_event_target_bindings_vm_js(vm, heap, realm)?;
     install_url_bindings_vm_js(vm, heap, realm)?;
     install_url_search_params_bindings_vm_js(vm, heap, realm)?;
@@ -11272,10 +12430,12 @@ pub mod worker {
 }
 
 pub use window::install_character_data_bindings_vm_js;
+pub use window::install_custom_event_bindings_vm_js;
 pub use window::install_document_bindings_vm_js;
 pub use window::install_document_fragment_bindings_vm_js;
 pub use window::install_dom_token_list_bindings_vm_js;
 pub use window::install_element_bindings_vm_js;
+pub use window::install_event_bindings_vm_js;
 pub use window::install_event_target_bindings_vm_js;
 pub use window::install_html_collection_bindings_vm_js;
 pub use window::install_node_bindings_vm_js;

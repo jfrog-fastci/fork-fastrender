@@ -7456,7 +7456,7 @@ fn emit_conversion_expr_for_optional_vmjs(
         let default_expr = emit_default_literal_vmjs(default);
         let dict_fn = to_snake_ident(name);
         return format!(
-          "if matches!({value_ident}, Value::Undefined) {{ js_to_dict_{dict_fn}({rt_expr}, host, hooks, {default_expr})? }} else {{ js_to_dict_{dict_fn}({rt_expr}, host, hooks, {value_ident})? }}"
+          "if matches!({value_ident}, Value::Undefined) {{ let default_value = {default_expr}; js_to_dict_{dict_fn}({rt_expr}, host, hooks, default_value)? }} else {{ js_to_dict_{dict_fn}({rt_expr}, host, hooks, {value_ident})? }}"
         );
       }
     }

@@ -16,6 +16,18 @@ attributes = []
 operations = ["addEventListener", "removeEventListener", "dispatchEvent"]
 
 [[interface]]
+name = "Event"
+constructors = true
+attributes = []
+operations = []
+
+[[interface]]
+name = "CustomEvent"
+constructors = true
+attributes = []
+operations = []
+
+[[interface]]
 name = "Node"
 constructors = false
 attributes = [

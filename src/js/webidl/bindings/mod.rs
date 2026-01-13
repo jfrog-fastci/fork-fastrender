@@ -31,6 +31,7 @@ pub use shadow_root::install_shadow_root_bindings_vm_js;
 pub use generated::{
   install_character_data_bindings_vm_js, install_document_bindings_vm_js,
   install_document_fragment_bindings_vm_js, install_element_bindings_vm_js,
+  install_custom_event_bindings_vm_js, install_event_bindings_vm_js,
   install_dom_token_list_bindings_vm_js, install_event_target_bindings_vm_js,
   install_html_collection_bindings_vm_js, install_node_bindings_vm_js,
   install_node_list_bindings_vm_js, install_text_bindings_vm_js, install_url_bindings_vm_js,
