@@ -12,6 +12,10 @@ Note: today, the browser chrome (tabs/address bar/etc) is rendered via **egui**.
 UI pages will use a privileged JS bridge (`globalThis.chrome`) documented in
 [`docs/chrome_js_bridge.md`](chrome_js_bridge.md).
 
+Renderer-chrome also relies on privileged internal URL schemes (`chrome://` assets and
+`chrome-action:` actions). These are documented in
+[`docs/renderer_chrome_schemes.md`](renderer_chrome_schemes.md).
+
 ## Build / run
 
 The `browser` binary is behind the Cargo feature `browser_ui` (note the underscore) and is **not**

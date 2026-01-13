@@ -27,6 +27,8 @@ Code lives in:
 - A renderer-chrome browser UI (yet): the `browser` chrome is currently rendered via egui. The
   renderer-chrome workstream aims to render the chrome UI using FastRender; trusted chrome pages
   would then use the privileged JS bridge documented in [chrome_js_bridge.md](chrome_js_bridge.md).
+  Privileged internal URL schemes used by renderer-chrome (`chrome://` assets, `chrome-action:`
+  actions) are documented in [renderer_chrome_schemes.md](renderer_chrome_schemes.md).
 
 ## Build / run
 
