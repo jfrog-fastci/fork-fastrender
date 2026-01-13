@@ -16956,9 +16956,11 @@ impl App {
         .find(|d| d.download_id == download_id);
 
       let download_event = match (trigger, entry) {
-        (DownloadToastTrigger::Started { .. }, Some(entry)) => Some(DownloadEvent::Started {
-          file_name: entry.file_name.clone(),
-        }),
+        (DownloadToastTrigger::Started { .. }, Some(entry)) if !self.downloads_panel_open => {
+          Some(DownloadEvent::Started {
+            file_name: entry.file_name.clone(),
+          })
+        }
         (DownloadToastTrigger::Finished { outcome, .. }, Some(entry)) => {
           let outcome = match outcome {
             fastrender::ui::DownloadOutcome::Completed => {

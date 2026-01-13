@@ -134,8 +134,8 @@ fn download_toast_base(event: &DownloadEvent) -> (ToastKind, String, Option<Stri
           Some(file_name_norm),
         ),
         DownloadOutcome::Cancelled => (
-          ToastKind::Info,
-          "Download cancelled".to_string(),
+          ToastKind::Warning,
+          format!("Download cancelled: {file_name_norm}"),
           Some(file_name_norm),
         ),
         DownloadOutcome::Failed { error } => {
@@ -233,11 +233,14 @@ pub fn coalesce_download_toast(existing_toast: Option<&Toast>, event: DownloadEv
   let existing_file_name = extract_download_file_name_from_toast_text(&existing_base);
 
   // Decide whether to replace the visible message (while still counting the new event).
-  let replace_message = match (existing.kind, new_kind) {
-    (ToastKind::Error, ToastKind::Info | ToastKind::Warning) => false,
-    (ToastKind::Info | ToastKind::Warning, ToastKind::Error) => true,
-    (a, b) => a == b,
-  };
+  fn kind_rank(kind: ToastKind) -> u8 {
+    match kind {
+      ToastKind::Info => 0,
+      ToastKind::Warning => 1,
+      ToastKind::Error => 2,
+    }
+  }
+  let replace_message = kind_rank(new_kind) >= kind_rank(existing.kind);
 
   // Only increment the counter when we believe a distinct download (file name) event occurred.
   let new_file_name_norm = new_file_name.as_deref().map(str::trim).filter(|n| !n.is_empty());
@@ -297,6 +300,19 @@ mod tests {
     );
     assert_eq!(kind, ToastKind::Info);
     assert_eq!(text, "Downloaded file.txt");
+  }
+
+  #[test]
+  fn mapping_finished_cancelled_is_warning_and_includes_file_name() {
+    let (kind, text) = coalesce_download_toast(
+      None,
+      DownloadEvent::Finished {
+        file_name: "file.txt".to_string(),
+        outcome: DownloadOutcome::Cancelled,
+      },
+    );
+    assert_eq!(kind, ToastKind::Warning);
+    assert_eq!(text, "Download cancelled: file.txt");
   }
 
   #[test]
@@ -392,5 +408,19 @@ mod tests {
     );
     assert_eq!(kind, ToastKind::Info);
     assert_eq!(text, "Downloading a.txt…");
+  }
+
+  #[test]
+  fn long_file_names_are_truncated_with_ellipsis() {
+    let long_name = "a".repeat(MAX_DOWNLOAD_TOAST_FILE_NAME_CHARS + 10);
+    let normalized = normalize_file_name_for_toast(&long_name);
+    assert!(
+      normalized.ends_with('…'),
+      "expected ellipsis truncation, got {normalized:?}"
+    );
+    assert_eq!(
+      normalized.chars().count(),
+      MAX_DOWNLOAD_TOAST_FILE_NAME_CHARS + 1
+    );
   }
 }
