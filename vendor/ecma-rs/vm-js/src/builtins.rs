@@ -18974,22 +18974,18 @@ pub fn string_prototype_replace_all(
       }
     }
 
-    // Per spec, primitives must skip the `GetMethod(searchValue, @@replace)` path (avoid boxing and
-    // consulting `Boolean/Number/String.prototype[Symbol.replace]`).
-    if let Value::Object(_) = search_value {
-      // 2.c. Let replacer be ? GetMethod(searchValue, @@replace).
-      let method = crate::spec_ops::get_method_with_host_and_hooks(
-        vm,
-        &mut scope,
-        host,
-        hooks,
-        search_value,
-        PropertyKey::from_symbol(intr.well_known_symbols().replace),
-      )?;
-      if let Some(method) = method {
-        // 2.d. Return ? Call(replacer, searchValue, « O, replaceValue »).
-        return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, search_value, &[o, replace_value]);
-      }
+    // 2.c. Let replacer be ? GetMethod(searchValue, @@replace).
+    let method = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      search_value,
+      PropertyKey::from_symbol(intr.well_known_symbols().replace),
+    )?;
+    if let Some(method) = method {
+      // 2.d. Return ? Call(replacer, searchValue, « O, replaceValue »).
+      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, search_value, &[o, replace_value]);
     }
   }
 
