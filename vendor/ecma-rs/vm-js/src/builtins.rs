@@ -3116,11 +3116,19 @@ pub fn array_buffer_constructor_construct(
   // - treats `NaN` as 0
   // - rejects negative values and +∞ with RangeError
   // - rejects values > 2^53 - 1 with RangeError
-  let length_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let byte_length: usize = if matches!(length_val, Value::Undefined) {
-    0
-  } else {
-    let num = scope.to_number(vm, host, hooks, length_val)?;
+  fn to_index_usize(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    intr: crate::Intrinsics,
+    value: Value,
+    err_message: &'static str,
+  ) -> Result<usize, VmError> {
+    if matches!(value, Value::Undefined) {
+      return Ok(0);
+    }
+    let num = scope.to_number(vm, host, hooks, value)?;
     // `ToIntegerOrInfinity`.
     let integer = if num.is_nan() {
       0.0
@@ -3131,7 +3139,7 @@ pub fn array_buffer_constructor_construct(
     };
 
     if integer < 0.0 {
-      let err = crate::error_object::new_range_error(scope, intr, "Invalid array buffer length")?;
+      let err = crate::error_object::new_range_error(scope, intr, err_message)?;
       return Err(VmError::Throw(err));
     }
 
@@ -3146,24 +3154,74 @@ pub fn array_buffer_constructor_construct(
 
     // `ToIndex` requires the clamped `ToLength` result to be exactly equal to the integer.
     if index != integer {
-      let err = crate::error_object::new_range_error(scope, intr, "Invalid array buffer length")?;
+      let err = crate::error_object::new_range_error(scope, intr, err_message)?;
       return Err(VmError::Throw(err));
     }
 
     // `index` is an integral f64 in [0, 2^53 - 1], so casting to u64 is exact.
     let index_u64 = index as u64;
     match usize::try_from(index_u64) {
-      Ok(n) => n,
+      Ok(n) => Ok(n),
       Err(_) => {
         // If the host `usize` can't represent `index`, treat it as an invalid (too large) length.
-        let err =
-          crate::error_object::new_range_error(scope, intr, "Invalid array buffer length")?;
-        return Err(VmError::Throw(err));
+        let err = crate::error_object::new_range_error(scope, intr, err_message)?;
+        Err(VmError::Throw(err))
       }
     }
-  };
+  }
 
-  let ab = scope.alloc_array_buffer(byte_length)?;
+  let length_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let byte_length: usize = to_index_usize(
+    vm,
+    scope,
+    host,
+    hooks,
+    intr,
+    length_val,
+    "Invalid array buffer length",
+  )?;
+
+  // Resizable ArrayBuffer: `new ArrayBuffer(length, { maxByteLength })`.
+  //
+  // Spec: https://tc39.es/ecma262/#sec-getarraybuffermaxbytelengthoption
+  let mut requested_max_byte_length: Option<usize> = None;
+  if let Some(Value::Object(options_obj)) = args.get(1).copied() {
+    scope.push_root(Value::Object(options_obj))?;
+    let key_s = scope.alloc_string("maxByteLength")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    let max_val = scope.get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      options_obj,
+      key,
+      Value::Object(options_obj),
+    )?;
+    if !matches!(max_val, Value::Undefined) {
+      let max = to_index_usize(
+        vm,
+        scope,
+        host,
+        hooks,
+        intr,
+        max_val,
+        "Invalid array buffer maxByteLength",
+      )?;
+      requested_max_byte_length = Some(max);
+    }
+  }
+
+  let ab = match requested_max_byte_length {
+    Some(max_byte_length) => {
+      if byte_length > max_byte_length {
+        let err = crate::error_object::new_range_error(scope, intr, "Invalid array buffer maxByteLength")?;
+        return Err(VmError::Throw(err));
+      }
+      scope.alloc_resizable_array_buffer(byte_length, max_byte_length)?
+    }
+    None => scope.alloc_array_buffer(byte_length)?,
+  };
   scope
     .heap_mut()
     .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
@@ -3230,6 +3288,181 @@ pub fn array_buffer_prototype_detached_get(
     .array_buffer_is_detached(obj)
     .map_err(|_| VmError::TypeError("ArrayBuffer.detached called on incompatible receiver"))?;
   Ok(Value::Bool(detached))
+}
+
+pub fn array_buffer_prototype_max_byte_length_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-get-arraybuffer.prototype.maxbytelength
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("ArrayBuffer.maxByteLength called on non-object"));
+  };
+  if scope
+    .heap()
+    .is_detached_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.maxByteLength called on incompatible receiver"))?
+  {
+    return Ok(Value::Number(0.0));
+  }
+  let byte_length = scope
+    .heap()
+    .array_buffer_byte_length(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.maxByteLength called on incompatible receiver"))?;
+  let max = if scope
+    .heap()
+    .array_buffer_is_resizable(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.maxByteLength called on incompatible receiver"))?
+  {
+    scope
+      .heap()
+      .array_buffer_max_byte_length(obj)
+      .map_err(|_| VmError::TypeError("ArrayBuffer.maxByteLength called on incompatible receiver"))?
+  } else {
+    byte_length
+  };
+  Ok(Value::Number(max as f64))
+}
+
+pub fn array_buffer_prototype_resizable_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-get-arraybuffer.prototype.resizable
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("ArrayBuffer.resizable called on non-object"));
+  };
+  let resizable = scope
+    .heap()
+    .array_buffer_is_resizable(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.resizable called on incompatible receiver"))?;
+  Ok(Value::Bool(resizable))
+}
+
+pub fn array_buffer_prototype_resize(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-arraybuffer.prototype.resize
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("ArrayBuffer.prototype.resize called on non-object"));
+  };
+  scope.push_root(Value::Object(obj))?;
+
+  // RequireInternalSlot(O, [[ArrayBufferMaxByteLength]]).
+  let resizable = scope
+    .heap()
+    .array_buffer_is_resizable(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.prototype.resize called on incompatible receiver"))?;
+  if !resizable {
+    return Err(VmError::TypeError("ArrayBuffer is not resizable"));
+  }
+
+  // Assert: IsImmutableBuffer(O) is false.
+  if scope
+    .heap()
+    .array_buffer_is_immutable(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.prototype.resize called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is immutable"));
+  }
+
+  // `ToIntegerOrInfinity(newLength)` happens before the detached-buffer check (spec ordering).
+  let new_len_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_len = scope.to_integer_or_infinity(vm, host, hooks, new_len_val)?;
+
+  // Detached check after argument coercion.
+  if scope
+    .heap()
+    .is_detached_array_buffer(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.prototype.resize called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+
+  let max = scope
+    .heap()
+    .array_buffer_max_byte_length(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.prototype.resize called on incompatible receiver"))?;
+  if !new_len.is_finite() || new_len < 0.0 || new_len > max as f64 {
+    return Err(VmError::RangeError("Invalid array buffer length"));
+  }
+
+  let new_len_u64 = new_len as u64;
+  let new_len_usize = usize::try_from(new_len_u64).map_err(|_| VmError::OutOfMemory)?;
+  scope.heap_mut().resize_array_buffer(obj, new_len_usize)?;
+  Ok(Value::Undefined)
+}
+
+pub fn array_buffer_prototype_transfer_to_immutable(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "ArrayBuffer.prototype.transferToImmutable called on non-object",
+    ));
+  };
+  scope.push_root(Value::Object(obj))?;
+
+  if scope
+    .heap()
+    .array_buffer_is_immutable(obj)
+    .map_err(|_| VmError::TypeError(
+      "ArrayBuffer.prototype.transferToImmutable called on incompatible receiver",
+    ))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is immutable"));
+  }
+
+  if scope
+    .heap()
+    .is_detached_array_buffer(obj)
+    .map_err(|_| VmError::TypeError(
+      "ArrayBuffer.prototype.transferToImmutable called on incompatible receiver",
+    ))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+
+  let dst = scope.heap_mut().transfer_array_buffer(obj)?;
+  scope.push_root(Value::Object(dst))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(dst, Some(intr.array_buffer_prototype()))?;
+
+  // An immutable buffer is not resizable; its `maxByteLength` matches its fixed `byteLength`.
+  let byte_length = scope
+    .heap()
+    .array_buffer_byte_length(dst)
+    .map_err(|_| VmError::InvariantViolation("transferred ArrayBuffer missing backing store"))?;
+  scope.heap_mut().array_buffer_set_immutable(dst, true)?;
+  scope
+    .heap_mut()
+    .array_buffer_set_resizable(dst, false, byte_length)?;
+
+  Ok(Value::Object(dst))
 }
 
 pub fn array_buffer_prototype_slice(
@@ -4615,6 +4848,16 @@ fn data_view_set_impl(
     .heap()
     .data_view_buffer(view_obj)
     .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
+
+  // Spec: `SetViewValue` must reject immutable buffers *before* converting `byteOffset`/`value`
+  // arguments.
+  if scope
+    .heap()
+    .array_buffer_is_immutable(buffer)
+    .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is immutable"));
+  }
 
   let value = args.get(1).copied().unwrap_or(Value::Undefined);
   let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);

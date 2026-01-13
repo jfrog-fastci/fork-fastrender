@@ -5089,6 +5089,99 @@ impl Intrinsics {
       )?;
     }
 
+    // ArrayBuffer.prototype.maxByteLength
+    {
+      let key_s = scope.alloc_string("maxByteLength")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_call = vm.register_native_call(builtins::array_buffer_prototype_max_byte_length_get)?;
+      let get_name = scope.alloc_string("get maxByteLength")?;
+      let get = scope.alloc_native_function(get_call, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        array_buffer_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // ArrayBuffer.prototype.resizable
+    {
+      let key_s = scope.alloc_string("resizable")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_call = vm.register_native_call(builtins::array_buffer_prototype_resizable_get)?;
+      let get_name = scope.alloc_string("get resizable")?;
+      let get = scope.alloc_native_function(get_call, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        array_buffer_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // ArrayBuffer.prototype.resize
+    {
+      let resize_call = vm.register_native_call(builtins::array_buffer_prototype_resize)?;
+      let resize_s = scope.alloc_string("resize")?;
+      scope.push_root(Value::String(resize_s))?;
+      let key = PropertyKey::from_string(resize_s);
+      let func = scope.alloc_native_function(resize_call, None, resize_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        array_buffer_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // ArrayBuffer.prototype.transferToImmutable
+    {
+      let transfer_call =
+        vm.register_native_call(builtins::array_buffer_prototype_transfer_to_immutable)?;
+      let transfer_s = scope.alloc_string("transferToImmutable")?;
+      scope.push_root(Value::String(transfer_s))?;
+      let key = PropertyKey::from_string(transfer_s);
+      let func = scope.alloc_native_function(transfer_call, None, transfer_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        array_buffer_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
     // ArrayBuffer.prototype.slice
     {
       let slice_call = vm.register_native_call(builtins::array_buffer_prototype_slice)?;

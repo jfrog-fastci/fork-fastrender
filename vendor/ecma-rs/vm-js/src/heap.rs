@@ -1455,6 +1455,35 @@ impl Heap {
     Ok(self.get_array_buffer(obj)?.byte_length())
   }
 
+  pub(crate) fn array_buffer_max_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
+    Ok(self.get_array_buffer(obj)?.max_byte_length())
+  }
+
+  pub(crate) fn array_buffer_is_resizable(&self, obj: GcObject) -> Result<bool, VmError> {
+    Ok(self.get_array_buffer(obj)?.is_resizable())
+  }
+
+  pub(crate) fn array_buffer_is_immutable(&self, obj: GcObject) -> Result<bool, VmError> {
+    Ok(self.get_array_buffer(obj)?.is_immutable())
+  }
+
+  pub(crate) fn array_buffer_set_immutable(&mut self, obj: GcObject, immutable: bool) -> Result<(), VmError> {
+    self.get_array_buffer_mut(obj)?.immutable = immutable;
+    Ok(())
+  }
+
+  pub(crate) fn array_buffer_set_resizable(
+    &mut self,
+    obj: GcObject,
+    resizable: bool,
+    max_byte_length: usize,
+  ) -> Result<(), VmError> {
+    let buf = self.get_array_buffer_mut(obj)?;
+    buf.resizable = resizable;
+    buf.max_byte_length = max_byte_length;
+    Ok(())
+  }
+
   pub(crate) fn array_buffer_is_detached(&self, obj: GcObject) -> Result<bool, VmError> {
     self.is_detached_array_buffer(obj)
   }
@@ -1469,12 +1498,15 @@ impl Heap {
   /// This is intended for host implementations of HTML structured clone transfer semantics.
   pub fn transfer_array_buffer(&mut self, src: GcObject) -> Result<GcObject, VmError> {
     // Validate up-front so we don't allocate a destination buffer if `src` is not transferable.
-    {
+    // Also snapshot metadata so the transferred buffer preserves `resizable` / `maxByteLength` /
+    // immutability state.
+    let (src_max_byte_length, src_resizable, src_immutable) = {
       let buf = self.get_array_buffer(src)?;
       if buf.data.is_none() {
         return Err(VmError::TypeError("Cannot transfer detached ArrayBuffer"));
       }
-    }
+      (buf.max_byte_length(), buf.is_resizable(), buf.is_immutable())
+    };
 
     // Root `src` across any allocation/GC triggered by `ensure_can_allocate`.
     let mut scope = self.scope();
@@ -1489,7 +1521,12 @@ impl Heap {
 
     // Allocate the destination buffer in a detached state, then attach the transferred data. This
     // avoids any need to "undo" a detachment if the allocation fails.
-    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new_detached(None));
+    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new_detached(
+      None,
+      src_max_byte_length,
+      src_resizable,
+      src_immutable,
+    ));
     let dst = GcObject(scope.heap.alloc_unchecked_after_ensure(obj, new_bytes)?);
 
     let data = {
@@ -1549,12 +1586,66 @@ impl Heap {
     Ok(data)
   }
 
+  pub(crate) fn resize_array_buffer(&mut self, obj: GcObject, new_byte_length: usize) -> Result<(), VmError> {
+    // Validate without holding a mutable borrow across allocation.
+    let (old_len, immutable) = {
+      let buf = self.get_array_buffer(obj)?;
+      (buf.byte_length(), buf.is_immutable())
+    };
+    if immutable {
+      return Err(VmError::TypeError("ArrayBuffer is immutable"));
+    }
+    if self.is_detached_array_buffer(obj)? {
+      return Err(VmError::TypeError("ArrayBuffer is detached"));
+    }
+
+    if new_byte_length == old_len {
+      return Ok(());
+    }
+
+    if new_byte_length > old_len {
+      let additional = new_byte_length - old_len;
+      self.ensure_can_allocate_with(|_| additional)?;
+    }
+
+    let buf = self.get_array_buffer_mut(obj)?;
+    let Some(data) = buf.data.take() else {
+      return Err(VmError::TypeError("ArrayBuffer is detached"));
+    };
+
+    // Resize via a Vec so we can grow with fallible allocation and then re-box to an exact-sized
+    // slice (matching our external-bytes accounting model).
+    let mut v = data.into_vec();
+    if new_byte_length > v.len() {
+      if v.try_reserve_exact(new_byte_length - v.len()).is_err() {
+        // Preserve the observable state of the ArrayBuffer if allocation fails.
+        buf.data = Some(v.into_boxed_slice());
+        return Err(VmError::OutOfMemory);
+      };
+    }
+    v.resize(new_byte_length, 0);
+    let new_data = v.into_boxed_slice();
+
+    buf.data = Some(new_data);
+
+    if new_byte_length > old_len {
+      self.add_external_bytes(new_byte_length - old_len);
+    } else {
+      self.sub_external_bytes(old_len - new_byte_length);
+    }
+    Ok(())
+  }
+
   pub(crate) fn array_buffer_write(&mut self, obj: GcObject, offset: usize, bytes: &[u8]) -> Result<(), VmError> {
     if bytes.is_empty() {
       return Ok(());
     }
     // Validate and bounds-check before mutably borrowing the backing store.
-    let buf_len = self.get_array_buffer(obj)?.byte_length();
+    let buf = self.get_array_buffer(obj)?;
+    if buf.is_immutable() {
+      return Err(VmError::TypeError("ArrayBuffer is immutable"));
+    }
+    let buf_len = buf.byte_length();
     let end = offset
       .checked_add(bytes.len())
       .ok_or(VmError::OutOfMemory)?;
@@ -4987,6 +5078,9 @@ impl Heap {
     // Spec: `TypedArraySetElement` (no effect when `IsValidIntegerIndex` is false).
     {
       let buf = self.get_array_buffer(buffer)?;
+      if buf.is_immutable() {
+        return Err(VmError::TypeError("ArrayBuffer is immutable"));
+      }
       let Some(data) = buf.data.as_deref() else {
         return Ok(false);
       };
@@ -8417,8 +8511,49 @@ impl<'a> Scope<'a> {
       .map_err(|_| VmError::OutOfMemory)?;
     buf.resize(byte_length, 0);
     let data = buf.into_boxed_slice();
- 
-    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new(None, data));
+
+    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new(
+      None,
+      data,
+      byte_length,
+      false,
+      false,
+    ));
+    let id = self.heap.alloc_unchecked_after_ensure(obj, new_bytes)?;
+    self.heap.add_external_bytes(byte_length);
+    Ok(GcObject(id))
+  }
+
+  /// Allocates a new resizable `ArrayBuffer` with a fixed initial length and a maximum byte length.
+  ///
+  /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller.
+  pub fn alloc_resizable_array_buffer(
+    &mut self,
+    byte_length: usize,
+    max_byte_length: usize,
+  ) -> Result<GcObject, VmError> {
+    let new_bytes = JsArrayBuffer::heap_size_bytes_for_property_count(0);
+    self.heap.ensure_can_allocate_with(|heap| {
+      heap
+        .additional_bytes_for_heap_alloc(new_bytes)
+        .saturating_add(byte_length)
+    })?;
+
+    // Allocate the backing buffer fallibly so hostile input cannot abort the host process on OOM.
+    let mut buf: Vec<u8> = Vec::new();
+    buf
+      .try_reserve_exact(byte_length)
+      .map_err(|_| VmError::OutOfMemory)?;
+    buf.resize(byte_length, 0);
+    let data = buf.into_boxed_slice();
+
+    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new(
+      None,
+      data,
+      max_byte_length,
+      true,
+      false,
+    ));
     let id = self.heap.alloc_unchecked_after_ensure(obj, new_bytes)?;
     self.heap.add_external_bytes(byte_length);
     Ok(GcObject(id))
@@ -8449,7 +8584,13 @@ impl<'a> Scope<'a> {
       buf.into_boxed_slice()
     };
 
-    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new(None, data));
+    let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new(
+      None,
+      data,
+      byte_length,
+      false,
+      false,
+    ));
     let id = self.heap.alloc_unchecked_after_ensure(obj, new_bytes)?;
     self.heap.add_external_bytes(byte_length);
     Ok(GcObject(id))
@@ -9675,26 +9816,66 @@ struct JsArrayBuffer {
   base: ObjectBase,
   // `None` represents a detached (neutered) ArrayBuffer.
   data: Option<Box<[u8]>>,
+  /// Maximum byte length for resizable ArrayBuffers.
+  ///
+  /// Note: `ArrayBuffer.prototype.maxByteLength` returns `0` when the buffer is detached, so this
+  /// value is not directly observable after detachment.
+  max_byte_length: usize,
+  /// Whether this buffer was constructed with a `maxByteLength` option.
+  ///
+  /// Per ECMA-262, this is observable even when the buffer is detached.
+  resizable: bool,
+  /// Whether this buffer is immutable (ImmutableArrayBuffer proposal).
+  immutable: bool,
 }
 
 impl JsArrayBuffer {
-  fn new(prototype: Option<GcObject>, data: Box<[u8]>) -> Self {
+  fn new(
+    prototype: Option<GcObject>,
+    data: Box<[u8]>,
+    max_byte_length: usize,
+    resizable: bool,
+    immutable: bool,
+  ) -> Self {
     Self {
       base: ObjectBase::new(prototype),
       data: Some(data),
+      max_byte_length,
+      resizable,
+      immutable,
     }
   }
 
-  fn new_detached(prototype: Option<GcObject>) -> Self {
+  fn new_detached(
+    prototype: Option<GcObject>,
+    max_byte_length: usize,
+    resizable: bool,
+    immutable: bool,
+  ) -> Self {
     Self {
       base: ObjectBase::new(prototype),
       data: None,
+      max_byte_length,
+      resizable,
+      immutable,
     }
   }
 
   fn byte_length(&self) -> usize {
     // Detached ArrayBuffers have a `byteLength` of 0.
     self.data.as_deref().map(|data| data.len()).unwrap_or(0)
+  }
+
+  fn max_byte_length(&self) -> usize {
+    self.max_byte_length
+  }
+
+  fn is_resizable(&self) -> bool {
+    self.resizable
+  }
+
+  fn is_immutable(&self) -> bool {
+    self.immutable
   }
 
   #[allow(dead_code)]
