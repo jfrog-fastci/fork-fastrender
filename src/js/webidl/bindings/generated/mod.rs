@@ -996,6 +996,43 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn document_get_elements_by_name(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "getElementsByName",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn document_get_elements_by_tag_name(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1026,6 +1063,55 @@ pub mod window {
         receiver,
         "Document",
         "getElementsByTagName",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_get_elements_by_tag_name_n_s(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v0, Value::Null | Value::Undefined) {
+        Value::Null
+      } else {
+        Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?)
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v1)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "getElementsByTagNameNS",
         0,
         &converted_args,
       )
@@ -1385,6 +1471,129 @@ pub mod window {
         receiver,
         "Element",
         "getBoundingClientRect",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_get_elements_by_class_name(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "getElementsByClassName",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_get_elements_by_tag_name(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "getElementsByTagName",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_get_elements_by_tag_name_n_s(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v0, Value::Null | Value::Undefined) {
+        Value::Null
+      } else {
+        Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?)
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v1)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "getElementsByTagNameNS",
         0,
         &converted_args,
       )
@@ -5505,6 +5714,24 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("getElementsByName")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_document, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(document_get_elements_by_name, None, "getElementsByName", 1)?;
+        rt.define_data_property_str(
+          proto_document,
+          "getElementsByName",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("getElementsByTagName")?;
       if rt
         .scope
@@ -5521,6 +5748,28 @@ pub mod window {
         rt.define_data_property_str(
           proto_document,
           "getElementsByTagName",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("getElementsByTagNameNS")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_document, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(
+          document_get_elements_by_tag_name_n_s,
+          None,
+          "getElementsByTagNameNS",
+          2,
+        )?;
+        rt.define_data_property_str(
+          proto_document,
+          "getElementsByTagNameNS",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;
@@ -5884,6 +6133,72 @@ pub mod window {
         rt.define_data_property_str(
           proto_element,
           "getBoundingClientRect",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("getElementsByClassName")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(
+          element_get_elements_by_class_name,
+          None,
+          "getElementsByClassName",
+          1,
+        )?;
+        rt.define_data_property_str(
+          proto_element,
+          "getElementsByClassName",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("getElementsByTagName")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(
+          element_get_elements_by_tag_name,
+          None,
+          "getElementsByTagName",
+          1,
+        )?;
+        rt.define_data_property_str(
+          proto_element,
+          "getElementsByTagName",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("getElementsByTagNameNS")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(
+          element_get_elements_by_tag_name_n_s,
+          None,
+          "getElementsByTagNameNS",
+          2,
+        )?;
+        rt.define_data_property_str(
+          proto_element,
+          "getElementsByTagNameNS",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;
