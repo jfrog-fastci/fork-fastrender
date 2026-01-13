@@ -348,6 +348,13 @@ pub struct RegExpProgram {
   insts: Vec<Inst>,
   pub(crate) capture_count: usize,
   pub(crate) repeat_count: usize,
+  pub(crate) named_capture_groups: Vec<NamedCaptureGroup>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NamedCaptureGroup {
+  pub(crate) name: Vec<u16>,
+  pub(crate) capture_indices: Vec<u32>,
 }
 
 /// Execution-time memory budget for the RegExp backtracking VM.
@@ -408,6 +415,21 @@ impl Drop for RegExpExecMemoryToken<'_> {
 impl RegExpProgram {
   pub(crate) fn heap_size_bytes(&self) -> usize {
     let mut total = self.insts.capacity().saturating_mul(mem::size_of::<Inst>());
+    total = total.saturating_add(
+      self
+        .named_capture_groups
+        .capacity()
+        .saturating_mul(mem::size_of::<NamedCaptureGroup>()),
+    );
+    for group in self.named_capture_groups.iter() {
+      total = total.saturating_add(group.name.capacity().saturating_mul(mem::size_of::<u16>()));
+      total = total.saturating_add(
+        group
+          .capture_indices
+          .capacity()
+          .saturating_mul(mem::size_of::<u32>()),
+      );
+    }
     for inst in self.insts.iter() {
       match inst {
         Inst::Class(cls) => {
@@ -619,6 +641,64 @@ impl RegExpProgram {
             state.pos += slice.len();
             state.pc += 1;
           }
+          Inst::NamedBackRef(name_id) => {
+            let Some(group) = self.named_capture_groups.get(*name_id as usize) else {
+              // Should not happen (compile-time validated); treat as empty.
+              state.pc += 1;
+              continue;
+            };
+
+            let mut found: Option<(usize, usize)> = None;
+            for (i, &cap_idx) in group.capture_indices.iter().rev().enumerate() {
+              if i % 64 == 0 {
+                tick()?;
+              }
+              let idx = cap_idx as usize;
+              let start_slot = idx.saturating_mul(2);
+              let end_slot = start_slot.saturating_add(1);
+              let (Some(&cap_start), Some(&cap_end)) =
+                (state.captures.get(start_slot), state.captures.get(end_slot))
+              else {
+                continue;
+              };
+              if cap_start == UNSET || cap_end == UNSET || cap_end < cap_start {
+                continue;
+              }
+              found = Some((cap_start, cap_end));
+              break;
+            }
+
+            let Some((cap_start, cap_end)) = found else {
+              // Unmatched capture => empty backreference.
+              state.pc += 1;
+              continue;
+            };
+
+            let slice = &input[cap_start..cap_end];
+            if state.pos + slice.len() > input.len() {
+              break;
+            }
+
+            let mut ok = true;
+            for (i, (&a, &b)) in slice
+              .iter()
+              .zip(input[state.pos..state.pos + slice.len()].iter())
+              .enumerate()
+            {
+              if i % 1024 == 0 {
+                tick()?;
+              }
+              if !char_eq(a, b, flags.ignore_case) {
+                ok = false;
+                break;
+              }
+            }
+            if !ok {
+              break;
+            }
+            state.pos += slice.len();
+            state.pc += 1;
+          }
           Inst::Split(a, b) => {
             let mut other = state.try_clone(exec_mem)?;
             other.pc = *b;
@@ -653,6 +733,8 @@ impl RegExpProgram {
             }
 
             if count < *min {
+              // Capture groups in quantified expressions are reset for each iteration (ECMA-262
+              // `RepeatMatcher` / `UpdateS` semantics).
               if let Some(rep) = state.repeats.get_mut(id) {
                 rep.last_pos = state.pos;
                 rep.count = rep.count.saturating_add(1);
@@ -770,6 +852,7 @@ impl RegExpProgram {
         Inst::WordBoundary { negated } => Inst::WordBoundary { negated: *negated },
         Inst::Save(slot) => Inst::Save(*slot),
         Inst::BackRef(group) => Inst::BackRef(*group),
+        Inst::NamedBackRef(name_id) => Inst::NamedBackRef(*name_id),
         Inst::Split(a, b) => Inst::Split(*a, *b),
         Inst::Jump(target) => Inst::Jump(*target),
         Inst::RepeatStart {
@@ -800,10 +883,34 @@ impl RegExpProgram {
       insts.push(cloned);
     }
 
+    let mut named_capture_groups: Vec<NamedCaptureGroup> = Vec::new();
+    named_capture_groups
+      .try_reserve_exact(self.named_capture_groups.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for group in self.named_capture_groups.iter() {
+      let mut name: Vec<u16> = Vec::new();
+      name
+        .try_reserve_exact(group.name.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      name.extend_from_slice(&group.name);
+
+      let mut capture_indices: Vec<u32> = Vec::new();
+      capture_indices
+        .try_reserve_exact(group.capture_indices.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      capture_indices.extend_from_slice(&group.capture_indices);
+
+      named_capture_groups.push(NamedCaptureGroup {
+        name,
+        capture_indices,
+      });
+    }
+
     Ok(Self {
       insts,
       capture_count: self.capture_count,
       repeat_count: self.repeat_count,
+      named_capture_groups,
     })
   }
 }
@@ -941,6 +1048,7 @@ enum Inst {
   WordBoundary { negated: bool },
   Save(usize),
   BackRef(u32),
+  NamedBackRef(u32),
   Split(usize, usize),
   Jump(usize),
   RepeatStart {
@@ -1067,6 +1175,17 @@ fn char_eq(a: u16, b: u16, ignore_case: bool) -> bool {
   ascii_lower(a) == ascii_lower(b)
 }
 
+fn is_regexp_identifier_start_ascii(u: u16) -> bool {
+  u == (b'$' as u16)
+    || u == (b'_' as u16)
+    || (b'A' as u16..=b'Z' as u16).contains(&u)
+    || (b'a' as u16..=b'z' as u16).contains(&u)
+}
+
+fn is_regexp_identifier_continue_ascii(u: u16) -> bool {
+  is_regexp_identifier_start_ascii(u) || (b'0' as u16..=b'9' as u16).contains(&u)
+}
+
 fn is_line_terminator_unit(u: u16) -> bool {
   matches!(u, 0x000A | 0x000D | 0x2028 | 0x2029)
 }
@@ -1148,6 +1267,7 @@ enum Atom {
     disj: Disjunction,
   },
   BackRef(u32),
+  NamedBackRef(Vec<u16>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1172,13 +1292,26 @@ pub(crate) fn estimated_regexp_compilation_bytes(pattern_len: usize) -> usize {
   const END_JUMPS_PER_UNIT: usize = 2;
   const CLASS_ITEMS_PER_UNIT: usize = 2;
   const PROGRAMS_PER_UNIT: usize = 1;
+  // Named groups + quantified-capture bookkeeping (approximate).
+  const NAMED_GROUPS_PER_UNIT: usize = 1;
+  const NAME_UNITS_PER_UNIT: usize = 1;
+  const CAPTURE_INDEX_PER_UNIT: usize = 1;
+  const REPEAT_CAPTURE_INDEX_PER_UNIT: usize = 1;
   let per_unit = INSTS_PER_UNIT
     .saturating_mul(mem::size_of::<Inst>())
     .saturating_add(TERMS_PER_UNIT.saturating_mul(mem::size_of::<Term>()))
     .saturating_add(ALTS_PER_UNIT.saturating_mul(mem::size_of::<Alternative>()))
     .saturating_add(END_JUMPS_PER_UNIT.saturating_mul(mem::size_of::<usize>()))
     .saturating_add(CLASS_ITEMS_PER_UNIT.saturating_mul(mem::size_of::<CharClassItem>()))
-    .saturating_add(PROGRAMS_PER_UNIT.saturating_mul(mem::size_of::<RegExpProgram>()));
+    .saturating_add(PROGRAMS_PER_UNIT.saturating_mul(mem::size_of::<RegExpProgram>()))
+    .saturating_add(NAMED_GROUPS_PER_UNIT.saturating_mul(mem::size_of::<NamedCaptureGroup>()))
+    .saturating_add(NAME_UNITS_PER_UNIT.saturating_mul(mem::size_of::<u16>()))
+    .saturating_add(
+      CAPTURE_INDEX_PER_UNIT
+        .saturating_add(REPEAT_CAPTURE_INDEX_PER_UNIT)
+        .saturating_mul(mem::size_of::<u32>()),
+    )
+    .saturating_add(REPEAT_CAPTURE_INDEX_PER_UNIT.saturating_mul(mem::size_of::<Vec<u32>>()));
 
   // Fixed overhead for vector headers, builder state, etc.
   const OVERHEAD_BYTES: usize = 8 * 1024;
@@ -1206,7 +1339,8 @@ pub(crate) fn compile_regexp_with_budget(
     .into());
   }
   let capture_count = parser.capture_count as usize + 1;
-  let mut builder = ProgramBuilder::new(capture_count);
+  let named_capture_groups = mem::take(&mut parser.named_capture_groups);
+  let mut builder = ProgramBuilder::new(capture_count, named_capture_groups);
   builder.compile_disjunction(&mut ctx, disj)?;
   builder.emit(&mut ctx, Inst::Match)?;
   Ok(builder.finish())
@@ -1226,6 +1360,7 @@ struct Parser<'a> {
   idx: usize,
   flags: RegExpFlags,
   capture_count: u32,
+  named_capture_groups: Vec<NamedCaptureGroup>,
 }
 
 impl<'a> Parser<'a> {
@@ -1235,6 +1370,7 @@ impl<'a> Parser<'a> {
       idx: 0,
       flags,
       capture_count: 0,
+      named_capture_groups: Vec::new(),
     }
   }
 
@@ -1471,22 +1607,10 @@ impl<'a> Parser<'a> {
         }
         x if x == (b'<' as u16) => {
           // Named capturing group: `(?<name>...)`.
-          let mut name_i: usize = 0;
-          while let Some(u) = self.peek() {
-            if name_i != 0 {
-              ctx.tick_every(name_i)?;
-            }
-            name_i = name_i.wrapping_add(1);
-            self.next();
-            if u == (b'>' as u16) {
-              break;
-            }
-          }
-          if self.peek().is_none() {
-            return Err(RegExpSyntaxError { message: "Invalid group" }.into());
-          }
+          let name = self.parse_group_name(ctx)?;
           self.capture_count = self.capture_count.saturating_add(1);
           let idx = self.capture_count;
+          self.register_named_capture_group(ctx, name, idx)?;
           let disj = self.parse_disjunction(ctx, Some(b')' as u16))?;
           if !self.eat(b')' as u16) {
             return Err(RegExpSyntaxError {
@@ -1523,6 +1647,71 @@ impl<'a> Parser<'a> {
         disj,
       })
     }
+  }
+
+  fn parse_group_name(&mut self, ctx: &mut CompileCtx<'_>) -> Result<Vec<u16>, RegExpCompileError> {
+    let mut name: Vec<u16> = Vec::new();
+    let mut i: usize = 0;
+    loop {
+      let Some(u) = self.peek() else {
+        return Err(RegExpSyntaxError { message: "Invalid group" }.into());
+      };
+      if u == (b'>' as u16) {
+        // Consume `>`.
+        self.next();
+        break;
+      }
+      if i != 0 {
+        ctx.tick_every(i)?;
+      }
+      i = i.wrapping_add(1);
+      self.next();
+      ctx.vec_try_push(&mut name, u)?;
+    }
+
+    if name.is_empty() {
+      return Err(RegExpSyntaxError { message: "Invalid group" }.into());
+    }
+    if !is_regexp_identifier_start_ascii(name[0]) {
+      return Err(RegExpSyntaxError { message: "Invalid group" }.into());
+    }
+    for (j, &u) in name.iter().enumerate().skip(1) {
+      if j % 32 == 0 {
+        ctx.tick()?;
+      }
+      if !is_regexp_identifier_continue_ascii(u) {
+        return Err(RegExpSyntaxError { message: "Invalid group" }.into());
+      }
+    }
+    Ok(name)
+  }
+
+  fn register_named_capture_group(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    name: Vec<u16>,
+    capture_idx: u32,
+  ) -> Result<(), RegExpCompileError> {
+    for (i, group) in self.named_capture_groups.iter_mut().enumerate() {
+      if i != 0 {
+        ctx.tick_every(i)?;
+      }
+      if group.name == name {
+        ctx.vec_try_push(&mut group.capture_indices, capture_idx)?;
+        return Ok(());
+      }
+    }
+
+    let mut capture_indices: Vec<u32> = Vec::new();
+    ctx.vec_try_push(&mut capture_indices, capture_idx)?;
+    ctx.vec_try_push(
+      &mut self.named_capture_groups,
+      NamedCaptureGroup {
+        name,
+        capture_indices,
+      },
+    )?;
+    Ok(())
   }
 
   fn parse_class(&mut self, ctx: &mut CompileCtx<'_>) -> Result<Atom, RegExpCompileError> {
@@ -1687,6 +1876,14 @@ impl<'a> Parser<'a> {
       x if x == (b'v' as u16) => Ok(Atom::Literal(0x000B)),
       x if x == (b'f' as u16) => Ok(Atom::Literal(0x000C)),
       x if x == (b'0' as u16) => Ok(Atom::Literal(0x0000)),
+      x if x == (b'k' as u16) => {
+        if self.eat(b'<' as u16) {
+          let name = self.parse_group_name(ctx)?;
+          Ok(Atom::NamedBackRef(name))
+        } else {
+          Ok(Atom::Literal(x))
+        }
+      }
       x if (b'1' as u16..=b'9' as u16).contains(&x) => {
         // Decimal escape => backreference (approximation).
         let mut n: u32 = (x - (b'0' as u16)) as u32;
@@ -1898,14 +2095,16 @@ struct ProgramBuilder {
   insts: Vec<Inst>,
   repeat_count: usize,
   capture_count: usize,
+  named_capture_groups: Vec<NamedCaptureGroup>,
 }
 
 impl ProgramBuilder {
-  fn new(capture_count: usize) -> Self {
+  fn new(capture_count: usize, named_capture_groups: Vec<NamedCaptureGroup>) -> Self {
     Self {
       insts: Vec::new(),
       repeat_count: 0,
       capture_count,
+      named_capture_groups,
     }
   }
 
@@ -1914,7 +2113,38 @@ impl ProgramBuilder {
       insts: self.insts,
       capture_count: self.capture_count,
       repeat_count: self.repeat_count,
+      named_capture_groups: self.named_capture_groups,
     }
+  }
+
+  fn try_clone_named_capture_groups(
+    ctx: &mut CompileCtx<'_>,
+    groups: &[NamedCaptureGroup],
+  ) -> Result<Vec<NamedCaptureGroup>, RegExpCompileError> {
+    let mut out: Vec<NamedCaptureGroup> = Vec::new();
+    ctx.reserve_vec_to_len(&mut out, groups.len())?;
+    for (i, group) in groups.iter().enumerate() {
+      if i != 0 {
+        ctx.tick_every(i)?;
+      }
+
+      let mut name: Vec<u16> = Vec::new();
+      ctx.reserve_vec_to_len(&mut name, group.name.len())?;
+      name.extend_from_slice(&group.name);
+
+      let mut capture_indices: Vec<u32> = Vec::new();
+      ctx.reserve_vec_to_len(&mut capture_indices, group.capture_indices.len())?;
+      capture_indices.extend_from_slice(&group.capture_indices);
+
+      ctx.vec_try_push(
+        &mut out,
+        NamedCaptureGroup {
+          name,
+          capture_indices,
+        },
+      )?;
+    }
+    Ok(out)
   }
 
   fn emit(&mut self, ctx: &mut CompileCtx<'_>, inst: Inst) -> Result<usize, RegExpCompileError> {
@@ -2029,7 +2259,9 @@ impl ProgramBuilder {
       }
       Assertion::LookAhead { negative, disj } => {
         // Compile lookahead into a nested program that shares the outer capture slot numbering.
-        let mut nested = ProgramBuilder::new(self.capture_count);
+        let cloned_named =
+          ProgramBuilder::try_clone_named_capture_groups(ctx, &self.named_capture_groups)?;
+        let mut nested = ProgramBuilder::new(self.capture_count, cloned_named);
         nested.compile_disjunction(ctx, disj)?;
         nested.emit(ctx, Inst::Match)?;
         let nested_prog = nested.finish();
@@ -2075,6 +2307,7 @@ impl ProgramBuilder {
 
     let id = self.repeat_count;
     self.repeat_count = self.repeat_count.saturating_add(1);
+
     let start_pc = self.emit(ctx, Inst::RepeatStart {
       id,
       min: q.min,
@@ -2111,6 +2344,25 @@ impl ProgramBuilder {
       }
       Atom::BackRef(n) => {
         self.emit(ctx, Inst::BackRef(n))?;
+      }
+      Atom::NamedBackRef(name) => {
+        let mut found: Option<u32> = None;
+        for (i, group) in self.named_capture_groups.iter().enumerate() {
+          if i != 0 {
+            ctx.tick_every(i)?;
+          }
+          if group.name == name {
+            found = Some(u32::try_from(i).map_err(|_| RegExpCompileError::OutOfMemory)?);
+            break;
+          }
+        }
+        let Some(name_id) = found else {
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        };
+        self.emit(ctx, Inst::NamedBackRef(name_id))?;
       }
       Atom::Group { capture, disj, .. } => {
         if let Some(idx) = capture {

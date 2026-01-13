@@ -1087,8 +1087,7 @@ reason = "vm-js: String.prototype.match / RegExp @@match semantics are still inc
 
 [[expectations]]
 id = "built-ins/String/prototype/match/duplicate-named-groups-properties.js"
-status = "xfail"
-reason = "vm-js: RegExp named capture groups / match result `.groups` semantics are still incomplete."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/duplicate-named-indices-groups-properties.js"

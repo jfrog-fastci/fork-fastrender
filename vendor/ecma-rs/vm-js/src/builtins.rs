@@ -7930,8 +7930,10 @@ fn regexp_exec_array(
     return Ok(None);
   };
   let flags = scope.heap().regexp_flags(rx)?;
-  let program = scope.heap().regexp_program(rx)?;
-  let capture_count = program.capture_count;
+  let (capture_count, named_group_count) = {
+    let program = scope.heap().regexp_program(rx)?;
+    (program.capture_count, program.named_capture_groups.len())
+  };
 
   let match_len = raw.m.end.saturating_sub(raw.index);
   let array_len_u32 = u32::try_from(capture_count).map_err(|_| VmError::OutOfMemory)?;
@@ -7979,7 +7981,7 @@ fn regexp_exec_array(
     scope.define_property(array, key, data_desc(value, true, true, true))?;
   }
 
-  // index / input
+  // index / input / groups
   {
     let index_key = string_key(&mut scope, "index")?;
     scope.define_property(
@@ -7992,6 +7994,88 @@ fn regexp_exec_array(
       array,
       input_key,
       data_desc(Value::String(input), true, false, true),
+    )?;
+
+    let groups_value = if named_group_count == 0 {
+      Value::Undefined
+    } else {
+      // `groups` objects are `OrdinaryObjectCreate(null)` in ECMA-262 (null prototype).
+      let groups_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(groups_obj))?;
+
+      for i in 0..named_group_count {
+        if i % 64 == 0 {
+          vm.tick()?;
+        }
+
+        let (group_name_units, selected) = {
+          let program = scope.heap().regexp_program(rx)?;
+          let group = program
+            .named_capture_groups
+            .get(i)
+            .ok_or(VmError::InvariantViolation("RegExpProgram named group index out of range"))?;
+
+          let mut group_name_units: Vec<u16> = Vec::new();
+          group_name_units
+            .try_reserve_exact(group.name.len())
+            .map_err(|_| VmError::OutOfMemory)?;
+          group_name_units.extend_from_slice(&group.name);
+
+          // Find the last matched capture among duplicate indices for this name.
+          let mut selected: Option<(usize, usize)> = None;
+          for (j, &cap_idx) in group.capture_indices.iter().rev().enumerate() {
+            if j % 64 == 0 {
+              vm.tick()?;
+            }
+            let idx = cap_idx as usize;
+            let start_slot = idx.saturating_mul(2);
+            let end_slot = start_slot.saturating_add(1);
+            let (start, end) = (
+              raw.m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
+              raw.m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
+            );
+            if start == usize::MAX || end == usize::MAX || end < start {
+              continue;
+            }
+            selected = Some((start, end));
+            break;
+          }
+          (group_name_units, selected)
+        };
+
+        let value = match selected {
+          None => Value::Undefined,
+          Some((start, end)) => {
+            let units: Vec<u16> = {
+              let s = scope.heap().get_string(input)?;
+              let slice = &s.as_code_units()[start..end];
+              let mut buf: Vec<u16> = Vec::new();
+              buf
+                .try_reserve_exact(slice.len())
+                .map_err(|_| VmError::OutOfMemory)?;
+              buf.extend_from_slice(slice);
+              buf
+            };
+            let s = scope.alloc_string_from_u16_vec(units)?;
+            scope.push_root(Value::String(s))?;
+            Value::String(s)
+          }
+        };
+
+        let key_s = scope.alloc_string_from_u16_vec(group_name_units)?;
+        scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        scope.define_property(groups_obj, key, data_desc(value, true, true, true))?;
+      }
+
+      Value::Object(groups_obj)
+    };
+
+    let groups_key = string_key(&mut scope, "groups")?;
+    scope.define_property(
+      array,
+      groups_key,
+      data_desc(groups_value, true, false, true),
     )?;
   }
 

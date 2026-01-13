@@ -190,6 +190,61 @@ fn regexp_quantifier_iterations_reset_inner_captures() {
 }
 
 #[test]
+fn regexp_named_capture_groups_basic() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#""a".match(/(?<x>a)/).groups.x"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "a");
+}
+
+#[test]
+fn regexp_named_capture_groups_duplicate_names_and_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const matcher = /(?:(?<x>a)|(?<y>a)(?<x>b))(?:(?<z>c)|(?<z>d))/;
+        const three = "abc".match(matcher);
+        const two = "ad".match(matcher);
+        three.groups.x + "," + three.groups.y + "," + three.groups.z + "|" +
+        Object.keys(three.groups).join(",") + "|" +
+        two.groups.x + "," + String(two.groups.y) + "," + two.groups.z + "|" +
+        Object.keys(two.groups).join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "b,a,c|x,y,z|a,undefined,d|x,y,z");
+}
+
+#[test]
+fn regexp_named_backref_basic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = /(?:(?<x>a)|(?<x>b)|c)\k<x>/;
+        [r.test("aa"), r.test("bb"), r.test("c")].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true");
+}
+
+#[test]
+fn regexp_named_groups_reset_in_quantifier_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const r = /(?:(?:(?<x>a)|(?<x>b)|c)\k<x>){2}/;
+        const m = "aac".match(r);
+        String(m !== null && m.groups.x === undefined && Object.keys(m.groups).join(",") === "x")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true");
+}
+
+#[test]
 fn regexp_string_iterator_next_proxy_receiver_throws_type_error() {
   let mut rt = new_runtime();
   let value = rt
