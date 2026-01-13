@@ -42,9 +42,9 @@ fn class_extends_null_prototype_wiring_compiled() -> Result<(), VmError> {
     &mut rt,
     r#"
        class C extends null {}
-      Object.getPrototypeOf(C) === Function.prototype &&
-        Object.getPrototypeOf(C.prototype) === null
-    "#,
+       Object.getPrototypeOf(C) === Function.prototype &&
+         Object.getPrototypeOf(C.prototype) === null
+     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
@@ -70,9 +70,9 @@ fn class_extends_null_default_constructor_throws_type_error_compiled() -> Result
   let value = exec_compiled(
     &mut rt,
     r#"
-      class C extends null {}
-      try { new C(); 'no' } catch(e) { e.name }
-    "#,
+       class C extends null {}
+       try { new C(); 'no' } catch(e) { e.name }
+     "#,
   )?;
   assert_value_is_utf8(&rt, value, "TypeError");
   Ok(())
@@ -99,10 +99,10 @@ fn class_extends_null_explicit_constructor_can_return_null_proto_object_compiled
   let value = exec_compiled(
     &mut rt,
     r#"
-      class C extends null { constructor() { return Object.create(null); } }
-      const o = new C();
-      Object.getPrototypeOf(o) === null
-    "#,
+       class C extends null { constructor() { return Object.create(null); } }
+       const o = new C();
+       Object.getPrototypeOf(o) === null
+     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())

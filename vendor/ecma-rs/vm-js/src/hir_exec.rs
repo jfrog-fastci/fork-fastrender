@@ -7409,33 +7409,41 @@ impl<'vm> HirEvaluator<'vm> {
     self.strict = true;
 
      let result = (|| {
-       // Avoid borrowing the HIR through `self` across calls that mutably borrow `self` during class
-       // member evaluation (e.g. evaluating class static blocks).
-       let hir = self.script.hir.clone();
+        // Avoid borrowing the HIR through `self` across calls that mutably borrow `self` during class
+        // member evaluation (e.g. evaluating class static blocks).
+        let hir = self.script.hir.clone();
 
-       let Some(class_meta) = class_body.class.as_ref() else {
+        let Some(class_meta) = class_body.class.as_ref() else {
           return Err(VmError::InvariantViolation("class body missing class metadata"));
         };
 
         // Evaluate `extends` (class heritage), if present.
         //
-        // - `undefined` => no `extends` (base class).
-        // - `null` => `extends null`.
-        // - object => superclass constructor.
+        // - `undefined` => no `extends` (base class)
+        // - `null` => `extends null`
+        // - object => superclass constructor
         let super_value = match class_meta.extends {
           None => Value::Undefined,
-          Some(expr_id) => {
-            let v = self.eval_expr(scope, class_body, expr_id)?;
+          Some(extends_expr_id) => {
+            let v = self.eval_expr(scope, class_body, extends_expr_id)?;
             match v {
               Value::Null => Value::Null,
               Value::Object(_) => {
                 if !scope.heap().is_constructor(v)? {
-                  return Err(VmError::TypeError("Class extends value is not a constructor"));
+                  return Err(throw_type_error(
+                    self.vm,
+                    scope,
+                    "Class extends value is not a constructor",
+                  )?);
                 }
                 v
               }
               _ => {
-                return Err(VmError::TypeError("Class extends value is not a constructor"));
+                return Err(throw_type_error(
+                  self.vm,
+                  scope,
+                  "Class extends value is not a constructor",
+                )?)
               }
             }
           }
@@ -7452,9 +7460,9 @@ impl<'vm> HirEvaluator<'vm> {
        // Ensure the requested class binding exists before creating any class element closures.
        if let Some(name) = binding_name {
          if scope.heap().env_has_binding(class_env, name)? {
-          return Err(VmError::InvariantViolation(
-            "class binding already exists in class environment",
-          ));
+           return Err(VmError::InvariantViolation(
+             "class binding already exists in class environment",
+           ));
         }
         scope.env_create_immutable_binding(class_env, name)?;
       }
@@ -7476,19 +7484,19 @@ impl<'vm> HirEvaluator<'vm> {
 
       // Allocate the optional hidden constructable constructor body.
       let mut ctor_length: u32 = 0;
-      let ctor_body_func = if let Some(member) = ctor_member {
+       let ctor_body_func = if let Some(member) = ctor_member {
         let hir_js::ClassMemberKind::Constructor { body, .. } = &member.kind else {
           unreachable!();
         };
         if let Some(body_id) = *body {
           // Allocate the compiled function object for the constructor body.
-          let body_func =
-            self.alloc_user_function_object(
-              scope,
-              body_id,
-              "constructor",
-              /* is_arrow */ false,
-              /* is_constructable */ true,
+           let body_func =
+             self.alloc_user_function_object(
+               scope,
+               body_id,
+               "constructor",
+               /* is_arrow */ false,
+               /* is_constructable */ true,
               /* name_binding */ None,
               EcmaFunctionKind::ClassMember,
             )?;
@@ -7539,9 +7547,9 @@ impl<'vm> HirEvaluator<'vm> {
         } else {
           None
         }
-      } else {
-        None
-      };
+       } else {
+         None
+       };
 
         let func_obj = self.create_class_constructor_object(
           scope,
@@ -7553,7 +7561,7 @@ impl<'vm> HirEvaluator<'vm> {
         )?;
 
         // `NamedEvaluation` assigns inferred names to anonymous class expressions in specific syntactic
-       // positions (e.g. `{ key: class {} }`).
+        // positions (e.g. `{ key: class {} }`).
        //
        // This must happen *before* defining class elements: a class can define a `static name() {}`
        // method which should override the constructor's initial `"name"` property. Setting the name
@@ -7611,7 +7619,17 @@ impl<'vm> HirEvaluator<'vm> {
        };
        class_scope.push_root(Value::Object(prototype_obj))?;
 
-       // Wire the instance prototype chain:
+       // Per ECMAScript, class constructors have a non-writable `prototype` property.
+       class_scope.define_property_or_throw(
+         func_obj,
+         prototype_key,
+        PropertyDescriptorPatch {
+          writable: Some(false),
+          ..Default::default()
+         },
+       )?;
+
+       // Wire the instance prototype chain for derived classes.
        //
        // - base class: `prototype.[[Prototype]] = %Object.prototype%`
        // - `extends null`: `prototype.[[Prototype]] = null`
@@ -7649,9 +7667,11 @@ impl<'vm> HirEvaluator<'vm> {
                Value::Object(o) => Some(o),
                Value::Null => None,
                _ => {
-                 return Err(VmError::TypeError(
+                 return Err(throw_type_error(
+                   self.vm,
+                   &mut proto_scope,
                    "Class extends value does not have a valid prototype property",
-                 ))
+                 )?)
                }
              }
            };
@@ -7666,19 +7686,9 @@ impl<'vm> HirEvaluator<'vm> {
          }
        }
 
-       // Per ECMAScript, class constructors have a non-writable `prototype` property.
-       class_scope.define_property_or_throw(
-         func_obj,
-        prototype_key,
-        PropertyDescriptorPatch {
-          writable: Some(false),
-          ..Default::default()
-        },
-      )?;
-
-       // Define prototype and static methods/accessors.
-       let mut static_blocks: Vec<hir_js::BodyId> = Vec::new();
-       for member in class_meta.members.iter() {
+        // Define prototype and static methods/accessors.
+        let mut static_blocks: Vec<hir_js::BodyId> = Vec::new();
+        for member in class_meta.members.iter() {
          self.vm.tick()?;
 
          match &member.kind {
