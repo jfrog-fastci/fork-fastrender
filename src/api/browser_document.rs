@@ -1758,10 +1758,13 @@ pub(super) fn prepare_dom_inner(
 
   let layout_viewport = artifacts.fragment_tree.viewport_size();
   let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
+  let layout_style_fingerprint_digest =
+    super::styled_layout_fingerprint_digest(&artifacts.styled_tree);
   Ok(PreparedDocument {
     dom: artifacts.dom,
     stylesheet: artifacts.stylesheet,
     styled_tree: artifacts.styled_tree,
+    layout_style_fingerprint_digest,
     box_tree: artifacts.box_tree,
     fragment_tree: artifacts.fragment_tree,
     layout_viewport,

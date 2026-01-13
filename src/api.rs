@@ -2453,6 +2453,7 @@ pub struct PreparedDocument {
   dom: DomNode,
   stylesheet: StyleSheet,
   styled_tree: StyledNode,
+  layout_style_fingerprint_digest: u64,
   box_tree: BoxTree,
   fragment_tree: FragmentTree,
   layout_viewport: Size,
@@ -2721,6 +2722,10 @@ impl PreparedDocument {
   /// Returns the styled tree produced during cascade.
   pub fn styled_tree(&self) -> &StyledNode {
     &self.styled_tree
+  }
+
+  pub(crate) fn layout_style_fingerprint_digest(&self) -> u64 {
+    self.layout_style_fingerprint_digest
   }
 
   /// Returns the generated box tree.
@@ -7385,11 +7390,13 @@ impl FastRender {
         // the resolved zoom factor. Using the visual viewport here keeps the output pixmap sized to
         // the originally requested viewport (after DPR), matching browser screenshots.
         let paint_viewport = resolved_viewport.visual_viewport;
+        let layout_style_fingerprint_digest = styled_layout_fingerprint_digest(&artifacts.styled_tree);
 
         let document = PreparedDocument {
           dom: artifacts.dom,
           stylesheet: artifacts.stylesheet,
           styled_tree: artifacts.styled_tree,
+          layout_style_fingerprint_digest,
           box_tree: artifacts.box_tree,
           fragment_tree: artifacts.fragment_tree,
           layout_viewport,
@@ -8660,10 +8667,12 @@ impl FastRender {
       eprintln!("timing:layout_document {:?}", now - start);
     }
 
+    let layout_style_fingerprint_digest = styled_layout_fingerprint_digest(&artifacts.styled_tree);
     Ok(PreparedDocument {
       dom: artifacts.dom,
       stylesheet: artifacts.stylesheet,
       styled_tree: artifacts.styled_tree,
+      layout_style_fingerprint_digest,
       box_tree: artifacts.box_tree,
       fragment_tree: artifacts.fragment_tree,
       layout_viewport,
@@ -8968,10 +8977,12 @@ impl FastRender {
       eprintln!("timing:layout_document {:?}", now - start);
     }
 
+    let layout_style_fingerprint_digest = styled_layout_fingerprint_digest(&artifacts.styled_tree);
     Ok(PreparedDocument {
       dom: artifacts.dom,
       stylesheet: artifacts.stylesheet,
       styled_tree: artifacts.styled_tree,
+      layout_style_fingerprint_digest,
       box_tree: artifacts.box_tree,
       fragment_tree: artifacts.fragment_tree,
       layout_viewport,
@@ -9115,10 +9126,12 @@ impl FastRender {
       eprintln!("timing:layout_document {:?}", now - start);
     }
 
+    let layout_style_fingerprint_digest = styled_layout_fingerprint_digest(&artifacts.styled_tree);
     Ok(PreparedDocument {
       dom: artifacts.dom,
       stylesheet: artifacts.stylesheet,
       styled_tree: artifacts.styled_tree,
+      layout_style_fingerprint_digest,
       box_tree: artifacts.box_tree,
       fragment_tree: artifacts.fragment_tree,
       layout_viewport,
@@ -23745,6 +23758,18 @@ mod tests {
     assert!(
       info.inline_size > 0.0,
       "expected non-zero container sizes, got {info:?}"
+    );
+  }
+
+  #[test]
+  fn prepared_document_caches_layout_style_fingerprint_digest() {
+    let mut renderer = FastRender::new().unwrap();
+    let options = RenderOptions::default().with_viewport(32, 32);
+    let prepared = renderer.prepare_html("<div>hi</div>", options).unwrap();
+    assert_eq!(
+      prepared.layout_style_fingerprint_digest(),
+      super::styled_layout_fingerprint_digest(prepared.styled_tree()),
+      "expected PreparedDocument to cache the layout-style fingerprint digest for its styled tree"
     );
   }
 
