@@ -2420,23 +2420,6 @@ impl BrowserRuntime {
       return;
     }
 
-    // -------------------------------------------------------------------------
-    // Crash isolation test hook.
-    // -------------------------------------------------------------------------
-    //
-    // `crash://` navigations are an internal/dev-only trigger used by crash recovery integration
-    // tests. The omnibox blocks this scheme via `validate_user_navigation_url_scheme`, so the only
-    // way to reach this path is via direct UI↔worker protocol injection (tests, developer tools).
-    //
-    // Important: do *not* `abort()` here; we only want to crash this worker thread so in-process
-    // integration tests can observe renderer crash recovery.
-    if requested_url
-      .get(0..8)
-      .is_some_and(|prefix| prefix.eq_ignore_ascii_case("crash://"))
-    {
-      panic!("intentional crash triggered via internal navigation to {requested_url}");
-    }
-
     match reason {
       NavigationReason::TypedUrl => {
         // Only normalize user-typed URLs. Back/forward/reload should preserve the exact URL
@@ -2567,7 +2550,6 @@ impl BrowserRuntime {
         request.url
       );
     }
-
     match reason {
       NavigationReason::TypedUrl | NavigationReason::LinkClick => {
         self.begin_navigation(tab_id, request, reason, true);
