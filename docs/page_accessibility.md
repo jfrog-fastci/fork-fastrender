@@ -60,6 +60,9 @@ The UI then maps viewport-local CSS rects into egui/window coordinates via:
   - Note: this produces **egui points** (logical pixels). If you need physical window pixels for an
     OS-facing API, multiply by `egui_ctx.pixels_per_point()` / `Window::scale_factor()` as
     appropriate for the frontend.
+  - The windowed `browser` UI builds an `InputMapping` per-frame from the egui `Rect` where the page
+    image is drawn (`response.rect`) and the worker-reported `viewport_css`; see the `InputMapping::new(...)`
+    call in [`src/bin/browser.rs`](../src/bin/browser.rs).
 
 For more general-purpose, scroll- and sticky-aware geometry queries (mirroring the paint pipeline),
 see [`src/api/dom2_geometry.rs`](../src/api/dom2_geometry.rs) (`Dom2GeometryContext::*_in_viewport`).
@@ -96,6 +99,10 @@ The desktop `browser` UI enables AccessKit for **egui widgets** (browser chrome)
 - Test utilities for extracting AccessKit output: [`src/ui/a11y_test_util.rs`](../src/ui/a11y_test_util.rs)
 - Egui code uses `ctx.enable_accesskit()` in tests (search for `enable_accesskit` in
   `src/ui/chrome.rs`, `src/ui/menu_bar.rs`, etc).
+- Page/content in the windowed UI is currently a single **egui image widget**. It is given a stable
+  accessible label (“Web page content (rendered image)”) so screen readers can identify the region,
+  but it does not expose a web content subtree yet. See `response.widget_info(...)` in
+  [`src/bin/browser.rs`](../src/bin/browser.rs).
 - Future-facing (page/chrome rendered by FastRender rather than egui):
   - AccessKit update gating (avoid building trees/bounds when no AT is connected):
     [`src/ui/accesskit_bridge.rs`](../src/ui/accesskit_bridge.rs)
@@ -179,6 +186,10 @@ let (_pixmap, a11y_tree) = renderer.render_html_with_accessibility("<button>OK</
 println!("{}", serde_json::to_string_pretty(&a11y_tree)?);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+Note: `render_html_with_accessibility` currently builds the accessibility tree with no explicit
+`InteractionState` (focus/visited/selection). If you need those dynamic states populated, call
+`FastRender::accessibility_tree_with_interaction_state(...)` directly (see `src/api.rs`).
 
 ### `dump_accesskit` (browser chrome / OS-facing a11y)
 
