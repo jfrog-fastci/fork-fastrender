@@ -122,7 +122,8 @@ impl BookmarksIoJob {
   ///
   /// Returns `Some` at most once per job.
   pub fn poll(&mut self) -> Option<BookmarksIoJobUpdate> {
-    match self {
+    let state = std::mem::replace(self, Self::Idle);
+    match state {
       Self::Exporting { path, rx } => match rx.try_recv() {
         Ok(update) => {
           if let BookmarksIoJobUpdate::ExportFinished { result: Err(err), .. } = &update {
@@ -132,12 +133,15 @@ impl BookmarksIoJob {
           }
           Some(update)
         }
-        Err(mpsc::TryRecvError::Empty) => None,
+        Err(mpsc::TryRecvError::Empty) => {
+          *self = Self::Exporting { path, rx };
+          None
+        }
         Err(mpsc::TryRecvError::Disconnected) => {
           let err = "Bookmarks export job disconnected.".to_string();
           *self = Self::Error { error: err.clone() };
           Some(BookmarksIoJobUpdate::ExportFinished {
-            path: path.clone(),
+            path,
             result: Err(err),
           })
         }
@@ -151,17 +155,23 @@ impl BookmarksIoJob {
           }
           Some(update)
         }
-        Err(mpsc::TryRecvError::Empty) => None,
+        Err(mpsc::TryRecvError::Empty) => {
+          *self = Self::Importing { path, rx };
+          None
+        }
         Err(mpsc::TryRecvError::Disconnected) => {
           let err = "Bookmarks import job disconnected.".to_string();
           *self = Self::Error { error: err.clone() };
           Some(BookmarksIoJobUpdate::ImportFinished {
-            path: path.clone(),
+            path,
             result: Err(err),
           })
         }
       },
-      Self::Idle | Self::Done | Self::Error { .. } => None,
+      other => {
+        *self = other;
+        None
+      }
     }
   }
 }
