@@ -531,11 +531,6 @@ glob = "built-ins/Boolean/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Boolean/prototype/S15.6.3.1_A3.js"
-status = "xfail"
-reason = "vm-js: Boolean.prototype.valueOf does not throw a TypeError for non-Boolean receivers."
-
-[[expectations]]
 id = "built-ins/Object/getOwnPropertyNames/15.2.3.4-4-1.js"
 status = "xfail"
 reason = "vm-js: global object is missing some standard built-ins (e.g. Date/RegExp/Error constructors)."
