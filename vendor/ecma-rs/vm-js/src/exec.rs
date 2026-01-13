@@ -12799,6 +12799,15 @@ enum AsyncFrame {
     base_root: RootId,
   },
 
+  /// Continue class evaluation after evaluating the class heritage (`extends`) expression.
+  ///
+  /// This allows `extends` to suspend on `await` and resume once the superclass value is available.
+  ClassAfterHeritage {
+    members: *const Vec<Node<ClassMember>>,
+    binding_name: Option<*const str>,
+    func_name: *const str,
+  },
+
   /// Continue class evaluation after evaluating a computed member key.
   ClassAfterComputedKey {
     members: *const Vec<Node<ClassMember>>,
@@ -16008,13 +16017,6 @@ fn async_eval_class_decl(
   scope: &mut Scope<'_>,
   decl: &Node<ClassDecl>,
 ) -> Result<AsyncEval<Completion>, VmError> {
-  let extends_null = match decl.stx.extends.as_ref() {
-    None => false,
-    Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
-  };
-  if decl.stx.extends.is_some() && !extends_null {
-    return Err(VmError::Unimplemented("class inheritance"));
-  }
   if !decl.stx.decorators.is_empty() {
     return Err(VmError::Unimplemented("class decorators"));
   }
@@ -16056,7 +16058,7 @@ fn async_eval_class_decl(
     inner_binding,
     func_name,
     &decl.stx.members,
-    extends_null,
+    decl.stx.extends.as_ref(),
   );
 
   match result {
@@ -16107,13 +16109,6 @@ fn async_eval_class_expr(
   scope: &mut Scope<'_>,
   expr: &Node<ClassExpr>,
 ) -> Result<AsyncEval<Value>, VmError> {
-  let extends_null = match expr.stx.extends.as_ref() {
-    None => false,
-    Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
-  };
-  if expr.stx.extends.is_some() && !extends_null {
-    return Err(VmError::Unimplemented("class inheritance"));
-  }
   if !expr.stx.decorators.is_empty() {
     return Err(VmError::Unimplemented("class decorators"));
   }
@@ -16128,7 +16123,14 @@ fn async_eval_class_expr(
   let outer = evaluator.env.lexical_env;
   let result = (|| {
     let Some(name) = expr.stx.name.as_ref() else {
-      return async_eval_class(evaluator, scope, ClassBinding::None, "", &expr.stx.members, extends_null);
+      return async_eval_class(
+        evaluator,
+        scope,
+        ClassBinding::None,
+        "",
+        &expr.stx.members,
+        expr.stx.extends.as_ref(),
+      );
     };
 
     let class_env = scope.env_create(Some(outer))?;
@@ -16139,7 +16141,7 @@ fn async_eval_class_expr(
       ClassBinding::Immutable(name.stx.name.as_str()),
       name.stx.name.as_str(),
       &expr.stx.members,
-      extends_null,
+      expr.stx.extends.as_ref(),
     )
   })();
 
@@ -16172,7 +16174,7 @@ fn async_eval_class(
   binding: ClassBinding<'_>,
   func_name: &str,
   members: &Vec<Node<ClassMember>>,
-  extends_null: bool,
+  extends: Option<&Node<Expr>>,
 ) -> Result<AsyncEval<Value>, VmError> {
   // Per ECMA-262, class definitions are always strict mode code, regardless of whether they
   // appear in a sloppy script/function body.
@@ -16186,21 +16188,125 @@ fn async_eval_class(
   evaluator.strict = true;
 
   let result = (|| {
-  let class_env = evaluator.env.lexical_env;
+    let class_env = evaluator.env.lexical_env;
 
-  // Ensure the requested class binding exists before creating any class element closures that may
-  // reference it.
-  match binding {
-    ClassBinding::None => {}
-    ClassBinding::Immutable(name) => {
-      if scope.heap().env_has_binding(class_env, name)? {
-        return Err(VmError::InvariantViolation(
-          "class binding already exists in class environment",
-        ));
+    // Ensure the requested class binding exists before creating any class element closures that may
+    // reference it.
+    match binding {
+      ClassBinding::None => {}
+      ClassBinding::Immutable(name) => {
+        if scope.heap().env_has_binding(class_env, name)? {
+          return Err(VmError::InvariantViolation(
+            "class binding already exists in class environment",
+          ));
+        }
+        scope.env_create_immutable_binding(class_env, name)?;
       }
-      scope.env_create_immutable_binding(class_env, name)?;
+    }
+
+    // Evaluate `extends` (class heritage), if present.
+    let super_value = match extends {
+      None => Value::Undefined,
+      Some(extends_expr) => match async_eval_expr(evaluator, scope, extends_expr)? {
+        AsyncEval::Complete(v) => async_class_heritage_value_to_super_value(evaluator, scope, v)?,
+        AsyncEval::Suspend(mut suspend) => {
+          let binding_name = match binding {
+            ClassBinding::None => None,
+            ClassBinding::Immutable(name) => Some(name as *const str),
+          };
+
+          let push_res = async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::ClassAfterHeritage {
+              members: members as *const Vec<Node<ClassMember>>,
+              binding_name,
+              func_name: func_name as *const str,
+            },
+          );
+          if let Err(err) = push_res {
+            // Best-effort cleanup: tear down any rooted frames so we don't leak GC roots on OOM.
+            for mut frame in suspend.frames {
+              async_teardown_frame(scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+          return Ok(AsyncEval::Suspend(suspend));
+        }
+      },
+    };
+
+    async_eval_class_after_super(evaluator, scope, binding, func_name, members, super_value)
+  })();
+
+  match result {
+    Ok(AsyncEval::Complete(v)) => {
+      evaluator.strict = saved_strict;
+      Ok(AsyncEval::Complete(v))
+    }
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      // Preserve strict-mode semantics across the suspension; restore strictness only after the
+      // class definition evaluation completes.
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreStrict { saved_strict }) {
+        // Best-effort cleanup: tear down any rooted frames so we don't leak GC roots on OOM.
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        evaluator.strict = saved_strict;
+        return Err(err);
+      }
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.strict = saved_strict;
+      Err(err)
     }
   }
+}
+
+fn async_class_heritage_value_to_super_value(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  heritage_value: Value,
+) -> Result<Value, VmError> {
+  match heritage_value {
+    Value::Undefined => Err(throw_type_error(
+      evaluator.vm,
+      scope,
+      "Class extends value is not a constructor",
+    )?),
+    Value::Null => Ok(Value::Null),
+    Value::Object(_) => {
+      if !scope.heap().is_constructor(heritage_value)? {
+        return Err(throw_type_error(
+          evaluator.vm,
+          scope,
+          "Class extends value is not a constructor",
+        )?);
+      }
+      Ok(heritage_value)
+    }
+    _ => Err(throw_type_error(
+      evaluator.vm,
+      scope,
+      "Class extends value is not a constructor",
+    )?),
+  }
+}
+
+fn async_eval_class_after_super(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  binding: ClassBinding<'_>,
+  func_name: &str,
+  members: &Vec<Node<ClassMember>>,
+  super_value: Value,
+) -> Result<AsyncEval<Value>, VmError> {
+  let class_env = evaluator.env.lexical_env;
+
+  // Root `super_value` across class-constructor allocation so it cannot be collected even if it is
+  // not otherwise reachable (e.g. `class B extends (class {}) {}`).
+  let mut class_scope = scope.reborrow();
+  class_scope.push_root(super_value)?;
 
   // Find an explicit `constructor(...) { ... }` method, if present.
   let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
@@ -16276,7 +16382,7 @@ fn async_eval_class(
     };
     let closure_env = Some(evaluator.env.lexical_env);
 
-    let mut ctor_scope = scope.reborrow();
+    let mut ctor_scope = class_scope.reborrow();
     let name_string = ctor_scope.alloc_string("constructor")?;
     let func_obj = ctor_scope.alloc_ecma_function(
       code,
@@ -16312,13 +16418,8 @@ fn async_eval_class(
     None
   };
 
-  let super_value = if extends_null {
-    Value::Null
-  } else {
-    Value::Undefined
-  };
   let func_obj = evaluator.create_class_constructor_object(
-    scope,
+    &mut class_scope,
     func_name,
     ctor_length,
     ctor_body_func,
@@ -16329,10 +16430,24 @@ fn async_eval_class(
   // Create a persistent root for the class constructor object so it remains GC-safe across `await`
   // suspensions during computed member key evaluation.
   let func_root = {
-    let mut root_scope = scope.reborrow();
+    let mut root_scope = class_scope.reborrow();
     root_scope.push_root(Value::Object(func_obj))?;
     root_scope.heap_mut().add_root(Value::Object(func_obj))?
   };
+
+  // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
+  // object so `[[Construct]]` can implement derived `super()` semantics.
+  if let Some(body_func) = ctor_body_func {
+    if let Err(err) = class_scope.heap_mut().set_function_data(
+      body_func,
+      FunctionData::ClassConstructorBody {
+        class_constructor: func_obj,
+      },
+    ) {
+      class_scope.heap_mut().remove_root(func_root);
+      return Err(err);
+    }
+  }
 
   // Initialize the requested binding now that the class constructor object exists.
   if let Some(binding_name) = match binding {
@@ -16343,7 +16458,7 @@ fn async_eval_class(
       // Root the class constructor object during initialization so if the operation grows the root
       // stack (and triggers GC) we don't collect the class constructor before it becomes reachable
       // from its binding.
-      let mut init_scope = scope.reborrow();
+      let mut init_scope = class_scope.reborrow();
       init_scope.push_root(Value::Object(func_obj))?;
       init_scope
         .heap_mut()
@@ -16351,7 +16466,7 @@ fn async_eval_class(
       Ok(())
     })();
     if let Err(err) = init_res {
-      scope.heap_mut().remove_root(func_root);
+      class_scope.heap_mut().remove_root(func_root);
       return Err(err);
     }
   }
@@ -16359,13 +16474,12 @@ fn async_eval_class(
   // Extract the prototype object created by `make_constructor`.
   let (prototype_key, prototype_obj) =
     match (|| -> Result<(PropertyKey, GcObject), VmError> {
-      let mut class_scope = scope.reborrow();
-      class_scope.push_root(Value::Object(func_obj))?;
-      let prototype_key_s = class_scope.alloc_string("prototype")?;
-      class_scope.push_root(Value::String(prototype_key_s))?;
+      let mut proto_scope = class_scope.reborrow();
+      proto_scope.push_root(Value::Object(func_obj))?;
+      let prototype_key_s = proto_scope.alloc_string("prototype")?;
+      proto_scope.push_root(Value::String(prototype_key_s))?;
       let prototype_key = PropertyKey::from_string(prototype_key_s);
-      let Some(prototype_desc) = class_scope.heap().get_own_property(func_obj, prototype_key)?
-      else {
+      let Some(prototype_desc) = proto_scope.heap().get_own_property(func_obj, prototype_key)? else {
         return Err(VmError::InvariantViolation(
           "class constructor missing prototype property",
         ));
@@ -16384,32 +16498,21 @@ fn async_eval_class(
     })() {
       Ok(v) => v,
       Err(e) => {
-        scope.heap_mut().remove_root(func_root);
+        class_scope.heap_mut().remove_root(func_root);
         return Err(e);
       }
     };
 
-  // `extends null` means the prototype object inherits from `null` (not `%Object.prototype%`).
-  if extends_null {
-    if let Err(err) = scope
-      .heap_mut()
-      .object_set_prototype(prototype_obj, None)
-    {
-      scope.heap_mut().remove_root(func_root);
-      return Err(err);
-    }
-  }
-
   // Per ECMAScript, class constructors have a non-writable `prototype` property.
   let patch_res = (|| -> Result<(), VmError> {
-    let mut class_scope = scope.reborrow();
-    class_scope.push_root(Value::Object(func_obj))?;
-    class_scope.push_root(Value::Object(prototype_obj))?;
+    let mut patch_scope = class_scope.reborrow();
+    patch_scope.push_root(Value::Object(func_obj))?;
+    patch_scope.push_root(Value::Object(prototype_obj))?;
     match prototype_key {
-      PropertyKey::String(s) => class_scope.push_root(Value::String(s))?,
-      PropertyKey::Symbol(s) => class_scope.push_root(Value::Symbol(s))?,
+      PropertyKey::String(s) => patch_scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => patch_scope.push_root(Value::Symbol(s))?,
     };
-    class_scope
+    patch_scope
       .define_property_or_throw(
         func_obj,
         prototype_key,
@@ -16418,44 +16521,76 @@ fn async_eval_class(
           ..Default::default()
         },
       )
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut class_scope, err))?;
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut patch_scope, err))?;
     Ok(())
   })();
   if let Err(err) = patch_res {
-    scope.heap_mut().remove_root(func_root);
+    class_scope.heap_mut().remove_root(func_root);
+    return Err(err);
+  }
+
+  // Wire the instance prototype chain.
+  //
+  // - base class: `prototype.[[Prototype]] = %Object.prototype%`
+  // - `extends null`: `prototype.[[Prototype]] = null`
+  // - derived class: `prototype.[[Prototype]] = super.prototype`
+  let intr = evaluator
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let proto_set_res: Result<(), VmError> = (|| {
+    match super_value {
+      Value::Undefined => class_scope
+        .heap_mut()
+        .object_set_prototype(prototype_obj, Some(intr.object_prototype())),
+      Value::Null => class_scope.heap_mut().object_set_prototype(prototype_obj, None),
+      Value::Object(super_ctor) => {
+        let proto_parent: Option<GcObject> = {
+          // `Get(superCtor, "prototype")` (Proxy-aware / accessor-aware).
+          let mut proto_scope = class_scope.reborrow();
+          proto_scope.push_root(Value::Object(super_ctor))?;
+          let proto_key_s = proto_scope.alloc_string("prototype")?;
+          proto_scope.push_root(Value::String(proto_key_s))?;
+          let proto_key = PropertyKey::from_string(proto_key_s);
+          let proto_value = proto_scope
+            .ordinary_get_with_host_and_hooks(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              super_ctor,
+              proto_key,
+              Value::Object(super_ctor),
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut proto_scope, err))?;
+          match proto_value {
+            Value::Object(o) => Some(o),
+            Value::Null => None,
+            _ => {
+              return Err(throw_type_error(
+                evaluator.vm,
+                &mut proto_scope,
+                "Class extends value does not have a valid prototype property",
+              )?)
+            }
+          }
+        };
+        class_scope
+          .heap_mut()
+          .object_set_prototype(prototype_obj, proto_parent)
+      }
+      _ => Err(VmError::InvariantViolation(
+        "class constructor super value is not undefined, null, or object",
+      )),
+    }?;
+    Ok(())
+  })();
+  if let Err(err) = proto_set_res {
+    class_scope.heap_mut().remove_root(func_root);
     return Err(err);
   }
 
   // Define prototype and static methods.
-  match async_eval_class_members_from(evaluator, scope, members, 0, func_root)? {
-    AsyncEval::Complete(v) => Ok(AsyncEval::Complete(v)),
-    AsyncEval::Suspend(suspend) => Ok(AsyncEval::Suspend(suspend)),
-  }
-  })();
-
-  match result {
-    Ok(AsyncEval::Complete(v)) => {
-      evaluator.strict = saved_strict;
-      Ok(AsyncEval::Complete(v))
-    }
-    Ok(AsyncEval::Suspend(mut suspend)) => {
-      // Preserve strict-mode semantics across the suspension; restore strictness only after the
-      // class definition evaluation completes.
-      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreStrict { saved_strict }) {
-        // Best-effort cleanup: tear down any rooted frames so we don't leak GC roots on OOM.
-        for mut frame in suspend.frames {
-          async_teardown_frame(scope.heap_mut(), &mut frame);
-        }
-        evaluator.strict = saved_strict;
-        return Err(err);
-      }
-      Ok(AsyncEval::Suspend(suspend))
-    }
-    Err(err) => {
-      evaluator.strict = saved_strict;
-      Err(err)
-    }
-  }
+  async_eval_class_members_from(evaluator, &mut class_scope, members, 0, func_root)
 }
 
 fn async_eval_class_members_from(
@@ -23895,6 +24030,59 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "computed member after member frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::ClassAfterHeritage {
+        members,
+        binding_name,
+        func_name,
+      } => match state {
+        AsyncState::Expr(heritage_res) => {
+          let members = unsafe { &*members };
+          let func_name = unsafe { &*func_name };
+          let binding = match binding_name {
+            None => ClassBinding::None,
+            Some(name_ptr) => ClassBinding::Immutable(unsafe { &*name_ptr }),
+          };
+
+          match heritage_res {
+            Ok(heritage_value) => {
+              let super_value = match async_class_heritage_value_to_super_value(
+                evaluator,
+                scope,
+                heritage_value,
+              ) {
+                Ok(v) => v,
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  state = AsyncState::Expr(Err(err));
+                  continue;
+                }
+                Err(err) => return Err(err),
+              };
+
+              match async_eval_class_after_super(evaluator, scope, binding, func_name, members, super_value) {
+                Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+                Ok(AsyncEval::Suspend(mut suspend)) => {
+                  suspend.frames.append(&mut frames);
+                  return Ok(AsyncBodyResult::Await {
+                    await_value: suspend.await_value,
+                    frames: suspend.frames,
+                  });
+                }
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  state = AsyncState::Expr(Err(err))
+                }
+                Err(err) => return Err(err),
+              }
+            }
+            Err(err) => state = AsyncState::Expr(Err(err)),
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "class heritage frame received completion state",
           ))
         }
       },
