@@ -31,7 +31,6 @@ use std::alloc::alloc;
 
 #[cfg(test)]
 mod unicode_string_property;
-pub(crate) use unicode_string_property::UnicodeStringProperty;
 #[cfg(test)]
 pub(crate) use unicode_string_property::resolve_unicode_string_property;
 
@@ -5036,26 +5035,21 @@ impl<'a> Parser<'a> {
         Ok(Atom::Literal(0x0000))
       }
       x if x == (b'k' as u16) => {
-        let unicode_mode = self.flags.has_either_unicode_flag();
-        let before_lt = self.idx;
-        if self.eat(b'<' as u16) {
-          match self.parse_group_name(ctx) {
-            Ok(name) => Ok(Atom::NamedBackRef(name)),
-            Err(RegExpCompileError::Syntax(_)) if !unicode_mode => {
-              // Annex B: If `\k<...` is not a valid named backreference syntax, fall back to
-              // `IdentityEscape` (`\k`) and leave `<...` to be parsed as literal pattern text.
-              //
-              // This preserves compatibility for patterns like `/\k<4>/` and `/\k<a/`.
-              self.idx = before_lt;
-              Ok(Atom::Literal(x as u32))
+        // `\k<name>` is a named backreference in UnicodeMode (`/u` or `/v`).
+        //
+        // In non-UnicodeMode, `\k` is an identity escape for `k` (and does *not* consume a
+        // following `<...>`). This matches JS engines and test262 expectations like:
+        // `"x".split(/\\k<x>/) === ["x"]`.
+        if self.flags.has_either_unicode_flag() {
+          if self.eat(b'<' as u16) {
+            let name = self.parse_group_name(ctx)?;
+            Ok(Atom::NamedBackRef(name))
+          } else {
+            Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
             }
-            Err(e) => Err(e),
+            .into())
           }
-        } else if unicode_mode {
-          Err(RegExpSyntaxError {
-            message: "Invalid regular expression",
-          }
-          .into())
         } else {
           Ok(Atom::Literal(x as u32))
         }

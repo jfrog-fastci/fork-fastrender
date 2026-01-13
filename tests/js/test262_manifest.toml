@@ -1769,8 +1769,7 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/separator-regexp.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split does not yet implement RegExp separators (and regexp literal parsing is still incomplete for some patterns)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/separator-tostring-error.js"
