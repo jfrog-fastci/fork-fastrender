@@ -169,6 +169,43 @@ impl MediaClock for AudioClock {
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use super::AudioClock;
+  use std::sync::atomic::{AtomicU64, Ordering};
+  use std::sync::Arc;
+  use std::time::Duration;
+
+  #[test]
+  fn audio_clock_output_frames_time_48k() {
+    let frames_played = Arc::new(AtomicU64::new(48_000));
+    let clock = AudioClock::OutputFrames {
+      frames_played: frames_played.clone(),
+      sample_rate_hz: 48_000,
+    };
+
+    assert_eq!(clock.time(), Duration::from_secs(1));
+
+    frames_played.store(24_000, Ordering::Relaxed);
+    assert_eq!(clock.time(), Duration::from_millis(500));
+
+    frames_played.store(1, Ordering::Relaxed);
+    assert_eq!(clock.time(), Duration::from_nanos(20_833));
+  }
+
+  #[test]
+  fn audio_clock_output_frames_large_values_do_not_panic() {
+    let frames_played = Arc::new(AtomicU64::new(u64::MAX));
+    let clock = AudioClock::OutputFrames {
+      frames_played,
+      sample_rate_hz: 48_000,
+    };
+
+    // This should not panic in debug builds due to intermediate overflow.
+    let _ = clock.time();
+  }
+}
+
 #[derive(Debug, Error)]
 pub enum AudioError {
   // --------------------------------------------------------------------------

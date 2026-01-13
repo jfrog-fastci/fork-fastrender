@@ -4,16 +4,26 @@ const NANOS_PER_SEC: u128 = 1_000_000_000;
 
 /// Converts a frame count at the given sample rate into a [`Duration`].
 ///
-/// This uses integer arithmetic and rounds down to the nearest nanosecond.
+/// This uses integer arithmetic and rounds to the nearest nanosecond.
 pub fn frames_to_duration(sample_rate_hz: u32, frames: u64) -> Duration {
   if sample_rate_hz == 0 {
     return Duration::ZERO;
   }
-  let nanos = (frames as u128).saturating_mul(NANOS_PER_SEC) / (sample_rate_hz as u128);
-  if nanos > (u64::MAX as u128) {
-    Duration::from_nanos(u64::MAX)
+
+  let rate = sample_rate_hz as u128;
+  let total_nanos = (frames as u128)
+    .checked_mul(NANOS_PER_SEC)
+    .and_then(|v| v.checked_add(rate / 2))
+    .and_then(|v| v.checked_div(rate))
+    .unwrap_or(u128::MAX);
+
+  let secs = total_nanos / NANOS_PER_SEC;
+  let nanos = total_nanos % NANOS_PER_SEC;
+  if secs > (u64::MAX as u128) {
+    Duration::MAX
   } else {
-    Duration::from_nanos(nanos as u64)
+    // Safe: nanos is in [0, 1e9).
+    Duration::new(secs as u64, nanos as u32)
   }
 }
 
