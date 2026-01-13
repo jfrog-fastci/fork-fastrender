@@ -675,6 +675,13 @@ fn paint_tab_pin_ghost(
     return;
   }
 
+  // The ghost is purely visual: swallow pointer interactions so clicks/drags on the moving tab
+  // don't accidentally hit whatever happens to be under it mid-flight.
+  let blocker_id = ui.make_persistent_id(("tab_strip_pin_ghost_blocker", tab.id));
+  let _ = ui
+    .interact(rect, blocker_id, Sense::click_and_drag())
+    .on_hover_cursor(egui::CursorIcon::Default);
+
   let visuals = ui.style().visuals.clone();
   let bg = if is_active {
     visuals.widgets.active.bg_fill
