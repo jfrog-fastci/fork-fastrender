@@ -761,7 +761,7 @@ fn compiled_template_literal_coerces_null_and_undefined() -> Result<(), VmError>
 }
 
 #[test]
-fn compiled_unary_minus_bigint() -> Result<(), VmError> {
+fn compiled_hir_exec_unary_minus_bigint() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
     &mut heap,
@@ -793,7 +793,7 @@ fn compiled_unary_minus_bigint() -> Result<(), VmError> {
 }
 
 #[test]
-fn compiled_unary_plus_coerces_object() -> Result<(), VmError> {
+fn compiled_hir_exec_unary_plus_coerces_object() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
     &mut heap,
