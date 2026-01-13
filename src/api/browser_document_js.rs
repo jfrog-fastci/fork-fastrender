@@ -315,9 +315,17 @@ impl BrowserDocumentJs {
     Ok(event_loop.has_pending_animation_frame_callbacks())
   }
 
-  /// Whether there is any runnable work (tasks or microtasks) queued.
+  /// Whether there is any runnable work queued.
   ///
-  /// This does *not* consider future timers that are not yet due.
+  /// This includes:
+  /// - normal tasks,
+  /// - microtasks,
+  /// - externally queued tasks (via [`BrowserDocumentJs::external_task_queue_handle`]),
+  /// - pending `requestIdleCallback` callbacks (which are dispatched as tasks when the loop is idle).
+  ///
+  /// This does *not* consider:
+  /// - future timers that are not yet due, or
+  /// - pending `requestAnimationFrame` callbacks (rAF runs on the frame schedule, not as tasks).
   pub fn event_loop_is_idle(&self) -> Result<bool> {
     let event_loop = self.event_loop.as_ref().ok_or_else(|| {
       Error::Other(

@@ -7162,9 +7162,17 @@ impl BrowserTab {
     Ok(true)
   }
 
-  /// Whether the JS event loop currently has no runnable work (tasks or microtasks) queued.
+  /// Whether the JS event loop currently has no runnable work queued.
   ///
-  /// Note: this does *not* consider future timers that are not yet due.
+  /// This includes:
+  /// - normal tasks,
+  /// - microtasks,
+  /// - externally queued tasks (via [`BrowserTab::external_task_queue_handle`]),
+  /// - pending `requestIdleCallback` callbacks (which are dispatched as tasks when the loop is idle).
+  ///
+  /// Note: this does *not* consider:
+  /// - future timers that are not yet due, or
+  /// - pending `requestAnimationFrame` callbacks (rAF runs on the frame schedule, not as tasks).
   pub fn event_loop_is_idle(&self) -> bool {
     self.event_loop.is_idle()
   }

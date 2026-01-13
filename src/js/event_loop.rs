@@ -690,10 +690,13 @@ impl<Host: 'static> EventLoop<Host> {
     self.timers.len()
   }
 
-  /// Whether this event loop has no runnable tasks/microtasks and no future work scheduled.
+  /// Whether this event loop has no runnable work and no future work scheduled.
   ///
   /// This is stronger than [`EventLoop::is_idle`]: it also requires that no timers remain scheduled
   /// (even if due in the future) and that no `requestAnimationFrame` callbacks remain pending.
+  ///
+  /// Note: `EventLoop::is_idle` already includes externally queued tasks and pending
+  /// `requestIdleCallback` callbacks (the latter are dispatched as tasks when the loop is idle).
   ///
   /// Embeddings use this to deterministically detect when they can no longer make forward progress
   /// (for example, to fail module top-level await that never settles).
@@ -1328,7 +1331,8 @@ impl<Host: 'static> EventLoop<Host> {
   /// - draining the microtask queue when the event loop starts a microtask checkpoint, and
   /// - executing a single task (including its post-task microtask checkpoint).
   ///
-  /// The hook is **not** called when the event loop is already idle (no pending tasks/microtasks).
+  /// The hook is **not** called when the event loop is already idle (no runnable tasks/microtasks,
+  /// no pending idle callbacks, and no externally queued tasks).
   pub fn run_until_idle_with_hook(
     &mut self,
     host: &mut Host,
