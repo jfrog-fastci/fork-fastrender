@@ -4,6 +4,8 @@
 //! duplicating platform quirks.
 
 pub mod bench_limits;
+#[cfg(target_os = "macos")]
+pub mod macos_sandbox_exec;
 
 use std::path::Path;
 use std::sync::OnceLock;
