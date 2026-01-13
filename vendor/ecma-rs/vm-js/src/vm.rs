@@ -4008,6 +4008,20 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
+    // Async compiled functions can suspend and store an `AsyncContinuation` that clones the
+    // `RuntimeEnv` (including its persistent env root). In that case, the caller must NOT tear down
+    // `env` after `run_compiled_function` returns, otherwise the continuation will resume with an
+    // invalid environment root.
+    //
+    // Mirror `Vm::call_ecma_function`'s `is_async` handling so the compiled path can evolve to
+    // support async functions without changing call plumbing again.
+    let is_async = func
+      .script
+      .hir
+      .body(func.body)
+      .and_then(|body| body.function.as_ref())
+      .is_some_and(|f| f.async_ && !f.generator);
+
     let (this_mode, is_strict, realm, outer, bound_this, bound_new_target) = {
       let f = scope.heap().get_function(callee)?;
       (
@@ -4120,7 +4134,9 @@ impl Vm {
       args,
     );
 
-    env.teardown(scope.heap_mut());
+    if !is_async {
+      env.teardown(scope.heap_mut());
+    }
     result
   }
 
