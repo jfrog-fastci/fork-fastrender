@@ -1,8 +1,6 @@
 use std::process::Command;
 
-use fastrender::sandbox::macos::{
-  apply_renderer_sandbox, MacosSandboxMode, MacosSandboxStatus,
-};
+use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode, MacosSandboxStatus};
 
 #[test]
 fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
@@ -23,9 +21,7 @@ fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
       "unexpected macOS sandbox status when applying relaxed profile: {status:?}"
     );
     if matches!(status, MacosSandboxStatus::AlreadySandboxed) {
-      eprintln!(
-        "skipping fontdb sandbox test: process was already sandboxed (status={status:?})"
-      );
+      eprintln!("skipping fontdb sandbox test: process was already sandboxed (status={status:?})");
       return;
     }
 
@@ -45,9 +41,20 @@ fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
       stretch: fontdb::Stretch::Normal,
       style: fontdb::Style::Normal,
     };
+    let selected_face = db
+      .query(&query)
+      .expect("expected fontdb generic sans-serif query to resolve under relaxed sandbox");
+
+    // Ensure `fontdb` can actually load/read the selected face data under the sandbox. This helps
+    // catch cases where directory enumeration succeeds but font loading fails due to additional
+    // Seatbelt restrictions (e.g. file mapping).
+    let mut selected_face_data_len: Option<usize> = None;
+    db.with_face_data(selected_face, |data, _face_index| {
+      selected_face_data_len = Some(data.len());
+    });
     assert!(
-      db.query(&query).is_some(),
-      "expected fontdb generic sans-serif query to resolve under relaxed sandbox"
+      selected_face_data_len.unwrap_or(0) > 0,
+      "expected fontdb to load selected system font face data under relaxed sandbox"
     );
     return;
   }
