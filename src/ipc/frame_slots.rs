@@ -262,14 +262,27 @@ impl SharedMemory {
       .map_err(|_| Error::Other("shared memory too large for this platform".to_string()))?;
 
     // SAFETY: Name is NUL-terminated.
-    let fd = unsafe {
+    let mut fd = unsafe {
       libc::memfd_create(
         b"fastrender-frame-slot\0".as_ptr() as *const libc::c_char,
-        libc::MFD_CLOEXEC,
+        libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
       )
     };
     if fd < 0 {
-      return Err(Error::Io(io::Error::last_os_error()));
+      let err = io::Error::last_os_error();
+      // Older kernels may not support `MFD_ALLOW_SEALING`. Fall back so the seqpacket prototype can
+      // still run (but note that size-sealing will be best-effort below).
+      if err.raw_os_error() == Some(libc::EINVAL) {
+        fd = unsafe {
+          libc::memfd_create(
+            b"fastrender-frame-slot\0".as_ptr() as *const libc::c_char,
+            libc::MFD_CLOEXEC,
+          )
+        };
+      }
+      if fd < 0 {
+        return Err(Error::Io(io::Error::last_os_error()));
+      }
     }
 
     // SAFETY: `fd` is valid on success.
@@ -279,6 +292,18 @@ impl SharedMemory {
     let rc = unsafe { libc::ftruncate(owned.as_raw_fd(), size as libc::off_t) };
     if rc != 0 {
       return Err(Error::Io(io::Error::last_os_error()));
+    }
+
+    // Best-effort: prevent the renderer from shrinking/growing the slot (SIGBUS footgun). See
+    // `docs/ipc_linux_fd_passing.md` (seals checklist).
+    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
+    let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_ADD_SEALS, seals) };
+    if rc != 0 {
+      let err = io::Error::last_os_error();
+      match err.raw_os_error() {
+        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => {}
+        _ => return Err(Error::Io(err)),
+      }
     }
 
     Ok(Self { fd: owned, size: size_usize })
