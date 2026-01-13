@@ -97,6 +97,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 
 const SHMEM_ID_PREFIX: &str = "fastrender-shm-";
 const SHMEM_ID_RANDOM_BYTES: usize = 16; // 128 bits
+const MAX_SHMEM_ID_LEN: usize = 64;
 
 /// Generates a fresh shared-memory identifier suitable for POSIX `shm_open`.
 ///
@@ -454,6 +455,25 @@ fn posix_shm_name(id: &str) -> io::Result<CString> {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
       "posix shm id must not be empty",
+    ));
+  }
+  if id.len() > MAX_SHMEM_ID_LEN {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      format!(
+        "posix shm id too long: {} bytes (max {MAX_SHMEM_ID_LEN})",
+        id.len()
+      ),
+    ));
+  }
+  if !id
+    .as_bytes()
+    .iter()
+    .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+  {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "posix shm id must contain only ASCII [a-z0-9-]",
     ));
   }
   if id.as_bytes().iter().any(|b| *b == b'/' || *b == 0) {
