@@ -576,14 +576,22 @@ fn tab_search_overlay_ui(
                 let title = tab.display_title().to_string();
                 let secondary = tab_search_secondary_text(tab);
 
+                // Use an explicit per-tab widget id so the AccessKit node id remains stable even if
+                // the filtered matches list reorders while the overlay is open.
                 let row_id = egui::Id::new(("tab_search_row", tab.id));
-                let (rect, response) = ui.allocate_exact_size(
-                  egui::vec2(ui.available_width().max(0.0), row_height),
-                  egui::Sense::click(),
-                );
+                let (_, rect) =
+                  ui.allocate_space(egui::vec2(ui.available_width().max(0.0), row_height));
+                let response = ui.interact(rect, row_id, egui::Sense::click());
                 response.widget_info({
-                  let label = title.clone();
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                  let label = if secondary.trim().is_empty() {
+                    format!("Switch to tab: {title}")
+                  } else {
+                    format!("Switch to tab: {title} ({secondary})")
+                  };
+                  let selected = is_selected;
+                  move || {
+                    egui::WidgetInfo::selected(egui::WidgetType::Button, selected, label.clone())
+                  }
                 });
 
                 let hover_t = motion.animate_bool(
@@ -3874,6 +3882,45 @@ mod tests {
     }
   }
 
+  fn accesskit_update(output: &egui::FullOutput) -> &accesskit::TreeUpdate {
+    output.platform_output.accesskit_update.as_ref().expect(
+      "egui did not emit an AccessKit update. Ensure `ctx.enable_accesskit()` was called for the frame under test.",
+    )
+  }
+
+  fn accesskit_node_by_name<'a>(
+    update: &'a accesskit::TreeUpdate,
+    name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    let mut matches = update.nodes.iter().filter(|(_id, node)| {
+      node.name().unwrap_or("").trim() == name
+    });
+    let Some((id, node)) = matches.next() else {
+      let mut seen: Vec<String> = update
+        .nodes
+        .iter()
+        .filter_map(|(id, node)| {
+          let node_name = node.name().unwrap_or("").trim();
+          if node_name.is_empty() {
+            return None;
+          }
+          Some(format!("{}: {}", id.0.get(), node_name))
+        })
+        .collect();
+      seen.sort();
+      panic!("expected AccessKit node named {name:?}, got named nodes={seen:#?}");
+    };
+    assert!(
+      matches.next().is_none(),
+      "expected a unique AccessKit node named {name:?}, but multiple nodes matched"
+    );
+    (*id, node)
+  }
+
+  fn accesskit_node_selected(node: &accesskit::Node) -> bool {
+    node.is_selected()
+  }
+
   fn apply_close_tab_actions_for_test(
     ctx: &egui::Context,
     app: &mut BrowserAppState,
@@ -4409,6 +4456,119 @@ mod tests {
       ctx.memory(|mem| mem.has_focus(appearance_button_id)),
       "expected focus to return to appearance button after closing the popup"
     );
+  }
+
+  #[test]
+  fn tab_search_overlay_accesskit_row_labels_have_stable_node_ids_across_filtering() {
+    let mut app = BrowserAppState::new();
+    let mut tab_a = BrowserTabState::new(TabId(1), "https://alpha.example/a".to_string());
+    tab_a.title = Some("Alpha".to_string());
+    let mut tab_b = BrowserTabState::new(TabId(2), "https://beta.example/b".to_string());
+    tab_b.title = Some("Beta".to_string());
+    let mut tab_c = BrowserTabState::new(TabId(3), "https://gamma.example/c".to_string());
+    tab_c.title = Some("Gamma".to_string());
+    app.push_tab(tab_a, true);
+    app.push_tab(tab_b, false);
+    app.push_tab(tab_c, false);
+
+    app.chrome.tab_search.open = true;
+    app.chrome.tab_search.query = "".to_string();
+    app.chrome.tab_search.selected = 0;
+
+    let alpha_label = "Switch to tab: Alpha (alpha.example)";
+    let beta_label = "Switch to tab: Beta (beta.example)";
+    let gamma_label = "Switch to tab: Gamma (gamma.example)";
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // Frame 0: full tab list.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output0 = ctx.end_frame();
+    let names0 = a11y_test_util::accesskit_names_from_full_output(&output0);
+    let snapshot0 = a11y_test_util::accesskit_pretty_json_from_full_output(&output0);
+    for expected in [alpha_label, beta_label, gamma_label, "Search tabs"] {
+      assert!(
+        names0.iter().any(|n| n == expected),
+        "expected AccessKit name {expected:?} in tab search output.\n\nnames: {names0:#?}\n\nsnapshot:\n{snapshot0}"
+      );
+    }
+    assert!(
+      ctx.memory(|mem| mem.has_focus(super::tab_search_input_id())),
+      "expected tab search input to keep keyboard focus while overlay is open"
+    );
+
+    let update0 = accesskit_update(&output0);
+    let (beta_id_0, _beta_node_0) = accesskit_node_by_name(update0, beta_label);
+
+    // Frame 1: apply a query that filters down to Beta, moving it to row 0. The AccessKit node id
+    // should still be stable because the row id is keyed by tab id rather than row index.
+    app.chrome.tab_search.query = "beta".to_string();
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output1 = ctx.end_frame();
+    let update1 = accesskit_update(&output1);
+    let (beta_id_1, _beta_node_1) = accesskit_node_by_name(update1, beta_label);
+
+    assert_eq!(
+      beta_id_1, beta_id_0,
+      "expected stable AccessKit node ids for tab search rows across filtering.\n\nframe0:\n{}\n\nframe1:\n{}",
+      a11y_test_util::accesskit_pretty_json_from_full_output(&output0),
+      a11y_test_util::accesskit_pretty_json_from_full_output(&output1),
+    );
+  }
+
+  #[test]
+  fn tab_search_overlay_exposes_selected_row_via_accesskit_selected_state() {
+    let mut app = BrowserAppState::new();
+    let mut tab_a = BrowserTabState::new(TabId(1), "https://alpha.example/a".to_string());
+    tab_a.title = Some("Alpha".to_string());
+    let mut tab_b = BrowserTabState::new(TabId(2), "https://beta.example/b".to_string());
+    tab_b.title = Some("Beta".to_string());
+    let mut tab_c = BrowserTabState::new(TabId(3), "https://gamma.example/c".to_string());
+    tab_c.title = Some("Gamma".to_string());
+    app.push_tab(tab_a, true);
+    app.push_tab(tab_b, false);
+    app.push_tab(tab_c, false);
+
+    app.chrome.tab_search.open = true;
+    app.chrome.tab_search.query = "".to_string();
+
+    let alpha_label = "Switch to tab: Alpha (alpha.example)";
+    let beta_label = "Switch to tab: Beta (beta.example)";
+    let gamma_label = "Switch to tab: Gamma (gamma.example)";
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // Frame 0: selection starts at row 0.
+    app.chrome.tab_search.selected = 0;
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output0 = ctx.end_frame();
+    let update0 = accesskit_update(&output0);
+    assert!(accesskit_node_selected(accesskit_node_by_name(update0, alpha_label).1));
+    assert!(!accesskit_node_selected(accesskit_node_by_name(update0, beta_label).1));
+    assert!(!accesskit_node_selected(accesskit_node_by_name(update0, gamma_label).1));
+
+    // Frame 1: move selection to row 1.
+    app.chrome.tab_search.selected = 1;
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output1 = ctx.end_frame();
+    let update1 = accesskit_update(&output1);
+    assert!(!accesskit_node_selected(accesskit_node_by_name(update1, alpha_label).1));
+    assert!(accesskit_node_selected(accesskit_node_by_name(update1, beta_label).1));
+
+    // Frame 2: move selection to row 2.
+    app.chrome.tab_search.selected = 2;
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output2 = ctx.end_frame();
+    let update2 = accesskit_update(&output2);
+    assert!(!accesskit_node_selected(accesskit_node_by_name(update2, beta_label).1));
+    assert!(accesskit_node_selected(accesskit_node_by_name(update2, gamma_label).1));
   }
 
   #[test]
