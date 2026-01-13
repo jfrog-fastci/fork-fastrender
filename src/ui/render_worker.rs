@@ -378,6 +378,19 @@ fn should_emit_download_progress(
 const POST_NAV_JS_PUMP_MAX_TASKS: usize = 4;
 const POST_NAV_JS_PUMP_MAX_MICROTASKS: usize = 10_000;
 const POST_NAV_JS_PUMP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+
+// JS DOM event-dispatch pump
+// -----------------------------------------------------------------------------
+//
+// When JS event handlers mutate the DOM, the UI worker must:
+// - run a microtask checkpoint (Promises/queueMicrotask),
+// - and then schedule a repaint so the renderer DOM can be resynced from `dom2`.
+//
+// Keep the budgets extremely tight: pointer-move can dispatch events frequently, and untrusted pages
+// must not be able to hang the worker.
+const DOM_EVENT_JS_PUMP_MAX_TASKS: usize = 8;
+const DOM_EVENT_JS_PUMP_MAX_MICROTASKS: usize = 10_000;
+const DOM_EVENT_JS_PUMP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2);
 #[derive(Debug, Clone, Default)]
 struct FindInPageWorkerState {
   query: String,
@@ -3757,6 +3770,47 @@ impl BrowserRuntime {
     });
   }
 
+  fn pump_js_event_loop_after_dom_event_dispatch(
+    &mut self,
+    tab_id: TabId,
+    tab: &mut TabState,
+    generation_before_dispatch: u64,
+  ) {
+    let Some(js_tab) = tab.js_tab.as_mut() else {
+      return;
+    };
+    let cancel_snapshot = tab.cancel.snapshot_paint();
+    let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
+    let deadline = deadline_for(cancel_callback, Some(DOM_EVENT_JS_PUMP_TIMEOUT));
+    let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+
+    let run_limits = RunLimits {
+      max_tasks: DOM_EVENT_JS_PUMP_MAX_TASKS,
+      max_microtasks: DOM_EVENT_JS_PUMP_MAX_MICROTASKS,
+      max_wall_time: Some(DOM_EVENT_JS_PUMP_TIMEOUT),
+    };
+
+    let prev_generation = tab.js_dom_mutation_generation;
+    if let Err(err) = js_tab.run_event_loop_until_idle(run_limits) {
+      if self.debug_log_enabled {
+        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("js event-loop pump failed: {err}"),
+        });
+      }
+    }
+
+    let generation_after_dispatch = js_tab.dom().mutation_generation();
+    if generation_before_dispatch != prev_generation
+      || generation_after_dispatch != generation_before_dispatch
+    {
+      tab.js_dom_dirty = true;
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+    tab.js_dom_mutation_generation = generation_after_dispatch;
+  }
+
   fn handle_pointer_move(
     &mut self,
     tab_id: TabId,
@@ -3908,6 +3962,8 @@ impl BrowserRuntime {
     let Some(js_tab) = tab.js_tab.as_mut() else {
       return;
     };
+    let js_mutation_generation_before_dispatch = js_tab.dom().mutation_generation();
+    let mut dispatched_dom_event = false;
 
     let mouse_base = web_events::MouseEvent {
       client_x: mouse_client_coord(pos_css.0),
@@ -3965,6 +4021,7 @@ impl BrowserRuntime {
         mouse.related_target = related;
 
         if should_mouseout {
+          dispatched_dom_event = true;
           let _ = js_tab.dispatch_mouse_event(
             prev_node_id,
             "mouseout",
@@ -4047,6 +4104,7 @@ impl BrowserRuntime {
         if should_mouseleave {
           let mut mouse = mouse_base;
           mouse.related_target = related_for_leave;
+          dispatched_dom_event = true;
           let _ = js_tab.dispatch_mouse_event(
             node_id,
             "mouseleave",
@@ -4079,6 +4137,7 @@ impl BrowserRuntime {
         mouse.related_target = related;
 
         if should_mouseover {
+          dispatched_dom_event = true;
           let _ = js_tab.dispatch_mouse_event(
             new_node_id,
             "mouseover",
@@ -4107,6 +4166,7 @@ impl BrowserRuntime {
         if should_mouseenter {
           let mut mouse = mouse_base;
           mouse.related_target = related_for_enter;
+          dispatched_dom_event = true;
           let _ = js_tab.dispatch_mouse_event(
             node_id,
             "mouseenter",
@@ -4135,6 +4195,7 @@ impl BrowserRuntime {
     });
     if should_mousemove {
       if let Some(target_node_id) = current_target {
+        dispatched_dom_event = true;
         let _ = js_tab.dispatch_mouse_event(
           target_node_id,
           "mousemove",
@@ -4146,6 +4207,17 @@ impl BrowserRuntime {
           mouse_base,
         );
       }
+    }
+
+    if dispatched_dom_event {
+      // Release our mutable borrow of `tab.js_tab` before running the follow-up pump (which borrows
+      // it again).
+      drop(js_tab);
+      self.pump_js_event_loop_after_dom_event_dispatch(
+        tab_id,
+        tab,
+        js_mutation_generation_before_dispatch,
+      );
     }
   }
 
@@ -4206,6 +4278,9 @@ impl BrowserRuntime {
 
     if let Some(target_id) = target_id {
       let pointer_buttons = tab.pointer_buttons;
+      let js_mutation_generation_before_dispatch =
+        tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
+      let mut dispatched_dom_event = false;
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let target = js_dom_node_for_preorder_id(
           js_tab,
@@ -4215,38 +4290,44 @@ impl BrowserRuntime {
           &mut tab.js_dom_mapping,
         );
         if let Some(node_id) = target {
-           let mouse = web_events::MouseEvent {
-             client_x: mouse_client_coord(pos_css.0),
-             client_y: mouse_client_coord(pos_css.1),
-             button: mouse_event_button(button),
-             buttons: pointer_buttons,
-             detail: click_count as i32,
-             ctrl_key: modifiers.ctrl(),
-             shift_key: modifiers.shift(),
-             alt_key: modifiers.alt(),
-             meta_key: modifiers.meta(),
-             related_target: None,
-           };
-           if let Err(err) = js_tab.dispatch_mouse_event(
-             node_id,
-             "mousedown",
-             web_events::EventInit {
-               bubbles: true,
-               cancelable: true,
-               composed: false,
-             },
-             mouse,
-           ) {
-             if self.debug_log_enabled {
-               let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                 tab_id,
-                 line: format!("js mousedown event dispatch failed: {err}"),
-               });
-             }
-           }
-         }
-       }
-     }
+          dispatched_dom_event = true;
+          let mouse = web_events::MouseEvent {
+            client_x: mouse_client_coord(pos_css.0),
+            client_y: mouse_client_coord(pos_css.1),
+            button: mouse_event_button(button),
+            buttons: pointer_buttons,
+            detail: click_count as i32,
+            ctrl_key: modifiers.ctrl(),
+            shift_key: modifiers.shift(),
+            alt_key: modifiers.alt(),
+            meta_key: modifiers.meta(),
+            related_target: None,
+          };
+          if let Err(err) = js_tab.dispatch_mouse_event(
+            node_id,
+            "mousedown",
+            web_events::EventInit {
+              bubbles: true,
+              cancelable: true,
+              composed: false,
+            },
+            mouse,
+          ) {
+            if self.debug_log_enabled {
+              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                tab_id,
+                line: format!("js mousedown event dispatch failed: {err}"),
+              });
+            }
+          }
+        }
+      }
+      if dispatched_dom_event {
+        if let Some(before) = js_mutation_generation_before_dispatch {
+          self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
+        }
+      }
+    }
     if changed {
       // Preserve existing repaint behaviour for interaction-engine state changes.
       tab.cancel.bump_paint();
@@ -4276,6 +4357,9 @@ impl BrowserRuntime {
       let scroll = &tab.scroll_state;
       let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
       let pointer_buttons = tab.pointer_buttons;
+      let js_mutation_generation_before_dispatch =
+        tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
+      let mut dispatched_dom_event = false;
 
       let (target_id, target_element_id) = if tab.last_pointer_pos_css == Some(pos_css) {
         (
@@ -4314,6 +4398,7 @@ impl BrowserRuntime {
             &mut tab.js_dom_mapping,
           );
           if let Some(node_id) = target {
+            dispatched_dom_event = true;
             let mouse = web_events::MouseEvent {
               client_x: mouse_client_coord(pos_css.0),
               client_y: mouse_client_coord(pos_css.1),
@@ -4344,6 +4429,11 @@ impl BrowserRuntime {
               }
             }
           }
+        }
+      }
+      if dispatched_dom_event {
+        if let Some(before) = js_mutation_generation_before_dispatch {
+          self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
         }
       }
       return;
@@ -4577,6 +4667,9 @@ impl BrowserRuntime {
         }
       }
     }
+    let js_mutation_generation_before_dispatch =
+      tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
+    let mut dispatched_dom_event = false;
 
     if let Some(target_id) = mouseup_target {
       if let Some(js_tab) = tab.js_tab.as_mut() {
@@ -4589,6 +4682,7 @@ impl BrowserRuntime {
             &mut tab.js_dom_mapping,
           );
         if let Some(node_id) = target {
+          dispatched_dom_event = true;
           let mouse = web_events::MouseEvent {
             client_x: mouse_client_coord(pos_css.0),
             client_y: mouse_client_coord(pos_css.1),
@@ -4643,6 +4737,7 @@ impl BrowserRuntime {
         );
 
         if let Some(node_id) = target {
+          dispatched_dom_event = true;
           let mouse = web_events::MouseEvent {
             client_x: mouse_client_coord(pos_css.0),
             client_y: mouse_client_coord(pos_css.1),
@@ -4694,6 +4789,7 @@ impl BrowserRuntime {
               &mut tab.js_dom_mapping,
             );
           if let Some(node_id) = target {
+            dispatched_dom_event = true;
             let mouse = web_events::MouseEvent {
               client_x: mouse_client_coord(pos_css.0),
               client_y: mouse_client_coord(pos_css.1),
@@ -4746,14 +4842,15 @@ impl BrowserRuntime {
               &mut tab.js_dom_mapping_miss_logged,
               "submit",
             );
-          if let Some(submitter_node) = submitter_node {
-            if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node)
-            {
-              match js_tab.dispatch_submit_event(form_node) {
-                Ok(allowed) => default_allowed = allowed,
-                Err(err) => {
-                  if self.debug_log_enabled {
-                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+            if let Some(submitter_node) = submitter_node {
+              if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node)
+              {
+                dispatched_dom_event = true;
+                match js_tab.dispatch_submit_event(form_node) {
+                  Ok(allowed) => default_allowed = allowed,
+                  Err(err) => {
+                    if self.debug_log_enabled {
+                      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                       tab_id,
                       line: format!("js submit event dispatch failed: {err}"),
                     });
@@ -4763,6 +4860,12 @@ impl BrowserRuntime {
             }
           }
         }
+      }
+    }
+
+    if dispatched_dom_event {
+      if let Some(before) = js_mutation_generation_before_dispatch {
+        self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
       }
     }
 
@@ -5198,6 +5301,9 @@ impl BrowserRuntime {
     // If JS calls `preventDefault()`, report `default_prevented=true` so UIs can suppress the
     // default menu (matching browser behavior) while still clearing any pending context-menu state.
     let mut default_prevented = false;
+    let js_mutation_generation_before_dispatch =
+      tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
+    let mut dispatched_dom_event = false;
     if let Some(target_id) = hit_info.dispatch_target_id {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let target =
@@ -5214,6 +5320,7 @@ impl BrowserRuntime {
             "contextmenu",
           );
         if let Some(node_id) = target {
+          dispatched_dom_event = true;
           let mouse = web_events::MouseEvent {
             client_x: mouse_client_coord(pos_css.0),
             client_y: mouse_client_coord(pos_css.1),
@@ -5251,6 +5358,12 @@ impl BrowserRuntime {
             }
           }
         }
+      }
+    }
+
+    if dispatched_dom_event {
+      if let Some(before) = js_mutation_generation_before_dispatch {
+        self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
       }
     }
 
@@ -5874,6 +5987,9 @@ impl BrowserRuntime {
       }
 
       let mut default_allowed = true;
+      let js_mutation_generation_before_dispatch =
+        tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
+      let mut dispatched_dom_event = false;
 
       // Keyboard activation should dispatch a cancelable `"click"` event on the activated element
       // before performing its default action (navigation, open-in-new-tab, submit, ...).
@@ -5933,6 +6049,7 @@ impl BrowserRuntime {
             "click",
           );
           if let Some(node_id) = target {
+            dispatched_dom_event = true;
             match js_tab.dispatch_click_event(node_id) {
               Ok(allowed) => default_allowed = allowed,
               Err(err) => {
@@ -5995,6 +6112,7 @@ impl BrowserRuntime {
               );
             if let Some(source_node) = source_node {
               if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), source_node) {
+                dispatched_dom_event = true;
                 match js_tab.dispatch_submit_event(form_node) {
                   Ok(allowed) => default_allowed = allowed,
                   Err(err) => {
@@ -6009,6 +6127,12 @@ impl BrowserRuntime {
               }
             }
           }
+        }
+      }
+
+      if dispatched_dom_event {
+        if let Some(before) = js_mutation_generation_before_dispatch {
+          self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
         }
       }
 
