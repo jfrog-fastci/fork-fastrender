@@ -67,6 +67,10 @@ jobs:
         with:
           submodules: false
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/ci_check_no_merge_conflicts.sh
+
       - name: Ensure upstream expectations manifest exists
         id: manifest
         shell: bash
@@ -223,6 +227,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/ci_check_no_merge_conflicts.sh
 
       - name: Assert TypeScript conformance suite is present
         shell: bash
@@ -502,6 +510,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: false
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/ci_check_no_merge_conflicts.sh
 
       - name: Install Rust toolchain (vendor/ecma-rs)
         uses: dtolnay/rust-toolchain@master

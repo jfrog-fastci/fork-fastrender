@@ -50,6 +50,9 @@ jobs:
       - name: Init ecma-rs checkout (vendored/submodule compatibility)
         run: bash scripts/ci_init_ecma_rs_submodule.sh
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        run: bash scripts/ci_check_no_merge_conflicts.sh
+
       - name: Cache cargo registry (ecma-rs vm-js check)
         uses: actions/cache@v4
         with:
@@ -155,6 +158,9 @@ jobs:
 
       - name: Init ecma-rs checkout (vendored/submodule compatibility)
         run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        run: bash scripts/ci_check_no_merge_conflicts.sh
 
       - name: UTF-8 source-text API policy (ecma-rs)
         run: bash vendor/ecma-rs/scripts/check_utf8_apis.sh
@@ -311,6 +317,9 @@ jobs:
 
       - name: Init ecma-rs checkout (vendored/submodule compatibility)
         run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        run: bash scripts/ci_check_no_merge_conflicts.sh
 
       - name: Cache cargo registry (ecma-rs native macOS)
         uses: actions/cache@v4
