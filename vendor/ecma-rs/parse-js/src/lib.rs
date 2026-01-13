@@ -259,11 +259,17 @@ mod tests {
       err.typ,
       SyntaxErrorType::ExpectedSyntax("valid regular expression")
     );
+    let err = parse_with_options("let re = /]/v;", opts).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression")
+    );
 
     // In non-Unicode mode, Annex B permits treating `]` as a literal.
     parse_with_options("let re = /]/;", opts).unwrap();
 
     // Escaped `]` remains valid in Unicode mode.
     parse_with_options(r"let re = /\]/u;", opts).unwrap();
+    parse_with_options(r"let re = /\]/v;", opts).unwrap();
   }
 }
