@@ -1028,4 +1028,53 @@ fn live_range_replace_data_insertion_shifts_by_utf16_code_units() {
   // End of text shifts by +2 code units.
   assert_eq!(doc.range_start_offset(r).unwrap(), 6);
   assert_eq!(doc.range_end_offset(r).unwrap(), 6);
+
+#[test]
+fn live_range_insert_steps_updates_collapsed_range_offsets() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let a = doc.create_element("a", "");
+  let b = doc.create_element("b", "");
+  let c = doc.create_element("c", "");
+  doc.append_child(parent, a).unwrap();
+  doc.append_child(parent, b).unwrap();
+  doc.append_child(parent, c).unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, parent, 2).unwrap();
+  doc.range_set_end(range, parent, 2).unwrap();
+
+  // Insert at index 1 (before `b`); the collapsed boundary point at offset 2 should shift right.
+  let inserted = doc.create_element("x", "");
+  assert!(doc.insert_before(parent, inserted, Some(b)).unwrap());
+
+  assert_eq!(doc.range_start_offset(range).unwrap(), 3);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 3);
+}
+
+#[test]
+fn live_range_insert_steps_updates_range_offsets_span() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let a = doc.create_element("a", "");
+  let b = doc.create_element("b", "");
+  doc.append_child(parent, a).unwrap();
+  doc.append_child(parent, b).unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, parent, 1).unwrap();
+  doc.range_set_end(range, parent, 2).unwrap();
+
+  // Insert at index 0 (before `a`); both endpoints should shift right.
+  let inserted = doc.create_element("x", "");
+  assert!(doc.insert_before(parent, inserted, Some(a)).unwrap());
+
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 3);
 }
