@@ -14379,12 +14379,16 @@ pub fn regexp_prototype_source_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   // https://tc39.es/ecma262/#sec-get-regexp.prototype.source
+  // Note: vm-js does not currently switch `vm.intrinsics()` when calling cross-realm intrinsic
+  // functions. `RegExp.prototype.source` is specified in terms of SameValue comparisons against the
+  // *getter's* `%RegExp.prototype%` and must throw a TypeError from the getter's realm when invoked
+  // with an invalid cross-realm receiver (test262
+  // `built-ins/RegExp/prototype/source/cross-realm.js`).
   //
-  // Note: vm-js does not yet switch `vm.intrinsics()` when calling cross-realm intrinsic
-  // functions. Like the RegExp prototype flag getters, this accessor captures its realm's
-  // `%RegExp.prototype%` and `%TypeError.prototype%` in native slots so:
-  // - `get.call(%RegExp.prototype%)` returns `"(?:)"`, and
-  // - invalid receivers throw a TypeError from the getter's realm.
+  // To preserve correct semantics, the getter captures:
+  // - slot0: its realm `%RegExp.prototype%`
+  // - slot1: its realm `%TypeError.prototype%`
+  // in native slots during intrinsic installation.
   let slots = scope.heap().get_function_native_slots(callee)?;
   let Some(Value::Object(regexp_prototype)) = slots.get(0).copied() else {
     return Err(VmError::InvariantViolation(
@@ -14397,14 +14401,17 @@ pub fn regexp_prototype_source_get(
     ));
   };
 
+  // 1. Let R be the this value.
+  // 2. If Type(R) is not Object, throw a TypeError exception.
   let Value::Object(obj) = this else {
     let err =
       crate::error_object::new_error(scope, type_error_prototype, "TypeError", "expected object")?;
     return Err(VmError::Throw(err));
   };
 
-  // `%RegExp.prototype%` itself is not a RegExp exotic object in vm-js. Per spec, invoking the
-  // getter with `%RegExp.prototype%` as the receiver must return `"(?:)"` instead of throwing.
+  // 3. If R does not have an [[OriginalSource]] internal slot, then
+  //   a. If SameValue(R, %RegExpPrototype%) is true, return "(?:)".
+  //   b. Otherwise, throw a TypeError exception.
   if obj == regexp_prototype {
     let s = scope.alloc_string("(?:)")?;
     return Ok(Value::String(s));
@@ -27494,13 +27501,17 @@ mod regexp_unicode_sets_tests {
     Ok(())
   }
 
-  fn regexp_unicode_sets_getter(heap: &Heap, regexp_prototype: GcObject) -> Result<GcObject, VmError> {
+  fn regexp_prototype_getter(
+    heap: &Heap,
+    regexp_prototype: GcObject,
+    name: &str,
+  ) -> Result<GcObject, VmError> {
     let keys = heap.own_property_keys(regexp_prototype)?;
     for key in keys {
       let PropertyKey::String(s) = key else {
         continue;
       };
-      if heap.get_string(s)?.to_utf8_lossy() != "unicodeSets" {
+      if heap.get_string(s)?.to_utf8_lossy() != name {
         continue;
       }
       let Some(desc) = heap.object_get_own_property(regexp_prototype, &key)? else {
@@ -27508,18 +27519,18 @@ mod regexp_unicode_sets_tests {
       };
       let PropertyKind::Accessor { get, .. } = desc.kind else {
         return Err(VmError::InvariantViolation(
-          "RegExp.prototype.unicodeSets is not an accessor property",
+          "RegExp.prototype getter is not an accessor property",
         ));
       };
       let Value::Object(getter) = get else {
         return Err(VmError::InvariantViolation(
-          "RegExp.prototype.unicodeSets getter is not a function object",
+          "RegExp.prototype getter is not a function object",
         ));
       };
       return Ok(getter);
     }
     Err(VmError::InvariantViolation(
-      "RegExp.prototype.unicodeSets getter not found",
+      "RegExp.prototype getter not found",
     ))
   }
 
@@ -27532,11 +27543,11 @@ mod regexp_unicode_sets_tests {
     // registry but requiring builtins to remain realm-correct.
     let mut realm_a = Realm::new(&mut vm, &mut heap).unwrap();
     let intr_a = *realm_a.intrinsics();
-    let getter_a = regexp_unicode_sets_getter(&heap, intr_a.regexp_prototype()).unwrap();
+    let getter_a = regexp_prototype_getter(&heap, intr_a.regexp_prototype(), "unicodeSets").unwrap();
 
     let mut realm_b = Realm::new(&mut vm, &mut heap).unwrap();
     let intr_b = *realm_b.intrinsics();
-    let getter_b = regexp_unicode_sets_getter(&heap, intr_b.regexp_prototype()).unwrap();
+    let getter_b = regexp_prototype_getter(&heap, intr_b.regexp_prototype(), "unicodeSets").unwrap();
 
     // Same-realm receiver: returns undefined.
     {
@@ -27639,6 +27650,83 @@ mod regexp_unicode_sets_tests {
       Value::Bool(true),
       "split(/(?:)/v) must not split surrogate pairs on empty matches"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_prototype_source_cross_realm_uses_getter_realm() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let mut realm_a = Realm::new(&mut vm, &mut heap).unwrap();
+    let intr_a = *realm_a.intrinsics();
+    let getter_a = regexp_prototype_getter(&heap, intr_a.regexp_prototype(), "source").unwrap();
+
+    let mut realm_b = Realm::new(&mut vm, &mut heap).unwrap();
+    let intr_b = *realm_b.intrinsics();
+    let getter_b = regexp_prototype_getter(&heap, intr_b.regexp_prototype(), "source").unwrap();
+
+    // Same-realm receiver: returns "(?:)".
+    {
+      let mut scope = heap.scope();
+      let v = vm
+        .call_without_host(
+          &mut scope,
+          Value::Object(getter_a),
+          Value::Object(intr_a.regexp_prototype()),
+          &[],
+        )
+        .unwrap();
+      let Value::String(s) = v else {
+        panic!("expected RegExp.prototype.source on %RegExp.prototype% to return a string");
+      };
+      assert_eq!(scope.heap().get_string(s).unwrap().to_utf8_lossy(), "(?:)");
+    }
+
+    // Cross-realm receiver: throws a TypeError from the getter's realm (prototype check).
+    {
+      let mut scope = heap.scope();
+      let err = vm.call_without_host(
+        &mut scope,
+        Value::Object(getter_a),
+        Value::Object(intr_b.regexp_prototype()),
+        &[],
+      );
+      let VmError::ThrowWithStack { value, .. } = err.unwrap_err() else {
+        panic!("expected cross-realm source getter call to throw");
+      };
+      let Value::Object(err_obj) = value else {
+        panic!("thrown value is not an object");
+      };
+      assert_eq!(
+        scope.heap().object_prototype(err_obj).unwrap(),
+        Some(intr_a.type_error_prototype())
+      );
+    }
+
+    // Reverse direction: other realm getter throws other realm TypeError.
+    {
+      let mut scope = heap.scope();
+      let err = vm.call_without_host(
+        &mut scope,
+        Value::Object(getter_b),
+        Value::Object(intr_a.regexp_prototype()),
+        &[],
+      );
+      let VmError::ThrowWithStack { value, .. } = err.unwrap_err() else {
+        panic!("expected cross-realm source getter call to throw");
+      };
+      let Value::Object(err_obj) = value else {
+        panic!("thrown value is not an object");
+      };
+      assert_eq!(
+        scope.heap().object_prototype(err_obj).unwrap(),
+        Some(intr_b.type_error_prototype())
+      );
+    }
+
+    realm_a.teardown(&mut heap);
+    realm_b.teardown(&mut heap);
     Ok(())
   }
 }

@@ -6954,8 +6954,8 @@ impl Intrinsics {
         Ok(())
       };
 
-      patch_getter("source")?;
       patch_getter("hasIndices")?;
+      patch_getter("source")?;
       patch_getter("global")?;
       patch_getter("ignoreCase")?;
       patch_getter("multiline")?;
