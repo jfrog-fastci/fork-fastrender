@@ -353,13 +353,28 @@ fn omnibox_input_looks_like_url_trimmed(input: &str) -> bool {
   if input.eq_ignore_ascii_case("localhost") {
     return true;
   }
-  if parse_ip_literal(input).is_some() {
+
+  // Fast path: a dot almost always means a domain-like input (or an IPv4 literal), which the
+  // omnibox should treat as a URL.
+  if input.contains('.') {
     return true;
   }
-  if looks_like_host_port_without_scheme(input) || looks_like_bracketed_ipv6_host_port_without_scheme(input) {
+
+  // Without a dot, the remaining URL-like forms we care about are host:port and IPv6 literals.
+  // If there is no colon, there's nothing left to classify as a URL.
+  if !input.contains(':') && !input.starts_with('[') {
+    return false;
+  }
+
+  // Host:port (including bracketed IPv6 host:port).
+  if looks_like_host_port_without_scheme(input)
+    || looks_like_bracketed_ipv6_host_port_without_scheme(input)
+  {
     return true;
   }
-  input.contains('.')
+
+  // Finally, treat bare IPv6 literals as URLs.
+  parse_ip_literal(input).is_some()
 }
 
 /// Heuristic for deciding whether a user-typed omnibox string should be treated as a URL
@@ -498,6 +513,11 @@ fn https_url_from_ip_literal(ip: IpAddr) -> Result<String, String> {
 }
 
 fn has_explicit_scheme(input: &str) -> bool {
+  // Fast path: without a colon, there is no scheme separator.
+  let Some((scheme, _rest)) = input.split_once(':') else {
+    return false;
+  };
+
   // Treat obvious host:port values and IP literals as non-explicit-scheme inputs so they can be
   // handled like normal URLs in an omnibox.
   if looks_like_host_port_without_scheme(input)
@@ -508,9 +528,6 @@ fn has_explicit_scheme(input: &str) -> bool {
     return false;
   }
 
-  let Some((scheme, _rest)) = input.split_once(':') else {
-    return false;
-  };
   let bytes = scheme.as_bytes();
   if bytes.is_empty() {
     return false;
