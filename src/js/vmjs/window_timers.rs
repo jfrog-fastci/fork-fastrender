@@ -2122,9 +2122,13 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
       }
       let finish_err = hooks.finish(&mut *heap);
 
-      if callback_threw || finish_err.is_some() || result.is_err() {
-        // On error (or uncaught exception), cancel the interval and drop JS references to avoid
-        // repeated errors/leaks.
+      if finish_err.is_some() || result.is_err() {
+        // Only cancel intervals for *fatal* host errors (e.g. VM termination, hook failures, or
+        // failures to queue the uncaught `error` event task).
+        //
+        // When the callback throws a JS exception, we instead queue an uncaught `ErrorEvent` task
+        // and keep the interval running, matching browser semantics (`setInterval` is not
+        // automatically canceled by exceptions).
         event_loop.clear_interval(id);
         {
           let mut scope = heap.scope();
@@ -5284,6 +5288,73 @@ mod tests {
       }
     };
     assert_eq!(count, 3);
+    Ok(())
+  }
+
+  #[test]
+  fn interval_continues_after_uncaught_exception() -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(Arc::clone(&clock));
+    let mut host =
+      crate::js::WindowHost::new_with_event_loop(dom, "https://example.com/", event_loop)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__interval_ticks = 0;
+      globalThis.__interval_after_throw = 0;
+      globalThis.__interval_error_is_instance = false;
+      globalThis.__interval_error_message = "";
+      globalThis.__interval_onerror_called = false;
+      globalThis.__interval_onerror_message = "";
+
+      addEventListener("error", (e) => {
+        globalThis.__interval_error_is_instance = (e instanceof ErrorEvent);
+        globalThis.__interval_error_message = String(e && e.message);
+      });
+
+      globalThis.onerror = function (message) {
+        globalThis.__interval_onerror_called = true;
+        globalThis.__interval_onerror_message = String(message);
+        return true; // cancel default reporting
+      };
+
+      let threw = false;
+      let id = setInterval(() => {
+        globalThis.__interval_ticks++;
+        if (!threw) {
+          threw = true;
+          throw new Error("boom");
+        }
+        globalThis.__interval_after_throw++;
+        if (globalThis.__interval_after_throw === 2) {
+          clearInterval(id);
+        }
+      }, 10);
+      "#,
+    )?;
+
+    // Drive the event loop through a few interval ticks deterministically.
+    for _ in 0..3 {
+      clock.advance(Duration::from_millis(10));
+      assert_eq!(
+        host.run_until_idle(RunLimits::unbounded())?,
+        RunUntilIdleOutcome::Idle
+      );
+    }
+
+    let ok = host.exec_script(
+      r#"
+      globalThis.__interval_ticks === 3 &&
+      globalThis.__interval_after_throw === 2 &&
+      globalThis.__interval_error_is_instance === true &&
+      globalThis.__interval_error_message.includes("boom") &&
+      globalThis.__interval_onerror_called === true &&
+      globalThis.__interval_onerror_message.includes("boom")
+      "#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
     Ok(())
   }
 
