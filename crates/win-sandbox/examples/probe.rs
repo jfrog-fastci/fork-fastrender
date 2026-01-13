@@ -123,7 +123,9 @@ mod windows {
     process: OwnedHandle,
     pid: u32,
     mode: SandboxMode,
-    job: Job,
+    // Keep the job object alive for the lifetime of the process so kill-on-close/process limits
+    // remain enforced.
+    _job: Job,
     job_assigned: bool,
     used_breakaway_from_job: bool,
     // Keep relocated image directory alive while the process runs.
@@ -542,7 +544,7 @@ mod windows {
       process,
       pid: pi.dwProcessId,
       mode,
-      job,
+      _job: job,
       job_assigned,
       used_breakaway_from_job,
       _relocated_image_dir: None,
@@ -718,7 +720,8 @@ mod windows {
   }
 
   struct ProcThreadAttributeList {
-    buf: Vec<u64>,
+    // Keep the backing allocation alive for the lifetime of `ptr`.
+    _buf: Vec<u64>,
     ptr: LPPROC_THREAD_ATTRIBUTE_LIST,
   }
 
@@ -744,7 +747,7 @@ mod windows {
       if ok == 0 {
         return Err(io::Error::last_os_error());
       }
-      Ok(Self { buf, ptr })
+      Ok(Self { _buf: buf, ptr })
     }
 
     fn update(&mut self, attribute: usize, value: *mut c_void, size: usize) -> io::Result<()> {
