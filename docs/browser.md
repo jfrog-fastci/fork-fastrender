@@ -159,12 +159,13 @@ When running against arbitrary real-world pages, consider using the repo’s res
 FastRender is moving toward a multiprocess architecture where untrusted page content runs in a
 separate OS-sandboxed renderer process.
 
-Windows sandboxing details (AppContainer + Job Objects + restricted-token fallback) and the
-debug escape hatches live in [sandboxing.md](sandboxing.md).
+Windows sandboxing details (AppContainer + Job Objects + restricted-token fallback) and macOS
+Seatbelt notes (profiles + debugging) live in [sandboxing.md](sandboxing.md).
 
-Debugging note (Windows): you can temporarily disable the renderer OS sandbox with
-`FASTR_DISABLE_RENDERER_SANDBOX=1` (alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off`). This is **insecure**
-and prints a warning to stderr; see [sandboxing.md](sandboxing.md) for details.
+Debugging note: you can temporarily disable the renderer OS sandbox with
+`FASTR_DISABLE_RENDERER_SANDBOX=1` (platform aliases: `FASTR_WINDOWS_RENDERER_SANDBOX=off`,
+`FASTR_MACOS_RENDERER_SANDBOX=off`). This is **insecure** and prints a warning to stderr; see
+[sandboxing.md](sandboxing.md) for details.
 
 To debug Windows sandbox spawn failures, set `FASTR_LOG_SANDBOX=1` for verbose sandbox logs.
 
