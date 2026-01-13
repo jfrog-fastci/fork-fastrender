@@ -216,7 +216,6 @@ pub mod ipc;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod js;
-pub mod ipc;
 pub mod memory;
 pub mod multiprocess;
 pub mod net;
