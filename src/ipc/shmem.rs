@@ -19,6 +19,7 @@ pub use fastrender_shmem::{
 /// provides a simplified creation API for FastRender's IPC call sites.
 pub struct ShmemRegion {
   inner: fastrender_shmem::ShmemRegion,
+  handle: ShmemHandle,
 }
 
 impl ShmemRegion {
@@ -28,13 +29,13 @@ impl ShmemRegion {
   /// provides zeroed pages for fresh shared-memory objects, making this invariant explicit avoids
   /// leaking previous-process memory (or stale named-shm contents if a name is ever reused
   /// accidentally) to an untrusted renderer.
-  pub fn create(len: usize) -> io::Result<(Self, ShmemHandle)> {
+  pub fn create(len: usize) -> io::Result<Self> {
     #[cfg(unix)]
     {
       let (region, handle) = fastrender_shmem::ShmemRegion::create(ShmemBackend::default(), len)?;
-      let mut out = Self { inner: region };
+      let mut out = Self { inner: region, handle };
       out.as_bytes_mut().fill(0);
-      return Ok((out, handle));
+      return Ok(out);
     }
 
     #[cfg(not(unix))]
@@ -52,7 +53,10 @@ impl ShmemRegion {
     #[cfg(unix)]
     {
       let region = fastrender_shmem::ShmemRegion::map(handle)?;
-      return Ok(Self { inner: region });
+      return Ok(Self {
+        inner: region,
+        handle: handle.clone(),
+      });
     }
 
     #[cfg(not(unix))]
@@ -67,6 +71,10 @@ impl ShmemRegion {
 
   pub fn len(&self) -> usize {
     self.inner.len()
+  }
+
+  pub fn handle(&self) -> &ShmemHandle {
+    &self.handle
   }
 
   pub fn as_bytes(&self) -> &[u8] {
@@ -113,7 +121,7 @@ mod tests {
   #[cfg(unix)]
   #[test]
   fn shmem_region_create_zero_initializes() {
-    let (region, _handle) = ShmemRegion::create(128).expect("create shared memory region");
+    let region = ShmemRegion::create(128).expect("create shared memory region");
     assert!(
       region.as_bytes().iter().all(|b| *b == 0),
       "newly created shared-memory region should be zero-initialized"
