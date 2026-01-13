@@ -16040,7 +16040,9 @@ pub fn string_prototype_replace_all(
       };
       vec_try_extend_from_slice(&mut out, &rep_units, || vm.tick())?;
     } else {
-      let replace_s = replace_s.expect("replace string should be computed");
+      let Some(replace_s) = replace_s else {
+        return Err(VmError::InvariantViolation("replace string should be computed"));
+      };
       let captures = [pos, match_end];
       let rep_units = get_substitution(vm, &mut scope, s, replace_s, (pos, match_end), &captures, 1)?;
       vec_try_extend_from_slice(&mut out, &rep_units, || vm.tick())?;
