@@ -193,7 +193,11 @@ Additional (important) size limits that sit *on top* of framing:
 | Browser↔renderer control-message decode budget | 256 KiB | `RENDERER_IPC_DECODE_LIMIT_BYTES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) (`bincode_options().with_limit(...)`) |
 | Renderer IPC URL string max | 8 KiB | `MAX_URL_BYTES` / `UrlString` (`BoundedString`) in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
+| WebSocket URL bytes (renderer→network) | 8 KiB | `MAX_WEBSOCKET_URL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
+| WebSocket protocol count (renderer→network) | 32 | `MAX_WEBSOCKET_PROTOCOLS` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
+| WebSocket protocol string bytes (renderer→network) | 1 KiB | `MAX_WEBSOCKET_PROTOCOL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket message payload (renderer→network) | 4 MiB | `MAX_WEBSOCKET_MESSAGE_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
+| WebSocket close reason bytes (renderer→network) | 123 bytes | `MAX_WEBSOCKET_CLOSE_REASON_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket concurrent connections (per renderer, network-process side) | 256 | `NetworkWebSocketManagerLimits::max_active_per_renderer` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) |
 | WebSocket concurrent connections (global, network-process side) | 4096 | `NetworkWebSocketManagerLimits::max_active_total` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) |
 
@@ -383,6 +387,9 @@ Security invariants that must remain true (even before we migrate to `memfd`):
 
 - **Browser allocates shared buffers**; renderer should not be able to cause the browser to accept
   arbitrary files.
+- **Bounded buffer count:** the number of frame buffers is capped (`MAX_FRAME_BUFFERS = 8` in
+  [`src/ipc/frame_pool.rs`](../src/ipc/frame_pool.rs)). Keep this low so a compromised renderer
+  cannot induce unbounded mappings/FD/path state even if it can trigger pool recreation.
 - **Exact-size mapping:** after mapping, the receiver validates `mmap.len() == expected_len` and
   treats mismatches as protocol violations.
 - **Size caps:** frame buffer size is capped by pixmap policy (`MAX_PIXMAP_BYTES` in
