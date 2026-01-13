@@ -4734,6 +4734,10 @@ fn run_headless_smoke_mode(
     serde_json::to_string(&persisted_history).unwrap_or_else(|_| "<invalid>".to_string());
   println!("HEADLESS_HISTORY source={history_source} {history_json}");
 
+  // Seed the process-global about-page snapshot so trusted (in-process) about-page rendering sees
+  // the same bookmarks/history data that the windowed browser uses.
+  fastrender::ui::about_pages::set_about_snapshot_from_stores(&bookmarks_store, &history_store);
+
   // Keep the smoke test cheap and deterministic: when Rayon is allowed to auto-initialize its
   // global pool it may attempt to spawn one worker per detected CPU (which can be very large on
   // CI hosts). Explicitly pin the pool to a single thread unless the caller has overridden it.
@@ -4759,154 +4763,209 @@ fn run_headless_smoke_mode(
   let active_window_idx = session.active_window_index;
   let active_window = &session.windows[active_window_idx];
 
-  let renderer_backend = fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
-    "fastr-browser-headless-smoke-worker",
-  )?;
-
-  renderer_backend.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
-
-  let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
-  for _tab in &active_window.tabs {
-    let tab_id = TabId::new();
-    tab_ids.push(tab_id);
-    renderer_backend.send(UiToWorker::CreateTab {
-      tab_id,
-      // Do not start navigation until after the headless harness has applied viewport/DPR. This
-      // avoids a race where the worker begins rendering with its default (800x600, DPR=1) and only
-      // later receives the `ViewportChanged` message, which can make the smoke test slow/flaky on
-      // debug builds / constrained CI.
-      initial_url: None,
-      cancel: CancelGens::new(),
-    })?;
-  }
-
   let active_idx = active_window
     .active_tab_index
-    .min(tab_ids.len().saturating_sub(1));
-  let active_tab_id = tab_ids[active_idx];
-  renderer_backend.send(UiToWorker::ViewportChanged {
-    tab_id: active_tab_id,
-    viewport_css: VIEWPORT_CSS,
-    dpr: DPR,
-  })?;
-  renderer_backend.send(UiToWorker::SetActiveTab {
-    tab_id: active_tab_id,
-  })?;
-  if let Some(tab) = active_window.tabs.get(active_idx) {
-    renderer_backend.send(UiToWorker::Navigate {
-      tab_id: active_tab_id,
-      url: tab.url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })?;
-  }
+    .min(active_window.tabs.len().saturating_sub(1));
+  let active_url = active_window
+    .tabs
+    .get(active_idx)
+    .map(|t| t.url.as_str())
+    .unwrap_or(fastrender::ui::about_pages::ABOUT_NEWTAB);
 
-  // Close the UI→worker channel so the worker thread exits after completing the above messages.
-  renderer_backend.shutdown();
+  // Test hook: simulate the renderer worker being disabled/unavailable. When this is enabled, the
+  // headless smoke path should still succeed for trusted `about:` pages.
+  let worker_disabled = std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE_DISABLE_WORKER")
+    .is_some_and(|v| !v.is_empty());
 
-  let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
-  let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
-  let mut frames_seen: u32 = 0;
+  let (pixmap_w, pixmap_h, viewport_css, dpr) =
+    if fastrender::ui::about_pages::is_about_url(active_url) {
+      // Trusted about: rendering: do not spawn the renderer worker and do not send any navigation
+      // messages. This keeps bookmarks/history data in the browser process.
+      let mut renderer = fastrender::FastRender::new()?;
+      renderer.set_base_url(fastrender::ui::about_pages::ABOUT_BASE_URL.to_string());
+      let html = fastrender::ui::about_pages::html_for_about_url(active_url).unwrap_or_else(|| {
+        fastrender::ui::about_pages::error_page_html(
+          "Unknown about page",
+          &format!("Unknown URL: {active_url}"),
+          None,
+        )
+      });
+      let pixmap = renderer.render_html_with_options(
+        &html,
+        fastrender::RenderOptions::new()
+          .with_viewport(VIEWPORT_CSS.0, VIEWPORT_CSS.1)
+          .with_device_pixel_ratio(DPR),
+      )?;
+      let pixmap_px = (pixmap.width(), pixmap.height());
+      if pixmap_px != (expected_pixmap_w, expected_pixmap_h) {
+        return Err(
+          format!(
+            "unexpected pixmap size from trusted about renderer: got {}x{}, expected {}x{}",
+            pixmap_px.0, pixmap_px.1, expected_pixmap_w, expected_pixmap_h
+          )
+          .into(),
+        );
+      }
+      (pixmap_px.0, pixmap_px.1, VIEWPORT_CSS, DPR)
+    } else {
+      if worker_disabled {
+        return Err(format!(
+          "renderer worker disabled, but active URL is not an about: page ({active_url})"
+        )
+        .into());
+      }
 
-  match renderer_watchdog_timeout {
-    Some(timeout) => {
-      let deadline = Instant::now() + timeout;
-      while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match renderer_backend.recv_timeout(remaining) {
-          Ok(WorkerToUi::FrameReady {
-            tab_id: msg_tab,
-            frame,
-          }) if msg_tab == active_tab_id => {
-            let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
-            frames_seen += 1;
-            last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
-            if frame.viewport_css == VIEWPORT_CSS
-              && (frame.dpr - DPR).abs() <= 0.01
-              && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
-            {
-              smoke_summary = last_frame_meta;
-              break;
+      let renderer_backend = fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
+        "fastr-browser-headless-smoke-worker",
+      )?;
+
+      renderer_backend.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
+
+      let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
+      for _tab in &active_window.tabs {
+        let tab_id = TabId::new();
+        tab_ids.push(tab_id);
+        renderer_backend.send(UiToWorker::CreateTab {
+          tab_id,
+          // Do not start navigation until after the headless harness has applied viewport/DPR. This
+          // avoids a race where the worker begins rendering with its default (800x600, DPR=1) and only
+          // later receives the `ViewportChanged` message, which can make the smoke test slow/flaky on
+          // debug builds / constrained CI.
+          initial_url: None,
+          cancel: CancelGens::new(),
+        })?;
+      }
+
+      let active_idx = active_window
+        .active_tab_index
+        .min(tab_ids.len().saturating_sub(1));
+      let active_tab_id = tab_ids[active_idx];
+      renderer_backend.send(UiToWorker::ViewportChanged {
+        tab_id: active_tab_id,
+        viewport_css: VIEWPORT_CSS,
+        dpr: DPR,
+      })?;
+      renderer_backend.send(UiToWorker::SetActiveTab {
+        tab_id: active_tab_id,
+      })?;
+      if let Some(tab) = active_window.tabs.get(active_idx) {
+        renderer_backend.send(UiToWorker::Navigate {
+          tab_id: active_tab_id,
+          url: tab.url.clone(),
+          reason: NavigationReason::TypedUrl,
+        })?;
+      }
+
+      // Close the UI→worker channel so the worker thread exits after completing the above messages.
+      renderer_backend.shutdown();
+
+      let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
+      let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
+      let mut frames_seen: u32 = 0;
+
+      match renderer_watchdog_timeout {
+        Some(timeout) => {
+          let deadline = Instant::now() + timeout;
+          while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match renderer_backend.recv_timeout(remaining) {
+              Ok(WorkerToUi::FrameReady {
+                tab_id: msg_tab,
+                frame,
+              }) if msg_tab == active_tab_id => {
+                let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
+                frames_seen += 1;
+                last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
+                if frame.viewport_css == VIEWPORT_CSS
+                  && (frame.dpr - DPR).abs() <= 0.01
+                  && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
+                {
+                  smoke_summary = last_frame_meta;
+                  break;
+                }
+              }
+              Ok(_) => {}
+              Err(RecvTimeoutError::Timeout) => break,
+              Err(RecvTimeoutError::Disconnected) => {
+                return Err("headless smoke worker disconnected before FrameReady".into());
+              }
             }
           }
-          Ok(_) => {}
-          Err(RecvTimeoutError::Timeout) => break,
-          Err(RecvTimeoutError::Disconnected) => {
-            return Err("headless smoke worker disconnected before FrameReady".into());
+        }
+        None => loop {
+          match renderer_backend.recv() {
+            Ok(WorkerToUi::FrameReady {
+              tab_id: msg_tab,
+              frame,
+            }) if msg_tab == active_tab_id => {
+              let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
+              frames_seen += 1;
+              last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
+              if frame.viewport_css == VIEWPORT_CSS
+                && (frame.dpr - DPR).abs() <= 0.01
+                && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
+              {
+                smoke_summary = last_frame_meta;
+                break;
+              }
+            }
+            Ok(_) => {}
+            Err(_) => {
+              return Err("headless smoke worker disconnected before FrameReady".into());
+            }
           }
-        }
+        },
       }
-    }
-    None => loop {
-      match renderer_backend.recv() {
-        Ok(WorkerToUi::FrameReady {
-          tab_id: msg_tab,
-          frame,
-        }) if msg_tab == active_tab_id => {
-          let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
-          frames_seen += 1;
-          last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
-          if frame.viewport_css == VIEWPORT_CSS
-            && (frame.dpr - DPR).abs() <= 0.01
-            && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
-          {
-            smoke_summary = last_frame_meta;
-            break;
-          }
-        }
-        Ok(_) => {}
-        Err(_) => {
-          return Err("headless smoke worker disconnected before FrameReady".into());
-        }
-      }
-    },
-  }
 
-  let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
-    let hint = match last_frame_meta {
-      Some((w, h, viewport, dpr)) => format!(
-        " (saw {frames_seen} FrameReady; last was viewport_css={viewport:?} dpr={dpr} pixmap_px={w}x{h})"
-      ),
-      None => " (saw no FrameReady messages)".to_string(),
+      let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
+        let hint = match last_frame_meta {
+          Some((w, h, viewport, dpr)) => format!(
+            " (saw {frames_seen} FrameReady; last was viewport_css={viewport:?} dpr={dpr} pixmap_px={w}x{h})"
+          ),
+          None => " (saw no FrameReady messages)".to_string(),
+        };
+        return Err(
+          match renderer_watchdog_timeout {
+            Some(timeout) => format!(
+              "timed out after {timeout:?} waiting for WorkerToUi::FrameReady matching viewport_css={VIEWPORT_CSS:?} dpr={DPR} pixmap_px={expected_pixmap_w}x{expected_pixmap_h}{hint}"
+            ),
+            None => format!(
+              "headless smoke worker exited before producing a matching WorkerToUi::FrameReady (watchdog disabled){hint}"
+            ),
+          }
+          .into(),
+        );
+      };
+
+      if viewport_css != VIEWPORT_CSS {
+        return Err(
+          format!(
+            "unexpected viewport_css from FrameReady: got {:?}, expected {:?}",
+            viewport_css, VIEWPORT_CSS
+          )
+          .into(),
+        );
+      }
+      if pixmap_w != expected_pixmap_w || pixmap_h != expected_pixmap_h {
+        return Err(
+          format!(
+            "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
+            pixmap_w, pixmap_h, expected_pixmap_w, expected_pixmap_h
+          )
+          .into(),
+        );
+      }
+      if (dpr - DPR).abs() > 0.01 {
+        return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
+      }
+
+      match renderer_backend.join() {
+        Ok(()) => {}
+        Err(_) => return Err("headless smoke worker panicked".into()),
+      }
+
+      (pixmap_w, pixmap_h, viewport_css, dpr)
     };
-    return Err(
-      match renderer_watchdog_timeout {
-        Some(timeout) => format!(
-          "timed out after {timeout:?} waiting for WorkerToUi::FrameReady matching viewport_css={VIEWPORT_CSS:?} dpr={DPR} pixmap_px={expected_pixmap_w}x{expected_pixmap_h}{hint}"
-        ),
-        None => format!(
-          "headless smoke worker exited before producing a matching WorkerToUi::FrameReady (watchdog disabled){hint}"
-        ),
-      }
-      .into(),
-    );
-  };
-
-  if viewport_css != VIEWPORT_CSS {
-    return Err(
-      format!(
-        "unexpected viewport_css from FrameReady: got {:?}, expected {:?}",
-        viewport_css, VIEWPORT_CSS
-      )
-      .into(),
-    );
-  }
-  if pixmap_w != expected_pixmap_w || pixmap_h != expected_pixmap_h {
-    return Err(
-      format!(
-        "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
-        pixmap_w, pixmap_h, expected_pixmap_w, expected_pixmap_h
-      )
-      .into(),
-    );
-  }
-  if (dpr - DPR).abs() > 0.01 {
-    return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
-  }
-
-  match renderer_backend.join() {
-    Ok(()) => {}
-    Err(_) => return Err("headless smoke worker panicked".into()),
-  }
 
   session.did_exit_cleanly = true;
   if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
@@ -4930,11 +4989,6 @@ fn run_headless_smoke_mode(
     );
   }
 
-  let active_url = active_window
-    .tabs
-    .get(active_idx)
-    .map(|t| t.url.as_str())
-    .unwrap_or(fastrender::ui::about_pages::ABOUT_NEWTAB);
   println!(
     "HEADLESS_SMOKE_OK source={source_label} active_url={active_url} viewport_css={}x{} dpr={:.1} pixmap_px={}x{}",
     viewport_css.0, viewport_css.1, dpr, pixmap_w, pixmap_h
@@ -6811,6 +6865,14 @@ struct App {
   last_page_upload_at: Option<std::time::Instant>,
   /// When to request the next redraw to retry a rate-limited page upload.
   next_page_upload_redraw: Option<std::time::Instant>,
+  /// In-process renderer used for `about:` pages.
+  ///
+  /// `about:` pages can surface sensitive browser state (bookmarks/history), so they are rendered
+  /// in the trusted browser process instead of being forwarded to the (eventually sandboxed)
+  /// renderer worker.
+  trusted_about_renderer: Option<fastrender::FastRender>,
+  /// Tracks the `about:` URL that each tab texture was last rendered for.
+  trusted_about_rendered_urls: std::collections::HashMap<fastrender::ui::TabId, String>,
 
   /// Rect of the central content panel (in egui points) from the last painted frame.
   ///
@@ -7634,6 +7696,8 @@ impl App {
       max_pending_frame_bytes: max_pending_frame_bytes_from_env(),
       last_page_upload_at: None,
       next_page_upload_redraw: None,
+      trusted_about_renderer: None,
+      trusted_about_rendered_urls: std::collections::HashMap::new(),
       content_rect_points: None,
       page_rect_points: None,
       page_viewport_css: None,
@@ -8448,6 +8512,30 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       }
       other => other,
     };
+
+    // `about:` pages can depend on sensitive browser state (bookmarks/history). Do not send them to
+    // the renderer worker; they are rendered in-process by the browser UI.
+    let msg = match msg {
+      UiToWorker::CreateTab {
+        tab_id,
+        initial_url: Some(url),
+        cancel,
+      } if fastrender::ui::about_pages::is_about_url(&url) => UiToWorker::CreateTab {
+        tab_id,
+        initial_url: None,
+        cancel,
+      },
+      UiToWorker::NewTab { tab_id, initial_url: Some(url) }
+        if fastrender::ui::about_pages::is_about_url(&url) =>
+      {
+        UiToWorker::NewTab {
+          tab_id,
+          initial_url: None,
+        }
+      }
+      other => other,
+    };
+
     // If we're about to change which tab/document is active, discard any coalesced scroll delta so
     // it can't be flushed against the wrong target later in the frame.
     if matches!(
@@ -8589,7 +8677,134 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       }
     }
 
+    match &msg {
+      UiToWorker::Navigate { tab_id, url, .. }
+        if fastrender::ui::about_pages::is_about_url(url) =>
+      {
+        // Invalidate any cached `about:` frame for this tab so the trusted renderer repaints on the
+        // next UI redraw.
+        self.trusted_about_rendered_urls.remove(tab_id);
+        self.window.request_redraw();
+        return Ok(());
+      }
+      UiToWorker::NavigateRequest { tab_id, request, .. }
+        if fastrender::ui::about_pages::is_about_url(request.url.as_str()) =>
+      {
+        self.trusted_about_rendered_urls.remove(tab_id);
+        self.window.request_redraw();
+        return Ok(());
+      }
+      _ => {}
+    }
+
     self.renderer_backend.send(msg)
+  }
+
+  fn ensure_trusted_about_renderer(&mut self) -> Option<&mut fastrender::FastRender> {
+    if self.trusted_about_renderer.is_none() {
+      match fastrender::FastRender::new() {
+        Ok(renderer) => {
+          self.trusted_about_renderer = Some(renderer);
+        }
+        Err(err) => {
+          eprintln!("failed to create trusted about: renderer: {err}");
+          return None;
+        }
+      }
+    }
+    self.trusted_about_renderer.as_mut()
+  }
+
+  fn render_trusted_about_page(
+    &mut self,
+    tab_id: fastrender::ui::TabId,
+    url: &str,
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) {
+    use fastrender::ui::messages::{ScrollMetrics, WorkerToUi};
+
+    let Some(renderer) = self.ensure_trusted_about_renderer() else {
+      return;
+    };
+
+    // Keep relative URL resolution consistent with the worker's about-page handling.
+    renderer.set_base_url(fastrender::ui::about_pages::ABOUT_BASE_URL.to_string());
+
+    let html = fastrender::ui::about_pages::html_for_about_url(url).unwrap_or_else(|| {
+      fastrender::ui::about_pages::error_page_html(
+        "Unknown about page",
+        &format!("Unknown URL: {url}"),
+        None,
+      )
+    });
+
+    let pixmap = match renderer.render_html_with_options(
+      &html,
+      fastrender::RenderOptions::new()
+        .with_viewport(viewport_css.0, viewport_css.1)
+        .with_device_pixel_ratio(dpr),
+    ) {
+      Ok(pixmap) => pixmap,
+      Err(err) => {
+        eprintln!("trusted about: render failed for {url}: {err}");
+        return;
+      }
+    };
+
+    // Apply the rendered frame into the shared app state model so chrome state (loading spinner,
+    // scrollbars, etc) stays coherent with worker-rendered pages.
+    let scroll_state = fastrender::scroll::ScrollState::default();
+    let scroll_metrics = ScrollMetrics {
+      viewport_css,
+      scroll_css: (0.0, 0.0),
+      bounds_css: fastrender::scroll::ScrollBounds {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 0.0,
+        max_y: 0.0,
+      },
+      content_css: (viewport_css.0 as f32, viewport_css.1 as f32),
+    };
+
+    let update = self.browser_state.apply_worker_msg(WorkerToUi::FrameReady {
+      tab_id,
+      frame: fastrender::ui::RenderedFrame {
+        pixmap,
+        viewport_css,
+        dpr,
+        scroll_state,
+        scroll_metrics,
+        wants_ticks: false,
+      },
+    });
+
+    if let Some(frame_ready) = update.frame_ready {
+      if self.browser_state.tab(frame_ready.tab_id).is_some() {
+        self.pending_frame_uploads.push(frame_ready);
+        self.pending_frame_uploads.evict_to_budget(
+          self.max_pending_frame_bytes,
+          self.browser_state.active_tab_id(),
+        );
+        // `flush_pending_frame_uploads` already ran at the start of this UI frame; flush again so
+        // the newly rendered pixmap becomes visible immediately.
+        self.flush_pending_frame_uploads();
+      }
+    }
+
+    // Mark navigation as committed so the chrome stops showing a loading spinner. `about:` pages do
+    // not currently participate in worker-owned history state, so report back/forward as false.
+    let _ = self.browser_state.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: url.to_string(),
+      title: None,
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    self
+      .trusted_about_rendered_urls
+      .insert(tab_id, url.to_string());
   }
 
   fn update_effective_pixels_per_point(&mut self) {
@@ -9365,6 +9580,36 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     };
     if let fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } = &msg {
       self.perf_navigation_started(*tab_id, url);
+    }
+
+    // `about:` pages are rendered in the trusted browser process. Once a tab is showing an about
+    // page, ignore any worker messages that would mutate the visible page state (stale frames from
+    // an older navigation, viewport relayouts, etc).
+    //
+    // Note: We intentionally do *not* ignore unrelated messages like download progress; those can
+    // still be relevant even if the tab is currently on an internal page.
+    let should_ignore_for_trusted_about = match &msg {
+      fastrender::ui::WorkerToUi::FrameReady { tab_id, .. }
+      | fastrender::ui::WorkerToUi::NavigationStarted { tab_id, .. }
+      | fastrender::ui::WorkerToUi::NavigationCommitted { tab_id, .. }
+      | fastrender::ui::WorkerToUi::NavigationFailed { tab_id, .. }
+      | fastrender::ui::WorkerToUi::Stage { tab_id, .. }
+      | fastrender::ui::WorkerToUi::LoadingState { tab_id, .. }
+      | fastrender::ui::WorkerToUi::ScrollStateUpdated { tab_id, .. }
+      | fastrender::ui::WorkerToUi::HoverChanged { tab_id, .. }
+      | fastrender::ui::WorkerToUi::FindResult { tab_id, .. }
+      | fastrender::ui::WorkerToUi::Favicon { tab_id, .. } => self
+        .browser_state
+        .tab(*tab_id)
+        .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+        .is_some_and(fastrender::ui::about_pages::is_about_url),
+      _ => false,
+    };
+    if should_ignore_for_trusted_about {
+      return WorkerMessageResult {
+        request_redraw: false,
+        history_changed: false,
+      };
     }
 
     // UI-only side effects that depend on the raw message before the shared reducer consumes it.
@@ -13881,8 +14126,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           // position.
           let egui_hover_pos = self.egui_ctx.input(|i| i.pointer.hover_pos());
           // Winit 0.28 does not expose a stable cross-platform cursor-position query API on
-          // `Window`. Fall back to egui's tracked hover position; if it's not available we treat
-          // the cursor position as unknown and conservatively avoid focusing the page.
+          // `Window`, so if egui's hover position isn't available we treat the cursor position as
+          // unknown and conservatively avoid focusing the page.
           let resolved = resolve_cursor_pos_points_for_mouse_input(
             egui_hover_pos,
             None,
@@ -15466,6 +15711,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.pending_frame_uploads.remove_tab(tab_id);
           self.next_media_wakeup.remove(&tab_id);
           self.last_media_wakeup_tick.remove(&tab_id);
+          self.trusted_about_rendered_urls.remove(&tab_id);
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
@@ -15570,6 +15816,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.pending_frame_uploads.remove_tab(tab_id);
           self.next_media_wakeup.remove(&tab_id);
           self.last_media_wakeup_tick.remove(&tab_id);
+          self.trusted_about_rendered_urls.remove(&tab_id);
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
@@ -15651,6 +15898,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             self.pending_frame_uploads.remove_tab(closed_tab_id);
             self.next_media_wakeup.remove(&closed_tab_id);
             self.last_media_wakeup_tick.remove(&closed_tab_id);
+            self.trusted_about_rendered_urls.remove(&closed_tab_id);
             if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
               tex.destroy(&mut self.egui_renderer);
             }
@@ -15702,6 +15950,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             self.pending_frame_uploads.remove_tab(closed_tab_id);
             self.next_media_wakeup.remove(&closed_tab_id);
             self.last_media_wakeup_tick.remove(&closed_tab_id);
+            self.trusted_about_rendered_urls.remove(&closed_tab_id);
             if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
               tex.destroy(&mut self.egui_renderer);
             }
@@ -16705,6 +16954,42 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           );
         });
         return;
+      }
+
+      // Trusted about: rendering: render `about:` pages locally in the browser process so we never
+      // forward bookmarks/history data to the renderer worker.
+      let trusted_about_url = self
+        .browser_state
+        .tab(active_tab)
+        .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+        .filter(|url| fastrender::ui::about_pages::is_about_url(url))
+        .map(str::to_string);
+
+      if let Some(url) = trusted_about_url {
+        let clamp = self.browser_limits.clamp_viewport_and_dpr(viewport_css, dpr);
+        let rendered_for_url = self
+          .trusted_about_rendered_urls
+          .get(&active_tab)
+          .is_some_and(|prev| prev == &url);
+        let meta_matches = self
+          .browser_state
+          .tab(active_tab)
+          .and_then(|tab| tab.latest_frame_meta.as_ref())
+          .is_some_and(|meta| {
+            meta.viewport_css == clamp.viewport_css && (meta.dpr - clamp.dpr).abs() <= 0.01
+          });
+        let has_texture = self.tab_textures.contains_key(&active_tab);
+        let loading = self
+          .browser_state
+          .tab(active_tab)
+          .is_some_and(|tab| tab.loading);
+
+        if !rendered_for_url || !meta_matches || !has_texture || loading {
+          self.render_trusted_about_page(active_tab, &url, clamp.viewport_css, clamp.dpr);
+        }
+      } else {
+        // If the tab is no longer on an about: page, discard any cached about-render metadata.
+        self.trusted_about_rendered_urls.remove(&active_tab);
       }
 
       // Best-effort popup UX: when a native wheel scroll happens outside an open picker/dropdown,

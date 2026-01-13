@@ -7785,6 +7785,18 @@ pub fn spawn_browser_ui_worker(
   std::sync::mpsc::Receiver<WorkerToUi>,
   std::thread::JoinHandle<()>,
 )> {
+  // Test hook used by the `browser --headless-smoke` integration harness to simulate the renderer
+  // worker being unavailable. When this env var is set, callers that *require* the worker should
+  // fail fast, while trusted in-process `about:` rendering paths should continue to work.
+  if std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE_DISABLE_WORKER")
+    .is_some_and(|v| !v.is_empty())
+  {
+    return Err(std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "renderer worker disabled by FASTR_TEST_BROWSER_HEADLESS_SMOKE_DISABLE_WORKER",
+    ));
+  }
+
   let handle = spawn_browser_worker_with_name(name)
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
   Ok((handle.tx, handle.rx, handle.join))
