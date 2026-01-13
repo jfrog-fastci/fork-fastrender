@@ -11,9 +11,14 @@
 //!   renderer with gigabytes of text.
 //!
 //! Policy:
-//! - Clipboard text is deterministically truncated to [`MAX_CLIPBOARD_TEXT_BYTES`] bytes.
-//! - Truncation always happens on a UTF-8 character boundary (so the result is valid UTF-8).
-//! - Call sites should apply the clamp at the UI↔worker boundary in *both* directions.
+//! - Clipboard payloads crossing the UI↔worker boundary must be bounded to
+//!   [`MAX_CLIPBOARD_TEXT_BYTES`] bytes.
+//! - When truncation is desired, it must happen on a UTF-8 character boundary (so the result is
+//!   valid UTF-8).
+//! - The windowed `browser` front-end currently **drops** oversized renderer→browser clipboard
+//!   payloads (so it never calls OS clipboard APIs with attacker-controlled huge strings).
+//! - Call sites should clamp at the UI↔worker boundary in *both* directions (renderer→browser and
+//!   browser→renderer).
 
 /// Maximum bytes allowed for a clipboard text payload crossing the UI↔worker boundary.
 ///
