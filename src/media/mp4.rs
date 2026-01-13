@@ -879,4 +879,59 @@ mod tests {
       );
     }
   }
-}
+
+  #[test]
+  fn seek_uses_sorted_index_when_pts_non_monotonic() {
+    // Synthetic "B-frame" style non-monotonic PTS in decode order.
+    //
+    // Decode order sample indices: 0, 1, 2
+    // PTS order: 0ns (0), 1000ns (2), 2000ns (1)
+    let pts_ns_by_sample = vec![0_u64, 2_000, 1_000];
+    let pts_index = build_pts_index(&pts_ns_by_sample);
+    assert!(
+      matches!(pts_index, PtsIndex::Sorted { .. }),
+      "non-monotonic PTS must build a sorted seek index"
+    );
+
+    let samples = vec![
+      Mp4Sample {
+        offset: 0,
+        size: 0,
+        dts_ticks: 0,
+        duration_ticks: 0,
+        is_sync: true,
+      },
+      Mp4Sample {
+        offset: 0,
+        size: 0,
+        dts_ticks: 0,
+        duration_ticks: 0,
+        is_sync: true,
+      },
+      Mp4Sample {
+        offset: 0,
+        size: 0,
+        dts_ticks: 0,
+        duration_ticks: 0,
+        is_sync: true,
+      },
+    ];
+
+    let mut track = Mp4Track {
+      timescale: 1,
+      samples,
+      pts_ns_by_sample,
+      pts_index,
+      next_sample: 0,
+      last_seek_method: None,
+    };
+
+    track.seek(1_000);
+    assert_eq!(track.last_seek_method(), Some(SeekMethod::SortedBinarySearch));
+    assert_eq!(
+      track.next_sample(),
+      2,
+      "seek should choose sample with the smallest PTS >= target"
+    );
+  }
+} 
