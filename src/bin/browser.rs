@@ -5563,7 +5563,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if request_redraw {
               win.app.schedule_worker_redraw(std::time::Instant::now());
             }
-
             // Clear the per-window pending bit now that we've drained the current batch, then
             // re-check the queue for any messages that arrived during the drain.
             //
@@ -5602,7 +5601,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               &global_history,
             );
             history_autosave_send_scheduler.mark_dirty();
-
             for (id, win) in windows.iter_mut() {
               if *id != window_id {
                 win.app
@@ -5617,7 +5615,93 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .record_visit(delta.url.clone(), delta.title.clone());
                 }
               }
-              win.app.window.request_redraw();
+
+              let omnibox_has_visited_suggestions = win.app.browser_state.chrome.omnibox.open
+                && win
+                  .app
+                  .browser_state
+                  .chrome
+                  .omnibox
+                  .suggestions
+                  .iter()
+                  .any(|s| {
+                    s.source == fastrender::ui::OmniboxSuggestionSource::Url(
+                      fastrender::ui::OmniboxUrlSource::Visited,
+                    )
+                  });
+
+              if omnibox_has_visited_suggestions {
+                let input = win.app.browser_state.chrome.address_bar_text.as_str();
+                let ctx = fastrender::ui::OmniboxContext {
+                  open_tabs: &win.app.browser_state.tabs,
+                  closed_tabs: &win.app.browser_state.closed_tabs,
+                  visited: &win.app.browser_state.visited,
+                  active_tab_id: win.app.browser_state.active_tab_id(),
+                  bookmarks: Some(&win.app.bookmarks),
+                  remote_search_suggest: Some(&win.app.browser_state.chrome.remote_search_cache),
+                };
+                let suggestions =
+                  fastrender::ui::build_omnibox_suggestions_default_limit(&ctx, input);
+                win.app.browser_state.chrome.omnibox.suggestions = suggestions;
+                win
+                  .app
+                  .browser_state
+                  .chrome
+                  .omnibox
+                  .last_built_for_input
+                  .clone_from(&win.app.browser_state.chrome.address_bar_text);
+                win.app.browser_state.chrome.omnibox.last_built_remote_fetched_at =
+                  win.app.browser_state.chrome.remote_search_cache.fetched_at;
+                if win.app.browser_state.chrome.omnibox.suggestions.is_empty() {
+                  win.app.browser_state.chrome.omnibox.open = false;
+                }
+                if win
+                  .app
+                  .browser_state
+                  .chrome
+                  .omnibox
+                  .selected
+                  .is_some_and(|idx| idx >= win.app.browser_state.chrome.omnibox.suggestions.len())
+                {
+                  win.app.browser_state.chrome.omnibox.selected = None;
+                  win.app.browser_state.chrome.omnibox.original_input = None;
+                }
+              } else if !win.app.browser_state.chrome.omnibox.open {
+                // Invalidate cached suggestions built from the old history store so the next time
+                // the user opens the omnibox dropdown it rebuilds against the updated global
+                // history/visited state.
+                win.app.browser_state.chrome.omnibox.reset();
+              }
+
+              let about_history_visible = win
+                .app
+                .browser_state
+                .active_tab()
+                .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+                .is_some_and(|url| {
+                  let base = url
+                    .trim()
+                    .split(|c| matches!(c, '?' | '#'))
+                    .next()
+                    .unwrap_or(url);
+                  base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
+                    || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_HISTORY)
+                    || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
+                });
+              if about_history_visible {
+                if let Some(active_tab) = win.app.browser_state.active_tab_id() {
+                  win.app.trusted_about_rendered_urls.remove(&active_tab);
+                }
+              }
+
+              let needs_redraw_due_to_history = *id == window_id
+                || Some(*id) == active_window_id
+                || win.app.history_panel_open
+                || omnibox_has_visited_suggestions
+                || about_history_visible;
+              if needs_redraw_due_to_history {
+                win.app.window.request_redraw();
+              }
             }
           }
         }
@@ -6216,7 +6300,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Synchronize profile state (bookmarks/history) across all windows.
-    let mut history_update: Option<(fastrender::ui::GlobalHistoryStore, bool)> = None;
+    let mut history_update: Option<(WindowId, fastrender::ui::GlobalHistoryStore, bool)> = None;
 
     // Safety net: if a code path mutates `BookmarkStore` without recording deltas, the multi-window
     // sync would otherwise miss the update. Detect revision changes and fall back to a full-store
@@ -6252,12 +6336,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
-    for win in windows.values_mut() {
+    for (id, win) in windows.iter_mut() {
       if win.app.profile_history_dirty {
         win.app.profile_history_dirty = false;
         let flush = win.app.profile_history_flush_requested;
         win.app.profile_history_flush_requested = false;
-        history_update = Some((win.app.browser_state.history.clone(), flush));
+        history_update = Some((*id, win.app.browser_state.history.clone(), flush));
       }
     }
 
@@ -6309,21 +6393,116 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       );
 
       for (id, win) in windows.iter_mut() {
-        if *id == source_window_id && !force_full_sync {
-          win.app.last_synced_bookmarks_revision = win.app.bookmarks.revision();
-          win.app.window.request_redraw();
-          continue;
-        }
+        let is_source_window = *id == source_window_id;
+        let is_active_window = Some(*id) == active_window_id;
 
-        if force_full_sync || dirty_bookmark_windows.contains(id) {
-          win.app.bookmarks = global_bookmarks.clone();
-        } else if let Err(err) = win.app.bookmarks.apply_deltas(&deltas) {
-          eprintln!("failed to apply bookmark deltas to window {id:?}: {err:?}");
-          win.app.bookmarks = global_bookmarks.clone();
+        let omnibox_has_bookmark_suggestions = win.app.browser_state.chrome.omnibox.open
+          && win
+            .app
+            .browser_state
+            .chrome
+            .omnibox
+            .suggestions
+            .iter()
+            .any(|s| {
+              s.source
+                == fastrender::ui::OmniboxSuggestionSource::Url(
+                  fastrender::ui::OmniboxUrlSource::Bookmark,
+                )
+            });
+
+        let active_url_for_star = win
+          .app
+          .browser_state
+          .active_tab()
+          .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()))
+          .map(str::to_string);
+        let star_state_before = active_url_for_star
+          .as_deref()
+          .is_some_and(|url| win.app.bookmarks.contains_url(url));
+
+        if !is_source_window || force_full_sync {
+          if force_full_sync || dirty_bookmark_windows.contains(id) {
+            win.app.bookmarks = global_bookmarks.clone();
+          } else if let Err(err) = win.app.bookmarks.apply_deltas(&deltas) {
+            eprintln!("failed to apply bookmark deltas to window {id:?}: {err:?}");
+            win.app.bookmarks = global_bookmarks.clone();
+          }
         }
 
         win.app.last_synced_bookmarks_revision = win.app.bookmarks.revision();
-        win.app.window.request_redraw();
+
+        let star_state_after = active_url_for_star
+          .as_deref()
+          .is_some_and(|url| win.app.bookmarks.contains_url(url));
+        let star_state_changed = star_state_before != star_state_after;
+
+        let about_bookmarks_visible = win
+          .app
+          .browser_state
+          .active_tab()
+          .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+          .is_some_and(|url| {
+            let base = url
+              .trim()
+              .split(|c| matches!(c, '?' | '#'))
+              .next()
+              .unwrap_or(url);
+            base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
+              || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
+          });
+        if about_bookmarks_visible {
+          if let Some(active_tab) = win.app.browser_state.active_tab_id() {
+            win.app.trusted_about_rendered_urls.remove(&active_tab);
+          }
+        }
+
+        if omnibox_has_bookmark_suggestions {
+          let input = win.app.browser_state.chrome.address_bar_text.as_str();
+          let ctx = fastrender::ui::OmniboxContext {
+            open_tabs: &win.app.browser_state.tabs,
+            closed_tabs: &win.app.browser_state.closed_tabs,
+            visited: &win.app.browser_state.visited,
+            active_tab_id: win.app.browser_state.active_tab_id(),
+            bookmarks: Some(&win.app.bookmarks),
+            remote_search_suggest: Some(&win.app.browser_state.chrome.remote_search_cache),
+          };
+          let suggestions = fastrender::ui::build_omnibox_suggestions_default_limit(&ctx, input);
+          win.app.browser_state.chrome.omnibox.suggestions = suggestions;
+          win
+            .app
+            .browser_state
+            .chrome
+            .omnibox
+            .last_built_for_input
+            .clone_from(&win.app.browser_state.chrome.address_bar_text);
+          win.app.browser_state.chrome.omnibox.last_built_remote_fetched_at =
+            win.app.browser_state.chrome.remote_search_cache.fetched_at;
+          if win.app.browser_state.chrome.omnibox.suggestions.is_empty() {
+            win.app.browser_state.chrome.omnibox.open = false;
+          }
+          if win
+            .app
+            .browser_state
+            .chrome
+            .omnibox
+            .selected
+            .is_some_and(|idx| idx >= win.app.browser_state.chrome.omnibox.suggestions.len())
+          {
+            win.app.browser_state.chrome.omnibox.selected = None;
+            win.app.browser_state.chrome.omnibox.original_input = None;
+          }
+        }
+
+        let needs_redraw_due_to_bookmarks = is_source_window
+          || is_active_window
+          || win.app.bookmarks_panel_open
+          || star_state_changed
+          || omnibox_has_bookmark_suggestions
+          || about_bookmarks_visible;
+        if needs_redraw_due_to_bookmarks {
+          win.app.window.request_redraw();
+        }
       }
 
       if let Some(tx) = profile_autosave_tx.as_ref() {
@@ -6350,7 +6529,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // History UI mutations (clear/delete) are currently synchronized via full-store snapshot.
     // Visit recording (`NavigationCommitted`) uses incremental deltas in the WorkerWake path above
     // to avoid cloning/reseeding the full history store on every navigation.
-    if let Some((new_history, flush)) = history_update {
+    if let Some((history_source_id, new_history, flush)) = history_update {
       global_history = new_history;
       history_autosave_send_scheduler.mark_dirty();
       fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
@@ -6369,12 +6548,93 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           let _ = done_rx.recv_timeout(std::time::Duration::from_millis(200));
         }
       }
-      for win in windows.values_mut() {
+      for (id, win) in windows.iter_mut() {
         win.app.browser_state.history = global_history.clone();
         win.app.browser_state.visited.clear();
         win.app.browser_state.seed_visited_from_history();
-        win.app.browser_state.chrome.omnibox.reset();
-        win.app.window.request_redraw();
+
+        let omnibox_has_visited_suggestions = win.app.browser_state.chrome.omnibox.open
+          && win
+            .app
+            .browser_state
+            .chrome
+            .omnibox
+            .suggestions
+            .iter()
+            .any(|s| {
+              s.source == fastrender::ui::OmniboxSuggestionSource::Url(
+                fastrender::ui::OmniboxUrlSource::Visited,
+              )
+            });
+
+        if omnibox_has_visited_suggestions {
+          let input = win.app.browser_state.chrome.address_bar_text.as_str();
+          let ctx = fastrender::ui::OmniboxContext {
+            open_tabs: &win.app.browser_state.tabs,
+            closed_tabs: &win.app.browser_state.closed_tabs,
+            visited: &win.app.browser_state.visited,
+            active_tab_id: win.app.browser_state.active_tab_id(),
+            bookmarks: Some(&win.app.bookmarks),
+            remote_search_suggest: Some(&win.app.browser_state.chrome.remote_search_cache),
+          };
+          let suggestions = fastrender::ui::build_omnibox_suggestions_default_limit(&ctx, input);
+          win.app.browser_state.chrome.omnibox.suggestions = suggestions;
+          win
+            .app
+            .browser_state
+            .chrome
+            .omnibox
+            .last_built_for_input
+            .clone_from(&win.app.browser_state.chrome.address_bar_text);
+          win.app.browser_state.chrome.omnibox.last_built_remote_fetched_at =
+            win.app.browser_state.chrome.remote_search_cache.fetched_at;
+          if win.app.browser_state.chrome.omnibox.suggestions.is_empty() {
+            win.app.browser_state.chrome.omnibox.open = false;
+          }
+          if win
+            .app
+            .browser_state
+            .chrome
+            .omnibox
+            .selected
+            .is_some_and(|idx| idx >= win.app.browser_state.chrome.omnibox.suggestions.len())
+          {
+            win.app.browser_state.chrome.omnibox.selected = None;
+            win.app.browser_state.chrome.omnibox.original_input = None;
+          }
+        } else if !win.app.browser_state.chrome.omnibox.open {
+          win.app.browser_state.chrome.omnibox.reset();
+        }
+
+        let about_history_visible = win
+          .app
+          .browser_state
+          .active_tab()
+          .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+          .is_some_and(|url| {
+            let base = url
+              .trim()
+              .split(|c| matches!(c, '?' | '#'))
+              .next()
+              .unwrap_or(url);
+            base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
+              || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_HISTORY)
+              || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
+          });
+        if about_history_visible {
+          if let Some(active_tab) = win.app.browser_state.active_tab_id() {
+            win.app.trusted_about_rendered_urls.remove(&active_tab);
+          }
+        }
+
+        let needs_redraw_due_to_history = *id == history_source_id
+          || Some(*id) == active_window_id
+          || win.app.history_panel_open
+          || omnibox_has_visited_suggestions
+          || about_history_visible;
+        if needs_redraw_due_to_history {
+          win.app.window.request_redraw();
+        }
       }
     }
 
@@ -8994,7 +9254,6 @@ impl PerfWindowLog {
       }
     }
   }
-
 }
 
 #[cfg(feature = "browser_ui")]
