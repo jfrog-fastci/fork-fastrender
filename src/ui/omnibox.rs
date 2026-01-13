@@ -191,18 +191,8 @@ impl OmniboxProvider for AboutPagesProvider {
       Cow::Borrowed(input)
     };
 
-    const PAGES: &[(&str, &str)] = &[
-      (about_pages::ABOUT_NEWTAB, "New Tab"),
-      (about_pages::ABOUT_HISTORY, "History"),
-      (about_pages::ABOUT_BOOKMARKS, "Bookmarks"),
-      (about_pages::ABOUT_HELP, "Help"),
-      (about_pages::ABOUT_VERSION, "Version"),
-      (about_pages::ABOUT_GPU, "GPU"),
-      (about_pages::ABOUT_PROCESSES, "Processes"),
-    ];
-
     let mut out = Vec::new();
-    for (url, title) in PAGES {
+    for (url, title) in about_pages::user_facing_about_pages() {
       if !contains_ascii_case_insensitive(url, input_lower.as_ref())
         && !contains_ascii_case_insensitive(title, input_lower.as_ref())
       {
@@ -215,6 +205,32 @@ impl OmniboxProvider for AboutPagesProvider {
         url: Some((*url).to_string()),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::About),
       });
+    }
+
+    // Test-only pages (`about:test-*`) are intentionally excluded from generic matching so that
+    // typing "test" doesn't surface internal debug pages. If the user explicitly starts typing an
+    // `about:test` URL, surface them as completions.
+    if input_lower.starts_with("about:test") {
+      const TEST_PAGES: &[(&str, &str)] = &[
+        (about_pages::ABOUT_TEST_SCROLL, "Test Scroll"),
+        (about_pages::ABOUT_TEST_HEAVY, "Test Heavy"),
+        (about_pages::ABOUT_TEST_LAYOUT_STRESS, "Test Layout Stress"),
+        (about_pages::ABOUT_TEST_FORM, "Test Form"),
+      ];
+      for (url, title) in TEST_PAGES {
+        if !contains_ascii_case_insensitive(url, input_lower.as_ref())
+          && !contains_ascii_case_insensitive(title, input_lower.as_ref())
+        {
+          continue;
+        }
+
+        out.push(OmniboxSuggestion {
+          action: OmniboxAction::NavigateToUrl,
+          title: Some((*title).to_string()),
+          url: Some((*url).to_string()),
+          source: OmniboxSuggestionSource::Url(OmniboxUrlSource::About),
+        });
+      }
     }
 
     out
@@ -1385,9 +1401,11 @@ mod tests {
       about_pages::ABOUT_NEWTAB,
       about_pages::ABOUT_HISTORY,
       about_pages::ABOUT_BOOKMARKS,
+      about_pages::ABOUT_SETTINGS,
       about_pages::ABOUT_HELP,
       about_pages::ABOUT_VERSION,
       about_pages::ABOUT_GPU,
+      about_pages::ABOUT_PROCESSES,
     ] {
       assert!(
         suggestions
@@ -1404,6 +1422,71 @@ mod tests {
         .any(|s| matches!(s.action, OmniboxAction::NavigateToUrl)
           && s.url.as_deref() == Some(about_pages::ABOUT_HELP)),
       "expected about:help suggestion for input `help`"
+    );
+  }
+
+  #[test]
+  fn about_settings_is_suggested_and_matching_is_case_insensitive() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    let provider = AboutPagesProvider;
+    let suggestions = provider.suggestions(&ctx, "settings");
+    assert!(
+      suggestions
+        .iter()
+        .any(|s| s.url.as_deref() == Some(about_pages::ABOUT_SETTINGS)),
+      "expected about:settings suggestion, got {suggestions:?}"
+    );
+
+    let suggestions = provider.suggestions(&ctx, "SeTtInGs");
+    assert!(
+      suggestions
+        .iter()
+        .any(|s| s.url.as_deref() == Some(about_pages::ABOUT_SETTINGS)),
+      "expected case-insensitive about:settings suggestion, got {suggestions:?}"
+    );
+  }
+
+  #[test]
+  fn about_test_pages_are_not_suggested_for_generic_queries() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    let provider = AboutPagesProvider;
+    let suggestions = provider.suggestions(&ctx, "test");
+    assert!(
+      !suggestions
+        .iter()
+        .any(|s| s.url.as_deref().is_some_and(|u| u.starts_with("about:test"))),
+      "expected no about:test-* suggestions for input `test`, got {suggestions:?}"
+    );
+
+    // But if the user explicitly starts typing an `about:test` URL, include them as completions.
+    let suggestions = provider.suggestions(&ctx, "about:test");
+    assert!(
+      suggestions
+        .iter()
+        .any(|s| s.url.as_deref() == Some(about_pages::ABOUT_TEST_SCROLL)),
+      "expected about:test-* suggestions for input `about:test`, got {suggestions:?}"
     );
   }
 

@@ -35,6 +35,24 @@ pub const ABOUT_PAGE_URLS: &[&str] = &[
   ABOUT_TEST_FORM,
 ];
 
+/// User-facing built-in `about:` pages.
+///
+/// This list is intended for UI surfaces like the omnibox and the `about:` page header navigation.
+/// It intentionally excludes internal/test-only pages like `about:test-*` so they do not appear in
+/// generic suggestions. Those pages are still reachable by typing the full URL explicitly.
+pub fn user_facing_about_pages() -> &'static [(&'static str, &'static str)] {
+  &[
+    (ABOUT_NEWTAB, "New Tab"),
+    (ABOUT_HISTORY, "History"),
+    (ABOUT_BOOKMARKS, "Bookmarks"),
+    (ABOUT_SETTINGS, "Settings"),
+    (ABOUT_HELP, "Help"),
+    (ABOUT_VERSION, "Version"),
+    (ABOUT_GPU, "GPU"),
+    (ABOUT_PROCESSES, "Processes"),
+  ]
+}
+
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
