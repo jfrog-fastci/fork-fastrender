@@ -114,14 +114,14 @@ impl Job {
   /// - Kill all processes in the job when the last job handle closes.
   /// - Prevent child process creation (`ActiveProcessLimit = 1`).
   /// - Optionally cap total committed memory for the job.
-  /// - Apply headless UI restrictions (**best-effort**, ignored on failure).
+  /// - Apply headless UI restrictions.
   pub fn set_renderer_limits(&self, job_memory_limit_bytes: Option<usize>) -> Result<()> {
     self.set_kill_on_close()?;
     self.set_active_process_limit(1)?;
     if let Some(bytes) = job_memory_limit_bytes {
       self.set_job_memory_limit_bytes(bytes)?;
     }
-    let _ = self.set_ui_restrictions_headless();
+    self.set_ui_restrictions_headless()?;
     Ok(())
   }
 
