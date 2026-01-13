@@ -237,8 +237,9 @@ Additional (important) size limits that sit *on top* of framing:
 | WebSocket protocol string bytes (renderer→network) | 1 KiB | `MAX_WEBSOCKET_PROTOCOL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket message payload (renderer→network) | 4 MiB | `MAX_WEBSOCKET_MESSAGE_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket close reason bytes (renderer→network) | 123 bytes | `MAX_WEBSOCKET_CLOSE_REASON_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
-| WebSocket concurrent connections (per renderer, network-process side) | 256 | `NetworkWebSocketManagerLimits::max_active_per_renderer` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) |
-| WebSocket concurrent connections (global, network-process side) | 4096 | `NetworkWebSocketManagerLimits::max_active_total` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) |
+| WebSocket concurrent connections (per renderer, network-process side) | 256 | `WebSocketManagerLimits::max_active_per_renderer` in [`src/network_process/websocket_manager.rs`](../src/network_process/websocket_manager.rs) |
+| WebSocket concurrent connections (global, network-process side) | 4096 | `WebSocketManagerLimits::max_active_total` in [`src/network_process/websocket_manager.rs`](../src/network_process/websocket_manager.rs) |
+| WebSocket bufferedAmount cap (per connection, network-process side) | 16 MiB | `MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES` in [`src/network_process/websocket_manager.rs`](../src/network_process/websocket_manager.rs) |
 
 Network IPC (renderer↔network process) also enforces per-field caps via
 `NetworkMessageLimits` in [`src/net/transport.rs`](../src/net/transport.rs) (defaults today):
