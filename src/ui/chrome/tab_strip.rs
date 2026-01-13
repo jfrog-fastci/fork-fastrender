@@ -543,12 +543,17 @@ fn tab_ui(
   if let Some(close_rect) = close_rect {
     let close_id = ui.make_persistent_id(("tab_strip_close", tab.id));
     let close_has_focus = ui.ctx().memory(|mem| mem.has_focus(close_id));
-    let close_enabled = is_active || response.hovered() || close_has_focus;
+    // Consider the tab "close-reveal active" when the tab is active, hovered, or keyboard-focused
+    // (either the tab itself or the close button).
+    //
+    // Keep the interaction rect stable; only the icon painting is animated.
+    let close_reveal_target =
+      is_active || response.hovered() || response.has_focus() || close_has_focus;
     let close_resp = ui
       .interact(
         close_rect,
         close_id,
-        if close_enabled {
+        if close_reveal_target {
           Sense::click()
         } else {
           // When the close icon is hidden (non-active tab, not hovered), avoid stealing clicks/focus
@@ -562,7 +567,7 @@ fn tab_ui(
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
     super::show_tooltip_on_focus(ui, &close_resp, "Close tab (Ctrl/Cmd+W)");
-    close_clicked = close_enabled && close_resp.clicked();
+    close_clicked = close_reveal_target && close_resp.clicked();
 
     // Micro-interaction: fade close button hover fill in/out.
     let close_rounding =
@@ -581,14 +586,32 @@ fn tab_ui(
       );
     }
 
-    let close_t = if is_active || close_has_focus { 1.0 } else { hover_t };
-    if close_t > 0.0 {
+    // Micro-interaction: close affordance reveal.
+    //
+    // Keep reserving the close button space (no layout shift), but animate the icon painting inside
+    // the reserved hit-target rect so it feels more "premium" than a simple opacity toggle.
+    let close_reveal_t = motion.animate_bool(
+      ui.ctx(),
+      close_id.with("reveal"),
+      close_reveal_target,
+      motion.durations.hover_fade,
+    );
+    if close_reveal_t > 0.0 {
+      // Small easing curve so slide/scale doesn't feel linear.
+      let t = {
+        let t = close_reveal_t.clamp(0.0, 1.0);
+        // Smoothstep (ease-in-out): 3t² - 2t³.
+        t * t * (3.0 - 2.0 * t)
+      };
+      let offset_x = (1.0 - t) * 4.0;
+      let scale = lerp(0.9, 1.0, t);
+      let icon_rect = close_rect.translate(Vec2::new(offset_x, 0.0));
       paint_icon_in_rect(
         ui,
-        close_rect,
+        icon_rect,
         BrowserIcon::CloseTab,
-        ICON_SIZE,
-        with_alpha(visuals.text_color(), close_t),
+        ICON_SIZE * scale,
+        with_alpha(visuals.text_color(), t),
       );
     }
 
