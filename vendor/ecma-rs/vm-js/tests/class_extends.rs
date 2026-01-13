@@ -117,3 +117,30 @@ fn class_extends_ephemeral_super_survives_gc_compiled() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn class_extends_named_class_expr_extends_sees_inner_name_tdz() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var C = function() {};
+    try { (class C extends C {}); 'no' } catch(e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn class_extends_named_class_expr_extends_sees_inner_name_tdz_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var C = function() {};
+    try { (class C extends C {}); 'no' } catch(e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}

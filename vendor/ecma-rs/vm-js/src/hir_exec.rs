@@ -7417,6 +7417,23 @@ impl<'vm> HirEvaluator<'vm> {
           return Err(VmError::InvariantViolation("class body missing class metadata"));
         };
 
+       let class_env = self.env.lexical_env();
+
+       // Ensure the requested class binding exists before evaluating `extends` or creating any
+       // class element closures.
+       //
+       // The binding must exist (but be uninitialized) so a class can observe TDZ semantics when
+       // referencing its own name in the `extends` clause (e.g. `class C extends C {}` should throw
+       // a ReferenceError, not consult outer bindings).
+       if let Some(name) = binding_name {
+         if scope.heap().env_has_binding(class_env, name)? {
+           return Err(VmError::InvariantViolation(
+             "class binding already exists in class environment",
+           ));
+         }
+         scope.env_create_immutable_binding(class_env, name)?;
+       }
+
         // Evaluate `extends` (class heritage), if present.
         //
         // - `undefined` => no `extends` (base class)
@@ -7454,19 +7471,6 @@ impl<'vm> HirEvaluator<'vm> {
         let super_root_len = scope.heap().root_stack.len();
         scope.push_root(super_value)?;
         let _super_root_guard = RootStackTruncateGuard::new(scope.heap_mut(), super_root_len);
-
-       let class_env = self.env.lexical_env();
-
-       // Ensure the requested class binding exists before creating any class element closures.
-       if let Some(name) = binding_name {
-         if scope.heap().env_has_binding(class_env, name)? {
-           return Err(VmError::InvariantViolation(
-             "class binding already exists in class environment",
-           ));
-        }
-        scope.env_create_immutable_binding(class_env, name)?;
-      }
-
       // Find an explicit constructor, if present.
       let mut ctor_member: Option<&hir_js::ClassMember> = None;
       for member in class_meta.members.iter() {
