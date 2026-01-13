@@ -4068,6 +4068,7 @@ impl App {
       | UiToWorker::PointerUp { tab_id, .. }
       | UiToWorker::DropFiles { tab_id, .. }
       | UiToWorker::ContextMenuRequest { tab_id, .. }
+      | UiToWorker::DropFiles { tab_id, .. }
       | UiToWorker::SelectDropdownChoose { tab_id, .. }
       | UiToWorker::SelectDropdownCancel { tab_id }
       | UiToWorker::SelectDropdownPick { tab_id, .. }
@@ -7981,6 +7982,40 @@ impl App {
         // a redraw so `render_frame` can flush the coalesced PointerMove to the worker.
         self.window.request_redraw();
         self.cursor_in_page = now_in_page;
+      }
+      WindowEvent::DroppedFile(path) => {
+        // OS-level file drop. Winit does not provide a drop position, so we use the last known
+        // cursor position tracked by `CursorMoved`.
+        //
+        // Best-effort: if we don't have a cursor position or an active points→CSS mapping from the
+        // most recent paint, ignore gracefully.
+        if self.page_loading_overlay_blocks_input {
+          return;
+        }
+        let Some(pos_points) = self.last_cursor_pos_points else {
+          return;
+        };
+        let Some(page_rect) = self.page_rect_points else {
+          return;
+        };
+        if !page_rect.contains(pos_points) {
+          return;
+        }
+        let Some(tab_id) = self.page_input_tab else {
+          return;
+        };
+        let Some(mapping) = self.page_input_mapping else {
+          return;
+        };
+        let Some(pos_css) = mapping.pos_points_to_pos_css_if_inside(pos_points) else {
+          return;
+        };
+        self.send_worker_msg(fastrender::ui::UiToWorker::DropFiles {
+          tab_id,
+          pos_css,
+          paths: vec![path.clone()],
+        });
+        self.window.request_redraw();
       }
       WindowEvent::MouseInput { state, button, .. } => {
         // While the tab search overlay is open, treat mouse interactions as UI-only (handled by

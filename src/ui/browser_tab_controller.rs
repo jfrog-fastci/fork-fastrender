@@ -2,8 +2,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{
-  fragment_tree_with_scroll, FormSubmission, FormSubmissionMethod, InteractionAction,
-  InteractionEngine, InteractionState,
+  fragment_tree_with_scroll, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
+  InteractionState,
 };
 use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
@@ -14,6 +14,7 @@ use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use crate::{BrowserDocument, FastRender, RenderOptions, Result};
+use std::path::PathBuf;
 use url::Url;
 
 /// Per-tab worker-side controller that owns interactive document state (DOM + scroll + input).
@@ -131,6 +132,11 @@ impl BrowserTabController {
         delta_css,
         pointer_css,
       } if tab_id == self.tab_id => self.handle_scroll(delta_css, pointer_css),
+      UiToWorker::DropFiles {
+        tab_id,
+        pos_css,
+        paths,
+      } if tab_id == self.tab_id => self.handle_drop_files(pos_css, paths),
       UiToWorker::PointerMove {
         tab_id, pos_css, ..
       } if tab_id == self.tab_id => self.handle_pointer_move(pos_css),
@@ -531,6 +537,41 @@ impl BrowserTabController {
         viewport_point,
       )
     });
+    if changed {
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
+    }
+  }
+
+  fn handle_drop_files(&mut self, pos_css: (f32, f32), paths: Vec<PathBuf>) -> Result<Vec<WorkerToUi>> {
+    let (box_tree_ptr, fragment_tree_ptr) = {
+      let Some(prepared) = self.document.prepared() else {
+        return Ok(Vec::new());
+      };
+      let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
+      let fragment_tree_ptr =
+        prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
+      (box_tree_ptr, fragment_tree_ptr)
+    };
+
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let fragment_tree = unsafe { &*fragment_tree_ptr };
+    let scrolled = (!self.scroll_state.elements.is_empty())
+      .then(|| fragment_tree_with_scroll(fragment_tree, &self.scroll_state));
+    let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+
+    let changed = self.document.mutate_dom(|dom| {
+      self.interaction.drop_files_with_scroll(
+        dom,
+        unsafe { &*box_tree_ptr },
+        fragment_tree,
+        &self.scroll_state,
+        viewport_point,
+        &paths,
+      )
+    });
+
     if changed {
       self.paint_if_needed()
     } else {
