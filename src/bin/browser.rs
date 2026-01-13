@@ -2404,7 +2404,7 @@ mod scroll_coalescer_tests {
 mod clipboard_limit_tests {
   use super::write_clipboard_update_if_within_limit;
   use fastrender::ui::protocol_limits::{
-    sanitize_worker_to_ui_clipboard_message, MAX_CLIPBOARD_TEXT_BYTES,
+    sanitize_worker_to_ui_clipboard_message, ClipboardTextLimitResult, MAX_CLIPBOARD_TEXT_BYTES,
   };
   use fastrender::ui::{TabId, WorkerToUi};
 
@@ -2442,6 +2442,21 @@ mod clipboard_limit_tests {
     });
     assert!(wrote);
     assert!(called);
+  }
+
+  #[test]
+  fn defense_in_depth_rejects_payloads_that_still_exceed_limit() {
+    let update = ClipboardTextLimitResult {
+      tab_id: TabId(1),
+      text: "a".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1),
+      truncated: false,
+      original_bytes: MAX_CLIPBOARD_TEXT_BYTES + 1,
+    };
+
+    let mut called = false;
+    let wrote = write_clipboard_update_if_within_limit(&update, |_text| called = true);
+    assert!(!wrote);
+    assert!(!called);
   }
 }
 
