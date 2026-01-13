@@ -32593,6 +32593,103 @@ fn text_data_set_native(
   Ok(Value::Undefined)
 }
 
+fn text_split_text_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(text_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let node_key = platform.require_text_handle(scope.heap(), Value::Object(text_obj))?;
+  let document_obj = node_wrapper_document_obj(scope, text_obj, node_key.node_id)?;
+
+  // WebIDL `unsigned long` conversion.
+  // https://webidl.spec.whatwg.org/#es-unsigned-long
+  let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut n = scope.heap_mut().to_number(offset_value)?;
+  if !n.is_finite() || n.is_nan() {
+    n = 0.0;
+  }
+  let n = n.trunc();
+  let two32 = 4_294_967_296.0_f64;
+  let mut n_mod = n % two32;
+  if n_mod < 0.0 {
+    n_mod += two32;
+  }
+  let offset = n_mod as u32 as usize;
+
+  let mut dom_ptr = if is_host_document_id(vm, node_key.document_id) {
+    dom_ptr_for_event_registry(host).ok_or(VmError::TypeError("Illegal invocation"))?
+  } else {
+    dom_ptr_for_document_id_mut(vm, host, node_key.document_id).ok_or(VmError::TypeError("Illegal invocation"))?
+  };
+
+  let (new_text_id, parent_id, maybe_script_parent) = if is_host_document_id(vm, node_key.document_id)
+  {
+    mutate_dom_for_vm_host(host, |dom| {
+      let parent_id = dom.parent_node(node_key.node_id);
+      match dom.split_text(node_key.node_id, offset) {
+        Ok(new_text_id) => {
+          let maybe_script_parent =
+            parent_id.filter(|&parent| is_html_script_element(dom, parent));
+          (Ok((new_text_id, parent_id, maybe_script_parent)), parent_id.is_some())
+        }
+        Err(err) => {
+          let exc = match make_dom_exception(scope, err.code(), "") {
+            Ok(v) => VmError::Throw(v),
+            Err(e) => e,
+          };
+          (Err(exc), false)
+        }
+      }
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??
+  } else {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let parent_id = dom.parent_node(node_key.node_id);
+    let new_text_id = match dom.split_text(node_key.node_id, offset) {
+      Ok(id) => id,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    };
+    (new_text_id, parent_id, None)
+  };
+
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  // Keep cached `childNodes` / `children` live lists updated for the parent.
+  if let Some(parent_id) = parent_id {
+    sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, parent_id)?;
+    sync_cached_children_for_node_id(vm, scope, document_obj, dom, parent_id)?;
+    sync_cached_select_options_for_select_ancestor(vm, scope, document_obj, dom, parent_id)?;
+  }
+
+  if let Some(script_parent) = maybe_script_parent {
+    run_dynamic_script_children_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      script_parent,
+    )?;
+  }
+
+  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), new_text_id)
+}
+
 fn comment_data_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -48380,6 +48477,34 @@ fn init_window_globals(
         Value::Object(text_data_set_func),
       ),
     )?;
+
+    // Text.splitText
+    //
+    // The WebIDL installer set does not currently include Text.prototype.splitText, so install it
+    // opportunistically when missing. This keeps the method available in both the handwritten and
+    // WebIDL-backed DOM bindings without clobbering future generated bindings.
+    let split_text_key = alloc_key(&mut scope, "splitText")?;
+    if scope
+      .heap()
+      .object_get_own_property(text_proto, &split_text_key)?
+      .is_none()
+    {
+      let split_text_call_id = vm.register_native_call(text_split_text_native)?;
+      let split_text_name = scope.alloc_string("splitText")?;
+      scope.push_root(Value::String(split_text_name))?;
+      let split_text_func =
+        scope.alloc_native_function(split_text_call_id, None, split_text_name, 1)?;
+      scope.heap_mut().object_set_prototype(
+        split_text_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(split_text_func))?;
+      scope.define_property(
+        text_proto,
+        split_text_key,
+        data_desc(Value::Object(split_text_func)),
+      )?;
+    }
 
     // Comment.data
     let comment_data_get_call_id = vm.register_native_call(comment_data_get_native)?;

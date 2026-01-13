@@ -1232,4 +1232,50 @@ impl Document {
       }
     }
   }
+
+  /// Live range updates for the DOM `Text.splitText()` algorithm.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#concept-text-split
+  ///
+  /// Note: this only implements the splitText-specific range adjustments (moving boundary points
+  /// from the old text node into the newly-created node, plus shifting boundary points at the
+  /// parent immediately after the split node). Generic insert/replace-data live range maintenance
+  /// is handled by their respective mutation primitives.
+  pub(super) fn live_range_split_text_steps(
+    &mut self,
+    node: NodeId,
+    offset: usize,
+    new_node: NodeId,
+    parent: NodeId,
+    index: usize,
+  ) {
+    for range in self.ranges.values_mut() {
+      if range.start.node == node && range.start.offset > offset {
+        range.start.node = new_node;
+        range.start.offset -= offset;
+      }
+    }
+
+    for range in self.ranges.values_mut() {
+      if range.end.node == node && range.end.offset > offset {
+        range.end.node = new_node;
+        range.end.offset -= offset;
+      }
+    }
+
+    // The new node was inserted immediately after `node`, so it sits at `index + 1`.
+    let insertion_offset = index.saturating_add(1);
+
+    for range in self.ranges.values_mut() {
+      if range.start.node == parent && range.start.offset == insertion_offset {
+        range.start.offset = range.start.offset.saturating_add(1);
+      }
+    }
+
+    for range in self.ranges.values_mut() {
+      if range.end.node == parent && range.end.offset == insertion_offset {
+        range.end.offset = range.end.offset.saturating_add(1);
+      }
+    }
+  }
 }

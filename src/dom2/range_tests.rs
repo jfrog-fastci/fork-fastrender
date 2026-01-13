@@ -460,3 +460,49 @@ fn live_range_replace_data_clamps_and_shifts_offsets() {
   assert_eq!(doc.range_start_offset(range).unwrap(), 2);
   assert_eq!(doc.range_end_offset(range).unwrap(), 4);
 }
+
+#[test]
+fn range_split_text_shifts_parent_boundary_point_immediately_after_split_node() {
+  let mut doc: Document =
+    parse_html("<!doctype html><div id=host>hello<span id=after></span></div>").unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let after = doc.get_element_by_id("after").expect("after node not found");
+  let text = doc.node(host).children[0];
+  assert_eq!(doc.node(host).children[1], after);
+
+  // Boundary point is immediately after the text node, expressed in the parent.
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 1).unwrap();
+  doc.range_set_end(range, host, 1).unwrap();
+
+  let _ = doc.split_text(text, 2).unwrap();
+
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}
+
+#[test]
+fn range_split_text_moves_boundary_points_from_old_text_to_new_text() {
+  let mut doc: Document = parse_html("<!doctype html><div id=host>hello</div>").unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let text = doc.node(host).children[0];
+  assert!(matches!(doc.node(text).kind, NodeKind::Text { .. }));
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 4).unwrap();
+
+  let new_text = doc.split_text(text, 2).unwrap();
+
+  assert_eq!(doc.text_data(text).unwrap(), "he");
+  assert_eq!(doc.text_data(new_text).unwrap(), "llo");
+
+  assert_eq!(doc.range_start_container(range).unwrap(), text);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), new_text);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}

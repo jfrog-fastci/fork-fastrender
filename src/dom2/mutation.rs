@@ -1045,6 +1045,53 @@ impl Document {
     Ok(true)
   }
 
+  /// Split a Text node at a UTF-16 code unit offset, returning the newly-created trailing Text node.
+  ///
+  /// Mirrors the WHATWG DOM `Text.splitText(offset)` algorithm for `dom2`'s supported node kinds.
+  ///
+  /// `offset_utf16` is measured in UTF-16 code units (not bytes and not Unicode scalar values),
+  /// matching JavaScript string indexing.
+  pub fn split_text(&mut self, node: NodeId, offset_utf16: usize) -> Result<NodeId, DomError> {
+    let node_id = node;
+    self.node_checked(node_id)?;
+
+    let old_value = match &self.node_checked(node_id)?.kind {
+      NodeKind::Text { content } => content.clone(),
+      _ => return Err(DomError::InvalidNodeType),
+    };
+
+    // Offsets are defined in UTF-16 code units.
+    let units: Vec<u16> = old_value.encode_utf16().collect();
+    if offset_utf16 > units.len() {
+      return Err(DomError::IndexSizeError);
+    }
+
+    let new_data = String::from_utf16_lossy(&units[offset_utf16..]);
+    let new_node = self.create_text(&new_data);
+
+    let parent = self.nodes[node_id.index()].parent;
+    if let Some(parent) = parent {
+      // Find the Text node's index among its parent's child list so we can insert immediately after
+      // it and perform the spec's splitText-specific live Range updates.
+      let index = self
+        .index_of_child_internal(parent, node_id)?
+        .ok_or(DomError::NotFoundError)?;
+
+      // Insert the new Text node immediately after the original node.
+      let reference = self.nodes[parent.index()].children.get(index + 1).copied();
+      let _ = self.insert_before(parent, new_node, reference)?;
+
+      // Live range updates for splitText (the extra steps beyond generic insert/replace-data).
+      self.live_range_split_text_steps(node_id, offset_utf16, new_node, parent, index);
+    }
+
+    // Truncate the original node's data to the prefix [0, offset).
+    let count = units.len().saturating_sub(offset_utf16);
+    let _ = self.replace_data(node_id, offset_utf16, count, "")?;
+
+    Ok(new_node)
+  }
+
   pub fn set_comment_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     let node_id = node;
     // Drive live Range/NodeIterator updates via the DOM "replace data" primitive.
