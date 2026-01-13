@@ -1303,12 +1303,33 @@ fn snap_axis(
 /// Applies scroll snap to all snap containers in the fragment tree.
 pub fn apply_scroll_snap(tree: &mut FragmentTree, scroll: &ScrollState) -> ScrollSnapResult {
   tree.ensure_scroll_metadata();
-  let metadata = tree.scroll_metadata.clone().unwrap_or_default();
+  let Some(metadata) = tree.scroll_metadata.as_ref() else {
+    return ScrollSnapResult {
+      state: scroll.clone(),
+      updates: Vec::new(),
+    };
+  };
 
+  apply_scroll_snap_from_metadata(metadata, scroll)
+}
+
+/// Applies scroll snap to a scroll state using precomputed scroll metadata.
+///
+/// This is a lightweight alternative to [`apply_scroll_snap`] for callers that already have access
+/// to a fragment tree's [`ScrollMetadata`] (for example, UI workers performing high-frequency scroll
+/// acknowledgements).
+///
+/// Note: This helper does **not** compute missing metadata. Callers that need scroll snap on
+/// synthetic fragment trees should use [`apply_scroll_snap`] or call
+/// [`FragmentTree::ensure_scroll_metadata`] first.
+pub fn apply_scroll_snap_from_metadata(
+  metadata: &ScrollMetadata,
+  scroll: &ScrollState,
+) -> ScrollSnapResult {
   let mut state = scroll.clone();
   let mut updates = Vec::new();
 
-  for container in metadata.containers {
+  for container in &metadata.containers {
     let element_offset = container
       .box_id
       .and_then(|id| state.elements.get(&id).copied());
@@ -2826,6 +2847,45 @@ mod tests {
     .viewport;
     assert!((snapped.x - 120.0).abs() < 0.1);
     assert!((snapped.y - 150.0).abs() < 0.1);
+  }
+
+  #[test]
+  fn apply_scroll_snap_from_metadata_matches_apply_scroll_snap() {
+    let mut container_style = ComputedStyle::default();
+    container_style.scroll_snap_type.axis = ScrollSnapAxis::Both;
+    container_style.scroll_snap_type.strictness = ScrollSnapStrictness::Mandatory;
+    let container_style = Arc::new(container_style);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.scroll_snap_align.inline = ScrollSnapAlign::Start;
+    child_style.scroll_snap_align.block = ScrollSnapAlign::Start;
+    let child_style = Arc::new(child_style);
+
+    let child = FragmentNode::new_block_styled(
+      Rect::from_xywh(120.0, 150.0, 50.0, 50.0),
+      vec![],
+      child_style,
+    );
+
+    let container = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 300.0, 300.0),
+      vec![child],
+      container_style,
+    );
+    let mut tree = FragmentTree::with_viewport(container, Size::new(100.0, 100.0));
+    tree.ensure_scroll_metadata();
+    let metadata = tree
+      .scroll_metadata
+      .as_ref()
+      .expect("scroll metadata computed");
+
+    let state = ScrollState::with_viewport(Point::new(90.0, 160.0));
+
+    let mut tree_expected = tree.clone();
+    let expected = apply_scroll_snap(&mut tree_expected, &state);
+    let actual = apply_scroll_snap_from_metadata(metadata, &state);
+
+    assert_eq!(actual, expected);
   }
 
   #[test]

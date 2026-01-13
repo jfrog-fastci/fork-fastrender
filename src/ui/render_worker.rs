@@ -2680,12 +2680,37 @@ impl BrowserRuntime {
   ) -> ScrollState {
     // Mirror `api::paint_fragment_tree_with_state` scroll adjustments so the UI's scroll model can
     // stay in sync with the eventual painted frame.
-    let mut fragment_tree = prepared.fragment_tree().clone();
-    let mut state = crate::scroll::resolve_effective_scroll_state_for_paint_mut(
-      &mut fragment_tree,
-      scroll_state.clone(),
-      prepared.layout_viewport(),
+    //
+    // This path runs on high-frequency scroll input, so avoid cloning the full fragment tree.
+    let mut state = scroll_state.clone();
+
+    if let Some(metadata) = prepared.fragment_tree().scroll_metadata.as_ref() {
+      state = crate::scroll::apply_scroll_snap_from_metadata(metadata, &state).state;
+    }
+
+    state.viewport = Point::new(
+      if state.viewport.x.is_finite() {
+        state.viewport.x
+      } else {
+        0.0
+      },
+      if state.viewport.y.is_finite() {
+        state.viewport.y
+      } else {
+        0.0
+      },
     );
+
+    if let Some(bounds) = crate::scroll::build_scroll_chain(
+      &prepared.fragment_tree().root,
+      prepared.layout_viewport(),
+      &[],
+    )
+    .last()
+    .map(|state| state.bounds)
+    {
+      state.viewport = bounds.clamp(state.viewport);
+    }
 
     // Keep element scroll offsets stable (wheel interaction already clamps), but canonicalize the
     // representation so NaNs/inf and explicit zero offsets don't cause spurious diffs.
@@ -3754,6 +3779,10 @@ impl BrowserRuntime {
                   .history
                   .update_scroll_state(&tab.scroll_state);
               }
+              let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+                tab_id,
+                scroll: tab.scroll_state.clone(),
+              });
             }
             return;
           };
