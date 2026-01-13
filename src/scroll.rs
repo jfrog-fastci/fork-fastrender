@@ -68,6 +68,72 @@ impl ScrollState {
   pub fn element_delta(&self, id: usize) -> Point {
     self.elements_delta.get(&id).copied().unwrap_or(Point::ZERO)
   }
+
+  /// Recomputes scroll deltas relative to `prev`, overwriting `viewport_delta` and `elements_delta`.
+  ///
+  /// This is intended for callers that update scroll offsets programmatically (focus scroll,
+  /// fragment navigation, scroll-to actions, etc). It prevents stale deltas from leaking across
+  /// independent scroll operations by deriving new deltas from the offset changes between `prev`
+  /// and `self`.
+  ///
+  /// Behaviour:
+  /// - `viewport_delta = self.viewport - prev.viewport`
+  /// - `elements_delta[id] = self.elements[id] - prev.elements.get(id).unwrap_or(Point::ZERO)`
+  ///   for each scroll container whose effective offset changed (missing entries are treated as
+  ///   `Point::ZERO`).
+  /// - Non-finite delta components are treated as `0.0`.
+  /// - `elements` and `elements_delta` omit `Point::ZERO` entries for canonical representation.
+  pub fn update_deltas_from(&mut self, prev: &ScrollState) {
+    let sanitize = |point: Point| {
+      Point::new(
+        if point.x.is_finite() { point.x } else { 0.0 },
+        if point.y.is_finite() { point.y } else { 0.0 },
+      )
+    };
+
+    let prev_viewport = sanitize(prev.viewport);
+    let next_viewport = sanitize(self.viewport);
+    self.viewport_delta = sanitize(Point::new(
+      next_viewport.x - prev_viewport.x,
+      next_viewport.y - prev_viewport.y,
+    ));
+
+    let mut elements_delta: HashMap<usize, Point> = HashMap::new();
+
+    // Track deltas for any element scroll container whose effective offset changed. Note that the
+    // canonical representation omits `Point::ZERO` offsets entirely, so we must treat "missing"
+    // and "zero" as equivalent when diffing.
+    for (&id, &prev_offset_raw) in prev.elements.iter() {
+      let prev_offset = sanitize(prev_offset_raw);
+      let next_offset = sanitize(self.elements.get(&id).copied().unwrap_or(Point::ZERO));
+      if next_offset != prev_offset {
+        let delta = sanitize(Point::new(
+          next_offset.x - prev_offset.x,
+          next_offset.y - prev_offset.y,
+        ));
+        if delta != Point::ZERO {
+          elements_delta.insert(id, delta);
+        }
+      }
+    }
+    for (&id, &next_offset_raw) in self.elements.iter() {
+      if prev.elements.contains_key(&id) {
+        continue;
+      }
+      let next_offset = sanitize(next_offset_raw);
+      if next_offset != Point::ZERO {
+        let delta = sanitize(next_offset);
+        if delta != Point::ZERO {
+          elements_delta.insert(id, delta);
+        }
+      }
+    }
+
+    // Preserve canonical representation so missing and zero offsets/deltas are treated the same.
+    self.elements.retain(|_, offset| *offset != Point::ZERO);
+    elements_delta.retain(|_, delta| *delta != Point::ZERO);
+    self.elements_delta = elements_delta;
+  }
 }
 
 impl Default for ScrollState {
@@ -1339,10 +1405,16 @@ fn apply_element_scroll_offsets(
     .and_then(|id| {
       let style = node.style.as_deref()?;
       let mut offset = scroll.elements.get(&id).copied().unwrap_or(Point::ZERO);
-      if !matches!(style.overflow_x, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+      if !matches!(
+        style.overflow_x,
+        Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+      ) {
         offset.x = 0.0;
       }
-      if !matches!(style.overflow_y, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+      if !matches!(
+        style.overflow_y,
+        Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+      ) {
         offset.y = 0.0;
       }
       (offset != Point::ZERO).then_some(offset)

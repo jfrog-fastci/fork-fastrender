@@ -3,6 +3,7 @@
 use fastrender::interaction::KeyAction;
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
+use fastrender::Point;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -118,6 +119,16 @@ fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
   assert!(
     scroll_y.is_finite() && scroll_y > 0.0,
     "expected scroll y > 0, got {scroll_y}"
+  );
+  assert!(
+    frame.scroll_state.viewport_delta.y > 0.0,
+    "expected viewport_delta.y > 0 after focus scroll, got {:?}",
+    frame.scroll_state.viewport_delta
+  );
+  assert!(
+    frame.scroll_state.elements_delta.is_empty(),
+    "expected focus viewport scroll to not report element deltas, got {:?}",
+    frame.scroll_state.elements_delta
   );
 
   let viewport_top = scroll_y;
@@ -256,6 +267,30 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
   assert!(
     scroll_y.is_finite() && scroll_y > 0.0,
     "expected element scroll y > 0, got {scroll_y}"
+  );
+  assert_eq!(
+    frame.scroll_state.viewport_delta,
+    Point::ZERO,
+    "expected element focus scroll to not change viewport_delta, got {:?}",
+    frame.scroll_state.viewport_delta
+  );
+  assert_eq!(
+    frame.scroll_state.elements_delta.len(),
+    1,
+    "expected exactly one element delta after focus scroll, got {:?}",
+    frame.scroll_state.elements_delta
+  );
+  let delta_y = frame
+    .scroll_state
+    .elements_delta
+    .values()
+    .next()
+    .copied()
+    .expect("element scroll delta")
+    .y;
+  assert!(
+    delta_y.is_finite() && delta_y > 0.0,
+    "expected element scroll delta y > 0 after focus scroll, got {delta_y}"
   );
 
   let viewport_top = scroll_y;

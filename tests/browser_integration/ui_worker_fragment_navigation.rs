@@ -653,6 +653,16 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   };
   let scroll_after = scroll.viewport.y;
   assert!(
+    scroll.viewport_delta.y.is_finite() && scroll.viewport_delta.y > 0.0,
+    "expected viewport_delta.y > 0 on fragment jump, got {:?}",
+    scroll.viewport_delta
+  );
+  assert!(
+    scroll.elements_delta.is_empty(),
+    "expected fragment jump to not report element deltas, got {:?}",
+    scroll.elements_delta
+  );
+  assert!(
     scroll_after > scroll_before,
     "expected fragment navigation to increase scroll y (before={scroll_before}, after={scroll_after})"
   );
@@ -678,6 +688,16 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   assert_eq!(
     scroll.viewport.y, scroll_before,
     "expected back to restore previous scroll position"
+  );
+  assert!(
+    scroll.viewport_delta.y.is_finite() && scroll.viewport_delta.y < 0.0,
+    "expected viewport_delta.y < 0 on back scroll restoration, got {:?}",
+    scroll.viewport_delta
+  );
+  assert!(
+    scroll.elements_delta.is_empty(),
+    "expected back scroll restoration to not report element deltas, got {:?}",
+    scroll.elements_delta
   );
 
   worker.join().unwrap();

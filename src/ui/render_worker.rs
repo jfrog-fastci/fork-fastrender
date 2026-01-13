@@ -2228,10 +2228,12 @@ impl BrowserRuntime {
           let Some(doc) = tab.document.as_mut() else {
             // No document yet (e.g. scrolling during initial load). Still record the viewport scroll
             // so it can be applied when the first frame is rendered.
-            let mut next = tab.scroll_state.clone();
+            let prev = tab.scroll_state.clone();
+            let mut next = prev.clone();
             next.viewport.x = (next.viewport.x + delta_x).max(0.0);
             next.viewport.y = (next.viewport.y + delta_y).max(0.0);
-            if next != tab.scroll_state {
+            if next.viewport != prev.viewport {
+              next.update_deltas_from(&prev);
               tab.scroll_state = next;
               if tab.loading {
                 tab
@@ -2294,15 +2296,15 @@ impl BrowserRuntime {
                   wheel_handled = true;
                   if scrolled {
                     let next = doc.scroll_state();
-                    if let Some(prepared) = doc.prepared() {
-                      let effective =
-                        Self::compute_effective_scroll_state_from_prepared(prepared, &next);
-                      doc.set_scroll_state(effective.clone());
-                      tab.scroll_state = effective;
+                    let mut effective = if let Some(prepared) = doc.prepared() {
                       emit_scroll_state_updated = true;
+                      Self::compute_effective_scroll_state_from_prepared(prepared, &next)
                     } else {
-                      tab.scroll_state = next;
-                    }
+                      next
+                    };
+                    effective.update_deltas_from(&current_scroll);
+                    doc.set_scroll_state(effective.clone());
+                    tab.scroll_state = effective;
                     scroll_changed = true;
                     changed = true;
                   }
@@ -2340,8 +2342,12 @@ impl BrowserRuntime {
               // Apply scroll snap/clamp immediately when we have cached layout artifacts so the UI
               // can use the effective scroll state before the next paint finishes.
               if let Some(prepared) = doc.prepared() {
-                let effective = Self::compute_effective_scroll_state_from_prepared(prepared, &next);
-                if effective != current_scroll {
+                let mut effective =
+                  Self::compute_effective_scroll_state_from_prepared(prepared, &next);
+                if effective.viewport != current_scroll.viewport
+                  || effective.elements != current_scroll.elements
+                {
+                  effective.update_deltas_from(&current_scroll);
                   doc.set_scroll_state(effective.clone());
                   tab.scroll_state = effective;
                   scroll_changed = true;
@@ -2350,6 +2356,7 @@ impl BrowserRuntime {
                 }
               } else {
                 // No cached layout yet; record the raw scroll offset for the first render.
+                next.update_deltas_from(&current_scroll);
                 doc.set_scroll_state(next.clone());
                 tab.scroll_state = next;
                 scroll_changed = true;
@@ -2395,8 +2402,9 @@ impl BrowserRuntime {
             .prepared()
             .map(|prepared| Self::compute_effective_scroll_state_from_prepared(prepared, &next));
 
-          if let Some(effective) = effective {
-            if effective != current {
+          if let Some(mut effective) = effective {
+            if effective.viewport != current.viewport || effective.elements != current.elements {
+              effective.update_deltas_from(&current);
               doc.set_scroll_state(effective.clone());
               tab.scroll_state = effective;
               let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
@@ -2409,6 +2417,7 @@ impl BrowserRuntime {
             }
           } else if next != current {
             // No cached layout yet; record the scroll position for the first frame.
+            next.update_deltas_from(&current);
             doc.set_scroll_state(next.clone());
             tab.scroll_state = next;
             tab.cancel.bump_paint();
@@ -2417,9 +2426,11 @@ impl BrowserRuntime {
           }
         } else {
           // No document yet; still record the scroll position for the first frame.
-          let mut next = tab.scroll_state.clone();
+          let prev = tab.scroll_state.clone();
+          let mut next = prev.clone();
           next.viewport = target;
-          if next != tab.scroll_state {
+          if next.viewport != prev.viewport {
+            next.update_deltas_from(&prev);
             tab.scroll_state = next;
             if tab.loading {
               tab
@@ -3194,8 +3205,12 @@ impl BrowserRuntime {
               }
             };
 
-            tab.scroll_state.viewport = offset;
-            doc.set_scroll_state(tab.scroll_state.clone());
+            let prev_scroll = tab.scroll_state.clone();
+            let mut next_scroll = prev_scroll.clone();
+            next_scroll.viewport = offset;
+            next_scroll.update_deltas_from(&prev_scroll);
+            tab.scroll_state = next_scroll.clone();
+            doc.set_scroll_state(next_scroll);
 
             let title = find_document_title(doc.dom());
             if let Some(title) = title.as_deref() {
@@ -3621,8 +3636,10 @@ impl BrowserRuntime {
     }
 
     if target != tab.scroll_state.viewport {
-      let mut next = tab.scroll_state.clone();
+      let prev = tab.scroll_state.clone();
+      let mut next = prev.clone();
       next.viewport = target;
+      next.update_deltas_from(&prev);
       doc.set_scroll_state(next.clone());
       tab.scroll_state = next;
       tab
@@ -6786,7 +6803,9 @@ impl BrowserRuntime {
           })
         };
         if let Some(offset) = offset {
+          let prev_scroll = scroll_state.clone();
           scroll_state.viewport = offset;
+          scroll_state.update_deltas_from(&prev_scroll);
         }
       }
     }

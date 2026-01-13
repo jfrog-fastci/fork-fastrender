@@ -436,7 +436,38 @@ pub fn scroll_state_for_focus(
   };
 
   next.viewport = sanitize_point(next.viewport);
-  if next != *scroll_state {
+
+  // Determine whether the focus-driven auto-scroll actually changed any offsets. `ScrollState`
+  // includes delta metadata, so compare offsets explicitly (treating "missing" and "zero" element
+  // offsets as equivalent) to avoid returning a spurious update that only resets deltas.
+  let prev_viewport = sanitize_point(scroll_state.viewport);
+  let viewport_changed = next.viewport != prev_viewport;
+
+  let sanitize_offset = sanitize_point;
+  let mut elements_changed = false;
+  for (&id, &prev_offset_raw) in scroll_state.elements.iter() {
+    let prev_offset = sanitize_offset(prev_offset_raw);
+    let next_offset = sanitize_offset(next.elements.get(&id).copied().unwrap_or(Point::ZERO));
+    if prev_offset != next_offset {
+      elements_changed = true;
+      break;
+    }
+  }
+  if !elements_changed {
+    for (&id, &next_offset_raw) in next.elements.iter() {
+      if scroll_state.elements.contains_key(&id) {
+        continue;
+      }
+      let next_offset = sanitize_offset(next_offset_raw);
+      if next_offset != Point::ZERO {
+        elements_changed = true;
+        break;
+      }
+    }
+  }
+
+  if viewport_changed || elements_changed {
+    next.update_deltas_from(scroll_state);
     Some(next)
   } else {
     None
