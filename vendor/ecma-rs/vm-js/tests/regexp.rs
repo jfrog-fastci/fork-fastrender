@@ -235,6 +235,24 @@ fn regexp_unicode_mode_allows_forward_numeric_escape_backreference() {
 }
 
 #[test]
+fn regexp_unicode_mode_allows_null_escape_0() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          new RegExp("\\0", "u").test("\0"),
+          new RegExp("\\0", "v").test("\0"),
+          new RegExp("[\\0]", "u").test("\0"),
+          new RegExp("[\\0]", "v").test("\0"),
+        ].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true,true");
+}
+
+#[test]
 fn regexp_unicode_mode_rejects_legacy_octal_escape_sequence_00() {
   let mut rt = new_runtime();
   let value = rt
