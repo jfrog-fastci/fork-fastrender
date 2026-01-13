@@ -238,7 +238,7 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
     // libvpx's build uses GNU-make specific features. On macOS the system `make` is BSD make, which
     // will fail with confusing errors ("missing separator", etc). Detect this early and emit a
     // clear hint.
-    if target_os == "macos" && effective_make == "make" && !is_gnu_make(&effective_make) {
+    if target_os == "macos" && !is_gnu_make(&effective_make) {
         unsupported(
             &target,
             &host,
