@@ -5063,11 +5063,22 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    // Two realms keep their intrinsics alive simultaneously; use a bit more headroom than the
+    // single-realm tests while still exercising heap limit paths.
+    let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
 
     let mut realm_a = Realm::new(&mut vm, &mut heap)?;
     let realm_a_id = realm_a.id();
-    let mut realm_b = Realm::new(&mut vm, &mut heap)?;
+
+    // If realm initialization fails part-way through, make sure we tear down any successfully
+    // created realms so their persistent GC roots are not leaked.
+    let mut realm_b = match Realm::new(&mut vm, &mut heap) {
+      Ok(realm) => realm,
+      Err(err) => {
+        realm_a.teardown(&mut heap);
+        return Err(err);
+      }
+    };
     let realm_b_id = realm_b.id();
 
     let result: Result<(), VmError> = (|| {
