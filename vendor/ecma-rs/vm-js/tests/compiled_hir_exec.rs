@@ -646,6 +646,31 @@ fn compiled_strict_equality_compares_strings_by_value() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_function_length_counts_params_before_first_default() -> Result<(), VmError> {
+  let source = r#"
+    function f(a, b = 1, c) {}
+    f.length
+  "#;
+
+  // Interpreter result (baseline).
+  let mut rt = JsRuntime::new(
+    Vm::new(VmOptions::default()),
+    Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024)),
+  )?;
+  let expected = rt.exec_script(source)?;
+  assert_eq!(expected, Value::Number(1.0));
+
+  // Compiled HIR execution should match.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(&mut heap, "test.js", source)?;
+  let mut rt = JsRuntime::new(Vm::new(VmOptions::default()), heap)?;
+  let actual = rt.exec_compiled_script(script)?;
+  assert_eq!(actual, expected);
+
+  Ok(())
+}
+
+#[test]
 fn compiled_strict_equality_compares_bigints_by_value() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
@@ -1549,5 +1574,30 @@ fn compiled_for_in_over_object() -> Result<(), VmError> {
     panic!("expected string, got {result:?}");
   };
   assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "ab");
+  Ok(())
+}
+
+#[test]
+fn compiled_function_length_ignores_rest_param() -> Result<(), VmError> {
+  let source = r#"
+    function g(a, ...rest) {}
+    g.length
+  "#;
+
+  // Interpreter result (baseline).
+  let mut rt = JsRuntime::new(
+    Vm::new(VmOptions::default()),
+    Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024)),
+  )?;
+  let expected = rt.exec_script(source)?;
+  assert_eq!(expected, Value::Number(1.0));
+
+  // Compiled HIR execution should match.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(&mut heap, "test.js", source)?;
+  let mut rt = JsRuntime::new(Vm::new(VmOptions::default()), heap)?;
+  let actual = rt.exec_compiled_script(script)?;
+  assert_eq!(actual, expected);
+
   Ok(())
 }

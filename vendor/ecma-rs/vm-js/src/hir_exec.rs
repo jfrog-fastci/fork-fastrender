@@ -227,22 +227,51 @@ impl<'vm> HirEvaluator<'vm> {
     name: &str,
     is_arrow: bool,
   ) -> Result<GcObject, VmError> {
-    let func_body = self.get_body(body_id)?;
-    let Some(func_meta) = func_body.function.as_ref() else {
-      return Err(VmError::InvariantViolation("function body missing function metadata"));
+    // Avoid holding references into `self.script.hir` across `vm.tick()` calls below: `tick()`
+    // requires `&mut Vm`, so borrow HIR via a standalone `Arc` clone of the compiled script.
+    let script = self.script.clone();
+
+    let (length, is_async, is_generator) = {
+      let func_body = script
+        .hir
+        .body(body_id)
+        .ok_or(VmError::InvariantViolation(
+          "hir body id missing from compiled script",
+        ))?;
+      let Some(func_meta) = func_body.function.as_ref() else {
+        return Err(VmError::InvariantViolation("function body missing function metadata"));
+      };
+
+      // ECMA-262 `length` is the number of parameters before the first one with a default/rest.
+      //
+      // This scan can be `O(N)` in the number of parameters, and function expressions/declarations
+      // can have very large parameter lists (bounded by source size). Budget it explicitly so a
+      // single function literal can't do unbounded work within a single statement/expression tick.
+      const TICK_EVERY: usize = 32;
+      let mut length: u32 = 0;
+      for (i, param) in func_meta.params.iter().enumerate() {
+        if i % TICK_EVERY == 0 {
+          self.vm.tick()?;
+        }
+        if param.rest || param.default.is_some() {
+          break;
+        }
+        length = length.saturating_add(1);
+      }
+
+      (length, func_meta.async_, func_meta.generator)
     };
-    if func_meta.generator {
-      return Err(VmError::Unimplemented(if func_meta.async_ {
+
+    if is_generator {
+      return Err(VmError::Unimplemented(if is_async {
         "async generator functions"
       } else {
         "generator functions"
       }));
     }
-    if func_meta.async_ {
+    if is_async {
       return Err(VmError::Unimplemented("async functions (hir-js compiled path)"));
     }
-
-    let length = u32::try_from(func_meta.params.len()).unwrap_or(u32::MAX);
 
     // Root inputs across string allocation + function allocation in case either triggers GC.
     let mut scope = scope.reborrow();
@@ -264,7 +293,7 @@ impl<'vm> HirEvaluator<'vm> {
 
     let func_obj = scope.alloc_user_function_with_env(
       CompiledFunctionRef {
-        script: self.script.clone(),
+        script,
         body: body_id,
       },
       name_s,
