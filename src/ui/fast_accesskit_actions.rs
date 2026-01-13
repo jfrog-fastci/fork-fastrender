@@ -67,18 +67,21 @@ impl ChromeDocumentContext<'_> {
     }
 
     fn js_dom_node_for_preorder_id(
-      js_tab: &BrowserTab,
+      js_tab: &mut BrowserTab,
       preorder_id: usize,
       element_id: Option<&str>,
     ) -> Option<dom2::NodeId> {
       element_id
         .and_then(|id| js_tab.dom().get_element_by_id(id))
-        .or_else(|| {
-          js_tab
-            .dom()
-            .node_id_from_index(preorder_id.saturating_sub(1))
-            .ok()
-        })
+        // Prefer mapping renderer preorder ids back into stable dom2 NodeIds using the JS tab's
+        // cached renderer-dom mapping. Renderer preorder ids can shift under DOM mutations, and
+        // `dom2::NodeId` allocation order does not match traversal order, so indexing into the
+        // dom2 node list is unsafe as a primary mapping strategy.
+        .or_else(|| js_tab.dom2_node_for_renderer_preorder(preorder_id))
+        // Last resort: treat preorder ids as a dom2 node allocation index. This can be incorrect
+        // when the document contains non-renderable nodes (doctype/comments) or synthetic renderer
+        // nodes (e.g. `<wbr>` ZWSP), and when DOM mutations shift preorder ids.
+        .or_else(|| js_tab.dom().node_id_from_index(preorder_id.saturating_sub(1)).ok())
     }
 
     let prev_element_id = prev.and_then(|id| element_id_for_node(self.dom, id));
