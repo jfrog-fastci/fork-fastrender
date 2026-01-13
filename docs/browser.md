@@ -45,7 +45,7 @@ end-to-end:
     → `https://example.com/`, filesystem paths → `file://...`)
   - per-tab history with back/forward/reload
   - loading + error status in the chrome
-- **Bookmarks**: bookmark the current page (star button / Ctrl/Cmd+D), bookmarks bar, bookmarks manager.
+- **Bookmarks**: bookmark the current page (star button / Ctrl+D on Win/Linux, Cmd+D on macOS), bookmarks bar, bookmarks manager.
 - **History**: global history panel with search + “Clear browsing data” (time range).
 - **Downloads**: “Download link” from the page context menu; view progress/cancel/retry/open from the downloads side panel.
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
