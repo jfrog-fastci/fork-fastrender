@@ -11768,6 +11768,10 @@ impl App {
     if self.scrollbar_drag.is_none() {
       return;
     }
+    // Deliver any coalesced drag delta now so ending/cancelling a drag doesn't depend on a future
+    // redraw to apply the final scroll offset. This matches the previous behavior where each
+    // CursorMoved during a drag sent `UiToWorker::Scroll` immediately.
+    self.flush_pending_scroll_drag();
     self.scrollbar_drag = None;
     self
       .overlay_scrollbar_visibility
