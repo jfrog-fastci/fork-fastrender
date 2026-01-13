@@ -70,8 +70,19 @@ Repo reality:
 
 - Landlock + seccomp are implemented in `src/sandbox/` and applied by
   `sandbox::apply_renderer_sandbox` (`src/sandbox/mod.rs`).
-- rlimits and fd hygiene are expected to be handled by the renderer launcher (browser process) as
-  part of process creation.
+- Some rlimits/hardening are applied **in-process** by `sandbox::apply_renderer_sandbox` (via
+  `linux_hardening`), before installing seccomp.
+  - Default values live in `RendererSandboxConfig::default()` (`src/sandbox/mod.rs`) and include
+    `RLIMIT_NOFILE=256` and `RLIMIT_CORE=0` (plus `PR_SET_DUMPABLE=0`).
+  - `RLIMIT_AS` is supported but is not enabled by default (`address_space_limit_bytes: None`).
+- File descriptor hygiene (closing unexpected inherited fds / setting `CLOEXEC`) is still the
+  responsibility of the **process launcher**.
+  - Helpers: `sandbox::close_fds_except(...)` and `sandbox::set_cloexec_on_fds_except(...)`
+    (`src/sandbox/fd_sanitizer.rs`).
+  - Prefer `close_fds_except` from a `Command::pre_exec` hook when spawning a dedicated renderer
+    subprocess.
+  - Prefer `set_cloexec_on_fds_except` when using `std::process::Command` without `pre_exec` and you
+    want to avoid interfering with Cargo/std internal CLOEXEC pipes.
 
 ### 1) rlimits (resource guardrails)
 
@@ -84,7 +95,8 @@ Common caps:
 - `RLIMIT_NPROC` (defense-in-depth against process spawning)
 - `RLIMIT_CORE=0` (no core dumps)
 
-Related: [`docs/resource-limits.md`](../resource-limits.md) and `src/process_limits.rs`.
+Related: [`docs/resource-limits.md`](../resource-limits.md), `src/process_limits.rs`, and
+`RendererSandboxConfig` defaults in `src/sandbox/mod.rs`.
 
 ### 2) Close file descriptors (no fd leaks)
 
@@ -102,8 +114,21 @@ Landlock is an LSM that enforces a **path-based** filesystem policy.
 
 Implementation: `src/sandbox/linux_landlock.rs`.
 
-Current default config is `deny_all` (no allowlisted paths). When unsupported, Landlock is treated as
-best-effort and the sandbox proceeds with seccomp.
+Repo reality:
+
+- `LandlockConfig::default()` / `LandlockConfig::deny_all()` installs a deny-all ruleset (no
+  allowlisted paths). This is useful for tests and diagnostics (for example `sandbox_probe --mode
+  landlock`).
+- The renderer sandbox (`sandbox::apply_renderer_sandbox`) currently treats Landlock as optional and
+  **disabled by default** (`RendererLandlockPolicy::Disabled`).
+  - When enabled (`RendererLandlockPolicy::RestrictWrites`), it uses a best-effort policy that
+    denies filesystem writes globally while still allowing reads (so pre-opened read-only FDs and
+    dynamic linking remain usable).
+  - If Landlock is unsupported, sandbox setup continues (seccomp is still applied).
+  - If Landlock is supported but applying it fails, we fail closed.
+
+Note: the “no path-based filesystem access” guarantee is enforced primarily by the **seccomp**
+denylist (blocking `open/openat/openat2/statx/...`). Landlock is defense-in-depth.
 
 Why Landlock at all if seccomp blocks `openat`?
 
