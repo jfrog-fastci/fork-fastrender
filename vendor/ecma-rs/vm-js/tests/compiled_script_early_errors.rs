@@ -91,3 +91,45 @@ fn compiled_module_with_budget_rejects_invalid_private_name() {
     other => panic!("expected VmError::Syntax, got {other:?}"),
   }
 }
+
+#[test]
+fn compiled_script_allows_await_in_class_static_block_when_script_is_async() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  // `CompiledScript` enables top-level await for classic scripts when they contain any await
+  // expression. Await in class static blocks should count, since the block executes during class
+  // evaluation.
+  CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      class C {
+        static {
+          await Promise.resolve(0);
+        }
+      }
+    "#,
+  )?;
+  Ok(())
+}
+
+#[test]
+fn compiled_script_with_budget_allows_await_in_class_static_block_when_script_is_async(
+) -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+
+  CompiledScript::compile_script_with_budget(
+    &mut heap,
+    &mut vm,
+    "test.js",
+    r#"
+      class C {
+        static {
+          await Promise.resolve(0);
+        }
+      }
+    "#,
+  )?;
+  Ok(())
+}

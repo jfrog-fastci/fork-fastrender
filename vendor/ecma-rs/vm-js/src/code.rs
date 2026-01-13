@@ -360,9 +360,18 @@ fn expr_contains_await(expr: &Node<Expr>) -> bool {
 
     Expr::Class(class) => {
       class.stx.extends.as_ref().is_some_and(expr_contains_await)
-        || class.stx.members.iter().any(|member| match &member.stx.key {
-          ClassOrObjKey::Direct(_) => false,
-          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        || class.stx.members.iter().any(|member| {
+          let key_has_await = match &member.stx.key {
+            ClassOrObjKey::Direct(_) => false,
+            ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+          };
+          if key_has_await {
+            return true;
+          }
+          match &member.stx.val {
+            ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_await),
+            _ => false,
+          }
         })
     }
 
@@ -434,9 +443,18 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     Stmt::ExportDefaultExpr(stmt) => expr_contains_await(&stmt.stx.expression),
     Stmt::ClassDecl(class) => {
       class.stx.extends.as_ref().is_some_and(expr_contains_await)
-        || class.stx.members.iter().any(|member| match &member.stx.key {
-          ClassOrObjKey::Direct(_) => false,
-          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        || class.stx.members.iter().any(|member| {
+          let key_has_await = match &member.stx.key {
+            ClassOrObjKey::Direct(_) => false,
+            ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+          };
+          if key_has_await {
+            return true;
+          }
+          match &member.stx.val {
+            ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_await),
+            _ => false,
+          }
         })
     }
     Stmt::Expr(expr_stmt) => expr_contains_await(&expr_stmt.stx.expr),
