@@ -4,6 +4,8 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use url::Url;
 
+use crate::ui::messages::NavigationReason;
+
 pub const DEFAULT_SEARCH_ENGINE_TEMPLATE: &str = "https://duckduckgo.com/?q={query}";
 
 // -----------------------------------------------------------------------------
@@ -118,6 +120,43 @@ pub fn sanitize_worker_url_for_ui(raw: &str) -> Option<String> {
   match parsed.scheme().to_ascii_lowercase().as_str() {
     "http" | "https" | "file" | "about" => Some(parsed.to_string()),
     _ => None,
+  }
+}
+
+/// Browser navigation policy for `file://` URLs.
+///
+/// This helper is intended to be consulted *only* when the navigation target is a `file://` URL.
+/// It determines whether a navigation to a local file should be permitted based on:
+/// - the navigation reason (typed URL vs. link click vs. back/forward/reload), and
+/// - the current document URL (the "initiator") when available.
+///
+/// Rationale: in a multiprocess / sandbox model, allowing web content (`http`/`https`) to navigate a
+/// tab to `file://...` is a security footgun (and differs from mainstream browsers).
+pub(crate) fn navigation_to_file_is_allowed(
+  reason: NavigationReason,
+  current_url: Option<&str>,
+) -> bool {
+  match reason {
+    // Explicit user input is allowed to open local files.
+    NavigationReason::TypedUrl => true,
+    // Browser chrome actions should allow revisiting already-existing history entries that happen
+    // to be `file://` URLs.
+    NavigationReason::BackForward | NavigationReason::Reload => true,
+    // Link clicks from web pages must not be able to initiate file navigations.
+    NavigationReason::LinkClick => {
+      let Some(current_url) = current_url else {
+        return true;
+      };
+      let current_url = trim_ascii_whitespace(current_url);
+      if current_url.is_empty() {
+        return true;
+      }
+      let scheme = current_url
+        .split_once(':')
+        .map(|(scheme, _rest)| scheme)
+        .unwrap_or("");
+      !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https")
+    }
   }
 }
 
@@ -659,12 +698,13 @@ fn has_explicit_scheme(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::{
-    http_fallback_url_for_failed_https,
-    normalize_user_url, omnibox_input_looks_like_url, resolve_link_url, resolve_omnibox_input,
+    http_fallback_url_for_failed_https, navigation_to_file_is_allowed, normalize_user_url,
+    omnibox_input_looks_like_url, resolve_link_url, resolve_omnibox_input,
     resolve_omnibox_search_query, sanitize_worker_url_for_ui,
     validate_trusted_chrome_navigation_url_scheme, validate_user_navigation_url_scheme,
     OmniboxInputResolution,
   };
+  use crate::ui::NavigationReason;
 
   #[test]
   fn bare_domain_defaults_to_https() {
@@ -996,5 +1036,38 @@ mod tests {
     assert_eq!(resolve_omnibox_search_query("localhost"), None);
     assert_eq!(resolve_omnibox_search_query("http://localhost"), None);
     assert_eq!(resolve_omnibox_search_query("about:help"), None);
+  }
+
+  #[test]
+  fn file_navigation_is_blocked_from_http_link_clicks() {
+    assert!(
+      !navigation_to_file_is_allowed(
+        NavigationReason::LinkClick,
+        Some("https://example.com/")
+      ),
+      "expected file:// navigation to be blocked when initiated by a link click from an https page"
+    );
+  }
+
+  #[test]
+  fn file_navigation_is_allowed_for_typed_urls() {
+    assert!(
+      navigation_to_file_is_allowed(
+        NavigationReason::TypedUrl,
+        Some("https://example.com/")
+      ),
+      "expected file:// navigation to be allowed when explicitly typed by the user"
+    );
+  }
+
+  #[test]
+  fn file_navigation_is_allowed_from_file_pages() {
+    assert!(
+      navigation_to_file_is_allowed(
+        NavigationReason::LinkClick,
+        Some("file:///tmp/a.html")
+      ),
+      "expected file:// -> file:// navigations via link click to be allowed"
+    );
   }
 }

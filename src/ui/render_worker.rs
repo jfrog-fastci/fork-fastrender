@@ -40,13 +40,14 @@ use crate::ui::messages::{
   BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, NavigationReason,
   PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
-<<<<<<< HEAD
 use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
+<<<<<<< HEAD
 =======
 #[cfg(feature = "browser_ui")]
 use crate::ui::page_accesskit_subtree;
 >>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
+use crate::ui::url::navigation_to_file_is_allowed;
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
 use image::imageops::FilterType;
@@ -150,6 +151,7 @@ pub struct BrowserWorkerHandle {
 #[derive(Debug, Clone)]
 struct NavigationRequest {
   request: FormSubmission,
+  reason: NavigationReason,
   apply_fragment_scroll: bool,
 }
 
@@ -4085,6 +4087,7 @@ impl BrowserRuntime {
     tab.needs_repaint = false;
     tab.pending_navigation = Some(NavigationRequest {
       request,
+      reason,
       apply_fragment_scroll: matches!(
         reason,
         NavigationReason::TypedUrl | NavigationReason::LinkClick
@@ -8513,6 +8516,7 @@ impl BrowserRuntime {
 
     let NavigationRequest {
       request,
+      reason,
       apply_fragment_scroll,
     } = request;
 
@@ -8525,6 +8529,7 @@ impl BrowserRuntime {
       dpr,
       initial_scroll,
       cancel,
+      committed_url_before_nav,
       doc,
       current_site_key,
       js_tab,
@@ -8549,6 +8554,7 @@ impl BrowserRuntime {
         tab.dpr,
         tab.history.current().map(|e| e.scroll_state()),
         tab.cancel.clone(),
+        tab.last_committed_url.clone(),
         doc,
         tab.site_key.clone(),
         tab.js_tab.take(),
@@ -8647,6 +8653,65 @@ impl BrowserRuntime {
               tab_id,
               url: original_url,
               error: err,
+              can_go_back: tab.history.can_go_back(),
+              can_go_forward: tab.history.can_go_forward(),
+            },
+            WorkerToUi::LoadingState {
+              tab_id,
+              loading: false,
+            },
+          ],
+        });
+      }
+
+      // Browser-side navigation policy: prevent web content from initiating top-level navigations to
+      // local files (e.g. an https page linking to `file:///...`).
+      //
+      // `validate_user_navigation_url_scheme` intentionally allows `file://` because users may type
+      // local paths/URLs in the address bar. We apply an additional policy gate here based on the
+      // navigation reason + the currently committed document URL (initiator).
+      let is_file_target = original_url
+        .split_once(':')
+        .is_some_and(|(scheme, _rest)| scheme.eq_ignore_ascii_case("file"));
+      if is_file_target
+        && !navigation_to_file_is_allowed(reason, committed_url_before_nav.as_deref())
+      {
+        let _ = self.reinsert_document_and_js_state(
+          tab_id,
+          doc,
+          js_tab,
+          js_dom_mapping_generation,
+          js_dom_mapping,
+          js_dom_mapping_miss_log_last,
+          js_dom_dirty,
+          js_dom_mutation_generation,
+        );
+
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return None;
+        };
+        tab.loading = false;
+        if tab.pending_history_entry {
+          tab.history.cancel_pending_navigation_entry();
+        } else {
+          tab.history.revert_to_committed();
+        }
+        tab.pending_history_entry = false;
+        // The navigation attempt may have cleared a pending repaint (e.g. a scroll). Ensure we
+        // repaint the still-committed document if needed.
+        if tab.document.is_some() {
+          tab.needs_repaint = true;
+        }
+
+        return Some(JobOutput {
+          tab_id,
+          snapshot,
+          snapshot_kind: SnapshotKind::Prepare,
+          msgs: vec![
+            WorkerToUi::NavigationFailed {
+              tab_id,
+              url: original_url,
+              error: "Blocked navigation to local file from web page".to_string(),
               can_go_back: tab.history.can_go_back(),
               can_go_forward: tab.history.can_go_forward(),
             },
