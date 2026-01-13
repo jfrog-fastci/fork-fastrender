@@ -15166,7 +15166,8 @@ fn async_eval_class_members_from(
       }
 
       // Static initialization blocks are not properties on the class/prototype. They are evaluated
-      // *after* the element definition pass completes, in source order.
+      // after the element definition pass completes, in source order. Per ECMAScript, they must
+      // not evaluate a key.
       if matches!(&member.stx.val, ClassOrObjVal::StaticBlock(_)) {
         continue;
       }
@@ -15225,15 +15226,16 @@ fn async_eval_class_members_from(
       )?;
     }
 
-    // Evaluate class static blocks in source order.
+    // Evaluate class static blocks in source order after all class elements have been defined.
     //
-    // Note: we currently reject public/private static fields (`class fields`) earlier in the
-    // element loop, so this executes only blocks.
+    // This matches the sync evaluator's `eval_class` behaviour and ECMAScript
+    // `ClassDefinitionEvaluation`.
     for member in members {
-      evaluator.tick()?;
       if let ClassOrObjVal::StaticBlock(block) = &member.stx.val {
         let mut block_scope = scope.reborrow();
-        evaluator.eval_class_static_block(&mut block_scope, func_obj, &block.stx.body)?;
+        evaluator
+          .eval_class_static_block(&mut block_scope, func_obj, &block.stx.body)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut block_scope, err))?;
       }
     }
 
@@ -15553,6 +15555,12 @@ fn async_class_after_computed_key(
     let member = members
       .get(member_index)
       .ok_or(VmError::InvariantViolation("async class continuation out of bounds"))?;
+
+    if matches!(&member.stx.val, ClassOrObjVal::StaticBlock(_)) {
+      return Err(VmError::InvariantViolation(
+        "async class computed key frame resumed for static block",
+      ));
+    }
 
     let target_obj = if member.stx.static_ { func_obj } else { prototype_obj };
 
