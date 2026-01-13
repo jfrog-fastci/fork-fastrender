@@ -2255,6 +2255,14 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
+    // Allocate a `ScriptId` up front so host embeddings can associate per-script metadata (e.g.
+    // referrer base URL) even if parsing fails before evaluation begins.
+    let script_id = self.vm.fresh_script_id()?;
+    let exec_ctx = crate::ExecutionContext {
+      realm: self.realm.id(),
+      script_or_module: Some(ScriptOrModule::Script(script_id)),
+    };
+
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
@@ -2282,12 +2290,6 @@ impl JsRuntime {
       source: source.name.clone(),
       line,
       col,
-    };
-
-    let script_id = self.vm.fresh_script_id()?;
-    let exec_ctx = crate::ExecutionContext {
-      realm: self.realm.id(),
-      script_or_module: Some(ScriptOrModule::Script(script_id)),
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
@@ -2729,6 +2731,14 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
+    // Allocate a `ScriptId` up front so host embeddings can associate per-script metadata (e.g.
+    // referrer base URL) even if parsing fails before evaluation begins.
+    let script_id = self.vm.fresh_script_id()?;
+    let exec_ctx = crate::ExecutionContext {
+      realm: self.realm.id(),
+      script_or_module: Some(ScriptOrModule::Script(script_id)),
+    };
+
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
@@ -2756,12 +2766,6 @@ impl JsRuntime {
       source: source.name.clone(),
       line,
       col,
-    };
-
-    let script_id = self.vm.fresh_script_id()?;
-    let exec_ctx = crate::ExecutionContext {
-      realm: self.realm.id(),
-      script_or_module: Some(ScriptOrModule::Script(script_id)),
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;

@@ -1270,25 +1270,14 @@ impl WindowRealm {
     // Route Promise jobs through host hooks so embeddings can integrate with a host-owned microtask
     // queue (HTML event loop).
 
-    // If the realm does not have module loading enabled, skip the extra execution-context work:
-    // dynamic `import()` will reject immediately and module loading hooks will never be invoked.
-    if self.runtime.vm.module_graph_ptr().is_none() {
-      return self.with_vm_budget(|rt| {
-        Self::ensure_window_inherits_event_target(rt)?;
-        let result = rt.exec_script_source_with_host_and_hooks(host, hooks, source);
-        let drain_result = {
-          let mut scope = rt.heap.scope();
-          drain_pending_dataset_mutation_observer_microtasks(&mut rt.vm, &mut scope, host, hooks)
-        };
-        if result.is_ok() {
-          drain_result?;
-        }
-        result
-      });
-    }
-
+    // Keep a stable ScriptId->URL mapping in the realm module loader so dynamic `import()` calls
+    // originating from this script (including from Promise jobs and future callbacks created by
+    // this script) can resolve relative module specifiers against the script URL.
+    //
+    // `vm-js` assigns a fresh ScriptId at the start of each `exec_script_*` entrypoint, so we mirror
+    // that allocation here to obtain the ScriptId that will be used as the `ModuleReferrer::Script`
+    // identity for this run.
     let script_id = vm_js::ScriptId::from_raw(self.next_script_id_raw);
-    self.next_script_id_raw = self.next_script_id_raw.wrapping_add(1);
 
     // Use the script's own URL as the referrer base for dynamic `import()` when the source name is
     // URL-like (external scripts). Otherwise fall back to the document base URL (inline scripts).
@@ -1307,79 +1296,21 @@ impl WindowRealm {
     };
 
     let module_loader = Rc::clone(&self.module_loader);
-    let realm_id = self.realm_id;
+    let did_consume_script_id = std::cell::Cell::new(false);
+    let did_consume_script_id = &did_consume_script_id;
 
-    self.with_vm_budget(move |rt| {
+    let result = self.with_vm_budget(move |rt| {
       Self::ensure_window_inherits_event_target(rt)?;
 
-      // We want `GetActiveScriptOrModule()` to return a Script Record while this script is running
-      // so dynamic `import()` calls resolve relative to the script URL rather than the document.
-      //
-      // `vm-js`'s classic-script evaluator currently pushes an ExecutionContext whose
-      // `script_or_module` is `None`, so we push our own Script-or-Module execution context around
-      // the entire run. The engine will skip the inner `None` context and pick up this Script entry.
-      struct ScriptReferrerGuard {
-        vm: *mut Vm,
-        module_loader: ModuleLoaderHandle,
-        script_id: vm_js::ScriptId,
-        exec_ctx: vm_js::ExecutionContext,
+      {
+        let mut loader = module_loader
+          .try_borrow_mut()
+          .map_err(|_| VmError::InvariantViolation("module loader already borrowed"))?;
+        loader.register_script_url(script_id, script_url)?;
       }
 
-      impl ScriptReferrerGuard {
-        fn new(
-          vm: &mut Vm,
-          module_loader: ModuleLoaderHandle,
-          realm: RealmId,
-          script_id: vm_js::ScriptId,
-          script_url: String,
-        ) -> Result<Self, VmError> {
-          {
-            let mut loader = module_loader
-              .try_borrow_mut()
-              .map_err(|_| VmError::InvariantViolation("module loader already borrowed"))?;
-            loader.register_script_url(script_id, script_url)?;
-          }
-
-          let exec_ctx = vm_js::ExecutionContext {
-            realm,
-            script_or_module: Some(vm_js::ScriptOrModule::Script(script_id)),
-          };
-          vm.push_execution_context(exec_ctx)?;
-
-          Ok(Self {
-            vm: vm as *mut Vm,
-            module_loader,
-            script_id,
-            exec_ctx,
-          })
-        }
-      }
-
-      impl Drop for ScriptReferrerGuard {
-        fn drop(&mut self) {
-          // SAFETY: the guard is only constructed from a live `&mut Vm` owned by the current realm.
-          // It is dropped before the realm (and its VM) can be dropped.
-          let vm = unsafe { &mut *self.vm };
-          let popped = vm.pop_execution_context();
-          debug_assert_eq!(popped, Some(self.exec_ctx));
-
-          // Best-effort: do not panic if the module loader is already borrowed (should not happen).
-          if let Ok(mut loader) = self.module_loader.try_borrow_mut() {
-            loader.unregister_script_url(self.script_id);
-          }
-        }
-      }
-
-      let result = {
-        let _guard = ScriptReferrerGuard::new(
-          &mut rt.vm,
-          module_loader,
-          realm_id,
-          script_id,
-          script_url,
-        )?;
-        rt.exec_script_source_with_host_and_hooks(host, hooks, source)
-      };
+      did_consume_script_id.set(true);
+      let result = rt.exec_script_source_with_host_and_hooks(host, hooks, source);
 
       let drain_result = {
         let mut scope = rt.heap.scope();
@@ -1390,7 +1321,13 @@ impl WindowRealm {
       }
 
       result
-    })
+    });
+
+    if did_consume_script_id.get() {
+      self.next_script_id_raw = self.next_script_id_raw.wrapping_add(1);
+    }
+
+    result
   }
 
   pub(crate) fn exec_script_source_with_hooks(
@@ -1420,6 +1357,11 @@ impl WindowRealm {
   ) -> Result<Value, VmError> {
     let webidl_bindings_host = self.webidl_bindings_host;
     let webidl_limits = self.js_execution_options.webidl_limits;
+
+    let script_id = vm_js::ScriptId::from_raw(self.next_script_id_raw);
+    let module_loader = Rc::clone(&self.module_loader);
+    let did_consume_script_id = std::cell::Cell::new(false);
+    let did_consume_script_id = &did_consume_script_id;
 
     // The `vm-js` default `exec_script` path uses the VM-owned microtask queue as the active
     // `VmHostHooks` implementation. That queue does not provide FastRender's DOM shims (like
@@ -1528,8 +1470,32 @@ impl WindowRealm {
       }
     }
 
-    self.with_vm_budget(move |rt| {
+    let result = self.with_vm_budget(move |rt| {
       let source = SourceText::new_charged_arc(&mut rt.heap, source_name, source_text)?;
+
+      // Use the script's own URL as the referrer base for dynamic `import()` when the source name
+      // is URL-like (external scripts). Otherwise fall back to the document base URL (inline
+      // scripts).
+      let script_url = if Url::parse(source.name.as_ref()).is_ok() {
+        source.name.to_string()
+      } else {
+        let Some(data) = rt.vm.user_data_mut::<WindowRealmUserData>() else {
+          return Err(VmError::InvariantViolation(
+            "window realm missing user data",
+          ));
+        };
+        data
+          .base_url
+          .clone()
+          .unwrap_or_else(|| data.document_url.clone())
+      };
+
+      {
+        let mut loader = module_loader
+          .try_borrow_mut()
+          .map_err(|_| VmError::InvariantViolation("module loader already borrowed"))?;
+        loader.register_script_url(script_id, script_url)?;
+      }
 
       // Temporarily move the VM-owned microtask queue out so we can both:
       // - expose DOM shim exotic hooks to the evaluator, and
@@ -1556,6 +1522,7 @@ impl WindowRealm {
         any,
         dataset_ctx,
       };
+      did_consume_script_id.set(true);
       let result = rt.exec_script_source_with_host_and_hooks(&mut host_ctx, &mut hooks, source);
       let drain_result = {
         let mut scope = rt.heap.scope();
@@ -1568,7 +1535,13 @@ impl WindowRealm {
       // hooks payload stores a raw pointer to it.
       let _ = &mut fallback_webidl_bindings_host;
       result
-    })
+    });
+
+    if did_consume_script_id.get() {
+      self.next_script_id_raw = self.next_script_id_raw.wrapping_add(1);
+    }
+
+    result
   }
 
   fn with_vm_budget<T>(
