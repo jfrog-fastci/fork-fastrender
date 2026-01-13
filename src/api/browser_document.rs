@@ -1247,7 +1247,7 @@ impl BrowserDocument {
       self
         .prepared
         .as_ref()
-        .map(|prepared| super::styled_layout_fingerprint_digest(prepared.styled_tree()))
+        .map(PreparedDocument::layout_style_fingerprint_digest)
     } else {
       None
     };
@@ -1323,7 +1323,7 @@ impl BrowserDocument {
         let next_layout_fingerprint = self
           .prepared
           .as_ref()
-          .map(|prepared| super::styled_layout_fingerprint_digest(prepared.styled_tree()));
+          .map(PreparedDocument::layout_style_fingerprint_digest);
         match (prev_layout_fingerprint, next_layout_fingerprint) {
           (Some(prev), Some(next)) => prev == next,
           _ => false,
