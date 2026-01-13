@@ -850,3 +850,44 @@ fn range_remap_node_ids_updates_boundary_points_for_cross_document_adopted_detac
     "remapped endpoint should refer to the cloned text node in the destination document"
   );
 }
+
+#[test]
+fn range_to_string_matches_dom_stringifier_expectations() {
+  // Mirrors `tests/wpt_dom/tests/dom/ranges/Range-stringifier.html`.
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=test>Test div</div>\n",
+    "<div id=another>Another div</div>\n",
+    "<div id=last>Last div</div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let test_div = doc.get_element_by_id("test").unwrap();
+  let another_div = doc.get_element_by_id("another").unwrap();
+  let last_div = doc.get_element_by_id("last").unwrap();
+
+  let text_node = doc.node(test_div).children[0];
+  let last_text = doc.node(last_div).children[0];
+
+  let range = doc.create_range();
+
+  // Equivalent to `Range.selectNodeContents(testDiv)`.
+  let end_offset = doc.node_length(test_div).unwrap();
+  doc.range_set_start(range, test_div, 0).unwrap();
+  doc.range_set_end(range, test_div, end_offset).unwrap();
+  assert_eq!(doc.range_to_string(range).unwrap(), "Test div");
+
+  doc.range_set_start(range, text_node, 5).unwrap();
+  doc.range_set_end(range, text_node, 7).unwrap();
+  assert_eq!(doc.range_to_string(range).unwrap(), "di");
+
+  doc.range_set_start(range, test_div, 0).unwrap();
+  doc.range_set_end(range, another_div, 0).unwrap();
+  assert_eq!(doc.range_to_string(range).unwrap(), "Test div\n");
+
+  doc.range_set_start(range, text_node, 5).unwrap();
+  doc.range_set_end(range, last_text, 4).unwrap();
+  assert_eq!(doc.range_to_string(range).unwrap(), "div\nAnother div\nLast");
+}
