@@ -183,7 +183,8 @@ if [[ "${run_summary}" -eq 1 ]]; then
     set +e
     timeout -k 10 600 bash "${repo_root}/scripts/run_limited.sh" --as 64G -- \
       bash "${repo_root}/scripts/cargo_agent.sh" run --release --bin browser_perf_log_summary -- \
-      --input "${out_path}"
+      --input "${out_path}" \
+      >/dev/null
     summary_status=$?
     set -e
     if [[ "${summary_status}" -ne 0 ]]; then
