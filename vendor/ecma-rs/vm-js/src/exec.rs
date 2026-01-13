@@ -3961,14 +3961,17 @@ impl<'a> Evaluator<'a> {
     fn collect_label_chain<'a>(
       mut stmt: &'a Node<Stmt>,
       out: &mut Vec<(&'a str, parse_js::loc::Loc)>,
-    ) -> &'a Node<Stmt> {
+    ) -> Result<&'a Node<Stmt>, VmError> {
       loop {
         match &*stmt.stx {
           Stmt::Label(label) => {
+            out
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
             out.push((label.stx.name.as_str(), stmt.loc));
             stmt = &label.stx.statement;
           }
-          _ => return stmt,
+          _ => return Ok(stmt),
         }
       }
     }
@@ -3996,19 +3999,24 @@ impl<'a> Evaluator<'a> {
       match &*stmt.stx {
         Stmt::Label(_) => {
           let mut labels: Vec<(&'a str, parse_js::loc::Loc)> = Vec::new();
-          let base = collect_label_chain(stmt, &mut labels);
+          let base = collect_label_chain(stmt, &mut labels)?;
           let base_non_label = first_non_label_stmt(base);
           let is_iteration = is_iteration_stmt(&base_non_label.stx);
 
-          for (name, loc) in &labels {
-            this.tick()?;
-            if ctx.labels.contains(name) {
-              let msg =
-                crate::fallible_format::try_format_error_message("Duplicate label '", name, "'")?;
-              return Err(syntax_error(*loc, msg));
-            }
-            ctx.labels.insert(*name);
-            if is_iteration {
+            for (name, loc) in &labels {
+              this.tick()?;
+              if ctx.labels.contains(name) {
+                let message =
+                  crate::fallible_format::try_format_error_message("Duplicate label '", name, "'")?;
+                return Err(syntax_error(*loc, message));
+              }
+              ctx.labels.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+              ctx.labels.insert(*name);
+              if is_iteration {
+                ctx
+                .iteration_labels
+                .try_reserve(1)
+                .map_err(|_| VmError::OutOfMemory)?;
               ctx.iteration_labels.insert(*name);
             }
           }
@@ -4026,9 +4034,9 @@ impl<'a> Evaluator<'a> {
           }
           Some(label) => {
             if !ctx.labels.contains(label) {
-              let msg =
+              let message =
                 crate::fallible_format::try_format_error_message("Undefined label '", label, "'")?;
-              return Err(syntax_error(stmt.loc, msg));
+              return Err(syntax_error(stmt.loc, message));
             }
             Ok(())
           }
@@ -4042,14 +4050,14 @@ impl<'a> Evaluator<'a> {
           }
           Some(label) => {
             if !ctx.iteration_labels.contains(label) {
-              let msg = crate::fallible_format::try_format_error_message(
+              let message = crate::fallible_format::try_format_error_message(
                 "Illegal continue statement: '",
                 label,
                 "' does not denote an iteration statement",
               )?;
               return Err(syntax_error(
                 stmt.loc,
-                msg,
+                message,
               ));
             }
             Ok(())
@@ -28477,11 +28485,10 @@ fn gen_resume_from_frames(
           };
 
           let Some(throw_method) = throw_method else {
-            // No `throw` method:
-            // 1. IteratorClose(iteratorRecord, NormalCompletion(empty)) (non-throw)
-            // 2. Throw TypeError (yield* protocol violation).
+            // No `throw` method: close the delegate iterator (IteratorClose), then throw a TypeError.
             //
-            // If IteratorClose throws, that error overrides the protocol-violation TypeError.
+            // Errors thrown while closing (including non-object `return` results) override the
+            // protocol-violation TypeError.
             if let Err(close_err) = iterator::iterator_close(
               evaluator.vm,
               &mut *evaluator.host,

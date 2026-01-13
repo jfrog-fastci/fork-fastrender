@@ -8,7 +8,7 @@ use vm_js::{
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError"
   );
   process::exit(2);
 }
@@ -131,6 +131,10 @@ fn main() {
     // This scenario triggers an indirect-export resolution failure during module linking while the
     // process is under a tight RLIMIT_AS, and asserts we exit cleanly (either `VmError::OutOfMemory`
     // or a thrown `SyntaxError`).
+    //
+    // Keep the filler buffer alive for the duration of linking so the process stays close to the
+    // RLIMIT_AS ceiling.
+    let _keep = &filler;
     let alloc_ascii_string = |len: usize| -> Option<String> {
       let mut bytes: Vec<u8> = Vec::new();
       bytes.try_reserve_exact(len).ok()?;
@@ -230,69 +234,110 @@ fn main() {
       }
     }
   }
+  let needs_global_string = matches!(
+    scenario.as_str(),
+    "eval"
+      | "function"
+      | "generator"
+      | "number"
+      | "parseFloat"
+      | "regexp_compile"
+      | "regexp"
+      | "arrayMap"
+      | "throw_string_format"
+  );
 
-  // Create a large heap string and install it as `globalThis.S` so the script itself can be tiny.
-  let fill_unit = match scenario.as_str() {
-    "parseFloat" => b'1' as u16,
-    // Use U+0800 so UTF-8 encoding expands to 3 bytes per code unit. This allows triggering
-    // host-side allocation failures with smaller UTF-16 strings.
-    _ => 0x0800u16,
-  };
+  if needs_global_string {
+    // Create a large heap string and install it as `globalThis.S` so the script itself can be tiny.
+    let fill_unit = match scenario.as_str() {
+      "parseFloat" => b'1' as u16,
+      // Use U+0800 so UTF-8 encoding expands to 3 bytes per code unit. This allows triggering
+      // host-side allocation failures with smaller UTF-16 strings.
+      _ => 0x0800u16,
+    };
 
-  let s = {
-    let mut units: Vec<u16> = Vec::new();
-    if units.try_reserve_exact(len_code_units).is_err() {
-      eprintln!("oom_harness: failed to allocate input string buffer");
-      process::exit(1);
-    }
-    units.resize(len_code_units, fill_unit);
-
-    let mut scope = agent.heap_mut().scope();
-    match scope.alloc_string_from_u16_vec(units) {
-      Ok(s) => s,
-      Err(err) => {
-        eprintln!("oom_harness: failed to allocate heap string: {err:?}");
+    let s = {
+      let mut units: Vec<u16> = Vec::new();
+      if units.try_reserve_exact(len_code_units).is_err() {
+        eprintln!("oom_harness: failed to allocate input string buffer");
         process::exit(1);
       }
-    }
-  };
+      units.resize(len_code_units, fill_unit);
 
-  {
-    let global = agent.realm().global_object();
-    let mut scope = agent.heap_mut().scope();
-    if scope.push_roots(&[Value::Object(global), Value::String(s)]).is_err() {
-      eprintln!("oom_harness: failed to root inputs");
-      process::exit(1);
-    }
-
-    let key_s = match scope.alloc_string("S") {
-      Ok(k) => k,
-      Err(err) => {
-        eprintln!("oom_harness: failed to allocate global key string: {err:?}");
-        process::exit(1);
+      let mut scope = agent.heap_mut().scope();
+      match scope.alloc_string_from_u16_vec(units) {
+        Ok(s) => s,
+        Err(err) => {
+          eprintln!("oom_harness: failed to allocate heap string: {err:?}");
+          process::exit(1);
+        }
       }
     };
-    if scope.push_root(Value::String(key_s)).is_err() {
-      eprintln!("oom_harness: failed to root global key string");
-      process::exit(1);
-    }
 
-    let desc = PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::String(s),
-        writable: true,
-      },
-    };
-    let key = PropertyKey::from_string(key_s);
-    if scope.define_property(global, key, desc).is_err() {
-      eprintln!("oom_harness: failed to define global property");
-      process::exit(1);
+    {
+      let global = agent.realm().global_object();
+      let mut scope = agent.heap_mut().scope();
+      if scope.push_roots(&[Value::Object(global), Value::String(s)]).is_err() {
+        eprintln!("oom_harness: failed to root inputs");
+        process::exit(1);
+      }
+
+      let key_s = match scope.alloc_string("S") {
+        Ok(k) => k,
+        Err(err) => {
+          eprintln!("oom_harness: failed to allocate global key string: {err:?}");
+          process::exit(1);
+        }
+      };
+      if scope.push_root(Value::String(key_s)).is_err() {
+        eprintln!("oom_harness: failed to root global key string");
+        process::exit(1);
+      }
+
+      let desc = PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(s),
+          writable: true,
+        },
+      };
+      let key = PropertyKey::from_string(key_s);
+      if scope.define_property(global, key, desc).is_err() {
+        eprintln!("oom_harness: failed to define global property");
+        process::exit(1);
+      }
     }
   }
 
   let result = match scenario.as_str() {
+    "labelEarlyError" => {
+      // Construct a large script containing an early error involving a huge label identifier. This
+      // previously used infallible `format!` in early error formatting, which could abort the
+      // process under allocator OOM.
+      let total_len = "break ".len()
+        .checked_add(len_code_units)
+        .and_then(|n| n.checked_add(";".len()))
+        .unwrap_or(usize::MAX);
+      if total_len == usize::MAX {
+        eprintln!("oom_harness: labelEarlyError script length overflow");
+        process::exit(1);
+      }
+      let mut bytes: Vec<u8> = Vec::new();
+      if bytes.try_reserve_exact(total_len).is_err() {
+        eprintln!("oom_harness: failed to allocate labelEarlyError script buffer");
+        process::exit(1);
+      }
+      bytes.extend_from_slice(b"break ");
+      bytes.resize("break ".len() + len_code_units, b'a');
+      bytes.extend_from_slice(b";");
+      let script = unsafe { String::from_utf8_unchecked(bytes) };
+
+      // Keep `filler` alive for the duration of the run.
+      let _keep = &filler;
+
+      agent.run_script("oom_harness.js", script, Budget::unlimited(1), None)
+    }
     "getPrototypeOf_proxy_chain" => {
       // Create a Proxy so `Heap::object_prototype` traverses a proxy chain and uses a `HashSet`
       // for cycle detection.
@@ -427,6 +472,8 @@ fn main() {
   };
 
   if scenario == "throw_string_format" {
+    // Keep `filler` alive while formatting the thrown value.
+    let _keep = &filler;
     match &result {
       Ok(v) => {
         eprintln!("oom_harness: unexpected success: {v:?}");
@@ -448,6 +495,7 @@ fn main() {
 
   match result {
     Err(VmError::OutOfMemory) => process::exit(0),
+    Err(VmError::Syntax(_)) if scenario == "labelEarlyError" => process::exit(0),
     // `parseFloat` is allowed to succeed here: upstream implementations may parse directly from
     // UTF-16 without allocating an intermediate `String`. The key invariant is that it must not
     // abort the process under memory pressure.

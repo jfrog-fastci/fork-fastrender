@@ -129,3 +129,10 @@ fn module_graph_growth_does_not_abort_on_oom() {
   // The oom harness interprets `len_code_units` as the specifier length for this scenario.
   run_oom_harness("moduleGraph", 8 * 1024);
 }
+
+#[test]
+fn label_early_error_large_label_does_not_abort_on_oom() {
+  // Early-error diagnostics that embed attacker-controlled label identifiers must use bounded,
+  // fallible formatting and must not abort on allocator OOM.
+  run_oom_harness("labelEarlyError", 25_000_000);
+}

@@ -1,4 +1,5 @@
 use crate::error::VmError;
+use crate::fallible_format::try_format_error_message;
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{
   ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMember, ObjMemberType,
@@ -23,6 +24,16 @@ use parse_js::token::TT;
 use std::collections::{HashMap, HashSet};
 
 const EARLY_ERROR_CODE: &str = "VMJS0004";
+
+#[inline]
+fn try_clone_string(value: &str) -> Result<String, VmError> {
+  let mut out = String::new();
+  out
+    .try_reserve_exact(value.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  out.push_str(value);
+  Ok(out)
+}
 
 fn is_restricted_identifier(name: &str) -> bool {
   // Restricted identifiers (ECMA-262 `IsRestrictedIdentifier`) are early errors in strict mode.
@@ -368,7 +379,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             self.push_error(stmt.loc, "anonymous function declaration")?;
             continue;
           };
-          var_names.insert(name.stx.name.clone());
+          let name_str = name.stx.name.as_str();
+          if !var_names.contains(name_str) {
+            var_names.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+            var_names.insert(try_clone_string(name_str)?);
+          }
         }
       } else {
         // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
@@ -530,7 +545,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
     // BoundNames(ForDeclaration)
     let mut bound_names: Vec<(String, Loc)> = Vec::new();
-    Self::collect_bound_names_from_pat(&pat.stx.pat, &mut bound_names);
+    Self::collect_bound_names_from_pat(&pat.stx.pat, &mut bound_names)?;
 
     // Duplicate BoundNames(ForDeclaration)
     let mut seen: HashMap<String, Loc> = HashMap::new();
@@ -542,7 +557,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         seen
           .try_reserve(1)
           .map_err(|_| VmError::OutOfMemory)?;
-        seen.insert(name.clone(), *loc);
+        seen.insert(try_clone_string(name.as_str())?, *loc);
       }
     }
 
@@ -592,7 +607,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         seen
           .try_reserve(1)
           .map_err(|_| VmError::OutOfMemory)?;
-        seen.insert(name.to_string(), kind);
+        seen.insert(try_clone_string(name)?, kind);
       }
       Some(prev) => {
         let allow_duplicate = !ctx.strict
@@ -719,7 +734,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn collect_var_names_from_pat(&mut self, pat: &Pat, out: &mut HashSet<String>) -> Result<(), VmError> {
     match pat {
       Pat::Id(id) => {
-        out.insert(id.stx.name.clone());
+        let name_str = id.stx.name.as_str();
+        if !out.contains(name_str) {
+          out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          out.insert(try_clone_string(name_str)?);
+        }
         Ok(())
       }
       Pat::Obj(obj) => {
@@ -765,7 +784,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           self.push_error(decl.loc, "anonymous function declaration")?;
           return Ok(());
         };
-        out.insert(name.stx.name.clone());
+        let name_str = name.stx.name.as_str();
+        if !out.contains(name_str) {
+          out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          out.insert(try_clone_string(name_str)?);
+        }
         Ok(())
       }
       Stmt::Block(block) => {
@@ -843,7 +866,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     seen: &mut HashMap<String, LexicalNameKind>,
     var_names: &HashSet<String>,
   ) -> Result<(), VmError> {
-    match &*pat.stx {
+      match &*pat.stx {
       Pat::Id(id) => {
         self.insert_lexical_name(ctx, &id.stx.name, LexicalNameKind::Other, loc, seen, var_names)?;
         Ok(())
@@ -1130,10 +1153,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn visit_label(&mut self, ctx: &mut ControlContext, loc: Loc, stmt: &LabelStmt) -> Result<(), VmError> {
     let is_iteration = Self::is_iteration_statement(&stmt.statement);
     if ctx.labels.iter().any(|l| l.name == stmt.name) {
-      self.push_error(loc, format!("duplicate label '{}'", stmt.name))?;
+      let message = try_format_error_message("duplicate label '", &stmt.name, "'")?;
+      self.push_error(loc, message)?;
     }
+    ctx.labels.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     ctx.labels.push(LabelInfo {
-      name: stmt.name.clone(),
+      name: try_clone_string(&stmt.name)?,
       is_iteration,
     });
     let res = self.visit_stmt(ctx, &stmt.statement);
@@ -1160,7 +1185,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     match stmt.label.as_ref() {
       Some(label) => {
         if !ctx.labels.iter().any(|l| l.name == *label) {
-          self.push_error(loc, format!("undefined label '{label}'"))?;
+          let message = try_format_error_message("undefined label '", label, "'")?;
+          self.push_error(loc, message)?;
         }
       }
       None => {
@@ -1185,7 +1211,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           .iter()
           .any(|l| l.name == *label && l.is_iteration)
         {
-          self.push_error(loc, format!("undefined loop label '{label}'"))?;
+          let message = try_format_error_message("undefined loop label '", label, "'")?;
+          self.push_error(loc, message)?;
         }
       }
       None => {
@@ -1209,10 +1236,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if ctx.strict {
       if let Some(name) = &decl.name {
         if is_restricted_identifier(&name.stx.name) {
-          self.push_error(
-            name.loc,
-            format!("restricted identifier '{}' is not allowed in strict mode", name.stx.name),
+          let message = try_format_error_message(
+            "restricted identifier '",
+            name.stx.name.as_str(),
+            "' is not allowed in strict mode",
           )?;
+          self.push_error(name.loc, message)?;
         }
       }
     }
@@ -1226,10 +1255,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if ctx.strict {
       if let Some(name) = &expr.name {
         if is_restricted_identifier(&name.stx.name) {
-          self.push_error(
-            name.loc,
-            format!("restricted identifier '{}' is not allowed in strict mode", name.stx.name),
+          let message = try_format_error_message(
+            "restricted identifier '",
+            name.stx.name.as_str(),
+            "' is not allowed in strict mode",
           )?;
+          self.push_error(name.loc, message)?;
         }
       }
     }
@@ -1293,34 +1324,55 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     for member in members {
       if let ClassOrObjKey::Direct(key) = &member.stx.key {
         if key.stx.tt == TT::PrivateMember {
-          declared_private_names
-            .try_reserve(1)
-            .map_err(|_| VmError::OutOfMemory)?;
-          declared_private_names.insert(key.stx.key.clone());
+          let name = key.stx.key.as_str();
 
-          private_name_decl_state
-            .try_reserve(1)
-            .map_err(|_| VmError::OutOfMemory)?;
-          let entry = private_name_decl_state.entry(key.stx.key.clone()).or_default();
+          if !declared_private_names.contains(name) {
+            declared_private_names
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
+            declared_private_names.insert(try_clone_string(name)?);
+          }
+
+          // Track private name declarations to detect illegal duplicates:
+          // - A private name cannot be used for both static and instance elements.
+          // - Getter/setter pairs are allowed, but other duplicate declarations are early errors.
+          let entry = match private_name_decl_state.get_mut(name) {
+            Some(entry) => entry,
+            None => {
+              private_name_decl_state
+                .try_reserve(1)
+                .map_err(|_| VmError::OutOfMemory)?;
+              private_name_decl_state.insert(try_clone_string(name)?, PrivateNameDeclState::default());
+              // Safe: just inserted.
+              private_name_decl_state
+                .get_mut(name)
+                .expect("private name state entry missing after insert")
+            }
+          };
+
           if let Some(prev_static) = entry.is_static {
             if prev_static != member.stx.static_ {
-              self.push_error(key.loc, format!("duplicate private name '{}'", key.stx.key))?;
+              let message = try_format_error_message("duplicate private name '", name, "'")?;
+              self.push_error(key.loc, message)?;
               continue;
             }
           } else {
             entry.is_static = Some(member.stx.static_);
           }
+
           match &member.stx.val {
             ClassOrObjVal::Getter(_) => {
               if entry.has_other || entry.has_getter {
-                self.push_error(key.loc, format!("duplicate private name '{}'", key.stx.key))?;
+                let message = try_format_error_message("duplicate private name '", name, "'")?;
+                self.push_error(key.loc, message)?;
               } else {
                 entry.has_getter = true;
               }
             }
             ClassOrObjVal::Setter(_) => {
               if entry.has_other || entry.has_setter {
-                self.push_error(key.loc, format!("duplicate private name '{}'", key.stx.key))?;
+                let message = try_format_error_message("duplicate private name '", name, "'")?;
+                self.push_error(key.loc, message)?;
               } else {
                 entry.has_setter = true;
               }
@@ -1329,7 +1381,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             // only duplication that's allowed as a pair.
             _ => {
               if entry.has_other || entry.has_getter || entry.has_setter {
-                self.push_error(key.loc, format!("duplicate private name '{}'", key.stx.key))?;
+                let message = try_format_error_message("duplicate private name '", name, "'")?;
+                self.push_error(key.loc, message)?;
               } else {
                 entry.has_other = true;
               }
@@ -1489,28 +1542,35 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     })
   }
 
-  fn collect_bound_names_from_pat(pat: &Node<Pat>, out: &mut Vec<(String, Loc)>) {
+  fn collect_bound_names_from_pat(pat: &Node<Pat>, out: &mut Vec<(String, Loc)>) -> Result<(), VmError> {
     match &*pat.stx {
-      Pat::Id(id) => out.push((id.stx.name.clone(), pat.loc)),
+      Pat::Id(id) => {
+        out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        out.push((try_clone_string(id.stx.name.as_str())?, pat.loc));
+        Ok(())
+      }
       Pat::Arr(arr) => {
         for elem in &arr.stx.elements {
           let Some(elem) = elem else { continue };
-          Self::collect_bound_names_from_pat(&elem.target, out);
+          Self::collect_bound_names_from_pat(&elem.target, out)?;
         }
         if let Some(rest) = &arr.stx.rest {
-          Self::collect_bound_names_from_pat(rest, out);
+          Self::collect_bound_names_from_pat(rest, out)?;
         }
+        Ok(())
       }
       Pat::Obj(obj) => {
         for prop in &obj.stx.properties {
-          Self::collect_bound_names_from_pat(&prop.stx.target, out);
+          Self::collect_bound_names_from_pat(&prop.stx.target, out)?;
         }
         if let Some(rest) = &obj.stx.rest {
-          Self::collect_bound_names_from_pat(rest, out);
+          Self::collect_bound_names_from_pat(rest, out)?;
         }
+        Ok(())
       }
       Pat::AssignTarget(_) => {
         // Assignment targets are not binding patterns; ignore.
+        Ok(())
       }
     }
   }
@@ -1530,8 +1590,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         for declarator in &decl.stx.declarators {
           self.step()?;
           let mut names: Vec<(String, Loc)> = Vec::new();
-          Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names);
+          Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names)?;
           for (name, _) in names {
+            out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
             out.insert(name);
           }
         }
@@ -1558,8 +1619,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             for declarator in &decl.stx.declarators {
               self.step()?;
               let mut names: Vec<(String, Loc)> = Vec::new();
-              Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names);
+              Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names)?;
               for (name, _) in names {
+                out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
                 out.insert(name);
               }
             }
@@ -1574,8 +1636,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if let ForInOfLhs::Decl((mode, pat)) = &stmt.stx.lhs {
           if *mode == VarDeclMode::Var {
             let mut names: Vec<(String, Loc)> = Vec::new();
-            Self::collect_bound_names_from_pat(&pat.stx.pat, &mut names);
+            Self::collect_bound_names_from_pat(&pat.stx.pat, &mut names)?;
             for (name, _) in names {
+              out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
               out.insert(name);
             }
           }
@@ -1589,8 +1652,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if let ForInOfLhs::Decl((mode, pat)) = &stmt.stx.lhs {
           if *mode == VarDeclMode::Var {
             let mut names: Vec<(String, Loc)> = Vec::new();
-            Self::collect_bound_names_from_pat(&pat.stx.pat, &mut names);
+            Self::collect_bound_names_from_pat(&pat.stx.pat, &mut names)?;
             for (name, _) in names {
+              out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
               out.insert(name);
             }
           }
@@ -1658,9 +1722,14 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           for declarator in &decl.stx.declarators {
             self.step()?;
             let mut names: Vec<(String, Loc)> = Vec::new();
-            Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names);
+            Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names)?;
             for (name, loc) in names {
-              if !lexical_names.insert(name.clone()) || var_names.contains(&name) {
+              let collides_var = var_names.contains(name.as_str());
+              lexical_names
+                .try_reserve(1)
+                .map_err(|_| VmError::OutOfMemory)?;
+              let inserted = lexical_names.insert(name);
+              if !inserted || collides_var {
                 self.push_error(loc, "Identifier has already been declared")?;
               }
             }
@@ -1668,14 +1737,32 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         }
         Stmt::ClassDecl(decl) => {
           if let Some(name) = &decl.stx.name {
-            if !lexical_names.insert(name.stx.name.clone()) || var_names.contains(&name.stx.name) {
+            let name_str = name.stx.name.as_str();
+            let duplicate = lexical_names.contains(name_str);
+            let collides_var = var_names.contains(name_str);
+            if !duplicate {
+              lexical_names
+                .try_reserve(1)
+                .map_err(|_| VmError::OutOfMemory)?;
+              lexical_names.insert(try_clone_string(name_str)?);
+            }
+            if duplicate || collides_var {
               self.push_error(name.loc, "Identifier has already been declared")?;
             }
           }
         }
         Stmt::FunctionDecl(decl) => {
           if let Some(name) = &decl.stx.name {
-            if !lexical_names.insert(name.stx.name.clone()) || var_names.contains(&name.stx.name) {
+            let name_str = name.stx.name.as_str();
+            let duplicate = lexical_names.contains(name_str);
+            let collides_var = var_names.contains(name_str);
+            if !duplicate {
+              lexical_names
+                .try_reserve(1)
+                .map_err(|_| VmError::OutOfMemory)?;
+              lexical_names.insert(try_clone_string(name_str)?);
+            }
+            if duplicate || collides_var {
               self.push_error(name.loc, "Identifier has already been declared")?;
             }
           }
@@ -1714,10 +1801,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if func_strict {
       if let Some(name) = name {
         if is_restricted_identifier(&name.stx.name) {
-          self.push_error(
-            name.loc,
-            format!("restricted identifier '{}' is not allowed in strict mode", name.stx.name),
+          let message = try_format_error_message(
+            "restricted identifier '",
+            name.stx.name.as_str(),
+            "' is not allowed in strict mode",
           )?;
+          self.push_error(name.loc, message)?;
         }
       }
     }
@@ -1741,11 +1830,13 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       for param in params {
         self.step()?;
         let mut names: Vec<(String, Loc)> = Vec::new();
-        Self::collect_bound_names_from_pat(&param.stx.pattern.stx.pat, &mut names);
+        Self::collect_bound_names_from_pat(&param.stx.pattern.stx.pat, &mut names)?;
         for (name, loc) in names {
           if let Some(_first) = seen.get(&name) {
-            self.push_error(loc, format!("duplicate parameter name '{name}'"))?;
+            let message = try_format_error_message("duplicate parameter name '", &name, "'")?;
+            self.push_error(loc, message)?;
           } else {
+            seen.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
             seen.insert(name, loc);
           }
         }
@@ -1956,23 +2047,27 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn visit_binary(&mut self, ctx: &mut ControlContext, expr: &BinaryExpr) -> Result<(), VmError> {
     if expr.operator.is_assignment() {
       // `eval = ...` and `arguments = ...` are strict-mode early errors.
-      if ctx.strict {
-        match &*expr.left.stx {
-          Expr::Id(id) if is_restricted_identifier(&id.stx.name) => {
-            self.push_error(
-              expr.left.loc,
-              format!("cannot assign to '{}' in strict mode", id.stx.name),
-            )?;
+        if ctx.strict {
+          match &*expr.left.stx {
+            Expr::Id(id) if is_restricted_identifier(&id.stx.name) => {
+              let message = try_format_error_message(
+                "cannot assign to '",
+                id.stx.name.as_str(),
+                "' in strict mode",
+              )?;
+              self.push_error(expr.left.loc, message)?;
+            }
+            Expr::IdPat(id) if is_restricted_identifier(&id.stx.name) => {
+              let message = try_format_error_message(
+                "cannot assign to '",
+                id.stx.name.as_str(),
+                "' in strict mode",
+              )?;
+              self.push_error(expr.left.loc, message)?;
+            }
+            _ => {}
           }
-          Expr::IdPat(id) if is_restricted_identifier(&id.stx.name) => {
-            self.push_error(
-              expr.left.loc,
-              format!("cannot assign to '{}' in strict mode", id.stx.name),
-            )?;
-          }
-          _ => {}
         }
-      }
 
       // Optional chaining is a static early error in assignment targets.
       if matches!(&*expr.left.stx, Expr::ArrPat(_) | Expr::ObjPat(_)) {
@@ -2047,16 +2142,20 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if ctx.strict {
           match &*expr.argument.stx {
             Expr::Id(id) if is_restricted_identifier(&id.stx.name) => {
-              self.push_error(
-                expr.argument.loc,
-                format!("cannot assign to '{}' in strict mode", id.stx.name),
+              let message = try_format_error_message(
+                "cannot assign to '",
+                id.stx.name.as_str(),
+                "' in strict mode",
               )?;
+              self.push_error(expr.argument.loc, message)?;
             }
             Expr::IdPat(id) if is_restricted_identifier(&id.stx.name) => {
-              self.push_error(
-                expr.argument.loc,
-                format!("cannot assign to '{}' in strict mode", id.stx.name),
+              let message = try_format_error_message(
+                "cannot assign to '",
+                id.stx.name.as_str(),
+                "' in strict mode",
               )?;
+              self.push_error(expr.argument.loc, message)?;
             }
             _ => {}
           }
@@ -2082,16 +2181,20 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if ctx.strict {
           match &*expr.argument.stx {
             Expr::Id(id) if is_restricted_identifier(&id.stx.name) => {
-              self.push_error(
-                expr.argument.loc,
-                format!("cannot assign to '{}' in strict mode", id.stx.name),
+              let message = try_format_error_message(
+                "cannot assign to '",
+                id.stx.name.as_str(),
+                "' in strict mode",
               )?;
+              self.push_error(expr.argument.loc, message)?;
             }
             Expr::IdPat(id) if is_restricted_identifier(&id.stx.name) => {
-              self.push_error(
-                expr.argument.loc,
-                format!("cannot assign to '{}' in strict mode", id.stx.name),
+              let message = try_format_error_message(
+                "cannot assign to '",
+                id.stx.name.as_str(),
+                "' in strict mode",
               )?;
+              self.push_error(expr.argument.loc, message)?;
             }
             _ => {}
           }
@@ -2258,10 +2361,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Pat::Arr(arr) => self.visit_arr_pat(ctx, &arr.stx, role),
       Pat::Id(id) => {
         if ctx.strict && is_restricted_identifier(&id.stx.name) {
-          self.push_error(
-            pat.loc,
-            format!("restricted identifier '{}' is not allowed in strict mode", id.stx.name),
+          let message = try_format_error_message(
+            "restricted identifier '",
+            id.stx.name.as_str(),
+            "' is not allowed in strict mode",
           )?;
+          self.push_error(pat.loc, message)?;
         }
         Ok(())
       }
