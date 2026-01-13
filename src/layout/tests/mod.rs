@@ -399,6 +399,7 @@ mod table_direction_rtl;
 mod table_direction_rtl_colgroup_background;
 mod table_direction_rtl_column_order;
 mod table_empty_cells;
+mod table_empty_row_height;
 mod table_fixed_layout_algorithm;
 mod table_fixed_layout_col_width_overrides_first_row_cell_width;
 mod table_fixed_layout_colgroup_width_applies_to_col_children;
