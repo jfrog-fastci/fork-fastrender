@@ -21,6 +21,26 @@ const SHORTCUT_NEW_WINDOW: &str = "Cmd+N";
 const SHORTCUT_NEW_WINDOW: &str = "Ctrl+N";
 
 #[cfg(target_os = "macos")]
+const SHORTCUT_UNDO: &str = "Cmd+Z";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_UNDO: &str = "Ctrl+Z";
+
+#[cfg(target_os = "macos")]
+const SHORTCUT_REDO: &str = "Cmd+Shift+Z";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_REDO: &str = "Ctrl+Shift+Z";
+
+#[cfg(target_os = "macos")]
+const SHORTCUT_SELECT_ALL: &str = "Cmd+A";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_SELECT_ALL: &str = "Ctrl+A";
+
+#[cfg(target_os = "macos")]
+const SHORTCUT_FIND_IN_PAGE: &str = "Cmd+F";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_FIND_IN_PAGE: &str = "Ctrl+F";
+
+#[cfg(target_os = "macos")]
 const SHORTCUT_CLOSE_TAB: &str = "Cmd+W";
 #[cfg(not(target_os = "macos"))]
 const SHORTCUT_CLOSE_TAB: &str = "Ctrl+W";
@@ -119,9 +139,13 @@ pub enum MenuCommand {
   NewWindow,
   CloseTab,
   Quit,
+  Undo,
+  Redo,
   Copy,
   Cut,
   Paste,
+  SelectAll,
+  FindInPage,
   Reload,
   ZoomIn,
   ZoomOut,
@@ -157,6 +181,13 @@ pub fn menu_bar_ui(
     .active_tab()
     .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()))
     .is_some();
+  let chrome_text_input_expected = ctx.wants_keyboard_input()
+    || app.chrome.address_bar_has_focus
+    || app.chrome.tab_search.open
+    || state.history_panel_open
+    || state.bookmarks_panel_open
+    || app.active_tab().is_some_and(|tab| tab.find.open);
+  let can_select_all = chrome_text_input_expected || has_active_tab;
 
   egui::TopBottomPanel::top("menu_bar")
     .resizable(false)
@@ -223,24 +254,27 @@ pub fn menu_bar_ui(
         // -------------------------------------------------------------------
         ui
           .menu_button("Edit", |ui| {
-            let undo_resp = ui
-              .add_enabled(
-                false,
-                egui::Button::new("Undo").shortcut_text(format!("{MOD_CMD_CTRL}+Z")),
-              )
-              .on_disabled_hover_text("Not implemented yet");
+            let undo_resp = ui.add_enabled(
+              chrome_text_input_expected,
+              egui::Button::new("Undo").shortcut_text(SHORTCUT_UNDO),
+            );
             undo_resp
               .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Undo"));
+            if undo_resp.clicked() {
+              commands.push(MenuCommand::Undo);
+              ui.close_menu();
+            }
 
-            let redo_resp = ui
-              .add_enabled(
-                false,
-                egui::Button::new("Redo")
-                  .shortcut_text(format!("{MOD_CMD_CTRL}+Shift+Z")),
-              )
-              .on_disabled_hover_text("Not implemented yet");
+            let redo_resp = ui.add_enabled(
+              chrome_text_input_expected,
+              egui::Button::new("Redo").shortcut_text(SHORTCUT_REDO),
+            );
             redo_resp
               .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Redo"));
+            if redo_resp.clicked() {
+              commands.push(MenuCommand::Redo);
+              ui.close_menu();
+            }
 
             ui.separator();
 
@@ -265,6 +299,32 @@ pub fn menu_bar_ui(
               .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Paste"));
             if paste_resp.clicked() {
               commands.push(MenuCommand::Paste);
+              ui.close_menu();
+            }
+
+            ui.separator();
+
+            let select_all_resp = ui.add_enabled(
+              can_select_all,
+              egui::Button::new("Select All").shortcut_text(SHORTCUT_SELECT_ALL),
+            );
+            select_all_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Select all")
+            });
+            if select_all_resp.clicked() {
+              commands.push(MenuCommand::SelectAll);
+              ui.close_menu();
+            }
+
+            let find_in_page_resp = ui.add_enabled(
+              has_active_tab,
+              egui::Button::new("Find in Page").shortcut_text(SHORTCUT_FIND_IN_PAGE),
+            );
+            find_in_page_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Find in page")
+            });
+            if find_in_page_resp.clicked() {
+              commands.push(MenuCommand::FindInPage);
               ui.close_menu();
             }
           })
@@ -584,8 +644,12 @@ pub fn dispatch_menu_command(command: MenuCommand, app: &mut BrowserAppState) ->
       ChromeAction::NavigateTo(about_pages::ABOUT_VERSION.to_string()),
     ],
     MenuCommand::Copy
+    | MenuCommand::Undo
+    | MenuCommand::Redo
     | MenuCommand::Cut
     | MenuCommand::Paste
+    | MenuCommand::SelectAll
+    | MenuCommand::FindInPage
     | MenuCommand::ToggleDebugLogPanel
     | MenuCommand::ToggleHistoryPanel
     | MenuCommand::ToggleBookmarksPanel
@@ -799,6 +863,40 @@ mod tests {
     assert!(
       cmds.iter().any(|c| matches!(c, MenuCommand::ToggleFullScreen)),
       "expected View → Toggle Full Screen to emit MenuCommand::ToggleFullScreen, got {cmds:?}"
+    );
+  }
+
+  #[test]
+  fn edit_menu_items_emit_commands() {
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    // Simulate focus on a chrome text input so Undo/Redo are enabled.
+    app.chrome.address_bar_has_focus = true;
+
+    let cmds = click_menu_item(&ctx, &app, "Edit", "Undo");
+    assert!(
+      cmds.iter().any(|c| matches!(c, MenuCommand::Undo)),
+      "expected Edit → Undo to emit MenuCommand::Undo, got {cmds:?}"
+    );
+
+    let cmds = click_menu_item(&ctx, &app, "Edit", "Redo");
+    assert!(
+      cmds.iter().any(|c| matches!(c, MenuCommand::Redo)),
+      "expected Edit → Redo to emit MenuCommand::Redo, got {cmds:?}"
+    );
+
+    let cmds = click_menu_item(&ctx, &app, "Edit", "Select All");
+    assert!(
+      cmds.iter().any(|c| matches!(c, MenuCommand::SelectAll)),
+      "expected Edit → Select All to emit MenuCommand::SelectAll, got {cmds:?}"
+    );
+
+    let cmds = click_menu_item(&ctx, &app, "Edit", "Find in Page");
+    assert!(
+      cmds.iter().any(|c| matches!(c, MenuCommand::FindInPage)),
+      "expected Edit → Find in Page to emit MenuCommand::FindInPage, got {cmds:?}"
     );
   }
 }

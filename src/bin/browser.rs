@@ -10092,13 +10092,48 @@ impl App {
             }
             fastrender::ui::MenuCommand::Copy
             | fastrender::ui::MenuCommand::Cut
-            | fastrender::ui::MenuCommand::Paste => {
+            | fastrender::ui::MenuCommand::Paste
+            | fastrender::ui::MenuCommand::Undo
+            | fastrender::ui::MenuCommand::Redo
+            | fastrender::ui::MenuCommand::SelectAll
+            | fastrender::ui::MenuCommand::FindInPage => {
               // Match our shortcut routing semantics:
               // - when egui has an active text field (address bar), prefer egui editing;
               // - otherwise, when the rendered page has focus, route to the worker.
-              let egui_target = self.egui_ctx.wants_keyboard_input()
-                || self.browser_state.chrome.address_bar_has_focus;
-              if egui_target {
+              let egui_target =
+                ctx.wants_keyboard_input() || self.browser_state.chrome.address_bar_has_focus;
+              let should_route_to_egui_text_input = egui_target
+                || self.browser_state.chrome.tab_search.open
+                || self.bookmarks_panel_open
+                || self.history_panel_open
+                || self
+                  .browser_state
+                  .active_tab()
+                  .is_some_and(|tab| tab.find.open);
+
+              let inject_command_key = |key: egui::Key, shift: bool| {
+                ctx.input_mut(|i| {
+                  i.events.push(egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                      command: true,
+                      shift,
+                      ..Default::default()
+                    },
+                  });
+                });
+              };
+
+              // Find is always chrome-level (even when the page is focused), so always route it
+              // through egui shortcut handling.
+              if matches!(cmd, fastrender::ui::MenuCommand::FindInPage) {
+                inject_command_key(egui::Key::F, false);
+                continue;
+              }
+
+              if should_route_to_egui_text_input {
                 match cmd {
                   fastrender::ui::MenuCommand::Copy => {
                     ctx.input_mut(|i| i.events.push(egui::Event::Copy));
@@ -10112,6 +10147,15 @@ impl App {
                         ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
                       }
                     }
+                  }
+                  fastrender::ui::MenuCommand::Undo => {
+                    inject_command_key(egui::Key::Z, false);
+                  }
+                  fastrender::ui::MenuCommand::Redo => {
+                    inject_command_key(egui::Key::Z, true);
+                  }
+                  fastrender::ui::MenuCommand::SelectAll => {
+                    inject_command_key(egui::Key::A, false);
                   }
                   _ => {}
                 }
@@ -10132,6 +10176,9 @@ impl App {
                         self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
                       }
                     }
+                  }
+                  fastrender::ui::MenuCommand::SelectAll => {
+                    self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
                   }
                   _ => {}
                 }
