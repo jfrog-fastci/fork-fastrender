@@ -177,14 +177,38 @@ impl Document {
     node.parent
   }
 
-  pub(crate) fn node_length(&self, node: NodeId) -> DomResult<usize> {
-    let node = self.node_checked(node)?;
+  pub(crate) fn node_length(&self, node_id: NodeId) -> DomResult<usize> {
+    let node = self.node_checked(node_id)?;
     Ok(match &node.kind {
       NodeKind::Document { .. }
       | NodeKind::DocumentFragment
-      | NodeKind::ShadowRoot { .. }
-      | NodeKind::Slot { .. }
-      | NodeKind::Element { .. } => node.children.len(),
+      | NodeKind::ShadowRoot { .. } => node
+        .children
+        .iter()
+        .copied()
+        .filter(|&child| {
+          self
+            .nodes
+            .get(child.index())
+            .is_some_and(|child_node| child_node.parent == Some(node_id))
+        })
+        .count(),
+      NodeKind::Slot { .. } | NodeKind::Element { .. } => node
+        .children
+        .iter()
+        .copied()
+        .filter(|&child| {
+          let Some(child_node) = self.nodes.get(child.index()) else {
+            return false;
+          };
+          if child_node.parent != Some(node_id) {
+            return false;
+          }
+          // dom2 stores an attached ShadowRoot as a child of its host for renderer traversal, but
+          // ShadowRoot is not part of `host.childNodes` and must not affect Range boundary offsets.
+          !matches!(&child_node.kind, NodeKind::ShadowRoot { .. })
+        })
+        .count(),
       NodeKind::Text { content } | NodeKind::Comment { content } => content.encode_utf16().count(),
       NodeKind::ProcessingInstruction { data, .. } => data.encode_utf16().count(),
       NodeKind::Doctype { .. } => 0,
@@ -209,12 +233,34 @@ impl Document {
 
   fn node_index(&self, node: NodeId) -> Option<usize> {
     let parent = self.range_parent(node)?;
-    self
-      .nodes
-      .get(parent.index())?
-      .children
-      .iter()
-      .position(|&c| c == node)
+    self.tree_child_index_for_range(parent, node)
+  }
+
+  fn tree_child_index_for_range(&self, parent: NodeId, node: NodeId) -> Option<usize> {
+    let parent_node = self.nodes.get(parent.index())?;
+    let skip_shadow_root_children = matches!(
+      &parent_node.kind,
+      NodeKind::Element { .. } | NodeKind::Slot { .. }
+    );
+
+    let mut tree_index = 0usize;
+    for &child in &parent_node.children {
+      let Some(child_node) = self.nodes.get(child.index()) else {
+        continue;
+      };
+      if child_node.parent != Some(parent) {
+        continue;
+      }
+      if skip_shadow_root_children && matches!(&child_node.kind, NodeKind::ShadowRoot { .. }) {
+        continue;
+      }
+      if child == node {
+        return Some(tree_index);
+      }
+      tree_index += 1;
+    }
+
+    None
   }
 
   fn is_ancestor_for_range(&self, ancestor: NodeId, node: NodeId) -> bool {
@@ -286,14 +332,8 @@ impl Document {
     let child_a = path_a[i];
     let child_b = path_b[i];
 
-    let idx_a = self
-      .nodes
-      .get(common.index())
-      .and_then(|n| n.children.iter().position(|&c| c == child_a));
-    let idx_b = self
-      .nodes
-      .get(common.index())
-      .and_then(|n| n.children.iter().position(|&c| c == child_b));
+    let idx_a = self.node_index(child_a);
+    let idx_b = self.node_index(child_b);
 
     match (idx_a, idx_b) {
       (Some(a), Some(b)) => a.cmp(&b),
@@ -912,13 +952,37 @@ impl Document {
   ///
   /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-remove
   pub(super) fn live_range_pre_remove_steps(&mut self, node: NodeId, parent: NodeId, index: usize) {
+    if self.ranges.is_empty() {
+      return;
+    }
+
+    // `dom2` stores an attached ShadowRoot as a child of its host element for renderer traversal.
+    // That ShadowRoot is not a DOM tree child (`host.childNodes`), so Range live-update indices
+    // must ignore it.
+    let index = match self.tree_child_index_for_range(parent, node) {
+      Some(index) => index,
+      None => {
+        // Not a tree child. This primarily happens for attached ShadowRoot nodes, which should
+        // not affect light-DOM range offsets when attached/detached.
+        let is_shadow_root = self
+          .nodes
+          .get(node.index())
+          .is_some_and(|n| matches!(&n.kind, NodeKind::ShadowRoot { .. }));
+        let parent_is_element_like = self.nodes.get(parent.index()).is_some_and(|n| {
+          matches!(&n.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+        });
+        if is_shadow_root && parent_is_element_like {
+          return;
+        }
+        // Defensive fallback: preserve the caller-provided index.
+        index
+      }
+    };
+
     let boundary_point = BoundaryPoint {
       node: parent,
       offset: index,
     };
-    if self.ranges.is_empty() {
-      return;
-    }
 
     // The algorithm performs multiple passes over the set of live ranges. Since `FxHashMap` does
     // not support stable indexed access, snapshot the keys up-front.

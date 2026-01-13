@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use super::{parse_html, Document, NodeKind};
+use super::{parse_html, Document, DomError, NodeKind};
 
 #[test]
 fn range_tree_root_stops_at_shadow_root_and_pre_remove_does_not_cross_shadow_boundary() {
@@ -294,4 +294,50 @@ fn live_range_pre_insert_shifts_boundary_points_by_fragment_child_count() {
   assert_eq!(doc.range_end_offset(r_end_after_all_children).unwrap(), 5);
   assert_eq!(doc.range_start_offset(r_after_b).unwrap(), 4);
   assert_eq!(doc.range_end_offset(r_after_b).unwrap(), 4);
+}
+
+#[test]
+fn range_offsets_ignore_shadow_root_pseudo_child() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "<p id=light></p>",
+    "</div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let light = doc.get_element_by_id("light").expect("light node not found");
+
+  // dom2 stores the attached shadow root as a child of the host at index 0 for renderer traversal.
+  let shadow_root = doc.node(host).children[0];
+  assert!(
+    matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }),
+    "expected host to have an attached ShadowRoot"
+  );
+  assert_eq!(
+    doc.node(host).children[1],
+    light,
+    "expected light DOM child to remain as a host child after ShadowRoot promotion"
+  );
+
+  // Range boundary offsets on the host must ignore the ShadowRoot pseudo-child.
+  let range = doc.create_range();
+  doc.range_set_end(range, light, 0).unwrap();
+  // With correct tree-child semantics, offset=1 is after the only light DOM child, so setting the
+  // start there must collapse the range (end becomes start).
+  doc.range_set_start(range, host, 1).unwrap();
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+
+  // Offsets beyond the light-child count must be rejected. (The ShadowRoot does not contribute.)
+  assert!(matches!(
+    doc.range_set_start(range, host, 2),
+    Err(DomError::IndexSizeError)
+  ));
 }
