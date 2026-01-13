@@ -70,6 +70,10 @@ FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
 When enabled, you should expect events covering at least:
 
 - **TTFP** (“time to first paint”): navigation start → first presented frame for that tab.
+- **Worker stage heartbeats**: `event=stage` is emitted when the windowed UI processes
+  `WorkerToUi::Stage` messages. These include `tab_id`, `stage` (e.g. `layout`, `paint_build`), and
+  `hotspot` (coarse bucket such as `fetch`, `script`, `css`, `cascade`, `box_tree`, `layout`,
+  `paint`, `unknown`).
 - **Frame time samples** during scroll and resize (used to spot jank and dropped frames).
 - **Input latency** samples (input arrival → visible UI response).
 - **Frame upload/coalescing** samples: `event=frame_upload` reports wgpu upload timing and

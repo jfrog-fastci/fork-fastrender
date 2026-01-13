@@ -247,7 +247,7 @@ stdout JSONL stream to a file), see
   - Worker stage heartbeat events (`event=stage`) are emitted when the windowed UI processes
     `WorkerToUi::Stage` messages. These include:
     - `tab_id`, `stage` (e.g. `layout`, `paint_build`), and `hotspot` (coarse bucket such as
-      `fetch`, `css`, `layout`, `paint`).
+      `fetch`, `script`, `css`, `cascade`, `box_tree`, `layout`, `paint`, `unknown`).
   - Output:
     - Defaults to **stdout** (so it can be piped/collected).
     - If `FASTR_PERF_LOG_OUT` is set, the log is written to that path instead (created/truncated).
