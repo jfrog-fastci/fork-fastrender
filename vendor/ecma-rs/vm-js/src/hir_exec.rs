@@ -4,7 +4,7 @@ use crate::exec::RuntimeEnv;
 use crate::function::ThisMode;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::tick::vec_try_extend_from_slice_with_ticks;
-use crate::{GcEnv, GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{EnvBinding, GcEnv, GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::cmp::Ordering;
 use std::sync::Arc;
 
@@ -551,6 +551,90 @@ impl<'vm> HirEvaluator<'vm> {
         update,
         body: inner,
       } => {
+        // Lexically-declared `for` loops require per-iteration environments so closures capture the
+        // correct binding value (ECMA-262 `CreatePerIterationEnvironment`).
+        let lexical_init = match init {
+          Some(hir_js::ForInit::Var(decl))
+            if matches!(decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) =>
+          {
+            Some(decl)
+          }
+          _ => None,
+        };
+
+        if let Some(init_decl) = lexical_init {
+          let outer_lex = self.env.lexical_env();
+          let result = (|| -> Result<Flow, VmError> {
+            // Create a loop-scoped declarative environment for the lexical declaration and evaluate
+            // the initializer with TDZ semantics.
+            let loop_env = scope.env_create(Some(outer_lex))?;
+            self.env.set_lexical_env(scope.heap_mut(), loop_env);
+
+            // Bind names in TDZ before evaluating initializers (only identifier patterns for now).
+            for declarator in &init_decl.declarators {
+              self.vm.tick()?;
+              let pat = self.get_pat(body, declarator.pat)?;
+              let hir_js::PatKind::Ident(name_id) = pat.kind else {
+                return Err(VmError::Unimplemented(
+                  "non-identifier for-loop bindings (hir-js compiled path)",
+                ));
+              };
+              let name = self.resolve_name(name_id)?;
+              match init_decl.kind {
+                hir_js::VarDeclKind::Let => {
+                  scope.env_create_mutable_binding(loop_env, name.as_str())?;
+                }
+                hir_js::VarDeclKind::Const => {
+                  scope.env_create_immutable_binding(loop_env, name.as_str())?;
+                }
+                _ => unreachable!("checked in lexical_init match"),
+              }
+            }
+
+            // Evaluate initializer(s) and initialize the bindings.
+            self.eval_var_decl(scope, body, init_decl)?;
+
+            // Enter the first per-iteration environment.
+            let mut iter_env = self.create_for_triple_per_iteration_env(scope, outer_lex, loop_env)?;
+            self.env.set_lexical_env(scope.heap_mut(), iter_env);
+
+            loop {
+              // Ensure empty loops still consume budget.
+              self.vm.tick()?;
+
+              if let Some(test) = test {
+                let test_value = self.eval_expr(scope, body, *test)?;
+                if !scope.heap().to_boolean(test_value)? {
+                  return Ok(Flow::empty());
+                }
+              }
+
+              match self.eval_stmt(scope, body, *inner)? {
+                Flow::Normal(_) => {}
+                Flow::Continue(None) => {}
+                Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
+                Flow::Break(None) => return Ok(Flow::empty()),
+                Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
+                Flow::Return(v) => return Ok(Flow::Return(v)),
+              }
+
+              // Create the next iteration's environment *before* evaluating the update expression so
+              // closures created in the body do not observe the post-update value.
+              iter_env = self.create_for_triple_per_iteration_env(scope, outer_lex, iter_env)?;
+              self.env.set_lexical_env(scope.heap_mut(), iter_env);
+
+              if let Some(update) = update {
+                let _ = self.eval_expr(scope, body, *update)?;
+              }
+            }
+          })();
+
+          // Always restore the outer lexical environment so later statements run in the correct
+          // scope.
+          self.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          return result;
+        }
+
         if let Some(init) = init {
           match init {
             hir_js::ForInit::Expr(expr) => {
@@ -563,6 +647,7 @@ impl<'vm> HirEvaluator<'vm> {
         }
 
         loop {
+          // Ensure empty loops still consume budget.
           self.vm.tick()?;
           if let Some(test) = test {
             let test_value = self.eval_expr(scope, body, *test)?;
@@ -671,6 +756,35 @@ impl<'vm> HirEvaluator<'vm> {
       self.bind_var_decl_pat(scope, body, declarator.pat, decl.kind, init_missing, value)?;
     }
     Ok(())
+  }
+
+  fn create_for_triple_per_iteration_env(
+    &mut self,
+    scope: &mut Scope<'_>,
+    outer: GcEnv,
+    last_env: GcEnv,
+  ) -> Result<GcEnv, VmError> {
+    let crate::env::EnvRecord::Declarative(last) = scope.heap().get_env_record(last_env)? else {
+      return Err(VmError::InvariantViolation(
+        "for-loop per-iteration environment must be declarative",
+      ));
+    };
+
+    let bindings = &last.bindings;
+    let mut new_bindings: Vec<EnvBinding> = Vec::new();
+    new_bindings
+      .try_reserve_exact(bindings.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    const TICK_EVERY: usize = 32;
+    for (i, binding) in bindings.iter().enumerate() {
+      if i % TICK_EVERY == 0 {
+        self.vm.tick()?;
+      }
+      new_bindings.push(*binding);
+    }
+
+    scope.alloc_env_record(Some(outer), &new_bindings)
   }
 
   fn bind_var_decl_pat(
