@@ -1259,8 +1259,8 @@ fn truncate_middle(s: &str, max_chars: usize) -> String {
   if max_chars == 0 || s.is_empty() {
     return String::new();
   }
-  let chars: Vec<char> = s.chars().collect();
-  if chars.len() <= max_chars {
+  let len = s.chars().count();
+  if len <= max_chars {
     return s.to_string();
   }
   if max_chars <= 1 {
@@ -1269,9 +1269,12 @@ fn truncate_middle(s: &str, max_chars: usize) -> String {
   let head = max_chars / 2;
   let tail = max_chars - head - 1;
   let mut out = String::new();
-  out.extend(chars.iter().take(head));
+  out.extend(s.chars().take(head));
   out.push('…');
-  out.extend(chars.iter().skip(chars.len().saturating_sub(tail)));
+  // Avoid allocating a full `Vec<char>` for long strings; only keep the tail slice we need.
+  let mut tail_rev = String::new();
+  tail_rev.extend(s.chars().rev().take(tail));
+  out.extend(tail_rev.chars().rev());
   out
 }
 
