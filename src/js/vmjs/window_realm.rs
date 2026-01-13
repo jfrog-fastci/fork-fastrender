@@ -49303,7 +49303,57 @@ mod tests {
           && host3.childNodes.length === 0;\n\
       })()",
     )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
 
+  #[test]
+  fn element_cssom_view_members_are_exposed_on_webidl_backend() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=x></div></body></html>",
+    )
+    .unwrap();
+    let document = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let window = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut host = WebIdlTestHost::new(document, window);
+
+    let ok = host.exec_script(
+      "(() => {\n\
+        const el = document.getElementById('x');\n\
+        if (!el) return false;\n\
+\n\
+        // CSSOM View.\n\
+        if (typeof Element.prototype.getBoundingClientRect !== 'function') return false;\n\
+        const r = el.getBoundingClientRect();\n\
+        if (!(r instanceof DOMRectReadOnly)) return false;\n\
+        // Non-rendered HostDocumentState returns deterministic zeros.\n\
+        if (!(r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0)) return false;\n\
+\n\
+        // Layout metrics.\n\
+        const metrics = [\n\
+          'clientWidth', 'clientHeight',\n\
+          'scrollWidth', 'scrollHeight',\n\
+          'scrollTop', 'scrollLeft',\n\
+          'offsetWidth', 'offsetHeight',\n\
+          'offsetLeft', 'offsetTop',\n\
+        ];\n\
+        for (const p of metrics) {\n\
+          if (!(p in el)) return false;\n\
+          if (typeof el[p] !== 'number') return false;\n\
+        }\n\
+\n\
+        // `style` is installed as an accessor on the prototype (but runtime dispatch may be\n\
+        // implemented separately). Avoid invoking the getter here; just assert the descriptor\n\
+        // exists.\n\
+        const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'style');\n\
+        if (!desc || typeof desc.get !== 'function') return false;\n\
+\n\
+        return true;\n\
+      })()",
+    )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
