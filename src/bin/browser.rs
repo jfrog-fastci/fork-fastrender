@@ -25305,6 +25305,12 @@ impl App {
       }
     }
 
+    // Keep browser-agnostic chrome state in sync with the windowed UI's side panel visibility so
+    // `chrome_ui` can expose accurate labels/state to assistive tech (e.g. the hamburger menu toggle
+    // items).
+    self.browser_state.chrome.history_panel_open = self.history_panel_open;
+    self.browser_state.chrome.bookmarks_manager_open = self.bookmarks_panel_open;
+
     let appearance_before = self.browser_state.appearance.clone();
     // Mirror front-end side panel state into the shared chrome model so the egui toolbar can expose
     // expanded/collapsed state to AccessKit (screen readers).

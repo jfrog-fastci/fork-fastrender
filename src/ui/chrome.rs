@@ -2755,10 +2755,16 @@ pub fn chrome_ui_with_bookmarks(
               close_menu = true;
             }
 
-            let bookmarks_mgr = ui.button("Show bookmarks manager");
+            let bookmarks_mgr_a11y_label = if app.chrome.bookmarks_manager_open {
+              "Hide bookmarks manager"
+            } else {
+              "Show bookmarks manager"
+            };
+            let mut show_bookmarks_manager = app.chrome.bookmarks_manager_open;
+            let bookmarks_mgr = ui.checkbox(&mut show_bookmarks_manager, "Bookmarks manager");
             popup_focus_ids.push(bookmarks_mgr.id);
-            bookmarks_mgr.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show bookmarks manager")
+            bookmarks_mgr.widget_info(move || {
+              egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, bookmarks_mgr_a11y_label)
             });
             if menu_opened_now && active_url_trim.is_empty() {
               bookmarks_mgr.request_focus();
@@ -2779,10 +2785,17 @@ pub fn chrome_ui_with_bookmarks(
             ui.separator();
 
             ui.label(egui::RichText::new("History").strong());
-            let history = ui.button("Show history");
+            let history_a11y_label = if app.chrome.history_panel_open {
+              "Hide history"
+            } else {
+              "Show history"
+            };
+            let mut show_history_panel = app.chrome.history_panel_open;
+            let history = ui.checkbox(&mut show_history_panel, "History panel");
             popup_focus_ids.push(history.id);
-            history
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show history"));
+            history.widget_info(move || {
+              egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, history_a11y_label)
+            });
             if menu_open {
               #[cfg(test)]
               store_test_rect(ctx, "chrome_menu_item_toggle_history_rect", history.rect);
@@ -9795,6 +9808,23 @@ frame={idx} repaint_after={:?}\n",
     actions
   }
 
+  fn open_menu_for_accesskit(
+    ctx: &egui::Context,
+    app: &mut BrowserAppState,
+    bookmarks: Option<&BookmarkStore>,
+  ) -> egui::FullOutput {
+    // Frame 0: layout, capture the menu button rect.
+    begin_frame(ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, |_| None);
+    let _ = ctx.end_frame();
+    let menu_button_rect = expect_temp_rect(ctx, "chrome_menu_button_rect");
+
+    // Frame 1: click the menu button to open the popup and capture AccessKit output.
+    begin_frame(ctx, left_click_at(menu_button_rect.center()));
+    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, |_| None);
+    ctx.end_frame()
+  }
+
   #[test]
   fn chrome_menu_toggle_bookmark_emits_action() {
     let mut app = BrowserAppState::new();
@@ -9841,6 +9871,122 @@ frame={idx} repaint_after={:?}\n",
     assert!(
       matches!(actions.as_slice(), [ChromeAction::ToggleBookmarksManager]),
       "expected ChromeAction::ToggleBookmarksManager, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn chrome_menu_accesskit_announces_show_history_when_closed() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "https://example.com/".to_string()),
+      true,
+    );
+    app.chrome.history_panel_open = false;
+    let bookmarks = BookmarkStore::default();
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let output = open_menu_for_accesskit(&ctx, &mut app, Some(&bookmarks));
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+
+    assert!(
+      nodes
+        .iter()
+        .any(|n| n.role == "CheckBox" && n.name == "Show history"),
+      "expected \"Show history\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+    assert!(
+      !nodes.iter().any(|n| n.name == "Hide history"),
+      "expected \"Hide history\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  #[test]
+  fn chrome_menu_accesskit_announces_hide_history_when_open() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "https://example.com/".to_string()),
+      true,
+    );
+    app.chrome.history_panel_open = true;
+    let bookmarks = BookmarkStore::default();
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let output = open_menu_for_accesskit(&ctx, &mut app, Some(&bookmarks));
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+
+    assert!(
+      nodes
+        .iter()
+        .any(|n| n.role == "CheckBox" && n.name == "Hide history"),
+      "expected \"Hide history\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+    assert!(
+      !nodes.iter().any(|n| n.name == "Show history"),
+      "expected \"Show history\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  #[test]
+  fn chrome_menu_accesskit_announces_show_bookmarks_manager_when_closed() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "https://example.com/".to_string()),
+      true,
+    );
+    app.chrome.bookmarks_manager_open = false;
+    let bookmarks = BookmarkStore::default();
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let output = open_menu_for_accesskit(&ctx, &mut app, Some(&bookmarks));
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+
+    assert!(
+      nodes
+        .iter()
+        .any(|n| n.role == "CheckBox" && n.name == "Show bookmarks manager"),
+      "expected \"Show bookmarks manager\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+    assert!(
+      !nodes.iter().any(|n| n.name == "Hide bookmarks manager"),
+      "expected \"Hide bookmarks manager\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  #[test]
+  fn chrome_menu_accesskit_announces_hide_bookmarks_manager_when_open() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "https://example.com/".to_string()),
+      true,
+    );
+    app.chrome.bookmarks_manager_open = true;
+    let bookmarks = BookmarkStore::default();
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let output = open_menu_for_accesskit(&ctx, &mut app, Some(&bookmarks));
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+
+    assert!(
+      nodes
+        .iter()
+        .any(|n| n.role == "CheckBox" && n.name == "Hide bookmarks manager"),
+      "expected \"Hide bookmarks manager\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+    assert!(
+      !nodes.iter().any(|n| n.name == "Show bookmarks manager"),
+      "expected \"Show bookmarks manager\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
     );
   }
 
