@@ -18,6 +18,7 @@ use crate::ParseOptions;
 use crate::SourceType;
 use expr::pat::ParsePatternRules;
 use operator::MULTARY_OPERATOR_MAPPING;
+use std::borrow::Cow;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
@@ -910,5 +911,68 @@ impl<'a> Parser<'a> {
       crate::parse::expr::lit::normalise_literal_string_or_template_inner(body)
         .unwrap_or_else(|| body.to_string()),
     )
+  }
+
+  /// Returns the *StringValue* of an `IdentifierName` token, decoding any Unicode escape sequences.
+  ///
+  /// `parse-js` stores identifier names using their original source spelling (so escapes like
+  /// `\u0061` are preserved). ECMAScript grammar and early errors, however, operate on the cooked
+  /// StringValue with escape sequences interpreted.
+  ///
+  /// Callers that need to compare identifier names against keywords or restricted identifiers
+  /// (e.g. `"await"`, `"yield"`, `"eval"`) should use this helper.
+  pub(crate) fn identifier_name_string_value<'s>(&self, raw: &'s str) -> Option<Cow<'s, str>> {
+    if !raw.contains('\\') {
+      return Some(Cow::Borrowed(raw));
+    }
+
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+      if ch != '\\' {
+        out.push(ch);
+        continue;
+      }
+
+      match chars.next() {
+        Some('u') => {}
+        _ => return None,
+      }
+
+      if chars.peek() == Some(&'{') {
+        // `\u{...}`
+        let _ = chars.next();
+        let mut value_u32: u32 = 0;
+        let mut saw_digit = false;
+        let mut closed = false;
+        while let Some(next) = chars.next() {
+          if next == '}' {
+            closed = true;
+            break;
+          }
+          let digit = next.to_digit(16)?;
+          saw_digit = true;
+          value_u32 = value_u32.checked_mul(16)?.checked_add(digit)?;
+        }
+        if !closed || !saw_digit {
+          return None;
+        }
+        let decoded = char::from_u32(value_u32)?;
+        out.push(decoded);
+        continue;
+      }
+
+      // `\uXXXX`
+      let mut value_u32: u32 = 0;
+      for _ in 0..4 {
+        let next = chars.next()?;
+        let digit = next.to_digit(16)?;
+        value_u32 = (value_u32 << 4) | digit;
+      }
+      let decoded = char::from_u32(value_u32)?;
+      out.push(decoded);
+    }
+
+    Some(Cow::Owned(out))
   }
 }

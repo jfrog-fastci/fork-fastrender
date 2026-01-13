@@ -95,6 +95,24 @@ fn yield_in_generator_function_params_is_syntax_error() {
 }
 
 #[test]
+fn escaped_await_as_binding_identifier_in_async_generator_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"async function* g(){ var \u0061wait; }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_await_as_label_in_async_generator_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"async function* g(){ \u0061wait: for(;;) break \u0061wait; }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn eval_early_errors_are_catchable_syntax_error() {
   let mut rt = new_runtime();
   let value = rt

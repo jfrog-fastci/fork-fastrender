@@ -747,10 +747,20 @@ impl<'a> Parser<'a> {
       return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     };
     let name = self.string(t.loc);
-    if self.is_strict_ecmascript()
-      && self.is_strict_mode()
-      && Parser::is_strict_mode_reserved_word(&name)
+    let Some(string_value) = self.identifier_name_string_value(&name) else {
+      return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+    };
+
+    // `await`/`yield` are reserved words when the corresponding grammar parameter is present
+    // (ECMA-262 `StringValue` early errors). Unicode escape sequences in the source spelling do
+    // not bypass these restrictions (e.g. `\u0061wait`).
+    if (!ctx.rules.await_allowed && string_value.as_ref() == "await")
+      || (!ctx.rules.yield_allowed && string_value.as_ref() == "yield")
     {
+      return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+    }
+
+    if self.is_strict_ecmascript() && self.is_strict_mode() && Parser::is_strict_mode_reserved_word(string_value.as_ref()) {
       return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     }
     Ok(name)

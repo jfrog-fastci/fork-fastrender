@@ -97,10 +97,22 @@ impl<'a> Parser<'a> {
         return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
       }
       let name = p.string(t.loc);
+      let Some(string_value) = p.identifier_name_string_value(&name) else {
+        return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+      };
+
+      // `await`/`yield` are reserved words when the corresponding grammar parameter is present.
+      // Unicode escape sequences in identifiers must not bypass this restriction.
+      if (!ctx.rules.await_allowed && string_value.as_ref() == "await")
+        || (!ctx.rules.yield_allowed && string_value.as_ref() == "yield")
+      {
+        return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+      }
+
       if p.is_strict_ecmascript()
         && p.is_strict_mode()
-        && (Parser::is_strict_mode_reserved_word(&name)
-          || Parser::is_strict_mode_restricted_binding_identifier(&name))
+        && (Parser::is_strict_mode_reserved_word(string_value.as_ref())
+          || Parser::is_strict_mode_restricted_binding_identifier(string_value.as_ref()))
       {
         return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
       }
@@ -159,10 +171,20 @@ impl<'a> Parser<'a> {
                 } else if !is_valid_pattern_identifier(n.stx.tt, ctx.rules) {
                   return Err(n.error(SyntaxErrorType::ExpectedSyntax("identifier")));
                 }
+                let Some(string_value) = p.identifier_name_string_value(&n.stx.key) else {
+                  return Err(n.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                };
+
+                if (!ctx.rules.await_allowed && string_value.as_ref() == "await")
+                  || (!ctx.rules.yield_allowed && string_value.as_ref() == "yield")
+                {
+                  return Err(n.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                }
+
                 if p.is_strict_ecmascript()
                   && p.is_strict_mode()
-                  && (Parser::is_strict_mode_reserved_word(&n.stx.key)
-                    || Parser::is_strict_mode_restricted_binding_identifier(&n.stx.key))
+                  && (Parser::is_strict_mode_reserved_word(string_value.as_ref())
+                    || Parser::is_strict_mode_restricted_binding_identifier(string_value.as_ref()))
                 {
                   return Err(n.error(SyntaxErrorType::ExpectedSyntax("identifier")));
                 }
