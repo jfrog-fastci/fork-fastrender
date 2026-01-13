@@ -1632,7 +1632,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     // Static initialization blocks introduce early-error boundaries:
     // - `return` is always invalid (they are not function bodies),
-    // - `await` is always invalid (static blocks are not async contexts),
+    // - `await` is always invalid (static blocks are not async contexts, even when nested inside
+    //   async functions and modules),
     // - `yield` is always invalid (even inside generator functions),
     // - `break`/`continue` target resolution must not cross static-block boundaries.
     let saved = self.save_and_enter_function(
