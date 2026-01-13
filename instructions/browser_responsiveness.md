@@ -63,11 +63,10 @@ A change counts if it lands at least one of:
 ### Profiling tools
 
 ```bash
-# Capture a windowed browser perf log (JSONL) under repo guardrails:
-bash scripts/capture_browser_perf_log.sh target/browser_perf.jsonl about:test-layout-stress
-
-# Capture + summarize (p50/p95/max) after the browser exits:
-bash scripts/capture_browser_perf_log.sh --summary target/browser_perf.jsonl about:test-layout-stress
+# Capture + summarize (p50/p95/max) from a windowed browser session.
+# `capture_browser_perf_log.sh` runs the browser under `timeout -k 10 600` + `run_limited.sh --as 64G`.
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --summary \
+  target/browser_perf.jsonl about:test-layout-stress
 
 # Manual run: write perf JSONL directly to a file.
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
@@ -75,8 +74,7 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 
 # Or summarize later (supports --from-ms/--to-ms windowing):
-timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
+timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
   --input target/browser_perf.jsonl
 
 # Debug invalidation fast paths for hover/focus/caret interactions (stderr one-line logs):
