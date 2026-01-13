@@ -455,6 +455,44 @@ fn browser_document_dom2_attribute_mutation_triggers_restyle() -> Result<()> {
 }
 
 #[test]
+fn browser_document_dom2_ignores_unrelated_link_attribute_mutations() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let options = RenderOptions::new().with_viewport(32, 32);
+
+  // `<link>` elements do not generate layout boxes. Only a small subset of attributes affect
+  // rendering (href/rel/media/etc). Mutating unrelated attributes should not force a full rerender.
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <link id="sheet" rel="stylesheet" href="data:text/css,html%2Cbody%7Bmargin%3A0%3Bpadding%3A0%3Bbackground%3Argb(255%2C0%2C0)%3B%7D">
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut doc = BrowserDocumentDom2::new(support::deterministic_renderer(), html, options)?;
+  assert!(doc.render_if_needed()?.is_some());
+  assert!(doc.render_if_needed()?.is_none());
+
+  let changed = doc.mutate_dom(|dom| {
+    let link = dom.get_element_by_id("sheet").expect("#sheet link");
+    dom
+      .set_attribute(link, "data-x", "1")
+      .expect("set_attribute on link")
+  });
+  assert!(changed);
+
+  assert!(
+    doc.render_if_needed()?.is_none(),
+    "expected no rerender when mutating unrelated <link> attributes"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn browser_document_dom2_insert_remove_triggers_recompute() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]

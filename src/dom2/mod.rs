@@ -223,7 +223,11 @@ impl Clone for Node {
 /// without requiring callers to manually classify changes.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MutationLog {
-  pub(crate) attribute_changed: FxHashSet<NodeId>,
+  /// Attribute names changed per node since the last `take_mutations()`.
+  ///
+  /// Names are normalized for HTML elements (ASCII-lowercased) so hosts can perform reliable
+  /// comparisons (`"HREF"` and `"href"` are treated as the same attribute on HTML nodes).
+  pub(crate) attribute_changed: FxHashMap<NodeId, FxHashSet<String>>,
   pub(crate) text_changed: FxHashSet<NodeId>,
   /// Parent nodes whose child list changed (insert/remove/reorder).
   pub(crate) child_list_changed: FxHashSet<NodeId>,
@@ -924,8 +928,26 @@ impl Document {
   }
 
   #[inline]
-  fn record_attribute_mutation(&mut self, node: NodeId) {
-    self.mutations.attribute_changed.insert(node);
+  fn record_attribute_mutation(&mut self, node: NodeId, name: &str) {
+    // Attribute names on HTML elements are ASCII-case-insensitive. Normalize to a stable lowercase
+    // form so hosts can reliably match on `"href"`, `"class"`, etc.
+    let is_html = match &self.node(node).kind {
+      NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => {
+        self.is_html_case_insensitive_namespace(namespace)
+      }
+      _ => true,
+    };
+    let normalized = if is_html {
+      name.to_ascii_lowercase()
+    } else {
+      name.to_string()
+    };
+    self
+      .mutations
+      .attribute_changed
+      .entry(node)
+      .or_default()
+      .insert(normalized);
   }
 
   #[inline]
@@ -2721,6 +2743,8 @@ mod node_iterator_tests;
 mod mapping_tests;
 #[cfg(test)]
 mod mutation_generation_tests;
+#[cfg(test)]
+mod mutation_log_tests;
 #[cfg(test)]
 mod mutation_tests;
 #[cfg(test)]

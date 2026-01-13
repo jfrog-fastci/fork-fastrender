@@ -2370,8 +2370,11 @@ impl BrowserDocumentDom2 {
 
     let mut render_affecting = false;
     // Treat changes in disconnected/inert subtrees as non-render-affecting.
-    for node in mutations.attribute_changed {
-      if self.dom.is_connected_for_scripting(node) {
+    for (node, attrs) in mutations.attribute_changed {
+      if !self.dom.is_connected_for_scripting(node) {
+        continue;
+      }
+      if self.attribute_mutation_affects_render(node, &attrs) {
         render_affecting = true;
         self.dirty_style_nodes.insert(node);
       }
@@ -2433,6 +2436,76 @@ impl BrowserDocumentDom2 {
     }
 
     render_affecting
+  }
+
+  fn attribute_mutation_affects_render(
+    &self,
+    node: crate::dom2::NodeId,
+    attrs: &FxHashSet<String>,
+  ) -> bool {
+    let node_ref = self.dom.node(node);
+    match &node_ref.kind {
+      crate::dom2::NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        let is_html = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+        if !is_html {
+          return true;
+        }
+
+        // `<link>`, `<style>`, `<base>`, and `<meta>` do not generate layout boxes. Mutations on
+        // unrelated attributes should not force a full restyle/layout pass.
+        if tag_name.eq_ignore_ascii_case("link") {
+          return attrs.iter().any(|name| {
+            matches!(
+              name.as_str(),
+              "href"
+                | "rel"
+                | "as"
+                | "type"
+                | "media"
+                | "disabled"
+                | "crossorigin"
+                | "referrerpolicy"
+            )
+          });
+        }
+
+        if tag_name.eq_ignore_ascii_case("style") {
+          return attrs.iter().any(|name| {
+            matches!(name.as_str(), "media" | "type" | "nonce" | "disabled")
+          });
+        }
+
+        if tag_name.eq_ignore_ascii_case("base") {
+          return attrs.iter().any(|name| name == "href");
+        }
+
+        if tag_name.eq_ignore_ascii_case("meta") {
+          // Viewport depends on `<meta name="viewport" content="...">`.
+          if attrs.iter().any(|name| name == "name") {
+            // A name change could add/remove the viewport meta; conservatively invalidate.
+            return true;
+          }
+          if attrs.iter().any(|name| name == "content") {
+            let meta_name = self
+              .dom
+              .get_attribute(node, "name")
+              .ok()
+              .flatten()
+              .unwrap_or("");
+            return meta_name.eq_ignore_ascii_case("viewport");
+          }
+          return false;
+        }
+
+        true
+      }
+      crate::dom2::NodeKind::Slot { .. } => true,
+      _ => true,
+    }
   }
 
   fn text_node_affects_stylesheet(&self, node: crate::dom2::NodeId) -> bool {

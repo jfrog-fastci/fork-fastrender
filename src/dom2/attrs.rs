@@ -128,7 +128,7 @@ impl Document {
 
     if changed {
       let _ = self.sync_form_control_state_after_attr_mutation(node_id, name);
-      self.record_attribute_mutation(node_id);
+      self.record_attribute_mutation(node_id, name);
       self.bump_mutation_generation_classified();
       let _ = self.queue_mutation_record_attributes(node_id, name, old_value);
 
@@ -190,7 +190,7 @@ impl Document {
 
     if changed {
       let _ = self.sync_form_control_state_after_attr_mutation(node_id, name);
-      self.record_attribute_mutation(node_id);
+      self.record_attribute_mutation(node_id, name);
       self.bump_mutation_generation_classified();
       let _ = self.queue_mutation_record_attributes(node_id, name, old_value);
 
@@ -265,7 +265,7 @@ impl Document {
       };
       if changed {
         let _ = self.sync_form_control_state_after_attr_mutation(node_id, name);
-        self.record_attribute_mutation(node_id);
+        self.record_attribute_mutation(node_id, name);
         self.bump_mutation_generation_classified();
         let _ = self.queue_mutation_record_attributes(node_id, name, None);
       }
