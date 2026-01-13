@@ -1,5 +1,6 @@
 use crate::interaction::form_controls;
 use crate::interaction::InteractionState;
+use crate::interaction::document_selection::DocumentSelectionIndex;
 use crate::text::caret::CaretAffinity;
 use crate::tree::box_tree::{
   BoxNode, BoxTree, FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem,
@@ -22,11 +23,12 @@ use std::sync::Arc;
 pub(crate) fn apply_interaction_state_paint_overlays_to_fragment_tree(
   box_tree: &BoxTree,
   fragment_tree: &mut FragmentTree,
+  document_selection_index: &DocumentSelectionIndex,
   interaction_state: Option<&InteractionState>,
 ) {
-  crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
-    box_tree,
+  crate::interaction::document_selection::apply_document_selection_to_fragment_tree_with_index(
     fragment_tree,
+    document_selection_index,
     interaction_state.and_then(|state| state.document_selection.as_ref()),
   );
 

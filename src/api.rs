@@ -2534,6 +2534,7 @@ pub struct PreparedDocument {
   layout_style_fingerprint_digest: u64,
   box_tree: BoxTree,
   fragment_tree: FragmentTree,
+  document_selection_index: Arc<crate::interaction::document_selection::DocumentSelectionIndex>,
   layout_viewport: Size,
   paint_viewport: Size,
   visual_viewport: Size,
@@ -8859,6 +8860,13 @@ impl FastRender {
         let paint_viewport = resolved_viewport.visual_viewport;
         let layout_style_fingerprint_digest = styled_layout_fingerprint_digest(&artifacts.styled_tree);
 
+        let document_selection_index = Arc::new(
+          crate::interaction::document_selection::DocumentSelectionIndex::build(
+            &artifacts.box_tree,
+            &artifacts.fragment_tree,
+          ),
+        );
+
         let document = PreparedDocument {
           dom: artifacts.dom,
           stylesheet: artifacts.stylesheet,
@@ -8866,6 +8874,7 @@ impl FastRender {
           layout_style_fingerprint_digest,
           box_tree: artifacts.box_tree,
           fragment_tree: artifacts.fragment_tree,
+          document_selection_index,
           layout_viewport,
           paint_viewport,
           visual_viewport: resolved_viewport.visual_viewport,
@@ -10151,6 +10160,12 @@ impl FastRender {
     }
 
     let layout_style_fingerprint_digest = styled_layout_fingerprint_digest(&artifacts.styled_tree);
+    let document_selection_index = Arc::new(
+      crate::interaction::document_selection::DocumentSelectionIndex::build(
+        &artifacts.box_tree,
+        &artifacts.fragment_tree,
+      ),
+    );
     Ok(PreparedDocument {
       dom: artifacts.dom,
       stylesheet: artifacts.stylesheet,
@@ -10158,6 +10173,7 @@ impl FastRender {
       layout_style_fingerprint_digest,
       box_tree: artifacts.box_tree,
       fragment_tree: artifacts.fragment_tree,
+      document_selection_index,
       layout_viewport,
       paint_viewport,
       visual_viewport: resolved_viewport.visual_viewport,
@@ -10464,6 +10480,12 @@ impl FastRender {
     }
 
     let layout_style_fingerprint_digest = styled_layout_fingerprint_digest(&artifacts.styled_tree);
+    let document_selection_index = Arc::new(
+      crate::interaction::document_selection::DocumentSelectionIndex::build(
+        &artifacts.box_tree,
+        &artifacts.fragment_tree,
+      ),
+    );
     Ok(PreparedDocument {
       dom: artifacts.dom,
       stylesheet: artifacts.stylesheet,
@@ -10471,6 +10493,7 @@ impl FastRender {
       layout_style_fingerprint_digest,
       box_tree: artifacts.box_tree,
       fragment_tree: artifacts.fragment_tree,
+      document_selection_index,
       layout_viewport,
       paint_viewport,
       visual_viewport: resolved_viewport.visual_viewport,
@@ -10616,6 +10639,12 @@ impl FastRender {
     }
 
     let layout_style_fingerprint_digest = styled_layout_fingerprint_digest(&artifacts.styled_tree);
+    let document_selection_index = Arc::new(
+      crate::interaction::document_selection::DocumentSelectionIndex::build(
+        &artifacts.box_tree,
+        &artifacts.fragment_tree,
+      ),
+    );
     Ok(PreparedDocument {
       dom: artifacts.dom,
       stylesheet: artifacts.stylesheet,
@@ -10623,6 +10652,7 @@ impl FastRender {
       layout_style_fingerprint_digest,
       box_tree: artifacts.box_tree,
       fragment_tree: artifacts.fragment_tree,
+      document_selection_index,
       layout_viewport,
       paint_viewport,
       visual_viewport: resolved_viewport.visual_viewport,

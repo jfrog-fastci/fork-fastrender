@@ -1384,6 +1384,7 @@ impl BrowserDocument {
     crate::interaction::paint_overlays::apply_interaction_state_paint_overlays_to_fragment_tree(
       prepared.box_tree(),
       &mut fragment_tree,
+      prepared.document_selection_index.as_ref(),
       interaction_state,
     );
 
@@ -1733,6 +1734,12 @@ pub(super) fn prepare_dom_inner(
   let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
   let layout_style_fingerprint_digest =
     super::styled_layout_fingerprint_digest(&artifacts.styled_tree);
+  let document_selection_index = Arc::new(
+    crate::interaction::document_selection::DocumentSelectionIndex::build(
+      &artifacts.box_tree,
+      &artifacts.fragment_tree,
+    ),
+  );
   Ok(PreparedDocument {
     dom: artifacts.dom,
     stylesheet: artifacts.stylesheet,
@@ -1740,6 +1747,7 @@ pub(super) fn prepare_dom_inner(
     layout_style_fingerprint_digest,
     box_tree: artifacts.box_tree,
     fragment_tree: artifacts.fragment_tree,
+    document_selection_index,
     layout_viewport,
     paint_viewport,
     visual_viewport: resolved_viewport.visual_viewport,
