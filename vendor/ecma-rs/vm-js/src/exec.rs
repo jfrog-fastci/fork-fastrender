@@ -14551,6 +14551,28 @@ pub(crate) enum GenFrame {
   /// Continue evaluating a non-`yield` unary expression after its operand completes.
   UnaryAfterArgument { expr: *const UnaryExpr },
 
+  /// Continue evaluating a `delete` expression after evaluating its operand.
+  DeleteAfterArgument,
+  /// Continue evaluating a `delete` member expression after evaluating its base.
+  DeleteMemberAfterBase {
+    expr: *const MemberExpr,
+  },
+  /// Continue evaluating a `delete` computed member expression after evaluating its base.
+  DeleteComputedMemberAfterBase {
+    expr: *const ComputedMemberExpr,
+  },
+  /// Continue evaluating a `delete` computed member expression after evaluating its member key
+  /// expression.
+  DeleteComputedMemberAfterMember {
+    expr: *const ComputedMemberExpr,
+    base: Value,
+  },
+  /// Continue evaluating a `delete super[expr]` after evaluating its computed member key expression.
+  ///
+  /// Per ECMA-262, `delete` of a Super Reference must throw a ReferenceError, but for computed
+  /// property references the key expression (including `ToPropertyKey`) is still evaluated first.
+  DeleteSuperComputedMemberAfterMember,
+
   /// Continue a member access after evaluating the base value.
   MemberAfterBase { expr: *const MemberExpr },
   /// Continue a computed member access after evaluating the base value.
@@ -14617,8 +14639,9 @@ impl Trace for GenFrame {
         tracer.trace_value(*v);
       }
       GenFrame::TryAfterFinally { pending } => pending.trace(tracer),
-      GenFrame::ComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
-      GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
+      GenFrame::ComputedMemberAfterMember { base, .. }
+      | GenFrame::DeleteComputedMemberAfterMember { base, .. }
+      | GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
       GenFrame::BinaryAfterRight { left, .. } => tracer.trace_value(*left),
       GenFrame::CallArgs {
         callee, this, args, ..
@@ -32494,6 +32517,9 @@ fn gen_eval_expr_chain(
         }
       }
     }
+    Expr::Unary(unary) if unary.stx.operator == OperatorName::Delete => {
+      gen_eval_delete_expr(evaluator, scope, &unary.stx)
+    }
     // For now, defer to the async-style continuation evaluator for expression forms that can nest
     // yield within larger expressions.
     Expr::Unary(unary) => match gen_eval_expr(evaluator, scope, &unary.stx.argument)? {
@@ -32706,6 +32732,89 @@ fn gen_yield_star_begin(
   }))
 }
 
+fn gen_eval_delete_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &UnaryExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  match &*expr.argument.stx {
+    // Super References are not deletable (ECMA-262 `delete` runtime semantics). For computed super
+    // property references, the key expression is still evaluated (and `ToPropertyKey` performed)
+    // before throwing.
+    Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+      match gen_eval_expr(evaluator, scope, &member.stx.member)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let member_value = v.unwrap_or(Value::Undefined);
+            let mut del_scope = scope.reborrow();
+            del_scope.push_root(member_value)?;
+            let _ = evaluator.to_property_key_operator(&mut del_scope, member_value)?;
+            Err(throw_reference_error(
+              evaluator.vm,
+              &mut del_scope,
+              "Cannot delete a super property",
+            )?)
+          }
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(&mut suspend.frames, GenFrame::DeleteSuperComputedMemberAfterMember)?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let out = gen_delete_member_after_base(evaluator, scope, &member.stx, base)?;
+          Ok(GenEval::Complete(Completion::normal(out)))
+        }
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::DeleteMemberAfterBase {
+            expr: &*member.stx as *const MemberExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    Expr::ComputedMember(member) => match gen_eval_expr(evaluator, scope, &member.stx.object)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_delete_computed_member_after_base(
+          evaluator,
+          scope,
+          &member.stx,
+          v.unwrap_or(Value::Undefined),
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::DeleteComputedMemberAfterBase {
+            expr: &*member.stx as *const ComputedMemberExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    _ => match gen_eval_expr(evaluator, scope, &expr.argument)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(_) => Ok(GenEval::Complete(Completion::normal(Value::Bool(true)))),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(&mut suspend.frames, GenFrame::DeleteAfterArgument)?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+  }
+}
+
 fn gen_apply_unary_operator(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -32763,6 +32872,126 @@ fn gen_apply_unary_operator(
     OperatorName::Void => Ok(Value::Undefined),
     _ => Err(VmError::Unimplemented("yield in unary operator")),
   }
+}
+
+fn gen_delete_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &MemberExpr,
+  base: Value,
+) -> Result<Value, VmError> {
+  // Optional-chain propagation (`delete a?.b.c`): if the base expression short-circuits, the operand
+  // is not a reference and `delete` returns true.
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(Value::Bool(true));
+  }
+  // `delete obj?.prop` short-circuits to `true` when the base is nullish.
+  if expr.optional_chaining && is_nullish(base) {
+    return Ok(Value::Bool(true));
+  }
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
+  let mut del_scope = scope.reborrow();
+  del_scope.push_root(base)?;
+  let key_s = del_scope.alloc_string(&expr.right)?;
+  del_scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+
+  let object = evaluator.to_object_operator(&mut del_scope, base)?;
+  del_scope.push_root(Value::Object(object))?;
+
+  Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
+    evaluator.vm,
+    &mut del_scope,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    object,
+    key,
+  )?))
+}
+
+fn gen_delete_computed_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &ComputedMemberExpr,
+  base: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Bool(true))));
+  }
+  // `delete obj?.[expr]` short-circuits to `true` when the base is nullish and does not evaluate the
+  // member expression.
+  if expr.optional_chaining && is_nullish(base) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Bool(true))));
+  }
+
+  match gen_eval_expr(evaluator, scope, &expr.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => {
+        let member_value = v.unwrap_or(Value::Undefined);
+        let out = gen_delete_computed_member_after_member(evaluator, scope, expr, base, member_value)?;
+        Ok(GenEval::Complete(Completion::normal(out)))
+      }
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::DeleteComputedMemberAfterMember {
+          expr: expr as *const ComputedMemberExpr,
+          base,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_delete_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  _expr: &ComputedMemberExpr,
+  base: Value,
+  member_value: Value,
+) -> Result<Value, VmError> {
+  let mut del_scope = scope.reborrow();
+  del_scope.push_roots(&[base, member_value])?;
+  let key = evaluator.to_property_key_operator(&mut del_scope, member_value)?;
+  // Root the allocated key across `ToObject(base)` / `[[Delete]]` in case either operation triggers
+  // a GC.
+  let key_root = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+  del_scope.push_root(key_root)?;
+
+  // For computed property deletion, the member expression is evaluated (and `ToPropertyKey` is
+  // performed) before throwing on a nullish base.
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut del_scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
+  let object = evaluator.to_object_operator(&mut del_scope, base)?;
+  del_scope.push_root(Value::Object(object))?;
+
+  Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
+    evaluator.vm,
+    &mut del_scope,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    object,
+    key,
+  )?))
 }
 
 fn gen_member_after_base(
@@ -33777,6 +34006,80 @@ fn gen_resume_from_frames(
             Ok(out) => state = Completion::normal(out),
             Err(err) => {
               let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              state = completion_from_expr_result(Err(err))?;
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::DeleteAfterArgument => match state {
+        Completion::Normal(_) => state = Completion::normal(Value::Bool(true)),
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::DeleteMemberAfterBase { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_delete_member_after_base(evaluator, scope, expr, v.unwrap_or(Value::Undefined)) {
+            Ok(v) => state = Completion::normal(v),
+            Err(err) => {
+              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              state = completion_from_expr_result(Err(err))?;
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::DeleteComputedMemberAfterBase { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_delete_computed_member_after_base(evaluator, scope, expr, v.unwrap_or(Value::Undefined)) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::DeleteComputedMemberAfterMember { expr, base } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_delete_computed_member_after_member(
+            evaluator,
+            scope,
+            expr,
+            base,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(v) => state = Completion::normal(v),
+            Err(err) => {
+              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              state = completion_from_expr_result(Err(err))?;
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::DeleteSuperComputedMemberAfterMember => match state {
+        Completion::Normal(v) => {
+          let member_value = v.unwrap_or(Value::Undefined);
+          let mut del_scope = scope.reborrow();
+          del_scope.push_root(member_value)?;
+          match evaluator.to_property_key_operator(&mut del_scope, member_value) {
+            Ok(_) => {
+              let err =
+                throw_reference_error(evaluator.vm, &mut del_scope, "Cannot delete a super property")?;
+              state = completion_from_expr_result(Err(err))?;
+            }
+            Err(err) => {
+              let err = coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err);
               state = completion_from_expr_result(Err(err))?;
             }
           }
