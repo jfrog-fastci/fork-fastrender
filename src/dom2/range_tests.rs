@@ -1,7 +1,7 @@
 #![cfg(test)]
 
-use super::{parse_html, Document, DomError, NodeKind};
-use crate::dom::HTML_NAMESPACE;
+use super::{parse_html, Document, DomError, NodeKind, SlotAssignmentMode};
+use crate::dom::{ShadowRootMode, HTML_NAMESPACE};
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
 
@@ -814,6 +814,69 @@ fn range_compare_boundary_points_orders_boundary_points() {
   assert_eq!(doc.range_compare_boundary_points(a, 0, b).unwrap(), -1);
   assert_eq!(doc.range_compare_boundary_points(b, 0, a).unwrap(), 1);
   assert_eq!(doc.range_compare_boundary_points(a, 0, a).unwrap(), 0);
+}
+
+#[test]
+fn range_offsets_do_not_shift_when_shadow_root_attached_or_detached() {
+  let mut doc: Document = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let host = doc.create_element("div", "");
+  doc.append_child(root, host).unwrap();
+
+  let a = doc.create_element("span", "");
+  let b = doc.create_element("span", "");
+  doc.append_child(host, a).unwrap();
+  doc.append_child(host, b).unwrap();
+
+  // Collapsed range between `a` and `b` in tree-child offset space.
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 1).unwrap();
+  doc.range_set_end(range, host, 1).unwrap();
+
+  // Attaching a shadow root inserts a ShadowRoot node as child index 0 in `dom2`, but that is not a
+  // light-DOM tree child and must not affect Range offsets.
+  let shadow_root = doc
+    .attach_shadow_root(
+      host,
+      ShadowRootMode::Open,
+      /* clonable */ false,
+      /* serializable */ false,
+      /* delegates_focus */ false,
+      SlotAssignmentMode::Named,
+    )
+    .unwrap();
+  assert!(matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }));
+  assert_eq!(doc.node(host).children[0], shadow_root);
+  assert_eq!(doc.node(host).children[1], a);
+  assert_eq!(doc.node(host).children[2], b);
+
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+
+  // Offsets into the host must continue to be validated against the light-DOM child count.
+  let check = doc.create_range();
+  doc.range_set_start(check, host, 2).unwrap();
+  assert_eq!(
+    doc.range_set_start(check, host, 3),
+    Err(DomError::IndexSizeError)
+  );
+
+  // Boundary point comparisons must use tree-child indices (ignoring the ShadowRoot pseudo-child).
+  let collapse = doc.create_range();
+  doc.range_set_start(collapse, host, 1).unwrap(); // after `a`
+  doc.range_set_end(collapse, a, 0).unwrap(); // before `a` => collapse
+  assert_range_collapsed(&doc, collapse, a, 0);
+
+  // Removing the attached ShadowRoot from the host's child list must also not shift existing ranges.
+  assert!(doc.remove_child(host, shadow_root).unwrap());
+  assert_eq!(doc.node(host).children.as_slice(), &[a, b]);
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
 }
 
 #[test]
