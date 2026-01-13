@@ -8,13 +8,17 @@
 //!
 //! Note: the actual scroll-blit implementation may live elsewhere; this module is intentionally
 //! scoped to *observability* so regressions don't silently disable the fast-path.
+//!
+//! In addition to document/scroll-dependent checks, scroll blitting is gated on:
+//! - the active paint backend (`PaintBackend::DisplayList`), and
+//! - `FASTR_FULL_PAGE` expand-full-page mode (output surface may exceed the viewport).
 
 use crate::geometry::Point;
+use crate::paint::painter::{paint_backend_from_env, PaintBackend};
 use crate::scroll::ScrollState;
+use crate::style::position::Position;
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 use crate::{PreparedDocument, Size};
-
-use crate::style::position::Position;
 
 /// Reasons why the scroll blit fast-path could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,10 +35,14 @@ pub(crate) enum ScrollBlitFallbackReason {
   /// The document contains scroll-driven animations (scroll/view timelines), so scrolling can
   /// change pixels without a pure translation.
   ScrollDrivenAnimationsPresent,
+  /// The active paint backend is not the display-list pipeline (e.g. legacy/immediate mode).
+  LegacyBackend,
+  /// Expand-full-page mode is enabled, so the output surface may exceed the viewport.
+  FullPageMode,
 }
 
 impl ScrollBlitFallbackReason {
-  const COUNT: usize = 4;
+  const COUNT: usize = 6;
 
   fn as_index(self) -> usize {
     match self {
@@ -42,6 +50,8 @@ impl ScrollBlitFallbackReason {
       ScrollBlitFallbackReason::FixedOrStickyPresent => 1,
       ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll => 2,
       ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent => 3,
+      ScrollBlitFallbackReason::LegacyBackend => 4,
+      ScrollBlitFallbackReason::FullPageMode => 5,
     }
   }
 
@@ -51,9 +61,42 @@ impl ScrollBlitFallbackReason {
       1 => Some(ScrollBlitFallbackReason::FixedOrStickyPresent),
       2 => Some(ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll),
       3 => Some(ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent),
+      4 => Some(ScrollBlitFallbackReason::LegacyBackend),
+      5 => Some(ScrollBlitFallbackReason::FullPageMode),
       _ => None,
     }
   }
+
+  pub(crate) fn as_str(self) -> &'static str {
+    match self {
+      ScrollBlitFallbackReason::NonIntegerDevicePixelDelta => "NonIntegerDevicePixelDelta",
+      ScrollBlitFallbackReason::FixedOrStickyPresent => "FixedOrStickyPresent",
+      ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll => "ScrollSnapAdjustedEffectiveScroll",
+      ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent => "ScrollDrivenAnimationsPresent",
+      ScrollBlitFallbackReason::LegacyBackend => "LegacyBackend",
+      ScrollBlitFallbackReason::FullPageMode => "FullPageMode",
+    }
+  }
+}
+
+impl std::fmt::Display for ScrollBlitFallbackReason {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+/// Returns `Ok(())` when the scroll-blit optimization may be attempted.
+///
+/// When this returns `Err(reason)`, callers must fall back to the full repaint path and should
+/// surface `reason` in diagnostics/logging.
+pub(crate) fn scroll_blit_gate() -> Result<(), ScrollBlitFallbackReason> {
+  if paint_backend_from_env() != PaintBackend::DisplayList {
+    return Err(ScrollBlitFallbackReason::LegacyBackend);
+  }
+  if crate::debug::runtime::runtime_toggles().truthy("FASTR_FULL_PAGE") {
+    return Err(ScrollBlitFallbackReason::FullPageMode);
+  }
+  Ok(())
 }
 
 /// Output of a successful scroll-blit eligibility check.
@@ -140,6 +183,8 @@ pub(crate) fn scroll_blit_plan(
   prev_scroll: &ScrollState,
   next_scroll: &ScrollState,
 ) -> std::result::Result<ScrollBlitPlan, ScrollBlitFallbackReason> {
+  scroll_blit_gate()?;
+
   let dpr = prepared.device_pixel_ratio();
   let delta_css = Point::new(
     next_scroll.viewport.x - prev_scroll.viewport.x,
@@ -147,8 +192,10 @@ pub(crate) fn scroll_blit_plan(
   );
   let delta_device = Point::new(delta_css.x * dpr, delta_css.y * dpr);
 
-  let dx = approx_integer(delta_device.x).ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
-  let dy = approx_integer(delta_device.y).ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
+  let dx = approx_integer(delta_device.x)
+    .ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
+  let dy = approx_integer(delta_device.y)
+    .ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
 
   if fragment_tree_has_fixed_or_sticky(prepared.fragment_tree()) {
     return Err(ScrollBlitFallbackReason::FixedOrStickyPresent);
@@ -157,10 +204,15 @@ pub(crate) fn scroll_blit_plan(
   // Scroll snap can adjust the effective scroll position, which invalidates a simple blit. Compute
   // the paint-time effective scroll for the *new* state and check if it differs.
   let scrollport_viewport = prepared.layout_viewport();
-  let effective =
-    effective_scroll_state_for_paint_like_scroll_blit(prepared.fragment_tree().clone(), next_scroll.clone(), scrollport_viewport);
+  let effective = effective_scroll_state_for_paint_like_scroll_blit(
+    prepared.fragment_tree().clone(),
+    next_scroll.clone(),
+    scrollport_viewport,
+  );
   let requested = next_scroll.viewport;
-  if (effective.viewport.x - requested.x).abs() > 1e-3 || (effective.viewport.y - requested.y).abs() > 1e-3 {
+  if (effective.viewport.x - requested.x).abs() > 1e-3
+    || (effective.viewport.y - requested.y).abs() > 1e-3
+  {
     return Err(ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll);
   }
 
@@ -193,6 +245,8 @@ static SCROLL_BLIT_FALLBACK_COUNTS: [AtomicUsize; ScrollBlitFallbackReason::COUN
   AtomicUsize::new(0),
   AtomicUsize::new(0),
   AtomicUsize::new(0),
+  AtomicUsize::new(0),
+  AtomicUsize::new(0),
 ];
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -204,9 +258,7 @@ pub(crate) fn record_scroll_blit_fallback_reason(reason: ScrollBlitFallbackReaso
 #[cfg(any(test, feature = "browser_ui"))]
 pub(crate) fn last_scroll_blit_fallback_reason_for_test() -> Option<ScrollBlitFallbackReason> {
   let stored = LAST_SCROLL_BLIT_FALLBACK_REASON.load(Ordering::Relaxed);
-  stored
-    .checked_sub(1)
-    .and_then(ScrollBlitFallbackReason::from_index)
+  stored.checked_sub(1).and_then(ScrollBlitFallbackReason::from_index)
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -229,10 +281,12 @@ pub(crate) fn scroll_blit_fallback_count_for_test(reason: ScrollBlitFallbackReas
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::{self, RuntimeToggles};
   use crate::text::font_db::FontConfig;
   use crate::FastRender;
   use crate::RenderOptions;
-  use std::sync::{Mutex, OnceLock};
+  use std::collections::HashMap;
+  use std::sync::{Arc, Mutex, OnceLock};
 
   static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -262,111 +316,159 @@ mod tests {
       .expect("prepare html")
   }
 
+  fn with_default_toggles<R>(f: impl FnOnce() -> R) -> R {
+    runtime::with_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), f)
+  }
+
   #[test]
   fn scroll_blit_fallback_reason_fractional_device_pixel_delta() {
     let _guard = test_guard();
-    reset_scroll_blit_fallback_reason_for_test();
-    let prepared = prepare_for_html("<div style=\"height: 200px\"></div>", 1.0);
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let prepared = prepare_for_html("<div style=\"height: 200px\"></div>", 1.0);
 
-    let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
-    let next = ScrollState::with_viewport(Point::new(0.0, 0.5));
-    let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
-    assert_eq!(err, ScrollBlitFallbackReason::NonIntegerDevicePixelDelta);
-    record_scroll_blit_fallback_reason(err);
-    assert_eq!(
-      last_scroll_blit_fallback_reason_for_test(),
-      Some(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)
-    );
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      let next = ScrollState::with_viewport(Point::new(0.0, 0.5));
+      let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
+      assert_eq!(err, ScrollBlitFallbackReason::NonIntegerDevicePixelDelta);
+      record_scroll_blit_fallback_reason(err);
+      assert_eq!(
+        last_scroll_blit_fallback_reason_for_test(),
+        Some(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)
+      );
+    });
   }
 
   #[test]
   fn scroll_blit_fallback_reason_fixed_or_sticky_present() {
     let _guard = test_guard();
-    reset_scroll_blit_fallback_reason_for_test();
-    let html = r#"
-      <style>
-        html, body { margin: 0; }
-        #fixed { position: fixed; top: 0; left: 0; width: 10px; height: 10px; background: red; }
-      </style>
-      <div id="fixed"></div>
-      <div style="height: 500px"></div>
-    "#;
-    let prepared = prepare_for_html(html, 1.0);
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let html = r#"
+        <style>
+          html, body { margin: 0; }
+          #fixed { position: fixed; top: 0; left: 0; width: 10px; height: 10px; background: red; }
+        </style>
+        <div id=\"fixed\"></div>
+        <div style=\"height: 500px\"></div>
+      "#;
+      let prepared = prepare_for_html(html, 1.0);
 
-    let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
-    let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
-    let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
-    assert_eq!(err, ScrollBlitFallbackReason::FixedOrStickyPresent);
-    record_scroll_blit_fallback_reason(err);
-    assert_eq!(
-      last_scroll_blit_fallback_reason_for_test(),
-      Some(ScrollBlitFallbackReason::FixedOrStickyPresent)
-    );
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+      let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
+      assert_eq!(err, ScrollBlitFallbackReason::FixedOrStickyPresent);
+      record_scroll_blit_fallback_reason(err);
+      assert_eq!(
+        last_scroll_blit_fallback_reason_for_test(),
+        Some(ScrollBlitFallbackReason::FixedOrStickyPresent)
+      );
+    });
   }
 
   #[test]
   fn scroll_blit_fallback_reason_scroll_snap_adjusted() {
     let _guard = test_guard();
-    reset_scroll_blit_fallback_reason_for_test();
-    let html = r#"
-      <style>
-        html, body { margin: 0; }
-        html { scroll-snap-type: y mandatory; }
-        .snap { height: 100px; scroll-snap-align: start; }
-      </style>
-      <div class="snap"></div>
-      <div class="snap"></div>
-      <div class="snap"></div>
-    "#;
-    let prepared = prepare_for_html(html, 1.0);
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let html = r#"
+        <style>
+          html, body { margin: 0; }
+          html { scroll-snap-type: y mandatory; }
+          .snap { height: 100px; scroll-snap-align: start; }
+        </style>
+        <div class=\"snap\"></div>
+        <div class=\"snap\"></div>
+        <div class=\"snap\"></div>
+      "#;
+      let prepared = prepare_for_html(html, 1.0);
 
-    let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
-    // 70px should snap to 100px under mandatory snapping.
-    let next = ScrollState::with_viewport(Point::new(0.0, 70.0));
-    let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
-    assert_eq!(err, ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll);
-    record_scroll_blit_fallback_reason(err);
-    assert_eq!(
-      last_scroll_blit_fallback_reason_for_test(),
-      Some(ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll)
-    );
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      // 70px should snap to 100px under mandatory snapping.
+      let next = ScrollState::with_viewport(Point::new(0.0, 70.0));
+      let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
+      assert_eq!(err, ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll);
+      record_scroll_blit_fallback_reason(err);
+      assert_eq!(
+        last_scroll_blit_fallback_reason_for_test(),
+        Some(ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll)
+      );
+    });
   }
 
   #[test]
   fn scroll_blit_fallback_reason_scroll_driven_animation_present() {
     let _guard = test_guard();
-    reset_scroll_blit_fallback_reason_for_test();
-    let html = r#"
-      <style>
-        html, body { margin: 0; }
-        #box {
-          width: 10px;
-          height: 10px;
-          background: red;
-          animation-name: fade;
-          animation-duration: 1s;
-          animation-timing-function: linear;
-          animation-timeline: scroll(root);
-        }
-        @keyframes fade {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-      </style>
-      <div id="box"></div>
-      <div style="height: 500px"></div>
-    "#;
-    let prepared = prepare_for_html(html, 1.0);
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let html = r#"
+        <style>
+          html, body { margin: 0; }
+          #box {
+            width: 10px;
+            height: 10px;
+            background: red;
+            animation-name: fade;
+            animation-duration: 1s;
+            animation-timing-function: linear;
+            animation-timeline: scroll(root);
+          }
+          @keyframes fade {
+            from { opacity: 0; }
+            to { opacity: 1; }
+          }
+        </style>
+        <div id=\"box\"></div>
+        <div style=\"height: 500px\"></div>
+      "#;
+      let prepared = prepare_for_html(html, 1.0);
 
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+      let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
+      assert_eq!(err, ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent);
+      record_scroll_blit_fallback_reason(err);
+      assert_eq!(
+        last_scroll_blit_fallback_reason_for_test(),
+        Some(ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent)
+      );
+    });
+  }
+
+  #[test]
+  fn scroll_blit_disabled_on_legacy_backend() {
+    let _guard = test_guard();
+    reset_scroll_blit_fallback_reason_for_test();
+    let prepared = prepare_for_html("<div style=\"height: 200px\"></div>", 1.0);
     let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
     let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
-    let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
-    assert_eq!(err, ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent);
-    record_scroll_blit_fallback_reason(err);
-    assert_eq!(
-      last_scroll_blit_fallback_reason_for_test(),
-      Some(ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent)
-    );
+
+    let mut raw = HashMap::new();
+    raw.insert("FASTR_PAINT_BACKEND".to_string(), "legacy".to_string());
+    let toggles = Arc::new(RuntimeToggles::from_map(raw));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
+      assert_eq!(err, ScrollBlitFallbackReason::LegacyBackend);
+      assert_eq!(err.as_str(), "LegacyBackend");
+    });
+  }
+
+  #[test]
+  fn scroll_blit_disabled_on_full_page_mode() {
+    let _guard = test_guard();
+    reset_scroll_blit_fallback_reason_for_test();
+    let prepared = prepare_for_html("<div style=\"height: 200px\"></div>", 1.0);
+    let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+    let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+
+    let mut raw = HashMap::new();
+    raw.insert("FASTR_FULL_PAGE".to_string(), "1".to_string());
+    let toggles = Arc::new(RuntimeToggles::from_map(raw));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
+      assert_eq!(err, ScrollBlitFallbackReason::FullPageMode);
+      assert_eq!(err.as_str(), "FullPageMode");
+    });
   }
 
   #[test]
@@ -374,26 +476,28 @@ mod tests {
     // `animation-timeline` alone does not create an active animation when `animation-name` is the
     // initial `none` value. Scroll blit should remain eligible in that case.
     let _guard = test_guard();
-    reset_scroll_blit_fallback_reason_for_test();
-    let html = r#"
-      <style>
-        html, body { margin: 0; }
-        #box {
-          width: 10px;
-          height: 10px;
-          background: red;
-          animation-timeline: scroll(root);
-        }
-      </style>
-      <div id="box"></div>
-      <div style="height: 500px"></div>
-    "#;
-    let prepared = prepare_for_html(html, 1.0);
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let html = r#"
+        <style>
+          html, body { margin: 0; }
+          #box {
+            width: 10px;
+            height: 10px;
+            background: red;
+            animation-timeline: scroll(root);
+          }
+        </style>
+        <div id="box"></div>
+        <div style="height: 500px"></div>
+      "#;
+      let prepared = prepare_for_html(html, 1.0);
 
-    let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
-    let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
-    let plan = scroll_blit_plan(&prepared, &prev, &next).expect("expected scroll blit plan");
-    assert_eq!(plan.delta_device_px, (0, 10));
-    assert_eq!(last_scroll_blit_fallback_reason_for_test(), None);
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+      let plan = scroll_blit_plan(&prepared, &prev, &next).expect("expected scroll blit plan");
+      assert_eq!(plan.delta_device_px, (0, 10));
+      assert_eq!(last_scroll_blit_fallback_reason_for_test(), None);
+    });
   }
 }
