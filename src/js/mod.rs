@@ -264,7 +264,9 @@ pub use window_xhr::{
 };
 pub use window_websocket::{
   install_window_websocket_bindings, install_window_websocket_bindings_with_guard,
+  install_window_websocket_ipc_bindings, install_window_websocket_ipc_bindings_with_guard,
   unregister_window_websocket_env, WindowWebSocketBindings, WindowWebSocketEnv,
+  WindowWebSocketIpcEnv, WebSocketIpcCommand, WebSocketIpcEvent,
 };
 
 /// The script processing mode for a `<script>` element.

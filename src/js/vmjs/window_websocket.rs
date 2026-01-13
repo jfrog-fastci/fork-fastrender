@@ -18,8 +18,8 @@ use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop
 use std::borrow::Cow;
 use std::char::decode_utf16;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tungstenite::protocol::{CloseFrame, Message};
@@ -63,6 +63,7 @@ impl WindowWebSocketEnv {
 
 struct EnvState {
   env: WindowWebSocketEnv,
+  ipc: Option<IpcEnvState>,
   next_id: u64,
   sockets: HashMap<u64, WebSocketState>,
 }
@@ -71,6 +72,16 @@ impl EnvState {
   fn new(env: WindowWebSocketEnv) -> Self {
     Self {
       env,
+      ipc: None,
+      next_id: 1,
+      sockets: HashMap::new(),
+    }
+  }
+
+  fn new_ipc(env: WindowWebSocketEnv, ipc: IpcEnvState) -> Self {
+    Self {
+      env,
+      ipc: Some(ipc),
       next_id: 1,
       sockets: HashMap::new(),
     }
@@ -90,7 +101,8 @@ struct WebSocketState {
   ready_state: u16,
   buffered_amount: usize,
   pending_events: usize,
-  cmd_tx: mpsc::SyncSender<WsCommand>,
+  // In-process backend (tungstenite) uses a per-socket command queue and thread.
+  cmd_tx: Option<mpsc::SyncSender<WsCommand>>,
   thread: Option<JoinHandle<()>>,
 }
 
@@ -102,6 +114,80 @@ enum WsCommand {
     reason: Option<String>,
   },
   Shutdown,
+}
+
+/// IPC commands emitted by the renderer/JS realm and consumed by a network process.
+///
+/// Tests can wire these up to an in-process "network process" thread; production embeddings can
+/// forward them across a real IPC boundary.
+#[derive(Debug)]
+pub enum WebSocketIpcCommand {
+  Connect {
+    ws_id: u64,
+    url: String,
+    protocols: Option<String>,
+  },
+  SendText {
+    ws_id: u64,
+    text: String,
+  },
+  SendBinary {
+    ws_id: u64,
+    data: Vec<u8>,
+  },
+  Close {
+    ws_id: u64,
+    code: Option<u16>,
+    reason: Option<String>,
+  },
+}
+
+/// IPC events emitted by a network process and consumed by the renderer/JS realm.
+#[derive(Debug)]
+pub enum WebSocketIpcEvent {
+  Open {
+    ws_id: u64,
+    protocol: String,
+  },
+  MessageText {
+    ws_id: u64,
+    text: String,
+  },
+  MessageBinary {
+    ws_id: u64,
+    data: Vec<u8>,
+  },
+  /// Indicates that `amount` bytes have been flushed/written by the network process.
+  Sent {
+    ws_id: u64,
+    amount: usize,
+  },
+  Error {
+    ws_id: u64,
+    message: String,
+  },
+  Close {
+    ws_id: u64,
+    code: u16,
+    reason: String,
+  },
+}
+
+/// Environment configuration for installing the IPC-based WebSocket backend.
+///
+/// The `cmd_tx` channel should generally be bounded (`sync_channel`) so the renderer can apply
+/// backpressure via `WebSocket.send()` throwing once the queue fills.
+pub struct WindowWebSocketIpcEnv {
+  pub document_url: Option<String>,
+  pub cmd_tx: mpsc::SyncSender<WebSocketIpcCommand>,
+  pub event_rx: mpsc::Receiver<WebSocketIpcEvent>,
+}
+
+struct IpcEnvState {
+  cmd_tx: mpsc::SyncSender<WebSocketIpcCommand>,
+  event_rx: Option<mpsc::Receiver<WebSocketIpcEvent>>,
+  stop: Arc<AtomicBool>,
+  thread: Option<JoinHandle<()>>,
 }
 
 static NEXT_ENV_ID: AtomicU64 = AtomicU64::new(1);
@@ -122,11 +208,21 @@ pub fn unregister_window_websocket_env(env_id: u64) {
     return;
   };
 
+  if let Some(mut ipc) = env_state.ipc.take() {
+    ipc.stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = ipc.thread.take() {
+      let _ = handle.join();
+    }
+    // Drop remaining rx/tx so embeddings can observe disconnects if desired.
+    drop(ipc);
+  }
+
   for (_id, mut ws) in env_state.sockets.drain() {
     // Best-effort shutdown: if the channel is full/disconnected, dropping the sender will still
     // cause the thread to eventually exit.
-    let _ = ws.cmd_tx.try_send(WsCommand::Shutdown);
-    drop(ws.cmd_tx);
+    if let Some(cmd_tx) = ws.cmd_tx.as_ref() {
+      let _ = cmd_tx.try_send(WsCommand::Shutdown);
+    }
     if let Some(handle) = ws.thread.take() {
       let _ = handle.join();
     }
@@ -555,25 +651,48 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
   set_data_prop(scope, obj, "onerror", Value::Null, true)?;
   set_data_prop(scope, obj, "onclose", Value::Null, true)?;
 
-  let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WsCommand>(MAX_QUEUED_WEBSOCKET_SEND_COMMANDS);
+  let use_ipc = with_env_state(env_id, |state| Ok(state.ipc.is_some()))?;
 
-  let ws_id = with_env_state_mut(env_id, |state| {
-    let id = state.alloc_id();
-    state.sockets.insert(
-      id,
-      WebSocketState {
-        weak_obj: WeakGcObject::from(obj),
-        url: resolved_url.to_string(),
-        protocol: String::new(),
-        ready_state: WS_CONNECTING,
-        buffered_amount: 0,
-        pending_events: 0,
-        cmd_tx: cmd_tx.clone(),
-        thread: None,
-      },
-    );
-    Ok(id)
-  })?;
+  let (ws_id, cmd_rx_opt) = if use_ipc {
+    let ws_id = with_env_state_mut(env_id, |state| {
+      let id = state.alloc_id();
+      state.sockets.insert(
+        id,
+        WebSocketState {
+          weak_obj: WeakGcObject::from(obj),
+          url: resolved_url.to_string(),
+          protocol: String::new(),
+          ready_state: WS_CONNECTING,
+          buffered_amount: 0,
+          pending_events: 0,
+          cmd_tx: None,
+          thread: None,
+        },
+      );
+      Ok(id)
+    })?;
+    (ws_id, None)
+  } else {
+    let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WsCommand>(MAX_QUEUED_WEBSOCKET_SEND_COMMANDS);
+    let ws_id = with_env_state_mut(env_id, |state| {
+      let id = state.alloc_id();
+      state.sockets.insert(
+        id,
+        WebSocketState {
+          weak_obj: WeakGcObject::from(obj),
+          url: resolved_url.to_string(),
+          protocol: String::new(),
+          ready_state: WS_CONNECTING,
+          buffered_amount: 0,
+          pending_events: 0,
+          cmd_tx: Some(cmd_tx.clone()),
+          thread: None,
+        },
+      );
+      Ok(id)
+    })?;
+    (ws_id, Some(cmd_rx))
+  };
 
   let ws_key = alloc_key(scope, WS_ID_KEY)?;
   scope.define_property(
@@ -591,23 +710,55 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
 
   let resolved_url_string = resolved_url.to_string();
 
-  let handle = std::thread::spawn(move || {
-    websocket_thread_main::<Host>(
-      env_id,
+  if use_ipc {
+    ensure_ipc_event_thread_started::<Host>(env_id, task_queue)?;
+    let ipc_tx = with_env_state(env_id, |state| {
+      state
+        .ipc
+        .as_ref()
+        .map(|ipc| ipc.cmd_tx.clone())
+        .ok_or(VmError::InvariantViolation("WebSocket IPC env missing cmd_tx"))
+    })?;
+    match ipc_tx.try_send(WebSocketIpcCommand::Connect {
       ws_id,
-      resolved_url_string,
-      protocols_header,
-      cmd_rx,
-      task_queue,
-    )
-  });
-
-  let _ = with_env_state_mut(env_id, |state| {
-    if let Some(ws) = state.sockets.get_mut(&ws_id) {
-      ws.thread = Some(handle);
+      url: resolved_url_string,
+      protocols: protocols_header,
+    }) {
+      Ok(()) => {}
+      Err(mpsc::TrySendError::Full(_)) => {
+        let _ = with_env_state_mut(env_id, |state| {
+          state.sockets.remove(&ws_id);
+          Ok(())
+        });
+        return Err(VmError::TypeError("WebSocket connect queue is full"));
+      }
+      Err(mpsc::TrySendError::Disconnected(_)) => {
+        let _ = with_env_state_mut(env_id, |state| {
+          state.sockets.remove(&ws_id);
+          Ok(())
+        });
+        return Err(VmError::TypeError("WebSocket is closed"));
+      }
     }
-    Ok(())
-  });
+  } else if let Some(cmd_rx) = cmd_rx_opt {
+    let handle = std::thread::spawn(move || {
+      websocket_thread_main::<Host>(
+        env_id,
+        ws_id,
+        resolved_url_string,
+        protocols_header,
+        cmd_rx,
+        task_queue,
+      )
+    });
+
+    let _ = with_env_state_mut(env_id, |state| {
+      if let Some(ws) = state.sockets.get_mut(&ws_id) {
+        ws.thread = Some(handle);
+      }
+      Ok(())
+    });
+  }
 
   Ok(Value::Object(obj))
 }
@@ -739,7 +890,12 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
 
   let cmd = kind.ok_or(VmError::TypeError("WebSocket data unsupported"))?;
 
-  let cmd_tx = with_env_state_mut(env_id, |state| {
+  enum SendQueue {
+    InProcess(mpsc::SyncSender<WsCommand>),
+    Ipc(mpsc::SyncSender<WebSocketIpcCommand>),
+  }
+
+  let queue = with_env_state_mut(env_id, |state| {
     let ws = state
       .sockets
       .get_mut(&ws_id)
@@ -748,13 +904,59 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
       return Err(VmError::TypeError("WebSocket is not open"));
     }
     ws.buffered_amount = ws.buffered_amount.saturating_add(byte_len);
-    Ok(ws.cmd_tx.clone())
+    if let Some(ipc) = state.ipc.as_ref() {
+      Ok(SendQueue::Ipc(ipc.cmd_tx.clone()))
+    } else {
+      let cmd_tx = ws
+        .cmd_tx
+        .as_ref()
+        .cloned()
+        .ok_or(VmError::InvariantViolation(
+          "WebSocket in-process state missing cmd_tx",
+        ))?;
+      Ok(SendQueue::InProcess(cmd_tx))
+    }
   })?;
 
-  match cmd_tx.try_send(cmd) {
-    Ok(()) => Ok(Value::Undefined),
-    Err(mpsc::TrySendError::Full(_)) => Err(VmError::TypeError("WebSocket send queue is full")),
-    Err(mpsc::TrySendError::Disconnected(_)) => Err(VmError::TypeError("WebSocket is closed")),
+  let revert_buffered = |byte_len: usize| {
+    let _ = with_env_state_mut(env_id, |state| {
+      if let Some(ws) = state.sockets.get_mut(&ws_id) {
+        ws.buffered_amount = ws.buffered_amount.saturating_sub(byte_len);
+      }
+      Ok(())
+    });
+  };
+
+  match queue {
+    SendQueue::InProcess(cmd_tx) => match cmd_tx.try_send(cmd) {
+      Ok(()) => Ok(Value::Undefined),
+      Err(mpsc::TrySendError::Full(_)) => {
+        revert_buffered(byte_len);
+        Err(VmError::TypeError("WebSocket send queue is full"))
+      }
+      Err(mpsc::TrySendError::Disconnected(_)) => {
+        revert_buffered(byte_len);
+        Err(VmError::TypeError("WebSocket is closed"))
+      }
+    },
+    SendQueue::Ipc(cmd_tx) => {
+      let ipc_cmd = match cmd {
+        WsCommand::SendText(text) => WebSocketIpcCommand::SendText { ws_id, text },
+        WsCommand::SendBinary(data) => WebSocketIpcCommand::SendBinary { ws_id, data },
+        _ => unreachable!("websocket_send only queues SendText/SendBinary"),
+      };
+      match cmd_tx.try_send(ipc_cmd) {
+        Ok(()) => Ok(Value::Undefined),
+        Err(mpsc::TrySendError::Full(_)) => {
+          revert_buffered(byte_len);
+          Err(VmError::TypeError("WebSocket send queue is full"))
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+          revert_buffered(byte_len);
+          Err(VmError::TypeError("WebSocket is closed"))
+        }
+      }
+    }
   }
 }
 
@@ -799,7 +1001,12 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
     Some(s)
   };
 
-  let cmd_tx = with_env_state_mut(env_id, |state| {
+  enum CloseQueue {
+    InProcess(mpsc::SyncSender<WsCommand>),
+    Ipc(mpsc::SyncSender<WebSocketIpcCommand>),
+  }
+
+  let queue = with_env_state_mut(env_id, |state| {
     let ws = state
       .sockets
       .get_mut(&ws_id)
@@ -808,15 +1015,38 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
       return Ok(None);
     }
     ws.ready_state = WS_CLOSING;
-    Ok(Some(ws.cmd_tx.clone()))
+    if let Some(ipc) = state.ipc.as_ref() {
+      Ok(Some(CloseQueue::Ipc(ipc.cmd_tx.clone())))
+    } else {
+      let cmd_tx = ws
+        .cmd_tx
+        .as_ref()
+        .cloned()
+        .ok_or(VmError::InvariantViolation(
+          "WebSocket in-process state missing cmd_tx",
+        ))?;
+      Ok(Some(CloseQueue::InProcess(cmd_tx)))
+    }
   })?;
 
-  let Some(cmd_tx) = cmd_tx else {
+  let Some(queue) = queue else {
     return Ok(Value::Undefined);
   };
 
-  let cmd = WsCommand::Close { code, reason };
-  let _ = cmd_tx.try_send(cmd);
+  match queue {
+    CloseQueue::InProcess(cmd_tx) => {
+      let cmd = WsCommand::Close { code, reason };
+      let _ = cmd_tx.try_send(cmd);
+    }
+    CloseQueue::Ipc(cmd_tx) => {
+      let cmd = WebSocketIpcCommand::Close {
+        ws_id,
+        code,
+        reason,
+      };
+      let _ = cmd_tx.try_send(cmd);
+    }
+  }
   Ok(Value::Undefined)
 }
 
@@ -955,6 +1185,165 @@ fn make_simple_event(scope: &mut Scope<'_>, event_type: &str) -> Result<GcObject
   let type_key = alloc_key(scope, "type")?;
   scope.define_property(ev, type_key, data_desc(Value::String(type_s), false))?;
   Ok(ev)
+}
+
+fn ensure_ipc_event_thread_started<Host: WindowRealmHost + 'static>(
+  env_id: u64,
+  task_queue: ExternalTaskQueueHandle<Host>,
+) -> Result<(), VmError> {
+  let init: Option<(mpsc::Receiver<WebSocketIpcEvent>, Arc<AtomicBool>)> =
+    with_env_state_mut(env_id, |state| {
+      let Some(ipc) = state.ipc.as_mut() else {
+        return Ok(None);
+      };
+      if ipc.thread.is_some() {
+        return Ok(None);
+      }
+      let rx = ipc
+        .event_rx
+        .take()
+        .ok_or(VmError::InvariantViolation(
+          "WebSocket IPC env missing event receiver",
+        ))?;
+      Ok(Some((rx, ipc.stop.clone())))
+    })?;
+
+  let Some((rx, stop)) = init else {
+    return Ok(());
+  };
+
+  let handle = std::thread::spawn(move || websocket_ipc_event_thread_main::<Host>(env_id, rx, task_queue, stop));
+  let _ = with_env_state_mut(env_id, |state| {
+    if let Some(ipc) = state.ipc.as_mut() {
+      ipc.thread = Some(handle);
+    }
+    Ok(())
+  });
+  Ok(())
+}
+
+fn websocket_ipc_event_thread_main<Host: WindowRealmHost + 'static>(
+  env_id: u64,
+  rx: mpsc::Receiver<WebSocketIpcEvent>,
+  task_queue: ExternalTaskQueueHandle<Host>,
+  stop: Arc<AtomicBool>,
+) {
+  // Keep timeouts small so `WindowWebSocketBindings` teardown can join this thread quickly.
+  let poll_timeout = Duration::from_millis(50);
+  while !stop.load(Ordering::Relaxed) {
+    match rx.recv_timeout(poll_timeout) {
+      Ok(ev) => handle_ipc_event::<Host>(&task_queue, env_id, ev),
+      Err(mpsc::RecvTimeoutError::Timeout) => {}
+      Err(mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+}
+
+fn handle_ipc_event<Host: WindowRealmHost + 'static>(
+  task_queue: &ExternalTaskQueueHandle<Host>,
+  env_id: u64,
+  ev: WebSocketIpcEvent,
+) {
+  match ev {
+    WebSocketIpcEvent::Open { ws_id, protocol } => {
+      let _ = with_env_state_mut(env_id, |state| {
+        if let Some(ws) = state.sockets.get_mut(&ws_id) {
+          ws.ready_state = WS_OPEN;
+          ws.protocol = protocol;
+        }
+        Ok(())
+      });
+      queue_ws_task::<Host>(task_queue, env_id, ws_id, |vm_host, heap, vm, hooks, ws_obj| {
+        let mut scope = heap.scope();
+        let ev = make_simple_event(&mut scope, "open")?;
+        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onopen")?;
+        Ok(())
+      });
+    }
+    WebSocketIpcEvent::MessageText { ws_id, text } => {
+      if text.as_bytes().len() > MAX_WEBSOCKET_MESSAGE_BYTES {
+        return;
+      }
+      queue_ws_task::<Host>(task_queue, env_id, ws_id, move |vm_host, heap, vm, hooks, ws_obj| {
+        let mut scope = heap.scope();
+        let ev = make_simple_event(&mut scope, "message")?;
+        let data_s = scope.alloc_string(&text)?;
+        scope.push_root(Value::String(data_s))?;
+        let data_key = alloc_key(&mut scope, "data")?;
+        scope.define_property(ev, data_key, data_desc(Value::String(data_s), false))?;
+        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
+        Ok(())
+      });
+    }
+    WebSocketIpcEvent::MessageBinary { ws_id, data } => {
+      if data.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
+        return;
+      }
+      queue_ws_task::<Host>(task_queue, env_id, ws_id, move |vm_host, heap, vm, hooks, ws_obj| {
+        let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+          "WebSocket message dispatch requires intrinsics",
+        ))?;
+        let mut scope = heap.scope();
+        let ev = make_simple_event(&mut scope, "message")?;
+        let ab = scope.alloc_array_buffer_from_u8_vec(data)?;
+        scope.push_root(Value::Object(ab))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+        let data_key = alloc_key(&mut scope, "data")?;
+        scope.define_property(ev, data_key, data_desc(Value::Object(ab), false))?;
+        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
+        Ok(())
+      });
+    }
+    WebSocketIpcEvent::Sent { ws_id, amount } => {
+      let _ = with_env_state_mut(env_id, |state| {
+        if let Some(ws) = state.sockets.get_mut(&ws_id) {
+          ws.buffered_amount = ws.buffered_amount.saturating_sub(amount);
+        }
+        Ok(())
+      });
+    }
+    WebSocketIpcEvent::Error { ws_id, message: _ } => {
+      let _ = with_env_state_mut(env_id, |state| {
+        if let Some(ws) = state.sockets.get_mut(&ws_id) {
+          ws.ready_state = WS_CLOSED;
+          ws.buffered_amount = 0;
+        }
+        Ok(())
+      });
+      queue_ws_task::<Host>(task_queue, env_id, ws_id, |vm_host, heap, vm, hooks, ws_obj| {
+        let mut scope = heap.scope();
+        let ev = make_simple_event(&mut scope, "error")?;
+        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
+        let close_ev = make_simple_event(&mut scope, "close")?;
+        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+        Ok(())
+      });
+    }
+    WebSocketIpcEvent::Close { ws_id, code, reason } => {
+      let _ = with_env_state_mut(env_id, |state| {
+        if let Some(ws) = state.sockets.get_mut(&ws_id) {
+          ws.ready_state = WS_CLOSED;
+          ws.buffered_amount = 0;
+        }
+        Ok(())
+      });
+
+      queue_ws_task::<Host>(task_queue, env_id, ws_id, move |vm_host, heap, vm, hooks, ws_obj| {
+        let mut scope = heap.scope();
+        let ev = make_simple_event(&mut scope, "close")?;
+        let code_key = alloc_key(&mut scope, "code")?;
+        scope.define_property(ev, code_key, data_desc(Value::Number(code as f64), false))?;
+        let reason_key = alloc_key(&mut scope, "reason")?;
+        let reason_s = scope.alloc_string(&reason)?;
+        scope.push_root(Value::String(reason_s))?;
+        scope.define_property(ev, reason_key, data_desc(Value::String(reason_s), false))?;
+        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onclose")?;
+        Ok(())
+      });
+    }
+  }
 }
 
 fn websocket_thread_main<Host: WindowRealmHost + 'static>(
@@ -1211,35 +1600,12 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
   });
 }
 
-/// Install WebSocket bindings onto the window global object.
-///
-/// Returns an env id that can be passed to [`unregister_window_websocket_env`] to tear down the
-/// backing Rust state when the realm/host is dropped.
-pub fn install_window_websocket_bindings<Host: WindowRealmHost + 'static>(
+fn install_window_websocket_bindings_for_env_id<Host: WindowRealmHost + 'static>(
   vm: &mut Vm,
   realm: &Realm,
   heap: &mut Heap,
-  env: WindowWebSocketEnv,
-) -> Result<u64, VmError> {
-  let bindings = install_window_websocket_bindings_with_guard::<Host>(vm, realm, heap, env)?;
-  Ok(bindings.disarm())
-}
-
-/// Install WebSocket bindings onto the window global object, returning an RAII guard that
-/// automatically unregisters the backing Rust state when dropped.
-pub fn install_window_websocket_bindings_with_guard<Host: WindowRealmHost + 'static>(
-  vm: &mut Vm,
-  realm: &Realm,
-  heap: &mut Heap,
-  env: WindowWebSocketEnv,
-) -> Result<WindowWebSocketBindings, VmError> {
-  let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
-  {
-    let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    lock.insert(env_id, EnvState::new(env));
-  }
-  let bindings = WindowWebSocketBindings::new(env_id);
-
+  env_id: u64,
+) -> Result<(), VmError> {
   let intr = realm.intrinsics();
   let func_proto = intr.function_prototype();
 
@@ -1330,7 +1696,11 @@ pub fn install_window_websocket_bindings_with_guard<Host: WindowRealmHost + 'sta
     .heap_mut()
     .object_set_prototype(ready_get_fn, Some(func_proto))?;
   let ready_key = alloc_key(&mut scope, "readyState")?;
-  scope.define_property(proto, ready_key, accessor_desc(Value::Object(ready_get_fn), Value::Undefined))?;
+  scope.define_property(
+    proto,
+    ready_key,
+    accessor_desc(Value::Object(ready_get_fn), Value::Undefined),
+  )?;
 
   let url_get_id = vm.register_native_call(websocket_url_get)?;
   let url_get_name = scope.alloc_string("get url")?;
@@ -1340,7 +1710,11 @@ pub fn install_window_websocket_bindings_with_guard<Host: WindowRealmHost + 'sta
     .heap_mut()
     .object_set_prototype(url_get_fn, Some(func_proto))?;
   let url_key = alloc_key(&mut scope, "url")?;
-  scope.define_property(proto, url_key, accessor_desc(Value::Object(url_get_fn), Value::Undefined))?;
+  scope.define_property(
+    proto,
+    url_key,
+    accessor_desc(Value::Object(url_get_fn), Value::Undefined),
+  )?;
 
   let protocol_get_id = vm.register_native_call(websocket_protocol_get)?;
   let protocol_get_name = scope.alloc_string("get protocol")?;
@@ -1373,6 +1747,93 @@ pub fn install_window_websocket_bindings_with_guard<Host: WindowRealmHost + 'sta
   // Expose on global.
   let ctor_key = alloc_key(&mut scope, "WebSocket")?;
   scope.define_property(global, ctor_key, data_desc(Value::Object(ctor), true))?;
+
+  Ok(())
+}
+
+/// Install WebSocket bindings onto the window global object.
+///
+/// Returns an env id that can be passed to [`unregister_window_websocket_env`] to tear down the
+/// backing Rust state when the realm/host is dropped.
+pub fn install_window_websocket_bindings<Host: WindowRealmHost + 'static>(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut Heap,
+  env: WindowWebSocketEnv,
+) -> Result<u64, VmError> {
+  let bindings = install_window_websocket_bindings_with_guard::<Host>(vm, realm, heap, env)?;
+  Ok(bindings.disarm())
+}
+
+/// Install WebSocket bindings onto the window global object, returning an RAII guard that
+/// automatically unregisters the backing Rust state when dropped.
+pub fn install_window_websocket_bindings_with_guard<Host: WindowRealmHost + 'static>(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut Heap,
+  env: WindowWebSocketEnv,
+) -> Result<WindowWebSocketBindings, VmError> {
+  let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
+  {
+    let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    lock.insert(env_id, EnvState::new(env));
+  }
+  let bindings = WindowWebSocketBindings::new(env_id);
+  if let Err(err) = install_window_websocket_bindings_for_env_id::<Host>(vm, realm, heap, env_id) {
+    unregister_window_websocket_env(env_id);
+    return Err(err);
+  }
+
+  Ok(bindings)
+}
+
+/// Install the IPC-backed WebSocket bindings onto the window global object.
+///
+/// Returns an env id that can be passed to [`unregister_window_websocket_env`] to tear down the
+/// backing Rust state when the realm/host is dropped.
+pub fn install_window_websocket_ipc_bindings<Host: WindowRealmHost + 'static>(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut Heap,
+  env: WindowWebSocketIpcEnv,
+) -> Result<u64, VmError> {
+  let bindings = install_window_websocket_ipc_bindings_with_guard::<Host>(vm, realm, heap, env)?;
+  Ok(bindings.disarm())
+}
+
+/// Install the IPC-backed WebSocket bindings onto the window global object, returning an RAII guard
+/// that automatically unregisters the backing Rust state when dropped.
+pub fn install_window_websocket_ipc_bindings_with_guard<Host: WindowRealmHost + 'static>(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut Heap,
+  env: WindowWebSocketIpcEnv,
+) -> Result<WindowWebSocketBindings, VmError> {
+  let WindowWebSocketIpcEnv {
+    document_url,
+    cmd_tx,
+    event_rx,
+  } = env;
+  let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
+  let ipc_state = IpcEnvState {
+    cmd_tx,
+    event_rx: Some(event_rx),
+    stop: Arc::new(AtomicBool::new(false)),
+    thread: None,
+  };
+  {
+    let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    lock.insert(
+      env_id,
+      EnvState::new_ipc(WindowWebSocketEnv::for_document(document_url), ipc_state),
+    );
+  }
+
+  let bindings = WindowWebSocketBindings::new(env_id);
+  if let Err(err) = install_window_websocket_bindings_for_env_id::<Host>(vm, realm, heap, env_id) {
+    unregister_window_websocket_env(env_id);
+    return Err(err);
+  }
 
   Ok(bindings)
 }
