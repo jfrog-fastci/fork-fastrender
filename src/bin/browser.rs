@@ -14957,12 +14957,6 @@ impl App {
       self.perf_navigation_started(*tab_id, url);
     }
 
-    if let fastrender::ui::WorkerToUi::Stage { tab_id, stage } = &msg {
-      if let Some(perf_log) = self.perf_log.as_mut() {
-        perf_log.stage(*tab_id, *stage, std::time::Instant::now());
-      }
-    }
-
     // `about:` pages are rendered in the trusted browser process. Once a tab is showing an about
     // page, ignore any worker messages that would mutate the visible page state (stale frames from
     // an older navigation, viewport relayouts, etc).
@@ -14991,6 +14985,16 @@ impl App {
         request_redraw: false,
         history_deltas: Vec::new(),
       };
+    }
+
+    if let fastrender::ui::WorkerToUi::Stage { tab_id, stage } = &msg {
+      // `reduce_worker_to_ui` ignores stage heartbeats for tabs that have already been closed;
+      // match that behavior to avoid logging stale heartbeats from worker backlog drains.
+      if self.browser_state.tab(*tab_id).is_some() {
+        if let Some(perf_log) = self.perf_log.as_mut() {
+          perf_log.stage(*tab_id, *stage, std::time::Instant::now());
+        }
+      }
     }
 
     // UI-only side effects that depend on the raw message before the shared reducer consumes it.

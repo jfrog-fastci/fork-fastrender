@@ -247,8 +247,8 @@ fn parse_value_as_f64(value: &Value) -> Option<f64> {
 }
 
 fn parse_timestamp_ms(obj: &serde_json::Map<String, Value>) -> Option<f64> {
-  // Most browser perf log events use `t_ms`.
-  // Some historical/special-case emitters use `ts_ms`; accept it as an alias for robustness.
+  // Most browser perf-log events use `t_ms` (monotonic ms since process start), but some
+  // diagnostic/legacy emitters use `ts_ms`. Accept both for robustness.
   parse_optional_ms(obj, "t_ms").or_else(|| parse_optional_ms(obj, "ts_ms"))
 }
 
