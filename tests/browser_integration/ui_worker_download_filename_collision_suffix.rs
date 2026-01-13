@@ -5,12 +5,33 @@ use fastrender::ui::messages::{
   DownloadOutcome, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::tempdir;
 use url::Url;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
+
+fn assert_path_in_download_dir(path: &Path, download_dir: &Path) {
+  let download_dir = std::fs::canonicalize(download_dir).unwrap_or_else(|err| {
+    panic!(
+      "failed to canonicalize download dir {}: {err}",
+      download_dir.display()
+    )
+  });
+  let path = std::fs::canonicalize(path).unwrap_or_else(|err| {
+    panic!(
+      "failed to canonicalize download path {}: {err}",
+      path.display()
+    )
+  });
+  assert!(
+    path.starts_with(&download_dir),
+    "expected download path {} to be inside download dir {}",
+    path.display(),
+    download_dir.display()
+  );
+}
 
 fn click_download_link(ui_tx: &std::sync::mpsc::Sender<UiToWorker>, tab_id: TabId) {
   ui_tx
@@ -35,6 +56,7 @@ fn click_download_link(ui_tx: &std::sync::mpsc::Sender<UiToWorker>, tab_id: TabI
 fn wait_for_download_success(
   ui_rx: &std::sync::mpsc::Receiver<WorkerToUi>,
   tab_id: TabId,
+  download_dir: &Path,
 ) -> PathBuf {
   let started = support::recv_for_tab(ui_rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::DownloadStarted { .. })
@@ -59,6 +81,13 @@ fn wait_for_download_success(
     )
   })
   .unwrap_or_else(|| panic!("timed out waiting for successful DownloadFinished"));
+
+  assert!(
+    path.is_file(),
+    "expected completed download file to exist at {}, but it does not",
+    path.display()
+  );
+  assert_path_in_download_dir(&path, download_dir);
 
   path
 }
@@ -122,10 +151,10 @@ fn ui_worker_download_filename_collision_suffix() {
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
 
   click_download_link(&ui_tx, tab_id);
-  let first_path = wait_for_download_success(&ui_rx, tab_id);
+  let first_path = wait_for_download_success(&ui_rx, tab_id, download_dir.path());
 
   click_download_link(&ui_tx, tab_id);
-  let second_path = wait_for_download_success(&ui_rx, tab_id);
+  let second_path = wait_for_download_success(&ui_rx, tab_id, download_dir.path());
 
   assert_ne!(
     first_path, second_path,
