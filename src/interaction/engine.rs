@@ -1569,6 +1569,50 @@ mod tests {
   }
 
   #[test]
+  fn tabindex_negative_allows_pointer_focus_but_is_not_tab_stop() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><button></button><div tabindex=\"-1\"></div></body></html>",
+    )
+    .expect("parse");
+    let button_id = find_element_node_id(&mut dom, "button");
+    let div_id = find_element_node_id(&mut dom, "div");
+    let index = DomIndexMut::new(&mut dom);
+
+    assert!(
+      is_focusable_interactive_element(&index, div_id),
+      "tabindex=-1 elements should remain focusable via pointer click"
+    );
+
+    let focusables = collect_tab_stops(&index);
+    assert_eq!(
+      focusables,
+      vec![button_id],
+      "tabindex < 0 elements must be skipped by sequential Tab focus navigation"
+    );
+  }
+
+  #[test]
+  fn tabindex_does_not_make_hidden_input_focusable() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><input type=\"hidden\" tabindex=\"-1\"></body></html>",
+    )
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let index = DomIndexMut::new(&mut dom);
+
+    assert!(
+      !is_focusable_interactive_element(&index, input_id),
+      "input type=hidden must never be focusable even if tabindex is set"
+    );
+
+    let focusables = collect_tab_stops(&index);
+    assert!(
+      !focusables.contains(&input_id),
+      "input type=hidden must never appear in the Tab order even if tabindex is set"
+    );
+  }
+
+  #[test]
   fn form_submission_includes_first_legend_controls_in_disabled_fieldset() {
     let mut dom = crate::dom::parse_html(
       "<html><body><form action=\"https://example.com/submit\">\

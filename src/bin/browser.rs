@@ -8772,7 +8772,6 @@ impl App {
               // Allow these keys to be forwarded to the page so focused text controls can handle
               // them for caret navigation and text entry.
               ShortcutAction::Space | ShortcutAction::Home | ShortcutAction::End => {}
-
               // Any other mapped shortcut should not be forwarded into the page. Most are handled
               // inside the egui chrome layer; swallowing here prevents pages from intercepting
               // browser shortcuts even if we haven't added a dedicated winit-layer handler.
