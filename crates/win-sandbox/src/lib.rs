@@ -84,6 +84,19 @@ fn format_win32_error_message(code: u32) -> String {
   msg.trim().to_string()
 }
 
+#[cfg(windows)]
+fn format_hresult_message(hresult: i32) -> String {
+  // For most Win32-facing APIs we use, errors are `HRESULT_FROM_WIN32(...)`,
+  // which stores the original Win32 error code in the low 16 bits.
+  const FACILITY_WIN32: u32 = 7;
+  let hr = hresult as u32;
+  let facility = (hr >> 16) & 0x1FFF;
+  if facility == FACILITY_WIN32 {
+    return format_win32_error_message(hr & 0xFFFF);
+  }
+  format!("HRESULT 0x{hr:08X}")
+}
+
 /// Errors produced by the Windows sandbox layer.
 #[derive(Debug, Error)]
 pub enum WinSandboxError {
@@ -94,6 +107,17 @@ pub enum WinSandboxError {
     code: u32,
     message: String,
   },
+
+  /// A Win32 API returned a failing HRESULT.
+  #[error("{func} failed with HRESULT 0x{hresult:08X}: {message}")]
+  HResult {
+    func: &'static str,
+    hresult: u32,
+    message: String,
+  },
+
+  #[error("{func} returned a null pointer")]
+  NullPointer { func: &'static str },
 }
 
 impl WinSandboxError {
@@ -114,6 +138,16 @@ impl WinSandboxError {
       func,
       code: err.code(),
       message: err.message(),
+    }
+  }
+
+  /// Builds a [`WinSandboxError::HResult`] from an explicit HRESULT.
+  #[cfg(windows)]
+  pub fn from_hresult(func: &'static str, hresult: i32) -> Self {
+    Self::HResult {
+      func,
+      hresult: hresult as u32,
+      message: format_hresult_message(hresult),
     }
   }
 }
@@ -167,45 +201,78 @@ impl Drop for OwnedHandle {
 ///
 /// # Allocation / free contract
 ///
-/// This wrapper is intended for SIDs allocated by Win32 APIs that document that
-/// the caller must free the returned `PSID` with `LocalFree` (for example,
-/// `DeriveAppContainerSidFromAppContainerName`).
+/// Windows isn't consistent about which deallocator is used for returned SIDs:
+/// some APIs require `FreeSid` (for example, AppContainer SIDs returned from
+/// `CreateAppContainerProfile` / `DeriveAppContainerSidFromAppContainerName`),
+/// while others require `LocalFree` (for example, `ConvertStringSidToSidW`).
 #[cfg(windows)]
 #[derive(Debug)]
-pub struct OwnedSid(windows_sys::Win32::Security::PSID);
+pub struct OwnedSid {
+  sid: windows_sys::Win32::Security::PSID,
+  free: SidFreeMethod,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidFreeMethod {
+  FreeSid,
+  #[allow(dead_code)]
+  LocalFree,
+}
 
 #[cfg(windows)]
 impl OwnedSid {
   /// Borrows the underlying `PSID`.
   pub fn as_ptr(&self) -> windows_sys::Win32::Security::PSID {
-    self.0
+    self.sid
   }
 
   /// Consumes the wrapper without freeing the SID.
   pub fn into_ptr(self) -> windows_sys::Win32::Security::PSID {
-    let sid = self.0;
+    let sid = self.sid;
     std::mem::forget(self);
     sid
   }
 
+  pub(crate) fn from_free_sid(sid: windows_sys::Win32::Security::PSID) -> Self {
+    Self {
+      sid,
+      free: SidFreeMethod::FreeSid,
+    }
+  }
+
   #[allow(dead_code)]
   pub(crate) fn from_local_free(sid: windows_sys::Win32::Security::PSID) -> Self {
-    Self(sid)
+    Self {
+      sid,
+      free: SidFreeMethod::LocalFree,
+    }
   }
 }
 
 #[cfg(windows)]
 impl Drop for OwnedSid {
   fn drop(&mut self) {
-    use windows_sys::Win32::Foundation::LocalFree;
-    if self.0.is_null() {
+    if self.sid.is_null() {
       return;
     }
 
-    // SAFETY: This wrapper only supports SIDs allocated by APIs requiring
-    // `LocalFree` (see type docs).
+    // SAFETY: The deallocator is selected based on the Win32 API contract.
     unsafe {
-      LocalFree(self.0 as _);
+      match self.free {
+        SidFreeMethod::FreeSid => {
+          windows_sys::Win32::Security::FreeSid(self.sid);
+        }
+        SidFreeMethod::LocalFree => {
+          windows_sys::Win32::Foundation::LocalFree(self.sid as _);
+        }
+      }
     }
   }
 }
+
+#[cfg(windows)]
+mod appcontainer;
+
+#[cfg(windows)]
+pub use appcontainer::{derive_appcontainer_sid, AppContainerProfile};
