@@ -131,34 +131,34 @@ loop {
         present(frame);
     }
 
-    // `next_wake_time` below is a *hypothetical* “sleep hint” API (it is not currently exposed on
-    // `BrowserTab`). If/when such an API exists, it would ideally return the earliest time at which
-    // something becomes runnable:
-    // - the next due timer, or
-    // - the next animation frame deadline when rAF/animations are active.
+    // Use `next_wake_time()` as a sleep hint: it returns the earliest event-loop timestamp at which
+    // calling `tick_frame()` would make progress (tasks/microtasks, due timers, or an rAF turn).
     //
-    // Today, embedders need to decide their own sleep/wake strategy (e.g. fixed frame cadence,
-    // external wakeups from input/network, etc).
-    if let Some(t) = tab.next_wake_time()? { sleep_until(t) } else { break; }
+    // This does not replace external wakeups (input/network); embedders should still wake the loop
+    // when external events arrive and then call `tick_frame()` again.
+    if let Some(wake_at) = tab.next_wake_time() {
+        let now = tab.now();
+        sleep_for(wake_at.saturating_sub(now));
+    } else {
+        break;
+    }
 }
 ```
 
-### What a hypothetical `next_wake_time()` would mean
+### What `next_wake_time()` returns
 
-The event loop clock is monotonic (`js::Clock::now() -> Duration`). A practical `next_wake_time()`
-API would return an **absolute timestamp on that clock** (not “sleep for X”).
+The event loop clock is monotonic (`js::Clock::now() -> Duration`). `BrowserTab::next_wake_time()`
+returns an **absolute timestamp on that clock** (not “sleep for X”):
 
-It would need to consider:
+It considers:
 
-- **timers**: the earliest `EventLoop::next_timer_due_time()`,
-- **frame callbacks**: if rAF callbacks are queued, the next frame deadline based on the
-  **animation frame interval**,
-- **CSS real-time animations**: if real-time CSS timeline sampling is enabled, the next frame
-  deadline (otherwise CSS animations will never advance),
-- **immediate runnable work**: if tasks/microtasks are queued, it can return “now”.
+- **Immediate runnable work**: if tasks/microtasks are runnable now, it returns `Some(now)`.
+- **Timers**: if only timers are pending, it returns the next timer due time (clamped to `>= now`).
+- **Frame callbacks**: if `requestAnimationFrame` callbacks are pending and nothing else is runnable,
+  it returns the next eligible animation-frame time (based on
+  `JsExecutionOptions.animation_frame_interval`), clamped to `>= now`.
 
-If nothing is scheduled (no tasks/microtasks, no pending timers, no pending rAF), it would return
-`None`.
+If nothing is scheduled (no tasks/microtasks, no pending timers, no pending rAF), it returns `None`.
 
 ---
 
@@ -261,7 +261,7 @@ fn main() -> Result<()> {
 }
 ```
 
-If a `BrowserTab::next_wake_time()` API is ever added, a deterministic harness could “jump” time:
+With `BrowserTab::next_wake_time()`, a deterministic harness can “jump” time:
 
 - `clock.set_now(next_wake_time)`
 - drive one tick/frame
