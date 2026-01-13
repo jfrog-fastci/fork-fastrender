@@ -472,6 +472,8 @@ impl FloatSweepState {
     self.active_right.clear();
     self.active_shape_left.clear();
     self.active_shape_right.clear();
+
+    let _ = float_count;
   }
 }
 
