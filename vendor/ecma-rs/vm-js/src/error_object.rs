@@ -99,6 +99,23 @@ pub fn new_syntax_error_object(
   )
 }
 
+/// Allocates a new ECMAScript `RangeError` object (instance).
+///
+/// This is an object factory (not a callable constructor) intended for spec-shaped algorithms and
+/// VM-internal helpers that need to reject/throw with real Error instances.
+pub fn new_range_error_object(
+  scope: &mut Scope<'_>,
+  intrinsics: &Intrinsics,
+  message: &str,
+) -> Result<Value, VmError> {
+  new_error(
+    scope,
+    intrinsics.range_error_prototype(),
+    "RangeError",
+    message,
+  )
+}
+
 pub fn new_type_error(
   scope: &mut Scope<'_>,
   intr: Intrinsics,
@@ -132,7 +149,7 @@ pub fn new_range_error(
   intr: Intrinsics,
   message: &str,
 ) -> Result<Value, VmError> {
-  new_error(scope, intr.range_error_prototype(), "RangeError", message)
+  new_range_error_object(scope, &intr, message)
 }
 
 pub fn throw_range_error(scope: &mut Scope<'_>, intr: Intrinsics, message: &str) -> VmError {

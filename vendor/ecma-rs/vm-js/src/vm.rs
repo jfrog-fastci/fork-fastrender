@@ -2335,7 +2335,13 @@ impl Vm {
 
   pub fn push_frame(&mut self, frame: StackFrame) -> Result<(), VmError> {
     if self.stack.len() >= self.options.max_stack_depth {
-      return Err(self.terminate(TerminationReason::StackOverflow));
+      // Exceeding the VM's maximum stack depth should surface to JavaScript as a catchable
+      // RangeError (like other engines' "Maximum call stack size exceeded"), not as a hard
+      // termination.
+      //
+      // This limit is a hard safety boundary: we must not continue pushing frames and risk
+      // overflowing the native stack.
+      return Err(VmError::RangeError("Maximum call stack size exceeded"));
     }
     // `Vec::push` can abort the process on allocator OOM; reserve fallibly first.
     self
@@ -4839,6 +4845,84 @@ mod tests {
     realm_b.teardown(&mut heap);
 
     result
+  }
+
+  #[test]
+  fn stack_depth_exhaustion_throws_catchable_range_error() -> Result<(), VmError> {
+    const MAX_STACK_DEPTH: usize = 32;
+
+    // --- AST interpreter path: exception is catchable in JS. ---
+    {
+      let vm = Vm::new(VmOptions {
+        max_stack_depth: MAX_STACK_DEPTH,
+        ..VmOptions::default()
+      });
+      let heap = Heap::new(crate::HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+      let mut rt = crate::JsRuntime::new(vm, heap)?;
+
+      let ok = rt.exec_script(
+        r#"
+          function f() { return f(); }
+          let ok = false;
+          try { f(); } catch (e) { ok = e instanceof RangeError; }
+          ok;
+        "#,
+      )?;
+      assert_eq!(ok, Value::Bool(true));
+    }
+
+    // --- AST interpreter path: uncaught overflow surfaces as a JS throw, not termination. ---
+    {
+      let vm = Vm::new(VmOptions {
+        max_stack_depth: MAX_STACK_DEPTH,
+        ..VmOptions::default()
+      });
+      let heap = Heap::new(crate::HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+      let mut rt = crate::JsRuntime::new(vm, heap)?;
+
+      let err = rt
+        .exec_script(
+          r#"
+            function f() { return f(); }
+            f();
+          "#,
+        )
+        .unwrap_err();
+      assert!(
+        !matches!(err, VmError::Termination(_)),
+        "expected stack overflow to be a catchable RangeError, got {err:?}"
+      );
+      assert!(
+        matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }),
+        "expected stack overflow to surface as a JS throw, got {err:?}"
+      );
+    }
+
+    // --- Compiled (HIR) execution path: exception is catchable in JS. ---
+    {
+      let vm = Vm::new(VmOptions {
+        max_stack_depth: MAX_STACK_DEPTH,
+        ..VmOptions::default()
+      });
+      let heap = Heap::new(crate::HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+      let mut rt = crate::JsRuntime::new(vm, heap)?;
+
+      let script = crate::CompiledScript::compile_script(
+        &mut rt.heap,
+        "<inline>",
+        r#"
+          function f() { return f(); }
+          let ok = false;
+          try { f(); } catch (e) { ok = e instanceof RangeError; }
+          ok;
+        "#,
+      )?;
+
+      let ok = rt.exec_compiled_script(script)?;
+      assert_eq!(ok, Value::Bool(true));
+    }
+
+    Ok(())
   }
 
   #[test]

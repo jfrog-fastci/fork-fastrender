@@ -12,8 +12,10 @@ use std::fmt::Display;
 ///
 /// - **JavaScript exceptions (catchable):** [`VmError::Throw`] and [`VmError::ThrowWithStack`].
 /// - **Early errors (user error, not catchable by JS):** [`VmError::Syntax`].
-/// - **Hard termination (not catchable by JS):** [`VmError::Termination`] for budgets/interrupts/
-///   stack overflow (and similar "stop now" conditions).
+/// - **Hard termination (not catchable by JS):** [`VmError::Termination`] for budgets/interrupts
+///   (and similar "stop now" conditions).
+///   - Exceeding [`crate::VmOptions::max_stack_depth`] is surfaced as a *catchable* JavaScript
+///     `RangeError` (see `Vm::push_frame`), rather than a termination.
 /// - **Engine/embedding bugs:** [`VmError::InvariantViolation`] (and related variants like
 ///   [`VmError::InvalidHandle`]). These indicate internal corruption or a broken host contract.
 ///

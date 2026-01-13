@@ -84,8 +84,8 @@ impl MicrotaskQueue {
   /// ## Termination errors
   ///
   /// [`VmError::Termination`] represents a non-catchable, host-enforced termination condition
-  /// (fuel exhausted, deadline exceeded, interrupt, stack overflow). Unlike ordinary job failures
-  /// (exceptions), termination is treated as a **hard stop**:
+  /// (fuel exhausted, deadline exceeded, interrupt). Unlike ordinary job failures (exceptions),
+  /// termination is treated as a **hard stop**:
   ///
   /// - Once a job returns `Err(VmError::Termination(..))`, the checkpoint stops executing any
   ///   further jobs.
