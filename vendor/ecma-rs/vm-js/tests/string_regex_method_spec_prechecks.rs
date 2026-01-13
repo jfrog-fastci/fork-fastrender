@@ -71,6 +71,15 @@ fn string_regex_methods_do_not_consult_symbol_methods_on_primitive_arguments() -
         }
       }
 
+      function isTypeError(thunk) {
+        try {
+          thunk();
+          return false;
+        } catch (e) {
+          return e && e.name === "TypeError";
+        }
+      }
+
        // @@match
        poison(Boolean.prototype, Symbol.match);
        poison(Number.prototype, Symbol.match);
@@ -122,11 +131,25 @@ fn string_regex_methods_do_not_consult_symbol_methods_on_primitive_arguments() -
        const split_ok = [
          noThrow(() => "abc".split(true)),
          noThrow(() => "abc".split(1)),
-         noThrow(() => "abc".split("a")),
-         noThrow(() => "abc".split(1n)),
-       ].every(Boolean);
+        noThrow(() => "abc".split("a")),
+        noThrow(() => "abc".split(1n)),
+      ].every(Boolean);
 
-      match_ok && search_ok && replace_ok && replace_all_ok && split_ok;
+      // Symbol primitives will still throw (ToString(Symbol) => TypeError), but they must not
+      // consult `Symbol.prototype[Symbol.*]` during @@dispatch checks.
+      poison(Symbol.prototype, Symbol.match);
+      poison(Symbol.prototype, Symbol.search);
+      poison(Symbol.prototype, Symbol.replace);
+      poison(Symbol.prototype, Symbol.split);
+      const symbol_ok = [
+        isTypeError(() => "abc".match(Symbol("a"))),
+        isTypeError(() => "abc".search(Symbol("a"))),
+        isTypeError(() => "abc".replace(Symbol("a"), "x")),
+        isTypeError(() => "abc".replaceAll(Symbol("a"), "x")),
+        isTypeError(() => "abc".split(Symbol("a"))),
+      ].every(Boolean);
+
+      match_ok && search_ok && replace_ok && replace_all_ok && split_ok && symbol_ok;
     "#,
     Budget::unlimited(1),
     None,
