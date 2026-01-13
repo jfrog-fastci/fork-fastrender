@@ -51,7 +51,15 @@ These limits are intended as defense-in-depth and lifecycle hygiene.
 
 ### Fallback mode: restricted token + low integrity (+ job object)
 
-If AppContainer is unavailable (or creation fails), the renderer falls back to spawning with:
+If AppContainer is unavailable (or creation fails), the spawner **fails closed** by default and
+returns an error that explains which capability is missing.
+
+To opt in to running without the full Windows sandbox (developer convenience on unsupported Windows
+versions / unusual CI setups), set:
+
+- `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`
+
+When this opt-in is enabled, the renderer may fall back to spawning with:
 
 - a **restricted token** (max privileges removed), and
 - **low integrity**, still under the same Job Object constraints.
@@ -63,10 +71,9 @@ Limitations:
 
 ### Last resort fallback: unsandboxed spawn (+ job object)
 
-If both AppContainer and restricted-token spawning fail, `spawn_sandboxed(...)` falls back to an
-unsandboxed spawn **still inside the Job Object**, and logs a warning to stderr. This is intended to
-avoid silent “it didn’t start” failures in developer environments while still preserving process
-lifecycle limits.
+If both AppContainer and restricted-token spawning fail (and
+`FASTR_ALLOW_UNSANDBOXED_RENDERER=1` is set), `spawn_sandboxed(...)` falls back to an unsandboxed
+spawn **still inside the Job Object**, and logs a warning to stderr.
 
 ---
 
@@ -89,6 +96,16 @@ active-process limit).
 
 Set `FASTR_LOG_SANDBOX=1` to enable verbose Windows sandbox spawn logs (useful for debugging
 AppContainer ACL/workdir issues in dev/test environments).
+
+### Allow running without the full Windows sandbox (opt-in)
+
+On unsupported Windows versions (or when sandbox setup fails due to host job restrictions), you can
+opt in to running without the full sandbox by setting:
+
+- `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`
+
+This is intended for development/debugging only: it can enable weaker sandboxing or an unsandboxed
+spawn.
 
 ---
 

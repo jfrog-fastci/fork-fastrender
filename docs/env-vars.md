@@ -60,11 +60,12 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - Windows note: disabling token/AppContainer sandboxing does **not** remove all guardrails: the spawn
     helper still uses a Job Object (kill-on-close, active-process cap) and the handle-inheritance
     allowlist.
-- `FASTR_ALLOW_UNSANDBOXED_RENDERER=0|1` – **Windows-only**: allow running without the Windows renderer sandbox when the host does not support the required primitives.
-  - Used by `crates/win-sandbox` (`RendererSandboxMode::new_default`) to enforce “no silent downgrade”
-    on older Windows versions (must opt in to unsandboxed mode).
-  - This is separate from `FASTR_DISABLE_RENDERER_SANDBOX` (a debug escape hatch for the main
-    `fastrender::sandbox::windows::spawn_sandboxed` helper).
+- `FASTR_ALLOW_UNSANDBOXED_RENDERER=0|1` – **Windows-only**: opt in to running the renderer without the full Windows sandbox when required primitives are missing or sandbox startup fails.
+  - Default: disabled (sandbox failures return an error; no silent downgrade).
+  - `crates/win-sandbox`: used by `RendererSandboxMode::new_default()` to avoid silently disabling
+    sandboxing on unsupported hosts.
+  - `fastrender::sandbox::windows::spawn_sandboxed(...)`: when set to `1`, Windows sandbox spawning
+    may fall back to weaker sandboxing (restricted token) or an unsandboxed spawn.
 - `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off` – **macOS-only**: override the Seatbelt renderer profile used by `src/sandbox/macos.rs`.
   - `pure-computation` is the strict default.
   - `system-fonts` enables the relaxed system-font allowlist profile.

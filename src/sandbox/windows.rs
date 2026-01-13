@@ -51,6 +51,13 @@ const ENV_WINDOWS_RENDERER_SANDBOX: &str = "FASTR_WINDOWS_RENDERER_SANDBOX";
 /// Enable verbose sandbox logging (primarily for Windows AppContainer spawn debugging).
 const ENV_LOG_SANDBOX: &str = "FASTR_LOG_SANDBOX";
 
+/// Explicit opt-in: allow the renderer to run without the full Windows sandbox when required
+/// primitives are unavailable or sandbox setup fails.
+///
+/// This is intended for developer convenience on unsupported Windows versions / CI environments.
+/// It is **never** enabled by default.
+const ENV_ALLOW_UNSANDBOXED_RENDERER: &str = "FASTR_ALLOW_UNSANDBOXED_RENDERER";
+
 /// Debug escape hatch: allow sandboxed renderer children to inherit the full parent environment.
 ///
 /// This is intentionally Windows-only (the variable is ignored on other platforms).
@@ -77,23 +84,22 @@ pub(crate) enum WindowsRendererSandboxLevel {
 /// Returns the sandbox level the Windows renderer should attempt to use.
 ///
 /// - `None` means "spawn unsandboxed" (debug escape hatch).
-/// - `Some(..)` indicates the preferred sandbox mode; callers are expected to apply
-///   fallbacks if a stronger sandbox is unavailable.
+/// - `Some(..)` indicates the preferred sandbox mode; callers may only apply downgrade paths when
+///   explicitly opted in (see [`ENV_ALLOW_UNSANDBOXED_RENDERER`]).
 pub(crate) fn requested_renderer_sandbox_level() -> Option<WindowsRendererSandboxLevel> {
   if renderer_sandbox_disabled_via_env() {
     log_sandbox_disabled_once();
     return None;
   }
 
-  // Preferred sandbox. If AppContainer is unavailable (e.g. older Windows versions without the
-  // relevant userenv.dll exports), fall back to restricted-token mode.
-  match appcontainer::appcontainer_apis() {
-    Ok(_) => Some(WindowsRendererSandboxLevel::AppContainer),
-    Err(err) => {
-      log_appcontainer_unavailable_once(err);
-      Some(WindowsRendererSandboxLevel::RestrictedToken)
-    }
-  }
+  Some(WindowsRendererSandboxLevel::AppContainer)
+}
+
+fn allow_unsandboxed_renderer_via_env() -> bool {
+  matches!(
+    std::env::var_os(ENV_ALLOW_UNSANDBOXED_RENDERER).as_deref(),
+    Some(v) if v == OsStr::new("1")
+  )
 }
 
 fn renderer_sandbox_disabled_via_env() -> bool {
@@ -151,15 +157,6 @@ fn log_sandbox_debug(msg: &str) {
   if cfg!(debug_assertions) || env_var_truthy(std::env::var_os(ENV_LOG_SANDBOX).as_deref()) {
     eprintln!("{msg}");
   }
-}
-
-fn log_appcontainer_unavailable_once(err: &appcontainer::AppContainerApiLoadError) {
-  static LOGGED: OnceLock<()> = OnceLock::new();
-  LOGGED.get_or_init(|| {
-    eprintln!(
-      "warning: Windows AppContainer sandbox is unavailable ({err}); falling back to restricted-token sandboxing"
-    );
-  });
 }
 
 use windows_sys::Win32::Foundation::{
@@ -486,6 +483,7 @@ pub fn spawn_sandboxed(
   inherit_handles: &[RawHandle],
 ) -> io::Result<SandboxedChild> {
   let mitigation_policy = mitigations::renderer_mitigation_policy();
+  let allow_fallback = allow_unsandboxed_renderer_via_env();
   let parent_in_job = match current_process_in_job() {
     Ok(value) => value,
     Err(err) => {
@@ -497,7 +495,15 @@ pub fn spawn_sandboxed(
   };
 
   let Some(requested) = requested_renderer_sandbox_level() else {
-    return spawn_unsandboxed(exe, args, inherit_handles, parent_in_job, mitigation_policy);
+    // Debug escape hatch: sandbox explicitly disabled. This is always allowed.
+    return spawn_unsandboxed(
+      exe,
+      args,
+      inherit_handles,
+      parent_in_job,
+      mitigation_policy,
+      true,
+    );
   };
 
   match requested {
@@ -507,11 +513,23 @@ pub fn spawn_sandboxed(
       inherit_handles,
       parent_in_job,
       mitigation_policy,
+      allow_fallback,
     ) {
       Ok(child) => Ok(child),
       Err(appcontainer_err) => {
+        if !allow_fallback {
+          return Err(io::Error::new(
+            appcontainer_err.kind(),
+            format!(
+              "windows renderer sandbox unavailable ({appcontainer_err}); \
+set {ENV_ALLOW_UNSANDBOXED_RENDERER}=1 to allow running without the full Windows sandbox"
+            ),
+          ));
+        }
+
         eprintln!(
-          "warning: Windows AppContainer sandbox failed ({appcontainer_err}); falling back to restricted-token mode"
+          "warning: Windows AppContainer sandbox failed ({appcontainer_err}); \
+falling back to weaker sandboxing because {ENV_ALLOW_UNSANDBOXED_RENDERER}=1 is set"
         );
         match spawn_restricted_token(
           exe,
@@ -519,6 +537,7 @@ pub fn spawn_sandboxed(
           inherit_handles,
           parent_in_job,
           mitigation_policy,
+          true,
         ) {
           Ok(child) => Ok(child),
           Err(restricted_err) => match spawn_unsandboxed(
@@ -527,10 +546,12 @@ pub fn spawn_sandboxed(
             inherit_handles,
             parent_in_job,
             mitigation_policy,
+            true,
           ) {
             Ok(child) => {
               eprintln!(
-                "warning: Windows renderer sandbox failed (appcontainer={appcontainer_err}, restricted_token={restricted_err}); spawning UNSANDBOXED process (Job Object still applied)"
+                "warning: Windows renderer sandbox failed (appcontainer={appcontainer_err}, restricted_token={restricted_err}); \
+spawning UNSANDBOXED process (job limits may still apply)"
               );
               Ok(child)
             }
@@ -550,29 +571,43 @@ pub fn spawn_sandboxed(
       inherit_handles,
       parent_in_job,
       mitigation_policy,
-    )
-    {
+      allow_fallback,
+    ) {
       Ok(child) => Ok(child),
-      Err(restricted_err) => match spawn_unsandboxed(
-        exe,
-        args,
-        inherit_handles,
-        parent_in_job,
-        mitigation_policy,
-      ) {
-        Ok(child) => {
-          eprintln!(
-            "warning: Windows restricted-token sandbox failed ({restricted_err}); spawning UNSANDBOXED process (Job Object still applied)"
-          );
-          Ok(child)
+      Err(restricted_err) => {
+        if !allow_fallback {
+          return Err(io::Error::new(
+            restricted_err.kind(),
+            format!(
+              "windows renderer sandbox unavailable (restricted-token spawn failed: {restricted_err}); \
+ set {ENV_ALLOW_UNSANDBOXED_RENDERER}=1 to allow running without the full Windows sandbox"
+            ),
+          ));
         }
-        Err(unsandboxed_err) => Err(io::Error::new(
-          unsandboxed_err.kind(),
-          format!(
-            "failed to spawn child process (restricted_token={restricted_err}, unsandboxed={unsandboxed_err})"
-          ),
-        )),
-      },
+
+        match spawn_unsandboxed(
+          exe,
+          args,
+          inherit_handles,
+          parent_in_job,
+          mitigation_policy,
+          true,
+        ) {
+          Ok(child) => {
+            eprintln!(
+              "warning: Windows restricted-token sandbox failed ({restricted_err}); \
+ spawning UNSANDBOXED process because {ENV_ALLOW_UNSANDBOXED_RENDERER}=1 is set"
+            );
+            Ok(child)
+          }
+          Err(unsandboxed_err) => Err(io::Error::new(
+            unsandboxed_err.kind(),
+            format!(
+              "failed to spawn child process (restricted_token={restricted_err}, unsandboxed={unsandboxed_err})"
+            ),
+          )),
+        }
+      }
     },
   }
 }
@@ -583,6 +618,7 @@ fn spawn_appcontainer(
   inherit_handles: &[RawHandle],
   parent_in_job: bool,
   mitigation_policy: u64,
+  allow_jobless: bool,
 ) -> io::Result<SandboxedChild> {
   let job = JobObject::new()?;
   let name = wide_from_str("FastRender.Renderer");
@@ -763,6 +799,7 @@ fn spawn_appcontainer(
         None,
         parent_in_job,
         used_breakaway,
+        allow_jobless,
       );
     }
     Err(err) => {
@@ -792,11 +829,12 @@ fn spawn_appcontainer(
       Some(temp_dir),
       parent_in_job,
       used_breakaway,
+      allow_jobless,
     ),
     Err(err) => {
-      eprintln!(
-        "warning: Windows AppContainer retry after relocation failed ({err}); falling back to restricted-token mode"
-      );
+      log_sandbox_debug(&format!(
+        "windows sandbox: AppContainer retry after relocation failed ({err})"
+      ));
       Err(err)
     }
   }
@@ -930,6 +968,7 @@ fn spawn_restricted_token(
   inherit_handles: &[RawHandle],
   parent_in_job: bool,
   mitigation_policy: u64,
+  allow_jobless: bool,
 ) -> io::Result<SandboxedChild> {
   let job = JobObject::new()?;
 
@@ -1182,6 +1221,7 @@ fn spawn_restricted_token(
     None,
     parent_in_job,
     used_breakaway,
+    allow_jobless,
   )
 }
 
@@ -1191,6 +1231,7 @@ fn spawn_unsandboxed(
   inherit_handles: &[RawHandle],
   parent_in_job: bool,
   mitigation_policy: u64,
+  allow_jobless: bool,
 ) -> io::Result<SandboxedChild> {
   let job = JobObject::new()?;
   let application_name = wide_from_os(exe.as_os_str());
@@ -1399,6 +1440,7 @@ fn spawn_unsandboxed(
     None,
     parent_in_job,
     used_breakaway,
+    allow_jobless,
   )
 }
 
@@ -1409,6 +1451,7 @@ fn finish_spawn(
   temp_dir: Option<TempDir>,
   parent_in_job: bool,
   used_breakaway: bool,
+  allow_jobless: bool,
 ) -> io::Result<SandboxedChild> {
   if pi.hProcess == 0 || pi.hThread == 0 {
     return Err(io::Error::new(
@@ -1424,11 +1467,28 @@ fn finish_spawn(
 
   let mut job = Some(job);
   if let Err(err) = job.as_ref().unwrap().assign_process(h_process) {
-    eprintln!(
-      "warning: Windows sandbox failed to assign child process {pid} to JobObject ({err}); \
+    if allow_jobless {
+      eprintln!(
+        "warning: Windows sandbox failed to assign child process {pid} to JobObject ({err}); \
 job limits (kill-on-close + active process limit) are NOT enforced (parent_in_job={parent_in_job}, used_breakaway={used_breakaway}, level={level:?})"
-    );
-    job = None;
+      );
+      job = None;
+    } else {
+      // Fail closed: a missing job means we cannot enforce kill-on-close or the process creation
+      // limit, which are security-relevant guardrails for the renderer process.
+      //
+      // This is commonly caused by running inside a parent Job object that disallows nested jobs /
+      // breakaway. Require an explicit opt-in before allowing a downgrade.
+      let _ = unsafe { TerminateProcess(h_process, 1) };
+      return Err(io::Error::new(
+        err.kind(),
+        format!(
+          "windows renderer sandbox failed to assign child process {pid} to JobObject ({err}); \
+this likely indicates nested jobs are unsupported or disallowed by the parent job (parent_in_job={parent_in_job}, used_breakaway={used_breakaway}, level={level:?}). \
+Set {ENV_ALLOW_UNSANDBOXED_RENDERER}=1 to allow running without full job containment."
+        ),
+      ));
+    }
   }
 
   let resume_rc = unsafe { ResumeThread(thread.as_raw_handle() as HANDLE) };
@@ -1964,13 +2024,10 @@ mod tests {
         }
         return;
       }
-
-      // Fallback sandbox mode: restricted token + low integrity.
-      assert!(
-        token.is_low_or_untrusted_integrity(),
-        "expected restricted-token fallback to run at Low/Untrusted integrity; token={token:?}"
+ 
+      panic!(
+        "expected sandbox child to run in an AppContainer token (no silent fallback); token={token:?}"
       );
-      return;
     }
 
     let _guard = ENV_LOCK.lock().unwrap();
@@ -1978,6 +2035,7 @@ mod tests {
     // Ensure debug escape hatches do not disable the sandbox for this test.
     let _disable_guard = EnvVarGuard::remove(ENV_DISABLE_RENDERER_SANDBOX);
     let _windows_guard = EnvVarGuard::remove(ENV_WINDOWS_RENDERER_SANDBOX);
+    let _allow_guard = EnvVarGuard::remove(ENV_ALLOW_UNSANDBOXED_RENDERER);
 
     let mut listener: Option<TcpListener> = None;
     let port = match TcpListener::bind(("127.0.0.1", 0)) {

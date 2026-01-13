@@ -94,10 +94,14 @@ The Windows renderer sandbox is **defense-in-depth**, layered as:
 
 - **AppContainer requires Windows 8+** (and `userenv.dll` must export the AppContainer profile APIs).
   On older Windows versions, or unusual Windows Server configurations where the APIs are absent,
-  we fall back to restricted-token mode.
+  we treat AppContainer as unsupported and **fail closed by default**.
+  - For developer convenience, set `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to opt in to falling back to
+    the restricted-token (or unsandboxed) spawn path.
 - **Nested jobs** (assigning a process to a new Job when the parent is already in one) are
-  generally supported on Windows 8+. On older Windows versions, job assignment may fail. In repo
-  reality, we treat “can’t assign to Job” as a sandbox degradation and continue with a warning.
+  generally supported on Windows 8+. If the parent is in a Job that disallows breakaway / nested-job
+  assignment, sandbox setup may fail.
+  - We treat job-assignment failures as a sandbox failure (fail closed by default); set
+    `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to opt in to running without full job containment.
 
 The *broker* (browser process) is trusted and is responsible for:
 
@@ -369,7 +373,15 @@ The builder adds only flags supported by the current OS (best-effort compatibili
 
 ## Fallback mode: restricted token + Low Integrity Level (weaker)
 
-If AppContainer is unavailable or fails to initialize, we fall back to a “best-effort” sandbox:
+If AppContainer is unavailable or fails to initialize, the Windows sandbox spawner **fails closed**
+by default and returns an error describing what went wrong (so we avoid silent security downgrades).
+
+For developer convenience on unsupported Windows versions / unusual CI environments, you can opt in
+to allowing weaker sandboxing (or no sandbox) by setting:
+
+- `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`
+
+When this opt-in is enabled, we fall back to a “best-effort” sandbox:
 
 - Create a **restricted token** via
   `CreateRestrictedToken(..., DISABLE_MAX_PRIVILEGE, ...)`.
@@ -407,7 +419,7 @@ Guidance:
 From `src/sandbox/windows.rs` (spawn-time sandboxing):
 
 - `FASTR_LOG_SANDBOX=1`: enable verbose stderr logging for sandbox spawn decisions (AppContainer
-  availability, `ERROR_ACCESS_DENIED` retries, breakaway/job assignment warnings).
+  availability, `ERROR_ACCESS_DENIED` retries, breakaway/job assignment failures).
   - In debug builds (`cargo test`/`cargo run` without `--release`), sandbox debug logging is enabled
     by default; this env var is primarily to enable the same logs in release builds.
 - `FASTR_DISABLE_RENDERER_SANDBOX=1` / `FASTR_WINDOWS_RENDERER_SANDBOX=off`: disable Windows
@@ -415,6 +427,8 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
   - Note: even with the token/AppContainer sandbox disabled, `spawn_sandboxed(...)` still uses the
     **Job object** and the **handle allowlist**. This is not a security boundary (no network/FS
     restrictions), but it keeps lifecycle/handle-leak invariants closer to the real configuration.
+- `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`: opt in to running without the full Windows sandbox when
+  required primitives are missing or sandbox startup fails.
 
 From `crates/win-sandbox` (mitigation policy escape hatch):
 

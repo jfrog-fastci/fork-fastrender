@@ -64,17 +64,25 @@ itself crashes or misbehaves.
 
 ### Fallback mode: restricted token + low integrity (+ job object)
 
-If AppContainer is unavailable (or creation fails), the renderer is intended to fall back to
-spawning with a **restricted token** and **low integrity**, still under the same Job Object
-constraints.
+If AppContainer is unavailable (or creation fails), the sandbox spawner **fails closed** by default
+and returns an error describing the missing capability.
+
+For developer convenience on unsupported Windows versions / unusual CI environments, you can opt in
+to running without the full sandbox by setting:
+
+- `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`
+
+When this opt-in is enabled, the spawner may fall back to a **restricted token** + **low integrity**
+mode (still under the same Job Object constraints) when AppContainer is unavailable.
 
 Limitations of the fallback:
 
 - **Network may still be available** depending on system policy and what the restricted token
   removes; do not treat this mode as equivalent to AppContainer.
 
-If both AppContainer and restricted-token sandboxing fail, `spawn_sandboxed(...)` falls back to an
-unsandboxed spawn (still inside a Job Object) and prints a warning to stderr.
+If both AppContainer and restricted-token sandboxing fail (and
+`FASTR_ALLOW_UNSANDBOXED_RENDERER=1` is set), `spawn_sandboxed(...)` falls back to an unsandboxed
+spawn (still inside a Job Object) and prints a warning to stderr.
 
 ### Windows version constraints
 
