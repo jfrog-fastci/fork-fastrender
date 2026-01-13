@@ -508,6 +508,47 @@ impl AbsoluteLayout {
       }
     }
 
+    // Absolute/fixed positioning is hot and should never panic.
+    //
+    // If we end up with non-finite geometry (NaN/inf), degrade gracefully by producing a 0×0 box at
+    // the static position (or 0 if the static position is also non-finite). This avoids
+    // propagating invalid floats into the fragment tree, where they can later trigger panics
+    // (e.g. during integer conversions for rasterization).
+    let static_x = if input.static_position.x.is_finite() {
+      input.static_position.x
+    } else {
+      0.0
+    };
+    let static_y = if input.static_position.y.is_finite() {
+      input.static_position.y
+    } else {
+      0.0
+    };
+    if !x.is_finite() {
+      x = static_x;
+    }
+    if !y.is_finite() {
+      y = static_y;
+    }
+    if !width.is_finite() || width < 0.0 {
+      width = 0.0;
+    }
+    if !height.is_finite() || height < 0.0 {
+      height = 0.0;
+    }
+    if !margin_left.is_finite() {
+      margin_left = 0.0;
+    }
+    if !margin_right.is_finite() {
+      margin_right = 0.0;
+    }
+    if !margin_top.is_finite() {
+      margin_top = 0.0;
+    }
+    if !margin_bottom.is_finite() {
+      margin_bottom = 0.0;
+    }
+
     // Position relative to containing block origin
     let position = Point::new(
       containing_block.origin().x + x,
@@ -740,13 +781,7 @@ impl AbsoluteLayout {
           let total = left + right + margin_left + margin_right + total_horizontal_spacing + width;
           (total - cb_width).abs() > 0.01
         }
-        _ => {
-          debug_assert!(
-            false,
-            "insets_and_width_specified implies left/right/width are all Some"
-          );
-          false
-        }
+        _ => false,
       }
     };
 

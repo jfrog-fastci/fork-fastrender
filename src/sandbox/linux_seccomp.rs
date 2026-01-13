@@ -426,11 +426,12 @@ pub(super) fn apply_renderer_sandbox_linux(
 
   // 2) Build and install the seccomp filter.
   let mut filter = build_renderer_filter(config);
+  let len: u16 = filter
+    .len()
+    .try_into()
+    .map_err(|_| SandboxError::SeccompFilterTooLong { len: filter.len() })?;
   let prog = libc::sock_fprog {
-    len: filter
-      .len()
-      .try_into()
-      .expect("seccomp filter length should fit in u16"),
+    len,
     filter: filter.as_mut_ptr(),
   };
 

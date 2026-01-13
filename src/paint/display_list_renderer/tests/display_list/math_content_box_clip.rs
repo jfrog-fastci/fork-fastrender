@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::debug::runtime::RuntimeToggles;
 use crate::{FastRender, FastRenderConfig};
 use std::collections::HashMap;

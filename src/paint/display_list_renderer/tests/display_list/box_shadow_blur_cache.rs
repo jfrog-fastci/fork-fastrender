@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::debug::runtime::RuntimeToggles;
 use crate::paint::display_list_renderer::PaintParallelism;
 use crate::{DiagnosticsLevel, DisplayItem, FastRender, RenderArtifactRequest, RenderOptions};

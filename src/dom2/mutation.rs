@@ -18,7 +18,7 @@ fn clone_node_data(doc: &Document, src: &Node, parent: Option<NodeId>) -> CloneN
 
   let script_force_async = if is_html_script {
     let NodeKind::Element { attributes, .. } = &src.kind else {
-      unreachable!();
+      unreachable!(); // fastrender-allow-panic
     };
     !attributes
       .iter()
@@ -324,7 +324,7 @@ impl Document {
                       *serializable,
                       *declarative,
                     ),
-                    _ => unreachable!("shadow_root_for_host must return a ShadowRoot node"),
+                    _ => unreachable!("shadow_root_for_host must return a ShadowRoot node"), // fastrender-allow-panic
                   };
 
                 if clonable {
@@ -972,7 +972,7 @@ impl Document {
         (NodeKind::ProcessingInstruction { data, .. }, ReplaceTarget::ProcessingInstruction) => {
           *data = new_value
         }
-        _ => unreachable!("replace_data target kind changed unexpectedly"),
+        _ => unreachable!("replace_data target kind changed unexpectedly"), // fastrender-allow-panic
       }
     }
 

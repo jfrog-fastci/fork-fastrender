@@ -653,7 +653,7 @@ pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) 
       match next_char {
         Some('s' | 'd' | 'i' | 'f' | 'o' | 'O' | 'c') => {
           if arg_idx >= args.len() {
-            emit_literal = Some(match next_char.unwrap() {
+            emit_literal = Some(match next_char.unwrap() { // fastrender-allow-unwrap
               's' => "%s",
               'd' => "%d",
               'i' => "%i",
@@ -661,7 +661,7 @@ pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) 
               'o' => "%o",
               'O' => "%O",
               'c' => "%c",
-              _ => unreachable!(),
+              _ => unreachable!(), // fastrender-allow-panic
             });
             advance = 2;
           } else {
@@ -738,7 +738,7 @@ pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) 
         let formatted = format_console_number_substitution(heap, value, spec_unit as u8 as char);
         truncated |= push_truncated(&mut out, &formatted, MAX_CONSOLE_MESSAGE_BYTES);
       }
-      _ => unreachable!(),
+      _ => unreachable!(), // fastrender-allow-panic
     }
   }
 

@@ -275,7 +275,8 @@ fn require_dom_token_list_receiver(
   if !matches!(slots, Some(slots) if slots.b == DOM_TOKEN_LIST_HOST_TAG) {
     return Err(VmError::TypeError("Illegal invocation"));
   }
-  let node_index = usize::try_from(slots.unwrap().a).map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  let node_index = usize::try_from(slots.unwrap().a) // fastrender-allow-unwrap
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   Ok((NodeId::from_index(node_index), obj))
 }
 
@@ -946,17 +947,17 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
         let any = vm_host.as_any_mut();
         let ty = any.type_id();
         if ty == TypeId::of::<Host>() {
-          let host = any.downcast_mut::<Host>().expect("checked type id");
+          let host = any.downcast_mut::<Host>().expect("checked type id"); // fastrender-allow-unwrap
           Some(DomHostSource::Embedder(NonNull::from(host)))
         } else if ty == TypeId::of::<DocumentHostState>() {
           let host = any
             .downcast_mut::<DocumentHostState>()
-            .expect("checked type id");
+            .expect("checked type id"); // fastrender-allow-unwrap
           Some(DomHostSource::DocumentHost(NonNull::from(host)))
         } else if ty == TypeId::of::<BrowserDocumentDom2>() {
           let host = any
             .downcast_mut::<BrowserDocumentDom2>()
-            .expect("checked type id");
+            .expect("checked type id"); // fastrender-allow-unwrap
           Some(DomHostSource::BrowserDocument(NonNull::from(host)))
         } else {
           None

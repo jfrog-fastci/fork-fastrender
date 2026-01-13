@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use base64::Engine as _;
 use crate::api::FastRender;
 use crate::geometry::{Point, Rect};

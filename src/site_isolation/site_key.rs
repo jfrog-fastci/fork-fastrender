@@ -101,11 +101,9 @@ impl SiteKeyFactory {
     SiteKey::Opaque(id)
   }
 
-  fn file_origin() -> &'static DocumentOrigin {
-    static FILE_ORIGIN: OnceLock<DocumentOrigin> = OnceLock::new();
-    FILE_ORIGIN.get_or_init(|| {
-      origin_from_url("file:///").expect("file:/// must be a parseable URL")
-    })
+  fn file_origin() -> Option<&'static DocumentOrigin> {
+    static FILE_ORIGIN: OnceLock<Option<DocumentOrigin>> = OnceLock::new();
+    FILE_ORIGIN.get_or_init(|| origin_from_url("file:///")).as_ref()
   }
 
   fn stable_file_hash_u64(&self, bytes: &[u8]) -> u64 {
@@ -147,7 +145,9 @@ impl SiteKeyFactory {
 
   fn site_key_for_file_url(&self, parsed: &Url) -> SiteKey {
     match self.file_url_isolation {
-      FileUrlSiteIsolation::SingleSite => SiteKey::Origin(Self::file_origin().clone()),
+      FileUrlSiteIsolation::SingleSite => Self::file_origin()
+        .cloned()
+        .map_or_else(|| self.new_opaque(), SiteKey::Origin),
       FileUrlSiteIsolation::OpaquePerUrl => {
         if let Ok(path) = parsed.to_file_path() {
           let id = self.stable_file_hash_u64(path.as_os_str().to_string_lossy().as_bytes());

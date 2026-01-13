@@ -495,7 +495,8 @@ pub(crate) fn apply_profile_source_with_home_param(profile_source: &str) -> io::
   let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
   let home =
     CString::new(home).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "HOME contains NUL"))?;
-  let key = CString::new("HOME").expect("static cstr should not contain NUL");
+  let key =
+    CString::new("HOME").map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "HOME contains NUL"))?;
 
   let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
   let tmpdir = CString::new(tmpdir)

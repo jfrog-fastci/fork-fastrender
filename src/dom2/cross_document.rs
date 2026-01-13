@@ -104,7 +104,7 @@ fn clone_node_shallow_from_other_document(
       CrossDocumentCloneSemantics::Clone => {
         if is_html_script {
           let NodeKind::Element { attributes, .. } = &node.kind else {
-            unreachable!();
+            unreachable!(); // fastrender-allow-panic
           };
           // HTML: script element cloning steps recompute the "force async" flag from the presence
           // of an `async` content attribute.
@@ -455,7 +455,7 @@ fn clone_subtree_from_other_document(
                   *serializable,
                   *declarative,
                 ),
-                _ => unreachable!("shadow_root_for_host must return a ShadowRoot node"),
+                _ => unreachable!("shadow_root_for_host must return a ShadowRoot node"), // fastrender-allow-panic
               };
 
             if clonable {

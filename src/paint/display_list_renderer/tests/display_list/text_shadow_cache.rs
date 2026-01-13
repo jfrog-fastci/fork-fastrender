@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::api::FastRenderConfig;
 use crate::debug::runtime::RuntimeToggles;
 use crate::{DiagnosticsLevel, FastRender, RenderOptions, Rgba};

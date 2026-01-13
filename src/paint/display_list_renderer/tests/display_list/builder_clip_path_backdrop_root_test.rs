@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::sync::Arc;
 
 use crate::paint::display_list::{ClipItem, ClipShape, DisplayItem};

@@ -315,6 +315,10 @@ pub enum SandboxError {
   },
 
   #[cfg(target_os = "linux")]
+  #[error("seccomp filter program too large ({len} instruction(s))")]
+  SeccompFilterTooLong { len: usize },
+
+  #[cfg(target_os = "linux")]
   #[error(
     "seccomp filter installation rejected ({reason:?}); process may already be sandboxed (errno {errno})"
   )]

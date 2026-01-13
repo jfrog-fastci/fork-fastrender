@@ -12352,7 +12352,7 @@ impl FormattingContext for InlineFormattingContext {
         intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max);
         (min, max)
       }
-      (Some(_), Some(_)) => unreachable!("handled by early return"),
+      (Some(min), Some(max)) => (min, max),
     };
 
     Ok((min, max))

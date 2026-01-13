@@ -747,7 +747,7 @@ impl WindowRealm {
       .runtime
       .vm
       .user_data::<WindowRealmUserData>()
-      .expect("WindowRealm missing WindowRealmUserData")
+      .expect("WindowRealm missing WindowRealmUserData") // fastrender-allow-unwrap
       .window_id
   }
 
@@ -8109,12 +8109,12 @@ where
   unsafe {
     if ty == TypeId::of::<crate::js::host_document::DocumentHostState>() {
       let host = &mut *(ptr as *mut crate::js::host_document::DocumentHostState);
-      let f = f.take().expect("closure is only taken once");
+      let f = f.take().expect("closure is only taken once"); // fastrender-allow-unwrap
       return Some(crate::js::DomHost::mutate_dom(host, f));
     }
     if ty == TypeId::of::<crate::api::BrowserDocumentDom2>() {
       let host = &mut *(ptr as *mut crate::api::BrowserDocumentDom2);
-      let f = f.take().expect("closure is only taken once");
+      let f = f.take().expect("closure is only taken once"); // fastrender-allow-unwrap
       return Some(crate::js::DomHost::mutate_dom(host, f));
     }
   }
@@ -27026,7 +27026,7 @@ pub(crate) fn event_target_dispatch_event_dom2(
       web_events::EventTargetId::Node(node_id) => {
         (target_obj, web_events::EventTargetId::Node(node_id))
       }
-      _ => unreachable!(),
+      _ => unreachable!(), // fastrender-allow-panic
     };
 
     let handler_name = format!("on{}", rust_event.type_);

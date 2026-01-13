@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::api::{FastRender, RenderOptions};
 use crate::scroll::{ScrollBounds, ScrollChainState};
 use crate::style::cascade::StyledNode;

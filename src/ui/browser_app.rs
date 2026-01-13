@@ -1700,10 +1700,11 @@ impl BrowserAppState {
     let left = self.tabs[idx - 1].group;
     let right = self.tabs[idx].group;
     if left.is_some() && left == right {
-      let group_id = left.expect("checked is_some above");
-      // Insert after the group block to preserve contiguity.
-      if let Some(range) = self.tab_group_range(group_id) {
-        idx = range.end;
+      if let Some(group_id) = left {
+        // Insert after the group block to preserve contiguity.
+        if let Some(range) = self.tab_group_range(group_id) {
+          idx = range.end;
+        }
       }
     }
     idx
@@ -2628,16 +2629,17 @@ impl BrowserAppState {
         // record a small allowlist of useful `about:` pages so they remain discoverable via omnibox
         // autocomplete. The visited store enforces the policy (see
         // `ui::visited::should_record_visit_in_history`).
-        if update.history_changed && safe_url.is_some() {
-          let url = safe_url.as_ref().unwrap();
-          let normalized_url = self
-            .history
-            .get(url)
-            .map(|entry| entry.url.clone())
-            // `record` returned true, so this should be unreachable, but keep a safe fallback to
-            // avoid losing visited entries in release builds if invariants change.
-            .unwrap_or_else(|| url.clone());
-          self.visited.record_visit(normalized_url, safe_title.clone());
+        if update.history_changed {
+          if let Some(url) = safe_url.as_ref() {
+            let normalized_url = self
+              .history
+              .get(url)
+              .map(|entry| entry.url.clone())
+              // `record` returned true, so this should be unreachable, but keep a safe fallback to
+              // avoid losing visited entries in release builds if invariants change.
+              .unwrap_or_else(|| url.clone());
+            self.visited.record_visit(normalized_url, safe_title.clone());
+          }
         } else if let Some(url) = safe_url.as_ref().filter(|u| about_pages::is_about_url(u)) {
           // Normalize internal pages by stripping any query/fragment so e.g. `about:help#foo` and
           // `about:history?q=rust` do not create separate visited entries.

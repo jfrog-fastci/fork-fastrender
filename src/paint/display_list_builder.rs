@@ -2656,15 +2656,15 @@ impl DisplayListBuilder {
           stack.push(frame);
         }
         Stage::Blocks => {
-          let (child_idx, child_offset, child_visibility) = {
-            let data = frame
-              .data
-              .as_mut()
-              .expect("entered fragment frame missing data");
-            loop {
-              if data.child_pos >= data.blocks.len() {
-                break (None, Point::ZERO, Visibility::none());
-              }
+            let (child_idx, child_offset, child_visibility) = {
+              let data = frame
+                .data
+                .as_mut()
+                .expect("entered fragment frame missing data"); // fastrender-allow-unwrap
+              loop {
+                if data.child_pos >= data.blocks.len() {
+                  break (None, Point::ZERO, Visibility::none());
+                }
               if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
                 data.child_pos = data.blocks.len();
                 break (None, Point::ZERO, Visibility::none());
@@ -2690,15 +2690,15 @@ impl DisplayListBuilder {
           stack.push(frame);
         }
         Stage::Floats => {
-          let (child_idx, child_offset, child_visibility) = {
-            let data = frame
-              .data
-              .as_mut()
-              .expect("entered fragment frame missing data");
-            loop {
-              if data.child_pos >= data.floats.len() {
-                break (None, Point::ZERO, Visibility::none());
-              }
+            let (child_idx, child_offset, child_visibility) = {
+              let data = frame
+                .data
+                .as_mut()
+                .expect("entered fragment frame missing data"); // fastrender-allow-unwrap
+              loop {
+                if data.child_pos >= data.floats.len() {
+                  break (None, Point::ZERO, Visibility::none());
+                }
               if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
                 data.child_pos = data.floats.len();
                 break (None, Point::ZERO, Visibility::none());
@@ -2747,15 +2747,15 @@ impl DisplayListBuilder {
           stack.push(frame);
         }
         Stage::Inlines => {
-          let (child_idx, child_offset, child_visibility) = {
-            let data = frame
-              .data
-              .as_mut()
-              .expect("entered fragment frame missing data");
-            loop {
-              if data.child_pos >= data.inlines.len() {
-                break (None, Point::ZERO, Visibility::none());
-              }
+            let (child_idx, child_offset, child_visibility) = {
+              let data = frame
+                .data
+                .as_mut()
+                .expect("entered fragment frame missing data"); // fastrender-allow-unwrap
+              loop {
+                if data.child_pos >= data.inlines.len() {
+                  break (None, Point::ZERO, Visibility::none());
+                }
               if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
                 data.child_pos = data.inlines.len();
                 break (None, Point::ZERO, Visibility::none());
@@ -2795,15 +2795,15 @@ impl DisplayListBuilder {
           stack.push(frame);
         }
         Stage::Positioned => {
-          let (child_idx, child_offset, child_visibility) = {
-            let data = frame
-              .data
-              .as_mut()
-              .expect("entered fragment frame missing data");
-            loop {
-              if data.child_pos >= data.positioned.len() {
-                break (None, Point::ZERO, Visibility::none());
-              }
+            let (child_idx, child_offset, child_visibility) = {
+              let data = frame
+                .data
+                .as_mut()
+                .expect("entered fragment frame missing data"); // fastrender-allow-unwrap
+              loop {
+                if data.child_pos >= data.positioned.len() {
+                  break (None, Point::ZERO, Visibility::none());
+                }
               if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
                 data.child_pos = data.positioned.len();
                 break (None, Point::ZERO, Visibility::none());
@@ -2826,7 +2826,7 @@ impl DisplayListBuilder {
             let data = frame
               .data
               .as_mut()
-              .expect("entered fragment frame missing data");
+              .expect("entered fragment frame missing data"); // fastrender-allow-unwrap
             data.children_painted = self.list.len() != data.before_children;
             data.prev_line_decoration_ctx
           };
@@ -3192,7 +3192,7 @@ impl DisplayListBuilder {
         }
         Stage::Children => {
           let (child_opt, child_offset, visibility) = {
-            let data = frame.data.as_mut().expect("missing clip frame data");
+            let data = frame.data.as_mut().expect("missing clip frame data"); // fastrender-allow-unwrap
             if data.child_pos >= data.ordered_children.len() {
               (None, Point::ZERO, Visibility::none())
             } else if self.deadline_reached_periodic(&mut data.counter, DEADLINE_STRIDE) {
@@ -3225,7 +3225,7 @@ impl DisplayListBuilder {
           stack.push(frame);
         }
         Stage::Exit => {
-          let data = frame.data.take().expect("missing clip frame data");
+          let data = frame.data.take().expect("missing clip frame data"); // fastrender-allow-unwrap
           let mut children_painted = false;
 
           if !data.skip_contents {

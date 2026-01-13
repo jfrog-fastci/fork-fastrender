@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::css::properties::parse_property_value;
 use crate::css::types::{Declaration, PropertyValue};
 use crate::layout::constraints::{AvailableSpace, LayoutConstraints};
@@ -670,4 +672,3 @@ fn grid_area_four_value_span_span_is_auto_placement_with_span() {
   assert_approx(placed_span.bounds.width(), 20.0, "span 2 columns width");
   assert_approx(placed_span.bounds.height(), 10.0, "span 1 row height");
 }
-

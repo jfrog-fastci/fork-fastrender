@@ -110,10 +110,9 @@ pub(crate) fn runtime_toggles_with_browser_media_prefs(
       raw = Some(base.raw_clone());
       changed = true;
     }
-    raw
-      .as_mut()
-      .expect("raw initialized")
-      .insert(key.to_string(), value);
+    if let Some(raw) = raw.as_mut() {
+      raw.insert(key.to_string(), value);
+    }
   };
 
   // `prefers-color-scheme`: only insert when no env override exists and UI wants a non-default
@@ -144,9 +143,7 @@ pub(crate) fn runtime_toggles_with_browser_media_prefs(
   }
 
   if changed {
-    Arc::new(RuntimeToggles::from_map(
-      raw.expect("raw initialized when changed"),
-    ))
+    Arc::new(RuntimeToggles::from_map(raw.unwrap_or_else(|| base.raw_clone())))
   } else {
     Arc::clone(base)
   }

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::debug::runtime::RuntimeToggles;
 use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
 use crate::{FastRender, FastRenderConfig};

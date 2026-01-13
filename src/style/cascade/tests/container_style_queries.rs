@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::api::FastRender;
 use crate::style::cascade::StyledNode;
 use crate::style::color::Rgba;

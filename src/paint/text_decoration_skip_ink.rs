@@ -17,14 +17,16 @@ struct UnderlineGlyphBboxKey {
   glyph_id: u32,
 }
 
-const UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES: usize = 8192;
+const UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES: NonZeroUsize =
+  // SAFETY: the constant is non-zero.
+  unsafe { NonZeroUsize::new_unchecked(8192) };
 type UnderlineGlyphBboxCacheHasher = BuildHasherDefault<FxHasher>;
 
 thread_local! {
   static UNDERLINE_GLYPH_BBOX_CACHE: RefCell<
     LruCache<UnderlineGlyphBboxKey, Option<FontBBox>, UnderlineGlyphBboxCacheHasher>
   > = RefCell::new(LruCache::with_hasher(
-    NonZeroUsize::new(UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES).unwrap(),
+    UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES,
     UnderlineGlyphBboxCacheHasher::default(),
   ));
 }
@@ -452,7 +454,7 @@ mod tests {
 
     // Use out-of-range glyph IDs so `glyph_bounds` returns early without having to read glyph data.
     let base_glyph = u16::MAX as u32 + 1;
-    for i in 0..UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES {
+    for i in 0..UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES.get() {
       let _ = cached_glyph_bounding_box(&instance, &font, variations_hash, base_glyph + i as u32);
     }
 
@@ -464,12 +466,13 @@ mod tests {
       &instance,
       &font,
       variations_hash,
-      base_glyph + UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES as u32,
+      base_glyph + UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES.get() as u32,
     );
 
     let cache_len = UNDERLINE_GLYPH_BBOX_CACHE.with(|cache| cache.borrow().len());
     assert_eq!(
-      cache_len, UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES,
+      cache_len,
+      UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES.get(),
       "glyph bbox cache should stay at capacity via incremental LRU eviction"
     );
 

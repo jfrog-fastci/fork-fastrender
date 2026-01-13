@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::css::parser::parse_stylesheet;
 use crate::dom;
 use crate::style::cascade::apply_styles_with_media;

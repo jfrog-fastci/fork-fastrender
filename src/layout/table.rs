@@ -1944,8 +1944,7 @@ impl TableStructure {
   ///
   /// A fully resolved TableStructure ready for layout
   pub fn from_box_tree(table_box: &BoxNode) -> Self {
-    Self::try_from_box_tree(table_box)
-      .expect("TableStructure::from_box_tree should not fail without an active layout deadline")
+    Self::try_from_box_tree(table_box).unwrap_or_else(|_| Self::new())
   }
 
   pub fn from_box_tree_with_root_metrics(
@@ -1953,9 +1952,7 @@ impl TableStructure {
     root_metrics: Option<RootFontMetrics>,
   ) -> Self {
     Self::try_from_box_tree_with_root_metrics(table_box, root_metrics)
-      .expect(
-        "TableStructure::from_box_tree_with_root_metrics should not fail without an active layout deadline",
-      )
+      .unwrap_or_else(|_| Self::new())
   }
 
   pub fn try_from_box_tree(table_box: &BoxNode) -> Result<Self, LayoutError> {

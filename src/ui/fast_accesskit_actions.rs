@@ -119,7 +119,9 @@ impl ChromeDocumentContext<'_> {
 /// FastRender uses stable 1-indexed pre-order ids (matching `crate::dom::enumerate_dom_ids`).
 /// AccessKit requires a non-zero `u128`, so we store the id directly.
 pub fn accesskit_node_id_from_fastrender(node_id: usize) -> accesskit::NodeId {
-  let raw = NonZeroU128::new(node_id as u128).expect("DOM node ids are 1-indexed");
+  let raw = NonZeroU128::new(node_id as u128)
+    // SAFETY: the fallback value is a constant non-zero sentinel.
+    .unwrap_or_else(|| unsafe { NonZeroU128::new_unchecked(1) });
   accesskit::NodeId(raw)
 }
 

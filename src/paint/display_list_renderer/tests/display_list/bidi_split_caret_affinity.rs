@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::debug::runtime::RuntimeToggles;
 use crate::dom::{enumerate_dom_ids, DomNode};
 use crate::interaction::state::TextEditPaintState;

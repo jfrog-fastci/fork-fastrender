@@ -292,11 +292,12 @@ fn sandbox_exec_invocation() -> Result<&'static SandboxExecInvocation, SandboxEx
   // If multiple threads race to initialize, whichever wins sets the value; all others can use the
   // already-set value.
   let _ = INVOCATION.set(invocation);
-  Ok(
-    INVOCATION
-      .get()
-      .expect("OnceLock should contain invocation after initialization"),
-  )
+  INVOCATION.get().ok_or_else(|| SandboxExecError::ProbeFailed {
+    source: io::Error::new(
+      io::ErrorKind::Other,
+      "sandbox-exec invocation missing after initialization",
+    ),
+  })
 }
 
 #[cfg(target_os = "macos")]

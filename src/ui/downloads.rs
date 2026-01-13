@@ -114,7 +114,14 @@ pub fn choose_unique_download_path(download_dir: &Path, requested_name: &str) ->
     }
   }
 
-  unreachable!("u32::MAX exhausted while searching for a unique download filename")
+  // Defensive: all u32 suffixes were exhausted. Fall back to a larger numeric suffix.
+  let overflow_idx = u64::from(u32::MAX) + 1;
+  let candidate = if let Some(ext) = ext {
+    format!("{stem} ({overflow_idx}).{ext}")
+  } else {
+    format!("{stem} ({overflow_idx})")
+  };
+  download_dir.join(candidate)
 }
 
 /// Derive a default filename for a download URL (used when no `<a download="...">` name is given).

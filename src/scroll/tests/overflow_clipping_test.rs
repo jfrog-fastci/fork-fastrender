@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::css::types::Transform;
 use crate::geometry::{Point, Rect, Size};
 use crate::scroll::{apply_scroll_snap, build_scroll_chain, ScrollState};

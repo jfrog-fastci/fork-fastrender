@@ -63,7 +63,10 @@ pub fn panel_header_with_actions(
   });
 
   PanelHeaderOutput {
-    close_response: close_response.expect("panel_header must render a close button"),
+    close_response: close_response.unwrap_or_else(|| {
+      // Defensive: the close button should always be rendered in the header layout.
+      ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
+    }),
   }
 }
 

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use base64::{engine::general_purpose, Engine as _};
 use crate::debug::runtime::RuntimeToggles;
 use crate::paint::display_list_renderer::PaintParallelism;

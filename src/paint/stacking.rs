@@ -1365,11 +1365,15 @@ fn build_stacking_tree_internal(
       continue;
     }
 
-    let Frame {
+    let Some(Frame {
       fragment: child_fragment,
       mut context,
       ..
-    } = stack.pop().expect("frame must exist");
+    }) = stack.pop()
+    else {
+      // Defensive: `stack` was non-empty because we just borrowed `stack.last_mut()` above.
+      break;
+    };
     let Some(parent) = stack.last_mut() else {
       return context;
     };
@@ -1991,7 +1995,11 @@ where
       continue;
     }
 
-    let mut finished = stack.pop().expect("frame must exist");
+    let Some(mut finished) = stack.pop() else {
+      return Err(Error::Render(crate::error::RenderError::InvalidParameters {
+        message: "stacking tree frame stack unexpectedly empty".into(),
+      }));
+    };
     finished.restore_clip_state(clip_stack, backface_depth);
     let Frame {
       fragment: child_fragment,

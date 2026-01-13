@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Display list backend regression suite.
 
 mod background_clip_text_rtl;

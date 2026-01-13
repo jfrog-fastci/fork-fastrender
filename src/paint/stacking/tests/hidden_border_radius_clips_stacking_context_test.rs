@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::geometry::Rect;
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::DisplayListRenderer;
