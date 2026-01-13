@@ -889,6 +889,28 @@ pub fn install_window_blob_bindings(
     }
   };
   scope.push_root(Value::Object(proto))?;
+
+  // Align Blob's constructor `prototype` property descriptor with spec behavior for real class
+  // constructors (and Node/browser `Blob`): non-writable, non-configurable, non-enumerable.
+  //
+  // `vm-js`'s `make_constructor` currently defines `F.prototype` as writable:true, configurable:false.
+  // Redefining to writable:false is permitted for a non-configurable data property when it is
+  // currently writable.
+  {
+    let proto_key = alloc_key(&mut scope, "prototype")?;
+    scope.define_property(
+      ctor,
+      proto_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(proto),
+          writable: false,
+        },
+      },
+    )?;
+  }
   scope
     .heap_mut()
     .object_set_prototype(proto, Some(intr.object_prototype()))?;
@@ -1080,6 +1102,30 @@ mod tests {
     // Non-ASCII types are clamped to empty string.
     let ty2 = realm.exec_script("new Blob(['hi'], { type: 'text/plain\\u00FF' }).type")?;
     assert_eq!(get_string(realm.heap(), ty2), "");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn blob_ctor_prototype_descriptor_matches_class_constructors() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let writable = realm.exec_script("Object.getOwnPropertyDescriptor(Blob,'prototype').writable")?;
+    assert_eq!(writable, Value::Bool(false));
+
+    let configurable =
+      realm.exec_script("Object.getOwnPropertyDescriptor(Blob,'prototype').configurable")?;
+    assert_eq!(configurable, Value::Bool(false));
+
+    let ctor_writable =
+      realm.exec_script("Object.getOwnPropertyDescriptor(Blob.prototype,'constructor').writable")?;
+    assert_eq!(ctor_writable, Value::Bool(true));
+
+    let ctor_configurable = realm.exec_script(
+      "Object.getOwnPropertyDescriptor(Blob.prototype,'constructor').configurable",
+    )?;
+    assert_eq!(ctor_configurable, Value::Bool(true));
 
     realm.teardown();
     Ok(())
