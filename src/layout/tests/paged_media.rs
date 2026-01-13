@@ -645,6 +645,165 @@ fn margin_box_min_height_clamps_used_size() {
 }
 
 #[test]
+fn margin_box_horizontal_margins_offset_border_box() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            @top-left { width: 30px; margin-left: 5px; margin-right: 10px; content: "A"; }
+            @top-center { width: 40px; content: "B"; }
+            @top-right { width: 30px; content: "C"; }
+          }
+          html, body { margin: 0; padding: 0; }
+        </style>
+      </head>
+      <body><div style="height: 1px"></div></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let a = find_margin_box_fragment(page, "A").expect("expected @top-left margin box");
+  let b = find_margin_box_fragment(page, "B").expect("expected @top-center margin box");
+  let c = find_margin_box_fragment(page, "C").expect("expected @top-right margin box");
+
+  let epsilon = 0.1;
+  assert!(
+    (a.bounds.x() - 45.0).abs() < epsilon,
+    "expected margins to offset border box start (x=45), got {}",
+    a.bounds.x()
+  );
+  assert!(
+    (a.bounds.width() - 30.0).abs() < epsilon,
+    "expected border box width to exclude margins (width=30), got {}",
+    a.bounds.width()
+  );
+
+  assert!(
+    (b.bounds.x() - 80.0).abs() < epsilon,
+    "expected top-center to remain centered (x=80), got {}",
+    b.bounds.x()
+  );
+  assert!(
+    (c.bounds.x() - 130.0).abs() < epsilon,
+    "expected top-right to remain right-aligned (x=130), got {}",
+    c.bounds.x()
+  );
+}
+
+#[test]
+fn margin_box_vertical_margins_offset_border_box() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            @left-top { height: 30px; margin-top: 5px; margin-bottom: 10px; content: "A"; }
+            @left-middle { height: 40px; content: "B"; }
+            @left-bottom { height: 30px; content: "C"; }
+          }
+          html, body { margin: 0; padding: 0; }
+        </style>
+      </head>
+      <body><div style="height: 1px"></div></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let a = find_margin_box_fragment(page, "A").expect("expected @left-top margin box");
+  let b = find_margin_box_fragment(page, "B").expect("expected @left-middle margin box");
+  let c = find_margin_box_fragment(page, "C").expect("expected @left-bottom margin box");
+
+  let epsilon = 0.1;
+  assert!(
+    (a.bounds.y() - 45.0).abs() < epsilon,
+    "expected margins to offset border box start (y=45), got {}",
+    a.bounds.y()
+  );
+  assert!(
+    (a.bounds.height() - 30.0).abs() < epsilon,
+    "expected border box height to exclude margins (height=30), got {}",
+    a.bounds.height()
+  );
+
+  assert!(
+    (b.bounds.y() - 80.0).abs() < epsilon,
+    "expected left-middle to remain centered (y=80), got {}",
+    b.bounds.y()
+  );
+  assert!(
+    (c.bounds.y() - 130.0).abs() < epsilon,
+    "expected left-bottom to remain bottom-aligned (y=130), got {}",
+    c.bounds.y()
+  );
+}
+
+#[test]
+fn margin_box_content_box_width_includes_padding() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            @top-left { width: 30px; padding-left: 10px; padding-right: 10px; content: "A"; }
+            @top-center { width: 20px; content: "B"; }
+            @top-right { width: 30px; content: "C"; }
+          }
+          html, body { margin: 0; padding: 0; }
+        </style>
+      </head>
+      <body><div style="height: 1px"></div></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let a = find_margin_box_fragment(page, "A").expect("expected @top-left margin box");
+  let b = find_margin_box_fragment(page, "B").expect("expected @top-center margin box");
+  let c = find_margin_box_fragment(page, "C").expect("expected @top-right margin box");
+
+  let epsilon = 0.1;
+  assert!(
+    (a.bounds.width() - 50.0).abs() < epsilon,
+    "expected content-box width to include padding (width=50), got {}",
+    a.bounds.width()
+  );
+  assert!(
+    (b.bounds.x() - 90.0).abs() < epsilon,
+    "expected top-center to be centered based on its border box (x=90), got {}",
+    b.bounds.x()
+  );
+  assert!(
+    (c.bounds.x() - 130.0).abs() < epsilon,
+    "expected top-right x=130, got {}",
+    c.bounds.x()
+  );
+}
+
+#[test]
 fn page_rule_important_overrides_non_important() {
   let html = r#"
     <html>
