@@ -2503,6 +2503,7 @@ mod live_mutation_hook_tests {
 mod live_range_tests {
   use super::Dom2TreeSink;
   use crate::dom2::NodeKind;
+  use html5ever::tree_builder::TreeSink;
 
   fn new_element(tag: &str) -> NodeKind {
     NodeKind::Element {

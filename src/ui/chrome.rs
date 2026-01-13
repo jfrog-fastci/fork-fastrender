@@ -4817,7 +4817,9 @@ mod tests {
     raw.time = Some(0.0);
     raw.focused = true;
     raw.events = events;
-    raw.accesskit_action_requests = requests;
+    raw
+      .events
+      .extend(requests.into_iter().map(egui::Event::AccessKitActionRequest));
     ctx.begin_frame(raw);
   }
 

@@ -1,14 +1,15 @@
 #![cfg(feature = "browser_ui")]
 
-/// Helpers for converting between egui's coordinate space (points) and the coordinate system used
-/// by the AccessKit nodes emitted by egui.
-///
-/// Why this exists:
-/// - egui layouts widgets in "points" (logical pixels).
-/// - AccessKit bounds are used for screen-reader highlight rectangles and spatial navigation.
-/// - When we inject additional AccessKit nodes (e.g. for rendered page content), their bounds must
-///   be in the same coordinate system that egui emits, otherwise the highlight rectangles will be
-///   misaligned, especially on HiDPI displays.
+//! AccessKit bounds conversion helpers.
+//!
+//! FastRender produces layout geometry in **CSS pixels** (typically viewport-local). The windowed
+//! browser UI uses egui for chrome; egui lays out widgets in **points** (logical pixels) and emits
+//! AccessKit nodes with bounds in that same coordinate space.
+//!
+//! When we inject additional AccessKit nodes (e.g. for rendered page content), their bounds must be
+//! expressed in the same coordinate space expected by `accesskit_winit`/egui so screen-reader
+//! highlight rectangles are aligned, including on HiDPI displays.
+
 use egui::Rect as EguiRect;
 
 /// Returns `true` if the AccessKit bounds in `egui::PlatformOutput::accesskit_update` are expressed
@@ -27,7 +28,10 @@ fn sanitize_pixels_per_point(pixels_per_point: f32) -> f32 {
 
 /// Convert an egui rectangle (in points) into an AccessKit rectangle in the coordinate space used
 /// by egui's emitted AccessKit nodes.
-pub fn accesskit_rect_from_egui_rect(rect_points: EguiRect, pixels_per_point: f32) -> accesskit::Rect {
+pub fn accesskit_rect_from_egui_rect(
+  rect_points: EguiRect,
+  pixels_per_point: f32,
+) -> accesskit::Rect {
   let ppp = sanitize_pixels_per_point(pixels_per_point) as f64;
   let scale = if ACCESSKIT_BOUNDS_ARE_PHYSICAL_PIXELS { ppp } else { 1.0 };
 
@@ -37,6 +41,64 @@ pub fn accesskit_rect_from_egui_rect(rect_points: EguiRect, pixels_per_point: f3
     rect_points.max.x as f64 * scale,
     rect_points.max.y as f64 * scale,
   )
+}
+
+/// Converts viewport-local FastRender CSS-pixel rectangles into AccessKit `Rect`s.
+///
+/// Coordinate spaces:
+/// - **Input**: `rect_css` is in **CSS pixels** with an origin at the top-left of the *page viewport*
+///   (i.e. viewport-local).
+/// - **Output**: `accesskit::Rect` in the coordinate space expected by `accesskit_winit` (and by
+///   egui's `accesskit_update` output).
+///
+/// Transform:
+/// - `offset` is the **placement** of the page viewport origin inside the window's **inner**
+///   coordinate space, expressed in *CSS pixels*.
+///   - Example: if the page is rendered below the browser chrome, `offset.y` is the chrome height
+///     (in CSS px) and `offset.x` is usually 0.
+/// - `scale` is the CSS px → AccessKit coordinate scale factor.
+///   - When interoperating with egui's `accesskit_update`, this is usually `1.0` because egui emits
+///     AccessKit bounds in points (see `ACCESSKIT_BOUNDS_ARE_PHYSICAL_PIXELS`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AccessKitBoundsTransform {
+  pub offset: (f64, f64),
+  pub scale: f64,
+}
+
+impl AccessKitBoundsTransform {
+  /// Convert a FastRender `Rect` (CSS px) into an AccessKit `Rect`.
+  ///
+  /// Returns `None` if any input value is non-finite.
+  ///
+  /// Negative widths/heights are clamped to 0 before conversion.
+  pub fn transform_rect(&self, rect_css: crate::geometry::Rect) -> Option<accesskit::Rect> {
+    if !(self.offset.0.is_finite()
+      && self.offset.1.is_finite()
+      && self.scale.is_finite()
+      && rect_css.origin.x.is_finite()
+      && rect_css.origin.y.is_finite()
+      && rect_css.size.width.is_finite()
+      && rect_css.size.height.is_finite())
+    {
+      return None;
+    }
+
+    let w_css = rect_css.size.width.max(0.0) as f64;
+    let h_css = rect_css.size.height.max(0.0) as f64;
+    let x_css = rect_css.origin.x as f64;
+    let y_css = rect_css.origin.y as f64;
+
+    let x0 = (x_css + self.offset.0) * self.scale;
+    let y0 = (y_css + self.offset.1) * self.scale;
+    let x1 = (x_css + w_css + self.offset.0) * self.scale;
+    let y1 = (y_css + h_css + self.offset.1) * self.scale;
+
+    if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+      return None;
+    }
+
+    Some(accesskit::Rect { x0, y0, x1, y1 })
+  }
 }
 
 #[cfg(test)]
@@ -119,4 +181,56 @@ mod tests {
       "test expectation mismatch: update ACCESSKIT_BOUNDS_ARE_PHYSICAL_PIXELS to reflect egui output"
     );
   }
+
+  #[test]
+  fn transform_rect_applies_offset_and_scale() {
+    let tx = AccessKitBoundsTransform {
+      offset: (10.0, 20.0),
+      scale: 2.0,
+    };
+
+    let rect_css = crate::geometry::Rect::from_xywh(1.0, 2.0, 3.0, 4.0);
+    let out = tx.transform_rect(rect_css).expect("rect should be finite");
+    assert_eq!(
+      out,
+      accesskit::Rect {
+        x0: 22.0,
+        y0: 44.0,
+        x1: 28.0,
+        y1: 52.0
+      }
+    );
+  }
+
+  #[test]
+  fn transform_rect_returns_none_for_non_finite_input() {
+    let tx = AccessKitBoundsTransform {
+      offset: (0.0, 0.0),
+      scale: 1.0,
+    };
+
+    let rect_css = crate::geometry::Rect::from_xywh(f32::NAN, 0.0, 10.0, 10.0);
+    assert_eq!(tx.transform_rect(rect_css), None);
+  }
+
+  #[test]
+  fn transform_rect_clamps_negative_dimensions() {
+    let tx = AccessKitBoundsTransform {
+      offset: (0.0, 0.0),
+      scale: 1.0,
+    };
+
+    let rect_css = crate::geometry::Rect::from_xywh(5.0, 7.0, -10.0, -2.0);
+    let out = tx.transform_rect(rect_css).expect("rect should be finite");
+    assert_eq!(
+      out,
+      accesskit::Rect {
+        x0: 5.0,
+        y0: 7.0,
+        x1: 5.0,
+        y1: 7.0
+      }
+    );
+  }
 }
+

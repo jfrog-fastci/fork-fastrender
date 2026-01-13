@@ -3,9 +3,11 @@
 use crate::accessibility::AccessibilityNode;
 use crate::dom::DomNode;
 use crate::interaction::InteractionState;
+use crate::ui::accesskit_bounds::AccessKitBoundsTransform;
 use crate::ui::encode_page_node_id;
 use crate::{FastRender, Result};
 use accesskit::{NodeBuilder, NodeId, Role, Tree, TreeUpdate};
+use std::collections::HashMap;
 
 fn accesskit_role_from_fastrender(role: &str) -> Role {
   match role {
@@ -29,6 +31,8 @@ fn build_accesskit_node_recursive(
   tree_generation: u32,
   node: &AccessibilityNode,
   interaction_state: Option<&InteractionState>,
+  bounds_css: Option<&HashMap<usize, crate::geometry::Rect>>,
+  bounds_transform: Option<&AccessKitBoundsTransform>,
   classes: &mut accesskit::NodeClassSet,
   out: &mut Vec<(NodeId, accesskit::Node)>,
 ) -> NodeId {
@@ -41,6 +45,8 @@ fn build_accesskit_node_recursive(
       tree_generation,
       child,
       interaction_state,
+      bounds_css,
+      bounds_transform,
       classes,
       out,
     ));
@@ -79,6 +85,14 @@ fn build_accesskit_node_recursive(
   }
 
   builder.set_children(child_ids);
+
+  if let (Some(bounds_css), Some(bounds_transform)) = (bounds_css, bounds_transform) {
+    if let Some(rect_css) = bounds_css.get(&node.node_id).copied() {
+      if let Some(bounds) = bounds_transform.transform_rect(rect_css) {
+        builder.set_bounds(bounds);
+      }
+    }
+  }
 
   // Expose caret/selection state for focused text controls.
   if matches!(node.role.as_str(), "textbox" | "searchbox" | "combobox") {
@@ -148,6 +162,45 @@ pub fn accesskit_tree_update_from_accessibility_tree(
     tree_generation,
     tree,
     interaction_state,
+    None,
+    None,
+    &mut classes,
+    &mut nodes,
+  );
+
+  let focus = interaction_state
+    .and_then(|state| state.focused)
+    .map(|id| encode_page_node_id(tab_id, document_generation, id));
+
+  TreeUpdate {
+    nodes,
+    tree: Some(Tree::new(root_id)),
+    focus,
+  }
+}
+
+/// Convert a FastRender accessibility tree + per-node viewport-local CSS bounds into an AccessKit tree update.
+///
+/// This is intended for renderer-chrome / future page content accessibility integration, where the
+/// semantic `AccessibilityNode` tree is built by the renderer but geometry is computed separately
+/// (e.g. from layout fragments).
+pub fn accesskit_tree_update_from_accessibility_tree_with_bounds(
+  tab_id: crate::ui::messages::TabId,
+  document_generation: u32,
+  tree: &AccessibilityNode,
+  interaction_state: Option<&InteractionState>,
+  bounds_css: &HashMap<usize, crate::geometry::Rect>,
+  bounds_transform: &AccessKitBoundsTransform,
+) -> TreeUpdate {
+  let mut classes = accesskit::NodeClassSet::default();
+  let mut nodes = Vec::new();
+  let root_id = build_accesskit_node_recursive(
+    tab_id,
+    document_generation,
+    tree,
+    interaction_state,
+    Some(bounds_css),
+    Some(bounds_transform),
     &mut classes,
     &mut nodes,
   );
@@ -196,6 +249,71 @@ mod tests {
       .iter()
       .find_map(|(node_id, node)| (*node_id == id).then_some(node))
       .unwrap_or_else(|| panic!("missing accesskit node {id:?}"))
+  }
+
+  fn leaf_node(node_id: usize, role: &str, name: Option<&str>) -> AccessibilityNode {
+    AccessibilityNode {
+      node_id,
+      role: role.to_string(),
+      role_description: None,
+      name: name.map(|s| s.to_string()),
+      description: None,
+      value: None,
+      level: None,
+      html_tag: None,
+      id: None,
+      dom_node_id: node_id,
+      relations: None,
+      states: crate::accessibility::AccessibilityState::default(),
+      children: Vec::new(),
+      #[cfg(any(debug_assertions, feature = "a11y_debug"))]
+      debug: None,
+    }
+  }
+
+  #[test]
+  fn accesskit_tree_builder_applies_bounds_transform() {
+    let tab_id = crate::ui::messages::TabId(1);
+    let gen = 1;
+
+    let tree = AccessibilityNode {
+      node_id: 1,
+      role: "document".to_string(),
+      role_description: None,
+      name: Some("Doc".to_string()),
+      description: None,
+      value: None,
+      level: None,
+      html_tag: None,
+      id: None,
+      dom_node_id: 1,
+      relations: None,
+      states: crate::accessibility::AccessibilityState::default(),
+      children: vec![leaf_node(2, "button", Some("OK"))],
+      #[cfg(any(debug_assertions, feature = "a11y_debug"))]
+      debug: None,
+    };
+
+    let mut bounds = std::collections::HashMap::new();
+    bounds.insert(1, crate::geometry::Rect::from_xywh(0.0, 0.0, 50.0, 40.0));
+    bounds.insert(2, crate::geometry::Rect::from_xywh(5.0, 6.0, 7.0, 8.0));
+
+    let tx = AccessKitBoundsTransform {
+      offset: (10.0, 20.0),
+      scale: 2.0,
+    };
+
+    let update = accesskit_tree_update_from_accessibility_tree_with_bounds(
+      tab_id, gen, &tree, None, &bounds, &tx,
+    );
+
+    let root_id = encode_page_node_id(tab_id, gen, 1);
+    let root = node_from_update(&update, root_id);
+    assert_eq!(root.bounds().map(|rect| [rect.x0, rect.y0, rect.x1, rect.y1]), Some([20.0, 40.0, 120.0, 120.0]));
+
+    let child_id = encode_page_node_id(tab_id, gen, 2);
+    let child = node_from_update(&update, child_id);
+    assert_eq!(child.bounds().map(|rect| [rect.x0, rect.y0, rect.x1, rect.y1]), Some([30.0, 52.0, 44.0, 68.0]));
   }
 
   #[test]
