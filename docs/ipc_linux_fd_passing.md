@@ -232,6 +232,10 @@ References:
 - `fstat(2)`: https://man7.org/linux/man-pages/man2/fstat.2.html
 - `mmap(2)`: https://man7.org/linux/man-pages/man2/mmap.2.html
 
+Repo reality:
+- FastRender has a hardened shared-memory fd validation helper (Linux-focused):
+  [`src/ipc/validate.rs`](../src/ipc/validate.rs) (`validate_shm_fd(...)`, `rgba_len(...)`).
+
 ### 5) Size your control buffer correctly (to avoid accidental `MSG_CTRUNC`)
 
 If you expect up to `N` file descriptors in a message, size the `msg_control` buffer using

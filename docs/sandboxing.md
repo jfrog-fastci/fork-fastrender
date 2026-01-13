@@ -134,7 +134,7 @@ Maintaining the syscall allowlist is a moving target; use the workflow in
 
 IPC implication: prefer **inherited IPC endpoints** (e.g. `socketpair()`) and browser-allocated
 shared memory (`memfd_create`) passed to the renderer before the sandbox is installed; see
-[ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
+[ipc.md](ipc.md) and [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
 
 ## macOS sandbox notes
 
