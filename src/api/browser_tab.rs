@@ -6636,9 +6636,11 @@ impl BrowserTab {
 
   /// Route an AccessKit accessibility action to a DOM mutation/event.
   ///
-  /// Currently this supports disclosure-style expand/collapse semantics for:
-  /// - HTML `<details>` / `<summary>`, and
-  /// - elements with `aria-expanded`.
+  /// Currently this supports:
+  /// - `Action::ShowContextMenu` → dispatch a trusted, cancelable `contextmenu` MouseEvent, and
+  /// - disclosure-style `Expand`/`Collapse` semantics for:
+  ///   - HTML `<details>` / `<summary>`, and
+  ///   - elements with `aria-expanded`.
   ///
   /// Node IDs are expected to be renderer preorder IDs (`crate::dom::enumerate_dom_ids`) encoded as
   /// AccessKit `NodeId`s (see `BrowserDocumentDom2::dom2_node_for_renderer_preorder`).
@@ -6648,15 +6650,35 @@ impl BrowserTab {
     target: AccessKitNodeId,
     action: AccessKitAction,
   ) -> Result<()> {
-    let expand = match action {
-      AccessKitAction::Expand => true,
-      AccessKitAction::Collapse => false,
-      _ => return Ok(()),
-    };
-
     let Some(target_node_id) = self.dom2_node_for_accesskit_node_id(target) else {
       return Ok(());
     };
+
+    match action {
+      // Assistive technologies can request a context menu without pointer input. Surface that as a
+      // trusted DOM `contextmenu` event so JS (including renderer-chrome) can react exactly like a
+      // right click.
+      //
+      // Coordinate selection:
+      // - Prefer the center of the target node's border box in viewport CSS pixels.
+      // - Fall back to (0,0) when bounds are unavailable (e.g. display:none / no layout yet).
+      AccessKitAction::ShowContextMenu => {
+        let bounds = self.host.document.border_box_rect_viewport(target_node_id)?;
+        let pos = bounds
+          .map(|rect| rect.center())
+          .unwrap_or(crate::geometry::Point::ZERO);
+        let _default_allowed = self.dispatch_contextmenu_event_with_pointer(
+          target_node_id,
+          (pos.x, pos.y),
+          PointerModifiers::NONE,
+        )?;
+        return Ok(());
+      }
+      AccessKitAction::Expand | AccessKitAction::Collapse => {}
+      _ => return Ok(()),
+    }
+
+    let expand = matches!(action, AccessKitAction::Expand);
 
     let (details_target, aria_expanded_target) = {
       let dom = self.dom();
