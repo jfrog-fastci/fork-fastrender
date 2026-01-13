@@ -24557,6 +24557,57 @@ mod tests {
   }
 
   #[test]
+  fn text_item_pre_wrap_text_wrap_nowrap_uses_forced_breaks_without_line_break_scanning() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.font_size = 16.0;
+    style.white_space = WhiteSpace::PreWrap;
+    style.text_wrap = TextWrap::NoWrap;
+    let style = Arc::new(style);
+
+    let NormalizedText {
+      text,
+      forced_breaks,
+      allow_soft_wrap,
+      ..
+    } = normalize_text_for_white_space("a\nb\nc", style.white_space, style.text_wrap);
+    assert!(
+      !allow_soft_wrap,
+      "pre-wrap + text-wrap: nowrap should disable soft wrapping"
+    );
+    assert!(
+      !forced_breaks.is_empty(),
+      "pre-wrap normalization should emit mandatory breaks"
+    );
+    let expected_breaks = forced_breaks.clone();
+
+    crate::text::line_break::debug_reset_find_break_opportunity_calls();
+
+    let bidi_stack = [(style.unicode_bidi, style.direction)];
+    let item = ifc
+      .create_text_item_from_normalized_owned(
+        &style,
+        text,
+        forced_breaks,
+        allow_soft_wrap,
+        false,
+        style.direction,
+        &bidi_stack,
+      )
+      .expect("text item");
+
+    assert_eq!(
+      crate::text::line_break::debug_find_break_opportunity_calls(),
+      0,
+      "pre-wrap + text-wrap: nowrap fast-path should not call find_break_opportunities"
+    );
+    assert_eq!(
+      item.break_opportunities, expected_breaks,
+      "break opportunities should contain only the forced mandatory breaks"
+    );
+  }
+
+  #[test]
   fn word_break_break_word_splits_when_overflowing() {
     let mut text_style = ComputedStyle::default();
     text_style.word_break = WordBreak::BreakWord;
