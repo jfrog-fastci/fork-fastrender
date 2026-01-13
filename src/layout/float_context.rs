@@ -451,6 +451,32 @@ impl FloatSweepState {
       active_shape_right: Vec::new(),
     }
   }
+
+  fn reset(&mut self, float_count: usize, events: &[FloatEvent]) {
+    self.current_y = f32::NEG_INFINITY;
+
+    self.pending_events.clear();
+    self.pending_events.extend(events.iter().copied().map(Reverse));
+
+    self.pending_start_events.clear();
+    self
+      .pending_start_events
+      .extend(
+        events
+          .iter()
+          .filter(|event| event.kind == FloatEventKind::Start)
+          .copied()
+          .map(Reverse),
+      );
+
+    self.active.clear();
+    self.active.resize(float_count, false);
+
+    self.active_left.clear();
+    self.active_right.clear();
+    self.active_shape_left.clear();
+    self.active_shape_right.clear();
+  }
 }
 
 impl Clone for FloatSweepState {
@@ -574,6 +600,13 @@ impl FloatRangeCache {
       segments: Vec::new(),
       block_min_cache: None,
     }
+  }
+
+  fn reset(&mut self) {
+    self.float_count = 0;
+    self.events_len = 0;
+    self.segments.clear();
+    self.sweep_state.reset(0, &[]);
   }
 
   fn ensure_current(&mut self, float_count: usize, events: &[FloatEvent]) {
@@ -800,8 +833,29 @@ static FLOAT_CLEARANCE_QUERIES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_CLEARANCE_STEPS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
+static FLOAT_CONTEXT_CLONES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
 thread_local! {
   static FLOAT_PROFILE_OVERRIDE: Cell<Option<bool>> = Cell::new(None);
+}
+
+#[inline]
+fn count_float_context_clone() {
+  #[cfg(test)]
+  {
+    FLOAT_CONTEXT_CLONES.fetch_add(1, AtomicOrdering::Relaxed);
+  }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_float_context_clone_counter() {
+  FLOAT_CONTEXT_CLONES.store(0, AtomicOrdering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn float_context_clone_count() -> u64 {
+  FLOAT_CONTEXT_CLONES.load(AtomicOrdering::Relaxed)
 }
 
 fn profile_enabled() -> bool {
@@ -1058,6 +1112,7 @@ pub struct FloatContext {
 
 impl Clone for FloatContext {
   fn clone(&self) -> Self {
+    count_float_context_clone();
     let float_map = self.float_map.clone();
     let events = self.events.clone();
     Self {
@@ -1075,6 +1130,27 @@ impl Clone for FloatContext {
       timeout_elapsed: Cell::new(self.timeout_elapsed.get()),
       current_y: self.current_y,
     }
+  }
+
+  fn clone_from(&mut self, source: &Self) {
+    self.containing_block_width = source.containing_block_width;
+    self.left_floats.clone_from(&source.left_floats);
+    self.right_floats.clone_from(&source.right_floats);
+    self.float_map.clone_from(&source.float_map);
+    self.events.clone_from(&source.events);
+
+    // Do not clone the sweep state / range cache; they can contain large heaps/vectors and are
+    // purely derived from `events`/`float_map`. Reset them, but reuse existing allocations.
+    self
+      .sweep_state
+      .get_mut()
+      .reset(self.float_map.len(), &self.events);
+    self.range_cache.get_mut().reset();
+
+    self.clearance_left_max_bottom = source.clearance_left_max_bottom;
+    self.clearance_right_max_bottom = source.clearance_right_max_bottom;
+    self.timeout_elapsed.set(source.timeout_elapsed.get());
+    self.current_y = source.current_y;
   }
 }
 

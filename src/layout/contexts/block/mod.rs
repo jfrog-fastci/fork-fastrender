@@ -3598,11 +3598,25 @@ impl BlockFormattingContext {
       });
     }
 
-    // `layout_block_child` can participate in float placement via `external_float_ctx`. Running
-    // multiple layout passes must not mutate the caller's float context repeatedly, so we run
-    // convergence passes against a scratch clone and only apply the final chosen style to the real
-    // float context once.
-    let float_ctx_snapshot: Option<FloatContext> = external_float_ctx.as_deref().cloned();
+    // `layout_block_child` can participate in float placement via `external_float_ctx`. When
+    // resolving `overflow:auto` scrollbars we may need to run multiple layout passes (for x/y
+    // scrollbar convergence).
+    //
+    // In the common case the child establishes a BFC via `overflow:auto` and does *not* insert
+    // floats into the parent's float context (it only queries it for float avoidance). In that
+    // case we can safely reuse the real float context across passes and avoid cloning a potentially
+    // very large `FloatContext`.
+    //
+    // Be conservative: if the child itself is an in-flow float, layout may insert into the float
+    // context, so we must run intermediate passes against a scratch clone and only commit once.
+    let child_in_flow_float = base_style.float.is_floating()
+      && matches!(base_style.position, Position::Static | Position::Relative);
+    let mut scratch_float: Option<FloatContext> = if child_in_flow_float {
+      external_float_ctx.as_deref().cloned()
+    } else {
+      None
+    };
+    let mut scratch_float_dirty = false;
 
     let mut force_x = false;
     let mut force_y = false;
@@ -3627,10 +3641,59 @@ impl BlockFormattingContext {
         }
       }
 
-      let mut scratch_float = float_ctx_snapshot.clone();
       record_overflow_auto_child_layout_pass();
-      let fragment = if overridden && child.id != 0 {
-        crate::layout::style_override::with_style_override(child.id, override_style.clone(), || {
+      let fragment = {
+        if child_in_flow_float && scratch_float_dirty {
+          // Reset the scratch context back to the caller's snapshot state before each convergence
+          // pass.
+          if let (Some(scratch), Some(snapshot)) = (scratch_float.as_mut(), external_float_ctx.as_deref()) {
+            scratch.clone_from(snapshot);
+          }
+        }
+
+        let float_ctx_for_pass = if child_in_flow_float {
+          scratch_float.as_mut()
+        } else {
+          external_float_ctx.as_deref_mut()
+        };
+
+        if overridden && child.id != 0 {
+          crate::layout::style_override::with_style_override(child.id, override_style.clone(), || {
+            crate::layout::auto_scrollbars::with_bypass(child, || {
+              self.layout_block_child(
+                parent,
+                child,
+                containing_width,
+                constraints,
+                box_y,
+                nearest_positioned_cb,
+                nearest_fixed_cb,
+                float_ctx_for_pass,
+                external_float_base_x,
+                external_float_base_y,
+                paint_viewport,
+              )
+            })
+          })
+        } else if overridden {
+          let mut cloned = child.clone();
+          cloned.style = override_style.clone();
+          crate::layout::auto_scrollbars::with_bypass(&cloned, || {
+            self.layout_block_child(
+              parent,
+              &cloned,
+              containing_width,
+              constraints,
+              box_y,
+              nearest_positioned_cb,
+              nearest_fixed_cb,
+              float_ctx_for_pass,
+              external_float_base_x,
+              external_float_base_y,
+              paint_viewport,
+            )
+          })
+        } else {
           crate::layout::auto_scrollbars::with_bypass(child, || {
             self.layout_block_child(
               parent,
@@ -3640,48 +3703,15 @@ impl BlockFormattingContext {
               box_y,
               nearest_positioned_cb,
               nearest_fixed_cb,
-              scratch_float.as_mut(),
+              float_ctx_for_pass,
               external_float_base_x,
               external_float_base_y,
               paint_viewport,
             )
           })
-        })
-      } else if overridden {
-        let mut cloned = child.clone();
-        cloned.style = override_style.clone();
-        crate::layout::auto_scrollbars::with_bypass(&cloned, || {
-          self.layout_block_child(
-            parent,
-            &cloned,
-            containing_width,
-            constraints,
-            box_y,
-            nearest_positioned_cb,
-            nearest_fixed_cb,
-            scratch_float.as_mut(),
-            external_float_base_x,
-            external_float_base_y,
-            paint_viewport,
-          )
-        })
-      } else {
-        crate::layout::auto_scrollbars::with_bypass(child, || {
-          self.layout_block_child(
-            parent,
-            child,
-            containing_width,
-            constraints,
-            box_y,
-            nearest_positioned_cb,
-            nearest_fixed_cb,
-            scratch_float.as_mut(),
-            external_float_base_x,
-            external_float_base_y,
-            paint_viewport,
-          )
-        })
+        }
       }?;
+      scratch_float_dirty = scratch_float_dirty || child_in_flow_float;
 
       let (overflow_x, overflow_y) = crate::layout::utils::fragment_overflows_content_box(
         &fragment,
@@ -3700,8 +3730,10 @@ impl BlockFormattingContext {
         && overflow_y;
 
       if need_x == force_x && need_y == force_y {
-        if let (Some(dest), Some(updated)) = (external_float_ctx.as_deref_mut(), scratch_float) {
-          *dest = updated;
+        if child_in_flow_float {
+          if let (Some(dest), Some(updated)) = (external_float_ctx.as_deref_mut(), scratch_float) {
+            *dest = updated;
+          }
         }
         return Ok(fragment);
       }
@@ -14327,7 +14359,8 @@ mod tests {
         inner_style.display = Display::Block;
         inner_style.height = Some(Length::px(10.0));
 
-        let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+        let inner =
+          BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
         let child = BoxNode::new_block(
           Arc::new(child_style),
           FormattingContextType::Block,
@@ -14347,6 +14380,75 @@ mod tests {
           overflow_auto_child_layout_passes(),
           1,
           "expected classic scrollbar mode to re-enable the overflow:auto convergence loop"
+        );
+      },
+    );
+  }
+
+  #[test]
+  fn overflow_auto_child_does_not_clone_external_float_ctx_when_not_floating() {
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_CLASSIC_SCROLLBARS".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        crate::layout::float_context::reset_float_context_clone_counter();
+
+        let mut parent_style = ComputedStyle::default();
+        parent_style.display = Display::Block;
+
+        let mut float_style = ComputedStyle::default();
+        float_style.display = Display::Block;
+        float_style.float = Float::Left;
+        float_style.width = Some(Length::px(10.0));
+        float_style.height = Some(Length::px(10.0));
+        let float_style = Arc::new(float_style);
+
+        let mut children = Vec::new();
+        // Create a large float context by inserting many preceding floats. The subsequent
+        // overflow:auto child is not itself a float, so it should not require cloning this context
+        // during scrollbar convergence.
+        for _ in 0..200 {
+          children.push(BoxNode::new_block(
+            float_style.clone(),
+            FormattingContextType::Block,
+            vec![],
+          ));
+        }
+
+        let mut child_style = ComputedStyle::default();
+        child_style.display = Display::Block;
+        child_style.overflow_y = Overflow::Auto;
+        child_style.height = Some(Length::px(50.0));
+
+        let mut inner_style = ComputedStyle::default();
+        inner_style.display = Display::Block;
+        inner_style.height = Some(Length::px(10.0));
+        let inner =
+          BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+        let child = BoxNode::new_block(
+          Arc::new(child_style),
+          FormattingContextType::Block,
+          vec![inner],
+        );
+        children.push(child);
+
+        let parent = BoxNode::new_block(
+          Arc::new(parent_style),
+          FormattingContextType::Block,
+          children,
+        );
+
+        let fc = BlockFormattingContext::new();
+        let constraints = LayoutConstraints::definite_width(200.0);
+        fc.layout(&parent, &constraints).unwrap();
+
+        assert_eq!(
+          crate::layout::float_context::float_context_clone_count(),
+          0,
+          "expected overflow:auto scrollbar convergence to reuse the existing float context when the child cannot mutate it"
         );
       },
     );
