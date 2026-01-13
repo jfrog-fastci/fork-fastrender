@@ -3,7 +3,7 @@ use crate::geometry::Rect;
 use crate::error::{RenderError, RenderStage};
 use crate::paint::display_list::Transform3D;
 use crate::paint::homography::Homography;
-use crate::render_control::{check_active, check_active_periodic};
+use crate::render_control::{active_deadline, check_active, check_active_periodic};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
@@ -106,7 +106,13 @@ pub fn eval_plane_z(plane: Plane, x: f32, y: f32) -> Option<f32> {
 ///
 /// Returns indices into the input slice in the order they should be painted.
 pub fn depth_sort_checked(items: &[SceneItem]) -> Result<Vec<usize>, RenderError> {
-  check_active(RenderStage::Paint)?;
+  // Avoid calling into TLS-heavy deadline check helpers when no deadline/cancel
+  // callback is installed (the common case). `depth_sort_checked` is used by the
+  // renderer preserve-3d compositor and can hit O(n^2) inner loops.
+  let deadline_enabled = active_deadline().is_some_and(|deadline| deadline.is_enabled());
+  if deadline_enabled {
+    check_active(RenderStage::Paint)?;
+  }
   let projections: Vec<_> = items.iter().map(project_item).collect();
   let n = items.len();
 
@@ -119,7 +125,9 @@ pub fn depth_sort_checked(items: &[SceneItem]) -> Result<Vec<usize>, RenderError
       continue;
     };
     for j in (i + 1)..n {
-      check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
+      if deadline_enabled {
+        check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
+      }
       let Some(pj) = &projections[j] else {
         continue;
       };
@@ -337,9 +345,8 @@ fn polygon_area(poly: &[Vec2]) -> f32 {
 }
 
 fn add_edge(edges: &mut [Vec<usize>], indegree: &mut [usize], from: usize, to: usize) {
-  if edges[from].contains(&to) {
-    return;
-  }
+  // Each `(i, j)` plane pair is visited once, so we can never add duplicate edges.
+  // Avoid the `Vec::contains` scan here to keep edge construction truly O(n^2).
   edges[from].push(to);
   indegree[to] += 1;
 }
