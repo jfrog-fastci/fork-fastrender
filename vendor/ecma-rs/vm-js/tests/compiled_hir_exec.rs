@@ -4216,6 +4216,34 @@ fn compiled_try_catch_destructures_exception_value() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_try_catch_destructuring_default_observes_tdz() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The default initializer `a = a` must refer to the *catch parameter* binding (which is in TDZ
+  // during BindingInitialization), not an outer binding.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let a = 123;
+      let ok = 0;
+      try {
+        try { throw {}; } catch ({a = a}) { ok = a; }
+      } catch (e) {
+        ok = 2;
+      }
+      ok
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_try_catch_tdz_shadowing_throws() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

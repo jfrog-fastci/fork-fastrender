@@ -1994,7 +1994,8 @@ impl<'vm> HirEvaluator<'vm> {
             let catch_result = (|| -> Result<Flow, VmError> {
               if let Some(param_pat_id) = catch_clause.param {
                 // Catch bindings accept any binding pattern (identifier, object/array destructuring,
-                // rest, etc).
+                // rest, etc). Bind into the catch environment we just installed as the current
+                // lexical environment.
                 //
                 // Catch parameters allow default initializers. Per spec, all bound names must be
                 // created in TDZ before default initializers run, so defaults like
