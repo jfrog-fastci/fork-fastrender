@@ -4792,7 +4792,10 @@ fn recompose_transform_matrix2d(decomp: &DecomposedTransform2D) -> Option<Transf
       0.0, 0.0, 0.0, 1.0, // column 4
     ],
   };
-  matrix = rotate.multiply(&matrix);
+  // CSS Transforms 1 recomposition uses `matrix = post-multiply(rotateMatrix, matrix)`, meaning
+  // the existing matrix is post-multiplied by the rotation matrix: `matrix = matrix * rotateMatrix`.
+  // This preserves the expected translation semantics for column-vector transforms.
+  matrix = matrix.multiply(&rotate);
 
   // Scale matrix.
   matrix.m[0] *= decomp.scale[0];
