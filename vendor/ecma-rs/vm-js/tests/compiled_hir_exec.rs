@@ -6507,6 +6507,46 @@ fn compiled_nullish_assign_short_circuits_rhs() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_logical_assignment_infers_function_names() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let o = {};
+      o.f ||= function() {};
+      o.a ||= () => {};
+      o.c ||= class {};
+      o.g = 1;
+      o.g &&= function() {};
+
+      let x;
+      x ||= function() {};
+      let y = true;
+      y &&= function() {};
+      let z;
+      z ??= () => {};
+      let w;
+      w ??= class {};
+
+      o.f.name + '|' + o.a.name + '|' + o.c.name + '|' + o.g.name + '|' +
+        x.name + '|' + y.name + '|' + z.name + '|' + w.name
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(result)?;
+  let expected = scope.alloc_string("f|a|c|g|x|y|z|w")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
 fn compiled_typeof_on_unbound_identifier_returns_undefined_string() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(

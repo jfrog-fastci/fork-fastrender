@@ -4761,6 +4761,7 @@ impl<'vm> HirEvaluator<'vm> {
         scope.push_root(left)?;
         let right = self.eval_expr(&mut scope, body, value)?;
         scope.push_root(right)?;
+        maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
         self.env.set_resolved_binding(
           self.vm,
           &mut *self.host,
@@ -4795,6 +4796,7 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
+            maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
             self.env.set_resolved_binding(
               self.vm,
               &mut *self.host,
@@ -4839,6 +4841,8 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
+            let reference = AssignmentReference::Property { base, key };
+            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, right)?;
 
             let ok = crate::spec_ops::internal_set_with_host_and_hooks(
               self.vm,
