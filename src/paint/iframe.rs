@@ -161,27 +161,13 @@ fn render_iframe_out_of_process(
 
   let mut cmd = Command::new(bin);
 
-  // Defense-in-depth: prevent leaking unrelated file descriptors into the iframe renderer process.
-  //
-  // This is implemented by setting `FD_CLOEXEC` on all inherited FDs except stdio. Unlike closing
-  // FDs directly, this does not interfere with `std::process::Command`'s internal exec-error pipes.
-  // On macOS, avoid `CommandExt::pre_exec`: it forces a `fork(2)`-based spawn, which is unsafe in
-  // multithreaded parents and bypasses the platform's `posix_spawn` fast path.
-  #[cfg(all(unix, target_os = "linux"))]
-  {
-    use std::os::unix::process::CommandExt as _;
-    let keep = [0, 1, 2];
-    unsafe {
-      cmd.pre_exec(move || crate::sandbox::fd_sanitizer::set_cloexec_on_fds_except(&keep));
-    }
-  }
-
   // Apply a minimal sandbox as early as possible in the child (after `fork`, before `exec`).
   //
   // This is defense-in-depth: the iframe renderer is a security boundary (see `src/bin/iframe_renderer.rs`).
   let mut cmd = crate::sandbox::spawn::configure_renderer_command(
     cmd,
     crate::sandbox::RendererSandboxConfig::default(),
+    &[],
   )
   .map_err(|err| {
     OopifError::SpawnFailed(io::Error::new(

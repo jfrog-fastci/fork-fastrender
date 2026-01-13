@@ -82,6 +82,14 @@ impl RendererSpawnCommand {
 /// `FASTR_MACOS_USE_SANDBOX_EXEC=1` is set. This path is intended for debugging/legacy workflows
 /// only; Apple has deprecated `sandbox-exec`.
 ///
+/// `extra_keep_fds` is an allowlist of additional file descriptors that must remain inheritable
+/// across `exec` (in addition to stdio `0/1/2`). This is intended for IPC endpoints or shared
+/// memory FDs passed to the renderer via inheritance.
+///
+/// Prefer calling this *after* any other `pre_exec` hooks that set up inherited file descriptors
+/// (e.g. `dup2` to a well-known fd), so the allowlist can be expressed in terms of the final FD
+/// numbers.
+///
 /// ## Safety notes
 ///
 /// The `pre_exec` closure is executed in the child process after a `fork(2)` from
@@ -99,13 +107,14 @@ impl RendererSpawnCommand {
 pub fn configure_renderer_command(
   mut cmd: Command,
   config: RendererSandboxConfig,
+  extra_keep_fds: &[crate::sandbox::fd_sanitizer::RawFd],
 ) -> Result<RendererSpawnCommand, RendererSandboxError> {
   #[cfg(all(unix, target_os = "linux"))]
   {
     let Some(config) = apply_linux_env_overrides(config)? else {
-      return Ok(());
+      return Ok(RendererSpawnCommand::Plain(cmd));
     };
-    let cfg = LinuxPreExecConfig::try_from_config(config)?;
+    let cfg = LinuxPreExecConfig::try_from_config(config, extra_keep_fds)?;
 
     // SAFETY: `pre_exec` is unsafe because the closure runs after fork. The
     // closure uses only async-signal-safe syscalls and does not allocate.
@@ -122,7 +131,7 @@ pub fn configure_renderer_command(
     //
     // This is a debug/legacy mechanism: Apple has deprecated `sandbox-exec` and may remove it in
     // future macOS releases.
-    let _ = config;
+    let _ = (config, extra_keep_fds);
     let wrapped = crate::sandbox::macos_spawn::maybe_wrap_command_with_sandbox_exec(
       &cmd,
       crate::sandbox::macos::RELAXED_SYSTEM_ALLOWLIST_PROFILE,
@@ -136,7 +145,7 @@ pub fn configure_renderer_command(
 
   #[cfg(not(any(all(unix, target_os = "linux"), target_os = "macos")))]
   {
-    let _ = config;
+    let _ = (config, extra_keep_fds);
     return Ok(RendererSpawnCommand::Plain(cmd));
   }
 }
@@ -255,7 +264,7 @@ mod tests {
     }
 
     let cmd = Command::new("/usr/bin/true");
-    let cmd = configure_renderer_command(cmd, RendererSandboxConfig::default())
+    let cmd = configure_renderer_command(cmd, RendererSandboxConfig::default(), &[])
       .expect("configure_renderer_command should succeed");
     match cmd {
       RendererSpawnCommand::SandboxExec(cmd) => assert_eq!(
@@ -410,11 +419,32 @@ struct LinuxPreExecConfig {
   network_policy: crate::sandbox::NetworkPolicy,
   landlock: crate::sandbox::RendererLandlockPolicy,
   seccomp: crate::sandbox::RendererSeccompPolicy,
+  keep_fds: [crate::sandbox::fd_sanitizer::RawFd; 16],
+  keep_fds_len: usize,
 }
 
 #[cfg(all(unix, target_os = "linux"))]
 impl LinuxPreExecConfig {
-  fn try_from_config(config: RendererSandboxConfig) -> Result<Self, RendererSandboxError> {
+  fn try_from_config(
+    config: RendererSandboxConfig,
+    extra_keep_fds: &[crate::sandbox::fd_sanitizer::RawFd],
+  ) -> Result<Self, RendererSandboxError> {
+    let actual_keep = 3usize.saturating_add(extra_keep_fds.len());
+    let mut keep_fds: [crate::sandbox::fd_sanitizer::RawFd; 16] = [-1; 16];
+    if actual_keep > keep_fds.len() {
+      return Err(RendererSandboxError::TooManyKeepFds {
+        max: keep_fds.len(),
+        actual: actual_keep,
+      });
+    }
+    keep_fds[0] = 0;
+    keep_fds[1] = 1;
+    keep_fds[2] = 2;
+    for (idx, &fd) in extra_keep_fds.iter().enumerate() {
+      keep_fds[3 + idx] = fd;
+    }
+    let keep_fds_len = actual_keep;
+
     Ok(Self {
       rlimit_as: config
         .address_space_limit_bytes
@@ -436,6 +466,8 @@ impl LinuxPreExecConfig {
       network_policy: config.network_policy,
       landlock: config.landlock,
       seccomp: config.seccomp,
+      keep_fds,
+      keep_fds_len,
     })
   }
 }
@@ -467,6 +499,15 @@ fn linux_pre_exec(cfg: LinuxPreExecConfig) -> std::io::Result<()> {
   // disabled). When it succeeds, it provides defense-in-depth beyond the seccomp filter by ensuring
   // the process starts inside a fresh network namespace where no interfaces are configured.
   let _ = crate::sandbox::linux_namespaces::apply_namespaces(cfg.linux_namespaces);
+
+  // 0d) Prevent unrelated inherited FDs from leaking into the renderer post-`exec`.
+  //
+  // We prefer setting `FD_CLOEXEC` instead of closing FDs directly to avoid interfering with
+  // `std::process::Command`'s internal exec-error pipes.
+  //
+  // This must run before lowering RLIMIT_NOFILE because lowering the limit does not close existing
+  // FDs, and the fallback implementation uses a scan bound derived from the current soft limit.
+  crate::sandbox::fd_sanitizer::set_cloexec_on_fds_except(&cfg.keep_fds[..cfg.keep_fds_len])?;
 
   // 1) Apply rlimits.
   if let Some(limit) = cfg.rlimit_as {
@@ -1051,7 +1092,7 @@ mod tests {
       .arg(test_name)
       .arg("--nocapture");
 
-    let mut cmd = configure_renderer_command(cmd, config).expect("configure sandbox");
+    let mut cmd = configure_renderer_command(cmd, config, &[]).expect("configure sandbox");
 
     let output = cmd.output().expect("spawn sandboxed child test process");
     assert!(
@@ -1060,5 +1101,97 @@ mod tests {
       String::from_utf8_lossy(&output.stdout),
       String::from_utf8_lossy(&output.stderr)
     );
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn configure_renderer_command_sets_cloexec_on_unrelated_fds() {
+    const CHILD_ENV: &str = "FASTR_TEST_SANDBOX_CLOEXEC_CHILD";
+    const LEAKED_FD_ENV: &str = "FASTR_TEST_SANDBOX_CLOEXEC_LEAKED_FD";
+
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      let fd: i32 = std::env::var(LEAKED_FD_ENV)
+        .expect("expected leaked fd env")
+        .parse()
+        .expect("parse leaked fd");
+
+      let mut buf = [0u8; 1];
+      // SAFETY: `fd` may be invalid/closed; this tests EBADF behavior.
+      let rc = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+      assert_eq!(rc, -1, "expected leaked fd to be closed on exec");
+      let err = std::io::Error::last_os_error();
+      assert_eq!(
+        err.raw_os_error(),
+        Some(libc::EBADF),
+        "expected EBADF for leaked fd, got {err:?}"
+      );
+      return;
+    }
+
+    // Parent: create an inheritable fd (no FD_CLOEXEC) and ensure it does not survive exec.
+    let (_cur_nofile, max_nofile) = get_rlimit(libc::RLIMIT_NOFILE);
+    let min_fd = if max_nofile > 600 {
+      500
+    } else if max_nofile > 300 {
+      200
+    } else {
+      100
+    };
+
+    let path = std::ffi::CString::new("/etc/passwd").expect("CString /etc/passwd");
+    // SAFETY: `open` is an FFI call; the path is NUL-terminated.
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
+    assert!(
+      fd >= 0,
+      "open(/etc/passwd) failed: {:?}",
+      std::io::Error::last_os_error()
+    );
+
+    // Duplicate to a high FD number to reduce the risk of reuse by the dynamic loader.
+    // SAFETY: `fcntl` is an FFI call.
+    let leaked_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD, min_fd as libc::c_int) };
+    assert!(
+      leaked_fd >= 0,
+      "fcntl(F_DUPFD) failed: {:?}",
+      std::io::Error::last_os_error()
+    );
+    // Best-effort close the original.
+    unsafe {
+      libc::close(fd);
+    }
+
+    // Ensure the duplicated FD is inheritable (CLOEXEC cleared) so it would leak without sanitization.
+    let flags = unsafe { libc::fcntl(leaked_fd, libc::F_GETFD) };
+    assert!(flags != -1, "fcntl(F_GETFD) failed");
+    assert_eq!(
+      flags & libc::FD_CLOEXEC,
+      0,
+      "expected leaked fd to be inheritable (no FD_CLOEXEC)"
+    );
+
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name = "sandbox::spawn::tests::configure_renderer_command_sets_cloexec_on_unrelated_fds";
+    let mut cmd = Command::new(exe);
+    cmd.env(CHILD_ENV, "1")
+      .env(LEAKED_FD_ENV, leaked_fd.to_string())
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture");
+
+    let mut cmd = configure_renderer_command(cmd, RendererSandboxConfig::default(), &[])
+      .expect("configure sandbox");
+
+    let output = cmd.output().expect("spawn sandboxed child test process");
+    assert!(
+      output.status.success(),
+      "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+
+    unsafe {
+      libc::close(leaked_fd);
+    }
   }
 }

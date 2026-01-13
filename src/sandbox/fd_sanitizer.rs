@@ -3,7 +3,7 @@ use std::io;
 // `RawFd` is unix-only, but the crate aims to compile on all platforms.
 // On non-unix targets we provide a stub `RawFd` type and return `Unsupported`.
 #[cfg(any(unix, target_os = "wasi"))]
-use std::os::fd::RawFd;
+pub use std::os::fd::RawFd;
 #[cfg(not(any(unix, target_os = "wasi")))]
 pub type RawFd = i32;
 
@@ -26,14 +26,20 @@ pub fn close_fds_except(keep: &[RawFd]) -> io::Result<()> {
   close_fds_except_impl(keep)
 }
 
-/// Ensure all file descriptors except those listed in `keep` are marked `FD_CLOEXEC`.
+/// Mark all file descriptors except those listed in `keep` as `FD_CLOEXEC`.
 ///
-/// This is intended as a **safe** defense-in-depth helper for `std::process::Command` spawns: it
-/// prevents accidental FD leaks into sandboxed renderer subprocesses without closing
-/// `std::process`'s internal CLOEXEC pipes used for exec error reporting.
+/// This is a spawn-oriented variant of [`close_fds_except`]. Instead of closing file descriptors
+/// immediately, it ensures they will not survive an `execve(2)` boundary by setting the
+/// `FD_CLOEXEC` flag.
 ///
-/// Unlike [`close_fds_except`], this does **not** close file descriptors; it only ensures they will
-/// not survive a successful `exec(2)`.
+/// ## Why `CLOEXEC` instead of close?
+/// When used from `std::process::CommandExt::pre_exec`, Rust's process spawning machinery may hold
+/// internal helper pipes open in the child until `exec`. Closing *all* FDs can interfere with error
+/// reporting from `exec` failures. Setting `FD_CLOEXEC` avoids leaking unrelated FDs into the
+/// sandboxed process *after* `exec` while keeping the spawn machinery intact.
+///
+/// Like [`close_fds_except`], this helper is allocation-free and intended to be safe to call from a
+/// `pre_exec` hook.
 pub fn set_cloexec_on_fds_except(keep: &[RawFd]) -> io::Result<()> {
   set_cloexec_on_fds_except_impl(keep)
 }
@@ -251,29 +257,30 @@ fn set_cloexec_on_fds_except_by_scanning(keep: &[RawFd]) -> io::Result<()> {
       continue;
     }
 
-    // Query fd flags; ignore EBADF (already closed).
     let flags = loop {
-      let rc = unsafe { libc::fcntl(fd_i32, libc::F_GETFD) };
-      if rc != -1 {
-        break rc;
+      // SAFETY: `fcntl` is safe to call with any integer fd value.
+      let flags = unsafe { libc::fcntl(fd_i32, libc::F_GETFD) };
+      if flags != -1 {
+        break flags;
       }
       let err = io::Error::last_os_error();
       match err.raw_os_error() {
-        Some(libc::EBADF) => {
-          // Not open.
-          continue;
-        }
+        Some(libc::EBADF) => break -1,
         Some(libc::EINTR) => continue,
         _ => return Err(err),
       }
     };
 
+    if flags == -1 {
+      continue;
+    }
+
     if (flags & libc::FD_CLOEXEC) != 0 {
       continue;
     }
 
-    // Set FD_CLOEXEC; retry on EINTR.
     loop {
+      // SAFETY: `fcntl` is safe to call with any integer fd value.
       let rc = unsafe { libc::fcntl(fd_i32, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
       if rc != -1 {
         break;

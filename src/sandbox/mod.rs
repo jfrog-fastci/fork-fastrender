@@ -408,6 +408,8 @@ impl SandboxWarning {
 pub enum RendererSandboxError {
   #[error("rlimit value {value} for {resource} does not fit platform rlim_t")]
   InvalidRlimitValue { resource: &'static str, value: u64 },
+  #[error("too many file descriptors to keep open across exec (max {max}, got {actual})")]
+  TooManyKeepFds { max: usize, actual: usize },
 
   #[error(
     "invalid sandbox env var {var}={value:?}; expected 0|1|true|false|yes|no|on|off"
