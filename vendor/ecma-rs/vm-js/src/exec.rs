@@ -2323,7 +2323,6 @@ impl JsRuntime {
           let res: Result<Value, VmError> = (|| {
             // In classic scripts, top-level `this` is the global object (even in strict mode).
             let global_this = Value::Object(global_object);
-
             if !has_await {
               let mut evaluator = Evaluator {
                 vm: &mut *vm_frame,
@@ -17813,7 +17812,6 @@ fn async_eval_class_after_super(
   // Define prototype and static methods.
   async_eval_class_members_from(evaluator, &mut class_scope, members, 0, func_root)
 }
-
 fn async_eval_class_members_from(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
