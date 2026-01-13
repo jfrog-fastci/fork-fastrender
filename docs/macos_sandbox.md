@@ -19,22 +19,15 @@ bash scripts/cargo_agent.sh run --bin macos_sandbox_probe -- --mode strict
 cargo run --bin macos_sandbox_probe -- --mode strict
 ```
 
-### Network probe (recommended)
+### Network probe
 
-To make network denial obvious (instead of just seeing “connection refused”), run a local TCP
-listener first:
+By default the tool uses `--port 0`, which means it will bind an ephemeral local TCP listener
+*before* applying the sandbox and then attempt to connect to it *after* applying the sandbox. This
+makes network denial obvious (a non-sandboxed process would succeed, but the sandboxed connect
+should report `DENIED`).
 
-```bash
-python3 -m http.server 8000
-```
-
-Then, in another terminal:
-
-```bash
-cargo run --bin macos_sandbox_probe -- --mode strict --port 8000
-```
-
-The `connect to 127.0.0.1:8000` probe should report `DENIED`.
+If you pass a specific `--port`, the tool will attempt to connect to that port directly. If nothing
+is listening there you may see `connection refused` instead of a sandbox permission error.
 
 ## Modes
 
@@ -72,5 +65,5 @@ inform the renderer<->browser IPC transport choice.
 
 ## Editing the profiles
 
-The profiles currently live in `src/bin/macos_sandbox_probe/probe.rs`. This tool is intentionally
-small so you can tweak the profile rules and re-run quickly.
+The profiles currently live in `src/bin/macos_sandbox_probe.rs`. This tool is intentionally small
+so you can tweak the profile rules and re-run quickly.
