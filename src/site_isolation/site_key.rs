@@ -17,6 +17,13 @@ pub enum SiteKey {
   Opaque(u64),
 }
 
+/// Canonical origin key for origin-partitioned state.
+///
+/// For now this is identical to [`SiteKey`]; the two names are kept separate so future work can
+/// evolve `SiteKey` toward "site" grouping (e.g. eTLD+1) while leaving origin partitioning logic
+/// explicit.
+pub type OriginKey = SiteKey;
+
 /// Generator for [`SiteKey::Opaque`] values.
 ///
 /// A factory can be injected for deterministic tests (each test can start from a fixed seed
@@ -184,4 +191,3 @@ mod tests {
     assert_eq!(key, SiteKey::Opaque(9));
   }
 }
-
