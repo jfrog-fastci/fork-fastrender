@@ -2750,6 +2750,11 @@ const HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_protot
 const HTML_OPTIONS_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_options_collection_prototype";
 const HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
 const NODE_LIST_ROOT_KEY: &str = "__fastrender_node_list_root";
+/// Internal length slot for live/static collection objects (NodeList/HTMLCollection shims).
+///
+/// Public `length` is exposed as a readonly accessor on the prototype (WebIDL-ish). Sync code
+/// updates this hidden data property instead.
+const COLLECTION_LENGTH_KEY: &str = "__fastrender_collection_length";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_REMOVE_ATTRIBUTE_KEY: &str = "__fastrender_element_remove_attribute";
@@ -10172,7 +10177,7 @@ fn sync_child_nodes_array(
   scope.push_root(Value::Object(document_obj))?;
   scope.push_root(Value::Object(array))?;
 
-  let length_key = alloc_key(scope, "length")?;
+  let length_key = alloc_key(scope, COLLECTION_LENGTH_KEY)?;
   let old_len = match scope
     .heap()
     .object_get_own_data_property_value(array, &length_key)?
@@ -10197,6 +10202,7 @@ fn sync_child_nodes_array(
     scope.heap_mut().delete_property_or_throw(array, key)?;
   }
 
+  // Update internal length storage. Public `length` is a readonly accessor on `NodeList.prototype`.
   scope.define_property(
     array,
     length_key,
@@ -10226,7 +10232,7 @@ fn sync_select_options_array(
   scope.push_root(Value::Object(document_obj))?;
   scope.push_root(Value::Object(array))?;
 
-  let length_key = alloc_key(scope, "length")?;
+  let length_key = alloc_key(scope, COLLECTION_LENGTH_KEY)?;
   let old_len = match scope
     .heap()
     .object_get_own_data_property_value(array, &length_key)?
@@ -10249,6 +10255,7 @@ fn sync_select_options_array(
     scope.heap_mut().delete_property_or_throw(array, key)?;
   }
 
+  // Update internal length storage. Public `length` is a readonly accessor on `HTMLCollection.prototype`.
   scope.define_property(
     array,
     length_key,
@@ -10304,7 +10311,7 @@ fn sync_children_collection(
   scope.push_root(Value::Object(document_obj))?;
   scope.push_root(Value::Object(collection))?;
 
-  let length_key = alloc_key(scope, "length")?;
+  let length_key = alloc_key(scope, COLLECTION_LENGTH_KEY)?;
   let old_len = match scope
     .heap()
     .object_get_own_data_property_value(collection, &length_key)?
@@ -10329,6 +10336,7 @@ fn sync_children_collection(
     scope.heap_mut().delete_property_or_throw(collection, key)?;
   }
 
+  // Update internal length storage. Public `length` is a readonly accessor on `HTMLCollection.prototype`.
   scope.define_property(
     collection,
     length_key,
@@ -10337,7 +10345,6 @@ fn sync_children_collection(
       configurable: false,
       kind: PropertyKind::Data {
         value: Value::Number(children.len() as f64),
-        // Writable so we can update the value even though the property is non-configurable.
         writable: true,
       },
     },
@@ -17314,6 +17321,30 @@ fn node_list_prototype_from_document(scope: &mut Scope<'_>, document_obj: GcObje
   }
 }
 
+fn collection_length_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(obj))?;
+  let len_key = alloc_key(scope, COLLECTION_LENGTH_KEY)?;
+  let len_value = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &len_key)?
+    .unwrap_or(Value::Number(0.0));
+  match len_value {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(Value::Number(n.trunc())),
+    _ => Ok(Value::Number(0.0)),
+  }
+}
+
 fn mutation_record_prototype_from_document(
   scope: &mut Scope<'_>,
   document_obj: GcObject,
@@ -17558,8 +17589,21 @@ fn alloc_node_array(
     scope.define_property(node_list, key, data_desc(wrapper))?;
   }
 
-  let length_key = alloc_key(scope, "length")?;
-  scope.define_property(node_list, length_key, read_only_data_desc(Value::Number(nodes.len() as f64)))?;
+  // Store the current length in an internal data property; the public `length` is exposed as a
+  // readonly accessor on `NodeList.prototype` so user code cannot assign to it.
+  let length_key = alloc_key(scope, COLLECTION_LENGTH_KEY)?;
+  scope.define_property(
+    node_list,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(nodes.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
 
   Ok(node_list)
 }
@@ -26910,7 +26954,6 @@ fn node_child_nodes_get_native(
     _ => {
       let list_obj = scope.alloc_object()?;
       scope.push_root(Value::Object(list_obj))?;
-
       // Use the realm's NodeList prototype so `instanceof NodeList` works and `Array.isArray`
       // remains false. The prototype is stored on the owning document wrapper so we don't need to
       // walk the global object.
@@ -38923,6 +38966,28 @@ fn init_window_globals(
       data_desc(Value::Object(html_collection_named_item_func)),
     )?;
 
+    // HTMLCollection.prototype.length (readonly accessor).
+    let collection_length_get_call_id = vm.register_native_call(collection_length_get_native)?;
+    let collection_length_get_name = scope.alloc_string("get length")?;
+    scope.push_root(Value::String(collection_length_get_name))?;
+    let collection_length_get_func = scope.alloc_native_function(
+      collection_length_get_call_id,
+      None,
+      collection_length_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      collection_length_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(collection_length_get_func))?;
+    let collection_length_key = alloc_key(&mut scope, "length")?;
+    scope.define_property(
+      html_collection_proto,
+      collection_length_key,
+      idl_attribute_desc(Value::Object(collection_length_get_func), Value::Undefined),
+    )?;
+
     // Store the HTMLCollection prototype on `document` so node wrappers can create collections
     // without walking the global object.
     let html_collection_proto_key = alloc_key(&mut scope, HTML_COLLECTION_PROTOTYPE_KEY)?;
@@ -39031,6 +39096,14 @@ fn init_window_globals(
       node_list_proto,
       node_list_for_each_key,
       data_desc(Value::Object(node_list_for_each_func)),
+    )?;
+
+    // NodeList.prototype.length (readonly accessor).
+    let node_list_length_key = alloc_key(&mut scope, "length")?;
+    scope.define_property(
+      node_list_proto,
+      node_list_length_key,
+      idl_attribute_desc(Value::Object(collection_length_get_func), Value::Undefined),
     )?;
 
     // NodeList iterator.
