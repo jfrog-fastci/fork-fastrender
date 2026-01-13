@@ -121,15 +121,12 @@ pub mod page_accesskit_ids;
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;
 
-<<<<<<< HEAD
-// Test-only helpers for snapshotting FastRender-generated AccessKit tree updates.
-#[cfg(all(test, feature = "browser_ui"))]
-pub mod accesskit_snapshot;
-=======
 // Page accessibility (AccessKit subtree) conversion helpers.
 #[cfg(feature = "browser_ui")]
 pub mod page_accesskit_subtree;
->>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
+// Test-only helpers for snapshotting FastRender-generated AccessKit tree updates.
+#[cfg(all(test, feature = "browser_ui"))]
+pub mod accesskit_snapshot;
 
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
