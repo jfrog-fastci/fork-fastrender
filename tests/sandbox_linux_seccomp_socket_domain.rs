@@ -8,7 +8,9 @@ fn socket_domain_filter_allows_unix_denies_inet() {
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     let status = fastrender::sandbox::apply_renderer_sandbox(
-      fastrender::sandbox::RendererSandboxConfig::default(),
+      fastrender::sandbox::RendererSandboxConfig {
+        network_policy: fastrender::sandbox::NetworkPolicy::AllowUnixSocketsOnly,
+      },
     )
     .expect("apply Linux sandbox");
     assert_eq!(status, fastrender::sandbox::SandboxStatus::Applied);
