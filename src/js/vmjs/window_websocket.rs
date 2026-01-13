@@ -659,7 +659,12 @@ fn parse_protocols(
 
   match value {
     Value::String(s) => {
-      let s = js_string_to_rust_string_limited(scope.heap(), s, MAX_WEBSOCKET_PROTOCOL_BYTES, "WebSocket protocol too long")?;
+      let s = js_string_to_rust_string_limited(
+        scope.heap(),
+        s,
+        MAX_WEBSOCKET_PROTOCOL_BYTES as usize,
+        "WebSocket protocol too long",
+      )?;
       if s.is_empty() {
         return Err(VmError::TypeError("WebSocket protocol must not be empty"));
       }
@@ -680,10 +685,15 @@ fn parse_protocols(
             break;
           };
           count += 1;
-          if count > MAX_WEBSOCKET_PROTOCOLS {
+          if count > MAX_WEBSOCKET_PROTOCOLS as usize {
             return Err(VmError::TypeError("WebSocket protocols list is too large"));
           }
-          let s = to_rust_string_limited(scope.heap_mut(), item, MAX_WEBSOCKET_PROTOCOL_BYTES, "WebSocket protocol too long")?;
+          let s = to_rust_string_limited(
+            scope.heap_mut(),
+            item,
+            MAX_WEBSOCKET_PROTOCOL_BYTES as usize,
+            "WebSocket protocol too long",
+          )?;
           if s.is_empty() {
             return Err(VmError::TypeError("WebSocket protocol must not be empty"));
           }
@@ -732,7 +742,12 @@ fn parse_protocols(
     }
     other => {
       // Union conversion fallback: treat as DOMString.
-      let s = to_rust_string_limited(scope.heap_mut(), other, MAX_WEBSOCKET_PROTOCOL_BYTES, "WebSocket protocol too long")?;
+      let s = to_rust_string_limited(
+        scope.heap_mut(),
+        other,
+        MAX_WEBSOCKET_PROTOCOL_BYTES as usize,
+        "WebSocket protocol too long",
+      )?;
       if s.is_empty() {
         return Err(VmError::TypeError("WebSocket protocol must not be empty"));
       }
@@ -776,7 +791,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
   let url_str = to_rust_string_limited(
     scope.heap_mut(),
     url_value,
-    MAX_WEBSOCKET_URL_BYTES,
+    MAX_WEBSOCKET_URL_BYTES as usize,
     "WebSocket URL exceeds maximum length",
   )?;
 
@@ -1142,7 +1157,7 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
       byte_len = bytes.len();
       // Avoid cloning potentially-large attacker-controlled buffers before enforcing the message
       // size limit.
-      if byte_len > MAX_WEBSOCKET_MESSAGE_BYTES {
+      if byte_len > MAX_WEBSOCKET_MESSAGE_BYTES as usize {
         return Err(VmError::TypeError("WebSocket message too large"));
       }
       kind = Some(WsCommand::SendBinary(bytes.to_vec()));
@@ -1150,7 +1165,7 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
     Value::Object(obj) if scope.heap().is_uint8_array_object(obj) => {
       let bytes = scope.heap().uint8_array_data(obj)?;
       byte_len = bytes.len();
-      if byte_len > MAX_WEBSOCKET_MESSAGE_BYTES {
+      if byte_len > MAX_WEBSOCKET_MESSAGE_BYTES as usize {
         return Err(VmError::TypeError("WebSocket message too large"));
       }
       kind = Some(WsCommand::SendBinary(bytes.to_vec()));
@@ -1160,14 +1175,19 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
         byte_len = blob.bytes.len();
         kind = Some(WsCommand::SendBinary(blob.bytes));
       } else {
-        let s = to_rust_string_limited(scope.heap_mut(), other, MAX_WEBSOCKET_MESSAGE_BYTES, "WebSocket message too large")?;
+        let s = to_rust_string_limited(
+          scope.heap_mut(),
+          other,
+          MAX_WEBSOCKET_MESSAGE_BYTES as usize,
+          "WebSocket message too large",
+        )?;
         byte_len = s.as_bytes().len();
         kind = Some(WsCommand::SendText(s));
       }
     }
   }
 
-  if byte_len > MAX_WEBSOCKET_MESSAGE_BYTES {
+  if byte_len > MAX_WEBSOCKET_MESSAGE_BYTES as usize {
     return Err(VmError::TypeError("WebSocket message too large"));
   }
 
@@ -1308,7 +1328,7 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
     let s = to_rust_string_limited(
       scope.heap_mut(),
       reason_value,
-      MAX_WEBSOCKET_CLOSE_REASON_BYTES,
+      MAX_WEBSOCKET_CLOSE_REASON_BYTES as usize,
       "WebSocket close reason too long",
     )?;
     Some(s)
@@ -1765,7 +1785,7 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
       );
     }
     WebSocketEvent::MessageText { text } => {
-      if text.as_bytes().len() > MAX_WEBSOCKET_MESSAGE_BYTES {
+      if text.as_bytes().len() > MAX_WEBSOCKET_MESSAGE_BYTES as usize {
         return;
       }
       queue_ws_task::<Host>(
@@ -1786,7 +1806,7 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
       );
     }
     WebSocketEvent::MessageBinary { data } => {
-      if data.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
+      if data.len() > MAX_WEBSOCKET_MESSAGE_BYTES as usize {
         return;
       }
       queue_ws_task::<Host>(
@@ -2239,7 +2259,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
 
     match socket.read_message() {
       Ok(Message::Text(text)) => {
-        if text.as_bytes().len() > MAX_WEBSOCKET_MESSAGE_BYTES {
+        if text.as_bytes().len() > MAX_WEBSOCKET_MESSAGE_BYTES as usize {
           closing = Some((1009, "message too large".to_string()));
           let _ = socket.close(None);
           break;
@@ -2268,7 +2288,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         }
       }
       Ok(Message::Binary(bytes)) => {
-        if bytes.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
+        if bytes.len() > MAX_WEBSOCKET_MESSAGE_BYTES as usize {
           closing = Some((1009, "message too large".to_string()));
           let _ = socket.close(None);
           break;
