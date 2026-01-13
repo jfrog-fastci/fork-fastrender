@@ -57,6 +57,11 @@ What these validate:
 - **`--headless-smoke`**: end-to-end UI↔worker startup and message wiring.
 - **`--headless-crash-smoke`**: crash isolation (today: worker thread crash; future: renderer process crash).
 
+In the intended multiprocess architecture, a renderer crash should **not** take down the whole
+browser process: the chrome (and other tabs) should stay responsive, and the affected tab should be
+marked as crashed and show a deterministic “tab crashed” overlay (typically with a Reload action).
+See [site_isolation.md](site_isolation.md) for the design context.
+
 These smoke modes are intended to remain stable as the renderer moves out-of-process. The key seam
 is the `UiToWorker`/`WorkerToUi` message protocol in [`src/ui/messages.rs`](../src/ui/messages.rs) and
 the worker spawn helpers (`spawn_browser_worker` / `spawn_browser_ui_worker`) in

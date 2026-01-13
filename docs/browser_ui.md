@@ -127,6 +127,7 @@ modes that exercise startup and UI↔worker wiring **without** creating a window
 - `browser --headless-crash-smoke` / `FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE=1`
   - Runs a smoke test that intentionally crashes the renderer worker and validates that the crash is
     contained/observable (future: renderer *process* crash isolation).
+  - On success prints `HEADLESS_CRASH_SMOKE_OK` to stdout.
 
 Run smoke modes under the repo’s resource-limit wrapper:
 

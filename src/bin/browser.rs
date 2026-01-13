@@ -1728,7 +1728,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // Crash-isolation smoke test (worker crash should not kill the browser process):
   //   bash scripts/run_limited.sh --as 64G -- \
   //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-crash-smoke
-  if cli.headless_crash_smoke {
+  //
+  // Or:
+  //   FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE=1 bash scripts/run_limited.sh --as 64G -- \
+  //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser
+  if cli.headless_crash_smoke
+    || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE").is_some()
+  {
     return run_headless_crash_smoke_mode(download_dir);
   }
   if cli.headless_smoke || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
@@ -3158,7 +3164,10 @@ fn run_headless_crash_smoke_mode(
     let _ = done_tx.send(join.join());
   });
   match done_rx.recv_timeout(Duration::from_secs(10)) {
-    Ok(_join_outcome) => {}
+    Ok(Ok(())) => {
+      return Err("expected crash smoke worker thread to panic, but it exited cleanly".into());
+    }
+    Ok(Err(_)) => {}
     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
       return Err("timed out waiting for crash smoke worker thread to terminate".into());
     }
