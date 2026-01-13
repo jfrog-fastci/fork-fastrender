@@ -214,6 +214,9 @@ struct TrackBoxes {
 
 fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
   let timescale = t.timescale.ok_or(Mp4Error::MissingBox("mdhd"))?;
+  if timescale == 0 {
+    return Err(Mp4Error::Invalid("mdhd timescale must be > 0"));
+  }
   let stts = t.stts.ok_or(Mp4Error::MissingBox("stts"))?;
   let stsc = t.stsc.ok_or(Mp4Error::MissingBox("stsc"))?;
   let stsz = t.stsz.ok_or(Mp4Error::MissingBox("stsz"))?;
