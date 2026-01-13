@@ -1086,6 +1086,49 @@ fn resolve_home_url_input(raw: &str) -> Result<String, String> {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
+fn is_path_within_any_dir(dirs: &[std::path::PathBuf], path: &std::path::Path) -> bool {
+  dirs.iter().any(|dir| is_path_within_dir(dir, path))
+}
+
+/// Apply a download-directory change to local window state.
+///
+/// This is intentionally pure (no dialogs, no worker messaging) so it can be unit tested under the
+/// default feature set (without pulling in the full `browser_ui` stack).
+#[cfg(any(test, feature = "browser_ui"))]
+fn apply_download_dir_change_state(
+  download_dir: &mut std::path::PathBuf,
+  allowed_dirs: &mut Vec<std::path::PathBuf>,
+  new_dir: std::path::PathBuf,
+) -> bool {
+  if new_dir.as_os_str().is_empty() {
+    return false;
+  }
+
+  let mut push_unique = |path: &std::path::PathBuf| {
+    if !allowed_dirs.iter().any(|p| p == path) {
+      allowed_dirs.push(path.clone());
+    }
+  };
+
+  if download_dir.as_os_str().is_empty() {
+    *download_dir = new_dir.clone();
+    push_unique(download_dir);
+    return true;
+  }
+
+  if *download_dir == new_dir {
+    push_unique(download_dir);
+    return false;
+  }
+
+  let old_dir = download_dir.clone();
+  push_unique(&old_dir);
+  push_unique(&new_dir);
+  *download_dir = new_dir;
+  true
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 fn open_url_in_new_tab_state(
   browser_state: &mut fastrender::ui::BrowserAppState,
   tab_cancel: &mut std::collections::HashMap<
@@ -3192,7 +3235,8 @@ mod resize_dpr_scale_env_tests {
 
 #[cfg(test)]
 mod download_dir_validation_tests {
-  use super::is_path_within_dir;
+  use super::{apply_download_dir_change_state, is_path_within_any_dir, is_path_within_dir};
+  use std::path::PathBuf;
 
   #[test]
   fn path_within_download_dir_rejects_traversal_and_outside_paths() {
@@ -3210,6 +3254,47 @@ mod download_dir_validation_tests {
     // Absolute path outside the download dir should be rejected.
     let outside_abs = temp.path().join("outside.bin");
     assert!(!is_path_within_dir(&download_dir, &outside_abs));
+  }
+
+  #[test]
+  fn apply_download_dir_change_updates_allowlist_and_allows_old_downloads() {
+    let mut download_dir = PathBuf::from("downloads-a");
+    let mut allowed = vec![download_dir.clone()];
+
+    assert!(apply_download_dir_change_state(
+      &mut download_dir,
+      &mut allowed,
+      PathBuf::from("downloads-b")
+    ));
+    assert_eq!(download_dir, PathBuf::from("downloads-b"));
+    assert!(allowed.contains(&PathBuf::from("downloads-a")));
+    assert!(allowed.contains(&PathBuf::from("downloads-b")));
+
+    // "Open/reveal" should continue to allow paths from the previous dir.
+    assert!(is_path_within_any_dir(
+      &allowed,
+      &PathBuf::from("downloads-a/file.bin")
+    ));
+  }
+
+  #[test]
+  fn apply_download_dir_change_ignores_empty_or_unchanged_values() {
+    let mut download_dir = PathBuf::from("downloads-a");
+    let mut allowed = vec![download_dir.clone()];
+
+    assert!(!apply_download_dir_change_state(
+      &mut download_dir,
+      &mut allowed,
+      PathBuf::new()
+    ));
+    assert_eq!(download_dir, PathBuf::from("downloads-a"));
+
+    assert!(!apply_download_dir_change_state(
+      &mut download_dir,
+      &mut allowed,
+      PathBuf::from("downloads-a")
+    ));
+    assert_eq!(download_dir, PathBuf::from("downloads-a"));
   }
 
   #[test]
@@ -8164,6 +8249,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let inherit_bookmarks_bar_visible = windows
           .get(&from_id)
           .map(|win| win.app.browser_state.chrome.bookmarks_bar_visible);
+        let inherited_download_dir = windows
+          .get(&from_id)
+          .map(|win| win.app.download_dir.clone())
+          .unwrap_or_else(|| download_dir.clone());
 
         let applied_appearance = global_appearance.clone().with_env_overrides(appearance_env);
         let theme_accent = applied_appearance
@@ -8223,10 +8312,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
-          download_dir.display().to_string(),
+          inherited_download_dir.display().to_string(),
         ));
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
-          path: download_dir.clone(),
+          path: inherited_download_dir.clone(),
         }) {
           if let Some(win) = windows.get_mut(&from_id) {
             win
@@ -8255,7 +8344,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           hud_enabled,
           bookmarks_path.clone(),
           history_path.clone(),
-          download_dir.clone(),
+          inherited_download_dir.clone(),
           global_bookmarks.clone(),
           global_history.clone(),
         ) {
@@ -8363,6 +8452,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(|pos| PhysicalPosition::new(pos.x.saturating_add(32), pos.y.saturating_add(32)))
         });
         let window_state = session_window.window_state.clone();
+        let inherited_download_dir = windows
+          .get(&from_id)
+          .map(|win| win.app.download_dir.clone())
+          .unwrap_or_else(|| download_dir.clone());
 
         let applied_appearance = global_appearance.clone().with_env_overrides(appearance_env);
         let theme_accent = applied_appearance
@@ -8422,10 +8515,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
-          download_dir.display().to_string(),
+          inherited_download_dir.display().to_string(),
         ));
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
-          path: download_dir.clone(),
+          path: inherited_download_dir.clone(),
         }) {
           if let Some(win) = windows.get_mut(&from_id) {
             win
@@ -8454,7 +8547,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           hud_enabled,
           bookmarks_path.clone(),
           history_path.clone(),
-          download_dir.clone(),
+          inherited_download_dir.clone(),
           global_bookmarks.clone(),
           global_history.clone(),
         ) {
@@ -8547,7 +8640,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(win) = windows.get_mut(&window_id) {
           session_dirty = win.app.render_frame(control_flow);
           if win.app.take_worker_restart_request() {
-            win.restart_worker(&download_dir, Arc::clone(&worker_wake_coalescer));
+            // Restart the worker with the download directory currently configured for this window
+            // (runtime download directory changes are per-window by default).
+            let window_download_dir = win.app.download_dir.clone();
+            win.restart_worker(&window_download_dir, Arc::clone(&worker_wake_coalescer));
             session_dirty = true;
           }
           // If this window diverged from the current global settings, treat it as a proposed update
@@ -12673,6 +12769,12 @@ struct App {
   history_path: std::path::PathBuf,
   /// Configured download directory (from CLI/env fallback).
   download_dir: std::path::PathBuf,
+  /// Download directories configured for this window during its lifetime.
+  ///
+  /// Download paths originate from the renderer/worker process and must be treated as untrusted.
+  /// We therefore only allow "open"/"reveal" requests within directories that the UI has
+  /// explicitly configured.
+  download_dir_allowlist: Vec<std::path::PathBuf>,
   bookmarks: fastrender::ui::BookmarkStore,
   pending_bookmark_deltas: Vec<fastrender::ui::BookmarkDelta>,
   last_synced_bookmarks_revision: u64,
@@ -13697,6 +13799,7 @@ impl App {
     };
 
     let bookmarks_revision = bookmarks.revision();
+    let download_dir_allowlist = vec![download_dir.clone()];
 
     Ok(Self {
       window,
@@ -13746,6 +13849,7 @@ impl App {
       bookmarks_path,
       history_path,
       download_dir,
+      download_dir_allowlist,
       bookmarks,
       pending_bookmark_deltas: Vec::new(),
       last_synced_bookmarks_revision: bookmarks_revision,
@@ -20280,7 +20384,7 @@ impl App {
     }
 
     for path in output.open_requests {
-      if is_path_within_dir(&self.download_dir, &path) {
+      if is_path_within_any_dir(&self.download_dir_allowlist, &path) {
         match check_download_path_exists_for_ui(&path) {
           Ok(()) => {
             if let Err(err) = open_file_with_os_default(&path) {
@@ -20297,14 +20401,14 @@ impl App {
         }
       } else {
         eprintln!(
-          "warning: ignoring download open request for path outside download dir: {} (download dir: {})",
+          "warning: ignoring download open request for path outside configured download dirs: {} (current download dir: {})",
           path.display(),
           self.download_dir.display()
         );
       }
     }
     for path in output.reveal_requests {
-      if is_path_within_dir(&self.download_dir, &path) {
+      if is_path_within_any_dir(&self.download_dir_allowlist, &path) {
         match check_download_path_exists_for_ui(&path) {
           Ok(()) => {
             if let Err(err) = reveal_file_in_os_file_manager(&path) {
@@ -20321,7 +20425,7 @@ impl App {
         }
       } else {
         eprintln!(
-          "warning: ignoring download reveal request for path outside download dir: {} (download dir: {})",
+          "warning: ignoring download reveal request for path outside configured download dirs: {} (current download dir: {})",
           path.display(),
           self.download_dir.display()
         );
@@ -20331,6 +20435,35 @@ impl App {
     for text in output.copy_requests {
       os_clipboard::write_text(&text);
       self.show_chrome_toast("Copied to clipboard");
+    }
+
+    if output.change_download_dir_requested {
+      // Note: download-directory changes apply only to this window/worker. Newly created windows
+      // inherit the download directory of the window that spawned them (see `RequestNewWindow`
+      // handlers in the winit event loop).
+      let picked = std::panic::catch_unwind(|| {
+        rfd::FileDialog::new()
+          .set_directory(&self.download_dir)
+          .pick_folder()
+      })
+      .ok()
+      .flatten();
+
+      if let Some(path) = picked {
+        if apply_download_dir_change_state(
+          &mut self.download_dir,
+          &mut self.download_dir_allowlist,
+          path,
+        ) {
+          fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+            self.download_dir.display().to_string(),
+          ));
+          let _ = self.send_worker_msg(UiToWorker::SetDownloadDirectory {
+            path: self.download_dir.clone(),
+          });
+          self.window.request_redraw();
+        }
+      }
     }
   }
 

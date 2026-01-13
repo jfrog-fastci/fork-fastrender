@@ -121,6 +121,7 @@ pub fn download_matches_query(entry: &DownloadEntry, query: &str) -> bool {
 pub struct DownloadsPanelOutput {
   pub close_requested: bool,
   pub clear_completed_requested: bool,
+  pub change_download_dir_requested: bool,
   pub cancel_requests: Vec<(TabId, DownloadId)>,
   pub retry_requests: Vec<(TabId, String, Option<String>)>,
   pub open_requests: Vec<PathBuf>,
@@ -191,6 +192,21 @@ pub fn downloads_panel_ui(
         BrowserIcon::Download,
         "Downloads",
         |ui| {
+          let tooltip = format!("Current folder: {}", download_dir.display());
+          let change_folder = ui.small_button("Change download folder…").on_hover_text(tooltip);
+          #[cfg(test)]
+          store_test_id(
+            ui.ctx(),
+            "downloads_panel_change_folder_button_id",
+            change_folder.id,
+          );
+          change_folder.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Change download folder")
+          });
+          if change_folder.clicked() {
+            out.change_download_dir_requested = true;
+          }
+
           let clear_button = egui::Button::new(egui::RichText::new("Clear completed").small());
           let clear_resp = ui.add_enabled(has_completed_downloads, clear_button);
           clear_resp.widget_info(|| {
@@ -821,10 +837,7 @@ mod tests {
     );
 
     // Frame 2: press Enter; should enqueue an open request for the injected download_dir.
-    begin_frame(
-      &ctx,
-      vec![key_press(egui::Key::Enter)],
-    );
+    begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
     let output = downloads_panel_ui(
       &ctx,
       &[],
@@ -879,6 +892,61 @@ mod tests {
       output.open_requests,
       vec![download_dir],
       "expected click on Show downloads folder to open injected dir"
+    );
+  }
+
+  #[test]
+  fn change_download_folder_button_sets_flag() {
+    let ctx = egui::Context::default();
+    let theme = BrowserTheme::light(None);
+    let download_dir = PathBuf::from("test-download-dir");
+    let mut search_query = String::new();
+
+    // Frame 0: capture the change-folder button id.
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    let change_folder_id = expect_temp_id(&ctx, "downloads_panel_change_folder_button_id");
+
+    // Frame 1: move focus to the change-folder button.
+    ctx.memory_mut(|mem| mem.request_focus(change_folder_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(change_folder_id)),
+      "expected Change download folder button to have focus"
+    );
+
+    // Frame 2: press Enter; should set the change_download_dir_requested flag.
+    begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
+    let output = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+
+    assert!(
+      output.change_download_dir_requested,
+      "expected Change download folder to set output flag"
     );
   }
 
