@@ -123,6 +123,24 @@ fn agent_facade_format_vm_error_formats_native_error_objects() {
 }
 
 #[test]
+fn agent_facade_format_vm_error_formats_native_error_objects_with_empty_message() {
+  let mut agent = new_agent();
+
+  let err = agent
+    .run_script(
+      "throw_type_error_empty.js",
+      "throw new TypeError();",
+      Budget::unlimited(1),
+      None,
+    )
+    .unwrap_err();
+
+  let formatted = agent.format_vm_error(&err);
+  let first_line = formatted.lines().next().unwrap_or_default();
+  assert_eq!(first_line, "TypeError", "got:\n{formatted}");
+}
+
+#[test]
 fn agent_facade_format_vm_error_formats_thrown_string_values() {
   let mut agent = new_agent();
 
