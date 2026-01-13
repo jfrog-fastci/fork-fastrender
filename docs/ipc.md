@@ -58,7 +58,7 @@ IPC links (each is a distinct connection):
 
 - **browser ↔ renderer**: navigation + input + frame submission
 - **browser ↔ network**: fetch requests/responses, DNS, cookie mediation
-- **renderer ↔ network** (optional / under development): WebSocket/fetch proxying, event streams
+- **renderer ↔ network**: fetch/WebSocket proxying, event streams
 
 The browser must be able to kill/restart renderer/network processes without risking browser memory
 corruption or unbounded resource consumption.
