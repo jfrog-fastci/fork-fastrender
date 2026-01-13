@@ -111,11 +111,10 @@ impl MicrotaskQueue {
           self.teardown(ctx);
           return errors;
         }
-
         errors.push(err);
         if is_hard_stop {
-          // Termination is a hard stop: discard any remaining queued jobs (and any jobs enqueued by
-          // the failing job) so we don't leak persistent roots.
+          // Hard stop: discard any remaining queued jobs (and any jobs enqueued by the failing job)
+          // so we don't leak persistent roots.
           self.teardown(ctx);
           break;
         }
@@ -141,6 +140,158 @@ impl MicrotaskQueue {
   /// Alias for [`MicrotaskQueue::teardown`].
   pub fn cancel_all(&mut self, ctx: &mut dyn VmJobContext) {
     self.teardown(ctx);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use crate::Heap;
+  use crate::HeapLimits;
+  use crate::Job;
+  use crate::JobKind;
+  use crate::RootId;
+  use crate::Value;
+  use crate::VmError;
+  use crate::VmHostHooks;
+  use crate::VmJobContext;
+  use crate::WeakGcObject;
+  use std::alloc::{GlobalAlloc, Layout, System};
+  use std::cell::Cell;
+
+  thread_local! {
+    static FAIL_ALLOC: Cell<bool> = Cell::new(false);
+  }
+
+  struct FailingAlloc;
+
+  #[global_allocator]
+  static GLOBAL_ALLOCATOR: FailingAlloc = FailingAlloc;
+
+  unsafe impl GlobalAlloc for FailingAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+      if FAIL_ALLOC.with(|f| f.get()) {
+        return std::ptr::null_mut();
+      }
+      System.alloc(layout)
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+      if FAIL_ALLOC.with(|f| f.get()) {
+        return std::ptr::null_mut();
+      }
+      System.alloc_zeroed(layout)
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+      if FAIL_ALLOC.with(|f| f.get()) {
+        return std::ptr::null_mut();
+      }
+      System.realloc(ptr, layout, new_size)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+      System.dealloc(ptr, layout)
+    }
+  }
+
+  struct FailAllocGuard;
+  impl FailAllocGuard {
+    fn new() -> Self {
+      FAIL_ALLOC.with(|f| f.set(true));
+      Self
+    }
+  }
+  impl Drop for FailAllocGuard {
+    fn drop(&mut self) {
+      FAIL_ALLOC.with(|f| f.set(false));
+    }
+  }
+
+  struct TestContext {
+    heap: Heap,
+  }
+
+  impl TestContext {
+    fn new() -> Self {
+      Self {
+        heap: Heap::new(HeapLimits::new(1024 * 1024, 512 * 1024)),
+      }
+    }
+  }
+
+  impl VmJobContext for TestContext {
+    fn call(
+      &mut self,
+      _host: &mut dyn VmHostHooks,
+      _callee: Value,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented("TestContext::call"))
+    }
+
+    fn construct(
+      &mut self,
+      _host: &mut dyn VmHostHooks,
+      _callee: Value,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented("TestContext::construct"))
+    }
+
+    fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+      self.heap.add_root(value)
+    }
+
+    fn remove_root(&mut self, id: RootId) {
+      self.heap.remove_root(id);
+    }
+  }
+
+  #[test]
+  fn microtask_checkpoint_error_collection_does_not_abort_on_allocator_oom() -> Result<(), VmError> {
+    let mut ctx = TestContext::new();
+    let mut queue = MicrotaskQueue::new();
+
+    // Ensure we have at least one queued job that will return an error during the checkpoint.
+    queue.enqueue_promise_job(
+      Job::new(JobKind::Promise, |_ctx, _host| Err(VmError::Unimplemented("job failed"))),
+      None,
+    );
+
+    // Also enqueue a job holding a persistent root so we can validate teardown still cleans up
+    // roots even when error collection OOMs.
+    let obj = {
+      let mut scope = ctx.heap.scope();
+      scope.alloc_object()?
+    };
+    let weak = WeakGcObject::from(obj);
+    let mut rooted_job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()));
+    rooted_job.add_root(&mut ctx, Value::Object(obj))?;
+    queue.enqueue_promise_job(rooted_job, None);
+
+    // The queued job holds a persistent root, so a GC cycle should not collect the object yet.
+    ctx.heap.collect_garbage();
+    assert_eq!(weak.upgrade(&ctx.heap), Some(obj));
+
+    // Simulate allocator OOM right before the checkpoint attempts to collect errors.
+    let _guard = FailAllocGuard::new();
+    let errors = queue.perform_microtask_checkpoint(&mut ctx);
+    drop(_guard);
+
+    // The checkpoint must not abort. Error collection is best-effort under OOM, so it may return an
+    // empty vector.
+    assert!(errors.is_empty());
+    assert!(queue.is_empty(), "expected queue to be torn down on OOM");
+
+    // After teardown, the rooted job's persistent root should be removed, making the object
+    // collectible.
+    ctx.heap.collect_garbage();
+    assert_eq!(weak.upgrade(&ctx.heap), None);
+    Ok(())
   }
 }
 
