@@ -5474,12 +5474,14 @@ fn styled_node_matches_html_tag(node: &StyledNode, tag: &str) -> bool {
 }
 
 fn find_document_element_node<'a>(node: &'a StyledNode) -> Option<&'a StyledNode> {
-  if matches!(node.node.node_type, DomNodeType::Element { .. }) {
-    return Some(node);
-  }
-  for child in node.children.iter() {
-    if let Some(found) = find_document_element_node(child) {
-      return Some(found);
+  // Avoid recursion: styled trees can be arbitrarily deep.
+  let mut stack: Vec<&'a StyledNode> = vec![node];
+  while let Some(node) = stack.pop() {
+    if matches!(node.node.node_type, DomNodeType::Element { .. }) {
+      return Some(node);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
   None
@@ -5602,18 +5604,24 @@ fn viewport_scrollport_inset_for_scrollbar_gutter(
   Point::new(inset_x, inset_y)
 }
 fn force_box_overflow_visible(node: &mut BoxNode, styled_node_id: usize) {
-  if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
-    let mut style = (*node.style).clone();
-    style.overflow_x = crate::style::types::Overflow::Visible;
-    style.overflow_y = crate::style::types::Overflow::Visible;
-    node.style = Arc::new(style);
-  }
+  // Box trees can be arbitrarily deep; avoid recursion to prevent stack overflow on degenerate inputs.
+  let mut stack: Vec<*mut BoxNode> = vec![node as *mut _];
+  while let Some(ptr) = stack.pop() {
+    // Safety: pointers are derived from `node` and we never reallocate a node's `children` vec.
+    let node = unsafe { &mut *ptr };
+    if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
+      let mut style = (*node.style).clone();
+      style.overflow_x = crate::style::types::Overflow::Visible;
+      style.overflow_y = crate::style::types::Overflow::Visible;
+      node.style = Arc::new(style);
+    }
 
-  for child in node.children.iter_mut() {
-    force_box_overflow_visible(child, styled_node_id);
-  }
-  if let Some(footnote_body) = node.footnote_body.as_deref_mut() {
-    force_box_overflow_visible(footnote_body, styled_node_id);
+    if let Some(footnote_body) = node.footnote_body.as_deref_mut() {
+      stack.push(footnote_body as *mut BoxNode);
+    }
+    for child in node.children.iter_mut() {
+      stack.push(child as *mut BoxNode);
+    }
   }
 }
 
@@ -20903,15 +20911,17 @@ fn build_container_query_context(
     }
   }
 
-  fn collect_main_styles(node: &StyledNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
-    out.insert(node.node_id, Arc::clone(&node.styles));
-    for child in node.children.iter() {
-      collect_main_styles(child, out);
+  let mut styles: HashMap<usize, Arc<ComputedStyle>> = HashMap::new();
+  {
+    // Styled trees can be arbitrarily deep; avoid recursion during container query bookkeeping.
+    let mut stack: Vec<&StyledNode> = vec![styled_tree];
+    while let Some(node) = stack.pop() {
+      styles.insert(node.node_id, Arc::clone(&node.styles));
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
     }
   }
-
-  let mut styles: HashMap<usize, Arc<ComputedStyle>> = HashMap::new();
-  collect_main_styles(styled_tree, &mut styles);
 
   let mut containers: HashMap<usize, ContainerQueryInfo> = HashMap::new();
 
