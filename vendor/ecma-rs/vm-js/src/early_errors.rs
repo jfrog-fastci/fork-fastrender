@@ -1142,6 +1142,35 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx: &mut ControlContext,
     stmt: &ForTripleStmt,
   ) -> Result<(), VmError> {
+    // ForStatement early error (ECMA-262 14.7.4 `for (LexicalDeclaration; ... ) Statement`):
+    // It is a Syntax Error if any element of BoundNames(LexicalDeclaration) also occurs in
+    // VarDeclaredNames(Statement).
+    if let ForTripleStmtInit::Decl(decl) = &stmt.init {
+      if matches!(
+        decl.stx.mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) {
+        // BoundNames(LexicalDeclaration).
+        let mut bound_names: Vec<(String, Loc)> = Vec::new();
+        for declarator in &decl.stx.declarators {
+          self
+            .collect_bound_names_from_pat_budgeted(&declarator.pattern.stx.pat, &mut bound_names)?;
+        }
+
+        // VarDeclaredNames(Statement): only `var` (and var-scoped function declarations, where
+        // applicable) should be included; lexical declarations do not participate.
+        let mut var_names: HashSet<String> = HashSet::new();
+        for stmt in &stmt.body.stx.body {
+          self.collect_var_declared_names_in_stmt(stmt, &mut var_names)?;
+        }
+        for (name, loc) in &bound_names {
+          if var_names.contains(name.as_str()) {
+            self.push_error(*loc, "Identifier has already been declared")?;
+          }
+        }
+      }
+    }
+
     match &stmt.init {
       ForTripleStmtInit::None => {}
       ForTripleStmtInit::Expr(expr) => self.visit_expr(ctx, expr)?,
