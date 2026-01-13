@@ -82,3 +82,41 @@ fn component_transfer_table_values_is_capped() {
     other => panic!("expected ComponentTransfer primitive, got {other:?}"),
   }
 }
+
+#[test]
+fn convolve_matrix_huge_kernel_matrix_is_rejected_without_panic() {
+  let mut kernel = String::new();
+  // Provide far more values than a 3x3 kernel requires; the parser should reject it without
+  // allocating/scanning the whole list.
+  for _ in 0..10_000 {
+    kernel.push_str("0 ");
+  }
+
+  let svg = format!(
+    r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">
+      <defs>
+        <filter id="f">
+          <feFlood flood-color="red" />
+          <feConvolveMatrix order="3 3" kernelMatrix="{kernel}" />
+        </filter>
+      </defs>
+    </svg>
+  "#
+  );
+
+  let cache = ImageCache::new();
+  let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    parse_svg_filter_from_svg_document(&svg, Some("f"), &cache)
+  }));
+  assert!(parsed.is_ok(), "SVG filter parse panicked");
+
+  let filter = parsed
+    .unwrap()
+    .expect("expected filter to parse (feFlood should remain)");
+  assert_eq!(filter.steps.len(), 1);
+  assert!(matches!(
+    filter.steps[0].primitive,
+    FilterPrimitive::Flood { .. }
+  ));
+}
