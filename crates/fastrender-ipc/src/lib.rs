@@ -967,6 +967,23 @@ impl NetworkWebSocketManager {
     Self::default()
   }
 
+  /// Drop all WebSocket connections associated with `renderer_id`.
+  ///
+  /// This is intended to be called when the renderer process disconnects/crashes so the network
+  /// process does not retain stale connection state.
+  pub fn shutdown_renderer(&mut self, renderer_id: RendererId) -> Vec<WebSocketEvent> {
+    let Some(conns) = self.conns.remove(&renderer_id) else {
+      return Vec::new();
+    };
+    // Return deterministic event ordering for tests/logging.
+    let mut ids: Vec<WebSocketConnId> = conns.keys().copied().collect();
+    ids.sort_by_key(|id| id.0);
+    ids
+      .into_iter()
+      .map(|conn_id| WebSocketEvent::Close { conn_id })
+      .collect()
+  }
+
   pub fn connection_count_for_test(&self, renderer_id: RendererId) -> usize {
     self
       .conns
@@ -1141,5 +1158,47 @@ mod websocket_ipc_tests {
     });
     assert!(!delivered);
     assert!(backend.delivered_for_test().is_empty());
+  }
+
+  #[test]
+  fn shutdown_renderer_drops_all_connections() {
+    let mut mgr = NetworkWebSocketManager::new();
+    let renderer = RendererId(9);
+
+    for conn_id in [WebSocketConnId(2), WebSocketConnId(1)] {
+      let events = mgr.handle_command(
+        renderer,
+        WebSocketCommand::Connect {
+          conn_id,
+          url: "ws://example.invalid/".to_string(),
+        },
+      );
+      assert!(events.is_empty());
+    }
+    assert_eq!(mgr.connection_count_for_test(renderer), 2);
+
+    let events = mgr.shutdown_renderer(renderer);
+    assert_eq!(
+      events,
+      vec![
+        WebSocketEvent::Close {
+          conn_id: WebSocketConnId(1)
+        },
+        WebSocketEvent::Close {
+          conn_id: WebSocketConnId(2)
+        }
+      ]
+    );
+    assert_eq!(mgr.connection_count_for_test(renderer), 0);
+
+    // Further commands for stale conn_ids should remain benign.
+    let ignored = mgr.handle_command(
+      renderer,
+      WebSocketCommand::SendText {
+        conn_id: WebSocketConnId(1),
+        text: "hello".to_string(),
+      },
+    );
+    assert!(ignored.is_empty());
   }
 }
