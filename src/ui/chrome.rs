@@ -4730,7 +4730,7 @@ mod tests {
 
     // Frame 0: capture ids + AccessKit node id.
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output = ctx.end_frame();
     let appearance_button_id = expect_temp_id(&ctx, "chrome_appearance_button_id");
     let (appearance_node_id, _) =
@@ -4739,7 +4739,7 @@ mod tests {
     // Frame 1: focus the appearance button.
     ctx.memory_mut(|mem| mem.request_focus(appearance_button_id));
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     assert!(
       ctx.memory(|mem| mem.has_focus(appearance_button_id)),
@@ -4756,7 +4756,7 @@ mod tests {
         data: None,
       }],
     );
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output = ctx.end_frame();
 
     assert!(
@@ -4796,7 +4796,7 @@ mod tests {
         data: None,
       }],
     );
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output = ctx.end_frame();
 
     assert!(
@@ -4850,7 +4850,7 @@ mod tests {
 
     // Frame 0: full tab list.
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output0 = ctx.end_frame();
     let names0 = a11y_test_util::accesskit_names_from_full_output(&output0);
     let snapshot0 = a11y_test_util::accesskit_pretty_json_from_full_output(&output0);
@@ -4872,7 +4872,7 @@ mod tests {
     // should still be stable because the row id is keyed by tab id rather than row index.
     app.chrome.tab_search.query = "beta".to_string();
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output1 = ctx.end_frame();
     let update1 = accesskit_update(&output1);
     let (beta_id_1, _beta_node_1) = accesskit_node_by_name(update1, beta_label);
@@ -4911,7 +4911,7 @@ mod tests {
     // Frame 0: selection starts at row 0.
     app.chrome.tab_search.selected = 0;
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output0 = ctx.end_frame();
     let update0 = accesskit_update(&output0);
     assert!(accesskit_node_selected(
@@ -4927,7 +4927,7 @@ mod tests {
     // Frame 1: move selection to row 1.
     app.chrome.tab_search.selected = 1;
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output1 = ctx.end_frame();
     let update1 = accesskit_update(&output1);
     assert!(!accesskit_node_selected(
@@ -4940,7 +4940,7 @@ mod tests {
     // Frame 2: move selection to row 2.
     app.chrome.tab_search.selected = 2;
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output2 = ctx.end_frame();
     let update2 = accesskit_update(&output2);
     assert!(!accesskit_node_selected(
@@ -8206,7 +8206,7 @@ frame={idx} repaint_after={:?}\n",
     // Focus address bar.
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     assert!(app.chrome.address_bar_has_focus);
 
@@ -8214,7 +8214,7 @@ frame={idx} repaint_after={:?}\n",
 
     // Type a prefix that can be completed by the about-pages provider.
     begin_frame(&ctx, vec![egui::Event::Text("about:n".into())]);
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     assert_eq!(app.chrome.address_bar_text, "about:newtab");
@@ -8228,19 +8228,19 @@ frame={idx} repaint_after={:?}\n",
 
     // Typing should replace the selected suffix.
     begin_frame(&ctx, vec![egui::Event::Text("x".into())]);
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     assert_eq!(app.chrome.address_bar_text, "about:nx");
 
     // Backspace should restore the prefix and re-trigger inline completion.
     begin_frame(&ctx, vec![key_press(egui::Key::Backspace)]);
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     assert_eq!(app.chrome.address_bar_text, "about:newtab");
 
     // Right arrow accepts completion by collapsing selection to the end.
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowRight)]);
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     assert_eq!(app.chrome.address_bar_text, "about:newtab");
     let state =
@@ -8948,7 +8948,7 @@ frame={idx} repaint_after={:?}\n",
     let ctx = egui::Context::default();
 
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     let first = (
       expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
@@ -8957,7 +8957,7 @@ frame={idx} repaint_after={:?}\n",
     );
 
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     let second = (
       expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
@@ -8986,7 +8986,7 @@ frame={idx} repaint_after={:?}\n",
 
     // Baseline (non-compact, not loading).
     begin_frame_with_screen_size(&ctx, regular, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     let baseline = (
       expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
@@ -8997,7 +8997,7 @@ frame={idx} repaint_after={:?}\n",
     // Toggle loading (Reload → Stop loading). This should not perturb ids for unrelated controls.
     app.active_tab_mut().unwrap().loading = true;
     begin_frame_with_screen_size(&ctx, regular, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     let loading_ids = (
       expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
@@ -9011,7 +9011,7 @@ frame={idx} repaint_after={:?}\n",
 
     // Switch to compact layout (zoom buttons are removed). Key control ids should remain stable.
     begin_frame_with_screen_size(&ctx, compact, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     let compact_ids = (
       expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
@@ -9026,7 +9026,7 @@ frame={idx} repaint_after={:?}\n",
     // In compact mode, enabling a non-default zoom inserts a reset pill. Ensure ids remain stable.
     app.active_tab_mut().unwrap().zoom = 1.25;
     begin_frame_with_screen_size(&ctx, compact, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     let compact_zoom_ids = (
       expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
@@ -9593,7 +9593,7 @@ frame={idx} repaint_after={:?}\n",
     let ctx = egui::Context::default();
 
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output = ctx.end_frame();
 
     let texts = collect_text_strings(&output.shapes);
@@ -9977,7 +9977,7 @@ frame={idx} repaint_after={:?}\n",
       opener_focus: Some(UiFocusToken(tab_a.0)),
     });
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     // Grab the menu's known focusable widget ids and focus one to simulate keyboard navigation
@@ -9993,7 +9993,7 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 1: press Escape to close. Focus should return to the tab strip opener widget.
     begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     assert!(
       app.chrome.open_tab_context_menu.is_none(),
@@ -10025,14 +10025,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once so the tab widgets exist.
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 1: focus the first tab.
     let tab_id = super::tab_strip::tab_strip_tab_widget_id(tab_a);
     ctx.memory_mut(|mem| mem.request_focus(tab_id));
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -10060,13 +10060,13 @@ frame={idx} repaint_after={:?}\n",
       },
     }];
     ctx.begin_frame(raw);
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 3: render again so the popup contents are present and AccessKit can see them.
     ctx.enable_accesskit();
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output = ctx.end_frame();
 
     let reload_id = ctx
