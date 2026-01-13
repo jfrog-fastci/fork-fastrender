@@ -556,28 +556,26 @@ FastRender’s experimental desktop browser UI supports **bookmarks** and a basi
     - `FASTR_BROWSER_BOOKMARKS_PATH`
     - `FASTR_BROWSER_HISTORY_PATH`
 
-## Accessibility / screen readers (chrome)
+## Accessibility
 
-The browser chrome UI is built with **egui** and, when compiled with `--features browser_ui`, enables
-egui’s **AccessKit** integration so screen readers can traverse the chrome widget tree.
+The windowed `browser` UI exposes accessibility information via **AccessKit** so platform screen
+readers (VoiceOver/Narrator/Orca) can traverse both the browser chrome and (experimental) page
+content.
 
-In addition to the chrome widgets, the windowed UI can expose a **page accessibility tree**:
+Accessibility sources:
 
-- The UI receives a `PageA11ySnapshot` from the worker and injects it into egui’s AccessKit tree,
-  allowing assistive technology to traverse page content nodes (for example headings, links,
-  buttons, and form controls) even though the page is still rendered visually as a pixel buffer.
-- Basic actions are supported: **focus** and **activate** requests coming from AccessKit are routed
-  back to the worker as DOM interactions.
-- Limitations: some properties are still best-effort/partial (for example node bounds and text
-  selection/value reporting).
+- **Chrome widgets (egui):** tabs, toolbar buttons, address bar, menus/panels/popups are exposed via
+  egui-winit + AccessKit when compiled with `--features browser_ui`.
+- **Page content (renderer tree):** page content accessibility is exposed via **injected AccessKit
+  nodes** derived from the renderer’s accessibility tree.
 
-For the current page accessibility semantics workflow (`dump_a11y`, bounds mapping, and how this will
-eventually feed into OS accessibility), see [page_accessibility.md](page_accessibility.md).
+For background and developer workflow:
 
-For a deeper architecture/debugging guide (AccessKit updates, node id stability, coordinate system
-notes, and future chrome+content composition), see [`docs/chrome_accessibility.md`](chrome_accessibility.md).
+- Renderer page semantics (`dump_a11y`, bounds mapping): [page_accessibility.md](page_accessibility.md).
+- AccessKit plumbing + debugging guide (updates, id stability, coordinate systems):
+  [chrome_accessibility.md](chrome_accessibility.md).
 
-Debugging tip: to inspect the AccessKit tree update without running a screen reader, use the
+Debugging tip: to inspect the OS-facing AccessKit update without running a screen reader, use the
 `dump_accesskit` CLI (requires `--features browser_ui`):
 
 ```bash
@@ -585,20 +583,31 @@ bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- --help
 ```
 
-Manual verification checklist:
+Current limitations (MVP / in-progress):
 
-- macOS: VoiceOver can traverse toolbar controls (Back/Forward/Reload/Zoom, tab close, new tab) and
-  announces their labels.
-- macOS: focusing the address bar (e.g. Cmd+L) is announced as “Address bar” and selection changes
-  (select-all) are announced.
-- macOS: VoiceOver can traverse page content nodes (e.g. headings/links/buttons).
-- macOS: VoiceOver focus/activate actions work on at least one page control.
-- Windows: Narrator can traverse toolbar controls and announces their labels.
-- Windows: Narrator can traverse page content nodes (e.g. headings/links/buttons).
-- Windows: Narrator focus/activate actions work on at least one page control.
-- Linux: Orca can traverse toolbar controls (when using X11/Wayland backend supported by your build).
-- Linux: Orca can traverse page content nodes (e.g. headings/links/buttons).
-- Linux: Orca focus/activate actions work on at least one page control.
+- **Action support is incomplete:** many AccessKit actions are not fully plumbed through to DOM
+  interaction yet (for example “activate/click”, focus, set value/text, scroll-to, etc.). Expect
+  read-only traversal to work better than interacting with complex controls.
+- **Bounds/geometry may be missing or approximate** for some page nodes, which can affect
+  hit-testing and “click this element” style commands.
+- **Tree updates are coarse:** page accessibility updates are currently best-effort and may lag
+  behind visual updates on complex pages.
+
+Manual testing checklist (smoke):
+
+- **macOS (VoiceOver):**
+  - Enable VoiceOver (Cmd+F5).
+  - Verify you can traverse chrome controls and the address bar is announced as “Address bar”
+    (e.g. after Cmd+L).
+  - Navigate to a simple page (e.g. `about:test-form`) and verify VoiceOver can reach/announce basic
+    document content (headings/links/form controls).
+- **Windows (Narrator):**
+  - Enable Narrator (Ctrl+Win+Enter).
+  - Verify basic traversal/announcement works for chrome controls and simple page content.
+- **Linux (Orca):**
+  - Enable Orca (often Super+Alt+S).
+  - Verify basic traversal/announcement works for chrome controls and simple page content (backend
+    support depends on your `winit`/X11/Wayland environment).
 
 ## Code layout
 
