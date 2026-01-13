@@ -350,9 +350,8 @@ mod open_typed_in_new_tab_tests {
     );
 
     let mut cancels = HashMap::new();
-    let (new_tab_id, msgs) =
-      open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "#frag")
-        .expect("fragment URL should resolve");
+    let (new_tab_id, msgs) = open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "#frag")
+      .expect("fragment URL should resolve");
 
     assert_eq!(browser_state.tabs.len(), 2);
     assert_eq!(browser_state.active_tab_id(), Some(new_tab_id));
@@ -387,7 +386,8 @@ mod open_typed_in_new_tab_tests {
     );
 
     let mut cancels = HashMap::new();
-    let result = open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "javascript:alert(1)");
+    let result =
+      open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "javascript:alert(1)");
 
     assert!(result.is_err(), "expected disallowed scheme to error");
     assert_eq!(
@@ -411,9 +411,8 @@ mod open_typed_in_new_tab_tests {
     );
 
     let mut cancels = HashMap::new();
-    let (new_tab_id, msgs) =
-      open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "cats")
-        .expect("search query should resolve");
+    let (new_tab_id, msgs) = open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "cats")
+      .expect("search query should resolve");
 
     let new_tab = browser_state
       .tab(new_tab_id)
@@ -1062,7 +1061,9 @@ mod page_context_menu_keyboard_shortcut_tests {
     assert_eq!(pending.pos_css, expected_pos_css);
 
     match msg {
-      UiToWorker::ContextMenuRequest { tab_id: msg_tab_id, .. } => {
+      UiToWorker::ContextMenuRequest {
+        tab_id: msg_tab_id, ..
+      } => {
         assert_eq!(msg_tab_id, tab_id);
       }
       other => panic!("unexpected worker message: {other:?}"),
@@ -2763,8 +2764,8 @@ fn keyboard_page_context_menu_request(
 ) -> Option<(PendingContextMenuRequest, fastrender::ui::UiToWorker)> {
   use winit::event::VirtualKeyCode;
 
-  let is_shortcut =
-    matches!(key, VirtualKeyCode::Apps) || (matches!(key, VirtualKeyCode::F10) && modifiers.shift());
+  let is_shortcut = matches!(key, VirtualKeyCode::Apps)
+    || (matches!(key, VirtualKeyCode::F10) && modifiers.shift());
   if !is_shortcut {
     return None;
   }
@@ -5625,9 +5626,15 @@ impl App {
                   retry = true;
                 }
 
-                let details_label = if details_open { "Hide details" } else { "Details" };
+                let details_label = if details_open {
+                  "Hide details"
+                } else {
+                  "Details"
+                };
                 let details_resp = ui
-                  .push_id(infobar_id.with("toggle_details"), |ui| ui.button(details_label))
+                  .push_id(infobar_id.with("toggle_details"), |ui| {
+                    ui.button(details_label)
+                  })
                   .inner;
 
                 // AccessKit may request explicit expand/collapse actions when the node exposes an
@@ -6105,14 +6112,14 @@ impl App {
   }
 
   fn render_context_menu(&mut self, ctx: &egui::Context) -> bool {
-    use fastrender::ui::BrowserIcon;
-    use fastrender::ui::ChromeAction;
-    use fastrender::ui::UiToWorker;
     use fastrender::ui::context_menu::{
       apply_page_context_menu_action, build_page_context_menu_entries, PageContextMenuAction,
       PageContextMenuBuildInput, PageContextMenuEntry,
     };
     use fastrender::ui::motion::UiMotion;
+    use fastrender::ui::BrowserIcon;
+    use fastrender::ui::ChromeAction;
+    use fastrender::ui::UiToWorker;
 
     let motion = UiMotion::from_ctx(ctx);
     let open_t = motion.animate_bool(
@@ -8215,8 +8222,7 @@ impl App {
             self.cursor_in_page = false;
 
             if should_clear {
-              if let Some(tab) =
-                active_tab_id.and_then(|tab_id| self.browser_state.tab_mut(tab_id))
+              if let Some(tab) = active_tab_id.and_then(|tab_id| self.browser_state.tab_mut(tab_id))
               {
                 tab.hovered_url = None;
                 tab.cursor = fastrender::ui::CursorKind::Default;
@@ -9141,8 +9147,13 @@ impl App {
           let next = !currently_fullscreen;
           self.window_fullscreen = next;
           if next {
-            let monitor = self.window.current_monitor().or_else(|| self.window.primary_monitor());
-            self.window.set_fullscreen(Some(Fullscreen::Borderless(monitor)));
+            let monitor = self
+              .window
+              .current_monitor()
+              .or_else(|| self.window.primary_monitor());
+            self
+              .window
+              .set_fullscreen(Some(Fullscreen::Borderless(monitor)));
           } else {
             self.window.set_fullscreen(None);
           }
@@ -9265,6 +9276,18 @@ impl App {
         ChromeAction::OpenClearBrowsingDataDialog => {
           self.clear_browsing_data_dialog_open = true;
           self.clear_browsing_data_dialog_request_focus = true;
+          // Ensure chrome/page UI doesn't continue to capture keyboard focus/input while the modal
+          // is open.
+          self.browser_state.chrome.request_focus_address_bar = false;
+          self.browser_state.chrome.request_select_all_address_bar = false;
+          self.browser_state.chrome.address_bar_has_focus = false;
+          self.browser_state.chrome.omnibox.reset();
+          self.browser_state.chrome.appearance_popup_open = false;
+          self.browser_state.chrome.tab_search.open = false;
+          self.browser_state.chrome.open_tab_context_menu = None;
+          self.browser_state.chrome.tab_context_menu_rect = None;
+          self.browser_state.chrome.clear_tab_drag();
+          self.browser_state.chrome.clear_link_drag();
           // Treat the dialog as a modal: while it's open, keyboard focus/input should not be
           // forwarded to the rendered page.
           self.page_has_focus = false;
@@ -10412,7 +10435,8 @@ impl App {
       }
     }
 
-    if self.downloads_panel_open
+    if !self.clear_browsing_data_dialog_open
+      && self.downloads_panel_open
       && ctx.input(|i| i.key_pressed(egui::Key::Escape))
       && !ctx.wants_keyboard_input()
     {
@@ -11599,9 +11623,15 @@ mod error_infobar_a11y_tests {
 
   fn error_infobar_details_toggle_ui(ui: &mut egui::Ui, details_open: &mut bool) -> FrameInfo {
     let infobar_id = egui::Id::new("test_error_infobar");
-    let details_label = if *details_open { "Hide details" } else { "Details" };
+    let details_label = if *details_open {
+      "Hide details"
+    } else {
+      "Details"
+    };
     let details_resp = ui
-      .push_id(infobar_id.with("toggle_details"), |ui| ui.button(details_label))
+      .push_id(infobar_id.with("toggle_details"), |ui| {
+        ui.button(details_label)
+      })
       .inner;
 
     let mut toggle_requested = details_resp.clicked();
@@ -11704,22 +11734,14 @@ mod error_infobar_a11y_tests {
     let mut details_open = false;
 
     run_infobar_frame(&ctx, &mut details_open, Vec::new());
-    run_infobar_frame(
-      &ctx,
-      &mut details_open,
-      key_press_release(egui::Key::Space),
-    );
+    run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Space));
     assert!(
       !details_open,
       "expected Space to do nothing when the toggle is not focused"
     );
 
     run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Tab));
-    run_infobar_frame(
-      &ctx,
-      &mut details_open,
-      key_press_release(egui::Key::Space),
-    );
+    run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Space));
     assert!(
       details_open,
       "expected Space to toggle details when focused via Tab"
@@ -11732,22 +11754,14 @@ mod error_infobar_a11y_tests {
     let mut details_open = false;
 
     run_infobar_frame(&ctx, &mut details_open, Vec::new());
-    run_infobar_frame(
-      &ctx,
-      &mut details_open,
-      key_press_release(egui::Key::Enter),
-    );
+    run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Enter));
     assert!(
       !details_open,
       "expected Enter to do nothing when the toggle is not focused"
     );
 
     run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Tab));
-    run_infobar_frame(
-      &ctx,
-      &mut details_open,
-      key_press_release(egui::Key::Enter),
-    );
+    run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Enter));
     assert!(
       details_open,
       "expected Enter to toggle details when focused via Tab"
@@ -11772,11 +11786,7 @@ mod error_infobar_a11y_tests {
       "expected details toggle egui id to be stable while closed"
     );
 
-    run_infobar_frame(
-      &ctx,
-      &mut details_open,
-      key_press_release(egui::Key::Space),
-    );
+    run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Space));
     assert!(details_open, "expected Space to open details when focused");
 
     let focused_open = run_infobar_frame(&ctx, &mut details_open, Vec::new());

@@ -29,22 +29,7 @@ pub fn clear_browsing_data_dialog_ui(
   let request_initial_focus = std::mem::take(request_initial_focus);
 
   // Esc closes the dialog (Chrome-like) and should not leak to other overlays.
-  let escape_pressed = ctx.input_mut(|i| {
-    let pressed = i.key_pressed(egui::Key::Escape);
-    if pressed {
-      i.events.retain(|event| {
-        !matches!(
-          event,
-          egui::Event::Key {
-            key: egui::Key::Escape,
-            pressed: true,
-            ..
-          }
-        )
-      });
-    }
-    pressed
-  });
+  let escape_pressed = ctx.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape));
   if escape_pressed {
     *open = false;
     return out;
@@ -62,9 +47,11 @@ pub fn clear_browsing_data_dialog_ui(
       ui.set_min_size(screen_rect.size());
       let (rect, _resp) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
       let alpha = if ui.visuals().dark_mode { 140 } else { 96 };
-      ui
-        .painter()
-        .rect_filled(rect, egui::Rounding::none(), egui::Color32::from_black_alpha(alpha));
+      ui.painter().rect_filled(
+        rect,
+        egui::Rounding::none(),
+        egui::Color32::from_black_alpha(alpha),
+      );
     });
 
   egui::Window::new("Clear browsing data")

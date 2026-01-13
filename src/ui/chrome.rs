@@ -566,7 +566,9 @@ fn tab_search_overlay_ui(
   //
   // This is stored in egui context data (rather than app state) because it is egui-specific and
   // should not leak into the egui-agnostic browser state model.
-  let open_prev = ctx.data(|d| d.get_temp::<bool>(open_prev_id)).unwrap_or(false);
+  let open_prev = ctx
+    .data(|d| d.get_temp::<bool>(open_prev_id))
+    .unwrap_or(false);
   if app.chrome.tab_search.open && !open_prev {
     let focused = ctx.memory(|mem| mem.focus());
     ctx.data_mut(|d| {
@@ -577,7 +579,9 @@ fn tab_search_overlay_ui(
     d.insert_temp(open_prev_id, app.chrome.tab_search.open);
   });
 
-  if shortcuts_enabled && app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+  if shortcuts_enabled
+    && app.chrome.tab_search.open
+    && ctx.input(|i| i.key_pressed(egui::Key::Escape))
   {
     app.chrome.tab_search.open = false;
     actions.push(ChromeAction::CloseTabSearch);
@@ -611,10 +615,10 @@ fn tab_search_overlay_ui(
   let area = egui::Area::new(overlay_id)
     .order(egui::Order::Foreground)
     .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
-    .interactable(app.chrome.tab_search.open);
+    .interactable(app.chrome.tab_search.open && shortcuts_enabled);
 
   let inner = area.show(ctx, |ui| {
-    ui.set_enabled(app.chrome.tab_search.open);
+    ui.set_enabled(app.chrome.tab_search.open && shortcuts_enabled);
     ui.visuals_mut().override_text_color =
       Some(with_alpha(ui.visuals().text_color(), open_opacity));
     let mut frame = egui::Frame::popup(ui.style());
@@ -632,7 +636,7 @@ fn tab_search_overlay_ui(
       );
       input.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search tabs"));
       // Keep focus in the search box while the overlay is open.
-      if app.chrome.tab_search.open {
+      if app.chrome.tab_search.open && shortcuts_enabled {
         input.request_focus();
       }
 
@@ -842,12 +846,7 @@ fn tab_search_overlay_ui(
       let opener = ctx
         .data(|d| d.get_temp::<Option<egui::Id>>(opener_focus_id))
         .unwrap_or(None);
-      restore_focus_or_clear_popup_focus(
-        ctx,
-        restore,
-        opener,
-        &[tab_search_input_id()],
-      );
+      restore_focus_or_clear_popup_focus(ctx, restore, opener, &[tab_search_input_id()]);
       ctx.data_mut(|d| d.insert_temp(opener_focus_id, None::<egui::Id>));
       return;
     }
@@ -884,8 +883,7 @@ pub fn chrome_ui_with_bookmarks(
   // This is browser-chrome UI state, so keep it local to the chrome layer (rather than the worker).
   if let Some(open_menu) = app.chrome.open_tab_context_menu {
     let close_on_blur = ctx.input(|i| !i.focused);
-    let close_on_escape =
-      shortcuts_enabled && ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let close_on_escape = shortcuts_enabled && ctx.input(|i| i.key_pressed(egui::Key::Escape));
     if close_on_blur || close_on_escape {
       let menu_id = egui::Id::new(("tab_context_menu", open_menu.tab_id));
       let focus_ids = ctx
@@ -1525,16 +1523,16 @@ pub fn chrome_ui_with_bookmarks(
         | AddressBarSecurityState::Other => security_indicator::SecurityIndicator::Neutral,
       };
 
-       let stage = stage.filter(|s| *s != StageHeartbeat::Done);
-       let loading_text = match stage {
-         Some(stage) => format!("Loading… {}", stage.as_str()),
-         None => "Loading…".to_string(),
-       };
-       let bar_height = ui.spacing().interact_size.y;
-       let button_side = ui.spacing().interact_size.y;
-       let spacing_x = ui.spacing().item_spacing.x;
-        // Reserve space for the right-side menu + appearance buttons (+ spacing between them).
-        let reserved_right = button_side * 2.0 + spacing_x * 2.0;
+      let stage = stage.filter(|s| *s != StageHeartbeat::Done);
+      let loading_text = match stage {
+        Some(stage) => format!("Loading… {}", stage.as_str()),
+        None => "Loading…".to_string(),
+      };
+      let bar_height = ui.spacing().interact_size.y;
+      let button_side = ui.spacing().interact_size.y;
+      let spacing_x = ui.spacing().item_spacing.x;
+      // Reserve space for the right-side menu + appearance buttons (+ spacing between them).
+      let reserved_right = button_side * 2.0 + spacing_x * 2.0;
       let (_id, bar_rect) = ui.allocate_space(egui::vec2(
         (ui.available_width() - reserved_right).max(0.0),
         bar_height,
@@ -1561,7 +1559,7 @@ pub fn chrome_ui_with_bookmarks(
       }
       let show_text_edit = show_text_edit_initial || activated_display_mode;
 
-      if show_text_edit {
+      if show_text_edit && shortcuts_enabled {
         ui.input_mut(|i| {
           key_arrow_down = i.consume_key(Default::default(), egui::Key::ArrowDown);
           key_arrow_up = i.consume_key(Default::default(), egui::Key::ArrowUp);
@@ -1800,30 +1798,33 @@ pub fn chrome_ui_with_bookmarks(
           ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             // Downloads progress indicator (optional; shown to the left of the icon).
             if downloads.active_count > 0 {
-              let (resp, a11y_label) =
-                if let Some(total) = downloads.total_bytes.filter(|t| *t > 0) {
-                  let frac = (downloads.received_bytes as f32 / total as f32).clamp(0.0, 1.0);
-                  let label = format!(
-                    "Downloads progress: {} of {}",
-                    format_bytes(downloads.received_bytes),
-                    format_bytes(total)
-                  );
-                  let resp = ui.add(egui::ProgressBar::new(frac).desired_width(50.0).text(""));
-                  (resp, label)
+              let (resp, a11y_label) = if let Some(total) = downloads.total_bytes.filter(|t| *t > 0)
+              {
+                let frac = (downloads.received_bytes as f32 / total as f32).clamp(0.0, 1.0);
+                let label = format!(
+                  "Downloads progress: {} of {}",
+                  format_bytes(downloads.received_bytes),
+                  format_bytes(total)
+                );
+                let resp = ui.add(egui::ProgressBar::new(frac).desired_width(50.0).text(""));
+                (resp, label)
+              } else {
+                let label = if downloads.received_bytes > 0 {
+                  format!(
+                    "Downloads progress: {}",
+                    format_bytes(downloads.received_bytes)
+                  )
                 } else {
-                  let label = if downloads.received_bytes > 0 {
-                    format!("Downloads progress: {}", format_bytes(downloads.received_bytes))
-                  } else {
-                    "Downloads progress".to_string()
-                  };
-                  let resp = ui.add(
-                    egui::ProgressBar::new(0.0)
-                      .desired_width(50.0)
-                      .animate(motion.enabled)
-                      .text(""),
-                  );
-                  (resp, label)
+                  "Downloads progress".to_string()
                 };
+                let resp = ui.add(
+                  egui::ProgressBar::new(0.0)
+                    .desired_width(50.0)
+                    .animate(motion.enabled)
+                    .text(""),
+                );
+                (resp, label)
+              };
               resp.widget_info({
                 let label = a11y_label.clone();
                 move || {
@@ -2481,8 +2482,7 @@ pub fn chrome_ui_with_bookmarks(
       }
       let menu_opened_now = menu_clicked && menu_open;
       if menu_opened_now {
-        ctx
-          .data_mut(|d| d.insert_temp(menu_opener_id, Some(menu_button.id)));
+        ctx.data_mut(|d| d.insert_temp(menu_opener_id, Some(menu_button.id)));
       }
 
       let open_t = motion.animate_bool(
@@ -2496,6 +2496,12 @@ pub fn chrome_ui_with_bookmarks(
       let mut menu_rect: Option<egui::Rect> = None;
       let mut popup_focus_ids: Vec<egui::Id> = Vec::new();
       let mut closed_by_click_outside = false;
+      if !shortcuts_enabled && menu_open {
+        // When a modal dialog is visible, treat chrome popups as inactive and close them without
+        // restoring focus to the opener (the modal owns focus).
+        closed_by_click_outside = true;
+        menu_open = false;
+      }
       if menu_open || open_opacity > 0.0 {
         let mut close_menu = false;
         // Anchor the popup menu below the menu button.
@@ -2504,9 +2510,9 @@ pub fn chrome_ui_with_bookmarks(
           .order(egui::Order::Foreground)
           .fixed_pos(pos)
           .constrain_to(ctx.screen_rect())
-          .interactable(menu_open);
+          .interactable(menu_open && shortcuts_enabled);
         let inner = area.show(ctx, |ui| {
-          ui.set_enabled(menu_open);
+          ui.set_enabled(menu_open && shortcuts_enabled);
           ui.visuals_mut().override_text_color =
             Some(with_alpha(ui.visuals().text_color(), open_opacity));
           let mut frame = egui::Frame::popup(ui.style());
@@ -2516,7 +2522,10 @@ pub fn chrome_ui_with_bookmarks(
           frame.show(ui, |ui| {
             ui.set_min_width(220.0);
 
-            if menu_open && ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
+            if shortcuts_enabled
+              && menu_open
+              && ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape))
+            {
               close_menu = true;
             }
 
@@ -2738,7 +2747,7 @@ pub fn chrome_ui_with_bookmarks(
           let mut key_enter = false;
           let mut key_shift_enter = false;
           let mut key_escape = false;
-          if show_text_edit {
+          if show_text_edit && shortcuts_enabled {
             ui.input_mut(|i| {
               key_shift_enter = i.consume_key(
                 egui::Modifiers {
@@ -2876,11 +2885,11 @@ pub fn chrome_ui_with_bookmarks(
         .order(egui::Order::Foreground)
         .fixed_pos(pos)
         .constrain_to(ctx.screen_rect())
-        .interactable(app.chrome.omnibox.open);
+        .interactable(app.chrome.omnibox.open && shortcuts_enabled);
 
       let mut clicked_suggestion: Option<usize> = None;
       let inner = area.show(ctx, |ui| {
-        ui.set_enabled(app.chrome.omnibox.open);
+        ui.set_enabled(app.chrome.omnibox.open && shortcuts_enabled);
         ui.visuals_mut().override_text_color =
           Some(with_alpha(ui.visuals().text_color(), omnibox_open_opacity));
         let mut frame = egui::Frame::popup(ui.style());
@@ -3059,7 +3068,7 @@ pub fn chrome_ui_with_bookmarks(
             app.chrome.omnibox.original_input = None;
             // Ensure we paint at least one follow-up frame so the dropdown can fade out smoothly.
             ctx.request_repaint();
-          } else if !ctx.input(|i| i.pointer.any_pressed()) {
+          } else if shortcuts_enabled && !ctx.input(|i| i.pointer.any_pressed()) {
             // Keep keyboard focus in the address bar while the dropdown is open.
             if let Some(response) = address_bar_text_edit_response.as_ref() {
               response.request_focus();
@@ -3104,11 +3113,11 @@ pub fn chrome_ui_with_bookmarks(
     let area = egui::Area::new(appearance_popup_id)
       .order(egui::Order::Foreground)
       .fixed_pos(anchor)
-      .interactable(app.chrome.appearance_popup_open);
+      .interactable(app.chrome.appearance_popup_open && shortcuts_enabled);
 
     let mut popup_rect: Option<egui::Rect> = None;
     let inner = area.show(ctx, |ui| {
-      ui.set_enabled(app.chrome.appearance_popup_open);
+      ui.set_enabled(app.chrome.appearance_popup_open && shortcuts_enabled);
       ui.visuals_mut().override_text_color = Some(with_alpha(
         ui.visuals().text_color(),
         appearance_open_opacity,
@@ -3257,9 +3266,8 @@ pub fn chrome_ui_with_bookmarks(
           .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, "UI scale"));
         popup_focus_ids.push(ui_scale_resp.id);
         let reset_scale = ui.button("Reset scale (1.0)");
-        reset_scale.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reset scale (1.0)")
-        });
+        reset_scale
+          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reset scale (1.0)"));
         popup_focus_ids.push(reset_scale.id);
         if reset_scale.clicked() {
           app.appearance.ui_scale = DEFAULT_UI_SCALE;
@@ -3267,13 +3275,11 @@ pub fn chrome_ui_with_bookmarks(
 
         ui.add_space(8.0);
         let high_contrast = ui.checkbox(&mut app.appearance.high_contrast, "High contrast");
-        high_contrast.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, "High contrast")
-        });
+        high_contrast
+          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, "High contrast"));
         let reduced_motion = ui.checkbox(&mut app.appearance.reduced_motion, "Reduced motion");
-        reduced_motion.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, "Reduced motion")
-        });
+        reduced_motion
+          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, "Reduced motion"));
         popup_focus_ids.push(high_contrast.id);
         popup_focus_ids.push(reduced_motion.id);
 
@@ -3406,187 +3412,185 @@ pub fn chrome_ui_with_bookmarks(
           frame.show(ui, |ui| {
             // Provide a consistent target size for hit-testing and a more browser-like look.
             ui.set_min_width(180.0);
- 
-             let reload_tab = ui.button("Reload Tab");
-             popup_focus_ids.push(reload_tab.id);
-             reload_tab
-               .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reload tab"));
-             if reload_tab.clicked() {
-               actions.push(ChromeAction::ReloadTab(tab_id));
-               app.chrome.open_tab_context_menu = None;
-               app.chrome.tab_context_menu_rect = None;
-             }
- 
-             let duplicate_tab = ui.button("Duplicate Tab");
-             popup_focus_ids.push(duplicate_tab.id);
-             duplicate_tab
-               .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Duplicate tab"));
-             if duplicate_tab.clicked() {
-               actions.push(ChromeAction::DuplicateTab(tab_id));
-               app.chrome.open_tab_context_menu = None;
-               app.chrome.tab_context_menu_rect = None;
-             }
- 
-             let pin_label = if is_pinned { "Unpin tab" } else { "Pin tab" };
-             let pin_button = ui.button(if is_pinned { "Unpin Tab" } else { "Pin Tab" });
-             popup_focus_ids.push(pin_button.id);
-             pin_button.widget_info({
-               let label = pin_label.to_string();
-               move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-             });
-             if pin_button.clicked() {
-               actions.push(ChromeAction::TogglePinTab(tab_id));
-               app.chrome.open_tab_context_menu = None;
-               app.chrome.tab_context_menu_rect = None;
-             }
- 
-             if !is_pinned {
-               match tab_group {
-                 Some(_) => {
-                   let remove_from_group = ui.button("Remove from Group");
-                   popup_focus_ids.push(remove_from_group.id);
-                   remove_from_group.widget_info(|| {
-                     egui::WidgetInfo::labeled(egui::WidgetType::Button, "Remove from group")
-                   });
-                   if remove_from_group.clicked() {
-                     app.remove_tab_from_group(tab_id);
-                     app.chrome.open_tab_context_menu = None;
-                     app.chrome.tab_context_menu_rect = None;
-                   }
- 
-                   let has_other_groups = groups_in_order
-                     .iter()
-                     .any(|(group_id, _, _)| Some(*group_id) != tab_group);
-                   if has_other_groups {
-                     let move_menu = ui.menu_button("Move to Group", |ui| {
-                       for (group_id, title, _) in &groups_in_order {
-                         if Some(*group_id) == tab_group {
-                           continue;
-                         }
-                         let move_to_group = ui.button(title);
-                         popup_focus_ids.push(move_to_group.id);
-                         move_to_group.widget_info({
-                           let label = format!("Move to group: {title}");
-                           move || {
-                             egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                           }
-                         });
-                         if move_to_group.clicked() {
-                           app.add_tab_to_group(tab_id, *group_id);
-                           app.chrome.open_tab_context_menu = None;
-                           app.chrome.tab_context_menu_rect = None;
-                           ui.close_menu();
-                         }
-                       }
-                     });
-                     popup_focus_ids.push(move_menu.response.id);
-                     move_menu.response.widget_info(|| {
-                       egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move to group")
-                     });
-                   }
-                 }
-                 None => {
-                   let add_to_new_group = ui.button("Add to New Group");
-                   popup_focus_ids.push(add_to_new_group.id);
-                   add_to_new_group.widget_info(|| {
-                     egui::WidgetInfo::labeled(egui::WidgetType::Button, "Add to new group")
-                   });
-                   if add_to_new_group.clicked() {
-                     app.create_group_with_tabs(&[tab_id]);
-                     app.chrome.open_tab_context_menu = None;
-                     app.chrome.tab_context_menu_rect = None;
-                   }
- 
-                   if groups_in_order.is_empty() {
-                     let resp = ui.add_enabled(false, egui::Button::new("Add to Existing Group"));
-                     resp.widget_info(|| {
-                       egui::WidgetInfo::labeled(egui::WidgetType::Button, "Add to existing group")
-                     });
-                   } else {
-                     let add_menu = ui.menu_button("Add to Existing Group", |ui| {
-                       for (group_id, title, _) in &groups_in_order {
-                         let add_to_group = ui.button(title);
-                         popup_focus_ids.push(add_to_group.id);
-                         add_to_group.widget_info({
-                           let label = format!("Add to group: {title}");
-                           move || {
-                             egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                           }
-                         });
-                         if add_to_group.clicked() {
-                           app.add_tab_to_group(tab_id, *group_id);
-                           app.chrome.open_tab_context_menu = None;
-                           app.chrome.tab_context_menu_rect = None;
-                           ui.close_menu();
-                         }
-                       }
-                     });
-                     popup_focus_ids.push(add_menu.response.id);
-                     add_menu.response.widget_info(|| {
-                       egui::WidgetInfo::labeled(egui::WidgetType::Button, "Add to existing group")
-                     });
-                   }
-                 }
-               }
-             }
- 
-             let close_tab = ui.add_enabled(can_close_tabs, egui::Button::new("Close Tab"));
-             popup_focus_ids.push(close_tab.id);
-             close_tab
-               .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close tab"));
-             if close_tab.clicked() {
-               actions.push(ChromeAction::CloseTab(tab_id));
-               app.chrome.open_tab_context_menu = None;
-               app.chrome.tab_context_menu_rect = None;
-               // The invoking tab will disappear once the action is applied; avoid focusing it.
-               restore_focus_on_close = false;
-             }
- 
-             ui.separator();
- 
-             let close_other_tabs =
-               ui.add_enabled(can_close_tabs, egui::Button::new("Close Other Tabs"));
-             popup_focus_ids.push(close_other_tabs.id);
-             close_other_tabs.widget_info(|| {
-               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close other tabs")
-             });
-             if close_other_tabs.clicked() {
-               actions.push(ChromeAction::CloseOtherTabs(tab_id));
-               app.chrome.open_tab_context_menu = None;
-               app.chrome.tab_context_menu_rect = None;
-               restore_focus_on_close = false;
-             }
- 
-             let close_tabs_to_right = ui.add_enabled(
-               can_close_tabs_to_right,
-               egui::Button::new("Close Tabs to the Right"),
-             );
-             popup_focus_ids.push(close_tabs_to_right.id);
-             close_tabs_to_right.widget_info(|| {
-               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close tabs to the right")
-             });
-             if close_tabs_to_right.clicked() {
-               actions.push(ChromeAction::CloseTabsToRight(tab_id));
-               app.chrome.open_tab_context_menu = None;
-               app.chrome.tab_context_menu_rect = None;
-               restore_focus_on_close = false;
-             }
- 
-             ui.separator();
- 
-             let reopen_closed_tab =
-               ui.add_enabled(can_reopen_closed_tab, egui::Button::new("Reopen Closed Tab"));
-             popup_focus_ids.push(reopen_closed_tab.id);
-             reopen_closed_tab.widget_info(|| {
-               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reopen closed tab")
-             });
-             if reopen_closed_tab.clicked() {
-               actions.push(ChromeAction::ReopenClosedTab);
-               app.chrome.open_tab_context_menu = None;
-               app.chrome.tab_context_menu_rect = None;
-             }
-            })
-          });
+
+            let reload_tab = ui.button("Reload Tab");
+            popup_focus_ids.push(reload_tab.id);
+            reload_tab
+              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reload tab"));
+            if reload_tab.clicked() {
+              actions.push(ChromeAction::ReloadTab(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+
+            let duplicate_tab = ui.button("Duplicate Tab");
+            popup_focus_ids.push(duplicate_tab.id);
+            duplicate_tab
+              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Duplicate tab"));
+            if duplicate_tab.clicked() {
+              actions.push(ChromeAction::DuplicateTab(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+
+            let pin_label = if is_pinned { "Unpin tab" } else { "Pin tab" };
+            let pin_button = ui.button(if is_pinned { "Unpin Tab" } else { "Pin Tab" });
+            popup_focus_ids.push(pin_button.id);
+            pin_button.widget_info({
+              let label = pin_label.to_string();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+            });
+            if pin_button.clicked() {
+              actions.push(ChromeAction::TogglePinTab(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+
+            if !is_pinned {
+              match tab_group {
+                Some(_) => {
+                  let remove_from_group = ui.button("Remove from Group");
+                  popup_focus_ids.push(remove_from_group.id);
+                  remove_from_group.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Remove from group")
+                  });
+                  if remove_from_group.clicked() {
+                    app.remove_tab_from_group(tab_id);
+                    app.chrome.open_tab_context_menu = None;
+                    app.chrome.tab_context_menu_rect = None;
+                  }
+
+                  let has_other_groups = groups_in_order
+                    .iter()
+                    .any(|(group_id, _, _)| Some(*group_id) != tab_group);
+                  if has_other_groups {
+                    let move_menu = ui.menu_button("Move to Group", |ui| {
+                      for (group_id, title, _) in &groups_in_order {
+                        if Some(*group_id) == tab_group {
+                          continue;
+                        }
+                        let move_to_group = ui.button(title);
+                        popup_focus_ids.push(move_to_group.id);
+                        move_to_group.widget_info({
+                          let label = format!("Move to group: {title}");
+                          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                        });
+                        if move_to_group.clicked() {
+                          app.add_tab_to_group(tab_id, *group_id);
+                          app.chrome.open_tab_context_menu = None;
+                          app.chrome.tab_context_menu_rect = None;
+                          ui.close_menu();
+                        }
+                      }
+                    });
+                    popup_focus_ids.push(move_menu.response.id);
+                    move_menu.response.widget_info(|| {
+                      egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move to group")
+                    });
+                  }
+                }
+                None => {
+                  let add_to_new_group = ui.button("Add to New Group");
+                  popup_focus_ids.push(add_to_new_group.id);
+                  add_to_new_group.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Add to new group")
+                  });
+                  if add_to_new_group.clicked() {
+                    app.create_group_with_tabs(&[tab_id]);
+                    app.chrome.open_tab_context_menu = None;
+                    app.chrome.tab_context_menu_rect = None;
+                  }
+
+                  if groups_in_order.is_empty() {
+                    let resp = ui.add_enabled(false, egui::Button::new("Add to Existing Group"));
+                    resp.widget_info(|| {
+                      egui::WidgetInfo::labeled(egui::WidgetType::Button, "Add to existing group")
+                    });
+                  } else {
+                    let add_menu = ui.menu_button("Add to Existing Group", |ui| {
+                      for (group_id, title, _) in &groups_in_order {
+                        let add_to_group = ui.button(title);
+                        popup_focus_ids.push(add_to_group.id);
+                        add_to_group.widget_info({
+                          let label = format!("Add to group: {title}");
+                          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                        });
+                        if add_to_group.clicked() {
+                          app.add_tab_to_group(tab_id, *group_id);
+                          app.chrome.open_tab_context_menu = None;
+                          app.chrome.tab_context_menu_rect = None;
+                          ui.close_menu();
+                        }
+                      }
+                    });
+                    popup_focus_ids.push(add_menu.response.id);
+                    add_menu.response.widget_info(|| {
+                      egui::WidgetInfo::labeled(egui::WidgetType::Button, "Add to existing group")
+                    });
+                  }
+                }
+              }
+            }
+
+            let close_tab = ui.add_enabled(can_close_tabs, egui::Button::new("Close Tab"));
+            popup_focus_ids.push(close_tab.id);
+            close_tab
+              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close tab"));
+            if close_tab.clicked() {
+              actions.push(ChromeAction::CloseTab(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+              // The invoking tab will disappear once the action is applied; avoid focusing it.
+              restore_focus_on_close = false;
+            }
+
+            ui.separator();
+
+            let close_other_tabs =
+              ui.add_enabled(can_close_tabs, egui::Button::new("Close Other Tabs"));
+            popup_focus_ids.push(close_other_tabs.id);
+            close_other_tabs.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close other tabs")
+            });
+            if close_other_tabs.clicked() {
+              actions.push(ChromeAction::CloseOtherTabs(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+              restore_focus_on_close = false;
+            }
+
+            let close_tabs_to_right = ui.add_enabled(
+              can_close_tabs_to_right,
+              egui::Button::new("Close Tabs to the Right"),
+            );
+            popup_focus_ids.push(close_tabs_to_right.id);
+            close_tabs_to_right.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close tabs to the right")
+            });
+            if close_tabs_to_right.clicked() {
+              actions.push(ChromeAction::CloseTabsToRight(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+              restore_focus_on_close = false;
+            }
+
+            ui.separator();
+
+            let reopen_closed_tab = ui.add_enabled(
+              can_reopen_closed_tab,
+              egui::Button::new("Reopen Closed Tab"),
+            );
+            popup_focus_ids.push(reopen_closed_tab.id);
+            reopen_closed_tab.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reopen closed tab")
+            });
+            if reopen_closed_tab.clicked() {
+              actions.push(ChromeAction::ReopenClosedTab);
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+          })
+        });
 
       if !popup_focus_ids.is_empty() {
         ctx.data_mut(|d| {
@@ -3596,12 +3600,7 @@ pub fn chrome_ui_with_bookmarks(
 
       if app.chrome.open_tab_context_menu.is_none() {
         let opener = restore_focus_on_close.then_some(open_menu.opener_id);
-        restore_focus_or_clear_popup_focus(
-          ctx,
-          restore_focus_on_close,
-          opener,
-          &popup_focus_ids,
-        );
+        restore_focus_or_clear_popup_focus(ctx, restore_focus_on_close, opener, &popup_focus_ids);
       }
 
       // Update the click-outside rect for the next frame.
@@ -4238,7 +4237,10 @@ mod tests {
   #[test]
   fn appearance_popup_emits_accesskit_names_for_accent_controls() {
     let mut app = BrowserAppState::new();
-    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
     app.chrome.appearance_popup_open = true;
 
     let ctx = egui::Context::default();
@@ -4273,7 +4275,10 @@ mod tests {
   #[test]
   fn appearance_popup_accesskit_roles_for_accent_controls_are_buttons() {
     let mut app = BrowserAppState::new();
-    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
     app.chrome.appearance_popup_open = true;
 
     let ctx = egui::Context::default();
@@ -4729,7 +4734,10 @@ mod tests {
   fn escape_closing_tab_search_restores_focus_to_address_bar_when_opened_from_it() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
     let ctx = egui::Context::default();
 
     // Frame 1: focus the address bar.
@@ -4737,7 +4745,10 @@ mod tests {
     begin_frame(&ctx, vec![]);
     let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let _ = ctx.end_frame();
-    assert!(app.chrome.address_bar_has_focus, "expected address bar to be focused");
+    assert!(
+      app.chrome.address_bar_has_focus,
+      "expected address bar to be focused"
+    );
 
     // Frame 2: open tab search via Ctrl/Cmd+Shift+A. The overlay input should take focus.
     begin_frame(
@@ -4766,7 +4777,10 @@ mod tests {
     begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
     let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let _ = ctx.end_frame();
-    assert!(!app.chrome.tab_search.open, "expected tab search to be closed");
+    assert!(
+      !app.chrome.tab_search.open,
+      "expected tab search to be closed"
+    );
     assert!(
       app.chrome.address_bar_has_focus || !ctx.wants_keyboard_input(),
       "expected focus to return to address bar or egui to stop wanting keyboard input"
@@ -6947,7 +6961,9 @@ mod tests {
       "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
     );
     assert!(
-      !actions.iter().any(|action| matches!(action, ChromeAction::OpenUrlInNewTab(_))),
+      !actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::OpenUrlInNewTab(_))),
       "did not expect ChromeAction::OpenUrlInNewTab, got {actions:?}"
     );
     assert!(
