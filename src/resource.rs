@@ -6109,6 +6109,37 @@ impl HttpFetcher {
     })
   }
 
+  fn fetch_http_range(
+    &self,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    url: &str,
+    start: u64,
+    end: u64,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
+    referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<FetchedResource> {
+    let deadline = render_control::root_deadline();
+    let started = Instant::now();
+    render_control::with_deadline(deadline.as_ref(), || {
+      self.fetch_http_range_inner(
+        kind,
+        destination,
+        url,
+        start,
+        end,
+        client_origin,
+        referrer_url,
+        referrer_policy,
+        credentials_mode,
+        &deadline,
+        started,
+      )
+    })
+  }
+
   fn fetch_http_with_context(
     &self,
     kind: FetchContextKind,
@@ -7109,6 +7140,1056 @@ impl HttpFetcher {
     }
 
     Ok(res)
+  }
+
+  fn fetch_http_range_inner(
+    &self,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    url: &str,
+    start: u64,
+    end: u64,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
+    referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
+    deadline: &Option<render_control::RenderDeadline>,
+    started: Instant,
+  ) -> Result<FetchedResource> {
+    let effective_url = url;
+    let prefer_reqwest = effective_url
+      .get(..8)
+      .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
+      .unwrap_or(false);
+
+    let res = match http_backend_mode() {
+      HttpBackendMode::Ureq => self.fetch_http_range_inner_ureq(
+        kind,
+        destination,
+        effective_url,
+        start,
+        end,
+        client_origin,
+        referrer_url,
+        referrer_policy,
+        credentials_mode,
+        deadline,
+        started,
+      ),
+      HttpBackendMode::Reqwest => self.fetch_http_range_inner_reqwest(
+        kind,
+        destination,
+        effective_url,
+        start,
+        end,
+        client_origin,
+        referrer_url,
+        referrer_policy,
+        credentials_mode,
+        deadline,
+        started,
+      ),
+      // The cURL backend shells out to the system binary and reads the entire response body before
+      // returning. For byte-range fetches we instead use the Rust backends so we can cap reads.
+      HttpBackendMode::Curl | HttpBackendMode::Auto => {
+        if prefer_reqwest {
+          self.fetch_http_range_inner_reqwest(
+            kind,
+            destination,
+            effective_url,
+            start,
+            end,
+            client_origin,
+            referrer_url,
+            referrer_policy,
+            credentials_mode,
+            deadline,
+            started,
+          )
+        } else {
+          self.fetch_http_range_inner_ureq(
+            kind,
+            destination,
+            effective_url,
+            start,
+            end,
+            client_origin,
+            referrer_url,
+            referrer_policy,
+            credentials_mode,
+            deadline,
+            started,
+          )
+        }
+      }
+    }?;
+
+    enforce_cors_on_network_response(
+      destination,
+      effective_url,
+      client_origin,
+      referrer_url,
+      credentials_mode,
+      res,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn fetch_http_range_inner_ureq(
+    &self,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    url: &str,
+    start: u64,
+    end: u64,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
+    referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
+    deadline: &Option<render_control::RenderDeadline>,
+    started: Instant,
+  ) -> Result<FetchedResource> {
+    let requested_url = url.to_string();
+    let mut current = requested_url.clone();
+    if let Some(normalized) = normalize_http_url_for_fetch(url) {
+      current = normalized;
+    }
+    let agent = &self.agent;
+    let timeout_budget = self.timeout_budget(deadline);
+    let mut effective_referrer_policy = referrer_policy;
+    let mut redirect_referrer_policy: Option<ReferrerPolicy> = None;
+    let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
+      deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
+    });
+    let max_attempts = if deadline_retries_disabled {
+      1
+    } else {
+      self.retry_policy.max_attempts.max(1)
+    };
+
+    let budget_exhausted_error = |current_url: &str, attempt: usize| -> Error {
+      let budget = timeout_budget.expect("budget mode should be active");
+      let elapsed = started.elapsed();
+      Error::Resource(
+        ResourceError::new(
+          requested_url.clone(),
+          format!(
+            "overall HTTP timeout budget exceeded (budget={budget:?}, elapsed={elapsed:?}){}",
+            format_attempt_suffix(attempt, max_attempts)
+          ),
+        )
+        .with_final_url(current_url.to_string()),
+      )
+    };
+
+    let read_limit = end
+      .checked_sub(start)
+      .and_then(|delta| delta.checked_add(1))
+      .and_then(|len| usize::try_from(len).ok())
+      .ok_or_else(|| {
+        Error::Resource(ResourceError::new(
+          requested_url.clone(),
+          "invalid byte range (overflow or too large)",
+        ))
+      })?
+      .max(1);
+
+    'redirects: for _ in 0..self.policy.max_redirects {
+      self.policy.ensure_url_allowed(&current)?;
+      for attempt in 1..=max_attempts {
+        self.policy.ensure_url_allowed(&current)?;
+        let stage_hint = render_stage_hint_for_context(kind, &current);
+        render_control::check_active(stage_hint).map_err(Error::Render)?;
+        let allowed_limit = self.policy.allowed_response_limit()?;
+        if read_limit > allowed_limit {
+          return Err(policy_error(format!(
+            "response too large ({} > {} bytes)",
+            read_limit, allowed_limit
+          )));
+        }
+
+        let per_request_timeout = self.deadline_aware_timeout(kind, deadline.as_ref(), &current)?;
+        let mut effective_timeout = per_request_timeout.unwrap_or(self.policy.request_timeout);
+
+        if let Some(budget) = timeout_budget {
+          match budget.checked_sub(started.elapsed()) {
+            Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+              let budget_timeout = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
+              effective_timeout = effective_timeout.min(budget_timeout);
+            }
+            _ => return Err(budget_exhausted_error(&current, attempt)),
+          }
+        }
+
+        let mut headers = build_http_header_pairs(
+          &current,
+          &self.user_agent,
+          &self.accept_language,
+          // Range requests must use identity encoding so byte offsets apply to the raw body.
+          "identity",
+          None,
+          destination,
+          client_origin,
+          referrer_url,
+          effective_referrer_policy,
+        );
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          if let Some(value) = self.cookie_header_value(&current) {
+            headers.push(("Cookie".to_string(), value));
+          }
+        }
+        headers.push(("Range".to_string(), format!("bytes={start}-{end}")));
+        let mut request = agent.get(&current);
+        for (name, value) in &headers {
+          request = request.header(name, value);
+        }
+
+        if !effective_timeout.is_zero() {
+          request = request
+            .config()
+            .timeout_global(Some(effective_timeout))
+            .build();
+        }
+
+        let mut network_timer = start_network_fetch_diagnostics();
+        let mut response = match request.call() {
+          Ok(resp) => resp,
+          Err(err) => {
+            finish_network_fetch_diagnostics(network_timer.take());
+            if attempt < max_attempts && is_retryable_ureq_error(&err) {
+              let mut backoff = compute_backoff(&self.retry_policy, attempt, &current);
+              let mut can_retry = true;
+              if let Some(deadline) = deadline.as_ref() {
+                if deadline.timeout_limit().is_some() {
+                  match deadline.remaining_timeout() {
+                    Some(remaining) if !remaining.is_zero() => {
+                      let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                      backoff = backoff.min(max_sleep);
+                    }
+                    _ => can_retry = false,
+                  }
+                }
+              }
+              if let Some(budget) = timeout_budget {
+                match budget.checked_sub(started.elapsed()) {
+                  Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+                    let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                    backoff = backoff.min(max_sleep);
+                  }
+                  _ => can_retry = false,
+                }
+              }
+              if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
+                let reason = err.to_string();
+                log_http_retry(&reason, attempt, max_attempts, &current, backoff);
+                if !backoff.is_zero() {
+                  sleep_with_deadline(deadline.as_ref(), stage_hint, backoff)
+                    .map_err(Error::Render)?;
+                }
+                continue;
+              }
+              if timeout_budget.is_some() {
+                return Err(budget_exhausted_error(&current, attempt));
+              }
+            }
+
+            let overall_timeout = deadline.as_ref().and_then(|d| d.timeout_limit());
+            let mut message = err.to_string();
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("timeout") || lower.contains("timed out") {
+              if let Some(overall) = overall_timeout {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?}, overall_timeout={overall:?})"
+                ));
+              } else if let Some(budget) = timeout_budget {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?}, overall_timeout_budget={budget:?})"
+                ));
+              } else {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?})"
+                ));
+              }
+            } else {
+              message.push_str(&format_attempt_suffix(attempt, max_attempts));
+            }
+
+            let err = ResourceError::new(requested_url.clone(), message)
+              .with_final_url(current.clone())
+              .with_source(err);
+            return Err(Error::Resource(err));
+          }
+        };
+
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          self.store_cookies_from_headers(&current, response.headers());
+        }
+
+        let status = response.status();
+        if (300..400).contains(&status.as_u16()) {
+          if let Some(loc) = response
+            .headers()
+            .get("location")
+            .and_then(|h| h.to_str().ok())
+          {
+            if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
+              .as_deref()
+              .and_then(ReferrerPolicy::parse_value_list)
+            {
+              effective_referrer_policy = policy;
+              redirect_referrer_policy = Some(policy);
+            }
+            let mut next = Url::parse(&current)
+              .ok()
+              .and_then(|base| base.join(loc).ok())
+              .map(|u| u.to_string())
+              .unwrap_or_else(|| loc.to_string());
+            if let Some(normalized) = normalize_http_url_for_fetch(&next) {
+              next = normalized;
+            }
+            finish_network_fetch_diagnostics(network_timer.take());
+            render_control::check_active(render_stage_hint_for_context(kind, &next))
+              .map_err(Error::Render)?;
+            self.policy.ensure_url_allowed(&next)?;
+            current = next;
+            continue 'redirects;
+          }
+        }
+
+        let status_code = status.as_u16();
+        let retry_after =
+          if self.retry_policy.respect_retry_after && retryable_http_status(status_code) {
+            parse_retry_after(response.headers())
+          } else {
+            None
+          };
+
+        let encodings = parse_content_encodings(response.headers());
+        if encodings.iter().any(|enc| enc != "identity") {
+          finish_network_fetch_diagnostics(network_timer.take());
+          let final_url = response.get_uri().to_string();
+          let err = ResourceError::new(
+            requested_url.clone(),
+            format!(
+              "received content-encoding {:?} for range fetch (expected identity)",
+              encodings
+            ),
+          )
+          .with_status(status_code)
+          .with_final_url(final_url);
+          return Err(Error::Resource(err));
+        }
+
+        let mut content_type = response
+          .headers()
+          .get("content-type")
+          .and_then(|h| h.to_str().ok())
+          .map(|s| s.to_string());
+        let nosniff = header_has_nosniff(response.headers());
+        let decode_stage = decode_stage_for_content_type(content_type.as_deref());
+        let etag = response
+          .headers()
+          .get("etag")
+          .and_then(|h| h.to_str().ok())
+          .map(|s| s.to_string());
+        let last_modified = response
+          .headers()
+          .get("last-modified")
+          .and_then(|h| h.to_str().ok())
+          .map(|s| s.to_string());
+        let (access_control_allow_origin, access_control_allow_credentials) =
+          parse_cors_response_headers(response.headers());
+        let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
+        let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
+          .as_deref()
+          .and_then(ReferrerPolicy::parse_value_list)
+          .or(redirect_referrer_policy);
+        let cache_policy = parse_http_cache_policy(response.headers());
+        let vary = parse_vary_headers(response.headers());
+        let final_url = response.get_uri().to_string();
+        let response_headers = collect_response_headers(response.headers());
+        let allows_empty_body =
+          http_response_allows_empty_body(kind, status_code, response.headers());
+
+        let mut body_reader = response.body_mut().as_reader();
+        let body_result = read_response_prefix(&mut body_reader, read_limit);
+        match body_result {
+          Ok(bytes) => {
+            record_network_fetch_bytes(bytes.len());
+
+            if bytes.is_empty() && http_empty_body_is_error(status_code, allows_empty_body) {
+              finish_network_fetch_diagnostics(network_timer.take());
+              let mut can_retry = attempt < max_attempts;
+              if can_retry {
+                let mut backoff = compute_backoff(&self.retry_policy, attempt, &current);
+                if let Some(retry_after) = retry_after {
+                  backoff = backoff.max(retry_after);
+                }
+                if let Some(deadline) = deadline.as_ref() {
+                  if deadline.timeout_limit().is_some() {
+                    match deadline.remaining_timeout() {
+                      Some(remaining) if !remaining.is_zero() => {
+                        let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                        backoff = backoff.min(max_sleep);
+                      }
+                      _ => can_retry = false,
+                    }
+                  }
+                }
+                if let Some(budget) = timeout_budget {
+                  match budget.checked_sub(started.elapsed()) {
+                    Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+                      let max_sleep = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
+                      backoff = backoff.min(max_sleep);
+                    }
+                    _ => can_retry = false,
+                  }
+                }
+                if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
+                  log_http_retry(
+                    &format!("empty body (status {status_code})"),
+                    attempt,
+                    max_attempts,
+                    &current,
+                    backoff,
+                  );
+                  if !backoff.is_zero() {
+                    sleep_with_deadline(deadline.as_ref(), stage_hint, backoff)
+                      .map_err(Error::Render)?;
+                  }
+                  continue;
+                }
+                if timeout_budget.is_some() {
+                  return Err(budget_exhausted_error(&current, attempt));
+                }
+              }
+            }
+
+            if retryable_http_status(status_code) {
+              finish_network_fetch_diagnostics(network_timer.take());
+              let mut can_retry = attempt < max_attempts;
+              if can_retry {
+                let mut backoff = compute_backoff(&self.retry_policy, attempt, &current);
+                if let Some(retry_after) = retry_after {
+                  backoff = backoff.max(retry_after);
+                }
+                if let Some(deadline) = deadline.as_ref() {
+                  if deadline.timeout_limit().is_some() {
+                    match deadline.remaining_timeout() {
+                      Some(remaining) if !remaining.is_zero() => {
+                        let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                        backoff = backoff.min(max_sleep);
+                      }
+                      _ => can_retry = false,
+                    }
+                  }
+                }
+                if let Some(budget) = timeout_budget {
+                  match budget.checked_sub(started.elapsed()) {
+                    Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+                      let max_sleep = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
+                      backoff = backoff.min(max_sleep);
+                    }
+                    _ => can_retry = false,
+                  }
+                }
+                if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
+                  log_http_retry(
+                    &format!("status {status_code}"),
+                    attempt,
+                    max_attempts,
+                    &current,
+                    backoff,
+                  );
+                  if !backoff.is_zero() {
+                    sleep_with_deadline(deadline.as_ref(), stage_hint, backoff)
+                      .map_err(Error::Render)?;
+                  }
+                  continue;
+                }
+                if timeout_budget.is_some() {
+                  return Err(budget_exhausted_error(&current, attempt));
+                }
+              }
+            }
+
+            finish_network_fetch_diagnostics(network_timer.take());
+            self.policy.reserve_budget(bytes.len())?;
+            let mut resource = FetchedResource::with_final_url(bytes, content_type, Some(final_url));
+            resource.response_headers = Some(response_headers);
+            if !encodings.is_empty() {
+              resource.content_encoding = Some(encodings.join(", "));
+            }
+            resource.nosniff = nosniff;
+            resource.status = Some(status_code);
+            resource.etag = etag;
+            resource.last_modified = last_modified;
+            resource.access_control_allow_origin = access_control_allow_origin;
+            resource.timing_allow_origin = timing_allow_origin;
+            resource.vary = vary;
+            resource.response_referrer_policy = response_referrer_policy;
+            resource.access_control_allow_credentials = access_control_allow_credentials;
+            resource.cache_policy = cache_policy;
+            render_control::check_root(decode_stage).map_err(Error::Render)?;
+            return Ok(resource);
+          }
+          Err(err) => {
+            finish_network_fetch_diagnostics(network_timer.take());
+            if attempt < max_attempts && is_retryable_io_error(&err) {
+              let mut backoff = compute_backoff(&self.retry_policy, attempt, &current);
+              let mut can_retry = true;
+              if let Some(deadline) = deadline.as_ref() {
+                if deadline.timeout_limit().is_some() {
+                  match deadline.remaining_timeout() {
+                    Some(remaining) if !remaining.is_zero() => {
+                      let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                      backoff = backoff.min(max_sleep);
+                    }
+                    _ => can_retry = false,
+                  }
+                }
+              }
+              if let Some(budget) = timeout_budget {
+                match budget.checked_sub(started.elapsed()) {
+                  Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+                    let max_sleep = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
+                    backoff = backoff.min(max_sleep);
+                  }
+                  _ => can_retry = false,
+                }
+              }
+              if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
+                let reason = err.to_string();
+                log_http_retry(&reason, attempt, max_attempts, &current, backoff);
+                if !backoff.is_zero() {
+                  sleep_with_deadline(deadline.as_ref(), stage_hint, backoff)
+                    .map_err(Error::Render)?;
+                }
+                continue;
+              }
+              if timeout_budget.is_some() {
+                return Err(budget_exhausted_error(&current, attempt));
+              }
+            }
+
+            let overall_timeout = deadline.as_ref().and_then(|d| d.timeout_limit());
+            let mut message = err.to_string();
+            if err.kind() == io::ErrorKind::TimedOut {
+              if let Some(overall) = overall_timeout {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?}, overall_timeout={overall:?})"
+                ));
+              } else if let Some(budget) = timeout_budget {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?}, overall_timeout_budget={budget:?})"
+                ));
+              } else {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?})"
+                ));
+              }
+            } else {
+              message.push_str(&format_attempt_suffix(attempt, max_attempts));
+            }
+
+            let status_code = status.as_u16();
+            let err = ResourceError::new(requested_url.clone(), message)
+              .with_status(status_code)
+              .with_final_url(final_url)
+              .with_source(err);
+            return Err(Error::Resource(err));
+          }
+        }
+      }
+    }
+
+    Err(Error::Resource(
+      ResourceError::new(
+        url,
+        format!("too many redirects (limit {})", self.policy.max_redirects),
+      )
+      .with_final_url(current),
+    ))
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn fetch_http_range_inner_reqwest(
+    &self,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    url: &str,
+    start: u64,
+    end: u64,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
+    referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
+    deadline: &Option<render_control::RenderDeadline>,
+    started: Instant,
+  ) -> Result<FetchedResource> {
+    let requested_url = url.to_string();
+    let mut current = requested_url.clone();
+    if let Some(normalized) = normalize_http_url_for_fetch(url) {
+      current = normalized;
+    }
+    let client = &self.reqwest_client;
+    let timeout_budget = self.timeout_budget(deadline);
+    let mut effective_referrer_policy = referrer_policy;
+    let mut redirect_referrer_policy: Option<ReferrerPolicy> = None;
+    let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
+      deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
+    });
+    let max_attempts = if deadline_retries_disabled {
+      1
+    } else {
+      self.retry_policy.max_attempts.max(1)
+    };
+
+    let budget_exhausted_error = |current_url: &str, attempt: usize| -> Error {
+      let budget = timeout_budget.expect("budget mode should be active");
+      let elapsed = started.elapsed();
+      Error::Resource(
+        ResourceError::new(
+          requested_url.clone(),
+          format!(
+            "overall HTTP timeout budget exceeded (budget={budget:?}, elapsed={elapsed:?}){}",
+            format_attempt_suffix(attempt, max_attempts)
+          ),
+        )
+        .with_final_url(current_url.to_string()),
+      )
+    };
+
+    let read_limit = end
+      .checked_sub(start)
+      .and_then(|delta| delta.checked_add(1))
+      .and_then(|len| usize::try_from(len).ok())
+      .ok_or_else(|| {
+        Error::Resource(ResourceError::new(
+          requested_url.clone(),
+          "invalid byte range (overflow or too large)",
+        ))
+      })?
+      .max(1);
+
+    'redirects: for _ in 0..self.policy.max_redirects {
+      self.policy.ensure_url_allowed(&current)?;
+      for attempt in 1..=max_attempts {
+        self.policy.ensure_url_allowed(&current)?;
+        let stage_hint = render_stage_hint_for_context(kind, &current);
+        render_control::check_active(stage_hint).map_err(Error::Render)?;
+        let allowed_limit = self.policy.allowed_response_limit()?;
+        if read_limit > allowed_limit {
+          return Err(policy_error(format!(
+            "response too large ({} > {} bytes)",
+            read_limit, allowed_limit
+          )));
+        }
+
+        let per_request_timeout = self.deadline_aware_timeout(kind, deadline.as_ref(), &current)?;
+        let mut effective_timeout = per_request_timeout.unwrap_or(self.policy.request_timeout);
+
+        if let Some(budget) = timeout_budget {
+          match budget.checked_sub(started.elapsed()) {
+            Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+              let budget_timeout = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
+              effective_timeout = effective_timeout.min(budget_timeout);
+            }
+            _ => return Err(budget_exhausted_error(&current, attempt)),
+          }
+        }
+
+        let mut headers = build_http_header_pairs(
+          &current,
+          &self.user_agent,
+          &self.accept_language,
+          "identity",
+          None,
+          destination,
+          client_origin,
+          referrer_url,
+          effective_referrer_policy,
+        );
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          if let Some(value) = self.cookie_header_value(&current) {
+            headers.push(("Cookie".to_string(), value));
+          }
+        }
+        headers.push(("Range".to_string(), format!("bytes={start}-{end}")));
+
+        let mut request = client.get(&current);
+        for (name, value) in &headers {
+          request = request.header(name, value);
+        }
+        if !effective_timeout.is_zero() {
+          request = request.timeout(effective_timeout);
+        }
+
+        let mut network_timer = start_network_fetch_diagnostics();
+        let mut response = match request.send() {
+          Ok(resp) => resp,
+          Err(err) => {
+            finish_network_fetch_diagnostics(network_timer.take());
+            if attempt < max_attempts && is_retryable_reqwest_error(&err) {
+              let mut backoff = compute_backoff(&self.retry_policy, attempt, &current);
+              let mut can_retry = true;
+              if let Some(deadline) = deadline.as_ref() {
+                if deadline.timeout_limit().is_some() {
+                  match deadline.remaining_timeout() {
+                    Some(remaining) if !remaining.is_zero() => {
+                      let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                      backoff = backoff.min(max_sleep);
+                    }
+                    _ => can_retry = false,
+                  }
+                }
+              }
+              if let Some(budget) = timeout_budget {
+                match budget.checked_sub(started.elapsed()) {
+                  Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+                    let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                    backoff = backoff.min(max_sleep);
+                  }
+                  _ => can_retry = false,
+                }
+              }
+              if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
+                let reason = err.to_string();
+                log_http_retry(&reason, attempt, max_attempts, &current, backoff);
+                if !backoff.is_zero() {
+                  sleep_with_deadline(deadline.as_ref(), stage_hint, backoff)
+                    .map_err(Error::Render)?;
+                }
+                continue;
+              }
+              if timeout_budget.is_some() {
+                return Err(budget_exhausted_error(&current, attempt));
+              }
+            }
+
+            let overall_timeout = deadline.as_ref().and_then(|d| d.timeout_limit());
+            let mut message = err.to_string();
+            if err.is_timeout() {
+              if let Some(overall) = overall_timeout {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?}, overall_timeout={overall:?})"
+                ));
+              } else if let Some(budget) = timeout_budget {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?}, overall_timeout_budget={budget:?})"
+                ));
+              } else {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?})"
+                ));
+              }
+            } else {
+              message.push_str(&format_attempt_suffix(attempt, max_attempts));
+            }
+
+            let err = ResourceError::new(requested_url.clone(), message)
+              .with_final_url(current.clone())
+              .with_source(err);
+            return Err(Error::Resource(err));
+          }
+        };
+
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          self.store_cookies_from_headers(&current, response.headers());
+        }
+
+        let status = response.status();
+        if (300..400).contains(&status.as_u16()) {
+          if let Some(loc) = response
+            .headers()
+            .get("location")
+            .and_then(|h| h.to_str().ok())
+          {
+            if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
+              .as_deref()
+              .and_then(ReferrerPolicy::parse_value_list)
+            {
+              effective_referrer_policy = policy;
+              redirect_referrer_policy = Some(policy);
+            }
+            let mut next = Url::parse(&current)
+              .ok()
+              .and_then(|base| base.join(loc).ok())
+              .map(|u| u.to_string())
+              .unwrap_or_else(|| loc.to_string());
+            if let Some(normalized) = normalize_http_url_for_fetch(&next) {
+              next = normalized;
+            }
+            finish_network_fetch_diagnostics(network_timer.take());
+            render_control::check_active(render_stage_hint_for_context(kind, &next))
+              .map_err(Error::Render)?;
+            self.policy.ensure_url_allowed(&next)?;
+            current = next;
+            continue 'redirects;
+          }
+        }
+
+        let status_code = status.as_u16();
+        let retry_after =
+          if self.retry_policy.respect_retry_after && retryable_http_status(status_code) {
+            parse_retry_after(response.headers())
+          } else {
+            None
+          };
+
+        let encodings = parse_content_encodings(response.headers());
+        if encodings.iter().any(|enc| enc != "identity") {
+          finish_network_fetch_diagnostics(network_timer.take());
+          let final_url = response.url().to_string();
+          let err = ResourceError::new(
+            requested_url.clone(),
+            format!(
+              "received content-encoding {:?} for range fetch (expected identity)",
+              encodings
+            ),
+          )
+          .with_status(status_code)
+          .with_final_url(final_url);
+          return Err(Error::Resource(err));
+        }
+
+        let mut content_type = response
+          .headers()
+          .get("content-type")
+          .and_then(|h| h.to_str().ok())
+          .map(|s| s.to_string());
+        let nosniff = header_has_nosniff(response.headers());
+        let decode_stage = decode_stage_for_content_type(content_type.as_deref());
+        let etag = response
+          .headers()
+          .get("etag")
+          .and_then(|h| h.to_str().ok())
+          .map(|s| s.to_string());
+        let last_modified = response
+          .headers()
+          .get("last-modified")
+          .and_then(|h| h.to_str().ok())
+          .map(|s| s.to_string());
+        let (access_control_allow_origin, access_control_allow_credentials) =
+          parse_cors_response_headers(response.headers());
+        let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
+        let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
+          .as_deref()
+          .and_then(ReferrerPolicy::parse_value_list)
+          .or(redirect_referrer_policy);
+        let cache_policy = parse_http_cache_policy(response.headers());
+        let vary = parse_vary_headers(response.headers());
+        let final_url = response.url().to_string();
+        let response_headers = collect_response_headers(response.headers());
+        let allows_empty_body =
+          http_response_allows_empty_body(kind, status_code, response.headers());
+
+        let mut limited_body = response.take(read_limit as u64);
+        let body_result = read_response_prefix(&mut limited_body, read_limit);
+        match body_result {
+          Ok(body) => {
+            record_network_fetch_bytes(body.len());
+
+            if body.is_empty() && http_empty_body_is_error(status_code, allows_empty_body) {
+              finish_network_fetch_diagnostics(network_timer.take());
+              let mut can_retry = attempt < max_attempts;
+              if can_retry {
+                let mut backoff = compute_backoff(&self.retry_policy, attempt, &current);
+                if let Some(retry_after) = retry_after {
+                  backoff = backoff.max(retry_after);
+                }
+                if let Some(deadline) = deadline.as_ref() {
+                  if deadline.timeout_limit().is_some() {
+                    match deadline.remaining_timeout() {
+                      Some(remaining) if !remaining.is_zero() => {
+                        let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                        backoff = backoff.min(max_sleep);
+                      }
+                      _ => can_retry = false,
+                    }
+                  }
+                }
+                if let Some(budget) = timeout_budget {
+                  match budget.checked_sub(started.elapsed()) {
+                    Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+                      let max_sleep = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
+                      backoff = backoff.min(max_sleep);
+                    }
+                    _ => can_retry = false,
+                  }
+                }
+                if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
+                  log_http_retry(
+                    &format!("empty body (status {status_code})"),
+                    attempt,
+                    max_attempts,
+                    &current,
+                    backoff,
+                  );
+                  if !backoff.is_zero() {
+                    sleep_with_deadline(deadline.as_ref(), stage_hint, backoff)
+                      .map_err(Error::Render)?;
+                  }
+                  continue;
+                }
+                if timeout_budget.is_some() {
+                  return Err(budget_exhausted_error(&current, attempt));
+                }
+              }
+            }
+
+            if retryable_http_status(status_code) {
+              finish_network_fetch_diagnostics(network_timer.take());
+              let mut can_retry = attempt < max_attempts;
+              if can_retry {
+                let mut backoff = compute_backoff(&self.retry_policy, attempt, &current);
+                if let Some(retry_after) = retry_after {
+                  backoff = backoff.max(retry_after);
+                }
+                if let Some(deadline) = deadline.as_ref() {
+                  if deadline.timeout_limit().is_some() {
+                    match deadline.remaining_timeout() {
+                      Some(remaining) if !remaining.is_zero() => {
+                        let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                        backoff = backoff.min(max_sleep);
+                      }
+                      _ => can_retry = false,
+                    }
+                  }
+                }
+                if let Some(budget) = timeout_budget {
+                  match budget.checked_sub(started.elapsed()) {
+                    Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+                      let max_sleep = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
+                      backoff = backoff.min(max_sleep);
+                    }
+                    _ => can_retry = false,
+                  }
+                }
+                if can_retry {
+                  render_control::check_active(stage_hint).map_err(Error::Render)?;
+                  log_http_retry(
+                    &format!("status {status_code}"),
+                    attempt,
+                    max_attempts,
+                    &current,
+                    backoff,
+                  );
+                  if !backoff.is_zero() {
+                    sleep_with_deadline(deadline.as_ref(), stage_hint, backoff)
+                      .map_err(Error::Render)?;
+                  }
+                  continue;
+                }
+                if timeout_budget.is_some() {
+                  return Err(budget_exhausted_error(&current, attempt));
+                }
+              }
+            }
+
+            finish_network_fetch_diagnostics(network_timer.take());
+            self.policy.reserve_budget(body.len())?;
+            let mut resource = FetchedResource::with_final_url(body, content_type, Some(final_url));
+            resource.response_headers = Some(response_headers);
+            if !encodings.is_empty() {
+              resource.content_encoding = Some(encodings.join(", "));
+            }
+            resource.nosniff = nosniff;
+            resource.status = Some(status_code);
+            resource.etag = etag;
+            resource.last_modified = last_modified;
+            resource.access_control_allow_origin = access_control_allow_origin;
+            resource.timing_allow_origin = timing_allow_origin;
+            resource.vary = vary;
+            resource.response_referrer_policy = response_referrer_policy;
+            resource.access_control_allow_credentials = access_control_allow_credentials;
+            resource.cache_policy = cache_policy;
+            render_control::check_root(decode_stage).map_err(Error::Render)?;
+            return Ok(resource);
+          }
+          Err(err) => {
+            finish_network_fetch_diagnostics(network_timer.take());
+            if attempt < max_attempts && is_retryable_io_error(&err) {
+              let mut backoff = compute_backoff(&self.retry_policy, attempt, &current);
+              let mut can_retry = true;
+              if let Some(deadline) = deadline.as_ref() {
+                if deadline.timeout_limit().is_some() {
+                  match deadline.remaining_timeout() {
+                    Some(remaining) if !remaining.is_zero() => {
+                      let max_sleep = remaining.saturating_sub(Duration::from_millis(1));
+                      backoff = backoff.min(max_sleep);
+                    }
+                    _ => can_retry = false,
+                  }
+                }
+              }
+              if let Some(budget) = timeout_budget {
+                match budget.checked_sub(started.elapsed()) {
+                  Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+                    let max_sleep = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
+                    backoff = backoff.min(max_sleep);
+                  }
+                  _ => can_retry = false,
+                }
+              }
+              if can_retry {
+                render_control::check_active(stage_hint).map_err(Error::Render)?;
+                let reason = err.to_string();
+                log_http_retry(&reason, attempt, max_attempts, &current, backoff);
+                if !backoff.is_zero() {
+                  sleep_with_deadline(deadline.as_ref(), stage_hint, backoff)
+                    .map_err(Error::Render)?;
+                }
+                continue;
+              }
+              if timeout_budget.is_some() {
+                return Err(budget_exhausted_error(&current, attempt));
+              }
+            }
+
+            let overall_timeout = deadline.as_ref().and_then(|d| d.timeout_limit());
+            let mut message = err.to_string();
+            if err.kind() == io::ErrorKind::TimedOut {
+              if let Some(overall) = overall_timeout {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?}, overall_timeout={overall:?})"
+                ));
+              } else if let Some(budget) = timeout_budget {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?}, overall_timeout_budget={budget:?})"
+                ));
+              } else {
+                message.push_str(&format!(
+                  " (attempt {attempt}/{max_attempts}, per_attempt_timeout={effective_timeout:?})"
+                ));
+              }
+            } else {
+              message.push_str(&format_attempt_suffix(attempt, max_attempts));
+            }
+
+            let err = ResourceError::new(requested_url.clone(), message)
+              .with_status(status_code)
+              .with_final_url(final_url)
+              .with_source(err);
+            return Err(Error::Resource(err));
+          }
+        }
+      }
+    }
+
+    Err(Error::Resource(
+      ResourceError::new(
+        url,
+        format!("too many redirects (limit {})", self.policy.max_redirects),
+      )
+      .with_final_url(current),
+    ))
   }
 
   fn fetch_http_partial_inner_ureq(
@@ -10361,18 +11442,17 @@ impl ResourceFetcher for HttpFetcher {
 
     match scheme {
       ResourceScheme::Http | ResourceScheme::Https => {
-        let mut headers = Vec::with_capacity(1);
-        headers.push(("Range".to_string(), format!("bytes={start}-{capped_end}")));
-
-        let request = HttpRequest {
-          fetch: req,
-          method: "GET",
-          redirect: web_fetch::RequestRedirect::Follow,
-          headers: &headers,
-          body: None,
-        };
-
-        let mut res = self.fetch_http_request(request)?;
+        let mut res = self.fetch_http_range(
+          kind,
+          req.destination,
+          url,
+          start,
+          capped_end,
+          req.client_origin,
+          req.referrer_url,
+          req.referrer_policy,
+          req.credentials_mode,
+        )?;
         ensure_http_success(&res, url)?;
 
         if max_bytes == 0 {
@@ -10382,7 +11462,17 @@ impl ResourceFetcher for HttpFetcher {
 
         // If the server ignored the range and returned a full 200 response, slice when possible.
         if res.status == Some(200) {
-          let full_len = u64::try_from(res.bytes.len()).unwrap_or(u64::MAX);
+          // Returning bytes from a non-zero offset would require downloading (and discarding) the
+          // preceding bytes, which defeats the purpose of efficient seeking. Treat this as an
+          // error to keep range fetches bounded.
+          if start > 0 {
+            return Err(response_resource_error(&res, url, "server did not honor Range request"));
+          }
+          let full_len = res
+            .header_get("content-length")
+            .map(trim_http_whitespace)
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_else(|| u64::try_from(res.bytes.len()).unwrap_or(u64::MAX));
           res.bytes = slice_bytes_for_fetch_range(url, &res.bytes, start..=capped_end, max_bytes)?;
           if !res.bytes.is_empty() {
             let end = start
