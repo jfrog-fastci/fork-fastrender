@@ -68,5 +68,6 @@ mod render_pages_output_paths;
 mod render_pages_panic_worker_test;
 mod render_pages_worker_timeout_test;
 mod sandbox_probe_seccomp_smoke_test;
+mod ui_perf_smoke_help_test;
 mod ui_perf_smoke_offline_default_test;
 mod ui_perf_smoke_output_test;

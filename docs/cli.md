@@ -272,6 +272,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - Via `xtask`: `timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json`
   - Direct: `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin ui_perf_smoke -- --output target/ui_perf_smoke.json`
   - See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness) for metric mapping (TTFP, scroll/resize frame times, input latency).
+  - Determinism: defaults to a single Rayon thread when neither `--rayon-threads` nor `RAYON_NUM_THREADS` are set; the output JSON records `run_config.effective_rayon_threads`.
 
 `render-page` wraps `fetch_and_render` in release mode by default (add `--debug` to keep a debug build).
 

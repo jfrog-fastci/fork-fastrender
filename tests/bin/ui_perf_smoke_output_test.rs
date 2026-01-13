@@ -54,7 +54,11 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
     summary["run_config"]["rayon_threads"].as_u64().is_some(),
     "run_config.rayon_threads should be present"
   );
-
+  assert_eq!(
+    summary["run_config"]["effective_rayon_threads"].as_u64(),
+    Some(1),
+    "ui_perf_smoke should default to a deterministic single Rayon thread (override with --rayon-threads or RAYON_NUM_THREADS)"
+  );
   let scenarios = summary["scenarios"]
     .as_array()
     .expect("scenarios array must exist");

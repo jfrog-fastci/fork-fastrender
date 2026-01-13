@@ -46,6 +46,10 @@ const INPUT_CYCLES: usize = 20;
 const TAB_SWITCH_WARMUP: usize = 5;
 const TAB_SWITCH_SAMPLES: usize = 40;
 
+fn default_rayon_threads() -> usize {
+  1
+}
+
 #[derive(Parser)]
 #[command(about = "Headless browser UI responsiveness harness (scroll/resize/input latency)")]
 struct Args {
@@ -157,6 +161,8 @@ struct ScenarioSummary {
 #[derive(Clone, Serialize, Deserialize)]
 struct RunConfig {
   rayon_threads: usize,
+  #[serde(default = "default_rayon_threads")]
+  effective_rayon_threads: usize,
   #[serde(default)]
   warmup: usize,
   #[serde(default)]
@@ -171,6 +177,7 @@ impl Default for RunConfig {
   fn default() -> Self {
     Self {
       rayon_threads: 1,
+      effective_rayon_threads: 1,
       warmup: 0,
       isolate: false,
       allow_network: false,
@@ -231,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   if std::env::var_os("FASTR_USE_BUNDLED_FONTS").is_none() {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
   }
-  let rayon_threads =
+  let effective_rayon_threads =
     apply_rayon_threads_config(resolve_requested_rayon_threads(args.rayon_threads));
 
   let scenario_names = selected_scenarios(args.only.as_deref())?;
@@ -257,7 +264,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let mut scenarios = Vec::new();
   let run_config = RunConfig {
-    rayon_threads,
+    rayon_threads: effective_rayon_threads,
+    effective_rayon_threads,
     warmup: args.warmup,
     isolate,
     allow_network: args.allow_network,
@@ -1706,6 +1714,7 @@ mod tests {
       schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
       run_config: RunConfig {
         rayon_threads: 1,
+        effective_rayon_threads: 1,
         ..RunConfig::default()
       },
       scenarios: Vec::new(),
@@ -1713,6 +1722,10 @@ mod tests {
 
     let value = serde_json::to_value(&summary).expect("serialize JSON");
     assert_eq!(value["run_config"]["rayon_threads"].as_u64(), Some(1));
+    assert_eq!(
+      value["run_config"]["effective_rayon_threads"].as_u64(),
+      Some(1)
+    );
     assert_eq!(value["run_config"]["warmup"].as_u64(), Some(0));
     assert_eq!(value["run_config"]["isolate"].as_bool(), Some(false));
     assert_eq!(

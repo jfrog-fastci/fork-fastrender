@@ -129,6 +129,11 @@ The `xtask` wrapper mirrors the `perf-smoke` workflow: it runs the harness in `-
 enables bundled fonts (`FASTR_USE_BUNDLED_FONTS=1`) for determinism, and forwards common regression
 gating flags (`--output`, `--baseline`, `--threshold`, `--fail-on-regression`).
 
+For deterministic CI-friendly timings, `ui_perf_smoke` defaults to a single Rayon thread when
+neither `--rayon-threads` nor `RAYON_NUM_THREADS` are set. Override with `--rayon-threads <N>` (or
+`RAYON_NUM_THREADS=<N>`) when you explicitly want more parallelism. The JSON summary records the
+resolved value as `run_config.effective_rayon_threads`.
+
 Examples:
 
 ```bash
