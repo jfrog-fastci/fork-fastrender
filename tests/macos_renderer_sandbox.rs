@@ -9,6 +9,7 @@ use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode};
 
 const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_CHILD";
 const MODE_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_MODE";
+const HOME_FILE_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_HOME_FILE_PATH";
 
 #[test]
 fn renderer_sandbox_profiles_enforce_policy() {
@@ -17,6 +18,10 @@ fn renderer_sandbox_profiles_enforce_policy() {
     run_child();
     return;
   }
+
+  let home_file = create_home_test_file().expect("create home test file");
+  let home_file_path = home_file.path().join("fastrender-seatbelt-home.txt");
+  std::fs::write(&home_file_path, b"fastrender seatbelt home file").expect("write home test file");
 
   for mode in ["pure", "relaxed"] {
     let exe = std::env::current_exe().expect("test exe path");
@@ -27,6 +32,7 @@ fn renderer_sandbox_profiles_enforce_policy() {
     let output = Command::new(&exe)
       .env(CHILD_ENV, "1")
       .env(MODE_ENV, mode)
+      .env(HOME_FILE_ENV, &home_file_path)
       .arg("--exact")
       .arg(test_name)
       .arg("--nocapture")
@@ -44,6 +50,7 @@ fn renderer_sandbox_profiles_enforce_policy() {
 
 fn run_child() {
   let mode = std::env::var(MODE_ENV).expect("child mode env var");
+  let home_file_path = std::env::var_os(HOME_FILE_ENV).map(PathBuf::from);
   let mode = match mode.as_str() {
     "pure" => MacosSandboxMode::PureComputation,
     "relaxed" => MacosSandboxMode::RendererSystemFonts,
@@ -57,10 +64,32 @@ fn run_child() {
 
   // Sensitive system files should not be readable.
   assert_permission_denied(std::fs::read("/etc/passwd"), "read /etc/passwd");
+  // Filesystem metadata and directory listings can also leak sensitive information.
+  assert_permission_denied(std::fs::metadata("/etc/passwd"), "metadata /etc/passwd");
+  assert_permission_denied(std::fs::read_dir("/etc"), "read_dir /etc");
+  assert_permission_denied(std::fs::canonicalize("/etc/passwd"), "canonicalize /etc/passwd");
 
   // Network should be denied in both modes.
   assert_permission_denied(std::net::TcpListener::bind("127.0.0.1:0"), "bind localhost");
   assert_permission_denied(std::net::UdpSocket::bind("127.0.0.1:0"), "bind UDP localhost");
+
+  // Relaxed mode should still deny user/home filesystem metadata access, but allow system font
+  // directory listing so font discovery can run.
+  if mode == MacosSandboxMode::RendererSystemFonts {
+    let Some(home_file_path) = home_file_path else {
+      panic!("missing {HOME_FILE_ENV} env var in relaxed-mode sandbox child");
+    };
+    assert_permission_denied(
+      std::fs::metadata(&home_file_path),
+      format!("metadata {}", home_file_path.display()),
+    );
+
+    let mut entries =
+      std::fs::read_dir("/System/Library/Fonts").expect("read_dir system fonts allowed");
+    if let Some(entry) = entries.next() {
+      entry.expect("read first entry in system font dir");
+    }
+  }
 
   // System fonts should only be readable in the relaxed profile.
   let font_read = std::fs::read(&font_path);
@@ -143,4 +172,14 @@ fn find_system_font_file() -> PathBuf {
     "expected to find at least one system font file (.ttf/.otf/.ttc) in one of: {}",
     FONT_DIRS.join(", ")
   );
+}
+
+fn create_home_test_file() -> io::Result<tempfile::TempDir> {
+  let home = std::env::var_os("HOME").ok_or_else(|| {
+    io::Error::new(io::ErrorKind::NotFound, "HOME env var not set for sandbox test")
+  })?;
+  let home_dir = PathBuf::from(home);
+  tempfile::Builder::new()
+    .prefix("fastr-seatbelt-home-")
+    .tempdir_in(&home_dir)
 }

@@ -27,7 +27,7 @@ fn is_spacer_char(ch: char) -> bool {
 fn spacer_advance_in_runs(runs: &[ShapedRun], edge: SpacerEdge, inline_vertical: bool) -> f32 {
   // Mirror `DisplayListBuilder::spacer_advance_in_runs` so expected ranges are derived from the same
   // glyph advances that the builder uses when computing skip-spaces clip ranges.
-  let mut advance = 0.0;
+  let mut advance: f32 = 0.0;
   match edge {
     SpacerEdge::Start => {
       for run in runs {
@@ -89,7 +89,7 @@ fn spacer_advance_for_prefix(
 ) -> f32 {
   // Compute spacer advance for the `[0, prefix_len)` byte range in the original text stream,
   // regardless of bidi reordering within the shaped glyph list.
-  let mut advance = 0.0;
+  let mut advance: f32 = 0.0;
 
   for run in runs {
     for glyph in &run.glyphs {
