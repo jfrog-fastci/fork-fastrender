@@ -853,6 +853,23 @@ mod tests {
   }
 
   #[test]
+  fn frame_src_scheme_relative_url_is_resolved_against_document_url() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://example.com/page.html".to_string(),
+      vec!["frame-src 'none'".to_string()],
+    );
+
+    let err = frame
+      .check_frame_src("//evil.example/child")
+      .expect_err("expected scheme-relative URL to be resolved then blocked");
+    assert_eq!(
+      err,
+      "Blocked by Content-Security-Policy (frame-src) for requested URL: https://evil.example/child"
+    );
+  }
+
+  #[test]
   fn mixed_content_blocks_final_url_after_redirect() {
     let mut frame = FrameNode::new(FrameId(1));
     frame.navigation_committed("https://secure.example/".to_string(), Vec::new());
