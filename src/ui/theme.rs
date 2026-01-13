@@ -259,6 +259,19 @@ fn rgba_with_alpha(color: Color32, alpha: u8) -> Color32 {
   Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
+fn selection_bg_fill(theme: &BrowserTheme) -> Color32 {
+  let tuning = high_contrast::theme_tuning(theme.high_contrast);
+  rgba_with_alpha(theme.colors.accent, tuning.selection_bg_alpha)
+}
+
+fn selection_stroke(theme: &BrowserTheme) -> Stroke {
+  let tuning = high_contrast::theme_tuning(theme.high_contrast);
+  Stroke::new(
+    tuning.focus_stroke_width,
+    rgba_with_alpha(theme.colors.accent, tuning.focus_stroke_alpha),
+  )
+}
+
 fn try_load_face(db: &FontDatabase, families: &[&str]) -> Option<LoadedFont> {
   for family in families {
     if let Some(id) = db.query(family, FontWeight::NORMAL, FontStyle::Normal) {
@@ -443,11 +456,8 @@ pub fn apply_browser_theme_with_ui_scale(ctx: &egui::Context, theme: &BrowserThe
 
   // Selection + focus.
   let tuning = high_contrast::theme_tuning(theme.high_contrast);
-  visuals.selection.bg_fill = rgba_with_alpha(theme.colors.accent, tuning.selection_bg_alpha);
-  visuals.selection.stroke = Stroke::new(
-    tuning.focus_stroke_width,
-    rgba_with_alpha(theme.colors.accent, tuning.focus_stroke_alpha),
-  );
+  visuals.selection.bg_fill = selection_bg_fill(theme);
+  visuals.selection.stroke = selection_stroke(theme);
 
   let rounding = egui::Rounding::same(theme.sizing.corner_radius);
   let stroke = Stroke::new(theme.sizing.stroke_width, theme.colors.border);
@@ -713,6 +723,33 @@ mod tests {
       || {
         assert_eq!(ui_scale_from_env(), None);
       },
+    );
+  }
+
+  #[test]
+  fn selection_stroke_is_stronger_in_high_contrast() {
+    let normal = BrowserTheme::light(None);
+    let high = BrowserTheme::light_high_contrast(None);
+
+    let normal_stroke = selection_stroke(&normal);
+    let high_stroke = selection_stroke(&high);
+
+    assert!(
+      normal_stroke.width >= 2.0,
+      "expected normal selection stroke (focus ring) to be thick enough for focus visibility (got {})",
+      normal_stroke.width
+    );
+    assert!(
+      high_stroke.width > normal_stroke.width,
+      "expected high-contrast selection stroke width to exceed normal ({} > {})",
+      high_stroke.width,
+      normal_stroke.width
+    );
+    assert!(
+      high_stroke.color.a() > normal_stroke.color.a(),
+      "expected high-contrast selection stroke alpha to exceed normal ({} > {})",
+      high_stroke.color.a(),
+      normal_stroke.color.a()
     );
   }
 }
