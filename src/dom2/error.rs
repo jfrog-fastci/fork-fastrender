@@ -28,8 +28,6 @@ pub enum DomError {
   NoModificationAllowedError,
   #[error("SyntaxError")]
   SyntaxError,
-  #[error("WrongDocumentError")]
-  WrongDocumentError,
 }
 
 impl DomError {
@@ -46,7 +44,6 @@ impl DomError {
       Self::InvalidNodeTypeError => "InvalidNodeTypeError",
       Self::NoModificationAllowedError => "NoModificationAllowedError",
       Self::SyntaxError => "SyntaxError",
-      Self::WrongDocumentError => "WrongDocumentError",
     }
   }
 }
