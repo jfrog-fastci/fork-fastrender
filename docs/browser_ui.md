@@ -107,6 +107,11 @@ running on very high-DPI displays), the browser UI also clamps viewport/DPR base
 - `FASTR_BROWSER_MAX_PIXELS`
 - `FASTR_BROWSER_MAX_DIM_PX`
 - `FASTR_BROWSER_MAX_DPR`
+
+For smoother interactive window drags (resize), the browser UI also supports temporarily reducing
+render-worker load by downscaling DPR during resize bursts:
+
+- `FASTR_BROWSER_RESIZE_DPR_SCALE` (defaults to `0.5`; set `1.0` to disable).
 If the windowed UI fails to start due to `wgpu` adapter/device creation issues (common under remote
 desktop, VMs, or systems without a working GPU stack), you can force a software adapter and/or
 backend:
