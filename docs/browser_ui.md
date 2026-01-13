@@ -330,9 +330,15 @@ The windowed `browser` UI includes a browser-style menu bar for discoverability 
 Implemented items are wired up to existing browser UI actions (tabs, navigation, reload, zoom,
 clipboard, panels).
 
-Some menu entries are still placeholders and remain disabled (for example Undo/Redo, **View → Toggle
-Full Screen**, **Bookmarks → Bookmark manager…**, **Window → New Window**, **Window → Show
-Downloads…**).
+Some menu entries are still placeholders and remain disabled (for example Undo/Redo).
+
+The menu bar also includes entries for some features that are available elsewhere in the UI, even
+if those menu items are currently disabled:
+
+- **New Window**: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>N</kbd>.
+- **Show Downloads…**: use the downloads button in the toolbar.
+- **Bookmark manager…**: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>.
+- **Toggle Full Screen**: not implemented yet.
 
 Help/About items open `about:help` / `about:version` in a new tab.
 
