@@ -2468,16 +2468,51 @@ fn idle_deadline_time_remaining_native<Host: WindowRealmHost + 'static>(
 fn make_idle_deadline_object(
   vm: &Vm,
   scope: &mut Scope<'_>,
+  global_obj: vm_js::GcObject,
   did_timeout: bool,
   deadline_ms: f64,
   time_remaining_call_id: NativeFunctionId,
 ) -> Result<vm_js::GcObject, VmError> {
   let mut scope = scope.reborrow();
+  // Root the global object while allocating property keys: `alloc_key` can trigger GC.
+  scope.push_root(Value::Object(global_obj))?;
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
 
+  // Best-effort: if the realm exposes an `IdleDeadline` interface, set the prototype so
+  // `deadline instanceof IdleDeadline` works for libraries that inspect it.
+  //
+  // Preserve determinism/safety by only consulting own *data* properties (no getters, no proxies),
+  // walking the prototype chain manually.
+  let idle_deadline_ctor_key = alloc_key(&mut scope, "IdleDeadline")?;
+  let mut cursor = Some(global_obj);
+  let idle_deadline_ctor = loop {
+    let Some(obj) = cursor else { break None };
+    if let Some(Value::Object(ctor)) = scope
+      .heap()
+      .object_get_own_data_property_value(obj, &idle_deadline_ctor_key)?
+    {
+      break Some(ctor);
+    }
+    cursor = scope.object_get_prototype(obj)?;
+  };
+  if let Some(idle_deadline_ctor) = idle_deadline_ctor {
+    scope.push_root(Value::Object(idle_deadline_ctor))?;
+    let prototype_key = alloc_key(&mut scope, "prototype")?;
+    if let Some(Value::Object(proto)) = scope
+      .heap()
+      .object_get_own_data_property_value(idle_deadline_ctor, &prototype_key)?
+    {
+      scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+    }
+  }
+
   let did_timeout_key = alloc_key(&mut scope, "didTimeout")?;
-  scope.define_property(obj, did_timeout_key, data_desc(Value::Bool(did_timeout)))?;
+  scope.define_property(
+    obj,
+    did_timeout_key,
+    read_only_data_desc(Value::Bool(did_timeout)),
+  )?;
 
   let mut deadline_ms = deadline_ms;
   if !deadline_ms.is_finite() || deadline_ms.is_nan() || deadline_ms < 0.0 {
@@ -2500,7 +2535,11 @@ fn make_idle_deadline_object(
   scope.push_root(Value::Object(func))?;
 
   let time_remaining_key = alloc_key(&mut scope, "timeRemaining")?;
-  scope.define_property(obj, time_remaining_key, data_desc(Value::Object(func)))?;
+  scope.define_property(
+    obj,
+    time_remaining_key,
+    read_only_data_desc(Value::Object(func)),
+  )?;
 
   Ok(obj)
 }
@@ -2569,6 +2608,7 @@ fn request_idle_callback_native<Host: WindowRealmHost + 'static>(
         let deadline_obj = make_idle_deadline_object(
           &*vm,
           &mut scope,
+          global_obj,
           did_timeout,
           duration_to_ms_f64(event_loop.now()) + time_remaining_ms,
           time_remaining_call_id,
@@ -3137,6 +3177,33 @@ mod tests {
     )?;
     assert_eq!(ok, Value::Bool(true));
 
+    Ok(())
+  }
+
+  #[test]
+  fn request_idle_callback_deadline_properties_are_read_only() -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__ok = false;
+      requestIdleCallback((deadline) => {
+        const didTimeoutDesc = Object.getOwnPropertyDescriptor(deadline, 'didTimeout');
+        const timeRemainingDesc = Object.getOwnPropertyDescriptor(deadline, 'timeRemaining');
+        globalThis.__ok =
+          didTimeoutDesc !== undefined &&
+          didTimeoutDesc.writable === false &&
+          timeRemainingDesc !== undefined &&
+          timeRemainingDesc.writable === false;
+      });
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    let ok = host.exec_script("globalThis.__ok")?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
