@@ -8557,7 +8557,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
       ("Element", "replaceWith", 0) => {
-        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let (node_id, obj) = require_element_receiver(vm, scope, receiver)?;
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(obj))?
+          .document_id;
 
         enum ReplaceWithItem {
           Node(NodeId),
@@ -8598,13 +8601,41 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         //   - If receiver is still a child of `parent`, replace it.
         //   - Otherwise, insert before `viableNextSibling` (handles cases where receiver was moved
         //     during conversion, e.g. `el.replaceWith(el)`).
-        let result = self.with_dom_host(vm, |host| {
+        #[derive(Debug)]
+        struct ReplaceWithSyncTargets {
+          parent_id: NodeId,
+          old_parents: Vec<NodeId>,
+          fragments: Vec<NodeId>,
+        }
+
+        let result: Result<Option<ReplaceWithSyncTargets>, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let generation = dom.mutation_generation();
-            let result: Result<Option<()>, DomError> = (|| {
+            let result: Result<Option<ReplaceWithSyncTargets>, DomError> = (|| {
               let Some(parent_id) = dom.parent(node_id)? else {
                 return Ok(None);
               };
+
+              // Capture old parents for any nodes that will be moved into the replacement fragment.
+              // This must happen after WebIDL conversion to avoid observing user-code mutations.
+              let mut old_parents: Vec<NodeId> = Vec::new();
+              let mut fragments: Vec<NodeId> = Vec::new();
+              for item in &items {
+                let ReplaceWithItem::Node(id) = item else {
+                  continue;
+                };
+                if id.index() >= dom.nodes_len() {
+                  continue;
+                }
+                let kind = &dom.node(*id).kind;
+                let is_fragment =
+                  matches!(kind, NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. });
+                if is_fragment {
+                  fragments.push(*id);
+                } else if let Some(p) = dom.parent_node(*id) {
+                  old_parents.push(p);
+                }
+              }
 
               // `viableNextSibling` is captured before conversion can move nodes out of the parent.
               let mut viable_next_sibling = dom.next_sibling(node_id);
@@ -8618,7 +8649,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
               if items.is_empty() {
                 dom.remove_child(parent_id, node_id)?;
-                return Ok(Some(()));
+                return Ok(Some(ReplaceWithSyncTargets {
+                  parent_id,
+                  old_parents,
+                  fragments,
+                }));
               }
 
               let fragment = dom.create_document_fragment();
@@ -8641,7 +8676,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               } else {
                 dom.insert_before(parent_id, fragment, viable_next_sibling)?;
               }
-              Ok(Some(()))
+              Ok(Some(ReplaceWithSyncTargets {
+                parent_id,
+                old_parents,
+                fragments,
+              }))
             })();
 
             let changed = dom.mutation_generation() != generation;
@@ -8650,7 +8689,50 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(Some(())) | Ok(None) => {
+          Ok(Some(targets)) => {
+            if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+              .get_existing_wrapper_for_document_id(scope.heap(), document_id, targets.parent_id)
+            {
+              self.sync_cached_child_nodes_for_wrapper(
+                vm,
+                scope,
+                parent_wrapper,
+                targets.parent_id,
+                document_id,
+              )?;
+            }
+            for old_parent in targets.old_parents {
+              if old_parent != targets.parent_id {
+                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
+                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent)
+                {
+                  self.sync_cached_child_nodes_for_wrapper(
+                    vm,
+                    scope,
+                    old_parent_wrapper,
+                    old_parent,
+                    document_id,
+                  )?;
+                }
+              }
+            }
+            for fragment_id in targets.fragments {
+              if let Some(fragment_wrapper) = require_dom_platform_mut(vm)?
+                .get_existing_wrapper_for_document_id(scope.heap(), document_id, fragment_id)
+              {
+                self.sync_cached_child_nodes_for_wrapper(
+                  vm,
+                  scope,
+                  fragment_wrapper,
+                  fragment_id,
+                  document_id,
+                )?;
+              }
+            }
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
+          Ok(None) => {
             self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }
@@ -8737,6 +8819,23 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let new_element_id =
           require_dom_platform_mut(vm)?.require_element_id(scope.heap(), new_element_val)?;
 
+        let where_lower = where_.to_ascii_lowercase();
+        let (target_parent, old_parent) = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let target_parent = match where_lower.as_str() {
+              "afterbegin" | "beforeend" => Some(element_id),
+              "beforebegin" | "afterend" => dom.parent_node(element_id),
+              _ => None,
+            };
+            let old_parent = if new_element_id.index() >= dom.nodes_len() {
+              None
+            } else {
+              dom.parent_node(new_element_id)
+            };
+            (target_parent, old_parent)
+          }))
+        })?;
+
         let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let before = dom.mutation_generation();
@@ -8749,29 +8848,35 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         match result {
           Ok(Some(_)) => {
             // Keep cached `childNodes` live NodeLists updated.
-            match where_.to_ascii_lowercase().as_str() {
-              "afterbegin" | "beforeend" => {
+            if let Some(parent_id) = target_parent {
+              if parent_id == element_id {
                 self.sync_cached_child_nodes_for_wrapper(vm, scope, obj, element_id, document_id)?;
+              } else if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+                .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+              {
+                self.sync_cached_child_nodes_for_wrapper(
+                  vm,
+                  scope,
+                  parent_wrapper,
+                  parent_id,
+                  document_id,
+                )?;
               }
-              "beforebegin" | "afterend" => {
-                let parent_id: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
-                  Ok(host.with_dom(|dom| dom.parent(element_id)))
-                })?;
-                if let Ok(Some(parent_id)) = parent_id {
-                  if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-                    .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
-                  {
-                    self.sync_cached_child_nodes_for_wrapper(
-                      vm,
-                      scope,
-                      parent_wrapper,
-                      parent_id,
-                      document_id,
-                    )?;
-                  }
+            }
+            if let Some(old_parent) = old_parent {
+              if Some(old_parent) != target_parent {
+                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
+                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent)
+                {
+                  self.sync_cached_child_nodes_for_wrapper(
+                    vm,
+                    scope,
+                    old_parent_wrapper,
+                    old_parent,
+                    document_id,
+                  )?;
                 }
               }
-              _ => {}
             }
             self.sync_live_html_collections(vm, scope)?;
             Ok(new_element_val)
@@ -9052,26 +9157,44 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Element", "remove", 0) => {
-        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(obj))?
+          .document_id;
 
-        let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+        let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let parent = match dom.parent(element_id) {
               Ok(v) => v,
               Err(err) => return (Err(err), false),
             };
             let Some(parent_id) = parent else {
-              return (Ok(()), false);
+              return (Ok(None), false);
             };
             match dom.remove_child(parent_id, element_id) {
-              Ok(changed) => (Ok(()), changed),
+              Ok(changed) => (Ok(Some(parent_id)), changed),
               Err(err) => (Err(err), false),
             }
           }))
         })?;
 
         match result {
-          Ok(()) => {
+          Ok(Some(parent_id)) => {
+            if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+              .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+            {
+              self.sync_cached_child_nodes_for_wrapper(
+                vm,
+                scope,
+                parent_wrapper,
+                parent_id,
+                document_id,
+              )?;
+            }
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
+          Ok(None) => {
             self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }
@@ -9786,6 +9909,70 @@ mod window_document_tests {
           if (coll1.length !== 1) return false;
           if (coll1[0] !== b) return false;
           if (node.children !== coll1) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_live_collections_sync_after_other_dom_mutations() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        try {
+          const root = document.createElement('div');
+          const a = document.createElement('a');
+          const b = document.createElement('b');
+          root.appendChild(a);
+          root.appendChild(b);
+
+          const kids = root.children;
+          const nodes = root.childNodes;
+
+          if (kids.length !== 2 || nodes.length !== 2) return false;
+          if (kids[0] !== a || kids[1] !== b) return false;
+          if (nodes[0] !== a || nodes[1] !== b) return false;
+
+          const c = document.createElement('c');
+          root.insertBefore(c, b);
+          if (kids.length !== 3 || nodes.length !== 3) return false;
+          if (kids[1] !== c || kids[2] !== b) return false;
+          if (nodes[1] !== c || nodes[2] !== b) return false;
+
+          const d = document.createElement('d');
+          root.replaceChild(d, c);
+          if (kids.length !== 3 || nodes.length !== 3) return false;
+          if (kids[1] !== d) return false;
+          if (nodes[1] !== d) return false;
+
+          b.remove();
+          if (kids.length !== 2 || nodes.length !== 2) return false;
+          if (kids[0] !== a || kids[1] !== d) return false;
+          if (nodes[0] !== a || nodes[1] !== d) return false;
+          if (kids[2] !== undefined) return false;
+          if (nodes[2] !== undefined) return false;
+          if (nodes.item(2) !== null) return false;
+
+          root.innerHTML = 't<span id="x"></span>';
+          if (kids.length !== 1) return false;
+          if (kids[0].id !== 'x') return false;
+          if (nodes.length !== 2) return false;
+          if (nodes.item(1).id !== 'x') return false;
+
           return true;
         } catch (e) {
           return false;
