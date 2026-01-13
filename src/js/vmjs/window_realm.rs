@@ -59,7 +59,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use url::Url;
 use vm_js::{
-  GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph,
+  promise_resolve_with_host_and_hooks, GcObject, GcString, Heap, HeapLimits, HostSlots,
+  JsRuntime as VmJsRuntime, ModuleGraph,
   NativeFunctionId, PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId,
   RootId, Scope, SourceText, SourceTextInput, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
   WeakGcObject,
@@ -40362,6 +40363,224 @@ fn html_media_element_load_native(
   Ok(Value::Undefined)
 }
 
+fn dispatch_dom_event_from_global_event_ctor_best_effort(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  target_obj: GcObject,
+  type_name: &'static str,
+) -> Result<(), VmError> {
+  let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+    return Ok(());
+  };
+  let Some(window_obj) = data.window_obj() else {
+    return Ok(());
+  };
+
+  let base = scope.heap().stack_root_len();
+  scope.push_root(Value::Object(window_obj))?;
+  scope.push_root(Value::Object(target_obj))?;
+
+  let event_ctor_key = alloc_key(scope, "Event")?;
+  let event_ctor = match vm.get_with_host_and_hooks(vm_host, scope, hooks, window_obj, event_ctor_key) {
+    Ok(v) => v,
+    Err(e @ VmError::OutOfMemory) | Err(e @ VmError::Termination(_)) => {
+      scope.heap_mut().truncate_stack_roots(base);
+      return Err(e);
+    }
+    Err(_) => {
+      // Best-effort: if `Event` is missing or throws, skip dispatch.
+      scope.heap_mut().truncate_stack_roots(base);
+      return Ok(());
+    }
+  };
+
+  if !scope.heap().is_constructor(event_ctor).unwrap_or(false) {
+    // Best-effort: if `Event` has been deleted or replaced with a non-constructible value, skip.
+    scope.heap_mut().truncate_stack_roots(base);
+    return Ok(());
+  }
+  scope.push_root(event_ctor)?;
+
+  let type_s = scope.alloc_string(type_name)?;
+  scope.push_root(Value::String(type_s))?;
+
+  let event_value = match vm.construct_with_host_and_hooks(
+    vm_host,
+    scope,
+    hooks,
+    event_ctor,
+    &[Value::String(type_s)],
+    event_ctor,
+  ) {
+    Ok(v) => v,
+    Err(e @ VmError::OutOfMemory) | Err(e @ VmError::Termination(_)) => {
+      scope.heap_mut().truncate_stack_roots(base);
+      return Err(e);
+    }
+    Err(_) => {
+      scope.heap_mut().truncate_stack_roots(base);
+      return Ok(());
+    }
+  };
+
+  let Value::Object(event_obj) = event_value else {
+    scope.heap_mut().truncate_stack_roots(base);
+    return Ok(());
+  };
+  scope.push_root(Value::Object(event_obj))?;
+
+  match event_target_dispatch_event_dom2(
+    vm,
+    scope,
+    vm_host,
+    hooks,
+    target_obj,
+    &[Value::Object(event_obj)],
+  ) {
+    Ok(_) => {}
+    Err(e @ VmError::OutOfMemory) | Err(e @ VmError::Termination(_)) => {
+      scope.heap_mut().truncate_stack_roots(base);
+      return Err(e);
+    }
+    Err(_) => {
+      // Best-effort: ignore dispatch errors (e.g. if `Event` has been replaced and does not produce
+      // a branded event object).
+    }
+  }
+
+  scope.heap_mut().truncate_stack_roots(base);
+  Ok(())
+}
+
+fn html_media_element_paused_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let state = data.media_element_state_registry_mut().get_or_create(key);
+  Ok(Value::Bool(state.paused))
+}
+
+fn html_media_element_current_time_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let state = data.media_element_state_registry_mut().get_or_create(key);
+  Ok(Value::Number(state.current_time))
+}
+
+fn html_media_element_current_time_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+
+  let mut time = scope
+    .heap_mut()
+    .to_number(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  if !time.is_finite() || time.is_nan() {
+    time = 0.0;
+  }
+
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let state = data.media_element_state_registry_mut().get_or_create(key);
+  state.current_time = time;
+
+  dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "timeupdate")?;
+  Ok(Value::Undefined)
+}
+
+fn html_media_element_play_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let state = data.media_element_state_registry_mut().get_or_create(key);
+  if state.paused {
+    state.paused = false;
+    dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "play")?;
+  }
+
+  promise_resolve_with_host_and_hooks(vm, scope, host, hooks, Value::Undefined)
+}
+
+fn html_media_element_pause_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let state = data.media_element_state_registry_mut().get_or_create(key);
+  if !state.paused {
+    state.paused = true;
+    dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "pause")?;
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn html_text_area_element_value_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -51305,6 +51524,89 @@ fn init_window_globals(
       data_desc(Value::Object(can_play_type_func)),
     )?;
 
+    // HTMLMediaElement.prototype.paused (readonly)
+    let paused_get_call_id = vm.register_native_call(html_media_element_paused_get_native)?;
+    let paused_get_name = scope.alloc_string("get paused")?;
+    scope.push_root(Value::String(paused_get_name))?;
+    let paused_get_func =
+      scope.alloc_native_function(paused_get_call_id, None, paused_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      paused_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(paused_get_func))?;
+    let paused_key = alloc_key(&mut scope, "paused")?;
+    scope.define_property(
+      html_media_element_proto,
+      paused_key,
+      idl_attribute_desc(Value::Object(paused_get_func), Value::Undefined),
+    )?;
+
+    // HTMLMediaElement.prototype.currentTime
+    let current_time_get_call_id =
+      vm.register_native_call(html_media_element_current_time_get_native)?;
+    let current_time_get_name = scope.alloc_string("get currentTime")?;
+    scope.push_root(Value::String(current_time_get_name))?;
+    let current_time_get_func =
+      scope.alloc_native_function(current_time_get_call_id, None, current_time_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      current_time_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(current_time_get_func))?;
+
+    let current_time_set_call_id =
+      vm.register_native_call(html_media_element_current_time_set_native)?;
+    let current_time_set_name = scope.alloc_string("set currentTime")?;
+    scope.push_root(Value::String(current_time_set_name))?;
+    let current_time_set_func =
+      scope.alloc_native_function(current_time_set_call_id, None, current_time_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      current_time_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(current_time_set_func))?;
+
+    let current_time_key = alloc_key(&mut scope, "currentTime")?;
+    scope.define_property(
+      html_media_element_proto,
+      current_time_key,
+      idl_attribute_desc(
+        Value::Object(current_time_get_func),
+        Value::Object(current_time_set_func),
+      ),
+    )?;
+
+    // HTMLMediaElement.prototype.play()
+    let play_call_id = vm.register_native_call(html_media_element_play_native)?;
+    let play_name = scope.alloc_string("play")?;
+    scope.push_root(Value::String(play_name))?;
+    let play_func = scope.alloc_native_function(play_call_id, None, play_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      play_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(play_func))?;
+    let play_key = alloc_key(&mut scope, "play")?;
+    scope.define_property(html_media_element_proto, play_key, data_desc(Value::Object(play_func)))?;
+
+    // HTMLMediaElement.prototype.pause()
+    let pause_call_id = vm.register_native_call(html_media_element_pause_native)?;
+    let pause_name = scope.alloc_string("pause")?;
+    scope.push_root(Value::String(pause_name))?;
+    let pause_func = scope.alloc_native_function(pause_call_id, None, pause_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      pause_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(pause_func))?;
+    let pause_key = alloc_key(&mut scope, "pause")?;
+    scope.define_property(
+      html_media_element_proto,
+      pause_key,
+      data_desc(Value::Object(pause_func)),
+    )?;
+
     // HTMLTextAreaElement.prototype.value
     let text_area_value_get_call_id =
       vm.register_native_call(html_text_area_element_value_get_native)?;
@@ -58983,6 +59285,82 @@ mod tests {
         } catch (e) {
           return false;
         }
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_play_dispatches_play_event() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        if (video.paused !== true) throw new Error(`expected paused true, got ${video.paused}`);
+        let fired = 0;
+        video.addEventListener('play', () => { fired++; });
+        video.play();
+        if (video.paused !== false) throw new Error(`expected paused false, got ${video.paused}`);
+        if (fired !== 1) throw new Error(`expected fired 1, got ${fired}`);
+        // Calling play again should be a no-op for the paused state and event.
+        video.play();
+        if (fired !== 1) throw new Error(`expected fired 1 after second play, got ${fired}`);
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_pause_dispatches_onpause_handler() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        let fired = 0;
+        video.onpause = () => { fired++; };
+        // Already paused; should not dispatch.
+        video.pause();
+        if (fired !== 0) throw new Error(`expected fired 0, got ${fired}`);
+        video.play();
+        video.pause();
+        if (fired !== 1) throw new Error(`expected fired 1, got ${fired}`);
+        // Already paused; should not dispatch again.
+        video.pause();
+        if (fired !== 1) throw new Error(`expected fired 1 after second pause, got ${fired}`);
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_current_time_set_dispatches_timeupdate_event() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        let fired = 0;
+        video.addEventListener('timeupdate', () => { fired++; });
+        video.currentTime = 10;
+        if (video.currentTime !== 10) throw new Error(`expected currentTime 10, got ${video.currentTime}`);
+        if (fired !== 1) throw new Error(`expected fired 1, got ${fired}`);
         return true;
       })()"#,
     )?;

@@ -120,6 +120,13 @@ impl DomInterface {
           return Self::HTMLFormElement;
         }
 
+        if tag_name.eq_ignore_ascii_case("video") {
+          return Self::HTMLVideoElement;
+        }
+        if tag_name.eq_ignore_ascii_case("audio") {
+          return Self::HTMLAudioElement;
+        }
+
         if tag_name.eq_ignore_ascii_case("div") {
           return Self::HTMLDivElement;
         }
@@ -805,6 +812,7 @@ impl DomPlatform {
     scope.push_root(Value::Object(proto_html_script_element))?;
 
     for proto in [
+      proto_html_media_element,
       proto_html_input_element,
       proto_html_select_element,
       proto_html_text_area_element,

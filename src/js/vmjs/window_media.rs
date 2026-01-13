@@ -20,11 +20,15 @@ use vm_js::Heap;
 #[derive(Debug, Clone)]
 pub(crate) struct MediaElementState {
   pub paused: bool,
+  pub current_time: f64,
 }
 
 impl Default for MediaElementState {
   fn default() -> Self {
-    Self { paused: true }
+    Self {
+      paused: true,
+      current_time: 0.0,
+    }
   }
 }
 
@@ -104,4 +108,3 @@ impl MediaElementStateRegistry {
     true
   }
 }
-
