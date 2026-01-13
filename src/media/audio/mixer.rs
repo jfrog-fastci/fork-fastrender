@@ -452,4 +452,43 @@ mod tests {
     mixer.mix_into_frames(&mut out2, frames as u64, frames);
     assert!(out2.iter().all(|v| *v == 0.0));
   }
+
+  #[test]
+  fn muted_stream_still_drains_queue() {
+    // 10Hz => 1 frame == 100ms (keeps the math exact and makes the test easy to reason about).
+    let mut mixer = AudioMixer::new(1, 10, Duration::from_secs(10));
+    mixer.add_stream(
+      1,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 0.0, // muted
+      },
+    );
+
+    mixer
+      .stream_queue_mut(1)
+      .unwrap()
+      .push_segment(seg(0, &[1.0, 1.0, 1.0, 1.0], 10))
+      .unwrap();
+    assert_eq!(mixer.stream_queue_mut(1).unwrap().buffered_frames(), 4);
+
+    // Mixing 2 frames while muted must still consume those frames from the queue.
+    let mut muted_out = vec![0.0; 2];
+    mixer.mix_into_frames(&mut muted_out, 0, 2);
+    assert_eq!(muted_out, vec![0.0, 0.0]);
+    assert_eq!(mixer.stream_queue_mut(1).unwrap().buffered_frames(), 2);
+
+    // Unmuting should play immediately without a backlog.
+    mixer.set_stream_params(
+      1,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 1.0,
+      },
+    );
+    let mut out = vec![0.0; 4];
+    mixer.mix_into_frames(&mut out, 2, 4);
+    assert_eq!(out, vec![1.0, 1.0, 0.0, 0.0]);
+    assert_eq!(mixer.stream_queue_mut(1).unwrap().buffered_frames(), 0);
+  }
 }
