@@ -697,6 +697,54 @@ fn p2_async_module_scripts_execute_asap_before_later_parser_scripts() -> Result<
 }
 
 #[test]
+fn p2_dynamic_module_scripts_are_async_by_default_and_do_not_block_each_other() -> Result<()> {
+  let js_options = JsExecutionOptions {
+    supports_module_scripts: true,
+    ..Default::default()
+  };
+  let mut h = Harness::new(
+    "https://example.invalid/p2_dynamic_module_async_default.html",
+    js_options,
+  )?;
+
+  // Module scripts created via `document.createElement("script")` are async-by-default. They should
+  // not participate in the ordered-asap module queue unless `async=false` is explicitly set.
+  //
+  // If the first module blocks on top-level await, the second module should still execute.
+  h.register_script_source(
+    "https://example.invalid/a.js",
+    r#"console.log("A-start"); await new Promise(() => {}); console.log("A-end");"#,
+  );
+  h.register_script_source("https://example.invalid/b.js", r#"console.log("B");"#);
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        const a = document.createElement('script');
+        a.type = 'module';
+        a.src = 'https://example.invalid/a.js';
+        document.body.appendChild(a);
+
+        const b = document.createElement('script');
+        b.type = 'module';
+        b.src = 'https://example.invalid/b.js';
+        document.body.appendChild(b);
+
+        console.log('after');
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["after".to_string(), "A-start".to_string(), "B".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn p2_dynamic_module_scripts_with_async_false_execute_in_insertion_order() -> Result<()> {
   let js_options = JsExecutionOptions {
     supports_module_scripts: true,
