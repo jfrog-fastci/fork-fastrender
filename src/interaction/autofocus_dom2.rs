@@ -1,4 +1,5 @@
 use crate::dom2::{Document, NodeId, NodeKind};
+use crate::interaction::InteractionStateDom2;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
   // HTML attribute processing (e.g. tabindex) trims ASCII whitespace only.
@@ -116,136 +117,7 @@ fn is_potentially_focusable_element_for_autofocus(doc: &Document, node: &crate::
   })
 }
 
-fn node_self_is_inert(doc: &Document, node: &crate::dom2::Node) -> bool {
-  // `<template>` inert subtree marker: treat the template element itself as inert for autofocus, to
-  // mirror the renderer/`DomNode` autofocus behaviour.
-  if node.inert_subtree {
-    return true;
-  }
-  if node_has_attr(doc, node, "inert") {
-    return true;
-  }
-  node_get_attr(doc, node, "data-fastr-inert").is_some_and(|v| v.eq_ignore_ascii_case("true"))
-}
-
-fn node_self_is_hidden(doc: &Document, node: &crate::dom2::Node) -> bool {
-  if node_has_attr(doc, node, "hidden") {
-    return true;
-  }
-  node_get_attr(doc, node, "data-fastr-hidden").is_some_and(|v| v.eq_ignore_ascii_case("true"))
-}
-
-fn is_html_fieldset(doc: &Document, node: &crate::dom2::Node) -> bool {
-  match &node.kind {
-    NodeKind::Element {
-      tag_name,
-      namespace,
-      ..
-    } => is_html_namespace(doc, namespace) && tag_name.eq_ignore_ascii_case("fieldset"),
-    _ => false,
-  }
-}
-
-fn is_html_legend(doc: &Document, node: &crate::dom2::Node) -> bool {
-  match &node.kind {
-    NodeKind::Element {
-      tag_name,
-      namespace,
-      ..
-    } => is_html_namespace(doc, namespace) && tag_name.eq_ignore_ascii_case("legend"),
-    _ => false,
-  }
-}
-
-fn is_fieldset_disabled_candidate(doc: &Document, node: &crate::dom2::Node) -> bool {
-  // HTML: fieldset disabledness only affects "form-associated elements" inside the fieldset. For
-  // autofocus selection we only need to support the core form controls we currently implement.
-  match &node.kind {
-    NodeKind::Element {
-      tag_name,
-      namespace,
-      ..
-    } => {
-      is_html_namespace(doc, namespace)
-        && (tag_name.eq_ignore_ascii_case("input")
-          || tag_name.eq_ignore_ascii_case("select")
-          || tag_name.eq_ignore_ascii_case("textarea")
-          || tag_name.eq_ignore_ascii_case("button"))
-    }
-    _ => false,
-  }
-}
-
-fn fieldset_first_legend_child(doc: &Document, fieldset_id: NodeId) -> Option<NodeId> {
-  let fieldset = doc.nodes().get(fieldset_id.index())?;
-  debug_assert!(is_html_fieldset(doc, fieldset));
-  for &child in &fieldset.children {
-    let Some(child_node) = doc.nodes().get(child.index()) else {
-      continue;
-    };
-    if child_node.parent != Some(fieldset_id) {
-      continue;
-    }
-    if is_html_legend(doc, child_node) {
-      return Some(child);
-    }
-  }
-  None
-}
-
-fn is_effectively_disabled(doc: &Document, node_id: NodeId) -> bool {
-  let Some(node) = doc.nodes().get(node_id.index()) else {
-    return false;
-  };
-  if !node_is_element_like(node) {
-    return false;
-  }
-
-  // `disabled` is a boolean attribute on form controls, but authors also use it on custom controls;
-  // for interaction treat it as authoritative on the element itself.
-  if node_has_attr(doc, node, "disabled") {
-    return true;
-  }
-
-  if !is_fieldset_disabled_candidate(doc, node) {
-    return false;
-  }
-
-  // Walk ancestors; `<fieldset disabled>` is the only ancestor-based disabledness we model (with the
-  // first-legend exception).
-  let mut ancestors: Vec<NodeId> = Vec::new();
-  let mut remaining = doc.nodes_len().saturating_add(1);
-  let mut current = Some(node_id);
-  while let Some(id) = current {
-    if remaining == 0 {
-      break;
-    }
-    remaining -= 1;
-
-    let Some(current_node) = doc.nodes().get(id.index()) else {
-      break;
-    };
-    ancestors.push(id);
-
-    if is_html_fieldset(doc, current_node) && node_has_attr(doc, current_node, "disabled") {
-      match fieldset_first_legend_child(doc, id) {
-        Some(first_legend_id) => {
-          let in_first_legend = ancestors.iter().any(|&ancestor| ancestor == first_legend_id);
-          if !in_first_legend {
-            return true;
-          }
-        }
-        None => return true,
-      }
-    }
-
-    current = current_node.parent;
-  }
-
-  false
-}
-
-/// Returns the first eligible `[autofocus]` element in DOM-connected tree order, if any.
+/// Returns the `dom2` [`NodeId`] of the first eligible `[autofocus]` element, if any.
 ///
 /// This is a best-effort approximation of HTML's autofocus behavior intended for dom2-driven live
 /// documents. The returned [`NodeId`] remains stable across DOM mutations that do not remove the
@@ -260,13 +132,15 @@ pub fn autofocus_target_node_id(dom: &Document) -> Option<NodeId> {
     };
 
     let self_inert_or_hidden = inherited_inert_or_hidden
-      || (node_is_element_like(node) && (node_self_is_inert(dom, node) || node_self_is_hidden(dom, node)));
+      || (node_is_element_like(node)
+        && (super::effective_disabled_dom2::node_self_is_inert(id, dom)
+          || super::effective_disabled_dom2::node_self_is_hidden(id, dom)));
 
     if node_is_element_like(node)
       && !self_inert_or_hidden
       && node_has_attr(dom, node, "autofocus")
       && is_potentially_focusable_element_for_autofocus(dom, node)
-      && !is_effectively_disabled(dom, id)
+      && !super::effective_disabled_dom2::is_effectively_disabled(id, dom)
     {
       return Some(id);
     }
@@ -292,6 +166,35 @@ pub fn autofocus_target_node_id(dom: &Document) -> Option<NodeId> {
   None
 }
 
+/// Build an [`InteractionStateDom2`] reflecting initial autofocus selection, if any.
+///
+/// This enables correct `:focus` selector matching (and related paint effects such as
+/// caret/selection rendering) for initial/static renders backed by a live `dom2::Document`.
+///
+/// Returns `None` when no eligible autofocus element is present.
+pub fn interaction_state_for_autofocus(doc: &Document) -> Option<InteractionStateDom2> {
+  let focused = autofocus_target_node_id(doc)?;
+
+  let mut focus_chain: Vec<NodeId> = Vec::new();
+  for ancestor in doc.ancestors(focused) {
+    let Some(node) = doc.nodes().get(ancestor.index()) else {
+      continue;
+    };
+    if node_is_element_like(node) {
+      focus_chain.push(ancestor);
+    }
+  }
+
+  Some(InteractionStateDom2 {
+    focused: Some(focused),
+    // Autofocus is not pointer-driven. Err on the side of matching `:focus-visible` as well,
+    // which aligns with typical browser behavior for initially focused text controls.
+    focus_visible: true,
+    focus_chain,
+    ..InteractionStateDom2::default()
+  })
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -310,14 +213,45 @@ mod tests {
   #[test]
   fn autofocus_respects_disabled_fieldset_first_legend_exception() {
     let doc = crate::dom2::parse_html(
-      "<!doctype html><html><body><fieldset disabled>\
+      "<html><body><fieldset disabled>\
          <input id=\"a\" autofocus>\
          <legend><input id=\"b\" autofocus></legend>\
        </fieldset></body></html>",
     )
     .expect("parse");
 
-    let b = doc.get_element_by_id("b").expect("b id");
-    assert_eq!(autofocus_target_node_id(&doc), Some(b));
+    let input_a = doc.get_element_by_id("a").expect("a id");
+    let input_b = doc.get_element_by_id("b").expect("b id");
+    assert_ne!(input_a, input_b);
+
+    assert_eq!(autofocus_target_node_id(&doc), Some(input_b));
+    let state = interaction_state_for_autofocus(&doc).expect("state");
+    assert_eq!(state.focused, Some(input_b));
+  }
+
+  #[test]
+  fn autofocus_does_not_treat_disabled_fieldset_as_inert_for_tabindex_elements() {
+    let doc = crate::dom2::parse_html(
+      "<html><body><fieldset disabled><div id=\"d\" tabindex=\"0\" autofocus></div></fieldset></body></html>",
+    )
+    .expect("parse");
+
+    let div_id = doc.get_element_by_id("d").expect("d id");
+
+    assert_eq!(autofocus_target_node_id(&doc), Some(div_id));
+    let state = interaction_state_for_autofocus(&doc).expect("state");
+    assert_eq!(state.focused, Some(div_id));
+  }
+
+  #[test]
+  fn autofocus_ignores_controls_disabled_by_fieldset() {
+    let doc = crate::dom2::parse_html(
+      "<html><body><fieldset disabled><input id=\"a\" autofocus></fieldset></body></html>",
+    )
+    .expect("parse");
+
+    assert_eq!(autofocus_target_node_id(&doc), None);
+    assert!(interaction_state_for_autofocus(&doc).is_none());
   }
 }
+
