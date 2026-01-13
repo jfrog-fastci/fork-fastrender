@@ -2120,6 +2120,7 @@ fn pinned_tab_ui(
   }
 
   // Input semantics.
+  // Keyboard context menu gesture (Shift+F10) when the tab has focus.
   let open_by_keyboard = response.has_focus()
     && ui.input_mut(|i| {
       i.consume_key(
@@ -4593,6 +4594,88 @@ mod tests {
     assert!(
       ctx.memory(|mem| mem.has_focus(rename_id)),
       "expected focus to move to rename text edit after opening via keyboard"
+    );
+  }
+
+  #[test]
+  fn tab_context_menu_opens_via_shift_f10_when_tab_focused() {
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "https://a.example/".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "https://b.example/".to_string()), false);
+
+    // Frame 1: render once so the tab widgets exist and test layout is stored.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let tab_id = tab_strip_tab_widget_id(tab_a);
+
+    // Frame 2: focus the tab.
+    ctx.memory_mut(|mem| mem.request_focus(tab_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      ctx.memory(|mem| mem.has_focus(tab_id)),
+      "expected tab to have focus"
+    );
+
+    // Frame 3: inject Shift+F10.
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    raw.time = Some(0.0);
+    raw.focused = true;
+    raw.modifiers.shift = true;
+    raw.events = vec![egui::Event::Key {
+      key: egui::Key::F10,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers {
+        shift: true,
+        ..Default::default()
+      },
+    }];
+    ctx.begin_frame(raw);
+    let actions = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions.is_empty(),
+      "expected Shift+F10 to open context menu without emitting tab actions, got {actions:?}"
+    );
+
+    let state = app
+      .chrome
+      .open_tab_context_menu
+      .expect("expected tab context menu to be opened after Shift+F10");
+    assert_eq!(state.tab_id, tab_a);
+    assert_eq!(state.opener_focus, Some(UiFocusToken(tab_a.0)));
+
+    let (_strip_rect, tab_rects) =
+      load_test_layout(&ctx).expect("expected test tab strip layout to be stored");
+    assert!(
+      !tab_rects.is_empty(),
+      "expected at least one tab rect to be stored"
+    );
+    let tab_rect = tab_rects[0];
+
+    let (ax, ay) = state.anchor_points;
+    assert!(
+      (ax - tab_rect.left()).abs() < 0.5,
+      "expected anchor x to be tab_rect.left() ({}), got {ax}",
+      tab_rect.left()
+    );
+    assert!(
+      (ay - tab_rect.bottom()).abs() < 0.5,
+      "expected anchor y to be tab_rect.bottom() ({}), got {ay}",
+      tab_rect.bottom()
     );
   }
 
