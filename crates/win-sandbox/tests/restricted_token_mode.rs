@@ -25,6 +25,9 @@ const TEST_NAME: &str = "restricted_token_spawn_enforces_low_integrity_and_block
 const ENV_TEST_FILE: &str = "WIN_SANDBOX_TEST_USERPROFILE_FILE";
 const ENV_TEST_DEPTH: &str = "WIN_SANDBOX_TEST_DEPTH";
 
+// `accctrl.h` defines `NO_INHERITANCE` as 0, but `windows-sys` does not currently export it.
+const NO_INHERITANCE: u32 = 0;
+
 #[link(name = "advapi32")]
 extern "system" {
   fn OpenProcessToken(process: HANDLE, desired_access: u32, token: *mut HANDLE) -> i32;
