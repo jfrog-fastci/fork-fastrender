@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use super::{
-  downloads, icon, icon_button, icon_tinted,
+  a11y_labels, downloads, icon, icon_button, icon_tinted,
   motion::UiMotion,
   theme::BrowserTheme,
   BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
@@ -252,7 +252,7 @@ pub fn downloads_panel_ui(
                       cancel_resp.widget_info(|| {
                         egui::WidgetInfo::labeled(
                           egui::WidgetType::Button,
-                          format!("Cancel download: {}", entry.file_name),
+                          a11y_labels::download_cancel_label(&entry.file_name),
                         )
                       });
                       if cancel_resp.clicked() {
@@ -264,7 +264,7 @@ pub fn downloads_panel_ui(
                       reveal_resp.widget_info(|| {
                         egui::WidgetInfo::labeled(
                           egui::WidgetType::Button,
-                          format!("Show downloaded file in folder: {}", entry.file_name),
+                          a11y_labels::download_show_in_folder_label(&entry.file_name),
                         )
                       });
                       if reveal_resp.clicked() {
@@ -274,7 +274,7 @@ pub fn downloads_panel_ui(
                       open_resp.widget_info(|| {
                         egui::WidgetInfo::labeled(
                           egui::WidgetType::Button,
-                          format!("Open downloaded file: {}", entry.file_name),
+                          a11y_labels::download_open_label(&entry.file_name),
                         )
                       });
                       if open_resp.clicked() {
@@ -286,7 +286,7 @@ pub fn downloads_panel_ui(
                       retry_resp.widget_info(|| {
                         egui::WidgetInfo::labeled(
                           egui::WidgetType::Button,
-                          format!("Retry download: {}", entry.file_name),
+                          a11y_labels::download_retry_label(&entry.file_name),
                         )
                       });
                       if retry_resp.clicked() {
@@ -298,7 +298,7 @@ pub fn downloads_panel_ui(
                       retry_resp.widget_info(|| {
                         egui::WidgetInfo::labeled(
                           egui::WidgetType::Button,
-                          format!("Retry download: {}", entry.file_name),
+                          a11y_labels::download_retry_label(&entry.file_name),
                         )
                       });
                       if retry_resp.clicked() {

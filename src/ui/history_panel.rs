@@ -7,7 +7,8 @@
 //! caller (typically `src/bin/browser.rs`).
 
 use super::{
-  icon_button, icon_tinted, motion::UiMotion, BrowserIcon, GlobalHistoryEntry, GlobalHistoryStore,
+  a11y_labels, icon_button, icon_tinted, motion::UiMotion, BrowserIcon, GlobalHistoryEntry,
+  GlobalHistoryStore,
 };
 
 #[derive(Debug, Default)]
@@ -264,7 +265,7 @@ pub fn history_panel_ui(
             }
 
             row_resp.widget_info({
-              let label = format!("Open history entry: {entry_label}");
+              let label = a11y_labels::history_open_label(Some(&entry_label), url.as_str());
               move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
             });
 
@@ -275,18 +276,19 @@ pub fn history_panel_ui(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                   let delete_resp = icon_button(ui, BrowserIcon::Trash, "Delete", true);
                   delete_resp.widget_info({
-                    let label = format!("Delete history entry: {entry_label}");
+                    let label = a11y_labels::history_delete_label(Some(&entry_label), url.as_str());
                     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                   });
-                if delete_resp.clicked() {
-                  out.delete_index = Some(idx);
-                  action_clicked = true;
-                }
+                  if delete_resp.clicked() {
+                    out.delete_index = Some(idx);
+                    action_clicked = true;
+                  }
 
                 let new_tab_resp =
                   icon_button(ui, BrowserIcon::OpenInNewTab, "Open in new tab", true);
                 new_tab_resp.widget_info({
-                  let label = format!("Open history entry in new tab: {entry_label}");
+                  let label =
+                    a11y_labels::history_open_in_new_tab_label(Some(&entry_label), url.as_str());
                   move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                 });
                 if new_tab_resp.clicked() {
@@ -296,7 +298,7 @@ pub fn history_panel_ui(
 
                 let open_resp = ui.small_button("Open");
                 open_resp.widget_info({
-                  let label = format!("Open history entry: {entry_label}");
+                  let label = a11y_labels::history_open_label(Some(&entry_label), url.as_str());
                   move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                 });
                 if open_resp.clicked() {

@@ -619,9 +619,12 @@ fn render_bookmark_row(
 
   ui.horizontal(|ui| {
     let open_a11y_label = format!("Open bookmark: {label}");
-    let new_tab_a11y_label = format!("Open bookmark in new tab: {label}");
-    let edit_a11y_label = format!("Edit bookmark: {label}");
-    let delete_a11y_label = format!("Delete bookmark: {label}");
+    let new_tab_a11y_label =
+      super::a11y_labels::bookmark_open_in_new_tab_label(entry.title.as_deref(), entry.url.as_str());
+    let edit_a11y_label =
+      super::a11y_labels::bookmark_edit_label(entry.title.as_deref(), entry.url.as_str());
+    let delete_a11y_label =
+      super::a11y_labels::bookmark_delete_label(entry.title.as_deref(), entry.url.as_str());
 
     let resp = ui.button(label).on_hover_text(entry.url.clone());
     resp.widget_info({
