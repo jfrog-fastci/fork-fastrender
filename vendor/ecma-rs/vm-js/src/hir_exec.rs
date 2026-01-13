@@ -1938,6 +1938,109 @@ impl<'vm> HirEvaluator<'vm> {
     expr: hir_js::ExprId,
   ) -> Result<Value, VmError> {
     match op {
+      hir_js::UnaryOp::Delete => {
+        let target_expr = self.get_expr(body, expr)?;
+        match &target_expr.kind {
+          hir_js::ExprKind::Ident(name_id) => {
+            if self.strict {
+              // Strict mode delete of an unqualified identifier is an early SyntaxError. The
+              // compiled HIR path can still observe it, so surface an equivalent error.
+              let diag = diagnostics::Diagnostic::error(
+                "VMJS0002",
+                "Delete of an unqualified identifier in strict mode.",
+                diagnostics::Span {
+                  file: diagnostics::FileId(0),
+                  range: diagnostics::TextRange::new(0, 0),
+                },
+              );
+              return Err(VmError::Syntax(vec![diag]));
+            }
+
+            let name = self.resolve_name(*name_id)?;
+            match self.env.resolve_binding_reference(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              scope,
+              name.as_str(),
+            )? {
+              ResolvedBinding::Declarative { .. } => Ok(Value::Bool(false)),
+              ResolvedBinding::Object {
+                binding_object,
+                name,
+              } => {
+                let mut del_scope = scope.reborrow();
+                del_scope.push_root(Value::Object(binding_object))?;
+                let key_s = del_scope.alloc_string(name)?;
+                del_scope.push_root(Value::String(key_s))?;
+                let key = PropertyKey::from_string(key_s);
+                Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
+                  self.vm,
+                  &mut del_scope,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  binding_object,
+                  key,
+                )?))
+              }
+              ResolvedBinding::GlobalProperty { name } => {
+                let global_object = self.env.global_object();
+                let mut del_scope = scope.reborrow();
+                del_scope.push_root(Value::Object(global_object))?;
+                let key_s = del_scope.alloc_string(name)?;
+                del_scope.push_root(Value::String(key_s))?;
+                let key = PropertyKey::from_string(key_s);
+                Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
+                  self.vm,
+                  &mut del_scope,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  global_object,
+                  key,
+                )?))
+              }
+              ResolvedBinding::Unresolvable { .. } => Ok(Value::Bool(true)),
+            }
+          }
+          hir_js::ExprKind::Member(member) => {
+            // Optional chaining delete (`delete o?.x`) short-circuits to `true` if the base is
+            // nullish and does not evaluate the property expression.
+            let base = self.eval_expr(scope, body, member.object)?;
+            if member.optional && matches!(base, Value::Null | Value::Undefined) {
+              return Ok(Value::Bool(true));
+            }
+
+            // Root base across key evaluation + boxing + delete.
+            let mut del_scope = scope.reborrow();
+            del_scope.push_root(base)?;
+
+            let key = self.eval_object_key(&mut del_scope, body, &member.property)?;
+            root_property_key(&mut del_scope, key)?;
+
+            let object = del_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+            del_scope.push_root(Value::Object(object))?;
+
+            let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
+              self.vm,
+              &mut del_scope,
+              &mut *self.host,
+              &mut *self.hooks,
+              object,
+              key,
+            )?;
+            if self.strict && !ok {
+              return Err(VmError::TypeError("Cannot delete property"));
+            }
+            Ok(Value::Bool(ok))
+          }
+          // `delete` of non-reference expressions always returns `true` (after evaluating the
+          // operand for side effects).
+          _ => {
+            let _ = self.eval_expr(scope, body, expr)?;
+            Ok(Value::Bool(true))
+          }
+        }
+      }
       hir_js::UnaryOp::Not => {
         let v = self.eval_expr(scope, body, expr)?;
         Ok(Value::Bool(!scope.heap().to_boolean(v)?))
