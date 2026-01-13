@@ -649,6 +649,65 @@ pub(super) fn compute_tab_strip_sizing(available_width: f32, tab_count: usize) -
   )
 }
 
+/// Compute how much horizontal space to allocate to pinned vs unpinned tab viewports.
+///
+/// This is pure sizing logic so it can be unit-tested. When pinned tabs overflow, they should
+/// scroll within their own region instead of consuming the full strip width and pushing the
+/// unpinned region to zero.
+pub(super) fn compute_pinned_viewport_width(
+  total_tabs_width: f32,
+  pinned_content_width: f32,
+  has_unpinned_tabs: bool,
+) -> (f32, f32) {
+  let total_tabs_width = if total_tabs_width.is_finite() {
+    total_tabs_width.max(0.0)
+  } else {
+    0.0
+  };
+  let pinned_content_width = if pinned_content_width.is_finite() {
+    pinned_content_width.max(0.0)
+  } else {
+    0.0
+  };
+
+  if pinned_content_width <= 0.0 {
+    return (0.0, total_tabs_width);
+  }
+  if !has_unpinned_tabs {
+    // When only pinned tabs exist, give them the full strip width so overflow can still scroll.
+    return (total_tabs_width, 0.0);
+  }
+
+  fn pinned_width_for_constraints(total: f32, pinned_content: f32, segment_gap: f32) -> f32 {
+    let max_by_fraction = total * PINNED_VIEWPORT_MAX_FRACTION;
+    let max_by_unpinned = (total - MIN_UNPINNED_VIEWPORT - segment_gap).max(0.0);
+    pinned_content
+      .min(max_by_fraction.min(max_by_unpinned))
+      .max(PINNED_TAB_WIDTH.min(total))
+      .min(total)
+  }
+
+  // Default to showing a gap between pinned + unpinned segments, but drop it if doing so would
+  // collapse one of the segments entirely under very narrow widths.
+  let mut segment_gap = TAB_GAP;
+  let mut pinned_viewport_width =
+    pinned_width_for_constraints(total_tabs_width, pinned_content_width, segment_gap);
+  let mut unpinned_viewport_width =
+    (total_tabs_width - pinned_viewport_width - segment_gap).max(0.0);
+  if unpinned_viewport_width <= 0.0 && segment_gap > 0.0 {
+    segment_gap = 0.0;
+    pinned_viewport_width =
+      pinned_width_for_constraints(total_tabs_width, pinned_content_width, segment_gap);
+    unpinned_viewport_width = (total_tabs_width - pinned_viewport_width - segment_gap).max(0.0);
+  }
+
+  let pinned_viewport_width = pinned_viewport_width.clamp(0.0, total_tabs_width);
+  let unpinned_viewport_width =
+    unpinned_viewport_width.clamp(0.0, (total_tabs_width - pinned_viewport_width).max(0.0));
+
+  (pinned_viewport_width, unpinned_viewport_width)
+}
+
 fn paint_spinner(painter: &egui::Painter, rect: Rect, time: f64, color: Color32) {
   let center = rect.center();
   let radius = rect.width().min(rect.height()) * 0.5 - 1.0;
@@ -1422,41 +1481,18 @@ pub(super) fn tab_strip_ui(
   } else {
     (pinned_count as f32) * PINNED_TAB_WIDTH + (pinned_count.saturating_sub(1) as f32) * TAB_GAP
   };
-  let mut segment_gap = if pinned_count > 0 && unpinned_count > 0 {
-    TAB_GAP
+  let (pinned_viewport_width, reserved_unpinned_viewport_width) = compute_pinned_viewport_width(
+    tabs_viewport_width,
+    pinned_content_width,
+    unpinned_count > 0,
+  );
+  // `compute_pinned_viewport_width` may drop the inter-segment gap under very narrow widths. Infer
+  // the effective gap from the remaining space.
+  let segment_gap = if pinned_count > 0 && unpinned_count > 0 {
+    (tabs_viewport_width - pinned_viewport_width - reserved_unpinned_viewport_width).max(0.0)
   } else {
     0.0
   };
-
-  let mut pinned_viewport_width = if pinned_count == 0 {
-    0.0
-  } else if unpinned_count == 0 {
-    tabs_viewport_width
-  } else {
-    let max_by_fraction = tabs_viewport_width * PINNED_VIEWPORT_MAX_FRACTION;
-    let max_by_unpinned = (tabs_viewport_width - MIN_UNPINNED_VIEWPORT - segment_gap).max(0.0);
-    // Ensure pinned tabs remain discoverable even in narrow strips by keeping at least one pinned
-    // tab width when possible.
-    pinned_content_width
-      .min(max_by_fraction.min(max_by_unpinned))
-      .max(PINNED_TAB_WIDTH.min(tabs_viewport_width))
-      .min(tabs_viewport_width)
-  };
-
-  // If the gap would fully consume what little space remains (e.g. very narrow windows), drop it
-  // so neither segment collapses to a 0-width viewport.
-  if pinned_count > 0 && unpinned_count > 0 && segment_gap > 0.0 {
-    let remaining = tabs_viewport_width - pinned_viewport_width - segment_gap;
-    if remaining <= 0.0 {
-      segment_gap = 0.0;
-      let max_by_fraction = tabs_viewport_width * PINNED_VIEWPORT_MAX_FRACTION;
-      let max_by_unpinned = (tabs_viewport_width - MIN_UNPINNED_VIEWPORT - segment_gap).max(0.0);
-      pinned_viewport_width = pinned_content_width
-        .min(max_by_fraction.min(max_by_unpinned))
-        .max(PINNED_TAB_WIDTH.min(tabs_viewport_width))
-        .min(tabs_viewport_width);
-    }
-  }
 
   let pinned_viewport_max_x = (tabs_rect.min.x + pinned_viewport_width).min(tabs_rect.max.x);
   let pinned_viewport_rect = Rect::from_min_max(
@@ -2472,5 +2508,37 @@ mod tests {
     let sizing = compute_tab_strip_sizing_with_fixed_width(200.0, 0, 240.0, 1);
     assert!(sizing.overflow);
     assert!((sizing.tab_width - 0.0).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn pinned_viewport_never_exceeds_total() {
+    for total in [0.0_f32, 10.0, 200.0, 400.0] {
+      let (pinned, unpinned) = compute_pinned_viewport_width(total, 10_000.0, true);
+      assert!(
+        pinned <= total + 1e-3,
+        "pinned viewport ({pinned}) should not exceed total ({total})"
+      );
+      assert!(unpinned >= -1e-3, "unpinned viewport should never be negative");
+      assert!(
+        pinned + unpinned <= total + 1e-3,
+        "sum of viewports should not exceed total width"
+      );
+    }
+  }
+
+  #[test]
+  fn pinned_viewport_reserves_min_unpinned_width_when_possible() {
+    // Pick a width where the unpinned minimum is satisfiable, and pinned is constrained primarily
+    // by the unpinned-minimum rule (not by pinned_content_width).
+    let total = MIN_UNPINNED_VIEWPORT + PINNED_TAB_WIDTH + TAB_GAP + 1.0;
+    let (pinned, unpinned) = compute_pinned_viewport_width(total, 10_000.0, true);
+    assert!(
+      unpinned + 1e-3 >= MIN_UNPINNED_VIEWPORT,
+      "expected unpinned viewport to keep minimum width"
+    );
+    assert!(
+      (total - pinned - unpinned) >= -1e-3,
+      "expected gap to be non-negative"
+    );
   }
 }
