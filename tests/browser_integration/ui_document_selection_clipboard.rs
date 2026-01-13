@@ -116,6 +116,14 @@ fn ui_document_selection_copy_preserves_preformatted_spaces() {
 }
 
 #[test]
+fn ui_document_selection_copy_preserves_preformatted_trailing_spaces() {
+  let text = run_copy(
+    "<!doctype html><meta charset=\"utf-8\"><style>html,body{margin:0;padding:0}</style><pre>hello   </pre>",
+  );
+  assert_eq!(text, "hello   ");
+}
+
+#[test]
 fn ui_document_selection_copy_preserves_preformatted_newlines() {
   let text = run_copy(
     "<!doctype html><meta charset=\"utf-8\"><style>html,body{margin:0;padding:0}</style><pre>hello\nworld</pre>",
