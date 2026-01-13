@@ -3116,13 +3116,17 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           ));
         }
 
-        let node_id = with_active_vm_host(vm, |host| {
-          mutate_dom_detached(host, |dom| dom.create_element(&local_name, HTML_NAMESPACE))
+        let (node_id, primary_interface) = with_active_vm_host(vm, |host| {
+          mutate_dom_detached(host, |dom| {
+            let node_id = dom.create_element(&local_name, HTML_NAMESPACE);
+            let primary_interface = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
+            (node_id, primary_interface)
+          })
         })?;
 
         let wrapper = {
           let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-          platform.get_or_create_wrapper(scope, document_key, node_id, DomInterface::Element)?
+          platform.get_or_create_wrapper(scope, document_key, node_id, primary_interface)?
         };
         Ok(Value::Object(wrapper))
       }
@@ -3889,7 +3893,7 @@ mod document_element_accessors_tests {
 mod document_node_creation_tests {
   use super::*;
   use crate::dom2::NodeKind;
-  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use crate::js::window_realm::{DomBindingsBackend, WindowRealm, WindowRealmConfig};
   use selectors::context::QuirksMode;
   use std::any::Any;
   use vm_js::{Job, Scope, Value, VmError, VmHostHooks};
@@ -4083,6 +4087,39 @@ mod document_node_creation_tests {
       "InvalidCharacterError"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn document_create_element_prototype_method_returns_html_element_wrappers_in_webidl_backend(
+  ) -> Result<(), VmError> {
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut dom_host = DocumentHostState::new(crate::dom2::Document::new(QuirksMode::NoQuirks));
+    let mut dispatch =
+      VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new(window.global_object());
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut dom_host);
+    hooks
+      .payload
+      .webidl_bindings_host_slot_mut()
+      .set(&mut dispatch);
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"(() => {
+        const el = Document.prototype.createElement.call(document, 'div');
+        if (!(el instanceof HTMLElement)) throw new Error('expected instanceof HTMLElement');
+        if (!(el instanceof HTMLDivElement)) throw new Error('expected instanceof HTMLDivElement');
+        if (Object.getPrototypeOf(el) !== HTMLDivElement.prototype) throw new Error('wrong prototype');
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
     Ok(())
   }
 }
