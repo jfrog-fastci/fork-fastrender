@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
 
@@ -28,7 +28,11 @@ fn context_menu_request_on_empty_tab_returns_default_context_menu() {
   let pos_css = (10.0, 10.0);
   worker
     .ui_tx
-    .send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css,
+      modifiers: PointerModifiers::NONE,
+    })
     .expect("context menu request");
 
   let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
@@ -75,4 +79,3 @@ fn context_menu_request_on_empty_tab_returns_default_context_menu() {
 
   worker.join().expect("worker join");
 }
-
