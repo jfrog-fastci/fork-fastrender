@@ -3823,7 +3823,7 @@ fn store_test_id(ctx: &egui::Context, key: &'static str, id: egui::Id) {
   });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use super::{
     chrome_focus_ring_style, chrome_ui, chrome_ui_with_bookmarks, tab_search_ranked_matches,
@@ -6993,6 +6993,83 @@ mod tests {
       expect_temp_id(ctx, "chrome_menu_button_id"),
       expect_temp_id(ctx, "chrome_appearance_button_id"),
     ]
+  }
+
+  #[test]
+  fn enter_activates_downloads_button_when_focused() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once to capture widget ids from `store_test_id`.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+    let downloads_id = expect_temp_id(&ctx, "chrome_downloads_button_id");
+
+    // Frame 1: move focus to the downloads button.
+    ctx.memory_mut(|mem| mem.request_focus(downloads_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(downloads_id)),
+      "expected downloads button to have focus"
+    );
+
+    // Frame 2: press Enter; should activate like a primary click.
+    begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ToggleDownloadsPanel)),
+      "expected ChromeAction::ToggleDownloadsPanel, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn space_activates_bookmark_star_when_focused() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let bookmarks = BookmarkStore::default();
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once to capture widget ids from `store_test_id`.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+    let bookmark_id = expect_temp_id(&ctx, "chrome_bookmark_star_id");
+
+    // Frame 1: move focus to the bookmark star.
+    ctx.memory_mut(|mem| mem.request_focus(bookmark_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(bookmark_id)),
+      "expected bookmark star to have focus"
+    );
+
+    // Frame 2: press Space; should activate like a primary click.
+    begin_frame(&ctx, vec![key_press(egui::Key::Space)]);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ToggleBookmarkForActiveTab)),
+      "expected ChromeAction::ToggleBookmarkForActiveTab, got {actions:?}"
+    );
   }
 
   #[test]

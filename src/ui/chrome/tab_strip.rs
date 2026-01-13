@@ -1217,7 +1217,9 @@ fn group_chip_ui(
     let _ = ui.put(title_rect, label);
   }
 
-  if response.clicked() {
+  let mut chip_activated = response.clicked();
+  chip_activated |= super::keyboard_activate(ui, &response);
+  if chip_activated {
     ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
   }
 
