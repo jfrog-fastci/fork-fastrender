@@ -1,4 +1,9 @@
 use crate::regexp::RegExpSyntaxError;
+use crate::regexp_unicode_property_strings::UnicodeStringProperty;
+use crate::regexp_unicode_tables::{
+  resolve_property_name, resolve_property_value, NonBinaryProp, NonBinaryValue,
+  ResolvedCodePointProperty, StringProp, UnicodePropertyName,
+};
 
 /// Resolved `\p{...}` / `\P{...}` Unicode property query.
 ///
@@ -9,57 +14,6 @@ use crate::regexp::RegExpSyntaxError;
 pub(crate) enum ResolvedUnicodeProperty {
   CodePoint(ResolvedCodePointProperty),
   String(UnicodeStringProperty),
-}
-
-/// Resolved code point property query.
-///
-/// Note: this intentionally contains only the minimal set needed by current users/tests. The
-/// mapping tables can be extended without changing the resolver algorithm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResolvedCodePointProperty {
-  /// `General_Category=<value>`
-  GeneralCategory(GeneralCategory),
-  /// `Script=<value>`
-  Script(Script),
-  /// `Script_Extensions=<value>`
-  ScriptExtensions(Script),
-  /// Binary properties such as `ASCII`.
-  Binary(BinaryCodePointProperty),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GeneralCategory {
-  UppercaseLetter,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Script {
-  Latin,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BinaryCodePointProperty {
-  ASCII,
-  Assigned,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UnicodeStringProperty {
-  RgiEmoji,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PropertyName {
-  Binary(BinaryCodePointProperty),
-  NonBinary(NonBinaryPropertyName),
-  String(UnicodeStringProperty),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NonBinaryPropertyName {
-  GeneralCategory,
-  Script,
-  ScriptExtensions,
 }
 
 #[inline]
@@ -96,122 +50,65 @@ pub(crate) fn resolve_unicode_property_value_expression(
       return Err(syntax_error());
     }
 
-    let Some(prop) = resolve_non_binary_property_name(name) else {
-      // `name` must resolve to one of the non-binary properties; binary/unknown => SyntaxError.
+    // `name` must resolve to one of the non-binary properties (`gc|sc|scx`).
+    let Some(prop_name) = resolve_property_name(name, unicode_sets) else {
+      return Err(syntax_error());
+    };
+    let UnicodePropertyName::NonBinary(prop) = prop_name else {
+      // Binary properties (and string properties) are invalid in `name=value` form.
       return Err(syntax_error());
     };
 
-    match prop {
-      NonBinaryPropertyName::GeneralCategory => {
-        let Some(gc) = resolve_general_category_value(value) else {
-          return Err(syntax_error());
-        };
-        Ok(ResolvedUnicodeProperty::CodePoint(
-          ResolvedCodePointProperty::GeneralCategory(gc),
-        ))
+    let Some(value) = resolve_property_value(prop, value) else {
+      return Err(syntax_error());
+    };
+
+    let resolved = match (prop, value) {
+      (NonBinaryProp::General_Category, NonBinaryValue::GeneralCategory(gc)) => {
+        ResolvedCodePointProperty::GeneralCategory(gc)
       }
-      NonBinaryPropertyName::Script => {
-        let Some(sc) = resolve_script_value(value) else {
-          return Err(syntax_error());
-        };
-        Ok(ResolvedUnicodeProperty::CodePoint(
-          ResolvedCodePointProperty::Script(sc),
-        ))
+      (NonBinaryProp::Script, NonBinaryValue::Script(sc)) => ResolvedCodePointProperty::Script(sc),
+      (NonBinaryProp::Script_Extensions, NonBinaryValue::Script(sc)) => {
+        ResolvedCodePointProperty::ScriptExtensions(sc)
       }
-      NonBinaryPropertyName::ScriptExtensions => {
-        let Some(sc) = resolve_script_value(value) else {
-          return Err(syntax_error());
-        };
-        Ok(ResolvedUnicodeProperty::CodePoint(
-          ResolvedCodePointProperty::ScriptExtensions(sc),
-        ))
-      }
-    }
+      _ => return Err(syntax_error()),
+    };
+
+    Ok(ResolvedUnicodeProperty::CodePoint(resolved))
   } else {
     // Lone values have `General_Category` value precedence.
-    if let Some(gc) = resolve_general_category_value(expr) {
+    if let Some(NonBinaryValue::GeneralCategory(gc)) =
+      resolve_property_value(NonBinaryProp::General_Category, expr)
+    {
       return Ok(ResolvedUnicodeProperty::CodePoint(
         ResolvedCodePointProperty::GeneralCategory(gc),
       ));
     }
 
-    let Some(name) = resolve_property_name(expr) else {
+    let Some(name) = resolve_property_name(expr, unicode_sets) else {
       return Err(syntax_error());
     };
 
     match name {
-      PropertyName::Binary(bin) => Ok(ResolvedUnicodeProperty::CodePoint(
+      UnicodePropertyName::Binary(bin) => Ok(ResolvedUnicodeProperty::CodePoint(
         ResolvedCodePointProperty::Binary(bin),
       )),
       // Non-binary property names require an explicit value (`Script=Latin` etc).
-      PropertyName::NonBinary(_) => Err(syntax_error()),
-      PropertyName::String(prop) => {
-        if !unicode_sets {
-          return Err(syntax_error());
-        }
-        Ok(ResolvedUnicodeProperty::String(prop))
-      }
+      UnicodePropertyName::NonBinary(_) => Err(syntax_error()),
+      UnicodePropertyName::String(prop) => Ok(ResolvedUnicodeProperty::String(map_string_prop(prop))),
     }
   }
 }
 
 #[inline]
-fn resolve_property_name(expr: &str) -> Option<PropertyName> {
-  if let Some(non_bin) = resolve_non_binary_property_name(expr) {
-    return Some(PropertyName::NonBinary(non_bin));
-  }
-  if let Some(bin) = resolve_binary_code_point_property_name(expr) {
-    return Some(PropertyName::Binary(bin));
-  }
-  if let Some(sp) = resolve_string_property_name(expr) {
-    return Some(PropertyName::String(sp));
-  }
-  None
-}
-
-#[inline]
-fn resolve_non_binary_property_name(expr: &str) -> Option<NonBinaryPropertyName> {
-  match expr {
-    // General_Category
-    "General_Category" | "gc" => Some(NonBinaryPropertyName::GeneralCategory),
-    // Script
-    "Script" | "sc" => Some(NonBinaryPropertyName::Script),
-    // Script_Extensions
-    "Script_Extensions" | "scx" => Some(NonBinaryPropertyName::ScriptExtensions),
-    _ => None,
+fn map_string_prop(prop: StringProp) -> UnicodeStringProperty {
+  match prop {
+    StringProp::Basic_Emoji => UnicodeStringProperty::BasicEmoji,
+    StringProp::Emoji_Keycap_Sequence => UnicodeStringProperty::EmojiKeycapSequence,
+    StringProp::RGI_Emoji_Flag_Sequence => UnicodeStringProperty::RgiEmojiFlagSequence,
+    StringProp::RGI_Emoji_Modifier_Sequence => UnicodeStringProperty::RgiEmojiModifierSequence,
+    StringProp::RGI_Emoji_Tag_Sequence => UnicodeStringProperty::RgiEmojiTagSequence,
+    StringProp::RGI_Emoji_ZWJ_Sequence => UnicodeStringProperty::RgiEmojiZwjSequence,
+    StringProp::RGI_Emoji => UnicodeStringProperty::RgiEmoji,
   }
 }
-
-#[inline]
-fn resolve_general_category_value(expr: &str) -> Option<GeneralCategory> {
-  match expr {
-    "Lu" | "Uppercase_Letter" => Some(GeneralCategory::UppercaseLetter),
-    _ => None,
-  }
-}
-
-#[inline]
-fn resolve_script_value(expr: &str) -> Option<Script> {
-  match expr {
-    "Latin" => Some(Script::Latin),
-    _ => None,
-  }
-}
-
-#[inline]
-fn resolve_binary_code_point_property_name(expr: &str) -> Option<BinaryCodePointProperty> {
-  match expr {
-    "ASCII" => Some(BinaryCodePointProperty::ASCII),
-    "Assigned" => Some(BinaryCodePointProperty::Assigned),
-    _ => None,
-  }
-}
-
-#[inline]
-fn resolve_string_property_name(expr: &str) -> Option<UnicodeStringProperty> {
-  match expr {
-    "RGI_Emoji" => Some(UnicodeStringProperty::RgiEmoji),
-    _ => None,
-  }
-}
-

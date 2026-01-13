@@ -1,7 +1,6 @@
-use crate::regexp_unicode_resolver::{
-  resolve_unicode_property_value_expression, GeneralCategory, ResolvedCodePointProperty,
-  ResolvedUnicodeProperty, UnicodeStringProperty,
-};
+use crate::regexp_unicode_resolver::{resolve_unicode_property_value_expression, ResolvedUnicodeProperty};
+use crate::regexp_unicode_property_strings::UnicodeStringProperty;
+use crate::regexp_unicode_tables::{GeneralCategory, ResolvedCodePointProperty};
 
 #[test]
 fn lone_general_category_value_precedence_lu_alias() {
@@ -9,7 +8,7 @@ fn lone_general_category_value_precedence_lu_alias() {
   assert_eq!(
     resolved,
     ResolvedUnicodeProperty::CodePoint(ResolvedCodePointProperty::GeneralCategory(
-      GeneralCategory::UppercaseLetter
+      GeneralCategory::Uppercase_Letter
     ))
   );
 }
@@ -20,7 +19,7 @@ fn lone_general_category_value_precedence_long_name() {
   assert_eq!(
     resolved,
     ResolvedUnicodeProperty::CodePoint(ResolvedCodePointProperty::GeneralCategory(
-      GeneralCategory::UppercaseLetter
+      GeneralCategory::Uppercase_Letter
     ))
   );
 }
@@ -55,4 +54,3 @@ fn string_properties_require_unicode_sets() {
     ResolvedUnicodeProperty::String(UnicodeStringProperty::RgiEmoji)
   );
 }
-
