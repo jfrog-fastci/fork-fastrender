@@ -122,6 +122,12 @@
 //! If you are embedding `vm-js` in a browser-style host and need to expose Web APIs (constructors,
 //! `prototype` objects, native methods/attributes, wrapper identity caches), see
 //! [`docs::webidl_host_objects`](crate::docs::webidl_host_objects).
+//!
+//! # RegExp: Unicode property escapes (`\p{…}` / `\P{…}`)
+//!
+//! RegExp Unicode property escapes are extremely data-driven. For the supported properties,
+//! strict matching rules, Unicode version policy (test262 alignment), and regeneration procedure,
+//! see [`docs::regexp_unicode_properties`](crate::docs::regexp_unicode_properties).
 
 mod agent;
 mod bigint;
@@ -360,4 +366,8 @@ pub mod docs {
   /// WebIDL binding initialization patterns (constructors, prototypes, host objects).
   #[doc = include_str!("../docs/webidl_host_objects.md")]
   pub mod webidl_host_objects {}
+
+  /// RegExp Unicode property escapes (`\p{…}` / `\P{…}`) and Unicode data update procedure.
+  #[doc = include_str!("../docs/regexp_unicode_properties.md")]
+  pub mod regexp_unicode_properties {}
 }
