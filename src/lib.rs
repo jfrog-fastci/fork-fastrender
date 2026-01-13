@@ -282,6 +282,7 @@ pub use api::BrowserDocumentJs;
 pub use api::BrowserTab;
 pub use api::BrowserTabHost;
 pub use api::BrowserTabJsExecutor;
+pub use api::Dom2HitTestResult;
 pub use api::ModuleScriptExecutionStatus;
 pub use api::SelectionAction;
 pub use api::CascadeDiagnostics;
