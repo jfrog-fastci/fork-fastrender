@@ -747,6 +747,7 @@ fn subtle_digest_native(
   let algorithm = args.get(0).copied().unwrap_or(Value::Undefined);
   let data = args.get(1).copied().unwrap_or(Value::Undefined);
 
+  #[derive(Clone, Copy)]
   enum DigestAlg {
     Sha1,
     Sha256,
@@ -861,30 +862,41 @@ fn subtle_digest_native(
     return reject_with_value(vm, &mut scope, &mut *host, &mut *hooks, cap, err);
   };
 
+  let compute_digest = |bytes: &[u8]| -> Vec<u8> {
+    match digest_alg {
+      DigestAlg::Sha1 => Sha1::digest(bytes).to_vec(),
+      DigestAlg::Sha256 => Sha256::digest(bytes).to_vec(),
+      DigestAlg::Sha384 => Sha384::digest(bytes).to_vec(),
+      DigestAlg::Sha512 => Sha512::digest(bytes).to_vec(),
+    }
+  };
+
   // --- Read BufferSource ----------------------------------------------------------------------
-  let data_bytes: Vec<u8> = match data {
+  //
+  // We hash directly from the underlying ArrayBuffer backing store (respecting view byteOffset /
+  // byteLength) so we don't need to allocate/copy the entire input into a temporary Vec.
+  let digest = match data {
     Value::Object(obj) => {
       scope.push_root(Value::Object(obj))?;
       let heap = scope.heap();
       if heap.is_array_buffer_object(obj) {
-        match heap.array_buffer_data(obj) {
-          Ok(bytes) => {
-            if bytes.len() > MAX_DIGEST_INPUT_BYTES {
-              return reject_with_vm_error(
-                vm,
-                &mut scope,
-                &mut *host,
-                &mut *hooks,
-                cap,
-                VmError::RangeError("crypto.subtle.digest input too large"),
-              );
-            }
-            bytes.to_vec()
-          }
+        let bytes = match heap.array_buffer_data(obj) {
+          Ok(bytes) => bytes,
           Err(err) => {
             return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err)
           }
+        };
+        if bytes.len() > MAX_DIGEST_INPUT_BYTES {
+          return reject_with_vm_error(
+            vm,
+            &mut scope,
+            &mut *host,
+            &mut *hooks,
+            cap,
+            VmError::RangeError("crypto.subtle.digest input too large"),
+          );
         }
+        compute_digest(bytes)
       } else if heap.is_typed_array_object(obj) {
         let (buffer_obj, byte_offset, byte_len) = match heap.typed_array_view_bytes(obj) {
           Ok(v) => v,
@@ -911,10 +923,10 @@ fn subtle_digest_native(
         let end = byte_offset
           .checked_add(byte_len)
           .ok_or(VmError::InvariantViolation("TypedArray byte offset overflow"))?;
-        buf_bytes
+        let view_bytes = buf_bytes
           .get(byte_offset..end)
-          .ok_or(VmError::InvariantViolation("TypedArray view out of bounds"))?
-          .to_vec()
+          .ok_or(VmError::InvariantViolation("TypedArray view out of bounds"))?;
+        compute_digest(view_bytes)
       } else if heap.is_data_view_object(obj) {
         let buffer_obj = heap.data_view_buffer(obj)?;
         let byte_offset = heap.data_view_byte_offset(obj)?;
@@ -938,26 +950,21 @@ fn subtle_digest_native(
         let end = byte_offset
           .checked_add(byte_len)
           .ok_or(VmError::InvariantViolation("DataView byte offset overflow"))?;
-        buf_bytes
+        let view_bytes = buf_bytes
           .get(byte_offset..end)
-          .ok_or(VmError::InvariantViolation("DataView view out of bounds"))?
-          .to_vec()
+          .ok_or(VmError::InvariantViolation("DataView view out of bounds"))?;
+        compute_digest(view_bytes)
       } else {
-        let err = new_type_error_object(&mut scope, &intr, "crypto.subtle.digest expects a BufferSource")?;
+        let err =
+          new_type_error_object(&mut scope, &intr, "crypto.subtle.digest expects a BufferSource")?;
         return reject_with_value(vm, &mut scope, &mut *host, &mut *hooks, cap, err);
       }
     }
     _ => {
-      let err = new_type_error_object(&mut scope, &intr, "crypto.subtle.digest expects a BufferSource")?;
+      let err =
+        new_type_error_object(&mut scope, &intr, "crypto.subtle.digest expects a BufferSource")?;
       return reject_with_value(vm, &mut scope, &mut *host, &mut *hooks, cap, err);
     }
-  };
-
-  let digest = match digest_alg {
-    DigestAlg::Sha1 => Sha1::digest(&data_bytes).to_vec(),
-    DigestAlg::Sha256 => Sha256::digest(&data_bytes).to_vec(),
-    DigestAlg::Sha384 => Sha384::digest(&data_bytes).to_vec(),
-    DigestAlg::Sha512 => Sha512::digest(&data_bytes).to_vec(),
   };
 
   let ab = scope.alloc_array_buffer_from_u8_vec(digest)?;
