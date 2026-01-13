@@ -149,6 +149,8 @@ fn browser_persists_and_restores_multi_window_session_active_window_and_window_s
   let persisted = std::fs::read_to_string(&session_path).expect("read persisted session");
   let persisted_value: serde_json::Value =
     serde_json::from_str(&persisted).expect("parse persisted session JSON");
+  let expected_value: serde_json::Value =
+    serde_json::from_str(expected_json).expect("parse expected session JSON as value");
   let windows = persisted_value
     .get("windows")
     .and_then(|v| v.as_array())
@@ -164,16 +166,56 @@ fn browser_persists_and_restores_multi_window_session_active_window_and_window_s
       .and_then(|v| v.as_u64()),
     Some(1)
   );
-  for (idx, win) in windows.iter().enumerate() {
-    let state = win
+  let expected_windows = expected_value
+    .get("windows")
+    .and_then(|v| v.as_array())
+    .expect("expected windows array in expected session JSON");
+  assert_eq!(
+    expected_windows.len(),
+    windows.len(),
+    "expected test fixture to contain same window count as persisted session"
+  );
+  for (idx, (persisted_win, expected_win)) in
+    windows.iter().zip(expected_windows.iter()).enumerate()
+  {
+    let persisted_state = persisted_win
       .get("window_state")
-      .unwrap_or_else(|| panic!("expected window_state for window {idx}, got: {win:?}"));
-    assert!(
-      state.get("x").is_some()
-        && state.get("y").is_some()
-        && state.get("width").is_some()
-        && state.get("height").is_some(),
-      "expected window_state geometry to be present for window {idx}, got: {state:?}"
+      .and_then(|v| v.as_object())
+      .unwrap_or_else(|| {
+        panic!(
+          "expected window_state object for window {idx}, got: {persisted_win:?}"
+        )
+      });
+    let expected_state = expected_win
+      .get("window_state")
+      .and_then(|v| v.as_object())
+      .unwrap_or_else(|| {
+        panic!("expected window_state object in fixture for window {idx}, got: {expected_win:?}")
+      });
+    assert_eq!(
+      persisted_state.get("x").and_then(|v| v.as_i64()),
+      expected_state.get("x").and_then(|v| v.as_i64()),
+      "window_state.x mismatch for window {idx}: {persisted_state:?}"
+    );
+    assert_eq!(
+      persisted_state.get("y").and_then(|v| v.as_i64()),
+      expected_state.get("y").and_then(|v| v.as_i64()),
+      "window_state.y mismatch for window {idx}: {persisted_state:?}"
+    );
+    assert_eq!(
+      persisted_state.get("width").and_then(|v| v.as_i64()),
+      expected_state.get("width").and_then(|v| v.as_i64()),
+      "window_state.width mismatch for window {idx}: {persisted_state:?}"
+    );
+    assert_eq!(
+      persisted_state.get("height").and_then(|v| v.as_i64()),
+      expected_state.get("height").and_then(|v| v.as_i64()),
+      "window_state.height mismatch for window {idx}: {persisted_state:?}"
+    );
+    assert_eq!(
+      persisted_state.get("maximized").and_then(|v| v.as_bool()),
+      expected_state.get("maximized").and_then(|v| v.as_bool()),
+      "window_state.maximized mismatch for window {idx}: {persisted_state:?}"
     );
   }
 
@@ -193,6 +235,24 @@ fn browser_persists_and_restores_multi_window_session_active_window_and_window_s
   let (source, session) = parse_headless_session(&stdout);
   assert_eq!(source, "restored");
   assert_eq!(session, expected_session);
+  assert_eq!(
+    session.windows.len(),
+    expected_session.windows.len(),
+    "expected restored session to contain the same number of windows as the fixture"
+  );
+  for (idx, (actual_win, expected_win)) in session
+    .windows
+    .iter()
+    .zip(expected_session.windows.iter())
+    .enumerate()
+  {
+    assert_eq!(
+      actual_win.active_tab_index, expected_win.active_tab_index,
+      "active_tab_index mismatch for restored window {idx}"
+    );
+    let actual_urls: Vec<&str> = actual_win.tabs.iter().map(|t| t.url.as_str()).collect();
+    let expected_urls: Vec<&str> = expected_win.tabs.iter().map(|t| t.url.as_str()).collect();
+    assert_eq!(actual_urls, expected_urls, "tab URL list mismatch for restored window {idx}");
+  }
   assert_eq!(parse_headless_smoke_active_url(&stdout), expected_active_url);
 }
-
