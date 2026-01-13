@@ -84,8 +84,20 @@ fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> 
 }
 
 fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  match rt.exec_script("async function* __ag_support() {} void __ag_support();") {
-    Ok(_) => Ok(true),
+  // Parse-level support for `async function*` isn't sufficient: vm-js can accept the syntax and
+  // still surface `VmError::Unimplemented` once the generator is actually executed. Probe a minimal
+  // `.next()` call so tests only activate when core async generator machinery exists.
+  match rt.exec_script(
+    r#"
+      async function* __ag_support() { yield 1; }
+      __ag_support().next();
+    "#,
+  ) {
+    Ok(_) => {
+      // Avoid leaking Promise jobs into subsequent assertions.
+      rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+      Ok(true)
+    }
     Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
     Err(err) => Err(err),
   }
@@ -180,6 +192,98 @@ fn yield_awaits_operand_fulfill() -> Result<(), VmError> {
 
   let value = rt.exec_script("JSON.stringify(actual)")?;
   assert_eq!(value_to_utf8(&rt, value), r#"[[7,false],["undefined",true]]"#);
+  Ok(())
+}
+
+#[test]
+fn yield_awaits_thenable_operand_fulfill() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  if !feature_detect_async_generators(&mut rt)? {
+    return Ok(());
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var actual = [];
+
+      var thenable = {
+        then(resolve, _reject) {
+          actual.push("then");
+          resolve(7);
+        }
+      };
+
+      async function* g() {
+        actual.push("start");
+        yield thenable;
+      }
+
+      g().next().then(r => {
+        actual.push([r.value, r.done]);
+      });
+
+      JSON.stringify(actual)
+    "#,
+  )?;
+
+  // `then` must be called synchronously as part of awaiting the operand.
+  assert_eq!(value_to_utf8(&rt, value), r#"["start","then"]"#);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("JSON.stringify(actual)")?;
+  assert_eq!(value_to_utf8(&rt, value), r#"["start","then",[7,false]]"#);
+  Ok(())
+}
+
+#[test]
+fn yield_awaits_thenable_operand_reject_closes_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  if !feature_detect_async_generators(&mut rt)? {
+    return Ok(());
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var actual = [];
+      var error = {};
+
+      var thenable = {
+        then(_resolve, reject) {
+          actual.push("then");
+          reject(error);
+        }
+      };
+
+      async function* g() {
+        actual.push("start");
+        yield thenable;
+        actual.push("unreachable");
+      }
+
+      var iter = g();
+      async function run() {
+        try {
+          await iter.next();
+          actual.push(false);
+        } catch (e) {
+          actual.push(e === error);
+        }
+
+        var r2 = await iter.next();
+        actual.push([r2.value === undefined ? "undefined" : r2.value, r2.done]);
+      }
+
+      run();
+      JSON.stringify(actual)
+    "#,
+  )?;
+  assert_eq!(value_to_utf8(&rt, value), r#"["start","then"]"#);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("JSON.stringify(actual)")?;
+  assert_eq!(value_to_utf8(&rt, value), r#"["start","then",true,["undefined",true]]"#);
   Ok(())
 }
 
