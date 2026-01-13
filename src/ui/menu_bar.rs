@@ -3,8 +3,8 @@
 use crate::ui::a11y;
 use crate::ui::about_pages;
 use crate::ui::browser_app::BrowserAppState;
-use crate::ui::ChromeAction;
 use crate::ui::zoom;
+use crate::ui::ChromeAction;
 
 #[cfg(target_os = "macos")]
 const MOD_CMD_CTRL: &str = "Cmd";
@@ -200,408 +200,382 @@ pub fn menu_bar_ui(
         // -------------------------------------------------------------------
         // File
         // -------------------------------------------------------------------
-        ui
-          .menu_button("File", |ui| {
-            let new_tab_resp =
-              ui.add(egui::Button::new("New Tab").shortcut_text(SHORTCUT_NEW_TAB));
-            new_tab_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open new tab"));
-            if new_tab_resp.clicked() {
-              commands.push(MenuCommand::NewTab);
-              ui.close_menu();
-            }
+        ui.menu_button("File", |ui| {
+          let new_tab_resp = ui.add(egui::Button::new("New Tab").shortcut_text(SHORTCUT_NEW_TAB));
+          new_tab_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open new tab"));
+          if new_tab_resp.clicked() {
+            commands.push(MenuCommand::NewTab);
+            ui.close_menu();
+          }
 
-            let save_page_resp = ui
-              .add_enabled(
-                has_active_tab,
-                egui::Button::new("Save Page…").shortcut_text(SHORTCUT_SAVE_PAGE),
-              )
-              .on_hover_text("Not implemented yet");
-            save_page_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Save page (not implemented)")
-            });
-            if save_page_resp.clicked() {
-              commands.push(MenuCommand::SavePage);
-              ui.close_menu();
-            }
+          let save_page_resp = ui.add_enabled(
+            has_active_tab,
+            egui::Button::new("Save Page…").shortcut_text(SHORTCUT_SAVE_PAGE),
+          );
+          save_page_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Save page"));
+          if save_page_resp.clicked() {
+            commands.push(MenuCommand::SavePage);
+            ui.close_menu();
+          }
 
-            let print_resp = ui
-              .add_enabled(has_active_tab, egui::Button::new("Print…").shortcut_text(SHORTCUT_PRINT))
-              .on_hover_text("Not implemented yet");
-            print_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Print page (not implemented)")
-            });
-            if print_resp.clicked() {
-              commands.push(MenuCommand::PrintPage);
-              ui.close_menu();
-            }
+          let print_resp = ui.add_enabled(
+            has_active_tab,
+            egui::Button::new("Print…").shortcut_text(SHORTCUT_PRINT),
+          );
+          print_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Print page"));
+          if print_resp.clicked() {
+            commands.push(MenuCommand::PrintPage);
+            ui.close_menu();
+          }
 
-            let close_tab_resp = ui.add_enabled(
-              can_close_tab,
-              egui::Button::new("Close Tab").shortcut_text(SHORTCUT_CLOSE_TAB),
-            );
-            close_tab_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close current tab")
-            });
-            if close_tab_resp.clicked() {
-              commands.push(MenuCommand::CloseTab);
-              ui.close_menu();
-            }
+          let close_tab_resp = ui.add_enabled(
+            can_close_tab,
+            egui::Button::new("Close Tab").shortcut_text(SHORTCUT_CLOSE_TAB),
+          );
+          close_tab_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close current tab")
+          });
+          if close_tab_resp.clicked() {
+            commands.push(MenuCommand::CloseTab);
+            ui.close_menu();
+          }
 
-            ui.separator();
+          ui.separator();
 
-            let quit_resp = ui.add(egui::Button::new("Quit").shortcut_text(SHORTCUT_QUIT));
-            quit_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Quit browser"));
-            if quit_resp.clicked() {
-              commands.push(MenuCommand::Quit);
-              ui.close_menu();
-            }
-          })
-          .response
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "File menu"));
+          let quit_resp = ui.add(egui::Button::new("Quit").shortcut_text(SHORTCUT_QUIT));
+          quit_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Quit browser"));
+          if quit_resp.clicked() {
+            commands.push(MenuCommand::Quit);
+            ui.close_menu();
+          }
+        })
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "File menu"));
 
         // -------------------------------------------------------------------
         // Edit
         // -------------------------------------------------------------------
-        ui
-          .menu_button("Edit", |ui| {
-            let undo_resp = ui.add_enabled(
-              chrome_text_input_expected,
-              egui::Button::new("Undo").shortcut_text(SHORTCUT_UNDO),
-            );
-            undo_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Undo"));
-            if undo_resp.clicked() {
-              commands.push(MenuCommand::Undo);
-              ui.close_menu();
-            }
+        ui.menu_button("Edit", |ui| {
+          let undo_resp = ui.add_enabled(
+            chrome_text_input_expected,
+            egui::Button::new("Undo").shortcut_text(SHORTCUT_UNDO),
+          );
+          undo_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Undo"));
+          if undo_resp.clicked() {
+            commands.push(MenuCommand::Undo);
+            ui.close_menu();
+          }
 
-            let redo_resp = ui.add_enabled(
-              chrome_text_input_expected,
-              egui::Button::new("Redo").shortcut_text(SHORTCUT_REDO),
-            );
-            redo_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Redo"));
-            if redo_resp.clicked() {
-              commands.push(MenuCommand::Redo);
-              ui.close_menu();
-            }
+          let redo_resp = ui.add_enabled(
+            chrome_text_input_expected,
+            egui::Button::new("Redo").shortcut_text(SHORTCUT_REDO),
+          );
+          redo_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Redo"));
+          if redo_resp.clicked() {
+            commands.push(MenuCommand::Redo);
+            ui.close_menu();
+          }
 
-            ui.separator();
+          ui.separator();
 
-            let cut_resp = ui.add(egui::Button::new("Cut").shortcut_text(SHORTCUT_CUT));
-            cut_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cut"));
-            if cut_resp.clicked() {
-              commands.push(MenuCommand::Cut);
-              ui.close_menu();
-            }
+          let cut_resp = ui.add(egui::Button::new("Cut").shortcut_text(SHORTCUT_CUT));
+          cut_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cut"));
+          if cut_resp.clicked() {
+            commands.push(MenuCommand::Cut);
+            ui.close_menu();
+          }
 
-            let copy_resp = ui.add(egui::Button::new("Copy").shortcut_text(SHORTCUT_COPY));
-            copy_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy"));
-            if copy_resp.clicked() {
-              commands.push(MenuCommand::Copy);
-              ui.close_menu();
-            }
+          let copy_resp = ui.add(egui::Button::new("Copy").shortcut_text(SHORTCUT_COPY));
+          copy_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy"));
+          if copy_resp.clicked() {
+            commands.push(MenuCommand::Copy);
+            ui.close_menu();
+          }
 
-            let paste_resp = ui.add(egui::Button::new("Paste").shortcut_text(SHORTCUT_PASTE));
-            paste_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Paste"));
-            if paste_resp.clicked() {
-              commands.push(MenuCommand::Paste);
-              ui.close_menu();
-            }
+          let paste_resp = ui.add(egui::Button::new("Paste").shortcut_text(SHORTCUT_PASTE));
+          paste_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Paste"));
+          if paste_resp.clicked() {
+            commands.push(MenuCommand::Paste);
+            ui.close_menu();
+          }
 
-            ui.separator();
+          ui.separator();
 
-            let select_all_resp = ui.add_enabled(
-              can_select_all,
-              egui::Button::new("Select All").shortcut_text(SHORTCUT_SELECT_ALL),
-            );
-            select_all_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Select all")
-            });
-            if select_all_resp.clicked() {
-              commands.push(MenuCommand::SelectAll);
-              ui.close_menu();
-            }
+          let select_all_resp = ui.add_enabled(
+            can_select_all,
+            egui::Button::new("Select All").shortcut_text(SHORTCUT_SELECT_ALL),
+          );
+          select_all_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Select all"));
+          if select_all_resp.clicked() {
+            commands.push(MenuCommand::SelectAll);
+            ui.close_menu();
+          }
 
-            let find_in_page_resp = ui.add_enabled(
-              has_active_tab,
-              egui::Button::new("Find in Page").shortcut_text(SHORTCUT_FIND_IN_PAGE),
-            );
-            find_in_page_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y::FIND_IN_PAGE_LABEL)
-            });
-            if find_in_page_resp.clicked() {
-              commands.push(MenuCommand::FindInPage);
-              ui.close_menu();
-            }
-          })
-          .response
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Edit menu"));
+          let find_in_page_resp = ui.add_enabled(
+            has_active_tab,
+            egui::Button::new("Find in Page").shortcut_text(SHORTCUT_FIND_IN_PAGE),
+          );
+          find_in_page_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y::FIND_IN_PAGE_LABEL)
+          });
+          if find_in_page_resp.clicked() {
+            commands.push(MenuCommand::FindInPage);
+            ui.close_menu();
+          }
+        })
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Edit menu"));
 
         // -------------------------------------------------------------------
         // View
         // -------------------------------------------------------------------
-        ui
-          .menu_button("View", |ui| {
-            let reload_resp = ui.add_enabled(
-              has_active_tab,
-              egui::Button::new("Reload").shortcut_text(SHORTCUT_RELOAD),
-            );
-            reload_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reload page"));
-            if reload_resp.clicked() {
-              commands.push(MenuCommand::Reload);
-              ui.close_menu();
-            }
+        ui.menu_button("View", |ui| {
+          let reload_resp = ui.add_enabled(
+            has_active_tab,
+            egui::Button::new("Reload").shortcut_text(SHORTCUT_RELOAD),
+          );
+          reload_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reload page"));
+          if reload_resp.clicked() {
+            commands.push(MenuCommand::Reload);
+            ui.close_menu();
+          }
 
-            ui.separator();
+          ui.separator();
 
-            let zoom_in_resp = ui.add_enabled(
-              has_active_tab,
-              egui::Button::new("Zoom In").shortcut_text(SHORTCUT_ZOOM_IN),
-            );
-            zoom_in_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Zoom in"));
-            if zoom_in_resp.clicked() {
-              commands.push(MenuCommand::ZoomIn);
-              ui.close_menu();
-            }
+          let zoom_in_resp = ui.add_enabled(
+            has_active_tab,
+            egui::Button::new("Zoom In").shortcut_text(SHORTCUT_ZOOM_IN),
+          );
+          zoom_in_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Zoom in"));
+          if zoom_in_resp.clicked() {
+            commands.push(MenuCommand::ZoomIn);
+            ui.close_menu();
+          }
 
-            let zoom_out_resp = ui.add_enabled(
-              has_active_tab,
-              egui::Button::new("Zoom Out").shortcut_text(SHORTCUT_ZOOM_OUT),
-            );
-            zoom_out_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Zoom out"));
-            if zoom_out_resp.clicked() {
-              commands.push(MenuCommand::ZoomOut);
-              ui.close_menu();
-            }
+          let zoom_out_resp = ui.add_enabled(
+            has_active_tab,
+            egui::Button::new("Zoom Out").shortcut_text(SHORTCUT_ZOOM_OUT),
+          );
+          zoom_out_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Zoom out"));
+          if zoom_out_resp.clicked() {
+            commands.push(MenuCommand::ZoomOut);
+            ui.close_menu();
+          }
 
-            let zoom_reset_resp = ui.add_enabled(
-              has_active_tab,
-              egui::Button::new("Reset Zoom").shortcut_text(SHORTCUT_ZOOM_RESET),
-            );
-            zoom_reset_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reset zoom")
-            });
-            if zoom_reset_resp.clicked() {
-              commands.push(MenuCommand::ZoomReset);
-              ui.close_menu();
-            }
+          let zoom_reset_resp = ui.add_enabled(
+            has_active_tab,
+            egui::Button::new("Reset Zoom").shortcut_text(SHORTCUT_ZOOM_RESET),
+          );
+          zoom_reset_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reset zoom"));
+          if zoom_reset_resp.clicked() {
+            commands.push(MenuCommand::ZoomReset);
+            ui.close_menu();
+          }
 
-            ui.separator();
+          ui.separator();
 
-            let debug_log_a11y_label = if state.debug_log_open {
-              "Hide debug log"
-            } else {
-              "Show debug log"
-            };
-            let mut show_debug_log = state.debug_log_open;
-            let debug_log_resp = ui.checkbox(&mut show_debug_log, "Debug log");
-            debug_log_resp.widget_info(move || {
-              egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, debug_log_a11y_label)
-            });
-            if debug_log_resp.clicked() {
-              commands.push(MenuCommand::ToggleDebugLogPanel);
-              ui.close_menu();
-            }
+          let debug_log_a11y_label = if state.debug_log_open {
+            "Hide debug log"
+          } else {
+            "Show debug log"
+          };
+          let mut show_debug_log = state.debug_log_open;
+          let debug_log_resp = ui.checkbox(&mut show_debug_log, "Debug log");
+          debug_log_resp.widget_info(move || {
+            egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, debug_log_a11y_label)
+          });
+          if debug_log_resp.clicked() {
+            commands.push(MenuCommand::ToggleDebugLogPanel);
+            ui.close_menu();
+          }
 
-            let fullscreen_resp = ui.add(
-              egui::Button::new("Toggle Full Screen").shortcut_text(SHORTCUT_TOGGLE_FULLSCREEN),
-            );
-            fullscreen_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Toggle full screen")
-            });
-            if fullscreen_resp.clicked() {
-              commands.push(MenuCommand::ToggleFullScreen);
-              ui.close_menu();
-            }
-          })
-          .response
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "View menu"));
+          let fullscreen_resp = ui
+            .add(egui::Button::new("Toggle Full Screen").shortcut_text(SHORTCUT_TOGGLE_FULLSCREEN));
+          fullscreen_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Toggle full screen")
+          });
+          if fullscreen_resp.clicked() {
+            commands.push(MenuCommand::ToggleFullScreen);
+            ui.close_menu();
+          }
+        })
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "View menu"));
 
         // -------------------------------------------------------------------
         // History
         // -------------------------------------------------------------------
-        ui
-          .menu_button("History", |ui| {
-            let back_resp =
-              ui.add_enabled(can_back, egui::Button::new("Back").shortcut_text(SHORTCUT_BACK));
-            back_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Go back")
-            });
-            if back_resp.clicked() {
-              commands.push(MenuCommand::Back);
-              ui.close_menu();
-            }
+        ui.menu_button("History", |ui| {
+          let back_resp = ui.add_enabled(
+            can_back,
+            egui::Button::new("Back").shortcut_text(SHORTCUT_BACK),
+          );
+          back_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Go back"));
+          if back_resp.clicked() {
+            commands.push(MenuCommand::Back);
+            ui.close_menu();
+          }
 
-            let forward_resp = ui.add_enabled(
-              can_forward,
-              egui::Button::new("Forward").shortcut_text(SHORTCUT_FORWARD),
-            );
-            forward_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Go forward")
-            });
-            if forward_resp.clicked() {
-              commands.push(MenuCommand::Forward);
-              ui.close_menu();
-            }
+          let forward_resp = ui.add_enabled(
+            can_forward,
+            egui::Button::new("Forward").shortcut_text(SHORTCUT_FORWARD),
+          );
+          forward_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Go forward"));
+          if forward_resp.clicked() {
+            commands.push(MenuCommand::Forward);
+            ui.close_menu();
+          }
 
-            let reopen_resp = ui.add_enabled(
-              can_reopen_closed,
-              egui::Button::new("Reopen Closed Tab").shortcut_text(SHORTCUT_REOPEN_TAB),
-            );
-            reopen_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reopen closed tab")
-            });
-            if reopen_resp.clicked() {
-              commands.push(MenuCommand::ReopenClosedTab);
-              ui.close_menu();
-            }
+          let reopen_resp = ui.add_enabled(
+            can_reopen_closed,
+            egui::Button::new("Reopen Closed Tab").shortcut_text(SHORTCUT_REOPEN_TAB),
+          );
+          reopen_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reopen closed tab")
+          });
+          if reopen_resp.clicked() {
+            commands.push(MenuCommand::ReopenClosedTab);
+            ui.close_menu();
+          }
 
-            ui.separator();
+          ui.separator();
 
-            let history_panel_a11y_label = if state.history_panel_open {
-              "Hide history panel"
-            } else {
-              "Show history panel"
-            };
-            let mut show_history_panel = state.history_panel_open;
-            let history_panel_resp = ui
-              .checkbox(&mut show_history_panel, "History panel")
-              .on_hover_text("Show the global history side panel");
-            history_panel_resp.widget_info(move || {
-              egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, history_panel_a11y_label)
-            });
-            if history_panel_resp.clicked() {
-              commands.push(MenuCommand::ToggleHistoryPanel);
-              ui.close_menu();
-            }
-          })
-          .response
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "History menu"));
+          let history_panel_a11y_label = if state.history_panel_open {
+            "Hide history panel"
+          } else {
+            "Show history panel"
+          };
+          let mut show_history_panel = state.history_panel_open;
+          let history_panel_resp = ui
+            .checkbox(&mut show_history_panel, "History panel")
+            .on_hover_text("Show the global history side panel");
+          history_panel_resp.widget_info(move || {
+            egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, history_panel_a11y_label)
+          });
+          if history_panel_resp.clicked() {
+            commands.push(MenuCommand::ToggleHistoryPanel);
+            ui.close_menu();
+          }
+        })
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "History menu"));
 
         // -------------------------------------------------------------------
         // Bookmarks
         // -------------------------------------------------------------------
-        ui
-          .menu_button("Bookmarks", |ui| {
-            let bookmark_label = if state.page_bookmarked {
-              "Remove Bookmark"
-            } else {
-              "Bookmark This Page"
-            };
-            let bookmark_a11y_label = if state.page_bookmarked {
-              "Remove bookmark"
-            } else {
-              "Bookmark this page"
-            };
-            let bookmark_resp = ui.add_enabled(
-              can_bookmark_this_page,
-              egui::Button::new(bookmark_label).shortcut_text(format!("{MOD_CMD_CTRL}+D")),
-            );
-            bookmark_resp.widget_info(move || {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, bookmark_a11y_label)
-            });
-            if bookmark_resp.clicked() {
-              commands.push(MenuCommand::ToggleBookmarkThisPage);
-              ui.close_menu();
-            }
+        ui.menu_button("Bookmarks", |ui| {
+          let bookmark_label = if state.page_bookmarked {
+            "Remove Bookmark"
+          } else {
+            "Bookmark This Page"
+          };
+          let bookmark_a11y_label = if state.page_bookmarked {
+            "Remove bookmark"
+          } else {
+            "Bookmark this page"
+          };
+          let bookmark_resp = ui.add_enabled(
+            can_bookmark_this_page,
+            egui::Button::new(bookmark_label).shortcut_text(format!("{MOD_CMD_CTRL}+D")),
+          );
+          bookmark_resp.widget_info(move || {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, bookmark_a11y_label)
+          });
+          if bookmark_resp.clicked() {
+            commands.push(MenuCommand::ToggleBookmarkThisPage);
+            ui.close_menu();
+          }
 
-            ui.separator();
+          ui.separator();
 
-            let bookmarks_panel_a11y_label = if state.bookmarks_panel_open {
-              "Hide bookmarks panel"
-            } else {
-              "Show bookmarks panel"
-            };
-            let mut show_bookmarks_panel = state.bookmarks_panel_open;
-            let bookmarks_panel_resp = ui
-              .checkbox(&mut show_bookmarks_panel, "Bookmarks panel")
-              .on_hover_text("Show the bookmarks side panel");
-            bookmarks_panel_resp.widget_info(move || {
-              egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, bookmarks_panel_a11y_label)
-            });
-            if bookmarks_panel_resp.clicked() {
-              commands.push(MenuCommand::ToggleBookmarksPanel);
-              ui.close_menu();
-            }
+          let bookmarks_panel_a11y_label = if state.bookmarks_panel_open {
+            "Hide bookmarks panel"
+          } else {
+            "Show bookmarks panel"
+          };
+          let mut show_bookmarks_panel = state.bookmarks_panel_open;
+          let bookmarks_panel_resp = ui
+            .checkbox(&mut show_bookmarks_panel, "Bookmarks panel")
+            .on_hover_text("Show the bookmarks side panel");
+          bookmarks_panel_resp.widget_info(move || {
+            egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, bookmarks_panel_a11y_label)
+          });
+          if bookmarks_panel_resp.clicked() {
+            commands.push(MenuCommand::ToggleBookmarksPanel);
+            ui.close_menu();
+          }
 
-            let bookmarks_manager_resp = ui.add(
-              egui::Button::new("Bookmark manager…").shortcut_text(SHORTCUT_BOOKMARK_MANAGER),
-            );
-            bookmarks_manager_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open bookmark manager")
-            });
-            if bookmarks_manager_resp.clicked() {
-              commands.push(MenuCommand::ToggleBookmarksManager);
-              ui.close_menu();
-            }
-          })
-          .response
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Bookmarks menu"));
+          let bookmarks_manager_resp =
+            ui.add(egui::Button::new("Bookmark manager…").shortcut_text(SHORTCUT_BOOKMARK_MANAGER));
+          bookmarks_manager_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open bookmark manager")
+          });
+          if bookmarks_manager_resp.clicked() {
+            commands.push(MenuCommand::ToggleBookmarksManager);
+            ui.close_menu();
+          }
+        })
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Bookmarks menu"));
 
         // -------------------------------------------------------------------
         // Window
         // -------------------------------------------------------------------
-        ui
-          .menu_button("Window", |ui| {
-            let new_window_resp =
-              ui.add(egui::Button::new("New Window").shortcut_text(SHORTCUT_NEW_WINDOW));
-            new_window_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open new window")
-            });
-            if new_window_resp.clicked() {
-              commands.push(MenuCommand::NewWindow);
-              ui.close_menu();
-            }
+        ui.menu_button("Window", |ui| {
+          let new_window_resp =
+            ui.add(egui::Button::new("New Window").shortcut_text(SHORTCUT_NEW_WINDOW));
+          new_window_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open new window"));
+          if new_window_resp.clicked() {
+            commands.push(MenuCommand::NewWindow);
+            ui.close_menu();
+          }
 
-            let downloads_resp = ui.add(
-              egui::Button::new("Show Downloads…").shortcut_text(SHORTCUT_DOWNLOADS),
-            );
-            downloads_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show downloads")
-            });
-            if downloads_resp.clicked() {
-              commands.push(MenuCommand::ToggleDownloadsPanel);
-              ui.close_menu();
-            }
-          })
-          .response
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Window menu"));
+          let downloads_resp =
+            ui.add(egui::Button::new("Show Downloads…").shortcut_text(SHORTCUT_DOWNLOADS));
+          downloads_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show downloads"));
+          if downloads_resp.clicked() {
+            commands.push(MenuCommand::ToggleDownloadsPanel);
+            ui.close_menu();
+          }
+        })
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Window menu"));
 
         // -------------------------------------------------------------------
         // Help
         // -------------------------------------------------------------------
-        ui
-          .menu_button("Help", |ui| {
-            let help_resp = ui.button("Help");
-            help_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open help")
-            });
-            if help_resp.clicked() {
-              commands.push(MenuCommand::OpenHelp);
-              ui.close_menu();
-            }
+        ui.menu_button("Help", |ui| {
+          let help_resp = ui.button("Help");
+          help_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open help"));
+          if help_resp.clicked() {
+            commands.push(MenuCommand::OpenHelp);
+            ui.close_menu();
+          }
 
-            let about_resp = ui.button("About FastRender");
-            about_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open about FastRender")
-            });
-            if about_resp.clicked() {
-              commands.push(MenuCommand::OpenAbout);
-              ui.close_menu();
-            }
-          })
-          .response
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Help menu"));
-
+          let about_resp = ui.button("About FastRender");
+          about_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open about FastRender")
+          });
+          if about_resp.clicked() {
+            commands.push(MenuCommand::OpenAbout);
+            ui.close_menu();
+          }
+        })
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Help menu"));
       });
     });
 
@@ -716,7 +690,12 @@ mod tests {
     events: Vec<egui::Event>,
   ) -> (Vec<MenuCommand>, egui::FullOutput) {
     begin_frame(ctx, events);
-    let cmds = menu_bar_ui(ctx, app, MenuBarState::default(), ctx.wants_keyboard_input());
+    let cmds = menu_bar_ui(
+      ctx,
+      app,
+      MenuBarState::default(),
+      ctx.wants_keyboard_input(),
+    );
     let output = ctx.end_frame();
     (cmds, output)
   }
@@ -736,10 +715,17 @@ mod tests {
       }
     }
 
-    shapes.iter().find_map(|clipped| in_shape(&clipped.shape, needle))
+    shapes
+      .iter()
+      .find_map(|clipped| in_shape(&clipped.shape, needle))
   }
 
-  fn click_menu_item(ctx: &egui::Context, app: &BrowserAppState, menu: &str, item: &str) -> Vec<MenuCommand> {
+  fn click_menu_item(
+    ctx: &egui::Context,
+    app: &BrowserAppState,
+    menu: &str,
+    item: &str,
+  ) -> Vec<MenuCommand> {
     let (_cmds, output) = menu_bar_frame(ctx, app, Vec::new());
     let menu_pos = find_text_center(&output.shapes, menu)
       .unwrap_or_else(|| panic!("failed to find menu bar label {menu:?}"));
@@ -855,7 +841,10 @@ mod tests {
   fn file_save_page_menu_item_emits_command() {
     let ctx = egui::Context::default();
     let mut app = BrowserAppState::new();
-    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
     let cmds = click_menu_item(&ctx, &app, "File", "Save Page…");
 
     assert!(
@@ -868,7 +857,10 @@ mod tests {
   fn file_print_menu_item_emits_command() {
     let ctx = egui::Context::default();
     let mut app = BrowserAppState::new();
-    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
     let cmds = click_menu_item(&ctx, &app, "File", "Print…");
 
     assert!(
@@ -881,7 +873,10 @@ mod tests {
   fn view_zoom_in_menu_mutates_active_tab_zoom() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
     let before = app.active_tab().unwrap().zoom;
     let actions = dispatch_menu_command(MenuCommand::ZoomIn, &mut app);
     assert!(actions.is_empty());
@@ -935,7 +930,9 @@ mod tests {
     let cmds = click_menu_item(&ctx, &app, "View", "Toggle Full Screen");
 
     assert!(
-      cmds.iter().any(|c| matches!(c, MenuCommand::ToggleFullScreen)),
+      cmds
+        .iter()
+        .any(|c| matches!(c, MenuCommand::ToggleFullScreen)),
       "expected View → Toggle Full Screen to emit MenuCommand::ToggleFullScreen, got {cmds:?}"
     );
   }
@@ -945,7 +942,10 @@ mod tests {
     let ctx = egui::Context::default();
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
     // Simulate focus on a chrome text input so Undo/Redo are enabled.
     app.chrome.address_bar_has_focus = true;
 
@@ -983,7 +983,12 @@ mod tests {
 
     let app = BrowserAppState::new();
     begin_frame(&ctx, Vec::new());
-    let _cmds = menu_bar_ui(&ctx, &app, MenuBarState::default(), ctx.wants_keyboard_input());
+    let _cmds = menu_bar_ui(
+      &ctx,
+      &app,
+      MenuBarState::default(),
+      ctx.wants_keyboard_input(),
+    );
     let output = ctx.end_frame();
 
     let names = a11y_test_util::accesskit_names_from_full_output(&output);

@@ -45,11 +45,11 @@ pub enum ShortcutAction {
   ToggleFullScreen,
   /// Save the current page (Ctrl/Cmd+S).
   ///
-  /// Not implemented yet; reserved so pages cannot intercept it.
+  /// Reserved so pages cannot intercept it even if the chrome UI does not implement saving.
   SavePage,
   /// Print the current page (Ctrl/Cmd+P).
   ///
-  /// Not implemented yet; reserved so pages cannot intercept it.
+  /// Reserved so pages cannot intercept it even if the chrome UI does not implement printing.
   PrintPage,
   Copy,
   Cut,
