@@ -14191,20 +14191,6 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.window.request_redraw();
         }
 
-        if matches!(state, ElementState::Pressed) && self.open_media_controls.is_some() {
-          // While the media controls overlay is open, clicks inside it are handled by egui.
-          if self
-            .open_media_controls_rect
-            .is_some_and(|rect| rect.contains(pos_points))
-          {
-            return;
-          }
-          // Close the controls before forwarding the click so the user doesn't need a second click
-          // to interact with the underlying page.
-          self.close_media_controls();
-          self.window.request_redraw();
-        }
-
         if matches!(state, ElementState::Pressed) && self.open_select_dropdown.is_some() {
           // If the dropdown popup is open, clicks inside it are handled by egui (option selection).
           if self
