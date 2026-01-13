@@ -6290,7 +6290,7 @@ impl BrowserTab {
   /// `queue_task` will start returning an error ("external task queue is closed").
   pub fn external_task_queue_handle(
     &self,
-  ) -> crate::js::event_loop::ExternalTaskQueueHandle<BrowserTabHost> {
+  ) -> crate::js::ExternalTaskQueueHandle<BrowserTabHost> {
     self.event_loop.external_task_queue_handle()
   }
 
