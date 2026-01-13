@@ -38217,6 +38217,64 @@ fn init_window_globals(
       };
 
     let html_element_ctor = install_illegal_dom_ctor(&mut scope, "HTMLElement", html_element_proto)?;
+
+    // HTMLMediaElement is widely referenced by feature-detection code (e.g. libraries checking
+    // `HTMLMediaElement.prototype.readyState`). FastRender does not yet implement media playback, but
+    // we provide a minimal, spec-shaped stub to avoid runtime errors when scripts inspect media
+    // readiness state.
+    let html_media_element_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(html_media_element_proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(html_media_element_proto, Some(html_element_proto))?;
+    let html_media_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLMediaElement", html_media_element_proto)?;
+
+    // HTMLMediaElement constants (WebIDL `const unsigned short ...`).
+    for (name, value) in [
+      ("NETWORK_EMPTY", 0.0),
+      ("NETWORK_IDLE", 1.0),
+      ("NETWORK_LOADING", 2.0),
+      ("NETWORK_NO_SOURCE", 3.0),
+      ("HAVE_NOTHING", 0.0),
+      ("HAVE_METADATA", 1.0),
+      ("HAVE_CURRENT_DATA", 2.0),
+      ("HAVE_FUTURE_DATA", 3.0),
+      ("HAVE_ENOUGH_DATA", 4.0),
+    ] {
+      let key = alloc_key(&mut scope, name)?;
+      let desc = const_desc(Value::Number(value));
+      scope.define_property(html_media_element_ctor, key, desc.clone())?;
+      scope.define_property(html_media_element_proto, key, desc)?;
+    }
+
+    // Minimal readonly attributes used by common media readiness checks.
+    let readonly_attr_desc = |value: Value| PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: false,
+      },
+    };
+    let network_state_key = alloc_key(&mut scope, "networkState")?;
+    scope.define_property(
+      html_media_element_proto,
+      network_state_key,
+      readonly_attr_desc(Value::Number(0.0)), // NETWORK_EMPTY
+    )?;
+    let ready_state_key = alloc_key(&mut scope, "readyState")?;
+    scope.define_property(
+      html_media_element_proto,
+      ready_state_key,
+      readonly_attr_desc(Value::Number(0.0)), // HAVE_NOTHING
+    )?;
+    let seeking_key = alloc_key(&mut scope, "seeking")?;
+    scope.define_property(
+      html_media_element_proto,
+      seeking_key,
+      readonly_attr_desc(Value::Bool(false)),
+    )?;
     let html_input_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLInputElement", html_input_element_proto)?;
     let html_text_area_element_ctor =
@@ -38378,6 +38436,9 @@ fn init_window_globals(
     scope
       .heap_mut()
       .object_set_prototype(html_element_ctor, Some(element_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(html_media_element_ctor, Some(html_element_ctor))?;
     for ctor in [
       html_media_element_ctor,
       html_input_element_ctor,
@@ -43509,6 +43570,25 @@ mod tests {
         if (typeof NodeList.prototype.item !== 'function') return false;
         if (typeof HTMLCollection.prototype.item !== 'function') return false;
         if (typeof DOMTokenList.prototype.item !== 'function') return false;
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_stub_exposes_readiness_state_attributes() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      r#"(() => {
+        if (typeof HTMLMediaElement !== 'function') return false;
+        if (typeof HTMLMediaElement.prototype.networkState !== 'number') return false;
+        if (typeof HTMLMediaElement.prototype.readyState !== 'number') return false;
+        if (typeof HTMLMediaElement.prototype.seeking !== 'boolean') return false;
+        if (HTMLMediaElement.prototype.networkState !== HTMLMediaElement.NETWORK_EMPTY) return false;
+        if (HTMLMediaElement.prototype.readyState !== HTMLMediaElement.HAVE_NOTHING) return false;
+        if (HTMLMediaElement.prototype.seeking !== false) return false;
         return true;
       })()"#,
     )?;
