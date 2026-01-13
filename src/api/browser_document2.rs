@@ -381,6 +381,26 @@ impl BrowserDocument2 {
         }
       }
 
+      if let Some(prev_prepared) = prev_prepared.as_ref() {
+        let old_scroll_state = ScrollState::from_parts_with_deltas(
+          Point::new(self.options.scroll_x, self.options.scroll_y),
+          self.options.element_scroll_offsets.clone(),
+          self.options.scroll_delta,
+          self.options.element_scroll_deltas.clone(),
+        );
+        let anchored = crate::scroll::apply_scroll_anchoring_between_trees(
+          prev_prepared.fragment_tree(),
+          prepared.fragment_tree(),
+          &old_scroll_state,
+          prepared.layout_viewport(),
+        );
+        self.options.scroll_x = anchored.viewport.x;
+        self.options.scroll_y = anchored.viewport.y;
+        self.options.element_scroll_offsets = anchored.elements.clone();
+        self.options.scroll_delta = anchored.viewport_delta;
+        self.options.element_scroll_deltas = anchored.elements_delta.clone();
+      }
+
       self.prepared = Some(prepared);
       self.last_dom_mapping = Some(snapshot);
       // We now have fresh style/layout artifacts stored in `self.prepared`, even if the subsequent

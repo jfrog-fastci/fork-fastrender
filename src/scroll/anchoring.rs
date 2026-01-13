@@ -1,7 +1,9 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::geometry::{Point, Rect, Size};
-use crate::style::types::{Direction, OverflowAnchor, WritingMode};
+use crate::style::types::{Direction, Overflow, OverflowAnchor, WritingMode};
+use crate::style::ComputedStyle;
 use crate::style::{block_axis_positive, inline_axis_is_horizontal, inline_axis_positive};
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree, HitTestRoot};
 use super::ScrollState;
@@ -688,8 +690,8 @@ pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
     }
   }
 
-  let snapshot = capture_scroll_anchors(prev_tree, scroll);
-  let (mut next_scroll, _next_snapshot) = apply_scroll_anchoring(&snapshot, new_tree, scroll);
+  let mut next_scroll =
+    apply_scroll_anchoring_between_trees(prev_tree, new_tree, scroll, scrollport_viewport);
 
   if snapped_viewport || !snapped_elements.is_empty() {
     let snapped_after = super::apply_scroll_snap(new_tree, &next_scroll).state;
@@ -715,6 +717,332 @@ pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
 
   next_scroll.update_deltas_from(scroll);
   next_scroll
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScrollAnchorContainer {
+  Viewport,
+  Element(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScrollAnchorContainerEntry {
+  container: ScrollAnchorContainer,
+  depth: usize,
+}
+
+fn is_element_scroll_container(style: &ComputedStyle) -> bool {
+  matches!(style.overflow_x, Overflow::Hidden | Overflow::Scroll | Overflow::Auto)
+    || matches!(style.overflow_y, Overflow::Hidden | Overflow::Scroll | Overflow::Auto)
+}
+
+fn collect_scroll_anchor_containers(node: &FragmentNode, depth: usize, out: &mut HashMap<usize, usize>) {
+  let mut depth_for_children = depth;
+  if let Some(style) = node.style.as_deref() {
+    if is_element_scroll_container(style) {
+      if let Some(id) = node.box_id() {
+        let next_depth = depth.saturating_add(1);
+        out
+          .entry(id)
+          .and_modify(|stored| *stored = (*stored).max(next_depth))
+          .or_insert(next_depth);
+      }
+      depth_for_children = depth.saturating_add(1);
+    }
+  }
+
+  for child in node.children.iter() {
+    collect_scroll_anchor_containers(child, depth_for_children, out);
+  }
+}
+
+fn find_fragment_with_box_id_and_origin<'a>(
+  tree: &'a FragmentTree,
+  box_id: usize,
+) -> Option<(&'a FragmentNode, Point)> {
+  let mut stack: Vec<(&'a FragmentNode, Point)> = Vec::new();
+  stack.push((&tree.root, tree.root.bounds.origin));
+  for root in &tree.additional_fragments {
+    stack.push((root, root.bounds.origin));
+  }
+
+  while let Some((node, origin)) = stack.pop() {
+    if node.box_id() == Some(box_id) {
+      return Some((node, origin));
+    }
+    for child in node.children.iter().rev() {
+      let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+      stack.push((child, child_origin));
+    }
+  }
+
+  None
+}
+
+fn scrollport_rect_in_page(
+  tree: &FragmentTree,
+  scroll: &ScrollState,
+  viewport: Size,
+  container: ScrollAnchorContainer,
+) -> Option<Rect> {
+  match container {
+    ScrollAnchorContainer::Viewport => Some(Rect::from_xywh(
+      scroll.viewport.x,
+      scroll.viewport.y,
+      viewport.width,
+      viewport.height,
+    )),
+    ScrollAnchorContainer::Element(box_id) => {
+      let (node, origin) = find_fragment_with_box_id_and_origin(tree, box_id)?;
+      let style = node.style.as_deref()?;
+      Some(super::scrollport_rect_for_fragment(node, style).translate(origin))
+    }
+  }
+}
+
+fn anchor_selection_point(scrollport: Rect) -> Option<Point> {
+  let w = scrollport.width().max(0.0);
+  let h = scrollport.height().max(0.0);
+  if w <= 0.0 || h <= 0.0 {
+    return None;
+  }
+
+  let epsilon_x = 1.0_f32.min(w * 0.5);
+  let epsilon_y = 1.0_f32.min(h * 0.5);
+  Some(Point::new(
+    scrollport.min_x() + epsilon_x,
+    scrollport.min_y() + epsilon_y,
+  ))
+}
+
+fn path_nodes<'a>(
+  tree: &'a FragmentTree,
+  root: HitTestRoot,
+  path: &[usize],
+) -> Option<Vec<&'a FragmentNode>> {
+  let mut out = Vec::with_capacity(path.len().saturating_add(1));
+  let mut current = match root {
+    HitTestRoot::Root => &tree.root,
+    HitTestRoot::Additional(idx) => tree.additional_fragments.get(idx)?,
+  };
+  out.push(current);
+  for &idx in path {
+    current = current.children.get(idx)?;
+    out.push(current);
+  }
+  Some(out)
+}
+
+fn select_anchor_box_id(
+  tree: &FragmentTree,
+  container: ScrollAnchorContainer,
+  scrollport: Rect,
+) -> Option<usize> {
+  let point = anchor_selection_point(scrollport)?;
+  let (root, path) = tree.hit_test_path(point)?;
+  let nodes = path_nodes(tree, root, &path)?;
+
+  // Respect `overflow-anchor:none`: once an excluded node appears on the hit-test path, everything
+  // below it is part of an excluded subtree. Select the deepest candidate *above* the excluded node.
+  let eligible_end = nodes
+    .iter()
+    .position(|node| fragment_excludes_scroll_anchoring(node))
+    .unwrap_or(nodes.len());
+
+  let start = match container {
+    ScrollAnchorContainer::Viewport => 0,
+    ScrollAnchorContainer::Element(container_id) => {
+      let pos = nodes.iter().rposition(|node| node.box_id() == Some(container_id))?;
+      pos.saturating_add(1)
+    }
+  };
+
+  if eligible_end <= start {
+    return None;
+  }
+
+  nodes
+    .iter()
+    .take(eligible_end)
+    .skip(start)
+    .rev()
+    .filter_map(|node| node.box_id())
+    .find(|&id| match container {
+      ScrollAnchorContainer::Viewport => true,
+      ScrollAnchorContainer::Element(container_id) => id != container_id,
+    })
+}
+
+fn find_fragment_rect_for_box_id_in_scrollport(
+  tree: &FragmentTree,
+  box_id: usize,
+  scrollport: Rect,
+) -> Option<Rect> {
+  let mut stack: Vec<(&FragmentNode, Point)> = Vec::new();
+  stack.push((&tree.root, tree.root.bounds.origin));
+  for root in &tree.additional_fragments {
+    stack.push((root, root.bounds.origin));
+  }
+
+  let mut best: Option<(Rect, (f32, f32))> = None;
+
+  while let Some((node, origin)) = stack.pop() {
+    if node.box_id() == Some(box_id) && !fragment_excludes_scroll_anchoring(node) {
+      let rect = Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height());
+      if rect.intersects(scrollport)
+        && rect.min_x().is_finite()
+        && rect.min_y().is_finite()
+        && rect.width().is_finite()
+        && rect.height().is_finite()
+      {
+        let key_y = rect.min_y().max(scrollport.min_y());
+        let key_x = rect.min_x().max(scrollport.min_x());
+        let key = (key_y, key_x);
+        let replace = best.map(|(_, best_key)| key < best_key).unwrap_or(true);
+        if replace {
+          best = Some((rect, key));
+        }
+      }
+    }
+
+    for child in node.children.iter().rev() {
+      let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+      stack.push((child, child_origin));
+    }
+  }
+
+  best.map(|(rect, _)| rect)
+}
+
+fn anchor_relative_position(anchor: Rect, scrollport: Rect) -> Option<Point> {
+  let anchor_min = Point::new(anchor.min_x(), anchor.min_y());
+  let scrollport_min = Point::new(scrollport.min_x(), scrollport.min_y());
+  let rel = Point::new(anchor_min.x - scrollport_min.x, anchor_min.y - scrollport_min.y);
+  (rel.x.is_finite() && rel.y.is_finite()).then_some(rel)
+}
+
+/// Adjust scroll offsets across a relayout using scroll anchoring, handling nested scroll containers.
+///
+/// This helper differs from [`apply_scroll_anchoring`] in two key ways:
+/// - It operates directly on a *pair* of fragment trees (before/after layout) rather than requiring a
+///   long-lived [`ScrollAnchorSnapshot`].
+/// - It processes element scroll containers + the viewport from *innermost to outermost*, updating
+///   the scroll state as it goes. This ensures layout shifts confined to an inner scroll container
+///   do not induce scroll anchoring adjustments on ancestor containers.
+///
+/// The returned [`ScrollState`] includes fresh `*_delta` fields derived from the offset changes.
+pub fn apply_scroll_anchoring_between_trees(
+  prev: &FragmentTree,
+  next: &FragmentTree,
+  old_scroll: &ScrollState,
+  viewport: Size,
+) -> ScrollState {
+  // Determine scroll-container nesting depth from the previous layout tree so processing order is
+  // stable across the relayout.
+  let mut depths: HashMap<usize, usize> = HashMap::new();
+  collect_scroll_anchor_containers(&prev.root, 0, &mut depths);
+  for root in &prev.additional_fragments {
+    collect_scroll_anchor_containers(root, 0, &mut depths);
+  }
+
+  // Only element scroll containers with non-zero offsets participate (mirrors canonical scroll
+  // state representation).
+  let mut ordered: Vec<ScrollAnchorContainerEntry> = old_scroll
+    .elements
+    .keys()
+    .filter_map(|&id| depths.get(&id).copied().map(|depth| ScrollAnchorContainerEntry {
+      container: ScrollAnchorContainer::Element(id),
+      depth,
+    }))
+    .collect();
+  ordered.push(ScrollAnchorContainerEntry {
+    container: ScrollAnchorContainer::Viewport,
+    depth: 0,
+  });
+
+  ordered.sort_by(|a, b| {
+    b.depth.cmp(&a.depth).then_with(|| match (a.container, b.container) {
+      (ScrollAnchorContainer::Viewport, ScrollAnchorContainer::Viewport) => Ordering::Equal,
+      (ScrollAnchorContainer::Viewport, ScrollAnchorContainer::Element(_)) => Ordering::Greater,
+      (ScrollAnchorContainer::Element(_), ScrollAnchorContainer::Viewport) => Ordering::Less,
+      (ScrollAnchorContainer::Element(a_id), ScrollAnchorContainer::Element(b_id)) => a_id.cmp(&b_id),
+    })
+  });
+
+  // The input fragment trees are in an unscrolled coordinate space; apply element scroll offsets so
+  // hit testing and anchor geometry match what was actually visible.
+  let mut prev_scrolled = prev.clone();
+  super::apply_scroll_offsets(&mut prev_scrolled, old_scroll);
+
+  let (viewport_writing_mode, viewport_direction) =
+    writing_mode_and_direction_from_style(next.root.style.as_deref());
+  let mut state = ScrollState::from_parts(old_scroll.viewport, old_scroll.elements.clone());
+
+  for entry in ordered {
+    let container = entry.container;
+    let Some(scrollport_old) = scrollport_rect_in_page(&prev_scrolled, old_scroll, viewport, container) else {
+      continue;
+    };
+    let Some(anchor_id) = select_anchor_box_id(&prev_scrolled, container, scrollport_old) else {
+      continue;
+    };
+    let Some(anchor_old) =
+      find_fragment_rect_for_box_id_in_scrollport(&prev_scrolled, anchor_id, scrollport_old)
+    else {
+      continue;
+    };
+    let Some(old_rel) = anchor_relative_position(anchor_old, scrollport_old) else {
+      continue;
+    };
+
+    let mut next_scrolled = next.clone();
+    super::apply_scroll_offsets(&mut next_scrolled, &state);
+
+    let Some(scrollport_new) = scrollport_rect_in_page(&next_scrolled, &state, viewport, container) else {
+      continue;
+    };
+    let Some(anchor_new) =
+      find_fragment_rect_for_box_id_in_scrollport(&next_scrolled, anchor_id, scrollport_new)
+    else {
+      continue;
+    };
+    let Some(new_rel) = anchor_relative_position(anchor_new, scrollport_new) else {
+      continue;
+    };
+
+    let delta = point_sub(new_rel, old_rel);
+    if delta == Point::ZERO || !delta.x.is_finite() || !delta.y.is_finite() {
+      continue;
+    }
+
+    let (writing_mode, direction) = match container {
+      ScrollAnchorContainer::Viewport => (viewport_writing_mode, viewport_direction),
+      ScrollAnchorContainer::Element(id) => {
+        let style = find_fragment_by_box_id(next, id).and_then(|node| node.style.as_deref());
+        writing_mode_and_direction_from_style(style)
+      }
+    };
+    let (x_sign, y_sign) = axis_signs_for_scroll_state(writing_mode, direction);
+    let delta = Point::new(x_sign * delta.x, y_sign * delta.y);
+
+    match container {
+      ScrollAnchorContainer::Viewport => {
+        state.viewport = sanitize_point(point_add(state.viewport, delta));
+      }
+      ScrollAnchorContainer::Element(id) => {
+        let current = state.elements.get(&id).copied().unwrap_or(Point::ZERO);
+        let updated = sanitize_point(point_add(current, delta));
+        if updated == Point::ZERO {
+          state.elements.remove(&id);
+        } else {
+          state.elements.insert(id, updated);
+        }
+      }
+    }
+  }
+
+  state.update_deltas_from(old_scroll);
+  state
 }
 
 #[cfg(test)]

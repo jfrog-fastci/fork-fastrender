@@ -2743,6 +2743,116 @@ mod tests {
   }
 
   #[test]
+  fn scroll_anchoring_nested_scroll_containers_adjust_innermost_only() -> Result<()> {
+    fn set_style_height(dom: &mut DomNode, id: &str, height_px: u32) -> bool {
+      let mut stack = vec![dom];
+      while let Some(node) = stack.pop() {
+        if let DomNodeType::Element { attributes, .. } = &mut node.node_type {
+          let matches_id = attributes.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("id") && value.eq_ignore_ascii_case(id)
+          });
+          if matches_id {
+            let style_value = format!("height: {height_px}px;");
+            if let Some((_, value)) = attributes
+              .iter_mut()
+              .find(|(name, _)| name.eq_ignore_ascii_case("style"))
+            {
+              *value = style_value;
+            } else {
+              attributes.push(("style".to_string(), style_value));
+            }
+            return true;
+          }
+        }
+        for child in node.children.iter_mut() {
+          stack.push(child);
+        }
+      }
+      false
+    }
+
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #scroller { width: 200px; height: 100px; overflow-y: scroll; }
+      #top { height: 200px; }
+      #anchor { height: 20px; }
+      #more { height: 1000px; }
+      #below { height: 2000px; }
+    </style>
+  </head>
+  <body>
+    <div id="scroller">
+      <div id="top"></div>
+      <div id="anchor">anchor</div>
+      <div id="more"></div>
+    </div>
+    <div id="below"></div>
+  </body>
+</html>"#;
+
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      html,
+      RenderOptions::default().with_viewport(200, 200),
+    )?;
+    document.render_frame()?;
+
+    // Ensure the viewport itself is scrolled.
+    document.set_scroll(0.0, 50.0);
+
+    // Scroll the inner element.
+    assert!(
+      document.wheel_scroll_at_viewport_point(Point::new(10.0, 10.0), (0.0, 200.0))?,
+      "expected wheel scroll to affect the inner scroll container"
+    );
+
+    let initial = document.scroll_state();
+    assert!(
+      (initial.viewport.y - 50.0).abs() < 0.5,
+      "expected viewport scroll_y to be 50, got {}",
+      initial.viewport.y
+    );
+    assert!(
+      initial.elements.len() == 1,
+      "expected exactly one element scroll offset; got {:?}",
+      initial.elements
+    );
+    let (&scroller_box_id, _) = initial
+      .elements
+      .iter()
+      .next()
+      .expect("expected element scroll state");
+    let inner_before = initial.element_offset(scroller_box_id).y;
+
+    // Expand content above the inner scrollport. This should adjust only the inner scroll offset.
+    assert!(
+      document.mutate_dom(|dom| set_style_height(dom, "top", 250)),
+      "expected DOM mutation to update #top height"
+    );
+
+    let frame = document.render_frame_with_scroll_state()?;
+    let viewport_after = frame.scroll_state.viewport.y;
+    let inner_after = frame.scroll_state.element_offset(scroller_box_id).y;
+
+    assert!(
+      (viewport_after - initial.viewport.y).abs() < 0.5,
+      "expected viewport scroll_y to remain {}, got {}",
+      initial.viewport.y,
+      viewport_after
+    );
+    let expected_inner = inner_before + 50.0;
+    assert!(
+      (inner_after - expected_inner).abs() < 0.5,
+      "expected inner scroll_y to be {expected_inner}, got {inner_after}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn base_url_reflects_base_href_after_prepare() -> Result<()> {
     fn set_base_href(dom: &mut DomNode, href: &str) -> bool {
       let mut stack = vec![dom];
