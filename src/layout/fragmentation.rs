@@ -5329,6 +5329,9 @@ fn collect_atomic_candidates_with_axis(
       // should not contribute descendant break opportunities to their container. However, the grid
       // item box itself can still be atomic (e.g. `break-inside: avoid-*`) and must participate in
       // boundary selection.
+      let child_suppress_break_inside_avoid = matches!(context, FragmentationContext::Page)
+        && node_is_row_flex_container
+        && is_in_flow_flex_child(&child.content, child_style);
       collect_atomic_candidate_for_node(
         child,
         child_abs_start,
@@ -5336,6 +5339,7 @@ fn collect_atomic_candidates_with_axis(
         node_block_size,
         candidates,
         context,
+        child_suppress_break_inside_avoid,
       );
       continue;
     }
