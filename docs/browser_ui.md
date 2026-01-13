@@ -52,14 +52,20 @@ If you run the `browser` binary without the feature, it will print a short messa
 
 The `browser_ui` feature includes an optional dependency on the
 [`rfd`](https://crates.io/crates/rfd) crate (pinned for MSRV) for native file/color dialogs, but the
-current windowed `browser` app does **not** open native file pickers or color pickers yet (e.g.
-clicking `<input type="file">` will not show a file picker).
+current windowed `browser` app does **not** open native dialogs yet.
+
+Instead:
+
+- `<input type=file>` opens a basic **in-app file picker** popup (a text box where you paste/enter
+  one or more local filesystem paths; for `multiple` inputs separate paths with `;`).
+- OS drag-and-drop onto `<input type=file>` is also supported.
+- `<input type=color>` does not have a picker UI yet.
 
 On Linux, `rfd` is configured to use the `xdg-portal` backend (via Cargo feature selection) so
 `--features browser_ui` stays **CI-friendly** and does **not** require GTK development packages
 (`libgtk-3-dev`, etc).
 
-If/when native dialogs are wired up, note that the portal backend requires an
+If/when native dialogs are wired up (e.g. via `rfd`), note that the portal backend requires an
 `xdg-desktop-portal` implementation to be running. If your environment doesn't provide one (common
 on minimal/headless setups), dialogs may fail to open at runtime, but the browser UI will still
 compile and run (including headless CI smoke tests).
@@ -489,6 +495,9 @@ Manual verification checklist:
   - Renders a date/time picker popup for `<input type=date|time|datetime-local|month|week>`.
     - Workers request this via `WorkerToUi::{DateTimePickerOpened,DateTimePickerClosed}`; the UI
       responds with `UiToWorker::{DateTimePickerChoose,DateTimePickerCancel}`.
+  - Renders a file picker popup for `<input type=file>`.
+    - Workers request this via `WorkerToUi::{FilePickerOpened,FilePickerClosed}`; the UI responds
+      with `UiToWorker::{FilePickerChoose,FilePickerCancel}`.
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
     [env-vars.md](env-vars.md)).
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
@@ -582,6 +591,8 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
   invocation; the worker responds with `WorkerToUi::ContextMenu`.
 - `DateTimePickerChoose { tab_id, input_node_id, value }` / `DateTimePickerCancel { tab_id }` —
   user interaction with a date/time picker popup for `<input type=date|time|datetime-local|month|week>`.
+- `FilePickerChoose { tab_id, input_node_id, paths }` / `FilePickerCancel { tab_id }` — user
+  interaction with a file picker popup for `<input type=file>`.
 
 Coordinate convention: `pos_css` / `pointer_css` fields are **viewport-relative CSS pixels** (origin
 at the top-left of the viewport). They must **not** include the current scroll offset; worker loops
@@ -602,6 +613,8 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `SelectDropdownClosed { tab_id }` — close/dismiss any open dropdown popup for the tab
 - `DateTimePickerOpened { tab_id, input_node_id, kind, value, anchor_css }` /
   `DateTimePickerClosed { tab_id }` — open/close a date/time picker popup for an `<input>` control.
+- `FilePickerOpened { tab_id, input_node_id, multiple, accept, anchor_css }` /
+  `FilePickerClosed { tab_id }` — open/close a file picker popup for an `<input type=file>` control.
 - `ContextMenu { ... }` — response to `UiToWorker::ContextMenuRequest` (link/image under cursor +
   copy/cut/paste/select-all affordances + whether the page prevented the default menu).
 - `NavigationStarted/Committed/Failed { ... }` — URL/title/back-forward state updates
@@ -763,8 +776,11 @@ Front-ends are encouraged to print these to stderr while developing new protocol
   - `<select>` support is basic (listbox clicks + dropdown popup selection; keyboard navigation and
     simple typeahead are supported; no multi-select yet)
   - `<input type=file>`:
-    - Selecting files via a native file picker dialog is not implemented yet.
-    - OS drag-and-drop onto the control is supported (best-effort; typically one file per drop).
+    - Clicking the control opens a basic **in-app file picker** popup (enter a path; for `multiple`
+      inputs separate paths with `;`).
+    - OS drag-and-drop onto the control is supported (multi-file drops are coalesced to support
+      `multiple`).
+    - Native OS file chooser dialogs are not wired up yet.
   - many controls are not yet supported (`contenteditable`, etc.)
 - No persistent browser profile (cookies/storage/devtools/extensions/etc.).
 
