@@ -113,6 +113,10 @@ mod windows {
   //   ProcThreadAttributeValue(Number, Thread, Input, Additive)
   const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
   const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
+  // ProcThreadAttributeValue(15, FALSE, TRUE, FALSE) → 0x0002_000F.
+  const PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: usize = 0x0002_000F;
+  // Value for `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (winbase.h).
+  const PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK: u32 = 1;
 
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
   enum SandboxMode {
@@ -299,6 +303,7 @@ mod windows {
         args,
         inherit_handles,
         mitigation_policy,
+        true,
         flags,
         Some(current_dir_ptr),
       )
@@ -344,6 +349,7 @@ mod windows {
         args,
         inherit_handles,
         mitigation_policy,
+        false,
         flags,
         Some(cwd_ptr),
       )
@@ -373,6 +379,7 @@ mod windows {
         args,
         inherit_handles,
         mitigation_policy,
+        false,
         flags,
         None,
       )
@@ -420,37 +427,62 @@ mod windows {
     args: &[OsString],
     inherit_handles: &[RawHandle],
     mitigation_policy: u64,
+    all_application_packages_hardened: bool,
     creation_flags: u32,
     current_dir: Option<*const u16>,
   ) -> io::Result<PROCESS_INFORMATION> {
-    match spawn_with_attributes_inner(
-      appcontainer_sid,
-      restricted_token,
-      exe,
-      args,
-      inherit_handles,
-      mitigation_policy,
-      creation_flags,
-      current_dir,
-    ) {
-      Ok(pi) => Ok(pi),
-      Err(err) if mitigation_policy != 0 && should_fallback_without_mitigations(&err) => {
-        eprintln!(
-          "warning: mitigation policy attribute unsupported/rejected ({err}); retrying without mitigations"
-        );
-        spawn_with_attributes_inner(
-          appcontainer_sid,
-          restricted_token,
-          exe,
-          args,
-          inherit_handles,
-          0,
-          creation_flags,
-          current_dir,
-        )
-      }
-      Err(err) => Err(err),
+    let want_aap = all_application_packages_hardened && appcontainer_sid.is_some();
+    let want_mitigations = mitigation_policy != 0;
+
+    // Try the strongest configuration first, then fall back when the host OS rejects particular
+    // `STARTUPINFOEX` attributes (commonly `ERROR_INVALID_PARAMETER (87)` /
+    // `ERROR_NOT_SUPPORTED (50)`).
+    let mut attempts: Vec<(u64, bool, &'static str)> = Vec::new();
+    if want_mitigations && want_aap {
+      attempts.push((mitigation_policy, true, "mitigations + AAP hardening"));
+      attempts.push((mitigation_policy, false, "mitigations (no AAP hardening)"));
+      attempts.push((0, true, "AAP hardening (no mitigations)"));
+      attempts.push((0, false, "no mitigations, no AAP hardening"));
+    } else if want_mitigations {
+      attempts.push((mitigation_policy, false, "mitigations"));
+      attempts.push((0, false, "no mitigations"));
+    } else if want_aap {
+      attempts.push((0, true, "AAP hardening"));
+      attempts.push((0, false, "no AAP hardening"));
+    } else {
+      attempts.push((0, false, "no startup attributes"));
     }
+
+    let mut last_optional_err: Option<io::Error> = None;
+    for (mitigations, include_aap, label) in attempts {
+      match spawn_with_attributes_inner(
+        appcontainer_sid,
+        restricted_token,
+        exe,
+        args,
+        inherit_handles,
+        mitigations,
+        include_aap,
+        creation_flags,
+        current_dir,
+      ) {
+        Ok(pi) => return Ok(pi),
+        Err(err) if should_fallback_without_mitigations(&err) => {
+          eprintln!(
+            "warning: CreateProcess* rejected startup attributes ({label}): {err}; retrying with weaker attribute set"
+          );
+          last_optional_err = Some(err);
+          continue;
+        }
+        Err(err) => return Err(err),
+      }
+    }
+    Err(last_optional_err.unwrap_or_else(|| {
+      io::Error::new(
+        io::ErrorKind::Other,
+        "CreateProcess* failed with unsupported startup attributes",
+      )
+    }))
   }
 
   fn spawn_with_attributes_inner(
@@ -460,6 +492,7 @@ mod windows {
     args: &[OsString],
     inherit_handles: &[RawHandle],
     mitigation_policy: u64,
+    include_aap: bool,
     creation_flags: u32,
     current_dir: Option<*const u16>,
   ) -> io::Result<PROCESS_INFORMATION> {
@@ -481,11 +514,15 @@ mod windows {
       Reserved: 0,
     };
 
+    let mut all_packages_policy_value = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK;
     let mut mitigation_policy_value = mitigation_policy;
 
     let mut attr_count = 0u32;
     if appcontainer_sid.is_some() {
       attr_count += 1;
+      if include_aap {
+        attr_count += 1;
+      }
     }
     if !handles.is_empty() {
       attr_count += 1;
@@ -545,6 +582,21 @@ mod windows {
         std::ptr::addr_of_mut!(security_caps).cast(),
         std::mem::size_of::<SECURITY_CAPABILITIES>(),
       )?;
+      if include_aap {
+        if let Err(err) = attr_list.update(
+          PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+          std::ptr::addr_of_mut!(all_packages_policy_value).cast(),
+          std::mem::size_of::<u32>(),
+        ) {
+          if should_fallback_without_mitigations(&err) {
+            eprintln!(
+              "warning: UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY) rejected by OS ({err}); continuing without AAP hardening"
+            );
+          } else {
+            return Err(err);
+          }
+        }
+      }
     }
     if !handles.is_empty() {
       attr_list.update(
