@@ -714,13 +714,15 @@ pub enum UiToWorker {
   },
   /// Assistive-tech hook: set the selection range for a focused text control.
   ///
+  /// `anchor` and `focus` are character indices (not bytes).
+  ///
   /// The worker clamps indices into the current value length.
   A11ySetTextSelectionRange {
     tab_id: TabId,
     /// Pre-order DOM node id of the focused `<input>`/`<textarea>`.
     node_id: usize,
-    start: usize,
-    end: usize,
+    anchor: usize,
+    focus: usize,
   },
   /// IME preedit update for the focused page text control (input/textarea).
   ///
@@ -1388,8 +1390,8 @@ mod tests {
       UiToWorker::A11ySetTextSelectionRange {
         tab_id,
         node_id: 42,
-        start: 0,
-        end: 5,
+        anchor: 0,
+        focus: 5,
       },
     ];
 

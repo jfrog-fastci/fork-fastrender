@@ -3434,8 +3434,8 @@ impl BrowserRuntime {
       UiToWorker::A11ySetTextSelectionRange {
         tab_id,
         node_id,
-        start,
-        end,
+        anchor,
+        focus,
       } => {
         // AccessKit selection updates are typically targeted at the focused text control, but keep
         // this robust by focusing the node first so `InteractionEngine::a11y_set_text_selection_range`
@@ -3452,7 +3452,7 @@ impl BrowserRuntime {
         let changed = doc.mutate_dom(|dom| {
           tab
             .interaction
-            .a11y_set_text_selection_range(dom, node_id, start, end)
+            .a11y_set_text_selection_range(dom, node_id, anchor, focus)
         });
         if changed {
           tab.cancel.bump_paint();

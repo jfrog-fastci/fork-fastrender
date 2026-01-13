@@ -286,9 +286,9 @@ impl BrowserTabController {
       UiToWorker::A11ySetTextSelectionRange {
         tab_id,
         node_id,
-        start,
-        end,
-      } if tab_id == self.tab_id => self.handle_a11y_set_text_selection(node_id, start, end),
+        anchor,
+        focus,
+      } if tab_id == self.tab_id => self.handle_a11y_set_text_selection(node_id, anchor, focus),
       UiToWorker::Copy { tab_id } if tab_id == self.tab_id => self.handle_copy(),
       UiToWorker::Cut { tab_id } if tab_id == self.tab_id => self.handle_cut(),
       UiToWorker::Paste { tab_id, text } if tab_id == self.tab_id => self.handle_paste(&text),
@@ -1417,13 +1417,13 @@ impl BrowserTabController {
   fn handle_a11y_set_text_selection(
     &mut self,
     node_id: usize,
-    start: usize,
-    end: usize,
+    anchor: usize,
+    focus: usize,
   ) -> Result<Vec<WorkerToUi>> {
     let changed = self.document.mutate_dom(|dom| {
       self
         .interaction
-        .a11y_set_text_selection_range(dom, node_id, start, end)
+        .a11y_set_text_selection_range(dom, node_id, anchor, focus)
     });
     if changed {
       self.paint_if_needed()
