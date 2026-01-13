@@ -8105,7 +8105,7 @@ fn regexp_exec_array(
   }
 
   // If this is a sticky regexp, ECMAScript sets `lastIndex` based on match end; our exec already did.
-  // Preserve the `u` flag for callers implementing `AdvanceStringIndex`.
+  // Preserve the `u`/`v` flags for callers implementing `AdvanceStringIndex`.
   let _ = flags;
 
   Ok(Some(RegExpExecArray {

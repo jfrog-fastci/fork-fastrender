@@ -2477,4 +2477,32 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn regexp_flags_v_is_accepted_and_mutually_exclusive_with_u() {
+    let mut tick = || Ok(());
+    let v = RegExpFlags::parse(&[b'v' as u16], &mut tick).expect("v should parse");
+    assert!(v.unicode_sets);
+    assert!(!v.unicode);
+    assert_eq!(v.to_canonical_string(), "v");
+    assert!(v.has_either_unicode_flag());
+
+    let mut tick = || Ok(());
+    let err = RegExpFlags::parse(&[b'u' as u16, b'v' as u16], &mut tick).unwrap_err();
+    match err {
+      RegExpCompileError::Syntax(e) => {
+        assert_eq!(e.message, "Invalid flags supplied to RegExp constructor")
+      }
+      other => panic!("expected syntax error, got {other:?}"),
+    }
+
+    let mut tick = || Ok(());
+    let err = RegExpFlags::parse(&[b'v' as u16, b'u' as u16], &mut tick).unwrap_err();
+    match err {
+      RegExpCompileError::Syntax(e) => {
+        assert_eq!(e.message, "Invalid flags supplied to RegExp constructor")
+      }
+      other => panic!("expected syntax error, got {other:?}"),
+    }
+  }
 }
