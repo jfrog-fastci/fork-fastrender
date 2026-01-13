@@ -57,7 +57,14 @@ direct_network = ["dep:reqwest", "dep:ureq"]
 # should disable this feature and inject a `ResourceFetcher` that proxies filesystem reads.
 direct_filesystem = []
 # Direct (in-process) WebSocket implementation for the vm-js Window realm.
-direct_websocket = ["dep:tungstenite", "dep:rustls", "dep:webpki-roots"]
+direct_websocket = [
+  "dep:tungstenite",
+  "dep:rustls",
+  "dep:webpki-roots",
+  "dep:tokio",
+  "dep:tokio-tungstenite",
+  "dep:futures-util",
+]
 # Feature set for a renderer build that intentionally excludes any in-process network stacks.
 # Used by CI (`--no-default-features --features renderer_minimal`) to ensure the renderer can be
 # built without linking reqwest/ureq/tungstenite.
@@ -198,6 +205,9 @@ ureq = { version = "3.1", default-features = false, optional = true, features = 
 tungstenite = { version = "0.21", default-features = false, optional = true, features = ["handshake", "rustls-tls-webpki-roots"] }
 rustls = { version = "0.22", optional = true }
 webpki-roots = { version = "0.26", optional = true }
+tokio = { version = "1", optional = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tokio-tungstenite = { version = "0.21", optional = true, default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", optional = true }
 wuff = "0.2"
 tar = "0.4"
 sha2 = "0.10"
