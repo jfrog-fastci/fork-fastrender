@@ -389,10 +389,12 @@ The intended test strategy is:
   * Media clocking is designed to support this via `MediaClock` in `src/media/clock.rs`: production
     code can use `RealAudioDeviceClock` (wall time), while tests can inject a fake/virtual device
     clock (see the `FakeDeviceClock` used in `src/media/clock.rs` unit tests).
-* A `NullAudioBackend` (`src/media/audio/*`) that:
-  * accepts audio samples into a queue,
-  * advances “device playback position” based on the injected `VirtualClock`,
-  * exposes an audio master clock derived from “played frames / sample_rate”.
+* A `NullAudioBackend` (`src/media/audio/null_backend.rs`) is used as a silence/CI fallback when real
+  audio output is unavailable.
+  * It keeps the pipeline moving, but it currently derives its clock from `Instant` (not
+    deterministic and not an accurate “time heard” estimate).
+  * Deterministic tests should avoid depending on `NullAudioBackend` time and instead inject a fake
+    `MediaClock`/audio clock (see below).
 
 Current implementation note: `src/media/audio/null_backend.rs` currently uses `Instant` for its
 clock. That is fine for “best effort” headless runs, but tests that need strict determinism should
@@ -400,8 +402,10 @@ avoid wall time. Two ways to achieve that:
 
 * Add a `Virtual`/injected-clock variant to `AudioClock` (mirroring `src/js/clock.rs`) and teach
   `NullAudioBackend` to use it in tests, or
-* Use `AudioClock::OutputFrames` with a test-controlled `frames_played` counter derived from the
-  `VirtualClock` (e.g. `frames = now * sample_rate`).
+* Use `AudioClock::OutputFrames` backed by an [`InterpolatedAudioClock`](../src/media/audio_clock.rs)
+  and advance it deterministically by calling `InterpolatedAudioClock::on_callback_end_at(...)` from
+  the test (using a captured `Instant` + deterministic offsets), so the reported time is derived from
+  the known callback frame counts.
 
 With these pieces, a test can:
 
