@@ -170,7 +170,7 @@ fn compute_referer_header_value(
   }
 }
 
-fn http_get(url: &Url, referer: Option<&str>) -> Result<Vec<u8>, String> {
+fn http_get(url: &Url, referer: Option<&str>) -> Result<(Vec<(String, String)>, Vec<u8>), String> {
   let host = url
     .host_str()
     .ok_or_else(|| format!("URL missing host: {url}"))?;
@@ -222,7 +222,59 @@ fn http_get(url: &Url, referer: Option<&str>) -> Result<Vec<u8>, String> {
     .windows(4)
     .position(|w| w == b"\r\n\r\n")
     .ok_or_else(|| "invalid HTTP response (missing header separator)".to_string())?;
-  Ok(response[(sep + 4)..].to_vec())
+
+  let header_bytes = &response[..sep];
+  let body = response[(sep + 4)..].to_vec();
+  let headers_text = String::from_utf8_lossy(header_bytes);
+
+  // Very small/forgiving HTTP header parser sufficient for tests and CSP propagation.
+  let mut headers = Vec::<(String, String)>::new();
+  for (idx, line) in headers_text.lines().enumerate() {
+    // Skip the status line.
+    if idx == 0 {
+      continue;
+    }
+    let line = line.trim_end_matches('\r');
+    let Some((name, value)) = line.split_once(':') else {
+      continue;
+    };
+    headers.push((name.trim().to_string(), value.trim().to_string()));
+  }
+
+  Ok((headers, body))
+}
+
+fn csp_values_from_http_headers(headers: &[(String, String)]) -> Vec<String> {
+  headers
+    .iter()
+    .filter_map(|(name, value)| {
+      name
+        .eq_ignore_ascii_case("Content-Security-Policy")
+        .then(|| value.clone())
+    })
+    .collect()
+}
+
+fn csp_values_from_html_meta(html: &str) -> Vec<String> {
+  let meta_tags = find_start_tags(html, "meta");
+  let mut out = Vec::new();
+  for tag in meta_tags {
+    let attrs = parse_tag_attributes(tag);
+    let Some(http_equiv) = attrs.get("http-equiv") else {
+      continue;
+    };
+    if !http_equiv.eq_ignore_ascii_case("content-security-policy") {
+      continue;
+    }
+    let Some(content) = attrs.get("content") else {
+      continue;
+    };
+    if content.trim().is_empty() {
+      continue;
+    }
+    out.push(content.clone());
+  }
+  out
 }
 
 fn parse_tag_attributes(tag: &str) -> HashMap<String, String> {
@@ -350,6 +402,10 @@ fn subframes_from_html(frame_id: FrameId, html: &str) -> Vec<SubframeInfo> {
     .enumerate()
     .map(|(idx, tag)| {
       let attrs = parse_tag_attributes(tag);
+      let src = attrs
+        .get("src")
+        .map(|v| v.to_string())
+        .filter(|v| !v.is_empty());
       let referrer_policy = attrs
         .get("referrerpolicy")
         .and_then(|v| ReferrerPolicy::from_attribute(v));
@@ -362,6 +418,7 @@ fn subframes_from_html(frame_id: FrameId, html: &str) -> Vec<SubframeInfo> {
 
       SubframeInfo {
         child: FrameId(frame_id.0.saturating_mul(1000).saturating_add(idx as u64 + 1)),
+        src,
         transform: AffineTransform::IDENTITY,
         clip_stack: Vec::<ClipItem>::new(),
         z_index: idx as u64,
@@ -477,9 +534,19 @@ impl<T: IpcTransport> RendererMainLoop<T> {
                     )
                   });
                 match http_get(&url, nav_referer.as_deref()) {
-                  Ok(body) => {
+                  Ok((headers, body)) => {
                     let html = String::from_utf8_lossy(&body);
                     subframes = subframes_from_html(frame_id, html.as_ref());
+
+                    let mut csp_values = csp_values_from_http_headers(&headers);
+                    csp_values.extend(csp_values_from_html_meta(html.as_ref()));
+                    // Report the committed CSP values to the browser so it can enforce parent
+                    // `frame-src` on out-of-process iframe navigations.
+                    self.transport.send(RendererToBrowser::NavigationCommitted {
+                      frame_id,
+                      url: url.to_string(),
+                      csp: csp_values,
+                    })?;
 
                     // Opportunistically fetch <img> subresources so integration tests can assert
                     // referrer policy behavior without implementing full layout/paint in the

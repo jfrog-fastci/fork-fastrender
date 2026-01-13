@@ -344,6 +344,7 @@ mod tests {
       RendererToBrowser::NavigationCommitted {
         frame_id: unknown,
         url: "https://example.test/".to_string(),
+        csp: Vec::new(),
       },
     );
 
@@ -431,6 +432,7 @@ mod tests {
         },
         subframes: vec![crate::SubframeInfo {
           child: unrelated_child,
+          src: None,
           transform: crate::AffineTransform::IDENTITY,
           clip_stack: Vec::new(),
           z_index: 0,
@@ -478,6 +480,7 @@ mod tests {
         },
         subframes: vec![crate::SubframeInfo {
           child,
+          src: None,
           transform: crate::AffineTransform::IDENTITY,
           clip_stack: Vec::new(),
           z_index: 0,
@@ -516,6 +519,7 @@ mod tests {
         parent_frame_id: parent,
         subframes: vec![crate::SubframeInfo {
           child,
+          src: None,
           transform: crate::AffineTransform::IDENTITY,
           clip_stack: Vec::new(),
           z_index: 0,
@@ -558,6 +562,7 @@ mod tests {
         parent_frame_id: parent,
         subframes: vec![crate::SubframeInfo {
           child,
+          src: None,
           transform: crate::AffineTransform::IDENTITY,
           clip_stack: Vec::new(),
           z_index: 0,

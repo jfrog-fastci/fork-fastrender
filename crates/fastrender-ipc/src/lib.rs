@@ -16,6 +16,7 @@ use url::Url;
 /// inline buffers.
 pub const MAX_IPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
+pub mod csp;
 pub mod security;
 pub use security::{
   BrowserIpcSecurityState, FrameOwnershipViolation, IpcSecurityEvent, RendererToBrowserKind,
@@ -147,6 +148,7 @@ pub struct DocumentOrigin {
 }
 
 impl DocumentOrigin {
+  /// Construct an origin tuple from a parsed URL, normalizing default HTTP(S) ports.
   pub fn from_url(url: &Url) -> Self {
     let scheme = url.scheme().to_ascii_lowercase();
     let host = url.host_str().map(|h| h.to_ascii_lowercase());
@@ -155,6 +157,30 @@ impl DocumentOrigin {
       _ => url.port(),
     };
     Self { scheme, host, port }
+  }
+
+  /// Parse an origin tuple from a URL string.
+  pub fn from_url_str(url: &str) -> Option<Self> {
+    let parsed = Url::parse(url).ok()?;
+    Some(Self::from_url(&parsed))
+  }
+}
+
+impl std::fmt::Display for DocumentOrigin {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    if self.scheme == "file" {
+      return write!(f, "file://");
+    }
+    let host = self.host.as_deref().unwrap_or("<unknown>");
+    let host = if host.contains(':') && !host.starts_with('[') {
+      format!("[{host}]")
+    } else {
+      host.to_string()
+    };
+    match self.port {
+      Some(port) => write!(f, "{}://{}:{}", self.scheme, host, port),
+      None => write!(f, "{}://{}", self.scheme, host),
+    }
   }
 }
 
@@ -478,6 +504,8 @@ impl AffineTransform {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubframeInfo {
   pub child: FrameId,
+  /// Raw `src` attribute value used by the browser to decide which URL to navigate.
+  pub src: Option<String>,
   /// Affine transform from subframe-local space into the parent frame coordinate space.
   pub transform: AffineTransform,
   /// Clip stack to apply in parent space before drawing the child surface.
@@ -555,7 +583,15 @@ pub enum RendererToBrowser {
     subframes: Vec<SubframeInfo>,
   },
   /// The renderer committed a navigation for `frame_id`.
-  NavigationCommitted { frame_id: FrameId, url: String },
+  ///
+  /// The browser uses this to update per-frame policy state (notably Content Security Policy) before
+  /// applying any out-of-process iframe navigation decisions.
+  NavigationCommitted {
+    frame_id: FrameId,
+    url: String,
+    /// Raw `Content-Security-Policy` values observed for this document (header and/or `<meta>`).
+    csp: Vec<String>,
+  },
   /// The renderer failed to commit a navigation for `frame_id`.
   NavigationFailed {
     frame_id: FrameId,
@@ -813,6 +849,7 @@ mod compositor_tests {
 
     let info = SubframeInfo {
       child: FrameId(2),
+      src: None,
       transform: AffineTransform {
         a: 2.0,
         b: 0.0,
@@ -854,6 +891,7 @@ mod compositor_tests {
 
     let info = SubframeInfo {
       child: FrameId(1),
+      src: None,
       transform: AffineTransform {
         a: 1.0,
         b: 0.0,
@@ -895,6 +933,7 @@ mod compositor_tests {
 
     let info = SubframeInfo {
       child: FrameId(3),
+      src: None,
       transform: AffineTransform::IDENTITY,
       clip_stack: vec![ClipItem {
         rect: Rect {
@@ -941,6 +980,7 @@ mod compositor_tests {
 
     let info_red = SubframeInfo {
       child: FrameId(10),
+      src: None,
       transform: base_transform,
       clip_stack: vec![ClipItem {
         rect: Rect {
@@ -959,6 +999,7 @@ mod compositor_tests {
 
     let info_blue = SubframeInfo {
       child: FrameId(11),
+      src: None,
       transform: base_transform,
       clip_stack: vec![ClipItem {
         rect: Rect {
@@ -986,6 +1027,7 @@ mod compositor_tests {
     let child = solid_buffer(1, 1, [255, 0, 0, 255]);
     let info = SubframeInfo {
       child: FrameId(1),
+      src: None,
       transform: AffineTransform {
         a: 1.0,
         b: 1.0,
@@ -1020,6 +1062,7 @@ mod compositor_tests {
 
     let info = SubframeInfo {
       child: FrameId(1),
+      src: None,
       transform: AffineTransform::IDENTITY,
       clip_stack: vec![ClipItem {
         rect: Rect {
@@ -1054,6 +1097,7 @@ mod navigation_tests {
     let parent_site = factory.site_key_for_navigation("https://parent.example/", None);
     let subframe = SubframeInfo {
       child: FrameId(2),
+      src: None,
       transform: AffineTransform::IDENTITY,
       clip_stack: vec![],
       z_index: 0,
@@ -1083,6 +1127,7 @@ mod navigation_tests {
     let parent_site = factory.site_key_for_navigation("https://parent.example/", None);
     let subframe = SubframeInfo {
       child: FrameId(2),
+      src: None,
       transform: AffineTransform::IDENTITY,
       clip_stack: vec![],
       z_index: 0,
@@ -1176,6 +1221,7 @@ mod navigation_tests {
 
     let unsandboxed = SubframeInfo {
       child: FrameId(1),
+      src: None,
       transform: AffineTransform::IDENTITY,
       clip_stack: vec![],
       z_index: 0,
