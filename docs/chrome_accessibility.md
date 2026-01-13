@@ -19,6 +19,26 @@ In this repo, AccessKit is used in the **browser/UI process**:
 - AccessKit is pulled in behind the `browser_ui` feature (`Cargo.toml` `features.browser_ui` enables `accesskit` + `accesskit_winit` and egui’s accesskit integration).
 - egui produces `accesskit::TreeUpdate` values (available on `egui::PlatformOutput::accesskit_update`), and the winit adapter delivers those to the OS accessibility API.
 
+### Where AccessKit is wired in the windowed `browser` app
+
+At a high level:
+
+1. `egui_winit::State` is created in `App::new` (see [`src/bin/browser.rs`](../src/bin/browser.rs)) and
+   owns the platform adapter glue (including AccessKit when egui-winit is built with its `accesskit`
+   feature).
+2. Each frame:
+   - The UI calls `egui_ctx.end_frame()` to get `FullOutput`.
+   - The UI forwards `platform_output` to winit via
+     `egui_state.handle_platform_output(&window, &egui_ctx, platform_output)`.
+
+That `handle_platform_output` call is the important “plumbing” point: it is responsible for applying
+platform-side effects (clipboard, cursor, IME, **and AccessKit updates**). If you refactor the event
+loop, ensure this still happens every frame.
+
+Note: in headless unit tests (and in `dump_accesskit`), we explicitly call
+`egui::Context::enable_accesskit()` so egui always emits a `TreeUpdate`. In the real windowed app,
+AccessKit output is typically enabled/disabled by the platform adapter.
+
 Renderer-side semantics live in [`src/accessibility.rs`](../src/accessibility.rs):
 
 - `FastRender::accessibility_tree*` APIs expose semantics as `AccessibilityNode` (role/name/state/relations) without requiring layout/paint.
