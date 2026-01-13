@@ -5,6 +5,7 @@ use crate::layout::engine::LayoutParallelism;
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::PaintParallelism;
 use crate::style::color::Rgba;
+use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
 use crate::style::float::{Clear, Float};
 use crate::style::types::BorderStyle;
@@ -12,6 +13,7 @@ use crate::style::types::BreakBetween;
 use crate::style::types::BreakInside;
 use crate::style::types::ColumnFill;
 use crate::style::types::ColumnSpan;
+use crate::style::types::FlexDirection;
 use crate::style::types::WhiteSpace;
 use crate::style::types::WritingMode;
 use crate::style::values::Length;
@@ -140,6 +142,22 @@ fn collect_line_positions(fragment: &FragmentNode, origin: (f32, f32), out: &mut
   for child in fragment.children.iter() {
     collect_line_positions(child, current, out);
   }
+}
+
+fn first_fragment_absolute_position(fragment: &FragmentNode, id: usize) -> Option<(f32, f32)> {
+  let mut stack = vec![(fragment, (0.0f32, 0.0f32))];
+  while let Some((node, origin)) = stack.pop() {
+    let current = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
+    if let FragmentContent::Block { box_id: Some(b) } = node.content {
+      if b == id {
+        return Some(current);
+      }
+    }
+    for child in node.children.iter() {
+      stack.push((child, current));
+    }
+  }
+  None
 }
 
 fn layout_multicol_fragment(
@@ -976,6 +994,116 @@ fn avoid_column_blocks_stay_whole() {
   assert!(
     (child_frags[0].bounds.height() - 80.0).abs() < 0.1,
     "avoided block should keep its full height"
+  );
+}
+
+#[test]
+fn avoid_column_flex_item_moves_to_next_column() {
+  // Multi-column container with a definite height so each column is exactly 100px tall.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(200.0));
+  parent_style.height = Some(Length::px(100.0));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(0.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  let parent_style = Arc::new(parent_style);
+
+  let mut flex_style = ComputedStyle::default();
+  flex_style.display = Display::Flex;
+  flex_style.flex_direction = FlexDirection::Column;
+  let flex_style = Arc::new(flex_style);
+
+  let mut item1_style = ComputedStyle::default();
+  item1_style.height = Some(Length::px(70.0));
+  // Ensure the authored block-size is honoured as the flex base size.
+  item1_style.flex_shrink = 0.0;
+  let mut item1 = BoxNode::new_block(
+    Arc::new(item1_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+  item1.id = 700;
+
+  // The second item is 60px tall (two 30px children). Without `break-inside: avoid-column`, the
+  // multicol fragmentation boundary would prefer splitting at the internal 30px boundary (y=100).
+  let mut item2_style = ComputedStyle::default();
+  item2_style.break_inside = BreakInside::AvoidColumn;
+  item2_style.flex_shrink = 0.0;
+  let item2_style = Arc::new(item2_style);
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.height = Some(Length::px(30.0));
+  let inner_style = Arc::new(inner_style);
+  let inner_a = BoxNode::new_block(inner_style.clone(), FormattingContextType::Block, vec![]);
+  let inner_b = BoxNode::new_block(inner_style.clone(), FormattingContextType::Block, vec![]);
+
+  let mut item2 = BoxNode::new_block(
+    item2_style,
+    FormattingContextType::Block,
+    vec![inner_a, inner_b],
+  );
+  item2.id = 701;
+
+  let mut flex = BoxNode::new_block(
+    flex_style,
+    FormattingContextType::Flex,
+    vec![item1.clone(), item2.clone()],
+  );
+  flex.id = 702;
+
+  let mut parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![flex.clone()],
+  );
+  parent.id = 703;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite_width(200.0))
+    .expect("layout");
+
+  // The flex container should fragment across the two columns.
+  let flex_frags = fragments_with_id(&fragment, flex.id);
+  assert!(
+    flex_frags.len() >= 2,
+    "expected flex container to fragment across columns"
+  );
+  let mut flex_frags_sorted = flex_frags.clone();
+  flex_frags_sorted.sort_by(|a, b| a.bounds.x().partial_cmp(&b.bounds.x()).unwrap());
+  let first_column_flex_frag = flex_frags_sorted[0];
+
+  // The avoid-column flex item fits in a column, so boundary selection should clamp the first
+  // column to end *before* the item (at y=70), rather than breaking at the internal y=100 boundary.
+  assert!(
+    (first_column_flex_frag.bounds.height() - 70.0).abs() < 0.1,
+    "expected first-column flex fragment to end at the first item boundary (70px) under avoid-column; got {}",
+    first_column_flex_frag.bounds.height()
+  );
+
+  // The avoided flex item must not be split across columns.
+  let item2_frags = fragments_with_id(&fragment, item2.id);
+  assert_eq!(
+    item2_frags.len(),
+    1,
+    "avoid-column flex item should not split across columns"
+  );
+
+  // The avoided flex item should be placed entirely in column 2.
+  assert_eq!(
+    item2_frags[0].fragmentainer.column_index,
+    Some(1),
+    "expected avoided flex item to be placed in column 2"
+  );
+
+  // Extra sanity: ensure the absolute x position differs from the first item (column 1).
+  let item1_pos = first_fragment_absolute_position(&fragment, item1.id).expect("item1 position");
+  let item2_pos = first_fragment_absolute_position(&fragment, item2.id).expect("item2 position");
+  assert!(
+    item2_pos.0 > item1_pos.0 + 50.0,
+    "expected item2 to be in a later column: item1 at x={}, item2 at x={}",
+    item1_pos.0,
+    item2_pos.0
   );
 }
 
