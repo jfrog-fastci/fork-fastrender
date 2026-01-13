@@ -16,7 +16,7 @@
 //!   (no `pull`, backpressure, etc.)
 //! - BYOB readers
 //! - full tee/backpressure (this implementation provides `ReadableStream.prototype.tee()` for byte
-//!   streams only)
+//!   and string streams only)
 //!
 //! The goal is to provide just enough surface area for real-world code that expects streams
 //! constructors to exist and for host-owned byte sources to be consumed via
@@ -2669,12 +2669,49 @@ fn readable_stream_tee_read_fulfilled_native(
 
   let value_key = alloc_key(scope, "value")?;
   let chunk_val = vm.get_with_host_and_hooks(host, scope, hooks, result_obj, value_key)?;
-  let bytes = match chunk_val {
+  enum TeeChunk {
+    Bytes(Vec<u8>),
+    String(String),
+  }
+  let chunk = match chunk_val {
     Value::Object(obj) if scope.heap().is_uint8_array_object(obj) => {
-      scope.heap().uint8_array_data(obj)?.to_vec()
+      TeeChunk::Bytes(scope.heap().uint8_array_data(obj)?.to_vec())
+    }
+    Value::String(s) => {
+      let code_units = scope.heap().get_string(s)?.as_code_units();
+      let byte_len = utf8_len_from_utf16_units(code_units)?;
+      if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
+        let msg = "ReadableStream.tee: chunk too large".to_string();
+        let pending0 = error_readable_stream(vm, scope, callee, branch0_obj, msg.clone())?;
+        if let Some(pending) = pending0 {
+          settle_pending_read(
+            vm,
+            scope,
+            host,
+            hooks,
+            pending.reader,
+            pending.roots,
+            pending.outcome,
+          )?;
+        }
+        let pending1 = error_readable_stream(vm, scope, callee, branch1_obj, msg)?;
+        if let Some(pending) = pending1 {
+          settle_pending_read(
+            vm,
+            scope,
+            host,
+            hooks,
+            pending.reader,
+            pending.roots,
+            pending.outcome,
+          )?;
+        }
+        return Ok(Value::Undefined);
+      }
+      TeeChunk::String(utf16_units_to_utf8_string_lossy(code_units, byte_len)?)
     }
     _ => {
-      let msg = "ReadableStream.tee: expected Uint8Array chunks".to_string();
+      let msg = "ReadableStream.tee: expected Uint8Array or string chunks".to_string();
       let pending0 = error_readable_stream(vm, scope, callee, branch0_obj, msg.clone())?;
       if let Some(pending) = pending0 {
         settle_pending_read(
@@ -2704,33 +2741,68 @@ fn readable_stream_tee_read_fulfilled_native(
   };
 
   // Enqueue into each non-canceled branch.
-  if branch0_open {
-    let pending =
-      enqueue_bytes_into_readable_stream(vm, scope, callee, branch0_obj, bytes.clone())?;
-    if let Some(pending) = pending {
-      settle_pending_read(
-        vm,
-        scope,
-        host,
-        hooks,
-        pending.reader,
-        pending.roots,
-        pending.outcome,
-      )?;
+  match chunk {
+    TeeChunk::Bytes(bytes) => {
+      if branch0_open {
+        let pending =
+          enqueue_bytes_into_readable_stream(vm, scope, callee, branch0_obj, bytes.clone())?;
+        if let Some(pending) = pending {
+          settle_pending_read(
+            vm,
+            scope,
+            host,
+            hooks,
+            pending.reader,
+            pending.roots,
+            pending.outcome,
+          )?;
+        }
+      }
+      if branch1_open {
+        let pending = enqueue_bytes_into_readable_stream(vm, scope, callee, branch1_obj, bytes)?;
+        if let Some(pending) = pending {
+          settle_pending_read(
+            vm,
+            scope,
+            host,
+            hooks,
+            pending.reader,
+            pending.roots,
+            pending.outcome,
+          )?;
+        }
+      }
     }
-  }
-  if branch1_open {
-    let pending = enqueue_bytes_into_readable_stream(vm, scope, callee, branch1_obj, bytes)?;
-    if let Some(pending) = pending {
-      settle_pending_read(
-        vm,
-        scope,
-        host,
-        hooks,
-        pending.reader,
-        pending.roots,
-        pending.outcome,
-      )?;
+    TeeChunk::String(s) => {
+      if branch0_open {
+        let pending =
+          enqueue_string_into_readable_stream(vm, scope, callee, branch0_obj, s.clone())?;
+        if let Some(pending) = pending {
+          settle_pending_read(
+            vm,
+            scope,
+            host,
+            hooks,
+            pending.reader,
+            pending.roots,
+            pending.outcome,
+          )?;
+        }
+      }
+      if branch1_open {
+        let pending = enqueue_string_into_readable_stream(vm, scope, callee, branch1_obj, s)?;
+        if let Some(pending) = pending {
+          settle_pending_read(
+            vm,
+            scope,
+            host,
+            hooks,
+            pending.reader,
+            pending.roots,
+            pending.outcome,
+          )?;
+        }
+      }
     }
   }
 
@@ -2864,7 +2936,7 @@ fn readable_stream_tee_native(
   scope.push_root(Value::Object(stream_obj))?;
 
   // Ensure this is one of our streams (and not e.g. an arbitrary object inheriting the prototype),
-  // that it is byte-oriented, and that it isn't already locked.
+  // and that it isn't already locked.
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
       .streams
@@ -2872,21 +2944,6 @@ fn readable_stream_tee_native(
       .ok_or(VmError::TypeError("ReadableStream.tee: illegal invocation"))?;
     if stream_state.locked {
       return Err(VmError::TypeError("ReadableStream is locked"));
-    }
-    // `ReadableStream.prototype.tee` in this implementation only supports byte streams. However, we
-    // allow teeing streams that haven't yet observed their first `enqueue` (kind is
-    // `Uninitialized`). This is important for pipelines like:
-    //
-    //   new ReadableStream({ start(c) { c.enqueue("hi"); c.close(); } })
-    //     .pipeThrough(new TextEncoderStream())
-    //     .tee()
-    //
-    // where the resulting TransformStream readable is byte-oriented, but may not have enqueued its
-    // first chunk yet when `.tee()` is called.
-    if !matches!(stream_state.kind, StreamKind::Bytes | StreamKind::Uninitialized) {
-      return Err(VmError::TypeError(
-        "ReadableStream.tee only supports byte streams",
-      ));
     }
     Ok(())
   })?;
