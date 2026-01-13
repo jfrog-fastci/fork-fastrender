@@ -5671,6 +5671,70 @@ mod webidl_event_target_dom2_tests {
     assert_eq!(out, "pc");
     Ok(())
   }
+
+  #[test]
+  fn webidl_event_target_stop_propagation_does_not_stop_other_listeners_on_same_target(
+  ) -> Result<(), VmError> {
+    let out = exec_webidl_event_target_script_to_string(
+      r#"
+(() => {
+  const parent = new EventTarget();
+  const child = new EventTarget(parent);
+  const log = [];
+  parent.addEventListener('x', () => { log.push('a'); }, { capture: true });
+  parent.addEventListener('x', (e) => { log.push('b'); e.stopPropagation(); }, { capture: true });
+  parent.addEventListener('x', () => { log.push('c'); }, { capture: true });
+  child.addEventListener('x', () => log.push('child'), { capture: true });
+  child.dispatchEvent(new Event('x', { bubbles: true }));
+  return log.join(',');
+})()
+"#,
+    )?;
+    // stopPropagation prevents reaching the target, but does not stop other listeners on the same
+    // currentTarget/phase.
+    assert_eq!(out, "a,b,c");
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_event_target_stop_immediate_propagation_stops_other_listeners_on_same_target(
+  ) -> Result<(), VmError> {
+    let out = exec_webidl_event_target_script_to_string(
+      r#"
+(() => {
+  const parent = new EventTarget();
+  const child = new EventTarget(parent);
+  const log = [];
+  parent.addEventListener('x', () => { log.push('a'); }, { capture: true });
+  parent.addEventListener('x', (e) => { log.push('b'); e.stopImmediatePropagation(); }, { capture: true });
+  parent.addEventListener('x', () => { log.push('c'); }, { capture: true });
+  child.addEventListener('x', () => log.push('child'), { capture: true });
+  child.dispatchEvent(new Event('x', { bubbles: true }));
+  return log.join(',');
+})()
+"#,
+    )?;
+    assert_eq!(out, "a,b");
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_event_target_prevent_default_sets_default_prevented_and_returns_false(
+  ) -> Result<(), VmError> {
+    let out = exec_webidl_event_target_script_to_string(
+      r#"
+(() => {
+  const t = new EventTarget();
+  t.addEventListener('x', (e) => e.preventDefault());
+  const ev = new Event('x', { cancelable: true });
+  const ret = t.dispatchEvent(ev);
+  return [ev.defaultPrevented, ret].join(',');
+})()
+"#,
+    )?;
+    assert_eq!(out, "true,false");
+    Ok(())
+  }
 }
 
 #[cfg(test)]
