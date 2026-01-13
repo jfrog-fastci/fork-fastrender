@@ -63,9 +63,6 @@ A change counts if it lands at least one of:
 ### Profiling tools
 
 ```bash
-# Capture perf logging from an interactive windowed session (closes when you close the window).
-scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl --summary
-
 # Enable performance logging (JSONL)
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
