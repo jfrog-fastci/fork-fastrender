@@ -15950,13 +15950,9 @@ pub(crate) enum GenFrame {
   /// Continue evaluating a `delete` expression after evaluating its operand.
   DeleteAfterArgument,
   /// Continue evaluating a `delete` member expression after evaluating its base.
-  DeleteMemberAfterBase {
-    expr: *const MemberExpr,
-  },
+  DeleteMemberAfterBase { expr: *const MemberExpr },
   /// Continue evaluating a `delete` computed member expression after evaluating its base.
-  DeleteComputedMemberAfterBase {
-    expr: *const ComputedMemberExpr,
-  },
+  DeleteComputedMemberAfterBase { expr: *const ComputedMemberExpr },
   /// Continue evaluating a `delete` computed member expression after evaluating its member key
   /// expression.
   DeleteComputedMemberAfterMember {
@@ -16240,7 +16236,9 @@ impl Trace for GenFrame {
       GenFrame::BindArrAfterDefault { value, .. } | GenFrame::BindArrContinue { value, .. } => {
         tracer.trace_value(*value);
       }
-      GenFrame::YieldStar { iterator_record, .. } => {
+      GenFrame::YieldStar {
+        iterator_record, ..
+      } => {
         tracer.trace_value(iterator_record.iterator);
         tracer.trace_value(iterator_record.next_method);
       }
@@ -35592,7 +35590,9 @@ fn gen_eval_expr_chain(
     Expr::Binary(binary)
       if matches!(
         binary.stx.operator,
-        OperatorName::Assignment | OperatorName::AssignmentAddition | OperatorName::AssignmentExponentiation
+        OperatorName::Assignment
+          | OperatorName::AssignmentAddition
+          | OperatorName::AssignmentExponentiation
       ) =>
     {
       gen_eval_assignment_expr(evaluator, scope, &binary.stx)
@@ -36370,8 +36370,8 @@ fn gen_delete_computed_member_after_base(
   if is_optional_chain_sentinel(evaluator.vm, base) {
     return Ok(GenEval::Complete(Completion::normal(Value::Bool(true))));
   }
-  // `delete obj?.[expr]` short-circuits to `true` when the base is nullish and does not evaluate the
-  // member expression.
+  // `delete obj?.[expr]` short-circuits to `true` when the base is nullish and does not evaluate
+  // the member expression.
   if expr.optional_chaining && is_nullish(base) {
     return Ok(GenEval::Complete(Completion::normal(Value::Bool(true))));
   }
@@ -36385,11 +36385,19 @@ fn gen_delete_computed_member_after_base(
 
   match member_eval {
     GenEval::Complete(c) => match c {
-      Completion::Normal(v) => {
-        let member_value = v.unwrap_or(Value::Undefined);
-        let out = gen_delete_computed_member_after_member(evaluator, scope, expr, base, member_value)?;
-        Ok(GenEval::Complete(Completion::normal(out)))
-      }
+      Completion::Normal(v) => match gen_delete_computed_member_after_member(
+        evaluator,
+        scope,
+        expr,
+        base,
+        v.unwrap_or(Value::Undefined),
+      ) {
+        Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+        Err(err) => {
+          let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+          Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+      },
       abrupt => Ok(GenEval::Complete(abrupt)),
     },
     GenEval::Suspend(mut suspend) => {
@@ -36824,7 +36832,7 @@ fn gen_binary_after_left(
           Ok(GenEval::Suspend(suspend))
         }
       }
-    },
+    }
     _ => Err(VmError::Unimplemented("yield in binary operator")),
   }
 }
@@ -37143,7 +37151,7 @@ fn gen_eval_assignment_apply_reference(
         }
       }
     }
-    OperatorName::AssignmentAddition => {
+    OperatorName::AssignmentAddition | OperatorName::AssignmentExponentiation => {
       let mut op_scope = scope.reborrow();
       evaluator.root_reference(&mut op_scope, &reference)?;
 
@@ -37156,15 +37164,31 @@ fn gen_eval_assignment_apply_reference(
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             let right = v.unwrap_or(Value::Undefined);
-            let mut add_scope = op_scope.reborrow();
-            add_scope.push_root(right)?;
-            let value = evaluator
-              .addition_operator(&mut add_scope, left, right)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
-            add_scope.push_root(value)?;
+            let mut compound_scope = op_scope.reborrow();
+            compound_scope.push_root(right)?;
+            let value = match expr.operator {
+              OperatorName::AssignmentAddition => evaluator
+                .addition_operator(&mut compound_scope, left, right)
+                .map_err(|err| {
+                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                })?,
+              OperatorName::AssignmentExponentiation => evaluator
+                .exponentiation_operator(&mut compound_scope, left, right)
+                .map_err(|err| {
+                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                })?,
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "generator compound assignment evaluator called for unsupported operator",
+                ))
+              }
+            };
+            compound_scope.push_root(value)?;
             evaluator
-              .put_value_to_reference(&mut add_scope, &reference, value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
+              .put_value_to_reference(&mut compound_scope, &reference, value)
+              .map_err(|err| {
+                coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+              })?;
             Ok(GenEval::Complete(Completion::normal(value)))
           }
           abrupt => Ok(GenEval::Complete(abrupt)),
@@ -38772,7 +38796,12 @@ fn gen_resume_from_frames(
       GenFrame::DeleteComputedMemberAfterBase { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
-          match gen_delete_computed_member_after_base(evaluator, scope, expr, v.unwrap_or(Value::Undefined)) {
+          match gen_delete_computed_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            v.unwrap_or(Value::Undefined),
+          ) {
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
               vecdeque_try_append(&mut suspend.frames, &mut frames)?;
@@ -38809,17 +38838,20 @@ fn gen_resume_from_frames(
           let member_value = v.unwrap_or(Value::Undefined);
           let mut del_scope = scope.reborrow();
           del_scope.push_root(member_value)?;
-          match evaluator.to_property_key_operator(&mut del_scope, member_value) {
-            Ok(_) => {
-              let err =
-                throw_reference_error(evaluator.vm, &mut del_scope, "Cannot delete a super property")?;
-              state = completion_from_expr_result(Err(err))?;
-            }
+          let _ = match evaluator.to_property_key_operator(&mut del_scope, member_value) {
+            Ok(k) => k,
             Err(err) => {
               let err = coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err);
               state = completion_from_expr_result(Err(err))?;
+              continue;
             }
-          }
+          };
+          let err = throw_reference_error(
+            evaluator.vm,
+            &mut del_scope,
+            "Cannot delete a super property",
+          )?;
+          state = completion_from_expr_result(Err(err))?;
         }
         abrupt => state = abrupt,
       },
@@ -39656,26 +39688,38 @@ fn gen_resume_from_frames(
               }
             };
 
-            let mut add_scope = scope.reborrow();
+            let mut op_scope = scope.reborrow();
             match (base, key, receiver) {
               (Some(base), Some(key_value), Some(receiver)) => {
-                add_scope.push_roots(&[base, key_value, receiver, left, right])?
+                op_scope.push_roots(&[base, key_value, receiver, left, right])?
               }
-              (Some(base), Some(key_value), None) => add_scope.push_roots(&[base, key_value, left, right])?,
-              (None, None, None) => add_scope.push_roots(&[left, right])?,
+              (Some(base), Some(key_value), None) => {
+                op_scope.push_roots(&[base, key_value, left, right])?
+              }
+              (None, None, None) => op_scope.push_roots(&[left, right])?,
               _ => {
                 return Err(VmError::InvariantViolation(
                   "AssignAddAfterRhs has mismatched stored reference components",
                 ))
               }
             };
-            let value = evaluator
-              .addition_operator(&mut add_scope, left, right)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
-            add_scope.push_root(value)?;
+            let value = match expr.operator {
+              OperatorName::AssignmentAddition => evaluator
+                .addition_operator(&mut op_scope, left, right)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
+              OperatorName::AssignmentExponentiation => evaluator
+                .exponentiation_operator(&mut op_scope, left, right)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "AssignAddAfterRhs used for non-compound operator",
+                ))
+              }
+            };
+            op_scope.push_root(value)?;
             evaluator
-              .put_value_to_reference(&mut add_scope, &reference, value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
+              .put_value_to_reference(&mut op_scope, &reference, value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
             Ok(value)
           })();
 
