@@ -84,9 +84,10 @@ impl AudioRingBuffer {
     }
     // Defensively treat non-finite/denormal gains as silence so we never poison the mix.
     // (`gain` originates from user volume, but the atomic bit-pattern may still be corrupted.)
-    if !gain.is_finite() || !gain.is_normal() {
-      return;
-    }
+    //
+    // Note: we still drain the ring buffer even when the effective gain is 0, so muting does not
+    // behave like pausing.
+    let gain = if gain.is_finite() && gain.is_normal() { gain } else { 0.0 };
 
     let read = self.read.load(Ordering::Relaxed);
     let write = self.write.load(Ordering::Acquire);
