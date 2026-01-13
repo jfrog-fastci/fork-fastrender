@@ -341,8 +341,9 @@ When audio is master, video presentation is a function of:
 * `t = timeline_now()` from `src/media/clock.rs`
 * the set of decoded video frames with `frame.pts`
 
-The renderer should display a frame whose PTS is “closest to but not ahead of” the current time, with
-bounded tolerance.
+The renderer should display a frame whose PTS is “close enough” to the current time, with bounded
+tolerance. Small early/late deltas are treated as noise (present the frame), while larger deltas
+trigger corrective actions (hold when too early; drop when too late).
 
 Typical actions:
 
