@@ -76,6 +76,10 @@ transport/codec yet:
   - **Warning:** `src/network_process/ipc.rs::read_frame` currently allocates `Vec<u8>` based on the
     peer-provided length **without a max length cap**. Do not copy this framing code for an
     untrusted IPC boundary; migrate to `src/ipc/framing.rs`/`IpcConnection` or add an explicit cap.
+- **Browser ↔ network (in-tree protocol schema, under development):**
+  - The intended browser↔network message types live in
+    [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) (with validation helpers and
+    `expected_fds()` for future FD-backed body transfer).
 - **Shared framing helper (in-tree):**
   - `src/ipc/framing.rs` provides a length-prefixed framing layer with a hard maximum frame size.
   - See: [`src/ipc/framing.rs`](../src/ipc/framing.rs).
@@ -329,8 +333,11 @@ Security invariants:
      - Usually this is a fixed small number (0 or 1).
      - Variable-arity messages are allowed only when the arity is derived from **validated** fields
        in the decoded message (e.g. `files.len()` with a hard cap).
-   - Repo reality: the browser↔renderer protocol encodes this explicitly via `expected_fds()`:
-     [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs).
+   - Repo reality:
+     - The browser↔renderer protocol encodes this explicitly via `expected_fds()`:
+       [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs).
+     - The browser↔network protocol schema also uses `expected_fds()` for the same reason:
+       [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs).
    - **Do not send the FD “out of band” in a separate write.** For messages like
      `RendererToBrowser::FrameReady`, the metadata and its FD must be sent in the *same* `sendmsg`
      so the receiver cannot accidentally associate the FD with the wrong message.
@@ -343,19 +350,19 @@ Security invariants:
      - stored in a clearly-owned structure, or
      - closed before returning from the receive handler.
 6. **CLOEXEC everywhere.**
-    - Create sockets with `SOCK_CLOEXEC` where possible.
-    - Prefer receiving FDs with `recvmsg(MSG_CMSG_CLOEXEC)` so `FD_CLOEXEC` is applied **atomically**.
-      - Do not rely on a follow-up `fcntl(FD_CLOEXEC)` in another step (TOCTOU footgun).
-    - Repo reality:
-      - `src/ipc/ancillary.rs::recv_fd` uses `MSG_CMSG_CLOEXEC` on Linux for single-FD transfers.
-      - `src/ipc/frame_slots.rs` uses `MSG_CMSG_CLOEXEC` for seqpacket messages with FD sets.
-      - `src/ipc/fd_passing.rs` uses `MSG_CMSG_CLOEXEC` on Linux/Android and sets `FD_CLOEXEC`
-        best-effort on other Unix platforms.
+   - Create sockets with `SOCK_CLOEXEC` where possible.
+   - Prefer receiving FDs with `recvmsg(MSG_CMSG_CLOEXEC)` so `FD_CLOEXEC` is applied **atomically**.
+     - Do not rely on a follow-up `fcntl(FD_CLOEXEC)` in another step (TOCTOU footgun).
+   - Repo reality:
+     - `src/ipc/ancillary.rs::recv_fd` uses `MSG_CMSG_CLOEXEC` on Linux for single-FD transfers.
+     - `src/ipc/frame_slots.rs` uses `MSG_CMSG_CLOEXEC` for seqpacket messages with FD sets.
+     - `src/ipc/fd_passing.rs` uses `MSG_CMSG_CLOEXEC` on Linux/Android and sets `FD_CLOEXEC`
+       best-effort on other Unix platforms.
 7. **Include at least one byte of real payload data when sending FDs.**
-    - On Linux, `SCM_RIGHTS` control messages are associated with a received datagram/packet. Sending
-      “FD-only” control messages without accompanying payload bytes is a well-known footgun; always
-      include at least one byte of non-ancillary data.
-    - See also: [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
+   - On Linux, `SCM_RIGHTS` control messages are associated with a received datagram/packet. Sending
+     “FD-only” control messages without accompanying payload bytes is a well-known footgun; always
+     include at least one byte of non-ancillary data.
+   - See also: [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
 
 Why this matters:
 
