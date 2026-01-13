@@ -242,6 +242,8 @@ pub mod site_isolation;
 pub mod shm;
 pub(crate) mod rayon_global;
 pub mod resource;
+#[cfg(target_os = "macos")]
+pub mod sandbox_exec;
 #[path = "ui/select_dropdown.rs"]
 pub mod select_dropdown;
 pub mod svg;
