@@ -122,6 +122,62 @@ fn async_await_compound_assignment_exponentiation_equals_number_and_bigint() -> 
 }
 
 #[test]
+fn async_await_compound_assignment_to_computed_member_with_await_in_key_and_rhs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let obj = { x: 5 };
+        obj[await Promise.resolve("x")] -= await Promise.resolve(2);
+        return String(obj.x);
+      }
+      f().then(v => out = v);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "3");
+  Ok(())
+}
+
+#[test]
+fn async_await_logical_and_assignment_to_computed_member_short_circuits_but_awaits_key(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var log = "";
+      async function f() {
+        let obj = { x: 0 };
+        obj[(log += "key-pre,", await Promise.resolve("x"), log += "key-post,", "x")] &&=
+          (log += "rhs-pre,", await Promise.resolve(1), log += "rhs-post,", 1);
+        return log + "|" + obj.x;
+      }
+      f().then(v => out = v);
+      log
+    "#,
+  )?;
+  // The computed key expression must run (including its `await`) before we can determine whether
+  // the logical assignment should evaluate/await the RHS.
+  assert_eq!(value_to_string(&rt, value), "key-pre,");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  // Because obj.x is falsy, `&&=` must short-circuit without evaluating/awaiting the RHS.
+  assert_eq!(value_to_string(&rt, value), "key-pre,key-post,|0");
+  Ok(())
+}
+
+#[test]
 fn async_await_shift_and_bitwise_assignment_ops_number_and_bigint() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
