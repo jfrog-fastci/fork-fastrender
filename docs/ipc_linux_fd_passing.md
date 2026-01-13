@@ -236,6 +236,59 @@ operation.
 References:
 - `cmsg(3)`: https://man7.org/linux/man-pages/man3/cmsg.3.html
 
+### Reference skeleton: safe `recvmsg()` + `SCM_RIGHTS` parsing
+
+This is C-like pseudo-code, meant to make the control-flow and “close on error” pattern explicit.
+
+```c
+uint8_t data[MSG_MAX];
+uint8_t control[CMSG_SPACE(sizeof(int) * MAX_FDS)];
+
+struct iovec iov = {
+  .iov_base = data,
+  .iov_len = sizeof(data),
+};
+struct msghdr msg = {
+  .msg_iov = &iov,
+  .msg_iovlen = 1,
+  .msg_control = control,
+  .msg_controllen = sizeof(control),
+};
+
+ssize_t n = recvmsg(sock, &msg, MSG_CMSG_CLOEXEC);
+if (n <= 0) { /* EOF or error */ fail; }
+if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) { fail; }
+
+int received_fds[MAX_FDS];
+size_t received_fd_count = 0;
+
+for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+     cmsg != NULL;
+     cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+  if (cmsg->cmsg_level != SOL_SOCKET) { fail; }
+  if (cmsg->cmsg_type != SCM_RIGHTS) { fail; }
+
+  size_t payload_len = cmsg->cmsg_len - CMSG_LEN(0);
+  if (payload_len % sizeof(int) != 0) { fail; }
+
+  int *fds = (int *) CMSG_DATA(cmsg);
+  size_t fd_count = payload_len / sizeof(int);
+
+  if (received_fd_count + fd_count > MAX_FDS) { fail; }
+  memcpy(&received_fds[received_fd_count], fds, fd_count * sizeof(int));
+  received_fd_count += fd_count;
+}
+
+// Validate/consume fds...
+// On any error after receiving FDs: close them all before returning.
+```
+
+Key points this skeleton bakes in:
+- control buffer is sized with `CMSG_SPACE`
+- truncation (`MSG_TRUNC`/`MSG_CTRUNC`) is fatal
+- malformed `SCM_RIGHTS` payload lengths are fatal
+- close-all-on-error avoids browser FD leaks
+
 ---
 
 ## Strongly recommended receiver checks (defense-in-depth)
