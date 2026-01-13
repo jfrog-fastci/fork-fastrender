@@ -4287,20 +4287,16 @@ impl App {
                 title_resp.request_focus();
               }
 
-              // Expose the title as a toggle button to assistive tech (AccessKit) so screen readers
-              // can announce the expanded/collapsed state.
+              // Expose the title as an expand/collapse control to assistive tech (AccessKit) so
+              // screen readers can announce the expanded/collapsed state.
               let title_a11y_label = format!("Warning details: {title_text}");
               title_resp.widget_info({
                 let label = title_a11y_label.clone();
-                let expanded = expanded;
-                move || {
-                  egui::WidgetInfo::selected(
-                    egui::WidgetType::SelectableLabel,
-                    expanded,
-                    label.clone(),
-                  )
-                }
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
               });
+              let _ = title_resp
+                .ctx
+                .accesskit_node_builder(title_resp.id, |builder| builder.set_expanded(expanded));
 
               if title_resp.has_focus() {
                 let focus_stroke = ui.visuals().selection.stroke;
