@@ -19,9 +19,9 @@ use crate::js::window_realm::{
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
   install_window_timers_bindings, install_window_websocket_bindings_with_guard,
-  install_window_xhr_bindings_with_guard, DomHost, EventLoop, JsExecutionOptions, RunLimits,
-  RunUntilIdleOutcome, TaskSource, WindowFetchBindings, WindowFetchEnv, WindowWebSocketBindings,
-  WindowWebSocketEnv, WindowXhrBindings, WindowXhrEnv,
+  install_window_xhr_bindings_with_guard, DomHost, EventLoop, ExternalTaskQueueHandle,
+  JsExecutionOptions, RunLimits, RunUntilIdleOutcome, TaskSource, WindowFetchBindings, WindowFetchEnv,
+  WindowWebSocketBindings, WindowWebSocketEnv, WindowXhrBindings, WindowXhrEnv,
 };
 use crate::js::{Clock, RealClock};
 use crate::resource::{origin_from_url, ResourceFetcher};
@@ -480,6 +480,23 @@ impl WindowHost {
 
   pub fn event_loop_mut(&mut self) -> &mut EventLoop<WindowHostState> {
     &mut self.event_loop
+  }
+
+  /// Returns a thread-safe handle for queueing tasks onto this window's event loop from other
+  /// threads.
+  pub fn external_task_queue_handle(&self) -> ExternalTaskQueueHandle<WindowHostState> {
+    self.event_loop.external_task_queue_handle()
+  }
+
+  /// Install (or clear) the wake callback invoked when external tasks are queued onto this
+  /// window's event loop from other threads.
+  pub fn set_external_wake_callback(&self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
+    self.event_loop.set_external_wake_callback(cb);
+  }
+
+  /// Compatibility alias for [`Self::set_external_wake_callback`].
+  pub fn set_external_task_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+    self.set_external_wake_callback(waker);
   }
 
   pub fn set_console_sink(&mut self, sink: Option<ConsoleSink>) -> Result<()> {

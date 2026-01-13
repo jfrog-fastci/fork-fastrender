@@ -10033,7 +10033,6 @@ impl BrowserRuntime {
       .document
       .as_ref()
       .and_then(|doc| compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state));
-
     let mut msgs = Vec::new();
     msgs.push(WorkerToUi::NavigationFailed {
       tab_id,
@@ -10054,7 +10053,11 @@ impl BrowserRuntime {
           .map(|p| p.device_pixel_ratio())
           .unwrap_or(tab.dpr),
         scroll_state: tab.scroll_state.clone(),
-        scroll_metrics: compute_scroll_metrics(tab.document.as_ref(), tab.viewport_css, &tab.scroll_state),
+        scroll_metrics: compute_scroll_metrics(
+          tab.document.as_ref(),
+          tab.viewport_css,
+          &tab.scroll_state,
+        ),
         next_tick: (tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some())
           .then_some(DEFAULT_TICK_INTERVAL),
       },
