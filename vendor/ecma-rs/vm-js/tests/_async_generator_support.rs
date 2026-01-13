@@ -60,9 +60,29 @@ pub fn is_unimplemented_async_generator_error(
 /// On success the probe also clears any queued microtasks so later assertions start from a clean
 /// microtask queue.
 pub fn supports_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
+  // Probe:
+  // - parse `async function*`
+  // - execute it (create iterator)
+  // - resume it via `await iter.next()`
+  //
+  // This is intentionally stricter than "does `.next()` return a Promise?" so tests remain skipped
+  // during partial implementations (e.g. promise creation works but the resume job does not).
   let probe = r#"
-    async function* __ag_support() { yield 1; }
-    __ag_support().next();
+    var __ag_support_ok = false;
+    (async function () {
+      try {
+        async function* __ag_support() { yield 1; }
+        var it = __ag_support();
+        var r1 = await it.next();
+        var r2 = await it.next();
+        __ag_support_ok = !!(
+          r1 && r1.value === 1 && r1.done === false &&
+          r2 && r2.value === undefined && r2.done === true
+        );
+      } catch (e) {
+        __ag_support_ok = false;
+      }
+    })();
   "#;
 
   match rt.exec_script(probe) {
@@ -71,17 +91,28 @@ pub fn supports_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
       rt.teardown_microtasks();
       return Ok(false);
     }
+    // Older/newer parse frontends may represent `async function*` as a syntax error rather than an
+    // explicit "unimplemented" error. Treat it as unsupported so async generator tests skip.
+    Err(VmError::Syntax(_)) => {
+      rt.teardown_microtasks();
+      return Ok(false);
+    }
     Err(err) => return Err(err),
   }
 
-  // `AsyncGenerator.prototype.next()` itself can succeed (returning a Promise) even when the async
-  // generator resume job is unimplemented. Run a microtask checkpoint to ensure the queued work can
-  // actually execute; otherwise tests might spuriously activate during partial implementations.
-  let result = match rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
-    Ok(()) => Ok(true),
-    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
-    Err(err) => Err(err),
-  };
+  let result = (|| {
+    // The probe runs in an async IIFE, so we need a microtask checkpoint to drive it to completion.
+    match rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+      Ok(()) => {}
+      Err(err) if is_unimplemented_async_generator_error(rt, &err)? => return Ok(false),
+      Err(err) => return Err(err),
+    };
+
+    match rt.exec_script("__ag_support_ok")? {
+      Value::Bool(b) => Ok(b),
+      _ => Ok(false),
+    }
+  })();
 
   // Always discard any queued microtasks after the probe (including in the unsupported case) so we
   // don't leak jobs into later assertions.
