@@ -768,7 +768,9 @@ impl Document {
     };
 
     self.live_mutation.pre_remove(child, old_parent, pos);
-    self.live_range_pre_remove_steps(child, old_parent, pos);
+    if let Some(tree_index) = self.tree_child_index_for_range(old_parent, child) {
+      self.live_range_pre_remove_steps(child, old_parent, tree_index);
+    }
     self.node_iterator_pre_remove_steps(child);
     self.nodes[old_parent.index()].children.remove(pos);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, old_parent);
@@ -1269,7 +1271,11 @@ impl Document {
       self
         .live_mutation
         .pre_insert(parent, insertion_idx, moved_children.len());
-      self.live_range_pre_insert_steps(parent, insertion_idx, moved_children.len());
+      self.live_range_pre_insert_steps(
+        parent,
+        self.tree_child_index_from_raw_index_for_range(parent, insertion_idx),
+        self.inserted_tree_children_count_for_range(parent, &moved_children),
+      );
 
       let mut children_to_move: Vec<NodeId> = Vec::with_capacity(moved_children.len());
       while let Some(child) = self.nodes[new_child.index()].children.first().copied() {
@@ -1350,7 +1356,11 @@ impl Document {
     }
 
     self.live_mutation.pre_insert(parent, insertion_idx, 1);
-    self.live_range_pre_insert_steps(parent, insertion_idx, 1);
+    self.live_range_pre_insert_steps(
+      parent,
+      self.tree_child_index_from_raw_index_for_range(parent, insertion_idx),
+      self.inserted_tree_children_count_for_range(parent, &[new_child]),
+    );
 
     self.nodes[parent.index()]
       .children
@@ -1387,7 +1397,9 @@ impl Document {
     };
 
     self.live_mutation.pre_remove(child, parent, idx);
-    self.live_range_pre_remove_steps(child, parent, idx);
+    if let Some(tree_index) = self.tree_child_index_for_range(parent, child) {
+      self.live_range_pre_remove_steps(child, parent, tree_index);
+    }
     self.node_iterator_pre_remove_steps(child);
     self.nodes[parent.index()].children.remove(idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, parent);
@@ -1468,7 +1480,9 @@ impl Document {
       self
         .live_mutation
         .pre_remove(old_child, parent, old_child_idx);
-      self.live_range_pre_remove_steps(old_child, parent, old_child_idx);
+      if let Some(tree_index) = self.tree_child_index_for_range(parent, old_child) {
+        self.live_range_pre_remove_steps(old_child, parent, tree_index);
+      }
       self.node_iterator_pre_remove_steps(old_child);
       self.nodes[parent.index()].children.remove(old_child_idx);
       let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
@@ -1482,7 +1496,11 @@ impl Document {
         self
           .live_mutation
           .pre_insert(parent, old_child_idx, moved_children.len());
-        self.live_range_pre_insert_steps(parent, old_child_idx, moved_children.len());
+        self.live_range_pre_insert_steps(
+          parent,
+          self.tree_child_index_from_raw_index_for_range(parent, old_child_idx),
+          self.inserted_tree_children_count_for_range(parent, &moved_children),
+        );
       }
 
       let mut children_to_move: Vec<NodeId> = Vec::with_capacity(moved_children.len());
@@ -1546,14 +1564,20 @@ impl Document {
     self
       .live_mutation
       .pre_remove(old_child, parent, old_child_idx);
-    self.live_range_pre_remove_steps(old_child, parent, old_child_idx);
+    if let Some(tree_index) = self.tree_child_index_for_range(parent, old_child) {
+      self.live_range_pre_remove_steps(old_child, parent, tree_index);
+    }
     self.node_iterator_pre_remove_steps(old_child);
     self.nodes[parent.index()].children.remove(old_child_idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
     self.nodes[old_child.index()].parent = None;
 
     self.live_mutation.pre_insert(parent, old_child_idx, 1);
-    self.live_range_pre_insert_steps(parent, old_child_idx, 1);
+    self.live_range_pre_insert_steps(
+      parent,
+      self.tree_child_index_from_raw_index_for_range(parent, old_child_idx),
+      self.inserted_tree_children_count_for_range(parent, &[new_child]),
+    );
     self.nodes[parent.index()]
       .children
       .insert(old_child_idx, new_child);

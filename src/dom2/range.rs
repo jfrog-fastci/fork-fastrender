@@ -39,6 +39,111 @@ fn invert_boundary_point_position(pos: BoundaryPointPosition) -> BoundaryPointPo
 }
 
 impl Document {
+  #[inline]
+  fn parent_is_element_like_for_range(&self, parent: NodeId) -> bool {
+    matches!(
+      self.nodes.get(parent.index()).map(|n| &n.kind),
+      Some(NodeKind::Element { .. } | NodeKind::Slot { .. })
+    )
+  }
+
+  #[inline]
+  fn is_shadow_root_node(&self, node: NodeId) -> bool {
+    matches!(
+      self.nodes.get(node.index()).map(|n| &n.kind),
+      Some(NodeKind::ShadowRoot { .. })
+    )
+  }
+
+  #[inline]
+  fn is_tree_child_for_range(&self, parent: NodeId, child: NodeId) -> bool {
+    if self.parent_is_element_like_for_range(parent) && self.is_shadow_root_node(child) {
+      return false;
+    }
+    true
+  }
+
+  fn tree_child_count_for_range(&self, parent: NodeId) -> usize {
+    let mut count = 0usize;
+    let parent_is_element_like = self.parent_is_element_like_for_range(parent);
+    let children = &self.nodes[parent.index()].children;
+    for &child in children {
+      if self.nodes[child.index()].parent != Some(parent) {
+        continue;
+      }
+      if parent_is_element_like && self.is_shadow_root_node(child) {
+        continue;
+      }
+      count += 1;
+    }
+    count
+  }
+
+  pub(super) fn tree_child_index_for_range(&self, parent: NodeId, child: NodeId) -> Option<usize> {
+    if self.nodes.get(child.index())?.parent != Some(parent) {
+      return None;
+    }
+    if !self.is_tree_child_for_range(parent, child) {
+      return None;
+    }
+
+    let mut idx = 0usize;
+    let parent_is_element_like = self.parent_is_element_like_for_range(parent);
+    for &c in &self.nodes.get(parent.index())?.children {
+      if self.nodes.get(c.index())?.parent != Some(parent) {
+        continue;
+      }
+      if parent_is_element_like && self.is_shadow_root_node(c) {
+        continue;
+      }
+      if c == child {
+        return Some(idx);
+      }
+      idx += 1;
+    }
+    None
+  }
+
+  /// Map an index into `parent.children` (including ShadowRoot nodes) to a DOM Range "tree child"
+  /// index.
+  ///
+  /// For element-like parents, this excludes ShadowRoot children (ShadowRoots are not part of the
+  /// light DOM `childNodes` list, and must not contribute to Range boundary point offsets).
+  pub(super) fn tree_child_index_from_raw_index_for_range(
+    &self,
+    parent: NodeId,
+    raw_index: usize,
+  ) -> usize {
+    let mut idx = 0usize;
+    let parent_is_element_like = self.parent_is_element_like_for_range(parent);
+    let children = &self.nodes[parent.index()].children;
+    let end = raw_index.min(children.len());
+    for &child in children.iter().take(end) {
+      if self.nodes[child.index()].parent != Some(parent) {
+        continue;
+      }
+      if parent_is_element_like && self.is_shadow_root_node(child) {
+        continue;
+      }
+      idx += 1;
+    }
+    idx
+  }
+
+  pub(super) fn inserted_tree_children_count_for_range(
+    &self,
+    parent: NodeId,
+    inserted: &[NodeId],
+  ) -> usize {
+    if !self.parent_is_element_like_for_range(parent) {
+      return inserted.len();
+    }
+    inserted
+      .iter()
+      .filter(|&&child| !self.is_shadow_root_node(child))
+      .count()
+  }
+
   fn insert_range_state(&mut self, id: RangeId) {
     let start_end = BoundaryPoint {
       node: self.root(),
@@ -177,38 +282,14 @@ impl Document {
     node.parent
   }
 
-  pub(crate) fn node_length(&self, node_id: NodeId) -> DomResult<usize> {
+  pub(crate) fn node_length(&self, node: NodeId) -> DomResult<usize> {
+    let node_id = node;
     let node = self.node_checked(node_id)?;
     Ok(match &node.kind {
       NodeKind::Document { .. }
       | NodeKind::DocumentFragment
-      | NodeKind::ShadowRoot { .. } => node
-        .children
-        .iter()
-        .copied()
-        .filter(|&child| {
-          self
-            .nodes
-            .get(child.index())
-            .is_some_and(|child_node| child_node.parent == Some(node_id))
-        })
-        .count(),
-      NodeKind::Slot { .. } | NodeKind::Element { .. } => node
-        .children
-        .iter()
-        .copied()
-        .filter(|&child| {
-          let Some(child_node) = self.nodes.get(child.index()) else {
-            return false;
-          };
-          if child_node.parent != Some(node_id) {
-            return false;
-          }
-          // dom2 stores an attached ShadowRoot as a child of its host for renderer traversal, but
-          // ShadowRoot is not part of `host.childNodes` and must not affect Range boundary offsets.
-          !matches!(&child_node.kind, NodeKind::ShadowRoot { .. })
-        })
-        .count(),
+      | NodeKind::ShadowRoot { .. } => self.tree_child_count_for_range(node_id),
+      NodeKind::Slot { .. } | NodeKind::Element { .. } => self.tree_child_count_for_range(node_id),
       NodeKind::Text { content } | NodeKind::Comment { content } => content.encode_utf16().count(),
       NodeKind::ProcessingInstruction { data, .. } => data.encode_utf16().count(),
       NodeKind::Doctype { .. } => 0,
@@ -234,33 +315,6 @@ impl Document {
   fn node_index(&self, node: NodeId) -> Option<usize> {
     let parent = self.range_parent(node)?;
     self.tree_child_index_for_range(parent, node)
-  }
-
-  fn tree_child_index_for_range(&self, parent: NodeId, node: NodeId) -> Option<usize> {
-    let parent_node = self.nodes.get(parent.index())?;
-    let skip_shadow_root_children = matches!(
-      &parent_node.kind,
-      NodeKind::Element { .. } | NodeKind::Slot { .. }
-    );
-
-    let mut tree_index = 0usize;
-    for &child in &parent_node.children {
-      let Some(child_node) = self.nodes.get(child.index()) else {
-        continue;
-      };
-      if child_node.parent != Some(parent) {
-        continue;
-      }
-      if skip_shadow_root_children && matches!(&child_node.kind, NodeKind::ShadowRoot { .. }) {
-        continue;
-      }
-      if child == node {
-        return Some(tree_index);
-      }
-      tree_index += 1;
-    }
-
-    None
   }
 
   fn is_ancestor_for_range(&self, ancestor: NodeId, node: NodeId) -> bool {
@@ -933,7 +987,7 @@ impl Document {
 
   /// Live range pre-insert steps.
   ///
-  /// Spec: https://dom.spec.whatwg.org/#concept-node-insert
+  /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-insert
   pub(super) fn live_range_pre_insert_steps(&mut self, parent: NodeId, index: usize, count: usize) {
     if count == 0 || self.ranges.is_empty() {
       return;
@@ -948,6 +1002,7 @@ impl Document {
       }
     }
   }
+
   /// Live range pre-remove steps.
   ///
   /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-remove

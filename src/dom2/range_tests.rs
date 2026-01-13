@@ -162,6 +162,72 @@ fn range_clone_extract_does_not_leak_persistent_subranges() {
       );
     }
   }
+
+}
+
+#[test]
+fn range_offsets_exclude_shadow_root_children_for_host_elements() {
+  // `dom2` stores ShadowRoot nodes as children of their host element so the renderer can traverse
+  // them, but DOM Range boundary point offsets are defined in terms of the light DOM tree children
+  // (which must exclude ShadowRoot).
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "<span id=light></span>",
+    "</div>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host not found");
+  let light = doc.get_element_by_id("light").expect("light child not found");
+
+  // In JS: host.childNodes.length == 1, so offset 1 refers to the position *after* `light`.
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 1).unwrap();
+
+  // Setting the end to a boundary point before the start must collapse the range to the new end.
+  doc.range_set_end(range, light, 0).unwrap();
+
+  assert_eq!(doc.range_start_container(range).unwrap(), light);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_container(range).unwrap(), light);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 0);
+}
+
+#[test]
+fn live_range_updates_use_tree_child_indices_excluding_shadow_root() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "<span id=a></span>",
+    "<span id=b></span>",
+    "</div>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host not found");
+  let a = doc.get_element_by_id("a").expect("a not found");
+
+  // In JS: host.childNodes == [a, b], so offset 1 is the boundary point between them.
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 1).unwrap();
+
+  // Insert a new light DOM child before `a` (tree index 0, raw index 1 due to ShadowRoot).
+  let x = doc.create_element("span", "");
+  assert!(doc.insert_before(host, x, Some(a)).unwrap());
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+
+  // Removing `a` (now tree index 1) must shift the boundary point left by one.
+  assert!(doc.remove_child(host, a).unwrap());
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
 }
 
 #[test]
