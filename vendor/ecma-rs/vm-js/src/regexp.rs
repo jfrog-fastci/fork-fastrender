@@ -1204,26 +1204,27 @@ impl RegExpProgram {
           }
           Inst::UnicodeSet(cls) => {
             if !dir.is_forward() {
-              // `/v` UnicodeSets-mode class matching currently supports only single-code-unit and
+              // `/v` UnicodeSets-mode class matching currently supports only single-code-point and
               // empty-string elements in lookbehind (backward direction). Multi-unit string
               // elements require suffix matching against the trie and are not yet implemented.
               let next_pc = state.pc.saturating_add(1);
               let end_pos = state.pos;
 
-              // --- 2) Single-code-unit elements ---
-              if let Some(prev_pos) = end_pos.checked_sub(1) {
-                if let Some(&u) = input.get(prev_pos) {
-                  if cls.single.matches(u as u32, flags) {
-                    // Keep empty as a lower-priority alternative.
-                    if cls.has_empty {
-                      let mut empty_state = state.try_clone(exec_mem)?;
-                      empty_state.pc = next_pc;
-                      stack_try_push(&mut stack, &mut stack_mem, exec_mem, empty_state)?;
-                    }
-                    state.pos = prev_pos;
-                    state.pc = next_pc;
-                    continue;
+              // --- 2) Single-code-point elements ---
+              if let Some((cp, len)) =
+                decode_prev_code_point(input, end_pos, flags.has_either_unicode_flag())
+              {
+                let prev_pos = end_pos.saturating_sub(len);
+                if cls.single.matches(cp, flags) {
+                  // Keep empty as a lower-priority alternative.
+                  if cls.has_empty {
+                    let mut empty_state = state.try_clone(exec_mem)?;
+                    empty_state.pc = next_pc;
+                    stack_try_push(&mut stack, &mut stack_mem, exec_mem, empty_state)?;
                   }
+                  state.pos = prev_pos;
+                  state.pc = next_pc;
+                  continue;
                 }
               }
 

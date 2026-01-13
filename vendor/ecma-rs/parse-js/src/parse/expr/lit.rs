@@ -2946,13 +2946,11 @@ fn validate_regex_pattern(
             err
           })?;
         if let Some(name) = capture_name {
-          if !named_capture_groups.insert(name) {
-            return Err(RegexError {
-              kind: RegexErrorKind::InvalidPattern,
-              offset: base_offset + i,
-              len: consumed,
-            });
-          }
+          // ECMAScript permits duplicate named capture group declarations. At runtime, backreference
+          // resolution and `groups` object behaviour follow the spec-defined ordering rules.
+          //
+          // For early syntax validation we only need to know whether a name exists at least once.
+          named_capture_groups.insert(name);
         }
         group_stack.push(quantifiable);
         prev_can_be_quantified = false;
