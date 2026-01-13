@@ -47,7 +47,7 @@ reason = "Intentional infinite loop; runner should terminate it deterministicall
 id = "smoke/dom_collections_prototype_shape.window.js"
 backend = "quickjs"
 status = "xfail"
-reason = "QuickJS backend uses a minimal DOM shim and does not expose NodeList/HTMLCollection constructors yet."
+reason = "QuickJS backend relies on a minimal DOM shim; NodeList/HTMLCollection prototype/constructor shape is validated on vm-js."
 
 [[expectations]]
 id = "dom/domimplementation_create_html_document.window.js"
@@ -120,6 +120,18 @@ id = "vmjs/time_determinism_baseline.window.js"
 backend = "quickjs"
 status = "skip"
 reason = "Deterministic virtual time (Date.now/performance.now) is vm-js-only; QuickJS timers are wall-clock based."
+
+[[expectations]]
+id = "dom/collections/nodelist-childnodes-live.window.js"
+backend = "quickjs"
+status = "xfail"
+reason = "QuickJS backend relies on a minimal DOM shim; NodeList live semantics are validated on vm-js."
+
+[[expectations]]
+id = "dom/collections/nodelist-queryselectorall-static.window.js"
+backend = "quickjs"
+status = "xfail"
+reason = "QuickJS backend relies on a minimal DOM shim; NodeList snapshot semantics are validated on vm-js."
 
 [[expectations]]
 id = "dom/collections/htmlcollection-children.window.js"

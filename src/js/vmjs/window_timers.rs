@@ -14,7 +14,7 @@ use crate::js::time::duration_to_ms_f64;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{
   dispatch_host_exotic_delete, dispatch_host_exotic_get, dispatch_host_exotic_set,
-  DatasetExoticContext, ExoticDispatchHandledBy,
+  CollectionsExoticContext, DatasetExoticContext, ExoticDispatchHandledBy,
   WindowRealmHost, WindowRealmUserData,
 };
 use std::ptr::NonNull;
@@ -669,6 +669,7 @@ pub struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
   heap_alive: Option<Arc<AtomicBool>>,
   enqueue_error: Option<crate::error::Error>,
   dataset_ctx: DatasetExoticContext,
+  collections_ctx: CollectionsExoticContext,
   _marker: std::marker::PhantomData<fn() -> Host>,
 }
 
@@ -732,6 +733,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
       heap_alive: None,
       enqueue_error: None,
       dataset_ctx: DatasetExoticContext::default(),
+      collections_ctx: CollectionsExoticContext::default(),
       _marker: std::marker::PhantomData,
     }
   }
@@ -745,6 +747,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
         .any
         .set_webidl_limits(window_realm.js_execution_options().webidl_limits);
       hooks.dataset_ctx = window_realm.dataset_exotic_context();
+      hooks.collections_ctx = window_realm.collections_exotic_context();
       hooks.heap_ptr = Some(NonNull::from(window_realm.heap_mut()));
       hooks.heap_alive = Some(Arc::clone(window_realm.heap_alive_flag()));
       hooks
@@ -783,6 +786,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
       .any
       .set_webidl_limits(window_realm.js_execution_options().webidl_limits);
     hooks.dataset_ctx = window_realm.dataset_exotic_context();
+    hooks.collections_ctx = window_realm.collections_exotic_context();
     hooks.heap_ptr = Some(NonNull::from(window_realm.heap_mut()));
     hooks.heap_alive = Some(Arc::clone(window_realm.heap_alive_flag()));
     if let Some(bindings_host) = webidl_bindings_host {
@@ -1495,7 +1499,15 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     key: vm_js::PropertyKey,
     receiver: vm_js::Value,
   ) -> Result<Option<vm_js::Value>, VmError> {
-    dispatch_host_exotic_get(scope, &mut self.any, &self.dataset_ctx, obj, key, receiver)
+    dispatch_host_exotic_get(
+      scope,
+      &mut self.any,
+      &self.dataset_ctx,
+      &self.collections_ctx,
+      obj,
+      key,
+      receiver,
+    )
   }
 
   fn host_exotic_set(
@@ -1510,6 +1522,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       scope,
       &mut self.any,
       &self.dataset_ctx,
+      &self.collections_ctx,
       obj,
       key,
       value,
@@ -1527,7 +1540,8 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     obj: vm_js::GcObject,
     key: vm_js::PropertyKey,
   ) -> Result<Option<bool>, VmError> {
-    let result = dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, obj, key)?;
+    let result =
+      dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, &self.collections_ctx, obj, key)?;
     if result.handled_by == Some(ExoticDispatchHandledBy::Dataset) {
       self.maybe_queue_mutation_observer_notify_microtask();
     }

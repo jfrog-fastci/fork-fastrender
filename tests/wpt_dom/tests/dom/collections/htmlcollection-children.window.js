@@ -125,3 +125,18 @@ test(() => {
   assert_equals(children[0], parent.firstElementChild, "parent.children[0] after outerHTML");
   assert_equals(children[2], parent.lastElementChild, "parent.children[2] after outerHTML");
 }, "Element.children updates live on Element.outerHTML mutations");
+
+test(() => {
+  const parent = document.createElement("div");
+  const children = parent.children;
+
+  // Do not touch children.length or children.item() before mutating the DOM; indexed access should
+  // still be live and reflect the current tree.
+  parent.innerHTML = "<span></span><span></span>";
+  assert_equals(children[0], parent.firstElementChild, "children[0] after insertion");
+  assert_equals(children[1], parent.lastElementChild, "children[1] after insertion");
+
+  parent.innerHTML = "<p></p>";
+  assert_equals(children[0], parent.firstElementChild, "children[0] after shrink");
+  assert_equals(children[1], undefined, "children[1] should be undefined after shrink");
+}, "Element.children indexed property access stays live without calling length/item");

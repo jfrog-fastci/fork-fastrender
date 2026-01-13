@@ -336,6 +336,12 @@ pub(crate) struct WindowRealmUserData {
   /// This is used for DOMs created from JS (e.g. `document.implementation.createHTMLDocument()`)
   /// which are not backed by the embedder/renderer.
   owned_dom2_documents: Rc<RefCell<HashMap<DocumentId, Box<dom2::Document>>>>,
+  /// Registry backing spec-shaped host-exotic DOM collections (NodeList / HTMLCollection).
+  ///
+  /// Live collections cache their resolved node lists and invalidate using `dom2::Document`'s
+  /// mutation generation. Storing the cache on the host side avoids materializing `"0..n"` data
+  /// properties onto JS objects (which go stale unless explicitly resynced).
+  collection_registry: Rc<RefCell<CollectionRegistry>>,
   /// Documents that had `dataset` mutations while running without direct access to `&mut Vm`.
   ///
   /// `Element.dataset` is implemented via `VmHostHooks::{host_exotic_get,host_exotic_set,host_exotic_delete}`.
@@ -448,6 +454,10 @@ impl std::fmt::Debug for WindowRealmUserData {
         "owned_dom2_documents_len",
         &self.owned_dom2_documents.borrow().len(),
       )
+      .field(
+        "collection_registry_len",
+        &self.collection_registry.borrow().len(),
+      )
       .finish()
   }
 }
@@ -504,6 +514,7 @@ impl WindowRealmUserData {
       media_element_state_registry: MediaElementStateRegistry::default(),
       dom_platform: None,
       owned_dom2_documents: Rc::new(RefCell::new(HashMap::new())),
+      collection_registry: Rc::new(RefCell::new(CollectionRegistry::default())),
       pending_dataset_mutation_observer_microtasks: Rc::new(RefCell::new(HashSet::new())),
       crypto_rng_state,
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
@@ -760,6 +771,10 @@ impl WindowRealm {
 
   pub(crate) fn dataset_exotic_context(&self) -> DatasetExoticContext {
     DatasetExoticContext::for_vm(&self.runtime.vm)
+  }
+
+  pub(crate) fn collections_exotic_context(&self) -> CollectionsExoticContext {
+    CollectionsExoticContext::for_vm(&self.runtime.vm)
   }
 
   pub fn vm_and_heap_mut(&mut self) -> (&mut Vm, &mut Heap) {
@@ -1398,6 +1413,7 @@ impl WindowRealm {
       microtasks: &'a mut vm_js::MicrotaskQueue,
       any: VmJsHostHooksPayload,
       dataset_ctx: DatasetExoticContext,
+      collections_ctx: CollectionsExoticContext,
     }
 
     impl vm_js::VmHostHooks for WindowRealmDomShimHooks<'_> {
@@ -1412,7 +1428,15 @@ impl WindowRealm {
         key: PropertyKey,
         receiver: Value,
       ) -> Result<Option<Value>, VmError> {
-        dispatch_host_exotic_get(scope, &mut self.any, &self.dataset_ctx, obj, key, receiver)
+        dispatch_host_exotic_get(
+          scope,
+          &mut self.any,
+          &self.dataset_ctx,
+          &self.collections_ctx,
+          obj,
+          key,
+          receiver,
+        )
       }
 
       fn host_exotic_set(
@@ -1428,6 +1452,7 @@ impl WindowRealm {
             scope,
             &mut self.any,
             &self.dataset_ctx,
+            &self.collections_ctx,
             obj,
             key,
             value,
@@ -1444,7 +1469,15 @@ impl WindowRealm {
         key: PropertyKey,
       ) -> Result<Option<bool>, VmError> {
         Ok(
-          dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, obj, key)?.handled,
+          dispatch_host_exotic_delete(
+            scope,
+            &mut self.any,
+            &self.dataset_ctx,
+            &self.collections_ctx,
+            obj,
+            key,
+          )?
+          .handled,
         )
       }
 
@@ -1517,10 +1550,12 @@ impl WindowRealm {
           .set(&mut fallback_webidl_bindings_host);
       }
       let dataset_ctx = DatasetExoticContext::for_vm(&rt.vm);
+      let collections_ctx = CollectionsExoticContext::for_vm(&rt.vm);
       let mut hooks = WindowRealmDomShimHooks {
         microtasks: &mut guard.queue,
         any,
         dataset_ctx,
+        collections_ctx,
       };
       did_consume_script_id.set(true);
       let result = rt.exec_script_source_with_host_and_hooks(&mut host_ctx, &mut hooks, source);
@@ -1580,12 +1615,14 @@ impl WindowRealm {
         any: VmJsHostHooksPayload,
         pending: Vec<(Option<RealmId>, vm_js::Job)>,
         dataset_ctx: DatasetExoticContext,
+        collections_ctx: CollectionsExoticContext,
       }
 
       impl DomShimMicrotaskHooks {
         fn new(
           host_ctx: &mut dyn VmHost,
           dataset_ctx: DatasetExoticContext,
+          collections_ctx: CollectionsExoticContext,
           webidl_limits: webidl::WebIdlLimits,
         ) -> Self {
           let mut any = VmJsHostHooksPayload::default();
@@ -1595,6 +1632,7 @@ impl WindowRealm {
             any,
             pending: Vec::new(),
             dataset_ctx,
+            collections_ctx,
           }
         }
 
@@ -1617,7 +1655,15 @@ impl WindowRealm {
           key: PropertyKey,
           receiver: Value,
         ) -> Result<Option<Value>, VmError> {
-          dispatch_host_exotic_get(scope, &mut self.any, &self.dataset_ctx, obj, key, receiver)
+          dispatch_host_exotic_get(
+            scope,
+            &mut self.any,
+            &self.dataset_ctx,
+            &self.collections_ctx,
+            obj,
+            key,
+            receiver,
+          )
         }
 
         fn host_exotic_set(
@@ -1633,6 +1679,7 @@ impl WindowRealm {
               scope,
               &mut self.any,
               &self.dataset_ctx,
+              &self.collections_ctx,
               obj,
               key,
               value,
@@ -1648,7 +1695,17 @@ impl WindowRealm {
           obj: GcObject,
           key: PropertyKey,
         ) -> Result<Option<bool>, VmError> {
-          Ok(dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, obj, key)?.handled)
+          Ok(
+            dispatch_host_exotic_delete(
+              scope,
+              &mut self.any,
+              &self.dataset_ctx,
+              &self.collections_ctx,
+              obj,
+              key,
+            )?
+            .handled,
+          )
         }
 
         fn host_call_job_callback(
@@ -1787,7 +1844,13 @@ impl WindowRealm {
       // algorithms (currently: `Document.currentScript` bookkeeping).
       let mut host_ctx = VmJsHostContext::default();
       let dataset_ctx = DatasetExoticContext::for_vm(&rt.vm);
-      let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx, dataset_ctx, webidl_limits);
+      let collections_ctx = CollectionsExoticContext::for_vm(&rt.vm);
+      let mut hooks = DomShimMicrotaskHooks::new(
+        &mut host_ctx,
+        dataset_ctx,
+        collections_ctx,
+        webidl_limits,
+      );
       let mut fallback_webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
       if let Some(mut host_ptr) = webidl_bindings_host {
         // SAFETY: The pointer is only installed via `WindowRealm::with_webidl_bindings_host` around
@@ -3041,6 +3104,8 @@ const WINDOW_REALM_CONSOLE_HOST_TAG: u64 = u64::from_be_bytes(*b"CONSOLE_");
 // across independent shims vanishingly unlikely.
 const HOST_EXOTIC_DOM_TOKEN_LIST: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const HOST_EXOTIC_DOM_STRING_MAP: u64 = u64::from_be_bytes(*b"FRDOMDSM");
+const HOST_EXOTIC_NODE_LIST: u64 = u64::from_be_bytes(*b"FRDOMNLI");
+const HOST_EXOTIC_HTML_COLLECTION: u64 = u64::from_be_bytes(*b"FRDOMHCL");
 const HOST_EXOTIC_COMPUTED_STYLE: u64 = u64::from_be_bytes(*b"FRCOMPUT");
 const HOST_EXOTIC_NAMED_NODE_MAP: u64 = u64::from_be_bytes(*b"FRDOMNNM");
 const HOST_EXOTIC_STORAGE: u64 = u64::from_be_bytes(*b"FRSTORAG");
@@ -3406,6 +3471,7 @@ const MUTATION_OBSERVER_REGISTRY_KEY: &str = "__fastrender_mutation_observer_reg
 const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notify";
 const MUTATION_OBSERVER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMOB"); // MutationObserver
 const MUTATION_RECORD_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMRC"); // MutationRecord
+const NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 const MUTATION_RECORD_PROTOTYPE_KEY: &str = "__fastrender_mutation_record_prototype";
 const RANGE_PROTOTYPE_KEY: &str = "__fastrender_range_prototype";
 const ATTR_PROTOTYPE_KEY: &str = "__fastrender_attr_prototype";
@@ -3589,6 +3655,137 @@ impl Default for DatasetExoticContext {
   }
 }
 
+#[derive(Debug)]
+struct LiveCollectionCache {
+  generation: u64,
+  nodes: Vec<NodeId>,
+}
+
+impl LiveCollectionCache {
+  fn new() -> Self {
+    Self {
+      // `dom2::Document::mutation_generation()` starts at 0, so use a sentinel that always forces
+      // the first cache build.
+      generation: u64::MAX,
+      nodes: Vec::new(),
+    }
+  }
+}
+
+#[derive(Debug)]
+enum CollectionKind {
+  /// Live `NodeList` for `Node.childNodes`.
+  NodeListChildNodes {
+    root_node_id: NodeId,
+    cache: LiveCollectionCache,
+  },
+  /// Live `HTMLCollection` for `ParentNode.children`.
+  HtmlCollectionChildren {
+    root_node_id: NodeId,
+    cache: LiveCollectionCache,
+  },
+  /// Static (snapshot) `NodeList` returned by `querySelectorAll`.
+  NodeListSnapshot { nodes: Vec<NodeId> },
+}
+
+#[derive(Debug)]
+struct CollectionRegistryEntry {
+  object: WeakGcObject,
+  document_id: DocumentId,
+  kind: CollectionKind,
+}
+
+#[derive(Debug)]
+struct CollectionRegistry {
+  last_gc_runs: u64,
+  next_id: u64,
+  entries: HashMap<u64, CollectionRegistryEntry>,
+}
+
+impl Default for CollectionRegistry {
+  fn default() -> Self {
+    Self {
+      last_gc_runs: 0,
+      next_id: 1,
+      entries: HashMap::new(),
+    }
+  }
+}
+
+impl CollectionRegistry {
+  fn len(&self) -> usize {
+    self.entries.len()
+  }
+
+  fn sweep_if_needed(&mut self, heap: &Heap) {
+    let gc_runs = heap.gc_runs();
+    if gc_runs == self.last_gc_runs {
+      return;
+    }
+    self
+      .entries
+      .retain(|_, entry| entry.object.upgrade(heap).is_some());
+    self.last_gc_runs = gc_runs;
+  }
+
+  fn register(&mut self, heap: &Heap, obj: GcObject, document_id: DocumentId, kind: CollectionKind) -> u64 {
+    self.sweep_if_needed(heap);
+    let id = self.next_id;
+    self.next_id = self.next_id.wrapping_add(1);
+    self.entries.insert(
+      id,
+      CollectionRegistryEntry {
+        object: WeakGcObject::new(obj),
+        document_id,
+        kind,
+      },
+    );
+    id
+  }
+
+  fn get_mut<'a>(&'a mut self, heap: &Heap, id: u64) -> Option<&'a mut CollectionRegistryEntry> {
+    self.sweep_if_needed(heap);
+    self.entries.get_mut(&id)
+  }
+}
+
+#[derive(Clone)]
+pub(crate) struct CollectionsExoticContext {
+  owned_dom2_documents: Rc<RefCell<HashMap<DocumentId, Box<dom2::Document>>>>,
+  collection_registry: Rc<RefCell<CollectionRegistry>>,
+  dom_platform_ptr: Option<NonNull<DomPlatform>>,
+  window_obj: Option<GcObject>,
+}
+
+impl CollectionsExoticContext {
+  fn empty() -> Self {
+    Self {
+      owned_dom2_documents: Rc::new(RefCell::new(HashMap::new())),
+      collection_registry: Rc::new(RefCell::new(CollectionRegistry::default())),
+      dom_platform_ptr: None,
+      window_obj: None,
+    }
+  }
+
+  pub(crate) fn for_vm(vm: &Vm) -> Self {
+    let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+      return Self::empty();
+    };
+    Self {
+      owned_dom2_documents: Rc::clone(&data.owned_dom2_documents),
+      collection_registry: Rc::clone(&data.collection_registry),
+      dom_platform_ptr: data.dom_platform.as_ref().map(NonNull::from),
+      window_obj: data.window_obj,
+    }
+  }
+}
+
+impl Default for CollectionsExoticContext {
+  fn default() -> Self {
+    Self::empty()
+  }
+}
+
 fn dataset_prop_is_valid(prop: &str) -> bool {
   if prop.is_empty() {
     return false;
@@ -3609,6 +3806,8 @@ fn dataset_prop_is_valid(prop: &str) -> bool {
 pub(crate) enum ExoticDispatchHandledBy {
   Dataset,
   DomTokenList,
+  NodeList,
+  HtmlCollection,
   WebIdl,
 }
 
@@ -3640,6 +3839,7 @@ pub(crate) fn dispatch_host_exotic_get(
   scope: &mut Scope<'_>,
   payload: &mut VmJsHostHooksPayload,
   dataset_ctx: &DatasetExoticContext,
+  collections_ctx: &CollectionsExoticContext,
   obj: GcObject,
   key: PropertyKey,
   receiver: Value,
@@ -3652,8 +3852,16 @@ pub(crate) fn dispatch_host_exotic_get(
     return Ok(Some(value));
   }
 
+  if let Some(value) = named_node_map_exotic_get(scope, payload.vm_host_mut(), dataset_ctx, obj, key)? {
+    return Ok(Some(value));
+  }
+
+  if let Some(value) = node_list_exotic_get(scope, payload.vm_host_mut(), collections_ctx, obj, key)? {
+    return Ok(Some(value));
+  }
+
   if let Some(value) =
-    named_node_map_exotic_get(scope, payload.vm_host_mut(), dataset_ctx, obj, key)?
+    html_collection_exotic_get(scope, payload.vm_host_mut(), collections_ctx, obj, key)?
   {
     return Ok(Some(value));
   }
@@ -3672,6 +3880,7 @@ pub(crate) fn dispatch_host_exotic_set(
   scope: &mut Scope<'_>,
   payload: &mut VmJsHostHooksPayload,
   dataset_ctx: &DatasetExoticContext,
+  collections_ctx: &CollectionsExoticContext,
   obj: GcObject,
   key: PropertyKey,
   value: Value,
@@ -3691,6 +3900,23 @@ pub(crate) fn dispatch_host_exotic_set(
     ));
   }
 
+  if let Some(ok) = node_list_exotic_set(scope, payload.vm_host_mut(), collections_ctx, obj, key, value)?
+  {
+    return Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::NodeList,
+    ));
+  }
+
+  if let Some(ok) =
+    html_collection_exotic_set(scope, payload.vm_host_mut(), collections_ctx, obj, key, value)?
+  {
+    return Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::HtmlCollection,
+    ));
+  }
+
   let Some(host) = payload.webidl_bindings_host_mut() else {
     return Ok(ExoticDispatchOutcome::not_handled());
   };
@@ -3707,6 +3933,7 @@ pub(crate) fn dispatch_host_exotic_delete(
   scope: &mut Scope<'_>,
   payload: &mut VmJsHostHooksPayload,
   dataset_ctx: &DatasetExoticContext,
+  collections_ctx: &CollectionsExoticContext,
   obj: GcObject,
   key: PropertyKey,
 ) -> Result<ExoticDispatchOutcome<bool>, VmError> {
@@ -3721,6 +3948,23 @@ pub(crate) fn dispatch_host_exotic_delete(
     return Ok(ExoticDispatchOutcome::handled(
       ok,
       ExoticDispatchHandledBy::DomTokenList,
+    ));
+  }
+
+  if let Some(ok) = node_list_exotic_delete(scope, payload.vm_host_mut(), collections_ctx, obj, key)?
+  {
+    return Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::NodeList,
+    ));
+  }
+
+  if let Some(ok) =
+    html_collection_exotic_delete(scope, payload.vm_host_mut(), collections_ctx, obj, key)?
+  {
+    return Ok(ExoticDispatchOutcome::handled(
+      ok,
+      ExoticDispatchHandledBy::HtmlCollection,
     ));
   }
 
@@ -4086,6 +4330,563 @@ fn canonical_array_index(scope: &Scope<'_>, key: PropertyKey) -> Result<Option<u
   }
 
   Ok(Some(value as u32))
+}
+
+fn property_key_is_length(scope: &Scope<'_>, key: PropertyKey) -> Result<bool, VmError> {
+  let PropertyKey::String(s) = key else {
+    return Ok(false);
+  };
+  let s = scope.heap().get_string(s)?;
+  let units = s.as_code_units();
+  if units.len() != 6 {
+    return Ok(false);
+  }
+  Ok(
+    units[0] == b'l' as u16
+      && units[1] == b'e' as u16
+      && units[2] == b'n' as u16
+      && units[3] == b'g' as u16
+      && units[4] == b't' as u16
+      && units[5] == b'h' as u16,
+  )
+}
+
+fn update_child_nodes_cache(
+  dom: &dom2::Document,
+  root_node_id: NodeId,
+  cache: &mut LiveCollectionCache,
+) -> Result<(), VmError> {
+  let generation = dom.mutation_generation();
+  if cache.generation == generation {
+    return Ok(());
+  }
+  cache.nodes.clear();
+  cache.generation = generation;
+
+  if root_node_id.index() >= dom.nodes_len() {
+    return Ok(());
+  }
+
+  cache
+    .nodes
+    .try_reserve(dom.node(root_node_id).children.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  // `dom2` stores a `ShadowRoot` as a child of its host element (often at index 0) so that the
+  // renderer can traverse the composed tree. Node traversal APIs (`childNodes`, `firstChild`, etc)
+  // must never expose that shadow root through the light-DOM child list.
+  let filter_shadow_roots = !matches!(dom.node(root_node_id).kind, NodeKind::ShadowRoot { .. });
+  for &child in dom.node(root_node_id).children.iter() {
+    if child.index() >= dom.nodes_len() {
+      continue;
+    }
+    let child_node = dom.node(child);
+    if child_node.parent != Some(root_node_id) {
+      continue;
+    }
+    if filter_shadow_roots && matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    cache.nodes.push(child);
+  }
+
+  Ok(())
+}
+
+fn update_children_collection_cache(
+  dom: &dom2::Document,
+  root_node_id: NodeId,
+  cache: &mut LiveCollectionCache,
+) -> Result<(), VmError> {
+  let generation = dom.mutation_generation();
+  if cache.generation == generation {
+    return Ok(());
+  }
+  cache.nodes.clear();
+  cache.generation = generation;
+
+  if root_node_id.index() >= dom.nodes_len() {
+    return Ok(());
+  }
+
+  if dom.node(root_node_id).inert_subtree {
+    // Keep `<template>` contents inert: treat the element as having no element children.
+    //
+    // FastRender represents template contents by storing descendants under the `<template>` element,
+    // but marks the element as `inert_subtree`. DOM traversal properties (`children`,
+    // `firstElementChild`, etc) must not expose these inert descendants.
+    return Ok(());
+  }
+
+  cache
+    .nodes
+    .try_reserve(dom.node(root_node_id).children.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for &child in dom.node(root_node_id).children.iter() {
+    if child.index() >= dom.nodes_len() {
+      continue;
+    }
+    if dom.node(child).parent != Some(root_node_id) {
+      continue;
+    }
+    // Skip non-elements and `ShadowRoot` nodes in the light DOM child list.
+    match &dom.node(child).kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => cache.nodes.push(child),
+      NodeKind::ShadowRoot { .. } => {}
+      _ => {}
+    }
+  }
+
+  Ok(())
+}
+
+fn collection_entry_nodes<'a>(
+  mut host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  entry: &'a mut CollectionRegistryEntry,
+) -> Result<Option<&'a [NodeId]>, VmError> {
+  let document_id = entry.document_id;
+
+  match &mut entry.kind {
+    CollectionKind::NodeListSnapshot { nodes } => Ok(Some(nodes.as_slice())),
+    CollectionKind::NodeListChildNodes {
+      root_node_id,
+      cache,
+    } => {
+      // Prefer a realm-owned `dom2::Document` when present.
+      if let Some(dom) = ctx
+        .owned_dom2_documents
+        .borrow()
+        .get(&document_id)
+        .map(|d| d.as_ref())
+      {
+        update_child_nodes_cache(dom, *root_node_id, cache)?;
+        return Ok(Some(cache.nodes.as_slice()));
+      }
+      let Some(host) = host.as_deref_mut() else {
+        return Ok(None);
+      };
+      let Some(dom) = dom_from_vm_host(host) else {
+        return Ok(None);
+      };
+      update_child_nodes_cache(dom, *root_node_id, cache)?;
+      Ok(Some(cache.nodes.as_slice()))
+    }
+    CollectionKind::HtmlCollectionChildren {
+      root_node_id,
+      cache,
+    } => {
+      if let Some(dom) = ctx
+        .owned_dom2_documents
+        .borrow()
+        .get(&document_id)
+        .map(|d| d.as_ref())
+      {
+        update_children_collection_cache(dom, *root_node_id, cache)?;
+        return Ok(Some(cache.nodes.as_slice()));
+      }
+      let Some(host) = host.as_deref_mut() else {
+        return Ok(None);
+      };
+      let Some(dom) = dom_from_vm_host(host) else {
+        return Ok(None);
+      };
+      update_children_collection_cache(dom, *root_node_id, cache)?;
+      Ok(Some(cache.nodes.as_slice()))
+    }
+  }
+}
+
+fn collection_entry_length(
+  host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  entry: &mut CollectionRegistryEntry,
+) -> Result<Option<usize>, VmError> {
+  let Some(nodes) = collection_entry_nodes(host, ctx, entry)? else {
+    return Ok(None);
+  };
+  Ok(Some(nodes.len()))
+}
+
+fn collection_entry_item_node_id(
+  host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  entry: &mut CollectionRegistryEntry,
+  idx: usize,
+) -> Result<Option<NodeId>, VmError> {
+  let Some(nodes) = collection_entry_nodes(host, ctx, entry)? else {
+    return Ok(None);
+  };
+  Ok(nodes.get(idx).copied())
+}
+
+fn get_or_create_node_wrapper_from_dom_platform(
+  scope: &mut Scope<'_>,
+  mut host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  document_id: DocumentId,
+  node_id: NodeId,
+) -> Result<Option<Value>, VmError> {
+  let Some(mut platform_ptr) = ctx.dom_platform_ptr else {
+    return Ok(None);
+  };
+  // SAFETY: the window realm owns the `DomPlatform` allocation for the duration of script
+  // execution. Host exotic hooks cannot borrow `&mut Vm`, so we use an unsafe pointer captured from
+  // VM user data when the execution boundary was entered.
+  let platform = unsafe { platform_ptr.as_mut() };
+
+  // Ensure the document wrapper exists so wrapper initialization can read shared shim methods from
+  // it. (This should already exist for all document IDs used by collections.)
+  let document_obj = if let Some(obj) =
+    platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, NodeId::from_index(0))
+  {
+    obj
+  } else {
+    platform.get_or_create_wrapper_for_document_id(
+      scope,
+      document_id,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    )?
+  };
+
+  if node_id.index() == 0 {
+    return Ok(Some(Value::Object(document_obj)));
+  }
+
+  if let Some(existing) =
+    platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, node_id)
+  {
+    return Ok(Some(Value::Object(existing)));
+  }
+
+  // Resolve the underlying `dom2::Document` so we can select the primary interface and install any
+  // handwritten shims onto the wrapper.
+  let owned_docs = ctx.owned_dom2_documents.borrow();
+  let dom = if let Some(dom) = owned_docs.get(&document_id).map(|d| d.as_ref()) {
+    Some(dom)
+  } else if let Some(host) = host.as_deref_mut() {
+    dom_from_vm_host(host)
+  } else {
+    None
+  };
+
+  let primary = dom
+    .map(|dom| DomInterface::primary_for_node_kind(&dom.node(node_id).kind))
+    .unwrap_or(DomInterface::Node);
+  let wrapper = platform.get_or_create_wrapper_for_document_id(scope, document_id, node_id, primary)?;
+
+  // Root while initializing: `initialize_node_wrapper_shims` allocates keys and can GC.
+  scope.push_root(Value::Object(wrapper))?;
+  initialize_node_wrapper_shims(scope, ctx.window_obj, document_obj, dom, node_id, wrapper)?;
+
+  Ok(Some(Value::Object(wrapper)))
+}
+
+pub(crate) fn node_list_exotic_get(
+  scope: &mut Scope<'_>,
+  mut host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<Value>, VmError> {
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != HOST_EXOTIC_NODE_LIST {
+    return Ok(None);
+  }
+
+  let collection_id = slots.a;
+  if property_key_is_length(scope, key)? {
+    let mut registry = ctx.collection_registry.borrow_mut();
+    let Some(entry) = registry.get_mut(scope.heap(), collection_id) else {
+      return Ok(None);
+    };
+    // Only NodeList-backed entries expose `length` here.
+    if !matches!(
+      &entry.kind,
+      CollectionKind::NodeListChildNodes { .. } | CollectionKind::NodeListSnapshot { .. }
+    ) {
+      return Ok(None);
+    }
+    let Some(len) = collection_entry_length(host, ctx, entry)? else {
+      return Ok(None);
+    };
+    return Ok(Some(Value::Number(len as f64)));
+  }
+
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+  let idx = idx as usize;
+
+  let (document_id, node_id) = {
+    let mut registry = ctx.collection_registry.borrow_mut();
+    let Some(entry) = registry.get_mut(scope.heap(), collection_id) else {
+      return Ok(None);
+    };
+    if !matches!(
+      &entry.kind,
+      CollectionKind::NodeListChildNodes { .. } | CollectionKind::NodeListSnapshot { .. }
+    ) {
+      return Ok(None);
+    }
+    let Some(node_id) = collection_entry_item_node_id(host.as_deref_mut(), ctx, entry, idx)? else {
+      return Ok(None);
+    };
+    (entry.document_id, node_id)
+  };
+
+  get_or_create_node_wrapper_from_dom_platform(scope, host, ctx, document_id, node_id)
+}
+
+pub(crate) fn node_list_exotic_set(
+  scope: &mut Scope<'_>,
+  host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+  _value: Value,
+) -> Result<Option<bool>, VmError> {
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != HOST_EXOTIC_NODE_LIST {
+    return Ok(None);
+  }
+
+  if property_key_is_length(scope, key)? {
+    // `NodeList.length` is read-only.
+    return Ok(Some(false));
+  }
+
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+  let idx = idx as usize;
+
+  let mut registry = ctx.collection_registry.borrow_mut();
+  let Some(entry) = registry.get_mut(scope.heap(), slots.a) else {
+    return Ok(None);
+  };
+  if !matches!(
+    &entry.kind,
+    CollectionKind::NodeListChildNodes { .. } | CollectionKind::NodeListSnapshot { .. }
+  ) {
+    return Ok(None);
+  }
+  let Some(len) = collection_entry_length(host, ctx, entry)? else {
+    return Ok(None);
+  };
+  if idx < len {
+    // Supported indices are read-only.
+    return Ok(Some(false));
+  }
+  Ok(None)
+}
+
+pub(crate) fn node_list_exotic_delete(
+  scope: &mut Scope<'_>,
+  host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<bool>, VmError> {
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != HOST_EXOTIC_NODE_LIST {
+    return Ok(None);
+  }
+
+  if property_key_is_length(scope, key)? {
+    return Ok(Some(false));
+  }
+
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+  let idx = idx as usize;
+
+  let mut registry = ctx.collection_registry.borrow_mut();
+  let Some(entry) = registry.get_mut(scope.heap(), slots.a) else {
+    return Ok(None);
+  };
+  if !matches!(
+    &entry.kind,
+    CollectionKind::NodeListChildNodes { .. } | CollectionKind::NodeListSnapshot { .. }
+  ) {
+    return Ok(None);
+  }
+  let Some(len) = collection_entry_length(host, ctx, entry)? else {
+    return Ok(None);
+  };
+  if idx < len {
+    return Ok(Some(false));
+  }
+  Ok(None)
+}
+
+pub(crate) fn html_collection_exotic_get(
+  scope: &mut Scope<'_>,
+  mut host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<Value>, VmError> {
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != HOST_EXOTIC_HTML_COLLECTION {
+    return Ok(None);
+  }
+
+  let collection_id = slots.a;
+  if property_key_is_length(scope, key)? {
+    let mut registry = ctx.collection_registry.borrow_mut();
+    let Some(entry) = registry.get_mut(scope.heap(), collection_id) else {
+      return Ok(None);
+    };
+    if !matches!(&entry.kind, CollectionKind::HtmlCollectionChildren { .. }) {
+      return Ok(None);
+    }
+    let Some(len) = collection_entry_length(host, ctx, entry)? else {
+      return Ok(None);
+    };
+    return Ok(Some(Value::Number(len as f64)));
+  }
+
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+  let idx = idx as usize;
+
+  let (document_id, node_id) = {
+    let mut registry = ctx.collection_registry.borrow_mut();
+    let Some(entry) = registry.get_mut(scope.heap(), collection_id) else {
+      return Ok(None);
+    };
+    if !matches!(&entry.kind, CollectionKind::HtmlCollectionChildren { .. }) {
+      return Ok(None);
+    }
+    let Some(node_id) = collection_entry_item_node_id(host.as_deref_mut(), ctx, entry, idx)? else {
+      return Ok(None);
+    };
+    (entry.document_id, node_id)
+  };
+
+  get_or_create_node_wrapper_from_dom_platform(scope, host, ctx, document_id, node_id)
+}
+
+pub(crate) fn html_collection_exotic_set(
+  scope: &mut Scope<'_>,
+  host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+  _value: Value,
+) -> Result<Option<bool>, VmError> {
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != HOST_EXOTIC_HTML_COLLECTION {
+    return Ok(None);
+  }
+
+  if property_key_is_length(scope, key)? {
+    return Ok(Some(false));
+  }
+
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+  let idx = idx as usize;
+
+  let mut registry = ctx.collection_registry.borrow_mut();
+  let Some(entry) = registry.get_mut(scope.heap(), slots.a) else {
+    return Ok(None);
+  };
+  if !matches!(&entry.kind, CollectionKind::HtmlCollectionChildren { .. }) {
+    return Ok(None);
+  }
+  let Some(len) = collection_entry_length(host, ctx, entry)? else {
+    return Ok(None);
+  };
+  if idx < len {
+    return Ok(Some(false));
+  }
+  Ok(None)
+}
+
+pub(crate) fn html_collection_exotic_delete(
+  scope: &mut Scope<'_>,
+  host: Option<&mut dyn VmHost>,
+  ctx: &CollectionsExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<bool>, VmError> {
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != HOST_EXOTIC_HTML_COLLECTION {
+    return Ok(None);
+  }
+
+  if property_key_is_length(scope, key)? {
+    return Ok(Some(false));
+  }
+
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+  let idx = idx as usize;
+
+  let mut registry = ctx.collection_registry.borrow_mut();
+  let Some(entry) = registry.get_mut(scope.heap(), slots.a) else {
+    return Ok(None);
+  };
+  if !matches!(&entry.kind, CollectionKind::HtmlCollectionChildren { .. }) {
+    return Ok(None);
+  }
+  let Some(len) = collection_entry_length(host, ctx, entry)? else {
+    return Ok(None);
+  };
+  if idx < len {
+    return Ok(Some(false));
+  }
+  Ok(None)
 }
 
 pub(crate) fn dom_token_list_exotic_get(
@@ -8366,65 +9167,24 @@ fn object_get_data_property_value(
   }
 }
 
-fn get_or_create_node_wrapper(
-  vm: &mut Vm,
+fn initialize_node_wrapper_shims(
   scope: &mut Scope<'_>,
+  window_obj: Option<GcObject>,
   document_obj: GcObject,
   dom: Option<&dom2::Document>,
   node_id: NodeId,
-) -> Result<Value, VmError> {
-  let wrapper = if let Some(platform) = dom_platform_mut(vm) {
-    // Most wrappers use their own `Document` as the `DomPlatform` key. However, some document-like
-    // wrappers (e.g. `DOMParser.parseFromString()` documents) are represented as detached subtrees
-    // inside the host `dom2::Document`. In those cases, wrappers must still be registered under the
-    // host document ID so `dom_ptr_for_document_id_*` resolves to the correct DOM arena.
-    let platform_document_obj = {
-      let mut scope = scope.reborrow();
-      scope.push_root(Value::Object(document_obj))?;
-      let key = alloc_key(&mut scope, PLATFORM_DOCUMENT_KEY)?;
-      match scope
-        .heap()
-        .object_get_own_data_property_value(document_obj, &key)?
-      {
-        Some(Value::Object(obj)) => obj,
-        _ => document_obj,
-      }
-    };
-
-    if node_id.index() == 0 {
-      // `dom2`'s document node is always index 0; return the platform document wrapper so wrapper
-      // identity remains stable even when called from an alias document.
-      return Ok(Value::Object(platform_document_obj));
-    }
-
-    let document_key = vm_js::WeakGcObject::from(platform_document_obj);
-    if let Some(existing) = platform.get_existing_wrapper(scope.heap(), document_key, node_id) {
-      return Ok(Value::Object(existing));
-    }
-
-    let mut primary = DomInterface::Node;
-    if let Some(dom) = dom {
-      primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
-    }
-
-    platform.get_or_create_wrapper(scope, document_key, node_id, primary)?
-  } else {
-    if node_id.index() == 0 {
-      return Ok(Value::Object(document_obj));
-    }
-    scope.alloc_object()?
-  };
+  wrapper: GcObject,
+) -> Result<(), VmError> {
+  // Root while initializing: `initialize_node_wrapper_shims` allocates keys and can GC.
   scope.push_root(Value::Object(wrapper))?;
+  scope.push_root(Value::Object(document_obj))?;
 
   // ShadowRoot wrappers should inherit from `ShadowRoot.prototype` (not Node.prototype) so
   // `ShadowRoot` accessors like `innerHTML` are available and `instanceof ShadowRoot` works when
   // the interface object exists.
   if let Some(dom) = dom {
     if matches!(&dom.node(node_id).kind, NodeKind::ShadowRoot { .. }) {
-      if let Some(global) = vm
-        .user_data::<WindowRealmUserData>()
-        .and_then(|data| data.window_obj())
-      {
+      if let Some(global) = window_obj {
         scope.push_root(Value::Object(global))?;
         let ctor_key = alloc_key(scope, "ShadowRoot")?;
         if let Some(Value::Object(ctor_obj)) =
@@ -10669,6 +11429,62 @@ fn get_or_create_node_wrapper(
     }
   }
 
+  Ok(())
+}
+
+fn get_or_create_node_wrapper(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: Option<&dom2::Document>,
+  node_id: NodeId,
+) -> Result<Value, VmError> {
+  let wrapper = if let Some(platform) = dom_platform_mut(vm) {
+    // Most wrappers use their own `Document` as the `DomPlatform` key. However, some document-like
+    // wrappers (e.g. `DOMParser.parseFromString()` documents) are represented as detached subtrees
+    // inside the host `dom2::Document`. In those cases, wrappers must still be registered under the
+    // host document ID so `dom_ptr_for_document_id_*` resolves to the correct DOM arena.
+    let platform_document_obj = {
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(document_obj))?;
+      let key = alloc_key(&mut scope, PLATFORM_DOCUMENT_KEY)?;
+      match scope
+        .heap()
+        .object_get_own_data_property_value(document_obj, &key)?
+      {
+        Some(Value::Object(obj)) => obj,
+        _ => document_obj,
+      }
+    };
+
+    if node_id.index() == 0 {
+      // `dom2`'s document node is always index 0; return the platform document wrapper so wrapper
+      // identity remains stable even when called from an alias document.
+      return Ok(Value::Object(platform_document_obj));
+    }
+
+    let document_key = vm_js::WeakGcObject::from(platform_document_obj);
+    if let Some(existing) = platform.get_existing_wrapper(scope.heap(), document_key, node_id) {
+      return Ok(Value::Object(existing));
+    }
+
+    let mut primary = DomInterface::Node;
+    if let Some(dom) = dom {
+      primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
+    }
+
+    platform.get_or_create_wrapper(scope, document_key, node_id, primary)?
+  } else {
+    if node_id.index() == 0 {
+      return Ok(Value::Object(document_obj));
+    }
+    scope.alloc_object()?
+  };
+  let window_obj = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.window_obj());
+  initialize_node_wrapper_shims(scope, window_obj, document_obj, dom, node_id, wrapper)?;
+
   Ok(Value::Object(wrapper))
 }
 
@@ -11406,6 +12222,15 @@ fn sync_cached_child_nodes_for_wrapper(
   else {
     return Ok(());
   };
+  let slots = match scope.heap().object_host_slots(array) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(array) => None,
+    Err(err) => return Err(err),
+  };
+  if slots.is_some_and(|slots| slots.b == HOST_EXOTIC_NODE_LIST) {
+    // Live host-exotic NodeList objects compute supported indices dynamically; no sync needed.
+    return Ok(());
+  }
   sync_child_nodes_array(vm, scope, document_obj, dom, node_id, array)
 }
 
@@ -11445,6 +12270,15 @@ fn sync_cached_children_for_wrapper(
   else {
     return Ok(());
   };
+  let slots = match scope.heap().object_host_slots(collection) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(collection) => None,
+    Err(err) => return Err(err),
+  };
+  if slots.is_some_and(|slots| slots.b == HOST_EXOTIC_HTML_COLLECTION) {
+    // Live host-exotic HTMLCollection objects compute supported indices dynamically; no sync needed.
+    return Ok(());
+  }
   sync_children_collection(vm, scope, document_obj, dom, node_id, collection)
 }
 
@@ -12876,14 +13710,53 @@ fn document_query_selector_all_native(
     }
   };
 
-  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
-  // SAFETY: `dom_ptr` points at either the host document or a realm-owned document stored in VM
-  // user data. Both outlive this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
+  let list_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(list_obj))?;
+  scope.push_root(Value::Object(document_obj))?;
 
-  let node_list = alloc_node_array(vm, scope, document_obj, Some(dom), &matches)?;
-  Ok(Value::Object(node_list))
+  let proto = node_list_prototype_from_document(scope, document_obj)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(list_obj, Some(proto))?;
+
+  let collection_id = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation(
+        "window realm missing user data",
+      ));
+    };
+    let mut registry = data.collection_registry.borrow_mut();
+    registry.register(
+      scope.heap(),
+      list_obj,
+      handle.document_id,
+      CollectionKind::NodeListSnapshot { nodes: matches },
+    )
+  };
+  scope.heap_mut().object_set_host_slots(
+    list_obj,
+    HostSlots {
+      a: collection_id,
+      b: HOST_EXOTIC_NODE_LIST,
+    },
+  )?;
+
+  // Keep the root wrapper alive even if the caller only holds the NodeList.
+  let root_key = alloc_key(scope, NODE_LIST_ROOT_KEY)?;
+  scope.define_property(
+    list_obj,
+    root_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(document_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(list_obj))
 }
 
 fn document_element_from_point_native(
@@ -13146,40 +14019,12 @@ fn element_query_selector_all_native(
     ));
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.querySelectorAll must be called on a node object",
-      ));
-    }
-  };
-
-  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.querySelectorAll requires a DOM-backed element",
-      ));
-    }
-  };
-
-  let node_id = {
-    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-      "Element.querySelectorAll requires a DOM-backed element",
-    ))?;
-    dom
-      .node_id_from_index(node_index)
-      .map_err(|_| VmError::TypeError("Element.querySelectorAll must be called on a node object"))?
-  };
+  let handle = element_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "Element.querySelectorAll must be called on a node object",
+  )?;
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let selector_value = scope.heap_mut().to_string(selector_value)?;
@@ -13189,35 +14034,91 @@ fn element_query_selector_all_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let matches = match mutate_dom_for_vm_host(host, |dom| (dom.query_selector_all(&selector, Some(node_id)), false))
-    .ok_or(VmError::TypeError(
-      "Element.querySelectorAll requires a DOM-backed element",
-    ))?
-  {
-    Ok(nodes) => nodes,
-    Err(err) => {
-      let (name, message) = match err {
-        crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
-        crate::web::dom::DomException::NoModificationAllowedError { message } => {
-          ("NoModificationAllowedError", message)
-        }
-        crate::web::dom::DomException::NotSupportedError { message } => {
-          ("NotSupportedError", message)
-        }
-        crate::web::dom::DomException::InvalidStateError { message } => {
-          ("InvalidStateError", message)
-        }
+  let matches = {
+    let result = if is_host_document_id(vm, handle.document_id) {
+      mutate_dom_for_vm_host(host, |dom| {
+        (dom.query_selector_all(&selector, Some(handle.node_id)), false)
+      })
+      .ok_or(VmError::TypeError(
+        "Element.querySelectorAll requires a DOM-backed element",
+      ))?
+    } else {
+      let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+        return Err(VmError::TypeError(
+          "Element.querySelectorAll requires a DOM-backed element",
+        ));
       };
-      return Err(VmError::Throw(make_dom_exception(vm, scope, name, &message)?));
+      // SAFETY: `dom_ptr` points at a realm-owned document stored in VM user data. We have exclusive
+      // access for the duration of this native call.
+      let dom = unsafe { dom_ptr.as_mut() };
+      dom.query_selector_all(&selector, Some(handle.node_id))
+    };
+    match result {
+      Ok(nodes) => nodes,
+      Err(err) => {
+        let (name, message) = match err {
+          crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
+          crate::web::dom::DomException::NoModificationAllowedError { message } => {
+            ("NoModificationAllowedError", message)
+          }
+          crate::web::dom::DomException::NotSupportedError { message } => {
+            ("NotSupportedError", message)
+          }
+          crate::web::dom::DomException::InvalidStateError { message } => {
+            ("InvalidStateError", message)
+          }
+        };
+        return Err(VmError::Throw(make_dom_exception(vm, scope, name, &message)?));
+      }
     }
   };
 
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-    "Element.querySelectorAll requires a DOM-backed element",
-  ))?;
+  let list_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(list_obj))?;
+  scope.push_root(Value::Object(wrapper_obj))?;
 
-  let node_list = alloc_node_array(vm, scope, document_obj, Some(dom), &matches)?;
-  Ok(Value::Object(node_list))
+  let proto = node_list_prototype_from_document(scope, handle.document_obj)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(list_obj, Some(proto))?;
+
+  let collection_id = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation(
+        "window realm missing user data",
+      ));
+    };
+    let mut registry = data.collection_registry.borrow_mut();
+    registry.register(
+      scope.heap(),
+      list_obj,
+      handle.document_id,
+      CollectionKind::NodeListSnapshot { nodes: matches },
+    )
+  };
+  scope.heap_mut().object_set_host_slots(
+    list_obj,
+    HostSlots {
+      a: collection_id,
+      b: HOST_EXOTIC_NODE_LIST,
+    },
+  )?;
+
+  let root_key = alloc_key(scope, NODE_LIST_ROOT_KEY)?;
+  scope.define_property(
+    list_obj,
+    root_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(wrapper_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(list_obj))
 }
 
 fn element_matches_native(
@@ -20444,22 +21345,62 @@ fn node_list_item_native(
   sync_node_list_query_if_needed(vm, scope, host, list_obj)?;
 
   let idx_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let idx_n = match idx_value {
+  let mut n = match idx_value {
     Value::Number(n) => n,
     other => scope.to_number(vm, host, hooks, other)?,
   };
-  if !idx_n.is_finite() || idx_n < 0.0 {
+  if !n.is_finite() || n.is_nan() {
+    n = 0.0;
+  }
+  let n = n.trunc();
+  if n < 0.0 {
     return Ok(Value::Null);
   }
 
-  let idx = idx_n.trunc() as usize;
+  let idx = if n >= usize::MAX as f64 {
+    usize::MAX
+  } else {
+    n as usize
+  };
+
+  let slots = match scope.heap().object_host_slots(list_obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(list_obj) => None,
+    Err(err) => return Err(err),
+  };
+  if let Some(slots) = slots {
+    if slots.b == HOST_EXOTIC_NODE_LIST {
+      let ctx = CollectionsExoticContext::for_vm(vm);
+      let (document_id, node_id) = {
+        let mut registry = ctx.collection_registry.borrow_mut();
+        let Some(entry) = registry.get_mut(scope.heap(), slots.a) else {
+          return Ok(Value::Null);
+        };
+        if !matches!(
+          &entry.kind,
+          CollectionKind::NodeListChildNodes { .. } | CollectionKind::NodeListSnapshot { .. }
+        ) {
+          return Ok(Value::Null);
+        }
+        let Some(node_id) = collection_entry_item_node_id(Some(&mut *host), &ctx, entry, idx)? else {
+          return Ok(Value::Null);
+        };
+        (entry.document_id, node_id)
+      };
+      let Some(wrapper) =
+        get_or_create_node_wrapper_from_dom_platform(scope, Some(&mut *host), &ctx, document_id, node_id)?
+      else {
+        return Ok(Value::Null);
+      };
+      return Ok(wrapper);
+    }
+  }
+
   let key = alloc_key(scope, &idx.to_string())?;
-  Ok(
-    scope
-      .heap()
-      .object_get_own_data_property_value(list_obj, &key)?
-      .unwrap_or(Value::Null),
-  )
+  Ok(scope
+    .heap()
+    .object_get_own_data_property_value(list_obj, &key)?
+    .unwrap_or(Value::Null))
 }
 
 fn node_list_for_each_native(
@@ -31494,11 +32435,6 @@ fn node_child_nodes_get_native(
   };
 
   let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
-  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
-
   let child_nodes_key = alloc_key(scope, NODE_CHILD_NODES_KEY)?;
   let list_obj = match scope
     .heap()
@@ -31506,8 +32442,15 @@ fn node_child_nodes_get_native(
   {
     Some(Value::Object(obj)) => obj,
     _ => {
+      // Ensure the backing `dom2::Document` exists for the duration of this call so live collection
+      // access can resolve nodes immediately.
+      let _ = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+        .ok_or(VmError::TypeError("Illegal invocation"))?;
+
       let list_obj = scope.alloc_object()?;
       scope.push_root(Value::Object(list_obj))?;
+      scope.push_root(Value::Object(wrapper_obj))?;
+
       // Use the realm's NodeList prototype so `instanceof NodeList` works and `Array.isArray`
       // remains false. The prototype is stored on the owning document wrapper so we don't need to
       // walk the global object.
@@ -31516,7 +32459,34 @@ fn node_child_nodes_get_native(
         .heap_mut()
         .object_set_prototype(list_obj, Some(proto))?;
 
-      // Keep the root wrapper alive even if the caller only holds the NodeList object.
+      // Register the live collection in the realm-owned registry and brand the JS object so host
+      // exotic hooks can service indexed lookups.
+      let collection_id = {
+        let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+          return Err(VmError::InvariantViolation(
+            "window realm missing user data",
+          ));
+        };
+        let mut registry = data.collection_registry.borrow_mut();
+        registry.register(
+          scope.heap(),
+          list_obj,
+          handle.document_id,
+          CollectionKind::NodeListChildNodes {
+            root_node_id: handle.node_id,
+            cache: LiveCollectionCache::new(),
+          },
+        )
+      };
+      scope.heap_mut().object_set_host_slots(
+        list_obj,
+        HostSlots {
+          a: collection_id,
+          b: HOST_EXOTIC_NODE_LIST,
+        },
+      )?;
+
+      // Keep the root wrapper alive even if the caller only holds the NodeList.
       let root_key = alloc_key(scope, NODE_LIST_ROOT_KEY)?;
       scope.define_property(
         list_obj,
@@ -31545,8 +32515,6 @@ fn node_child_nodes_get_native(
       list_obj
     }
   };
-
-  sync_child_nodes_array(vm, scope, handle.document_obj, dom, handle.node_id, list_obj)?;
   Ok(Value::Object(list_obj))
 }
 
@@ -31890,16 +32858,51 @@ fn html_collection_item_native(
     n as usize
   };
 
+  let slots = match scope.heap().object_host_slots(collection_obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(collection_obj) => None,
+    Err(err) => return Err(err),
+  };
+  if let Some(slots) = slots {
+    if slots.b == HOST_EXOTIC_HTML_COLLECTION {
+      let ctx = CollectionsExoticContext::for_vm(vm);
+      let (document_id, node_id) = {
+        let mut registry = ctx.collection_registry.borrow_mut();
+        let Some(entry) = registry.get_mut(scope.heap(), slots.a) else {
+          return Ok(Value::Null);
+        };
+        if !matches!(&entry.kind, CollectionKind::HtmlCollectionChildren { .. }) {
+          return Ok(Value::Null);
+        }
+        let Some(node_id) =
+          collection_entry_item_node_id(Some(&mut *host), &ctx, entry, idx)?
+        else {
+          return Ok(Value::Null);
+        };
+        (entry.document_id, node_id)
+      };
+      let Some(wrapper) = get_or_create_node_wrapper_from_dom_platform(
+        scope,
+        Some(&mut *host),
+        &ctx,
+        document_id,
+        node_id,
+      )?
+      else {
+        return Ok(Value::Null);
+      };
+      return Ok(wrapper);
+    }
+  }
+
   let mut idx_buf = [0u8; 20];
   let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
   let key = alloc_key(scope, idx_str)?;
-  Ok(
-    scope
-      .heap()
-      .object_get_own_data_property_value(collection_obj, &key)?
-      .filter(|v| !matches!(v, Value::Undefined))
-      .unwrap_or(Value::Null),
-  )
+  Ok(scope
+    .heap()
+    .object_get_own_data_property_value(collection_obj, &key)?
+    .filter(|v| !matches!(v, Value::Undefined))
+    .unwrap_or(Value::Null))
 }
 
 fn html_collection_named_item_native(
@@ -32387,13 +33390,14 @@ fn parent_node_children_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
   // `children` is exposed only on ParentNode implementers.
-  match &dom.node(node_id).kind {
+  match &dom.node(handle.node_id).kind {
     NodeKind::Document { .. }
     | NodeKind::DocumentFragment
     | NodeKind::Element { .. }
@@ -32401,7 +33405,7 @@ fn parent_node_children_get_native(
     _ => return Err(VmError::TypeError("Illegal invocation")),
   }
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  let document_obj = handle.document_obj;
 
   let children_key = alloc_key(scope, NODE_CHILDREN_KEY)?;
   let collection = match scope
@@ -32412,6 +33416,7 @@ fn parent_node_children_get_native(
     _ => {
       let collection = scope.alloc_object()?;
       scope.push_root(Value::Object(collection))?;
+      scope.push_root(Value::Object(wrapper_obj))?;
 
       // Use the realm's HTMLCollection prototype so `instanceof HTMLCollection` works.
       let proto_key = alloc_key(scope, HTML_COLLECTION_PROTOTYPE_KEY)?;
@@ -32425,6 +33430,31 @@ fn parent_node_children_get_native(
       scope
         .heap_mut()
         .object_set_prototype(collection, Some(proto))?;
+
+      let collection_id = {
+        let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+          return Err(VmError::InvariantViolation(
+            "window realm missing user data",
+          ));
+        };
+        let mut registry = data.collection_registry.borrow_mut();
+        registry.register(
+          scope.heap(),
+          collection,
+          handle.document_id,
+          CollectionKind::HtmlCollectionChildren {
+            root_node_id: handle.node_id,
+            cache: LiveCollectionCache::new(),
+          },
+        )
+      };
+      scope.heap_mut().object_set_host_slots(
+        collection,
+        HostSlots {
+          a: collection_id,
+          b: HOST_EXOTIC_HTML_COLLECTION,
+        },
+      )?;
 
       // Keep the root wrapper alive even if the caller only holds the collection object.
       let root_key = alloc_key(scope, HTML_COLLECTION_ROOT_KEY)?;
@@ -32458,7 +33488,6 @@ fn parent_node_children_get_native(
     }
   };
 
-  sync_children_collection(vm, scope, document_obj, dom, node_id, collection)?;
   Ok(Value::Object(collection))
 }
 
@@ -56956,18 +57985,24 @@ mod tests {
   struct DomShimHostHooks {
     any: VmJsHostHooksPayload,
     dataset_ctx: DatasetExoticContext,
+    collections_ctx: CollectionsExoticContext,
   }
 
   impl DomShimHostHooks {
     fn new(
       host_ctx: &mut dyn VmHost,
       dataset_ctx: DatasetExoticContext,
+      collections_ctx: CollectionsExoticContext,
       webidl_limits: webidl::WebIdlLimits,
     ) -> Self {
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(host_ctx);
       any.set_webidl_limits(webidl_limits);
-      Self { any, dataset_ctx }
+      Self {
+        any,
+        dataset_ctx,
+        collections_ctx,
+      }
     }
 
     fn set_webidl_bindings_host(&mut self, host: &mut dyn WebIdlBindingsHost) {
@@ -56989,7 +58024,15 @@ mod tests {
       key: PropertyKey,
       receiver: Value,
     ) -> Result<Option<Value>, VmError> {
-      dispatch_host_exotic_get(scope, &mut self.any, &self.dataset_ctx, obj, key, receiver)
+      dispatch_host_exotic_get(
+        scope,
+        &mut self.any,
+        &self.dataset_ctx,
+        &self.collections_ctx,
+        obj,
+        key,
+        receiver,
+      )
     }
 
     fn host_exotic_set(
@@ -57005,6 +58048,7 @@ mod tests {
           scope,
           &mut self.any,
           &self.dataset_ctx,
+          &self.collections_ctx,
           obj,
           key,
           value,
@@ -57020,7 +58064,10 @@ mod tests {
       obj: GcObject,
       key: PropertyKey,
     ) -> Result<Option<bool>, VmError> {
-      Ok(dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, obj, key)?.handled)
+      Ok(
+        dispatch_host_exotic_delete(scope, &mut self.any, &self.dataset_ctx, &self.collections_ctx, obj, key)?
+          .handled,
+      )
     }
   }
 
@@ -57099,8 +58146,13 @@ mod tests {
     source: &str,
   ) -> Result<Value, VmError> {
     let dataset_ctx = realm.dataset_exotic_context();
-    let mut hooks =
-      DomShimHostHooks::new(host, dataset_ctx, realm.js_execution_options().webidl_limits);
+    let collections_ctx = realm.collections_exotic_context();
+    let mut hooks = DomShimHostHooks::new(
+      host,
+      dataset_ctx,
+      collections_ctx,
+      realm.js_execution_options().webidl_limits,
+    );
     realm.exec_script_with_host_and_hooks(host, &mut hooks, source)
   }
 
@@ -57110,8 +58162,13 @@ mod tests {
     source: &str,
   ) -> Result<Value, VmError> {
     let dataset_ctx = realm.dataset_exotic_context();
-    let mut hooks =
-      DomShimHostHooks::new(host, dataset_ctx, realm.js_execution_options().webidl_limits);
+    let collections_ctx = realm.collections_exotic_context();
+    let mut hooks = DomShimHostHooks::new(
+      host,
+      dataset_ctx,
+      collections_ctx,
+      realm.js_execution_options().webidl_limits,
+    );
     let mut webidl_host =
       VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
     hooks.set_webidl_bindings_host(&mut webidl_host);
@@ -57148,9 +58205,11 @@ mod tests {
 
     fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
       let dataset_ctx = self.window.dataset_exotic_context();
+      let collections_ctx = self.window.collections_exotic_context();
       let mut hooks = DomShimHostHooks::new(
         &mut self.document,
         dataset_ctx,
+        collections_ctx,
         self.window.js_execution_options().webidl_limits,
       );
       hooks.set_webidl_bindings_host(&mut self.webidl_bindings_host);
@@ -64560,8 +65619,13 @@ mod tests {
     };
 
     let dataset_ctx = realm.dataset_exotic_context();
-    let mut hooks =
-      DomShimHostHooks::new(&mut host, dataset_ctx, realm.js_execution_options().webidl_limits);
+    let collections_ctx = realm.collections_exotic_context();
+    let mut hooks = DomShimHostHooks::new(
+      &mut host,
+      dataset_ctx,
+      collections_ctx,
+      realm.js_execution_options().webidl_limits,
+    );
     hooks.set_webidl_bindings_host(&mut webidl_host);
 
     let dataset_value =

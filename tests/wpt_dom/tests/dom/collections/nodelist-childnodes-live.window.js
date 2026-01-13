@@ -110,3 +110,18 @@ test(() => {
   assert_equals(list[0], parent.firstChild, "parent.childNodes[0] after outerHTML");
   assert_equals(list[2], parent.lastChild, "parent.childNodes[2] after outerHTML");
 }, "Node.childNodes updates live on Element.outerHTML mutations");
+
+test(() => {
+  const node = document.createElement("div");
+  const list = node.childNodes;
+
+  // Do not touch list.length or list.item() before mutating the DOM; indexed access should still be
+  // live and reflect the current tree.
+  node.innerHTML = "<span></span><span></span>";
+  assert_equals(list[0], node.firstChild, "childNodes[0] after insertion");
+  assert_equals(list[1], node.lastChild, "childNodes[1] after insertion");
+
+  node.innerHTML = "<p></p>";
+  assert_equals(list[0], node.firstChild, "childNodes[0] after shrink");
+  assert_equals(list[1], undefined, "childNodes[1] should be undefined after shrink");
+}, "Node.childNodes indexed property access stays live without calling length/item");

@@ -7527,11 +7527,14 @@ impl<'a> Evaluator<'a> {
         continue;
       };
 
-    if ctor_method.is_some() {
-      return Err(syntax_error(member.loc, "A class may only have one constructor"));
+      if ctor_method.is_some() {
+        return Err(syntax_error(
+          member.loc,
+          "A class may only have one constructor",
+        ));
+      }
+      ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
     }
-    ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
-  }
 
     let mut ctor_length: u32 = 0;
     let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
@@ -7539,8 +7542,8 @@ impl<'a> Evaluator<'a> {
         return Err(syntax_error(
           loc,
           "Class constructor may not be a generator",
-          ));
-        }
+        ));
+      }
 
         ctor_length = self.function_length(&func_node.stx)?;
 
@@ -18992,7 +18995,10 @@ fn async_eval_class_after_super(
     };
 
     if ctor_method.is_some() {
-      return Err(syntax_error(member.loc, "A class may only have one constructor"));
+      return Err(syntax_error(
+        member.loc,
+        "A class may only have one constructor",
+      ));
     }
     ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
   }
@@ -19016,33 +19022,33 @@ fn async_eval_class_after_super(
     let span_start = evaluator.env.base_offset().saturating_add(rel_start);
     let span_end = evaluator.env.base_offset().saturating_add(rel_end);
 
-    let code = evaluator.vm.register_ecma_function(
-      evaluator.env.source(),
-      span_start,
-      span_end,
-      EcmaFunctionKind::ClassMember,
-    )?;
+      let code = evaluator.vm.register_ecma_function(
+        evaluator.env.source(),
+        span_start,
+        span_end,
+        EcmaFunctionKind::ClassMember,
+      )?;
 
-    // Class constructor bodies are always strict mode.
-    let is_strict = true;
-    let this_mode = if func_node.stx.arrow {
-      ThisMode::Lexical
-    } else {
-      ThisMode::Strict
-    };
-    let closure_env = Some(evaluator.env.lexical_env);
+      // Class constructor bodies are always strict mode.
+      let is_strict = true;
+      let this_mode = if func_node.stx.arrow {
+        ThisMode::Lexical
+      } else {
+        ThisMode::Strict
+      };
+      let closure_env = Some(evaluator.env.lexical_env);
 
-    let mut ctor_scope = class_scope.reborrow();
-    let name_string = ctor_scope.alloc_string("constructor")?;
-    let func_obj = ctor_scope.alloc_ecma_function(
-      code,
-      /* is_constructable */ true,
-      name_string,
-      ctor_length,
-      this_mode,
-      is_strict,
-      closure_env,
-    )?;
+      let mut ctor_scope = class_scope.reborrow();
+      let name_string = ctor_scope.alloc_string("constructor")?;
+      let func_obj = ctor_scope.alloc_ecma_function(
+        code,
+        /* is_constructable */ true,
+        name_string,
+        ctor_length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?;
 
     let intr = evaluator
       .vm
