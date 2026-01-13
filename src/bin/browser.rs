@@ -6206,6 +6206,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     should_show_crash_recovery_infobar(source, startup_session.did_exit_cleanly);
   let bookmarks_path = fastrender::ui::bookmarks_path();
   let history_path = fastrender::ui::history_path();
+  let mut startup_profile_notifications: Vec<String> = Vec::new();
   let bookmarks = match fastrender::ui::load_bookmarks(&bookmarks_path) {
     Ok(outcome) => outcome.value,
     Err(err) => {
@@ -6213,6 +6214,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "failed to load bookmarks from {}: {err}",
         bookmarks_path.display()
       );
+      if let Some(msg) =
+        fastrender::ui::startup_notifications::format_profile_store_load_failure_toast(
+          "bookmarks",
+          &bookmarks_path,
+          &err,
+        )
+      {
+        startup_profile_notifications.push(msg);
+      }
       fastrender::ui::BookmarkStore::default()
     }
   };
@@ -6223,6 +6233,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "failed to load history from {}: {err}",
         history_path.display()
       );
+      if let Some(msg) =
+        fastrender::ui::startup_notifications::format_profile_store_load_failure_toast(
+          "history",
+          &history_path,
+          &err,
+        )
+      {
+        startup_profile_notifications.push(msg);
+      }
       fastrender::ui::GlobalHistoryStore::default()
     }
   };
@@ -6928,6 +6947,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       .app
       .set_session_autosave_status(session_autosave_status.clone());
     win.app.window.request_redraw();
+  }
+
+  if !startup_profile_notifications.is_empty() {
+    let toast_text = startup_profile_notifications.join("\n\n");
+    let toast_target = active_window_id.or_else(|| window_order.first().copied());
+    if let Some(target_id) = toast_target {
+      if let Some(win) = windows.get_mut(&target_id) {
+        win
+          .app
+          .show_chrome_toast_with_kind(fastrender::ui::ToastKind::Warning, &toast_text);
+        win.app.window.request_redraw();
+      }
+    }
   }
 
   event_loop.run(move |event, event_loop_target, control_flow| {

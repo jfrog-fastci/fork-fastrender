@@ -91,6 +91,7 @@ pub mod async_scroll;
 pub mod chrome_dynamic_asset_fetcher;
 pub mod multiprocess;
 pub mod shutdown_join_tracker;
+pub mod startup_notifications;
 
 mod tab_accessible_label;
 pub use tab_accessible_label::TabAccessibleLabelCache;
