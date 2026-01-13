@@ -173,7 +173,11 @@ where
 
   let out_obj = rt.alloc_object()?;
 
-  let keys = rt.scope.ordinary_own_property_keys(input)?;
+  // WebIDL record conversion uses `O.[[OwnPropertyKeys]]()`, which must dispatch through Proxy
+  // `ownKeys` traps when present.
+  let keys = rt
+    .scope
+    .own_property_keys_with_host_and_hooks(&mut *rt.vm, host, hooks, input)?;
   let mut key_roots: Vec<Value> = Vec::with_capacity(keys.len());
   for key in &keys {
     match *key {
@@ -187,7 +191,12 @@ where
 
   let mut entries: usize = 0;
   for key in keys {
-    let Some(desc) = rt.scope.heap().object_get_own_property(input, &key)? else {
+    // WebIDL record conversion uses `O.[[GetOwnProperty]](key)`, which must dispatch through Proxy
+    // `getOwnPropertyDescriptor` traps when present.
+    let Some(desc) =
+      rt.scope
+        .object_get_own_property_with_host_and_hooks(&mut *rt.vm, host, hooks, input, key)?
+    else {
       continue;
     };
     if !desc.enumerable {
