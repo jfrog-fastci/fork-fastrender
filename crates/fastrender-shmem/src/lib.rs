@@ -57,7 +57,7 @@
 //! cmd.env("FASTR_RENDER_SHMEM_FD", SHMEM_FD.to_string());
 //! cmd.env("FASTR_RENDER_SHMEM_LEN", len.to_string());
 //! // Safety: the `pre_exec` hook runs in the child after `fork` and before `exec`, so the closure
-//! // must only perform async-signal-safe operations (here: `dup2` + `fcntl`).
+//! // must only perform async-signal-safe operations (here: `dup`/`dup2`/`close`).
 //! unsafe {
 //!   cmd.pre_exec(move || handle.dup_to_fd(SHMEM_FD));
 //! }
@@ -232,15 +232,52 @@ impl ShmemHandle {
     let Some(fd) = self.fd() else {
       return Ok(());
     };
+
+    // `dup2` clears `FD_CLOEXEC` on the new descriptor, except when `fd == target_fd` (no-op). To
+    // handle the equality case without relying on `fcntl` (useful for `pre_exec`), duplicate to a
+    // temporary fd first and then `dup2` onto `target_fd`.
+    if fd == target_fd {
+      // SAFETY: `dup` is an FFI boundary; on success it returns a new fd referring to the same file
+      // description with `FD_CLOEXEC` cleared.
+      let tmp_fd = unsafe { libc::dup(fd) };
+      if tmp_fd < 0 {
+        return Err(io::Error::last_os_error());
+      }
+
+      // SAFETY: `dup2` duplicates `tmp_fd` onto `target_fd` (closing `target_fd` first if needed).
+      let rc = unsafe { libc::dup2(tmp_fd, target_fd) };
+      let dup2_err = if rc < 0 {
+        Some(io::Error::last_os_error())
+      } else {
+        None
+      };
+
+      // Always close the temporary fd to avoid leaking it across exec.
+      loop {
+        // SAFETY: `close` is an FFI boundary; on success it closes `tmp_fd`.
+        let close_rc = unsafe { libc::close(tmp_fd) };
+        if close_rc == 0 {
+          break;
+        }
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EINTR) {
+          continue;
+        }
+        // Prefer returning the `dup2` error if both failed.
+        return Err(dup2_err.unwrap_or(err));
+      }
+
+      if let Some(err) = dup2_err {
+        return Err(err);
+      }
+      return Ok(());
+    }
+
     // SAFETY: `dup2` is an FFI boundary; on success it duplicates `fd` onto `target_fd` in the
     // current process (closing the previous `target_fd` if it was open).
     let rc = unsafe { libc::dup2(fd, target_fd) };
     if rc < 0 {
       return Err(io::Error::last_os_error());
-    }
-    // `dup2` clears `FD_CLOEXEC` on the new descriptor, except when `fd == target_fd` (no-op).
-    if fd == target_fd {
-      clear_fd_cloexec(target_fd)?;
     }
     Ok(())
   }
@@ -919,6 +956,23 @@ mod tests {
     }
   }
 
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn linux_memfd_dup_to_same_fd_clears_cloexec() {
+    let (_region, handle) =
+      ShmemRegion::create(ShmemBackend::LinuxMemfd, 4096).expect("create memfd shmem");
+    let fd = handle.fd().expect("memfd handle fd");
+
+    let initial_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    assert!(initial_flags & libc::FD_CLOEXEC != 0);
+
+    handle
+      .dup_to_fd(fd)
+      .expect("dup memfd onto same fd number and clear cloexec");
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    assert_eq!(flags & libc::FD_CLOEXEC, 0);
+  }
+
   #[cfg(unix)]
   #[test]
   fn posix_shm_map_rejects_size_mismatch() {
@@ -1047,7 +1101,7 @@ mod tests {
     cmd.arg("linux_memfd_inheritance_across_exec_smoke");
 
     // SAFETY: pre_exec runs after fork and before exec; the closure must only use
-    // async-signal-safe operations.
+    // async-signal-safe operations (here: `dup`/`dup2`/`close`).
     let handle_for_child = handle.clone();
     unsafe {
       cmd.pre_exec(move || handle_for_child.dup_to_fd(TARGET_FD));
