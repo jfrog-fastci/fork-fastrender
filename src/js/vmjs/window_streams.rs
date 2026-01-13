@@ -79,6 +79,21 @@ const MAX_READABLE_STREAM_BYTE_CHUNK_BYTES: usize = 32 * 1024 * 1024;
 /// This matches the spec default for default controllers.
 const DEFAULT_READABLE_STREAM_HIGH_WATER_MARK: f64 = 1.0;
 
+/// Hard upper bound on total buffered content per `ReadableStream`.
+///
+/// This is a DoS resistance measure: even with per-chunk caps, hostile code can enqueue unbounded
+/// numbers of small chunks (or `tee()` can duplicate buffered data), otherwise leading to OOM.
+///
+/// Note: this implementation does not implement full backpressure/high-water-mark semantics, so
+/// this limit acts as a simple safety valve.
+const MAX_READABLE_STREAM_QUEUED_BYTES: usize = 32 * 1024 * 1024; // 32MiB
+
+/// Hard upper bound on number of queued items for object-mode (`ReadableStream` of arbitrary JS
+/// values).
+const MAX_READABLE_STREAM_QUEUED_ITEMS: usize = 100_000;
+
+const READABLE_STREAM_QUEUE_LIMIT_ERROR: &str = "ReadableStream queue size limit exceeded";
+
 // --- Hidden, internal property keys -----------------------------------------------------------
 
 const READABLE_STREAM_READER_PENDING_RESOLVE_KEY: &str =
@@ -346,6 +361,8 @@ struct StreamState {
   buffered_byte_len: usize,
   /// Queue of string chunks (only used when `kind == StreamKind::Strings`).
   strings: VecDeque<String>,
+  /// Total number of UTF-8 bytes currently buffered across `strings`.
+  buffered_string_len: usize,
   /// Queue of rooted JS values (only used when `kind == StreamKind::Values`).
   values: VecDeque<RootId>,
   init: Option<LazyInit>,
@@ -366,6 +383,7 @@ impl StreamState {
       byte_queue: VecDeque::new(),
       buffered_byte_len: 0,
       strings: VecDeque::new(),
+      buffered_string_len: 0,
       values: VecDeque::new(),
       init: None,
       pending_reader: None,
@@ -384,6 +402,7 @@ impl StreamState {
       byte_queue: VecDeque::new(),
       buffered_byte_len: 0,
       strings: VecDeque::new(),
+      buffered_string_len: 0,
       values: VecDeque::new(),
       init: None,
       pending_reader: None,
@@ -402,6 +421,7 @@ impl StreamState {
       byte_queue: VecDeque::new(),
       buffered_byte_len: 0,
       strings: VecDeque::new(),
+      buffered_string_len: 0,
       values: VecDeque::new(),
       init: None,
       pending_reader: None,
@@ -421,6 +441,7 @@ impl StreamState {
       byte_queue,
       buffered_byte_len,
       strings: VecDeque::new(),
+      buffered_string_len: 0,
       values: VecDeque::new(),
       init: None,
       pending_reader: None,
@@ -439,6 +460,7 @@ impl StreamState {
       byte_queue: VecDeque::new(),
       buffered_byte_len: 0,
       strings: VecDeque::new(),
+      buffered_string_len: 0,
       values: VecDeque::new(),
       init: Some(init),
       pending_reader: None,
@@ -1129,6 +1151,7 @@ fn readable_stream_cancel_native(
     stream_state.byte_queue.clear();
     stream_state.buffered_byte_len = 0;
     stream_state.strings.clear();
+    stream_state.buffered_string_len = 0;
     let value_roots: Vec<RootId> = stream_state.values.drain(..).collect();
     stream_state.init = None;
     stream_state.pending_reader = None;
@@ -4273,6 +4296,7 @@ fn reader_read_native(
             None,
           ));
         };
+        stream_state.buffered_string_len = stream_state.buffered_string_len.saturating_sub(chunk.len());
 
         if stream_state.close_requested && stream_state.strings.is_empty() {
           stream_state.state = StreamLifecycleState::Closed;
@@ -4496,6 +4520,7 @@ fn reader_cancel_native(
     stream_state.byte_queue.clear();
     stream_state.buffered_byte_len = 0;
     stream_state.strings.clear();
+    stream_state.buffered_string_len = 0;
     let value_roots: Vec<RootId> = stream_state.values.drain(..).collect();
     stream_state.init = None;
     let pending_reader = stream_state.pending_reader.take();
@@ -4587,7 +4612,7 @@ fn enqueue_bytes_into_readable_stream(
   stream_obj: GcObject,
   bytes: Vec<u8>,
 ) -> Result<Option<PendingReadSettle>, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, _heap| {
+  let (pending, value_roots) = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
       .streams
       .get_mut(&WeakGcObject::from(stream_obj))
@@ -4615,6 +4640,39 @@ fn enqueue_bytes_into_readable_stream(
       return Err(VmError::TypeError("ReadableStream is closed"));
     }
 
+    let new_total = stream_state
+      .buffered_byte_len
+      .checked_add(bytes.len())
+      .ok_or(VmError::OutOfMemory)?;
+    if new_total > MAX_READABLE_STREAM_QUEUED_BYTES {
+      let error_message = READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string();
+      stream_state.state = StreamLifecycleState::Errored;
+      stream_state.close_requested = true;
+      stream_state.error_message = Some(error_message.clone());
+      stream_state.byte_queue.clear();
+      stream_state.buffered_byte_len = 0;
+      stream_state.strings.clear();
+      stream_state.buffered_string_len = 0;
+      let value_roots: Vec<RootId> = stream_state.values.drain(..).collect();
+      stream_state.init = None;
+
+      let pending_reader = stream_state.pending_reader.take();
+      if let Some(reader) = pending_reader {
+        let roots = stream_state.pending_read_roots.take();
+        return Ok((
+          Some(PendingReadSettle {
+            reader,
+            roots,
+            outcome: ReadOutcome::Error(error_message),
+          }),
+          value_roots,
+        ));
+      }
+
+      debug_assert!(stream_state.pending_read_roots.is_none());
+      return Ok((None, value_roots));
+    }
+
     push_byte_chunks(
       &mut stream_state.byte_queue,
       &mut stream_state.buffered_byte_len,
@@ -4623,33 +4681,48 @@ fn enqueue_bytes_into_readable_stream(
 
     let Some(pending_reader) = stream_state.pending_reader.take() else {
       debug_assert!(stream_state.pending_read_roots.is_none());
-      return Ok(None);
+      return Ok((None, Vec::new()));
     };
     let pending_roots = stream_state.pending_read_roots.take();
 
     let Some(chunk) = stream_state.byte_queue.pop_front() else {
-      return Ok(Some(PendingReadSettle {
-        reader: pending_reader,
-        roots: pending_roots,
-        outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
-      }));
+      return Ok((
+        Some(PendingReadSettle {
+          reader: pending_reader,
+          roots: pending_roots,
+          outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
+        }),
+        Vec::new(),
+      ));
     };
     if chunk.len() > stream_state.buffered_byte_len {
       stream_state.buffered_byte_len = 0;
-      return Ok(Some(PendingReadSettle {
-        reader: pending_reader,
-        roots: pending_roots,
-        outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
-      }));
+      return Ok((
+        Some(PendingReadSettle {
+          reader: pending_reader,
+          roots: pending_roots,
+          outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
+        }),
+        Vec::new(),
+      ));
     }
     stream_state.buffered_byte_len -= chunk.len();
 
-    Ok(Some(PendingReadSettle {
-      reader: pending_reader,
-      roots: pending_roots,
-      outcome: ReadOutcome::Chunk(ReadChunk::Bytes(chunk)),
-    }))
-  })
+    Ok((
+      Some(PendingReadSettle {
+        reader: pending_reader,
+        roots: pending_roots,
+        outcome: ReadOutcome::Chunk(ReadChunk::Bytes(chunk)),
+      }),
+      Vec::new(),
+    ))
+  })?;
+
+  for root_id in value_roots {
+    scope.heap_mut().remove_root(root_id);
+  }
+
+  Ok(pending)
 }
 
 fn enqueue_string_into_readable_stream(
@@ -4659,7 +4732,7 @@ fn enqueue_string_into_readable_stream(
   stream_obj: GcObject,
   chunk: String,
 ) -> Result<Option<PendingReadSettle>, VmError> {
-  with_realm_state_mut(vm, scope, callee, |state, _heap| {
+  let (pending, value_roots) = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
       .streams
       .get_mut(&WeakGcObject::from(stream_obj))
@@ -4687,28 +4760,76 @@ fn enqueue_string_into_readable_stream(
       return Err(VmError::TypeError("ReadableStream is closed"));
     }
 
+    let chunk_len = chunk.len();
+    let new_total = stream_state
+      .buffered_string_len
+      .checked_add(chunk_len)
+      .ok_or(VmError::OutOfMemory)?;
+    if new_total > MAX_READABLE_STREAM_QUEUED_BYTES {
+      let error_message = READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string();
+      stream_state.state = StreamLifecycleState::Errored;
+      stream_state.close_requested = true;
+      stream_state.error_message = Some(error_message.clone());
+      stream_state.byte_queue.clear();
+      stream_state.buffered_byte_len = 0;
+      stream_state.strings.clear();
+      stream_state.buffered_string_len = 0;
+      let value_roots: Vec<RootId> = stream_state.values.drain(..).collect();
+      stream_state.init = None;
+
+      let pending_reader = stream_state.pending_reader.take();
+      if let Some(reader) = pending_reader {
+        let roots = stream_state.pending_read_roots.take();
+        return Ok((
+          Some(PendingReadSettle {
+            reader,
+            roots,
+            outcome: ReadOutcome::Error(error_message),
+          }),
+          value_roots,
+        ));
+      }
+
+      debug_assert!(stream_state.pending_read_roots.is_none());
+      return Ok((None, value_roots));
+    }
+
+    stream_state.buffered_string_len = new_total;
     stream_state.strings.push_back(chunk);
 
     let Some(pending_reader) = stream_state.pending_reader.take() else {
       debug_assert!(stream_state.pending_read_roots.is_none());
-      return Ok(None);
+      return Ok((None, Vec::new()));
     };
     let pending_roots = stream_state.pending_read_roots.take();
 
     let Some(chunk) = stream_state.strings.pop_front() else {
-      return Ok(Some(PendingReadSettle {
+      return Ok((
+        Some(PendingReadSettle {
+          reader: pending_reader,
+          roots: pending_roots,
+          outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
+        }),
+        Vec::new(),
+      ));
+    };
+    stream_state.buffered_string_len = stream_state.buffered_string_len.saturating_sub(chunk.len());
+
+    Ok((
+      Some(PendingReadSettle {
         reader: pending_reader,
         roots: pending_roots,
-        outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
-      }));
-    };
+        outcome: ReadOutcome::Chunk(ReadChunk::String(chunk)),
+      }),
+      Vec::new(),
+    ))
+  })?;
 
-    Ok(Some(PendingReadSettle {
-      reader: pending_reader,
-      roots: pending_roots,
-      outcome: ReadOutcome::Chunk(ReadChunk::String(chunk)),
-    }))
-  })
+  for root_id in value_roots {
+    scope.heap_mut().remove_root(root_id);
+  }
+
+  Ok(pending)
 }
 
 fn enqueue_value_into_readable_stream(
@@ -4718,9 +4839,41 @@ fn enqueue_value_into_readable_stream(
   stream_obj: GcObject,
   chunk: Value,
 ) -> Result<Option<PendingReadSettle>, VmError> {
+  let would_exceed_item_cap =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| -> Result<_, VmError> {
+      let stream_state = state
+        .streams
+        .get(&WeakGcObject::from(stream_obj))
+        .ok_or(VmError::TypeError("ReadableStream enqueue: invalid stream"))?;
+
+      if stream_state.state != StreamLifecycleState::Readable || stream_state.close_requested {
+        return Err(VmError::TypeError("ReadableStream is closed"));
+      }
+
+      let queued_items_after_enqueue = match stream_state.kind {
+        StreamKind::Values => stream_state.values.len().saturating_add(1),
+        StreamKind::Uninitialized => 1,
+        StreamKind::Strings => stream_state.strings.len().saturating_add(1),
+        StreamKind::Bytes => stream_state.byte_queue.len().saturating_add(1),
+      };
+
+      Ok(queued_items_after_enqueue > MAX_READABLE_STREAM_QUEUED_ITEMS)
+    })?;
+
+  if would_exceed_item_cap {
+    return error_readable_stream(
+      vm,
+      scope,
+      callee,
+      stream_obj,
+      READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string(),
+    );
+  }
+
   struct PromoteToValues {
     from_kind: StreamKind,
     strings: VecDeque<String>,
+    buffered_string_len: usize,
     byte_queue: VecDeque<Vec<u8>>,
     buffered_byte_len: usize,
     pending_reader: Option<WeakGcObject>,
@@ -4799,12 +4952,15 @@ fn enqueue_value_into_readable_stream(
       }
       StreamKind::Strings => {
         let strings: VecDeque<String> = stream_state.strings.drain(..).collect();
+        let buffered_string_len = stream_state.buffered_string_len;
+        stream_state.buffered_string_len = 0;
         let pending_reader = stream_state.pending_reader.take();
         let pending_roots = stream_state.pending_read_roots.take();
         stream_state.kind = StreamKind::Values;
         Ok(EnqueueAction::Promote(PromoteToValues {
           from_kind: StreamKind::Strings,
           strings,
+          buffered_string_len,
           byte_queue: VecDeque::new(),
           buffered_byte_len: 0,
           pending_reader,
@@ -4821,6 +4977,7 @@ fn enqueue_value_into_readable_stream(
         Ok(EnqueueAction::Promote(PromoteToValues {
           from_kind: StreamKind::Bytes,
           strings: VecDeque::new(),
+          buffered_string_len: 0,
           byte_queue,
           buffered_byte_len,
           pending_reader,
@@ -4950,6 +5107,7 @@ fn enqueue_value_into_readable_stream(
             match promotion.from_kind {
               StreamKind::Strings => {
                 stream_state.strings = promotion.strings;
+                stream_state.buffered_string_len = promotion.buffered_string_len;
               }
               StreamKind::Bytes => {
                 stream_state.byte_queue = promotion.byte_queue;
@@ -5030,6 +5188,7 @@ fn error_readable_stream(
     stream_state.byte_queue.clear();
     stream_state.buffered_byte_len = 0;
     stream_state.strings.clear();
+    stream_state.buffered_string_len = 0;
     let value_roots: Vec<RootId> = stream_state.values.drain(..).collect();
     stream_state.init = None;
 
@@ -8912,6 +9071,43 @@ mod tests {
       realm.heap().promise_state(read_p2_obj)?,
       PromiseState::Rejected
     );
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_enqueuing_past_total_buffer_cap_errors_stream() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Use a moderate chunk size so the test doesn't allocate too much, but still requires multiple
+    // enqueue calls to exceed the per-stream cap.
+    let chunk_size = 1024 * 1024; // 1MiB
+    let iterations = (MAX_READABLE_STREAM_QUEUED_BYTES / chunk_size) + 1;
+
+    let script = format!(
+      r#"
+        globalThis.stream = new ReadableStream({{
+          start(controller) {{ globalThis.controller = controller; }}
+        }});
+        globalThis.reader = stream.getReader();
+        globalThis.chunk = new Uint8Array({chunk_size});
+        for (let i = 0; i < {iterations}; i++) {{
+          controller.enqueue(chunk);
+        }}
+      "#,
+      chunk_size = chunk_size,
+      iterations = iterations,
+    );
+    let _ = realm.exec_script(&script)?;
+
+    let p = realm.exec_script("reader.read()")?;
+    let Value::Object(p_obj) = p else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(p_obj)?, PromiseState::Rejected);
 
     realm.teardown();
     Ok(())
