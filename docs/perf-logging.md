@@ -82,8 +82,8 @@ When enabled, you should expect events covering at least:
 The exact schema evolves, but each JSON line is intended to be self-describing. Common fields
 include:
 
-- `schema_version` (integer) — currently `1` (omitted on some legacy/diagnostic events).
-- `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`; plus
+- `schema_version` (integer) — currently `2` (omitted on some legacy/diagnostic events).
+- `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`, `stage`; plus
   periodic diagnostics like `idle_summary` / `worker_wake_summary` / `cpu_summary`).
 - `ts_ms` (integer) — monotonic timestamp in milliseconds since process start (some legacy/diagnostic
   events use `t_ms`).
@@ -190,7 +190,7 @@ FASTR_PERF_LOG=1
 
 Each log line is a JSON object that includes:
 
-- `schema_version` (currently `1`)
+- `schema_version` (currently `2`)
 - `event` (tag)
 - `ts_ms` (monotonic timestamp in milliseconds since process start)
 - `window_id` (string)
@@ -203,6 +203,8 @@ Event payload fields (current schema in `src/bin/browser.rs`, `perf_log::PerfEve
   `input_ts_ms`, `count`, and `active_tab_id` (optional).
 - `event=resize`: `resize_to_present_ms`, `resize_ts_ms`, `new_width_px`, `new_height_px`.
 - `event=navigation`: `tab_id`, `navigation_seqno`, `url`.
+- `event=stage`: `tab_id`, `stage` (fine-grained stage heartbeat such as `layout`), `hotspot`
+  (coarse bucket such as `fetch`, `css`, `layout`, `paint`).
 - `event=ttfp`: `tab_id`, `navigation_seqno`, `ttfp_ms`.
 - `event=cpu_summary`: `cpu_time_ms_total`, `cpu_percent_recent` (process CPU time over the last interval)
 

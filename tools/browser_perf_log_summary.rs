@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
 
-const SUPPORTED_SCHEMA_VERSION: u64 = 1;
+const SUPPORTED_SCHEMA_VERSIONS: &[u64] = &[1, 2];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum OnlyEvent {
@@ -284,12 +284,23 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
     let schema_version = parse_optional_u64(obj, "schema_version")
       .map_err(|err| format!("line {line_no}: {err}"))?;
     if let Some(schema_version) = schema_version {
-      if schema_version != SUPPORTED_SCHEMA_VERSION {
+      if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
         return Err(format!(
-          "line {line_no}: unknown FASTR_PERF_LOG schema_version {schema_version} (supported: {SUPPORTED_SCHEMA_VERSION})"
+          "line {line_no}: unknown FASTR_PERF_LOG schema_version {schema_version} (supported: {:?})",
+          SUPPORTED_SCHEMA_VERSIONS
         ));
       }
-      schema_version_seen.get_or_insert(schema_version);
+      match schema_version_seen {
+        Some(seen) if seen != schema_version => {
+          return Err(format!(
+            "line {line_no}: mixed FASTR_PERF_LOG schema_version {schema_version} (previously saw {seen})"
+          ));
+        }
+        None => {
+          schema_version_seen = Some(schema_version);
+        }
+        _ => {}
+      }
     }
 
     let event = parse_required_str(obj, "event").map_err(|err| format!("line {line_no}: {err}"))?;
@@ -374,7 +385,9 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
     }
   }
 
-  let schema_version_seen = schema_version_seen.unwrap_or(SUPPORTED_SCHEMA_VERSION);
+  let schema_version_seen = schema_version_seen
+    .or_else(|| SUPPORTED_SCHEMA_VERSIONS.last().copied())
+    .unwrap_or(0);
 
   let fps_stats = fps.stats();
   let frames = frame_ms.stats().map(|ui_frame_ms| FrameSummary {

@@ -126,7 +126,7 @@ mod perf_log {
   use std::io::{self, Write};
   use std::time::Instant;
 
-  pub const SCHEMA_VERSION: u32 = 1;
+  pub const SCHEMA_VERSION: u32 = 2;
 
   #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
   #[serde(rename_all = "snake_case")]
@@ -177,6 +177,14 @@ mod perf_log {
       tab_id: u64,
       navigation_seqno: u64,
       url: &'a str,
+    },
+    Stage {
+      schema_version: u32,
+      t_ms: u64,
+      window_id: &'a str,
+      tab_id: u64,
+      stage: &'a str,
+      hotspot: &'a str,
     },
     Ttfp {
       schema_version: u32,
@@ -9601,6 +9609,23 @@ impl PerfWindowLog {
     self.emit(&event);
   }
 
+  fn stage(
+    &mut self,
+    tab_id: fastrender::ui::TabId,
+    stage: fastrender::render_control::StageHeartbeat,
+    at: std::time::Instant,
+  ) {
+    let event = perf_log::PerfEvent::Stage {
+      schema_version: perf_log::SCHEMA_VERSION,
+      t_ms: self.ts_ms(at),
+      window_id: &self.window_id,
+      tab_id: tab_id.0,
+      stage: stage.as_str(),
+      hotspot: stage.hotspot(),
+    };
+    self.emit(&event);
+  }
+
   fn frame_ready(&mut self, tab_id: fastrender::ui::TabId) {
     if let Some(pending) = self.pending_nav.get_mut(&tab_id) {
       pending.saw_frame_ready = true;
@@ -13269,6 +13294,12 @@ impl App {
     };
     if let fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } = &msg {
       self.perf_navigation_started(*tab_id, url);
+    }
+
+    if let fastrender::ui::WorkerToUi::Stage { tab_id, stage } = &msg {
+      if let Some(perf_log) = self.perf_log.as_mut() {
+        perf_log.stage(*tab_id, *stage, std::time::Instant::now());
+      }
     }
 
     // `about:` pages are rendered in the trusted browser process. Once a tab is showing an about
@@ -23364,6 +23395,43 @@ mod perf_log_tests {
     assert_eq!(value["t_ms"], 100);
     assert_eq!(value["window_id"], "WindowId(9)");
     assert_eq!(value["rolling_window_ms"], 2000);
+  }
+}
+
+#[cfg(test)]
+mod perf_log_stage_event_tests {
+  use super::perf_log;
+
+  #[test]
+  fn perf_log_stage_event_json_format() {
+    let start = std::time::Instant::now();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut writer = perf_log::JsonlPerfWriter::new(start, &mut buf);
+
+    let stage = fastrender::render_control::StageHeartbeat::Layout;
+    let event = perf_log::PerfEvent::Stage {
+      schema_version: perf_log::SCHEMA_VERSION,
+      t_ms: 123,
+      window_id: "WindowId(1)",
+      tab_id: 7,
+      stage: stage.as_str(),
+      hotspot: stage.hotspot(),
+    };
+    writer.emit(&event);
+    drop(writer);
+
+    let text = String::from_utf8(buf).expect("valid utf-8");
+    let mut lines = text.lines();
+    let line = lines.next().expect("expected a JSONL line");
+    assert!(lines.next().is_none(), "expected exactly one JSONL event");
+
+    let value: serde_json::Value = serde_json::from_str(line).expect("valid json");
+    assert_eq!(value["event"], "stage");
+    assert_eq!(value["schema_version"], perf_log::SCHEMA_VERSION);
+    assert_eq!(value["t_ms"], 123);
+    assert_eq!(value["tab_id"], 7);
+    assert_eq!(value["stage"], "layout");
+    assert_eq!(value["hotspot"], "layout");
   }
 }
 
