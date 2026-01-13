@@ -653,6 +653,32 @@ fn select_placeholder_disabled_selected_exposes_value_text() {
 }
 
 #[test]
+fn option_value_uses_label_attribute_text() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="s">
+          <option id="o" label="Label value">Text value</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let select = find_by_id(&tree, "s").expect("select");
+  assert_eq!(select.value.as_deref(), Some("Label value"));
+
+  let option = find_by_id(&tree, "o").expect("option");
+  assert_eq!(option.name.as_deref(), Some("Label value"));
+  assert_eq!(option.value.as_deref(), Some("Label value"));
+}
+
+#[test]
 fn select_required_empty_value_is_not_invalid_when_not_placeholder_label() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"

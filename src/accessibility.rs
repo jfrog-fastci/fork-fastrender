@@ -3581,8 +3581,7 @@ fn compute_value(
       meter_value(&node.node)
     }
     Some("option") => {
-      let mut visited = HashSet::new();
-      let text = ctx.subtree_text(node, &mut visited, TextAlternativeMode::Visible);
+      let text = option_label_text(node, ctx);
       if text.is_empty() {
         None
       } else {
