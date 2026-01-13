@@ -72,6 +72,7 @@ use crate::style::types::FontVariantPosition;
 use crate::style::types::NumericFigure;
 use crate::style::types::NumericFraction;
 use crate::style::types::NumericSpacing;
+use crate::style::types::TextRendering;
 use crate::style::ComputedStyle;
 use crate::text::bidi_controls::is_bidi_format_char;
 use crate::text::color_fonts::select_cpal_palette;
@@ -2380,6 +2381,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
   let position = style.font_variant_position;
   let caps = style.font_variant_caps;
   let alternates = &style.font_variant_alternates;
+  let optimize_speed = matches!(style.text_rendering, TextRendering::OptimizeSpeed);
 
   let push_toggle = |features: &mut Vec<Feature>, tag: [u8; 4], enabled: bool| {
     features.push(Feature {
@@ -2391,11 +2393,14 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
   };
 
   // font-variant-ligatures keywords map to OpenType features
-  push_toggle(&mut features, *b"liga", lig.common);
-  push_toggle(&mut features, *b"clig", lig.common);
-  push_toggle(&mut features, *b"dlig", lig.discretionary);
-  push_toggle(&mut features, *b"hlig", lig.historical);
-  push_toggle(&mut features, *b"calt", lig.contextual);
+  // In browsers, `text-rendering: optimizeSpeed` is effectively treated as a hint to skip optional
+  // shaping work (kerning/ligatures) for performance. Mirror that behavior by disabling the common
+  // optional ligature features unless explicitly re-enabled via `font-feature-settings`.
+  push_toggle(&mut features, *b"liga", lig.common && !optimize_speed);
+  push_toggle(&mut features, *b"clig", lig.common && !optimize_speed);
+  push_toggle(&mut features, *b"dlig", lig.discretionary && !optimize_speed);
+  push_toggle(&mut features, *b"hlig", lig.historical && !optimize_speed);
+  push_toggle(&mut features, *b"calt", lig.contextual && !optimize_speed);
 
   // font-variant-numeric mappings
   match numeric.figure {
@@ -2626,14 +2631,16 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     }
   }
 
-  match style.font_kerning {
-    // `font-kerning: auto` leaves the decision to the user agent. Chrome enables kerning for
-    // typical Latin text runs by default, and real-world pages (Tailwind resets, etc) rarely set
-    // `font-kerning` explicitly. Treating `auto` as "kerning enabled" matches browser behavior and
-    // avoids pervasive text metric/layout diffs on pages that rely on kerning pairs.
-    FontKerning::Auto | FontKerning::Normal => push_toggle(&mut features, *b"kern", true),
-    FontKerning::None => push_toggle(&mut features, *b"kern", false),
-  }
+  // `font-kerning: auto` leaves the decision to the user agent. Chrome enables kerning for
+  // typical Latin text runs by default, and real-world pages (Tailwind resets, etc) rarely set
+  // `font-kerning` explicitly. Treating `auto` as "kerning enabled" matches browser behavior and
+  // avoids pervasive text metric/layout diffs on pages that rely on kerning pairs.
+  //
+  // `text-rendering: optimizeSpeed` is a stronger hint: it disables kerning unless explicitly
+  // re-enabled via `font-feature-settings`.
+  let kern_enabled = !optimize_speed
+    && matches!(style.font_kerning, FontKerning::Auto | FontKerning::Normal);
+  push_toggle(&mut features, *b"kern", kern_enabled);
 
   if style.letter_spacing != 0.0 {
     for tag in [*b"liga", *b"clig", *b"dlig", *b"hlig"] {
@@ -6071,6 +6078,7 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
   std::mem::discriminant(&style.unicode_bidi).hash(&mut hasher);
   std::mem::discriminant(&style.writing_mode).hash(&mut hasher);
   std::mem::discriminant(&style.text_orientation).hash(&mut hasher);
+  std::mem::discriminant(&style.text_rendering).hash(&mut hasher);
   style.language.hash(&mut hasher);
   style.font_family.hash(&mut hasher);
   f32_to_canonical_bits(style.font_size).hash(&mut hasher);
@@ -7124,6 +7132,7 @@ mod tests {
   use crate::style::types::NumericFigure;
   use crate::style::types::NumericFraction;
   use crate::style::types::NumericSpacing;
+  use crate::style::types::TextRendering;
   use crate::style::types::TextOrientation;
   use crate::style::types::WritingMode;
   use crate::text::font_db::FontConfig;
@@ -7585,6 +7594,91 @@ mod tests {
         clean_adv
       );
     }
+  }
+
+  #[test]
+  fn text_rendering_optimize_speed_disables_kerning() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    assert!(
+      !ctx.database().is_empty(),
+      "bundled font context should load deterministic fonts for tests"
+    );
+
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["sans-serif".to_string()].into();
+    style.font_size = 48.0;
+    style.text_rendering = TextRendering::OptimizeSpeed;
+
+    let pipeline = ShapingPipeline::new();
+    let av_adv = pipeline
+      .measure_width("AV", &style, &ctx)
+      .expect("measure AV advance");
+    let separate_adv = pipeline
+      .measure_width("A", &style, &ctx)
+      .expect("measure A advance")
+      + pipeline
+        .measure_width("V", &style, &ctx)
+        .expect("measure V advance");
+
+    let delta = separate_adv - av_adv;
+    assert!(
+      delta.abs() < 0.05,
+      "expected optimizeSpeed to disable kerning (A+V={} AV={} delta={})",
+      separate_adv,
+      av_adv,
+      delta
+    );
+  }
+
+  #[test]
+  fn text_rendering_optimize_speed_disables_ligatures() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    assert!(
+      !ctx.database().is_empty(),
+      "bundled font context should load deterministic fonts for tests"
+    );
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.font_family = vec!["sans-serif".to_string()].into();
+    auto_style.font_size = 48.0;
+    auto_style.text_rendering = TextRendering::Auto;
+
+    let mut speed_style = auto_style.clone();
+    speed_style.text_rendering = TextRendering::OptimizeSpeed;
+
+    let pipeline = ShapingPipeline::new();
+    let text = "ffi";
+    let char_count = text.chars().count();
+
+    let auto = pipeline.shape(text, &auto_style, &ctx).expect("shape auto");
+    let auto_glyphs: usize = auto.iter().map(|run| run.glyphs.len()).sum();
+
+    let speed = pipeline
+      .shape(text, &speed_style, &ctx)
+      .expect("shape optimizeSpeed");
+    let speed_glyphs: usize = speed.iter().map(|run| run.glyphs.len()).sum();
+
+    assert!(
+      auto_glyphs < char_count,
+      "expected bundled fonts to form a ligature for {:?} under auto (chars={} glyphs={})",
+      text,
+      char_count,
+      auto_glyphs
+    );
+    assert_eq!(
+      speed_glyphs, char_count,
+      "expected optimizeSpeed to disable ligatures for {:?} (chars={} glyphs={})",
+      text, char_count, speed_glyphs
+    );
+    assert!(
+      speed_glyphs > auto_glyphs,
+      "expected optimizeSpeed to increase glyph count for {:?} (auto={} speed={})",
+      text,
+      auto_glyphs,
+      speed_glyphs
+    );
   }
 
   #[test]
@@ -8335,6 +8429,22 @@ mod tests {
       light_hash,
       shaping_style_hash(&dark),
       "used_dark_color_scheme should affect shaping cache key (palette overrides can depend on light-dark())"
+    );
+  }
+
+  #[test]
+  fn shaping_style_hash_includes_text_rendering() {
+    let mut auto = ComputedStyle::default();
+    auto.text_rendering = TextRendering::Auto;
+    let auto_hash = shaping_style_hash(&auto);
+
+    let mut speed = auto.clone();
+    speed.text_rendering = TextRendering::OptimizeSpeed;
+
+    assert_ne!(
+      auto_hash,
+      shaping_style_hash(&speed),
+      "text-rendering affects OpenType feature selection and must be part of the shaping cache key"
     );
   }
 
