@@ -176,3 +176,62 @@ fn logical_assignment_anonymous_function_name_inference() -> Result<(), VmError>
 
   Ok(())
 }
+
+#[test]
+fn logical_assignment_computed_member_evaluation_order() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  assert_eq!(
+    rt.exec_script(
+      r#"
+        (() => {
+          const log = [];
+          let stored = 1;
+          const obj = {
+            get a() { log.push("get"); return stored; },
+            set a(v) { log.push("set:" + v); stored = v; },
+          };
+          function base() { log.push("base"); return obj; }
+          function key() { log.push("key"); return "a"; }
+          function rhs() { log.push("rhs"); return 2; }
+
+          // `&&=` short-circuits when the LHS is falsy.
+          let res = (base()[key()] &&= rhs());
+          if (res !== 2 || stored !== 2 || log.join(",") !== "base,key,get,rhs,set:2") return false;
+
+          log.length = 0;
+          stored = 0;
+          res = (base()[key()] &&= rhs());
+          if (res !== 0 || stored !== 0 || log.join(",") !== "base,key,get") return false;
+
+          // `||=` short-circuits when the LHS is truthy.
+          log.length = 0;
+          stored = 0;
+          res = (base()[key()] ||= rhs());
+          if (res !== 2 || stored !== 2 || log.join(",") !== "base,key,get,rhs,set:2") return false;
+
+          log.length = 0;
+          stored = 5;
+          res = (base()[key()] ||= rhs());
+          if (res !== 5 || stored !== 5 || log.join(",") !== "base,key,get") return false;
+
+          // `??=` short-circuits only on non-nullish values, even when falsy.
+          log.length = 0;
+          stored = 0;
+          res = (base()[key()] ??= rhs());
+          if (res !== 0 || stored !== 0 || log.join(",") !== "base,key,get") return false;
+
+          log.length = 0;
+          stored = undefined;
+          res = (base()[key()] ??= rhs());
+          if (res !== 2 || stored !== 2 || log.join(",") !== "base,key,get,rhs,set:2") return false;
+
+          return true;
+        })()
+      "#,
+    )?,
+    Value::Bool(true)
+  );
+
+  Ok(())
+}
