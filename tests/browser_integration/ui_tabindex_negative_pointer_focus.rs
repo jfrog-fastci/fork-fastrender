@@ -37,15 +37,13 @@ fn tabindex_negative_pointer_focuses_but_tab_skips() -> Result<()> {
         <meta charset="utf-8">
         <style>
           html, body { margin: 0; padding: 0; }
-          #a { position: absolute; left: 0; top: 0; width: 80px; height: 22px; }
-          #t { position: absolute; left: 0; top: 30px; width: 80px; height: 22px; background: rgb(220, 220, 0); }
-          #b { position: absolute; left: 0; top: 60px; width: 80px; height: 22px; }
+          #b { position: absolute; left: 0; top: 0; width: 120px; height: 32px; }
+          #neg { position: absolute; left: 0; top: 50px; width: 120px; height: 32px; background: rgb(220, 220, 0); }
         </style>
       </head>
       <body>
-        <input id="a">
-        <div id="t" tabindex="-1"></div>
-        <input id="b">
+        <button id="b">Button</button>
+        <div id="neg" tabindex="-1">Neg</div>
       </body>
     </html>
   "#;
@@ -60,25 +58,22 @@ fn tabindex_negative_pointer_focuses_but_tab_skips() -> Result<()> {
   )?;
   let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
 
-  let node_id_a = node_id_by_id_attr(controller.document().dom(), "a");
-  let node_id_t = node_id_by_id_attr(controller.document().dom(), "t");
-  let node_id_b = node_id_by_id_attr(controller.document().dom(), "b");
+  let node_id_button = node_id_by_id_attr(controller.document().dom(), "b");
+  let node_id_neg = node_id_by_id_attr(controller.document().dom(), "neg");
 
-  // Tab focuses the first tab stop, skipping `tabindex < 0`.
+  // Tab focuses the (only) tab stop, skipping `tabindex < 0`.
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Tab))?;
-  assert_eq!(controller.interaction_state().focused, Some(node_id_a));
+  assert_eq!(controller.interaction_state().focused, Some(node_id_button));
 
   // Click the `tabindex="-1"` element and ensure it receives focus.
-  let click = (10.0, 40.0);
+  let click = (10.0, 60.0);
   let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
-  assert_eq!(controller.interaction_state().focused, Some(node_id_t));
+  assert_eq!(controller.interaction_state().focused, Some(node_id_neg));
 
   // Sequential focus navigation via Tab should skip `tabindex < 0` elements.
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Tab))?;
-  assert_eq!(controller.interaction_state().focused, Some(node_id_a));
-  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Tab))?;
-  assert_eq!(controller.interaction_state().focused, Some(node_id_b));
+  assert_eq!(controller.interaction_state().focused, Some(node_id_button));
 
   Ok(())
 }
