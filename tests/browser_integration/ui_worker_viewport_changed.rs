@@ -158,7 +158,13 @@ fn viewport_changed_does_not_repaint_before_first_navigation() {
 
   ui_tx
     .send(support::viewport_changed_msg(tab_id, (200, 100), 2.0))
-    .expect("ViewportChanged");
+    .expect("ViewportChanged 1");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (220, 110), 2.0))
+    .expect("ViewportChanged 2");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (240, 120), 2.0))
+    .expect("ViewportChanged 3");
 
   // A tab created without an initial URL should remain inert until the UI sends an explicit
   // navigation.
@@ -184,7 +190,36 @@ fn viewport_changed_does_not_repaint_before_first_navigation() {
       NavigationReason::TypedUrl,
     ))
     .expect("Navigate");
-  let frame = wait_for_frame_with_meta(&ui_rx, tab_id, (200, 100), 2.0);
+  let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }
+    )
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for first FrameReady for tab {tab_id:?}"));
+
+  let frame = match msg {
+    WorkerToUi::FrameReady { tab_id: got, frame } => {
+      assert_eq!(got, tab_id);
+      frame
+    }
+    WorkerToUi::NavigationFailed {
+      tab_id: got,
+      url,
+      error,
+      ..
+    } => {
+      assert_eq!(got, tab_id);
+      panic!("navigation failed for {url}: {error}");
+    }
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  };
+  assert_eq!(
+    frame.viewport_css,
+    (240, 120),
+    "first FrameReady should use the latest ViewportChanged state"
+  );
+  assert!((frame.dpr - 2.0).abs() < 1e-6);
   assert_pixmap_matches_viewport(&frame);
 
   drop(ui_tx);

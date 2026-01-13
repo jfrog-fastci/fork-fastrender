@@ -1415,6 +1415,40 @@ impl BrowserRuntime {
       ((f32, f32), PointerButton, crate::ui::PointerModifiers),
     > = HashMap::new();
 
+    // Coalesce back-to-back `ViewportChanged` messages so resize/zoom bursts only apply the latest
+    // viewport state per tab.
+    //
+    // Unlike pointer-move, viewport updates can be expensive even when no repaint happens (clamping,
+    // warning generation, cancellation bumps). Coalescing here provides a safety net for frontends
+    // that don't already throttle resize events.
+    let mut pending_viewport_changes: HashMap<TabId, ((u32, u32), f32)> = HashMap::new();
+
+    let mut flush_viewport_changes = |this: &mut Self,
+                                      pending: &mut HashMap<TabId, ((u32, u32), f32)>| {
+      for (tab_id, (viewport_css, dpr)) in pending.drain() {
+        this.handle_message(UiToWorker::ViewportChanged {
+          tab_id,
+          viewport_css,
+          dpr,
+        });
+      }
+    };
+
+    let mut flush_pointer_moves = |this: &mut Self,
+                                   pending: &mut HashMap<
+      TabId,
+      ((f32, f32), PointerButton, crate::ui::PointerModifiers),
+    >| {
+      for (tab_id, (pos_css, button, modifiers)) in pending.drain() {
+        this.handle_message(UiToWorker::PointerMove {
+          tab_id,
+          pos_css,
+          button,
+          modifiers,
+        });
+      }
+    };
+
     while let Some(msg) = self.try_recv_message() {
       match msg {
         UiToWorker::PointerMove {
@@ -1423,30 +1457,35 @@ impl BrowserRuntime {
           button,
           modifiers,
         } => {
+          // Pointer-move hit-testing depends on the current viewport; apply any queued viewport
+          // updates first so hover state is computed against the correct size/dpr.
+          flush_viewport_changes(self, &mut pending_viewport_changes);
           pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
         }
+        UiToWorker::ViewportChanged {
+          tab_id,
+          viewport_css,
+          dpr,
+        } => {
+          // Preserve message ordering semantics: any queued pointer-moves should be applied before a
+          // following viewport change (pointer events preceding a resize should hit-test against the
+          // old viewport).
+          flush_pointer_moves(self, &mut pending_pointer_moves);
+          pending_viewport_changes.insert(tab_id, (viewport_css, dpr));
+        }
         other => {
-          for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
-            self.handle_message(UiToWorker::PointerMove {
-              tab_id,
-              pos_css,
-              button,
-              modifiers,
-            });
-          }
+          // Non-viewport messages are barriers: flush any queued viewport changes before handling
+          // messages that might depend on the viewport (navigation, scroll, pointer events, paint
+          // scheduling, etc).
+          flush_viewport_changes(self, &mut pending_viewport_changes);
+          flush_pointer_moves(self, &mut pending_pointer_moves);
           self.handle_message(other);
         }
       }
     }
 
-    for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
-      self.handle_message(UiToWorker::PointerMove {
-        tab_id,
-        pos_css,
-        button,
-        modifiers,
-      });
-    }
+    flush_viewport_changes(self, &mut pending_viewport_changes);
+    flush_pointer_moves(self, &mut pending_pointer_moves);
   }
 
   fn drain_scroll_burst(&mut self) {
