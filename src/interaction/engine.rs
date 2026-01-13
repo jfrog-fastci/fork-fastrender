@@ -5139,7 +5139,11 @@ impl InteractionEngine {
               .and_then(|state| state.selection())
             {
               let caret_in_bounds = caret.min(current_len);
-              if caret_in_bounds > sel_start && caret_in_bounds < sel_end {
+              // `caret_index_for_text_control_point` returns the nearest caret stop. At the edges of
+              // the selection highlight, clicks can legitimately quantize to `sel_start`/`sel_end`
+              // (e.g. clicking inside the first/last selected glyph). Treat boundary caret indices
+              // as inside-selection so selection collapse is deferred until mouseup (browser-like).
+              if caret_in_bounds >= sel_start && caret_in_bounds <= sel_end {
                 let start_byte = byte_offset_for_char_idx(&current_value, sel_start);
                 let end_byte = byte_offset_for_char_idx(&current_value, sel_end);
                 if start_byte < end_byte && end_byte <= current_value.len() {

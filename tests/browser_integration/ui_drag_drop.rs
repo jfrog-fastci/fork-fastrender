@@ -38,6 +38,9 @@ fn drag_drop_selected_text_between_text_inputs_copies_text() -> Result<()> {
             left: 0;
             width: 260px;
             height: 40px;
+            padding: 0;
+            border: 0;
+            outline: none;
             font-family: "Noto Sans Mono";
             font-size: 24px;
           }
@@ -79,7 +82,10 @@ fn drag_drop_selected_text_between_text_inputs_copies_text() -> Result<()> {
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::SelectAll))?;
 
   // Drag the selected text into the destination input.
-  let src_drag_start = (60.0, 20.0);
+  // Start the drag near the left edge of the selection. This exercises the boundary case where the
+  // click quantizes to the selection start caret (caret == sel_start), but should still be treated
+  // as a drag-drop gesture candidate.
+  let src_drag_start = (4.0, 20.0);
   let dst_drop = (10.0, 80.0);
   let _ = controller.handle_message(support::pointer_down(
     tab_id,
