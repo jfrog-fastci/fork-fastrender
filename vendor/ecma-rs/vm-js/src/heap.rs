@@ -8630,7 +8630,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
   }
 
-  pub(crate) fn get_function_job_realm(&self, func: GcObject) -> Option<RealmId> {
+  pub fn get_function_job_realm(&self, func: GcObject) -> Option<RealmId> {
     // Promise job callbacks may be Proxy objects; follow the proxy chain to the underlying target.
     let mut obj = func;
     for _ in 0..MAX_PROTOTYPE_CHAIN {
@@ -8650,7 +8650,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     None
   }
 
-  pub(crate) fn get_function_script_or_module_token(&self, func: GcObject) -> Option<NonZeroU32> {
+  pub fn get_function_script_or_module_token(&self, func: GcObject) -> Option<NonZeroU32> {
     // Promise job callbacks may be Proxy objects; follow the proxy chain to the underlying target.
     let mut obj = func;
     for _ in 0..MAX_PROTOTYPE_CHAIN {

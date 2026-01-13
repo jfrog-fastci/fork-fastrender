@@ -41,6 +41,7 @@ use std::alloc::{alloc, Layout};
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::mem;
+use std::num::NonZeroU32;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -342,6 +343,7 @@ impl GraphLoadingState {
     if let Some(dynamic_import) = dynamic_import {
       let global_object = dynamic_import.state.global_object();
       let realm_id = dynamic_import.state.realm_id();
+      let script_or_module_token = dynamic_import.state.script_or_module_token();
       let module = dynamic_import.module;
 
       // Store the dynamic import promise capability so it survives until the module evaluation
@@ -417,6 +419,15 @@ impl GraphLoadingState {
         eval_scope
           .heap_mut()
           .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
+        eval_scope
+          .heap_mut()
+          .set_function_realm(on_fulfilled, global_object)?;
+        eval_scope
+          .heap_mut()
+          .set_function_job_realm(on_fulfilled, realm_id)?;
+        eval_scope
+          .heap_mut()
+          .set_function_script_or_module_token(on_fulfilled, script_or_module_token)?;
         eval_scope.push_root(Value::Object(on_fulfilled))?;
  
         let on_rejected = eval_scope.alloc_native_function_with_slots(
@@ -429,6 +440,15 @@ impl GraphLoadingState {
         eval_scope
           .heap_mut()
           .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
+        eval_scope
+          .heap_mut()
+          .set_function_realm(on_rejected, global_object)?;
+        eval_scope
+          .heap_mut()
+          .set_function_job_realm(on_rejected, realm_id)?;
+        eval_scope
+          .heap_mut()
+          .set_function_script_or_module_token(on_rejected, script_or_module_token)?;
         eval_scope.push_root(Value::Object(on_rejected))?;
  
         crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
@@ -647,6 +667,7 @@ struct DynamicImportStateInner {
   promise_roots: Option<PromiseCapabilityRoots>,
   realm_id: RealmId,
   global_object: GcObject,
+  script_or_module_token: Option<NonZeroU32>,
 }
 
 /// Promise capability payload used by dynamic `import()` (`EvaluateImportCall` / `ContinueDynamicImport`).
@@ -671,6 +692,7 @@ impl DynamicImportState {
     cap: PromiseCapability,
     realm_id: RealmId,
     global_object: GcObject,
+    script_or_module_token: Option<NonZeroU32>,
   ) -> Result<Self, VmError> {
     // Use a nested scope so temporary stack roots created while registering persistent roots are
     // popped before we return.
@@ -684,6 +706,7 @@ impl DynamicImportState {
       promise_roots: None,
       realm_id,
       global_object,
+      script_or_module_token,
     })) {
       Ok(rc) => DynamicImportState(rc),
       Err(err) => {
@@ -701,6 +724,10 @@ impl DynamicImportState {
 
   fn global_object(&self) -> GcObject {
     self.0.borrow().global_object
+  }
+
+  fn script_or_module_token(&self) -> Option<NonZeroU32> {
+    self.0.borrow().script_or_module_token
   }
 
   fn resolve(
@@ -1785,7 +1812,7 @@ pub fn start_dynamic_import_with_host_and_hooks(
   import_scope.push_roots(&[specifier, options])?;
 
   // 1. Let promiseCapability be ? NewPromiseCapability(%Promise%).
-  let (state, promise, realm_id) = {
+  let (state, promise, realm_id, active_script_or_module) = {
     let mut root_scope = import_scope.reborrow();
     let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
       vm,
@@ -1796,8 +1823,19 @@ pub fn start_dynamic_import_with_host_and_hooks(
     let realm_id = vm.current_realm().ok_or(VmError::Unimplemented(
       "dynamic import requires an active Realm (push an ExecutionContext)",
     ))?;
-    let state = DynamicImportState::new(&mut root_scope, cap, realm_id, global_object)?;
-    Ok::<_, VmError>((state, cap.promise, realm_id))
+    let active_script_or_module = vm.get_active_script_or_module();
+    let script_or_module_token = match active_script_or_module {
+      Some(s) => Some(vm.intern_script_or_module(s)?),
+      None => None,
+    };
+    let state = DynamicImportState::new(
+      &mut root_scope,
+      cap,
+      realm_id,
+      global_object,
+      script_or_module_token,
+    )?;
+    Ok::<_, VmError>((state, cap.promise, realm_id, active_script_or_module))
   }?;
 
   // 2. Let specifierString be ? ToString(specifier).
@@ -1922,7 +1960,7 @@ pub fn start_dynamic_import_with_host_and_hooks(
   let module_request = ModuleRequest::new(specifier_string, attributes);
 
   // 4. Let referrer be GetActiveScriptOrModule(). If null, use the current Realm.
-  let referrer = match vm.get_active_script_or_module() {
+  let referrer = match active_script_or_module {
     Some(ScriptOrModule::Script(id)) => ModuleReferrer::Script(id),
     Some(ScriptOrModule::Module(id)) => ModuleReferrer::Module(id),
     None => ModuleReferrer::Realm(realm_id),

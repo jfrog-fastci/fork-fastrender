@@ -2697,7 +2697,7 @@ impl Vm {
     NonZeroU32::new(n).ok_or(VmError::OutOfMemory)
   }
 
-  pub(crate) fn resolve_script_or_module_token(&self, token: NonZeroU32) -> Option<ScriptOrModule> {
+  pub fn resolve_script_or_module_token(&self, token: NonZeroU32) -> Option<ScriptOrModule> {
     let idx = token.get().wrapping_sub(1) as usize;
     self.script_or_module_table.get(idx).copied()
   }

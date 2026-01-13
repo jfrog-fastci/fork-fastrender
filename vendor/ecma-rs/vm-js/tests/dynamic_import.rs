@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  GcObject, HeapLimits, HostDefined, JsRuntime, MicrotaskQueue, ModuleId, ModuleLoadPayload,
+  GcObject, HeapLimits, HostDefined, JobCallback, JsRuntime, MicrotaskQueue, ModuleId, ModuleLoadPayload,
   JsString, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, PropertyKind, Scope,
-  SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmOptions,
+  ScriptOrModule, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmOptions,
 };
 
 #[derive(Debug)]
@@ -22,6 +22,7 @@ struct TestHostHooks {
   /// Specifier → module id mapping used by `complete_load_for`.
   modules: HashMap<JsString, ModuleId>,
   pending: Vec<PendingLoad>,
+  job_callback_objects: Vec<GcObject>,
 }
 
 impl TestHostHooks {
@@ -30,6 +31,7 @@ impl TestHostHooks {
       microtasks: MicrotaskQueue::new(),
       modules: HashMap::new(),
       pending: Vec::new(),
+      job_callback_objects: Vec::new(),
     }
   }
 
@@ -105,6 +107,11 @@ impl TestHostHooks {
 impl VmHostHooks for TestHostHooks {
   fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<vm_js::RealmId>) {
     self.microtasks.host_enqueue_promise_job(job, realm);
+  }
+
+  fn host_make_job_callback(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+    self.job_callback_objects.push(callback);
+    JobCallback::try_new(callback)
   }
 
   fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
@@ -753,6 +760,107 @@ fn dynamic_import_from_promise_callback_works() -> Result<(), VmError> {
   assert!(matches!(y_value, Value::Number(n) if n == 1.0));
 
   drop(scope);
+  host.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
+fn dynamic_import_eval_callbacks_capture_job_realm_and_script() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // Minimal module with no dependencies. This ensures `FinishLoadingImportedModule` can complete
+  // after the initiating script has returned (no active execution context).
+  let m_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 1;")?;
+  let m = rt.modules_mut().add_module(m_record)?;
+
+  let mut host = TestHostHooks::new();
+  host.register_module("./m.js", m);
+
+  // Start the dynamic import from a script. The host will complete it asynchronously by calling
+  // `FinishLoadingImportedModule` after the script finishes.
+  let _promise_value = rt.exec_script_with_hooks(&mut host, "import('./m.js')")?;
+
+  assert_eq!(host.pending_count(), 1);
+  let initiating_script_id = match host.pending[0].referrer {
+    ModuleReferrer::Script(id) => id,
+    other => panic!("expected dynamic import referrer to be a Script, got {other:?}"),
+  };
+
+  // Completing the load triggers `ContinueDynamicImport`, which attaches Promise reactions using
+  // the internal `dynamicImportEvalOnFulfilled` / `dynamicImportEvalOnRejected` callbacks. These
+  // callbacks should be wrapped via `HostMakeJobCallback` and carry the initiating realm/script.
+  host.complete_load_for(&mut rt, "./m.js");
+
+  let mut on_fulfilled: Option<GcObject> = None;
+  let mut on_rejected: Option<GcObject> = None;
+  for &cb in &host.job_callback_objects {
+    let name = {
+      let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(cb))?;
+      let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
+      let Some(desc) = scope.heap().object_get_own_property(cb, &name_key)? else {
+        continue;
+      };
+      let PropertyKind::Data { value, .. } = desc.kind else {
+        continue;
+      };
+      let Value::String(s) = value else {
+        continue;
+      };
+      scope.heap().get_string(s)?.to_utf8_lossy()
+    };
+
+    match name.as_str() {
+      "dynamicImportEvalOnFulfilled" => on_fulfilled = Some(cb),
+      "dynamicImportEvalOnRejected" => on_rejected = Some(cb),
+      _ => {}
+    }
+  }
+
+  let on_fulfilled = on_fulfilled.expect("expected to observe dynamicImportEvalOnFulfilled");
+  let on_rejected = on_rejected.expect("expected to observe dynamicImportEvalOnRejected");
+
+  let expected_realm = rt.realm().id();
+  assert_eq!(
+    rt.heap.get_function_job_realm(on_fulfilled),
+    Some(expected_realm),
+    "dynamicImportEvalOnFulfilled should capture the initiating realm",
+  );
+  assert_eq!(
+    rt.heap.get_function_job_realm(on_rejected),
+    Some(expected_realm),
+    "dynamicImportEvalOnRejected should capture the initiating realm",
+  );
+
+  let token_fulfilled = rt
+    .heap
+    .get_function_script_or_module_token(on_fulfilled)
+    .expect("dynamicImportEvalOnFulfilled should capture a ScriptOrModule token");
+  let token_rejected = rt
+    .heap
+    .get_function_script_or_module_token(on_rejected)
+    .expect("dynamicImportEvalOnRejected should capture a ScriptOrModule token");
+
+  let resolved_fulfilled = rt
+    .vm
+    .resolve_script_or_module_token(token_fulfilled)
+    .expect("ScriptOrModule token should resolve");
+  let resolved_rejected = rt
+    .vm
+    .resolve_script_or_module_token(token_rejected)
+    .expect("ScriptOrModule token should resolve");
+
+  assert_eq!(
+    resolved_fulfilled,
+    ScriptOrModule::Script(initiating_script_id),
+    "dynamicImportEvalOnFulfilled should capture the initiating script identity",
+  );
+  assert_eq!(
+    resolved_rejected,
+    ScriptOrModule::Script(initiating_script_id),
+    "dynamicImportEvalOnRejected should capture the initiating script identity",
+  );
+
   host.teardown_jobs(&mut rt);
   Ok(())
 }
