@@ -225,6 +225,108 @@ fn async_await_logical_and_assignment_short_circuits_without_awaiting_rhs() -> R
 }
 
 #[test]
+fn async_await_logical_or_assignment_evaluates_rhs_when_falsy() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let x = 0;
+        x ||= await Promise.resolve(2);
+        return x;
+      }
+      f().then(v => out = String(v));
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "2");
+  Ok(())
+}
+
+#[test]
+fn async_await_logical_or_assignment_short_circuits_without_awaiting_rhs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var hit = "";
+      async function f() {
+        let x = 1;
+        x ||= (hit = "rhs", await Promise.resolve(2));
+        return String(x) + "|" + hit;
+      }
+      f().then(v => out = v);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "1|");
+  Ok(())
+}
+
+#[test]
+fn async_await_nullish_assignment_evaluates_rhs_when_nullish() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let x;
+        x ??= await Promise.resolve(2);
+        return x;
+      }
+      f().then(v => out = String(v));
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "2");
+  Ok(())
+}
+
+#[test]
+fn async_await_nullish_assignment_short_circuits_without_awaiting_rhs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var hit = "";
+      async function f() {
+        let x = 0;
+        x ??= (hit = "rhs", await Promise.resolve(2));
+        return String(x) + "|" + hit;
+      }
+      f().then(v => out = v);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "0|");
+  Ok(())
+}
+
+#[test]
 fn async_await_compound_assignment_getvalue_happens_before_awaiting_rhs() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -255,4 +357,3 @@ fn async_await_compound_assignment_getvalue_happens_before_awaiting_rhs() -> Res
   assert_eq!(value_to_string(&rt, value), "get,rhs-pre,rhs-post,set:3,");
   Ok(())
 }
-
