@@ -1043,6 +1043,13 @@ glob = "built-ins/String/prototype/split/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/RegExp/lookBehind/**"
+status = "xfail"
+reason = "lookbehind not implemented yet"
+
+# TODO: Flip the above `built-ins/RegExp/lookBehind/**` entry to `pass` once regexp lookbehind lands
+# in vm-js.
+[[expectations]]
 glob = "built-ins/RegExp/**"
 status = "xfail"
 reason = "vm-js: RegExp semantics are still incomplete (e.g. v/d flags, unicode sets, etc); tracked via curated test262 progress."

@@ -1,0 +1,9 @@
+# RegExp lookbehind-focused suite.
+#
+# This suite is intended to make it easy to track progress on `regexp-lookbehind` support in
+# `vm-js` without pulling in the wider RegExp corpus.
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  "built-ins/RegExp/lookBehind/**/*.js",
+]

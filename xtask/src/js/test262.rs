@@ -16,6 +16,7 @@ const DEFAULT_LANGUAGE_CLASSES_SUITE_PATH: &str = "tests/js/test262_suites/langu
 const DEFAULT_LANGUAGE_SCOPES_SUITE_PATH: &str = "tests/js/test262_suites/language_scopes.toml";
 const DEFAULT_BUILTINS_CORE_SUITE_PATH: &str = "tests/js/test262_suites/builtins_core.toml";
 const DEFAULT_BUILTINS_JSON_MATH_SUITE_PATH: &str = "tests/js/test262_suites/builtins_json_math.toml";
+const DEFAULT_REGEXP_LOOKBEHIND_SUITE_PATH: &str = "tests/js/test262_suites/regexp_lookbehind.toml";
 const DEFAULT_BASELINE_PATH: &str = "progress/test262/baseline.json";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
@@ -56,6 +57,9 @@ pub enum Test262Suite {
   Curated,
   /// Minimal suite intended for quick wiring/smoke checks.
   Smoke,
+  /// Targeted suite for RegExp lookbehind support (regexp-lookbehind).
+  #[value(aliases = ["regexplookbehind"])]
+  RegexpLookbehind,
   /// Statement/control-flow focused subset of the curated suite.
   LanguageStatements,
   /// Function-focused subset of the curated suite.
@@ -164,6 +168,7 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
   let suite_path = repo_root.join(match args.suite {
     Test262Suite::Curated => DEFAULT_CURATED_SUITE_PATH,
     Test262Suite::Smoke => DEFAULT_SMOKE_SUITE_PATH,
+    Test262Suite::RegexpLookbehind => DEFAULT_REGEXP_LOOKBEHIND_SUITE_PATH,
     Test262Suite::LanguageStatements => DEFAULT_LANGUAGE_STATEMENTS_SUITE_PATH,
     Test262Suite::LanguageFunctions => DEFAULT_LANGUAGE_FUNCTIONS_SUITE_PATH,
     Test262Suite::LanguageClasses => DEFAULT_LANGUAGE_CLASSES_SUITE_PATH,
