@@ -365,86 +365,6 @@ status = "xfail"
 reason = "vm-js does not yet implement class inheritance (`extends`)."
 
 [[expectations]]
-id = "language/statements/class/definition/early-errors-class-async-method-duplicate-parameters.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/early-errors-class-method-NSPL-with-USD.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/early-errors-class-method-arguments-in-formal-parameters.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/early-errors-class-method-await-in-formals-default.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/early-errors-class-method-await-in-formals.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/early-errors-class-method-body-contains-super-call.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/early-errors-class-method-duplicate-parameters.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/early-errors-class-method-eval-in-formal-parameters.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/early-errors-class-method-formals-body-duplicate.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/early-errors-class-method-formals-contains-super-call.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/methods-gen-yield-as-function-expression-binding-identifier.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/methods-gen-yield-as-identifier-in-nested-function.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/methods-gen-yield-as-logical-or-expression.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/methods-gen-yield-as-parameter.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/methods-gen-yield-star-after-newline.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/definition/methods-gen-yield-weak-binding.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
 id = "language/statements/class/definition/methods-gen-yield-as-expression-with-rhs.js"
 status = "xfail"
 reason = "vm-js does not yet implement `yield` as an expression in generator methods."
@@ -485,70 +405,10 @@ status = "pass"
 
 # --- class/method ---
 [[expectations]]
-id = "language/statements/class/method/array-destructuring-param-strict-body.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method/dflt-params-duplicates.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method/dflt-params-rest.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method/object-destructuring-param-strict-body.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method/rest-param-strict-body.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method/rest-params-trailing-comma-early-error.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
 glob = "language/statements/class/method/**"
 status = "pass"
 
 # --- class/method-static ---
-[[expectations]]
-id = "language/statements/class/method-static/array-destructuring-param-strict-body.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method-static/dflt-params-duplicates.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method-static/dflt-params-rest.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method-static/object-destructuring-param-strict-body.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method-static/rest-param-strict-body.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/method-static/rest-params-trailing-comma-early-error.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
 [[expectations]]
 glob = "language/statements/class/method-static/**"
 status = "pass"
@@ -575,22 +435,17 @@ status = "xfail"
 reason = "vm-js does not yet implement class inheritance (`extends`)."
 
 [[expectations]]
-id = "language/statements/class/syntax/early-errors/class-definition-evaluation-block-duplicate-binding.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/syntax/early-errors/class-definition-evaluation-scriptbody-duplicate-binding.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
-id = "language/statements/class/syntax/escaped-static.js"
-status = "xfail"
-reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
-
-[[expectations]]
 glob = "language/statements/class/syntax/**"
+status = "pass"
+
+# --- class/strict-mode ---
+[[expectations]]
+id = "language/statements/class/strict-mode/arguments-callee.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+glob = "language/statements/class/strict-mode/**"
 status = "pass"
 
 # --- class/name-binding ---
@@ -648,6 +503,19 @@ reason = "vm-js does not yet implement class fields/private fields (required for
 id = "language/statements/class/static-init-sequence.js"
 status = "xfail"
 reason = "vm-js does not yet implement class fields/static initialization blocks."
+
+# --- class/subclass (partial) ---
+[[expectations]]
+id = "language/statements/class/subclass/class-definition-null-proto.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/class/subclass/class-definition-null-proto-contains-return-override.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/class/subclass/class-definition-null-proto-missing-return-override.js"
+status = "pass"
 
 # --- Additional curated suites (statements + built-ins) ---
 [[expectations]]
