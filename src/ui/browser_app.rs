@@ -212,6 +212,15 @@ pub struct LatestFrameMeta {
   pub wants_ticks: bool,
 }
 
+#[derive(Debug)]
+pub struct PageAccessibilitySnapshot {
+  pub tree: crate::accessibility::AccessibilityNode,
+  /// Map of DOM preorder node id → viewport-local CSS bounds.
+  ///
+  /// Stored as a sorted vector (by id) to keep snapshots deterministic.
+  pub bounds_css: Vec<(usize, crate::geometry::Rect)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadStatus {
   InProgress {
@@ -541,6 +550,8 @@ pub struct BrowserTabState {
   pub rendered_scroll_state: ScrollState,
   pub scroll_metrics: Option<ScrollMetrics>,
   pub latest_frame_meta: Option<LatestFrameMeta>,
+  /// Latest accessibility snapshot reported by the worker for this tab.
+  pub page_accessibility: Option<PageAccessibilitySnapshot>,
   pub favicon_meta: Option<FaviconMeta>,
   debug_log: VecDeque<String>,
 }
@@ -582,6 +593,7 @@ impl BrowserTabState {
       rendered_scroll_state: ScrollState::default(),
       scroll_metrics: None,
       latest_frame_meta: None,
+      page_accessibility: None,
       favicon_meta: None,
       debug_log: VecDeque::new(),
     }
@@ -2445,6 +2457,16 @@ impl BrowserAppState {
       }
       WorkerToUi::RequestWakeAfter { .. } => {
         // Wakeup scheduling is handled by the host UI event loop (e.g. `src/bin/browser.rs`).
+      }
+      WorkerToUi::PageAccessibility {
+        tab_id,
+        tree,
+        bounds_css,
+      } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.page_accessibility = Some(PageAccessibilitySnapshot { tree, bounds_css });
+        }
+        update.request_redraw = self.active_tab_id() == Some(tab_id);
       }
       WorkerToUi::OpenSelectDropdown {
         tab_id,

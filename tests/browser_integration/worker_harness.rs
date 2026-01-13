@@ -4,6 +4,7 @@ use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
 use fastrender::tree::box_tree::SelectControl;
 use fastrender::api::FastRenderFactory;
+use fastrender::accessibility::AccessibilityNode;
 use fastrender::ui::messages::{
   CursorKind, DateTimeInputKind, DownloadId, DownloadOutcome, FormSubmission, RenderedFrame, TabId,
   UiToWorker, WorkerToUi,
@@ -105,6 +106,10 @@ pub enum WorkerToUiEvent {
     viewport_css: (u32, u32),
     dpr: f32,
     scroll_state: ScrollState,
+  },
+  PageAccessibility {
+    tab_id: TabId,
+    node_count: usize,
   },
   OpenSelectDropdown {
     tab_id: TabId,
@@ -221,6 +226,7 @@ pub enum WorkerEventKind {
   Stage,
   Favicon,
   FrameReady,
+  PageAccessibility,
   OpenSelectDropdown,
   RequestOpenInNewTab,
   RequestOpenInNewTabRequest,
@@ -252,6 +258,7 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::Stage { .. } => WorkerEventKind::Stage,
       WorkerToUiEvent::Favicon { .. } => WorkerEventKind::Favicon,
       WorkerToUiEvent::FrameReady { .. } => WorkerEventKind::FrameReady,
+      WorkerToUiEvent::PageAccessibility { .. } => WorkerEventKind::PageAccessibility,
       WorkerToUiEvent::OpenSelectDropdown { .. } => WorkerEventKind::OpenSelectDropdown,
       WorkerToUiEvent::RequestOpenInNewTab { .. } => WorkerEventKind::RequestOpenInNewTab,
       WorkerToUiEvent::RequestOpenInNewTabRequest { .. } => WorkerEventKind::RequestOpenInNewTabRequest,
@@ -279,6 +286,18 @@ impl WorkerToUiEvent {
   }
 }
 
+fn accessibility_node_count(root: &AccessibilityNode) -> usize {
+  let mut count = 0usize;
+  let mut stack: Vec<&AccessibilityNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    count += 1;
+    for child in &node.children {
+      stack.push(child);
+    }
+  }
+  count
+}
+
 fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
   match msg {
     WorkerToUi::Stage { tab_id, stage } => (WorkerToUiEvent::Stage { tab_id, stage }, None),
@@ -304,6 +323,17 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
         scroll_state: frame.scroll_state.clone(),
       };
       (event, Some(frame))
+    }
+    WorkerToUi::PageAccessibility {
+      tab_id,
+      tree,
+      bounds_css: _,
+    } => {
+      let node_count = accessibility_node_count(&tree);
+      (
+        WorkerToUiEvent::PageAccessibility { tab_id, node_count },
+        None,
+      )
     }
     WorkerToUi::OpenSelectDropdown {
       tab_id,

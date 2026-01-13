@@ -1286,6 +1286,107 @@ fn select_anchor_css(
   styled_node_anchor_css(box_tree, fragment_tree, scroll_state, select_node_id)
 }
 
+fn compute_page_accessibility_snapshot(
+  doc: &BrowserDocument,
+  interaction: &InteractionEngine,
+  scroll_state: &ScrollState,
+) -> Option<(crate::accessibility::AccessibilityNode, Vec<(usize, Rect)>)> {
+  let prepared = doc.prepared()?;
+
+  let tree = crate::accessibility::build_accessibility_tree(
+    prepared.styled_tree(),
+    Some(interaction.interaction_state()),
+  )
+  .ok()?;
+
+  // Build a mapping from BoxTree box id -> DOM preorder id (`StyledNode.node_id`).
+  let mut box_dom_id: Vec<usize> = vec![0];
+  let mut stack: Vec<&crate::BoxNode> = vec![&prepared.box_tree().root];
+  while let Some(node) = stack.pop() {
+    let box_id = node.id;
+    if box_id >= box_dom_id.len() {
+      box_dom_id.resize(box_id.saturating_add(1), 0);
+    }
+    if let Some(dom_id) = node.styled_node_id {
+      box_dom_id[box_id] = dom_id;
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  // Walk the paint-time geometry tree once and union fragment bounds for each DOM node.
+  let fragment_tree = prepared.fragment_tree_for_geometry(scroll_state);
+
+  let mut dom_bounds: Vec<Option<Rect>> = vec![None];
+
+  struct Frame<'a> {
+    node: &'a crate::tree::fragment_tree::FragmentNode,
+    parent_offset: Point,
+  }
+
+  let mut stack: Vec<Frame<'_>> = Vec::new();
+  for root in fragment_tree.additional_fragments.iter().rev() {
+    stack.push(Frame {
+      node: root,
+      parent_offset: Point::ZERO,
+    });
+  }
+  stack.push(Frame {
+    node: &fragment_tree.root,
+    parent_offset: Point::ZERO,
+  });
+
+  while let Some(frame) = stack.pop() {
+    let abs_bounds = frame.node.bounds.translate(frame.parent_offset);
+    if let Some(box_id) = frame.node.box_id() {
+      let dom_id = box_dom_id.get(box_id).copied().unwrap_or(0);
+      if dom_id != 0 {
+        if dom_id >= dom_bounds.len() {
+          dom_bounds.resize(dom_id.saturating_add(1), None);
+        }
+        dom_bounds[dom_id] = Some(match dom_bounds[dom_id] {
+          Some(existing) => existing.union(abs_bounds),
+          None => abs_bounds,
+        });
+      }
+    }
+
+    let child_parent_offset = abs_bounds.origin;
+    for child in frame.node.children.iter().rev() {
+      stack.push(Frame {
+        node: child,
+        parent_offset: child_parent_offset,
+      });
+    }
+  }
+
+  // Convert page-space bounds to viewport-local coordinates.
+  let scroll_x = if scroll_state.viewport.x.is_finite() {
+    scroll_state.viewport.x
+  } else {
+    0.0
+  };
+  let scroll_y = if scroll_state.viewport.y.is_finite() {
+    scroll_state.viewport.y
+  } else {
+    0.0
+  };
+  let to_viewport = Point::new(-scroll_x, -scroll_y);
+
+  let mut bounds_css: Vec<(usize, Rect)> = Vec::new();
+  for (dom_id, rect) in dom_bounds.into_iter().enumerate().skip(1) {
+    if let Some(rect) = rect {
+      bounds_css.push((dom_id, rect.translate(to_viewport)));
+    }
+  }
+
+  Some((tree, bounds_css))
+}
+
 #[derive(Debug, Clone, Copy)]
 enum SelectRow {
   OptGroupLabel,
@@ -7933,6 +8034,17 @@ impl BrowserRuntime {
             wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
           },
         });
+        if let Some(doc) = tab.document.as_ref() {
+          if let Some((tree, bounds_css)) =
+            compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
+          {
+            msgs.push(WorkerToUi::PageAccessibility {
+              tab_id,
+              tree,
+              bounds_css,
+            });
+          }
+        }
         emitted_frame = true;
       } else {
         tab.needs_repaint = true;
@@ -8171,43 +8283,52 @@ impl BrowserRuntime {
     tab.pending_history_entry = false;
     tab.history.mark_committed();
 
+    let page_accessibility = tab
+      .document
+      .as_ref()
+      .and_then(|doc| compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state));
+
+    let mut msgs = Vec::new();
+    msgs.push(WorkerToUi::NavigationFailed {
+      tab_id,
+      url: original_url.to_string(),
+      error: error.to_string(),
+      can_go_back: tab.history.can_go_back(),
+      can_go_forward: tab.history.can_go_forward(),
+    });
+    msgs.push(WorkerToUi::FrameReady {
+      tab_id,
+      frame: RenderedFrame {
+        pixmap: painted.pixmap,
+        viewport_css: tab.viewport_css,
+        dpr: tab
+          .document
+          .as_ref()
+          .and_then(|d| d.prepared())
+          .map(|p| p.device_pixel_ratio())
+          .unwrap_or(tab.dpr),
+        scroll_state: tab.scroll_state.clone(),
+        scroll_metrics: compute_scroll_metrics(tab.document.as_ref(), tab.viewport_css, &tab.scroll_state),
+        wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
+      },
+    });
+    if let Some((tree, bounds_css)) = page_accessibility {
+      msgs.push(WorkerToUi::PageAccessibility {
+        tab_id,
+        tree,
+        bounds_css,
+      });
+    }
+    msgs.push(WorkerToUi::LoadingState {
+      tab_id,
+      loading: false,
+    });
+
     Some(JobOutput {
       tab_id,
       snapshot,
       snapshot_kind: SnapshotKind::Prepare,
-      msgs: vec![
-        WorkerToUi::NavigationFailed {
-          tab_id,
-          url: original_url.to_string(),
-          error: error.to_string(),
-          can_go_back: tab.history.can_go_back(),
-          can_go_forward: tab.history.can_go_forward(),
-        },
-        WorkerToUi::FrameReady {
-          tab_id,
-          frame: RenderedFrame {
-            pixmap: painted.pixmap,
-            viewport_css: tab.viewport_css,
-            dpr: tab
-              .document
-              .as_ref()
-              .and_then(|d| d.prepared())
-              .map(|p| p.device_pixel_ratio())
-              .unwrap_or(tab.dpr),
-            scroll_state: tab.scroll_state.clone(),
-            scroll_metrics: compute_scroll_metrics(
-              tab.document.as_ref(),
-              tab.viewport_css,
-              &tab.scroll_state,
-            ),
-            wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
-          },
-        },
-        WorkerToUi::LoadingState {
-          tab_id,
-          loading: false,
-        },
-      ],
+      msgs,
     })
   }
 
@@ -8227,21 +8348,24 @@ impl BrowserRuntime {
     if tab.js_dom_dirty || js_dom_generation_changed {
       sync_render_dom_from_js_tab(tab_id, tab, &self.ui_tx);
     }
-    let Some(doc) = tab.document.as_mut() else {
+    if tab.document.is_none() {
       return None;
-    };
+    }
 
     let snapshot = tab.cancel.snapshot_paint();
     let cancel_callback = combine_cancel_callbacks(
       snapshot.cancel_callback_for_paint(&tab.cancel),
       preempt_cancel_callback.clone(),
     );
-    doc.set_cancel_callback(Some(cancel_callback.clone()));
 
     // Forward render pipeline stage heartbeats during paint jobs (including scroll/hover repaints)
     // so UI callers and integration tests can observe progress and deterministically cancel
     // in-flight work.
     let painted = {
+      let Some(doc) = tab.document.as_mut() else {
+        return None;
+      };
+      doc.set_cancel_callback(Some(cancel_callback.clone()));
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
       let interaction_state = Some(tab.interaction.interaction_state());
       if force {
@@ -8287,8 +8411,10 @@ impl BrowserRuntime {
         .history
         .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
 
-      let actual_dpr = doc
-        .prepared()
+      let actual_dpr = tab
+        .document
+        .as_ref()
+        .and_then(|doc| doc.prepared())
         .map(|p| p.device_pixel_ratio())
         .unwrap_or(tab.dpr);
 
@@ -8297,7 +8423,12 @@ impl BrowserRuntime {
       if !tab.find.query.is_empty() {
         let prev_count = tab.find.matches.len();
         let prev_active = tab.find.active_match_index;
-        Self::rebuild_find_matches(&mut tab.find, &tab.scroll_state, &*doc);
+        if let Some(doc) = tab.document.as_ref() {
+          Self::rebuild_find_matches(&mut tab.find, &tab.scroll_state, doc);
+        } else {
+          tab.find.matches.clear();
+          tab.find.active_match_index = None;
+        }
         if tab.find.matches.len() != prev_count || tab.find.active_match_index != prev_active {
           msgs.push(WorkerToUi::FindResult {
             tab_id,
@@ -8325,6 +8456,17 @@ impl BrowserRuntime {
           wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
         },
       });
+      if let Some(doc) = tab.document.as_ref() {
+        if let Some((tree, bounds_css)) =
+          compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
+        {
+          msgs.push(WorkerToUi::PageAccessibility {
+            tab_id,
+            tree,
+            bounds_css,
+          });
+        }
+      }
     }
 
     Some(JobOutput {

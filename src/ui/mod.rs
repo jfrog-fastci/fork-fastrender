@@ -239,7 +239,8 @@ pub use search_suggest::{SearchSuggestConfig, SearchSuggestService, SearchSugges
 pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, DownloadEntry,
   DownloadProgressSummary, DownloadStatus, DownloadsState, FrameReadyUpdate, FindInPageState,
-  LatestFrameMeta, OpenDatalistUpdate, OpenSelectDropdownUpdate, RemoteSearchSuggestCache,
+  LatestFrameMeta, OpenDatalistUpdate, OpenSelectDropdownUpdate, PageAccessibilitySnapshot,
+  RemoteSearchSuggestCache,
   TabGroupColor, TabGroupId, TabGroupState,
 };
 pub use renderer_ipc::{FrameReadyLimits, FrameReadyViolation};
