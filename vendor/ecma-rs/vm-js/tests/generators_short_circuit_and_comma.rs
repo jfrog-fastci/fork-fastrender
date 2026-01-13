@@ -23,6 +23,23 @@ fn generator_and_short_circuit_prevents_yield() {
 }
 
 #[test]
+fn generator_and_evaluates_rhs_when_truthy_and_can_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return true && (yield 1); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(42);
+      r1.done === false && r1.value === 1 && r2.done === true && r2.value === 42
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_or_short_circuit_prevents_yield() {
   let mut rt = new_runtime();
   let value = rt
@@ -32,6 +49,23 @@ fn generator_or_short_circuit_prevents_yield() {
       var it = g();
       var r = it.next();
       r.done === true && r.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_or_evaluates_rhs_when_falsy_and_can_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return false || (yield 1); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(42);
+      r1.done === false && r1.value === 1 && r2.done === true && r2.value === 42
     "#,
     )
     .unwrap();
@@ -124,4 +158,3 @@ fn generator_comma_operator_with_yield_on_both_sides() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
-

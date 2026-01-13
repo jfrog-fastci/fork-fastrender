@@ -33304,15 +33304,6 @@ fn gen_binary_after_left(
         }
       }
     },
-    OperatorName::Comma => {
-      // Comma operator: evaluate the RHS and return it (LHS value is discarded).
-      //
-      // This is yield-aware because `gen_eval_expr` is used for both operands. If the RHS yields,
-      // we can propagate the suspension directly: unlike arithmetic operators, there is no
-      // additional computation to perform after the RHS completes.
-      let _ = left;
-      gen_eval_expr(evaluator, scope, &expr.right)
-    },
     _ => Err(VmError::Unimplemented("yield in binary operator")),
   }
 }
