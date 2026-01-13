@@ -5003,6 +5003,31 @@ fn compiled_with_statement_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_with_block_instantiates_lexical_decls_for_tdz() -> Result<(), VmError> {
+  // A block inside a `with` statement must still perform lexical declaration instantiation for
+  // `let`/`const`, so the inner `let x` shadows the `with` binding immediately (TDZ).
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let o = {x: 1};
+      with (o) { x; let x = 2; }
+      'no'
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::ThrowWithStack { .. } => Ok(()),
+    other => panic!("expected ThrowWithStack, got {other:?}"),
+  }
+}
+
+#[test]
 fn compiled_with_restores_outer_lexical_env() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
