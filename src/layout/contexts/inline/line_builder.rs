@@ -11239,6 +11239,36 @@ mod tests {
   }
 
   #[test]
+  fn apply_spacing_rtl_monotonic_decreasing_avoids_sorting() {
+    // Simulate RTL shaping output where glyphs are in visual order but cluster offsets are
+    // monotonic-decreasing.
+    let text = "אבג";
+    let mut run = make_synthetic_run_with_byte_clusters(
+      text,
+      0,
+      10.0,
+      PipelineDirection::RightToLeft,
+    );
+    run.glyphs.reverse();
+    let base_width = run.advance;
+    let mut runs = vec![run];
+
+    reset_apply_spacing_diagnostics();
+    TextItem::apply_spacing_to_runs(&mut runs, text, 2.0, 0.0);
+    let (sorts, clusters) = take_apply_spacing_diagnostics();
+
+    assert_eq!(sorts, 0, "expected monotonic RTL clusters to avoid sorting");
+    assert_eq!(clusters, text.chars().count());
+
+    let spaced_width: f32 = runs.iter().map(|r| r.advance).sum();
+    let expected_extra = 2.0 * (text.chars().count().saturating_sub(1) as f32);
+    assert!(
+      (spaced_width - base_width - expected_extra).abs() < 0.1,
+      "expected letter spacing to apply after each logical cluster (except the final one)"
+    );
+  }
+
+  #[test]
   fn split_at_can_insert_hyphen() {
     let font_ctx = FontContext::new();
     let pipeline = ShapingPipeline::new();
