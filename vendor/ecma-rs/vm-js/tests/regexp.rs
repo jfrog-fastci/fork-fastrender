@@ -1357,3 +1357,48 @@ fn regexp_captures_from_lookbehind_visible_to_later_backrefs() {
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), r#"["foo","\"","foo"]"#);
 }
+
+#[test]
+fn regexp_lookbehind_greedy_quantifiers_capture_maximal_left_context() {
+  // From test262 `lookBehind/greedy-loop.js`.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          JSON.stringify("abbbbbbc".match(/(?<=(b+))c/)),
+          JSON.stringify("ab1234c".match(/(?<=(b\d+))c/)),
+          JSON.stringify("ab12b23b34c".match(/(?<=((?:b\d{2})+))c/)),
+        ].join("|")
+      "#,
+    )
+    .unwrap();
+
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    r#"["c","bbbbbb"]|["c","b1234"]|["c","b12b23b34"]"#
+  );
+}
+
+#[test]
+fn regexp_lookbehind_mutual_recursive_backreferences_use_empty_for_unset_captures() {
+  // From test262 `lookBehind/mutual-recursive.js`.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          JSON.stringify(/(?<=a(.\2)b(\1)).{4}/.exec("aabcacbc")),
+          JSON.stringify(/(?<=a(\2)b(..\1))b/.exec("aacbacb")),
+          JSON.stringify(/(?<=(?:\1b)(aa))./.exec("aabaax")),
+          JSON.stringify(/(?<=(?:\1|b)(aa))./.exec("aaaax")),
+        ].join("|")
+      "#,
+    )
+    .unwrap();
+
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    r#"["cacb","a",""]|["b","ac","ac"]|["x","aa"]|["x","aa"]"#
+  );
+}
