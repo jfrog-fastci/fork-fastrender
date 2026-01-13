@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-use super::support::{create_tab_msg, format_messages, navigate_msg, DEFAULT_TIMEOUT};
+use super::support::{
+  allow_crash_urls_for_test, create_tab_msg, format_messages, navigate_msg, DEFAULT_TIMEOUT,
+};
 
 fn crash_enabled_factory() -> FastRenderFactory {
   let mut raw = std::env::vars()
@@ -51,6 +53,7 @@ fn join_with_timeout(
 fn crash_scheme_navigation_panics_worker_thread() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
+  let _allow_crash_urls = allow_crash_urls_for_test();
 
   let handle = spawn_ui_worker_with_factory(
     "fastr-ui-worker-crash-hook",

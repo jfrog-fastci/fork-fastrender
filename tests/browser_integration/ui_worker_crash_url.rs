@@ -10,7 +10,9 @@ use fastrender::text::font_db::FontConfig;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;
 
-use super::support::{create_tab_msg, navigate_msg, recv_for_tab, DEFAULT_TIMEOUT};
+use super::support::{
+  allow_crash_urls_for_test, create_tab_msg, navigate_msg, recv_for_tab, DEFAULT_TIMEOUT,
+};
 
 const CRASH_URL: &str = "crash://panic";
 
@@ -38,6 +40,7 @@ fn factory_with_crash_urls_enabled(enabled: bool) -> FastRenderFactory {
 fn crash_url_is_ignored_unless_opted_in() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
+  let _allow_crash_urls = allow_crash_urls_for_test();
 
   let factory = factory_with_crash_urls_enabled(false);
   let (ui_tx, ui_rx, join) = spawn_ui_worker_with_factory("fastr-ui-worker-crash-url-disabled", factory)
@@ -70,6 +73,7 @@ fn crash_url_is_ignored_unless_opted_in() {
 fn crash_url_panics_worker_and_disconnects_channel_when_enabled() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
+  let _allow_crash_urls = allow_crash_urls_for_test();
 
   let factory = factory_with_crash_urls_enabled(true);
   let (ui_tx, ui_rx, join) = spawn_ui_worker_with_factory("fastr-ui-worker-crash-url-enabled", factory)
@@ -122,4 +126,3 @@ fn crash_url_panics_worker_and_disconnects_channel_when_enabled() {
     "expected worker thread to panic when crash URLs are enabled"
   );
 }
-

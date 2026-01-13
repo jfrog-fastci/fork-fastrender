@@ -7369,7 +7369,10 @@ fn run_headless_crash_smoke_mode(
 
   let crash_url = BROWSER_WORKER_CRASH_TEST_URL.to_string();
 
-  // Enable crash URLs explicitly for this smoke-test mode.
+  // Enable crash URLs explicitly for this smoke-test mode:
+  // - allowlist the `crash://` scheme so typed navigations are accepted
+  // - enable the worker-side crash hook so `crash://panic` triggers a deterministic panic
+  fastrender::ui::url::set_allow_crash_urls(true);
   let factory = {
     let mut raw = std::env::vars()
       .filter(|(k, _)| k.starts_with("FASTR_"))

@@ -1,6 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{
+  allow_crash_urls_for_test, create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
+};
 use super::worker_harness::{format_events, WorkerHarness, WorkerToUiEvent};
 use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig};
 use fastrender::debug::runtime::RuntimeToggles;
@@ -28,6 +30,7 @@ fn crash_enabled_factory() -> FastRenderFactory {
 #[test]
 fn worker_harness_wait_for_disconnect_observes_worker_panic() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _allow_crash_urls = allow_crash_urls_for_test();
 
   let h = WorkerHarness::spawn_with_factory(crash_enabled_factory());
   let tab_id = TabId::new();

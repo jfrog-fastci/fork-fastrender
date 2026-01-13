@@ -30,6 +30,29 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 // Keep this small enough that long waits are still responsive, but not so small we busy-loop.
 const RECV_SLICE: Duration = Duration::from_millis(25);
 
+/// RAII guard for temporarily allowing `crash://` URL navigations in the UI worker.
+///
+/// `crash://` URLs are disabled by default so normal integration tests can't accidentally trip the
+/// crash hooks. Tests that explicitly exercise crash isolation can opt in by holding this guard for
+/// their duration.
+#[must_use]
+pub(crate) struct AllowCrashUrlsGuard {
+  previous: bool,
+}
+
+impl Drop for AllowCrashUrlsGuard {
+  fn drop(&mut self) {
+    fastrender::ui::url::set_allow_crash_urls(self.previous);
+  }
+}
+
+/// Enable the process-global `crash://` scheme allowlist for the lifetime of the returned guard.
+pub(crate) fn allow_crash_urls_for_test() -> AllowCrashUrlsGuard {
+  let previous = fastrender::ui::url::crash_urls_allowed();
+  fastrender::ui::url::set_allow_crash_urls(true);
+  AllowCrashUrlsGuard { previous }
+}
+
 pub(crate) struct ExecutorWithWindow<E> {
   inner: E,
   host_ctx: (),

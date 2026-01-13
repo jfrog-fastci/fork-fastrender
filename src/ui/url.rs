@@ -25,7 +25,11 @@ pub fn set_allow_crash_urls(enabled: bool) {
   ALLOW_CRASH_URLS.store(enabled, Ordering::Relaxed);
 }
 
-fn crash_urls_allowed() -> bool {
+/// Returns `true` when navigation to `crash://` URLs is currently allowlisted.
+///
+/// This is intended primarily for tests/integration harnesses that temporarily override the
+/// process-global allowlist and need to restore the previous value.
+pub fn crash_urls_allowed() -> bool {
   ALLOW_CRASH_URLS.load(Ordering::Relaxed)
 }
 
