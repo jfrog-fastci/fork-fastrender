@@ -319,6 +319,43 @@ mod tests {
     rb.pop_add_into_ramped(&mut out, 1, &mut ramp);
     assert_eq!(out, vec![0.0, 0.0, 1.0, 2.0]);
   }
+
+  #[test]
+  fn ring_buffer_ramped_drains_when_gain_is_zero() {
+    // Use stereo so we exercise the channel alignment logic in `pop_add_into_ramped`.
+    let channels = 2usize;
+    // 200ms worth of 48kHz frames.
+    let frames_total = 48_000 / 5;
+    let frames_half = frames_total / 2;
+    let samples_total = frames_total * channels;
+    let samples_half = frames_half * channels;
+
+    let rb = AudioRingBuffer::new(samples_total * 2);
+    assert_eq!(rb.push(&vec![1.0; samples_total]), samples_total);
+
+    // Muted playback for 100ms should still advance the read cursor (drain).
+    let mut muted_out = vec![0.0; samples_half];
+    let mut ramp = GainRamp {
+      current_gain: 0.0,
+      target_gain: 0.0,
+      step: 0.0,
+      frames_remaining: 0,
+    };
+    rb.pop_add_into_ramped(&mut muted_out, channels, &mut ramp);
+    assert_eq!(muted_out, vec![0.0; samples_half]);
+
+    // Unmuting should play immediately without backlog: only the remaining 100ms should be present.
+    let mut out = vec![0.0; samples_total];
+    let mut ramp = GainRamp {
+      current_gain: 1.0,
+      target_gain: 1.0,
+      step: 0.0,
+      frames_remaining: 0,
+    };
+    rb.pop_add_into_ramped(&mut out, channels, &mut ramp);
+    assert_eq!(&out[..samples_half], &vec![1.0; samples_half][..]);
+    assert_eq!(&out[samples_half..], &vec![0.0; samples_half][..]);
+  }
   #[test]
   fn ring_buffer_drains_when_gain_is_zero() {
     // 200ms worth of mono 48kHz samples.
