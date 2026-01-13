@@ -2434,6 +2434,8 @@ const HISTORY_TRAVERSE_WINDOW_OBJ_SLOT: usize = 0;
 const HISTORY_TRAVERSE_HISTORY_OBJ_SLOT: usize = 1;
 const HISTORY_TRAVERSE_LOCATION_OBJ_SLOT: usize = 2;
 const HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT: usize = 3;
+const HISTORY_SCROLL_RESTORATION_AUTO: u64 = 0;
+const HISTORY_SCROLL_RESTORATION_MANUAL: u64 = 1;
 const DOM_RECT_FROM_RECT_CTOR_SLOT: usize = 0;
 const DOM_RECT_FROM_RECT_READ_ONLY_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
@@ -6077,6 +6079,82 @@ fn history_state_structured_clone_inner(
       Ok(out)
     }
   }
+}
+
+fn history_scroll_restoration_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(history_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // Root the receiver while allocating strings.
+  scope.push_root(Value::Object(history_obj))?;
+
+  let slots = host_slots_for_object(scope, history_obj)?
+    .filter(|slots| slots.a == WINDOW_REALM_HISTORY_HOST_TAG)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let value = match slots.b {
+    HISTORY_SCROLL_RESTORATION_AUTO => "auto",
+    HISTORY_SCROLL_RESTORATION_MANUAL => "manual",
+    // Defensive fallback: treat unknown values as the default "auto".
+    _ => "auto",
+  };
+  Ok(Value::String(scope.alloc_string(value)?))
+}
+
+fn history_scroll_restoration_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(history_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  // Root the receiver while allocating strings.
+  scope.push_root(Value::Object(history_obj))?;
+
+  let slots = host_slots_for_object(scope, history_obj)?
+    .filter(|slots| slots.a == WINDOW_REALM_HISTORY_HOST_TAG)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  // WebIDL enum conversion: ToString + validate exact matches.
+  let raw_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value_s = match raw_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(value_s))?;
+  let value = scope.heap().get_string(value_s)?.to_utf8_lossy();
+
+  let mode = match value.as_str() {
+    "auto" => HISTORY_SCROLL_RESTORATION_AUTO,
+    "manual" => HISTORY_SCROLL_RESTORATION_MANUAL,
+    _ => {
+      return Err(VmError::TypeError(
+        "history.scrollRestoration must be either \"auto\" or \"manual\"",
+      ))
+    }
+  };
+
+  scope.heap_mut().object_set_host_slots(
+    history_obj,
+    HostSlots {
+      a: slots.a,
+      b: mode,
+    },
+  )?;
+  Ok(Value::Undefined)
 }
 
 fn history_state_change_native(
@@ -41692,12 +41770,13 @@ fn init_window_globals(
     history_obj,
     HostSlots {
       a: WINDOW_REALM_HISTORY_HOST_TAG,
-      b: 0,
+      b: HISTORY_SCROLL_RESTORATION_AUTO,
     },
   )?;
   let history_key = alloc_key(&mut scope, "history")?;
   let history_state_key = alloc_key(&mut scope, "state")?;
   let history_length_key = alloc_key(&mut scope, "length")?;
+  let history_scroll_restoration_key = alloc_key(&mut scope, "scrollRestoration")?;
   scope.define_property(
     history_obj,
     history_state_key,
@@ -41707,6 +41786,50 @@ fn init_window_globals(
     history_obj,
     history_length_key,
     read_only_data_desc(Value::Number(1.0)),
+  )?;
+
+  // `history.scrollRestoration` (default: "auto").
+  //
+  // Many SPAs feature-detect this property and set it to `"manual"` to disable automatic scroll
+  // restoration during client-side navigation.
+  let history_scroll_restoration_get_call_id =
+    vm.register_native_call(history_scroll_restoration_get_native)?;
+  let history_scroll_restoration_get_name = scope.alloc_string("get scrollRestoration")?;
+  scope.push_root(Value::String(history_scroll_restoration_get_name))?;
+  let history_scroll_restoration_get_func = scope.alloc_native_function(
+    history_scroll_restoration_get_call_id,
+    None,
+    history_scroll_restoration_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    history_scroll_restoration_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(history_scroll_restoration_get_func))?;
+
+  let history_scroll_restoration_set_call_id =
+    vm.register_native_call(history_scroll_restoration_set_native)?;
+  let history_scroll_restoration_set_name = scope.alloc_string("set scrollRestoration")?;
+  scope.push_root(Value::String(history_scroll_restoration_set_name))?;
+  let history_scroll_restoration_set_func = scope.alloc_native_function(
+    history_scroll_restoration_set_call_id,
+    None,
+    history_scroll_restoration_set_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    history_scroll_restoration_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(history_scroll_restoration_set_func))?;
+  scope.define_property(
+    history_obj,
+    history_scroll_restoration_key,
+    idl_attribute_desc(
+      Value::Object(history_scroll_restoration_get_func),
+      Value::Object(history_scroll_restoration_set_func),
+    ),
   )?;
 
   // Seed the realm's host-side session history stack with the initial document URL + a `null`
@@ -43691,6 +43814,39 @@ mod tests {
       host.foo_gets >= 2,
       "expected WebIDL exotic_get to run for both direct eval and microtask callback"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn history_scroll_restoration_exists_and_validates() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script("'scrollRestoration' in history")?,
+      Value::Bool(true)
+    );
+
+    let initial = realm.exec_script("history.scrollRestoration")?;
+    assert_eq!(get_string(realm.heap(), initial), "auto");
+
+    realm.exec_script("history.scrollRestoration = 'manual'")?;
+    let manual = realm.exec_script("history.scrollRestoration")?;
+    assert_eq!(get_string(realm.heap(), manual), "manual");
+
+    let throws_on_bogus = realm.exec_script(
+      "(() => { try { history.scrollRestoration = 'bogus'; return false; } catch (e) { return e instanceof TypeError; } })()",
+    )?;
+    assert_eq!(throws_on_bogus, Value::Bool(true));
+
+    let throws_on_number = realm.exec_script(
+      "(() => { try { history.scrollRestoration = 123; return false; } catch (e) { return e instanceof TypeError; } })()",
+    )?;
+    assert_eq!(throws_on_number, Value::Bool(true));
+
+    // Invalid assignments should not clobber the previous value.
+    let after_invalid = realm.exec_script("history.scrollRestoration")?;
+    assert_eq!(get_string(realm.heap(), after_invalid), "manual");
+
     Ok(())
   }
 
