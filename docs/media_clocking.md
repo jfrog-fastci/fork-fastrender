@@ -226,6 +226,10 @@ Importantly, this message does **not** carry a timestamp. That’s intentional: 
 to query whatever clock is appropriate (for JS timers, for media playback, etc.) rather than trusting
 the UI thread’s scheduling jitter.
 
+Where it comes from: the windowed `browser` app schedules these ticks using winit timers
+(`ControlFlow::WaitUntil`) around `ANIMATION_TICK_INTERVAL` in `src/bin/browser.rs`. That interval is
+best-effort (it can jitter, coalesce, or pause), so it must never be treated as a timeline clock.
+
 What the tick does:
 
 * Gives the media pipeline CPU time to:
