@@ -445,7 +445,8 @@ pub fn host_from_hooks<'a>(
 pub enum CallbackKind {
   /// `callback Foo = ...` (must be callable when present).
   Function,
-  /// `callback interface Foo { ... }` (callable or has callable `handleEvent`).
+  /// `callback interface Foo { ... }` (callable or has a callable operation method like
+  /// `handleEvent` / `acceptNode`).
   Interface,
 }
 
@@ -535,15 +536,25 @@ impl CallbackHandle {
     let mut scope = heap.scope();
     scope.push_root(value)?;
 
+    // WebIDL callback interfaces are structural: a non-callable object is accepted only when it
+    // exposes a callable method for the callback's operation.
+    //
+    // `EventListener` uses `handleEvent`, while `NodeFilter` uses `acceptNode`. Prefer the existing
+    // `handleEvent` behavior and only fall back to `acceptNode` when `handleEvent` is missing.
     let key_str = scope.alloc_string("handleEvent")?;
     scope.push_root(Value::String(key_str))?;
     let key = VmPropertyKey::from_string(key_str);
 
-    let Some(_method) = vm.get_method_from_object(&mut scope, obj, key)? else {
-      return Err(VmError::TypeError(
-        "Callback interface object is missing a callable handleEvent method",
-      ));
-    };
+    if vm.get_method_from_object(&mut scope, obj, key)?.is_none() {
+      let key_str = scope.alloc_string("acceptNode")?;
+      scope.push_root(Value::String(key_str))?;
+      let key = VmPropertyKey::from_string(key_str);
+      if vm.get_method_from_object(&mut scope, obj, key)?.is_none() {
+        return Err(VmError::TypeError(
+          "Callback interface object is missing a callable handleEvent method",
+        ));
+      }
+    }
 
     drop(scope);
 
@@ -583,8 +594,8 @@ impl CallbackHandle {
 
   /// Invoke this callback with an explicit `this` value.
   ///
-  /// For callback interface objects, `this` is ignored and `handleEvent` is called with the
-  /// callback object as the receiver.
+  /// For callback interface objects, `this` is ignored and the callback's operation method is
+  /// called with the callback object as the receiver (`handleEvent` / `acceptNode`).
   pub fn invoke_with_this(
     &self,
     vm: &mut Vm,
@@ -625,16 +636,24 @@ impl CallbackHandle {
             ));
           };
 
-          // `handleEvent`
+          // Use spec-shaped `GetMethod` so Proxy `get` traps are respected and accessor getters are
+          // invoked via `call_with_host_and_hooks` (preserving embedder host context / host hooks).
+          //
+          // Prefer `handleEvent` (EventListener) and fall back to `acceptNode` (NodeFilter) when
+          // missing.
           let key_str = scope.alloc_string("handleEvent")?;
           scope.push_root(Value::String(key_str))?;
           let key = VmPropertyKey::from_string(key_str);
-          // Use spec-shaped `GetMethod` so Proxy `get` traps are respected and accessor getters are
-          // invoked via `call_with_host_and_hooks` (preserving embedder host context / host hooks).
-          let Some(method) = vm.get_method_with_host_and_hooks(host, scope, hooks, callback, key)? else {
-            return Err(VmError::TypeError(
-              "Callback interface object is missing a callable handleEvent method",
-            ));
+          let method = match vm.get_method_with_host_and_hooks(host, scope, hooks, callback, key)? {
+            Some(m) => m,
+            None => {
+              let key_str = scope.alloc_string("acceptNode")?;
+              scope.push_root(Value::String(key_str))?;
+              let key = VmPropertyKey::from_string(key_str);
+              vm.get_method_with_host_and_hooks(host, scope, hooks, callback, key)?.ok_or_else(|| {
+                VmError::TypeError("Callback interface object is missing a callable handleEvent method")
+              })?
+            }
           };
           scope.push_root(method)?;
 
@@ -1682,21 +1701,33 @@ pub fn invoke_callback_interface(
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(obj))?;
 
-  let key_s = scope.alloc_string("handleEvent")?;
-  scope.push_root(Value::String(key_s))?;
-  let key = VmPropertyKey::from_string(key_s);
-
   // Spec-shaped `GetMethod` so Proxy `get` traps are respected.
   //
   // `GetMethod` can invoke user code (Proxy traps, accessors) which can enqueue Promise jobs, so
   // temporarily install the embedder host hooks override while performing the property access.
-  let method = vm.with_host_hooks_override(hooks, |vm| {
-    vm.get_method_from_object(&mut scope, obj, key)
-  })?;
-  let Some(method) = method else {
-    return Err(VmError::TypeError(
-      "Callback interface object is missing a callable handleEvent method",
-    ));
+  //
+  // Prefer `handleEvent` (EventListener) and fall back to `acceptNode` (NodeFilter) when missing.
+  let method = {
+    let key_s = scope.alloc_string("handleEvent")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = VmPropertyKey::from_string(key_s);
+    vm.with_host_hooks_override(hooks, |vm| {
+      vm.get_method_from_object(&mut scope, obj, key)
+    })?
+  };
+  let method = match method {
+    Some(m) => m,
+    None => {
+      let key_s = scope.alloc_string("acceptNode")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = VmPropertyKey::from_string(key_s);
+      vm.with_host_hooks_override(hooks, |vm| {
+        vm.get_method_from_object(&mut scope, obj, key)
+      })?
+      .ok_or_else(|| {
+        VmError::TypeError("Callback interface object is missing a callable handleEvent method")
+      })?
+    }
   };
   scope.push_root(method)?;
   vm.call_with_host(&mut scope, hooks, method, Value::Object(obj), args)
