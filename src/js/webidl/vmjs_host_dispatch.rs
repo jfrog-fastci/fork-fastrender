@@ -7266,6 +7266,11 @@ mod element_dispatch_tests {
     let mut heap = vm_js::Heap::new(vm_js::HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
     let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
 
+    // `Element.classList` returns a real DOMTokenList instance, which requires the `DOMTokenList`
+    // bindings to exist on the realm global. This test uses host dispatch directly (without
+    // `WindowRealm`), so install just the DOMTokenList bindings to provide the prototype.
+    crate::js::bindings::install_dom_token_list_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
     let document_url = "https://example.invalid/".to_string();
     let module_loader: ModuleLoaderHandle =
       std::rc::Rc::new(std::cell::RefCell::new(ModuleLoader::new(Some(document_url.clone()))));
@@ -7285,7 +7290,7 @@ mod element_dispatch_tests {
     // document key so wrapper identity remains consistent.
     let document_obj = scope.alloc_object()?;
     let document_key = WeakGcObject::from(document_obj);
-    let _document_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    let document_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
     platform.register_wrapper(
       scope.heap(),
       document_obj,
@@ -7314,12 +7319,13 @@ mod element_dispatch_tests {
     };
     scope.push_root(Value::Object(wrapper))?;
 
-    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new_without_global();
+    let global = realm.global_object();
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new(global);
 
     let mut hooks = TestHooks::default();
     hooks.payload.set_vm_host(&mut host);
 
-    let result: Result<(), VmError> = vm.with_host_hooks_override(&mut hooks, |vm| {
+    let result = vm.with_host_hooks_override(&mut hooks, |vm| {
       // Getter attributes.
       let got = dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "id", 0, &[])?;
       assert_eq!(js_string_to_rust_string(&scope, got)?, "a");
@@ -7332,7 +7338,7 @@ mod element_dispatch_tests {
         dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "tagName", 0, &[])?;
       assert_eq!(js_string_to_rust_string(&scope, got)?, "DIV");
 
-      // classList placeholder should be stable and not crash.
+      // classList object should be stable and not crash.
       let got1 =
         dispatch.call_operation(vm, &mut scope, Some(Value::Object(wrapper)), "Element", "classList", 0, &[])?;
       let got2 =
@@ -7439,7 +7445,6 @@ mod element_dispatch_tests {
 
       Ok(())
     });
-    result?;
 
     // Ensure we unregister persistent roots (Realm::drop debug-asserts on missing teardown).
     drop(scope);
@@ -7448,8 +7453,9 @@ mod element_dispatch_tests {
         platform.teardown(&mut heap);
       }
     }
+    heap.remove_root(document_root);
     realm.teardown(&mut heap);
-    Ok(())
+    result
   }
 
   fn call_document_get_element_by_id_native(
