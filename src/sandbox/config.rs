@@ -56,6 +56,13 @@ pub struct RendererSandboxEnvConfig {
   pub macos_seatbelt_profile: MacosSeatbeltProfileSelection,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RendererSandboxMode {
+  Strict,
+  Relaxed,
+  Off,
+}
+
 impl RendererSandboxEnvConfig {
   pub fn from_env(default_enabled: bool) -> Result<Self, SandboxError> {
     Self::from_vars_iter(std::env::vars(), default_enabled)
@@ -73,12 +80,20 @@ impl RendererSandboxEnvConfig {
     env: &HashMap<String, String>,
     default_enabled: bool,
   ) -> Result<Self, SandboxError> {
-    let enabled = parse_env_bool_0_1(
+    let mode = parse_renderer_sandbox_mode(
       env.get(ENV_RENDERER_SANDBOX).map(String::as_str),
       default_enabled,
     )?;
+    let enabled = mode != RendererSandboxMode::Off;
+
+    let default_profile = match mode {
+      RendererSandboxMode::Strict => MacosSeatbeltProfileSelection::PureComputation,
+      RendererSandboxMode::Relaxed => MacosSeatbeltProfileSelection::RendererDefault,
+      RendererSandboxMode::Off => MacosSeatbeltProfileSelection::PureComputation,
+    };
     let macos_seatbelt_profile = parse_macos_seatbelt_profile(
       env.get(ENV_MACOS_SEATBELT_PROFILE).map(String::as_str),
+      default_profile,
     )?;
     Ok(Self {
       enabled,
@@ -87,14 +102,35 @@ impl RendererSandboxEnvConfig {
   }
 }
 
-fn parse_env_bool_0_1(value: Option<&str>, default: bool) -> Result<bool, SandboxError> {
+fn parse_renderer_sandbox_mode(
+  value: Option<&str>,
+  default_enabled: bool,
+) -> Result<RendererSandboxMode, SandboxError> {
   let Some(raw) = value else {
-    return Ok(default);
+    return Ok(if default_enabled {
+      RendererSandboxMode::Strict
+    } else {
+      RendererSandboxMode::Off
+    });
   };
   let trimmed = raw.trim();
-  match trimmed {
-    "0" => Ok(false),
-    "1" => Ok(true),
+
+  if trimmed.is_empty() {
+    return Err(SandboxError::InvalidBoolean0Or1 {
+      var: ENV_RENDERER_SANDBOX,
+      value: raw.to_string(),
+    });
+  }
+
+  // Accept canonical and case-insensitive spellings.
+  //
+  // `0|1` are legacy spellings. `strict|relaxed|off` are the preferred values for renderer
+  // sandbox mode selection.
+  let lower = trimmed.to_ascii_lowercase();
+  match lower.as_str() {
+    "0" | "off" => Ok(RendererSandboxMode::Off),
+    "1" | "strict" => Ok(RendererSandboxMode::Strict),
+    "relaxed" => Ok(RendererSandboxMode::Relaxed),
     _ => Err(SandboxError::InvalidBoolean0Or1 {
       var: ENV_RENDERER_SANDBOX,
       value: raw.to_string(),
@@ -102,9 +138,12 @@ fn parse_env_bool_0_1(value: Option<&str>, default: bool) -> Result<bool, Sandbo
   }
 }
 
-fn parse_macos_seatbelt_profile(value: Option<&str>) -> Result<MacosSeatbeltProfileSelection, SandboxError> {
+fn parse_macos_seatbelt_profile(
+  value: Option<&str>,
+  default: MacosSeatbeltProfileSelection,
+) -> Result<MacosSeatbeltProfileSelection, SandboxError> {
   let Some(raw) = value else {
-    return Ok(MacosSeatbeltProfileSelection::RendererDefault);
+    return Ok(default);
   };
   let trimmed = raw.trim();
   if trimmed.is_empty() {
@@ -136,6 +175,10 @@ mod tests {
     let env = HashMap::new();
     let config = RendererSandboxEnvConfig::from_env_map(&env, true).expect("parse config");
     assert!(config.enabled);
+    assert_eq!(
+      config.macos_seatbelt_profile,
+      MacosSeatbeltProfileSelection::PureComputation
+    );
     let config = RendererSandboxEnvConfig::from_env_map(&env, false).expect("parse config");
     assert!(!config.enabled);
   }
@@ -149,6 +192,10 @@ mod tests {
     env.insert(ENV_RENDERER_SANDBOX.to_string(), "\t1\n".to_string());
     let config = RendererSandboxEnvConfig::from_env_map(&env, false).expect("parse config");
     assert!(config.enabled);
+    assert_eq!(
+      config.macos_seatbelt_profile,
+      MacosSeatbeltProfileSelection::PureComputation
+    );
   }
 
   #[test]
@@ -158,16 +205,16 @@ mod tests {
     let err = RendererSandboxEnvConfig::from_env_map(&env, true).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("FASTR_RENDERER_SANDBOX"), "msg={msg}");
-    assert!(msg.contains("0 or 1"), "msg={msg}");
+    assert!(msg.contains("strict"), "msg={msg}");
   }
 
   #[test]
-  fn macos_seatbelt_profile_defaults_to_renderer_default() {
+  fn macos_seatbelt_profile_defaults_to_pure_computation() {
     let env = HashMap::new();
     let config = RendererSandboxEnvConfig::from_env_map(&env, true).expect("parse config");
     assert_eq!(
       config.macos_seatbelt_profile,
-      MacosSeatbeltProfileSelection::RendererDefault
+      MacosSeatbeltProfileSelection::PureComputation
     );
   }
 
@@ -207,5 +254,29 @@ mod tests {
     let msg = err.to_string();
     assert!(msg.contains("FASTR_RENDERER_MACOS_SEATBELT_PROFILE"), "msg={msg}");
     assert!(msg.contains("pure-computation"), "msg={msg}");
+  }
+
+  #[test]
+  fn renderer_sandbox_mode_parses_strict_relaxed_off() {
+    let mut env = HashMap::new();
+    env.insert(ENV_RENDERER_SANDBOX.to_string(), "strict".to_string());
+    let config = RendererSandboxEnvConfig::from_env_map(&env, false).expect("parse config");
+    assert!(config.enabled);
+    assert_eq!(
+      config.macos_seatbelt_profile,
+      MacosSeatbeltProfileSelection::PureComputation
+    );
+
+    env.insert(ENV_RENDERER_SANDBOX.to_string(), " relaxed ".to_string());
+    let config = RendererSandboxEnvConfig::from_env_map(&env, false).expect("parse config");
+    assert!(config.enabled);
+    assert_eq!(
+      config.macos_seatbelt_profile,
+      MacosSeatbeltProfileSelection::RendererDefault
+    );
+
+    env.insert(ENV_RENDERER_SANDBOX.to_string(), "OFF".to_string());
+    let config = RendererSandboxEnvConfig::from_env_map(&env, true).expect("parse config");
+    assert!(!config.enabled);
   }
 }

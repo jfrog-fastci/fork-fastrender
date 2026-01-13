@@ -16,6 +16,34 @@ This document is the macOS-specific sandbox guide. It covers:
 - Practical debugging tips for sandbox denials (`log stream ...`).
 - How to run the macOS-only sandbox tests and the `macos_sandbox_probe` tool.
 
+## Runtime configuration: `FASTR_RENDERER_SANDBOX`
+
+Renderer processes can select the Seatbelt sandbox mode at startup via:
+
+`FASTR_RENDERER_SANDBOX=strict|relaxed|off`
+
+The canonical entrypoint is:
+
+- `fastrender::sandbox::apply_macos_sandbox_from_env()` (returns `MacosSandboxStatus` so callers can
+  choose fail-closed in production or best-effort in dev).
+
+Mode mapping:
+
+- `strict` (default on macOS renderer processes): applies `macos::MacosSandboxMode::PureComputation`
+  (Seatbelt `pure-computation`, with an embedded fallback profile).
+- `relaxed`: applies `macos::MacosSandboxMode::RendererSystemFonts` (still blocks network, but
+  allows read-only access to system font/framework locations).
+- `off`: do not apply a sandbox (**debugging only**).
+
+Advanced override:
+
+- `FASTR_RENDERER_MACOS_SEATBELT_PROFILE=pure-computation|no-internet|renderer-default|<path>` can be
+  used to override the underlying Seatbelt profile when `FASTR_RENDERER_SANDBOX` enables sandboxing.
+  This is intended for experimentation; it overrides the `strict`/`relaxed` profile mapping.
+
+Recommended: leave unset in production (default `strict`), use `relaxed` only when you need system
+fonts during bring-up, and use `off` only when debugging sandbox behavior.
+
 ## Seatbelt vs App Sandbox (what’s the difference?)
 
 ### Seatbelt (what we use for renderer isolation)

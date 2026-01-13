@@ -89,6 +89,22 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - This is intended for local debugging only.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
 
+## Renderer sandboxing (macOS)
+
+These env vars are consumed by the multiprocess renderer sandbox entrypoints (i.e. processes that
+call [`fastrender::sandbox::apply_macos_sandbox_from_env`](../src/sandbox/mod.rs) during startup).
+
+- `FASTR_RENDERER_SANDBOX=strict|relaxed|off` – control the macOS Seatbelt sandbox mode for renderer processes.
+  - `strict` (default on macOS renderer processes): apply the built-in `pure-computation` profile (no filesystem access; no network access). Intended for production.
+  - `relaxed`: still blocks network access, but allows read-only access to system font/framework locations needed for system font discovery. Useful for local development / debugging while still preventing accidental network access.
+  - `off`: do not apply a sandbox (local debugging only; **not** safe for production).
+- `FASTR_RENDERER_MACOS_SEATBELT_PROFILE=pure-computation|no-internet|renderer-default|<path>` – **macOS-only**: advanced override for the underlying Seatbelt profile used when `FASTR_RENDERER_SANDBOX` enables sandboxing.
+  - When set, this overrides the `strict`/`relaxed` profile mapping.
+  - `<path>` is treated as a path to an SBPL profile file to load.
+
+Recommended: leave unset in production builds so macOS renderers default to `strict`. Use `relaxed`
+when you need system fonts, and use `off` only when debugging sandbox behaviour.
+
 ## Browser UI (`browser` binary)
 
 These are consumed by the experimental desktop browser UI (`browser` binary; see [browser_ui.md](browser_ui.md); run with `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --features browser_ui --bin browser`).

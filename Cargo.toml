@@ -246,7 +246,6 @@ path = "src/bin/macos_sandbox_probe.rs"
 test = false
 bench = false
 required-features = ["macos_sandbox_probe"]
-
 [target.'cfg(windows)'.dependencies]
 # Windows-only renderer sandboxing (AppContainer + restricted token + job objects).
 # Keep feature set narrow: only APIs used by `src/sandbox/windows.rs`.

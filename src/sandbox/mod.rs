@@ -46,6 +46,8 @@ pub mod spawn;
 
 pub use fd_sanitizer::close_fds_except;
 
+use std::env::VarError;
+
 #[cfg(target_os = "linux")]
 mod linux_prelude;
 
@@ -237,7 +239,7 @@ pub enum SandboxError {
     source: io::Error,
   },
 
-  #[error("invalid {var}: expected 0 or 1, got {value:?}")]
+  #[error("invalid {var}: expected one of 0, 1, strict, relaxed, or off; got {value:?}")]
   InvalidBoolean0Or1 { var: &'static str, value: String },
 
   #[error(
@@ -276,7 +278,7 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
       eprintln!(
         "fastrender: renderer sandbox configuration error\n\
          error: {err}\n\
-         hint: set FASTR_RENDERER_SANDBOX=0 to disable sandboxing for debugging"
+         hint: set FASTR_RENDERER_SANDBOX=off (or 0) to disable sandboxing for debugging"
       );
       return Err(err);
     }
@@ -306,7 +308,7 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
             eprintln!(
               "fastrender: failed to load macOS Seatbelt sandbox profile (profile={profile_desc})\n\
                error: {err}\n\
-               hint: set FASTR_RENDERER_SANDBOX=0 to disable sandboxing for debugging"
+               hint: set FASTR_RENDERER_SANDBOX=off (or 0) to disable sandboxing for debugging"
             );
             return Err(err);
           }
@@ -320,7 +322,7 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
       eprintln!(
         "fastrender: failed to apply macOS Seatbelt sandbox (profile={profile_desc})\n\
          errorbuf: {err}\n\
-         hint: set FASTR_RENDERER_SANDBOX=0 to disable sandboxing for debugging"
+         hint: set FASTR_RENDERER_SANDBOX=off (or 0) to disable sandboxing for debugging"
       );
       return Err(SandboxError::MacosSeatbeltInitFailed {
         profile: profile_desc,
@@ -416,6 +418,163 @@ mod linux_seccomp;
 pub mod macos_spawn;
 #[cfg(target_os = "windows")]
 pub mod windows;
+
+// ============================================================================
+// macOS renderer sandbox env API (`FASTR_RENDERER_SANDBOX`)
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosSandboxMode {
+  /// Strict sandbox (no filesystem access; no network access).
+  Strict,
+  /// Relaxed sandbox: still blocks network, but allows read-only system font access.
+  Relaxed,
+  /// Do not apply a sandbox (debugging only).
+  Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosSandboxSource {
+  Default,
+  EnvVar,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacosSandboxNotAppliedReason {
+  ModeOff,
+  UnsupportedPlatform,
+  ApplyFailed { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacosSandboxStatus {
+  Applied {
+    mode: MacosSandboxMode,
+    source: MacosSandboxSource,
+  },
+  NotApplied {
+    mode: MacosSandboxMode,
+    source: MacosSandboxSource,
+    reason: MacosSandboxNotAppliedReason,
+  },
+}
+
+impl MacosSandboxStatus {
+  pub fn is_applied(&self) -> bool {
+    matches!(self, Self::Applied { .. })
+  }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MacosSandboxError {
+  #[error("{var} is not valid Unicode")]
+  EnvVarNotUnicode { var: &'static str },
+
+  #[error(transparent)]
+  Sandbox(#[from] SandboxError),
+}
+
+/// Apply a macOS Seatbelt sandbox configuration based on `FASTR_RENDERER_SANDBOX`.
+///
+/// This is a macOS-focused wrapper that:
+/// - selects sane defaults (strict by default on macOS),
+/// - returns a structured status that callers can treat as best-effort in dev or fail-closed in prod.
+pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandboxError> {
+  let default_enabled = cfg!(target_os = "macos");
+
+  let sandbox_env = match std::env::var(config::ENV_RENDERER_SANDBOX) {
+    Ok(v) => Some(v),
+    Err(VarError::NotPresent) => None,
+    Err(VarError::NotUnicode(_)) => {
+      return Err(MacosSandboxError::EnvVarNotUnicode {
+        var: config::ENV_RENDERER_SANDBOX,
+      })
+    }
+  };
+  let source = if sandbox_env.is_some() {
+    MacosSandboxSource::EnvVar
+  } else {
+    MacosSandboxSource::Default
+  };
+
+  let seatbelt_profile_env = match std::env::var(config::ENV_MACOS_SEATBELT_PROFILE) {
+    Ok(v) => Some(v),
+    Err(VarError::NotPresent) => None,
+    Err(VarError::NotUnicode(_)) => {
+      return Err(MacosSandboxError::EnvVarNotUnicode {
+        var: config::ENV_MACOS_SEATBELT_PROFILE,
+      })
+    }
+  };
+
+  let mut env = std::collections::HashMap::<String, String>::new();
+  if let Some(v) = sandbox_env {
+    env.insert(config::ENV_RENDERER_SANDBOX.to_string(), v);
+  }
+  if let Some(v) = seatbelt_profile_env {
+    env.insert(config::ENV_MACOS_SEATBELT_PROFILE.to_string(), v);
+  }
+
+  let config = config::RendererSandboxEnvConfig::from_env_map(&env, default_enabled)?;
+
+  let mode = if !config.enabled {
+    MacosSandboxMode::Off
+  } else if matches!(
+    config.macos_seatbelt_profile,
+    config::MacosSeatbeltProfileSelection::PureComputation
+  ) {
+    MacosSandboxMode::Strict
+  } else {
+    MacosSandboxMode::Relaxed
+  };
+
+  if mode == MacosSandboxMode::Off {
+    return Ok(MacosSandboxStatus::NotApplied {
+      mode,
+      source,
+      reason: MacosSandboxNotAppliedReason::ModeOff,
+    });
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  {
+    return Ok(MacosSandboxStatus::NotApplied {
+      mode,
+      source,
+      reason: MacosSandboxNotAppliedReason::UnsupportedPlatform,
+    });
+  }
+
+  #[cfg(target_os = "macos")]
+  {
+    use config::MacosSeatbeltProfileSelection;
+
+    let apply_result = match &config.macos_seatbelt_profile {
+      MacosSeatbeltProfileSelection::PureComputation => {
+        macos::apply_renderer_sandbox(macos::MacosSandboxMode::PureComputation)
+      }
+      MacosSeatbeltProfileSelection::NoInternet => macos::apply_named_profile("no-internet"),
+      MacosSeatbeltProfileSelection::RendererDefault => {
+        macos::apply_renderer_sandbox(macos::MacosSandboxMode::RendererSystemFonts)
+      }
+      MacosSeatbeltProfileSelection::SbplPath { .. } => {
+        let sbpl = config.macos_seatbelt_profile.load_sbpl_source()?;
+        macos::apply_profile_source_with_home_param(&sbpl)
+      }
+    };
+
+    match apply_result {
+      Ok(()) => Ok(MacosSandboxStatus::Applied { mode, source }),
+      Err(err) => Ok(MacosSandboxStatus::NotApplied {
+        mode,
+        source,
+        reason: MacosSandboxNotAppliedReason::ApplyFailed {
+          message: err.to_string(),
+        },
+      }),
+    }
+  }
+}
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
   use super::*;
