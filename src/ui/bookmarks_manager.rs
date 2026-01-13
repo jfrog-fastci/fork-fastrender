@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::borrow::Cow;
 
 use crate::ui::motion::UiMotion;
 
@@ -14,6 +15,8 @@ use super::{
   icon_button, icon_tinted, panel_empty_state, panel_header, panel_search_field, BookmarkId,
   BookmarkDelta, BookmarkNode, BookmarkStore, BrowserIcon,
 };
+
+use super::string_match::contains_ascii_case_insensitive;
 
 #[derive(Debug, Clone)]
 pub enum BookmarksManagerAction {
@@ -39,7 +42,7 @@ pub struct BookmarksManagerState {
   list_cache: Option<BookmarksListCache>,
   /// Incremented when folder open/closed state changes so the flattened view can be rebuilt.
   folder_open_revision: u64,
-  /// Cached folder dropdown options + parent-label map (rebuilt on store revision changes).
+  /// Cached folder dropdown options + parent-label map (rebuilt on folder revision changes).
   folder_cache: Option<BookmarksFolderCache>,
 }
 
@@ -64,7 +67,7 @@ struct BookmarksListCache {
 
 #[derive(Debug, Clone)]
 struct BookmarksFolderCache {
-  store_revision: u64,
+  folder_revision: u64,
   folder_options: Vec<(Option<BookmarkId>, String)>,
   folder_labels: HashMap<Option<BookmarkId>, String>,
 }
@@ -74,18 +77,18 @@ impl BookmarksFolderCache {
     let folder_options = folder_options(store);
     let folder_labels = folder_options.iter().cloned().collect::<HashMap<_, _>>();
     Self {
-      store_revision: store.revision(),
+      folder_revision: store.folder_revision(),
       folder_options,
       folder_labels,
     }
   }
 
   fn ensure_up_to_date(&mut self, store: &BookmarkStore) {
-    let revision = store.revision();
-    if self.store_revision == revision {
+    let revision = store.folder_revision();
+    if self.folder_revision == revision {
       return;
     }
-    self.store_revision = revision;
+    self.folder_revision = revision;
     self.folder_options = folder_options(store);
     self.folder_labels = self
       .folder_options
@@ -836,18 +839,16 @@ fn bookmarks_list(
 
     // Move the cache out temporarily so row rendering can mutably borrow `state` without fighting
     // Rust's borrow checker.
+    let prev_cache = state.list_cache.take();
     let mut cache = if needs_rebuild {
       BookmarksListCache {
         store_revision,
         search_query: query.to_string(),
         folder_open_revision: open_rev,
-        rows: build_visible_rows(ui.ctx(), store, query),
+        rows: build_visible_rows(ui.ctx(), store, query, prev_cache.as_ref()),
       }
     } else {
-      state
-        .list_cache
-        .take()
-        .expect("list cache present when not rebuilding")
+      prev_cache.expect("list cache present when not rebuilding")
     };
 
     if !query.is_empty() && cache.rows.is_empty() {
@@ -955,8 +956,78 @@ fn folder_open(ctx: &egui::Context, folder_id: BookmarkId) -> bool {
     .unwrap_or(false)
 }
 
-fn build_visible_rows(ctx: &egui::Context, store: &BookmarkStore, query: &str) -> Vec<BookmarkRow> {
+fn filter_search_rows(
+  store: &BookmarkStore,
+  query: &str,
+  prev_rows: &[BookmarkRow],
+) -> Vec<BookmarkRow> {
+  // Keep matching behavior consistent with `BookmarkStore::search`.
+  let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+    Cow::Owned(query.to_ascii_lowercase())
+  } else {
+    Cow::Borrowed(query)
+  };
+  let tokens: Vec<&str> = query_lower
+    .split_whitespace()
+    .filter(|t| !t.is_empty())
+    .collect();
+  if tokens.is_empty() {
+    return Vec::new();
+  }
+
+  let mut out = Vec::with_capacity(prev_rows.len());
+  'rows: for row in prev_rows {
+    let BookmarkRowKind::Bookmark = row.kind else {
+      continue;
+    };
+    let Some(BookmarkNode::Bookmark(entry)) = store.nodes.get(&row.id) else {
+      continue;
+    };
+
+    let url = entry.url.trim();
+    if url.is_empty() {
+      continue;
+    }
+    let title = entry
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty());
+
+    for token_lower in &tokens {
+      if !contains_ascii_case_insensitive(url, token_lower)
+        && !title.is_some_and(|t| contains_ascii_case_insensitive(t, token_lower))
+      {
+        continue 'rows;
+      }
+    }
+
+    out.push(BookmarkRow {
+      kind: BookmarkRowKind::Bookmark,
+      id: row.id,
+      depth: 0,
+    });
+  }
+
+  out
+}
+
+fn build_visible_rows(
+  ctx: &egui::Context,
+  store: &BookmarkStore,
+  query: &str,
+  prev_cache: Option<&BookmarksListCache>,
+) -> Vec<BookmarkRow> {
   if !query.is_empty() {
+    if let Some(prev) = prev_cache {
+      if prev.store_revision == store.revision()
+        && !prev.search_query.is_empty()
+        && query.starts_with(prev.search_query.as_str())
+      {
+        return filter_search_rows(store, query, &prev.rows);
+      }
+    }
+
     let ids = store.search(query, usize::MAX);
     return ids
       .into_iter()
