@@ -109,6 +109,9 @@ call [`fastrender::sandbox::maybe_apply_renderer_sandbox_from_env`](../src/sandb
   - When set, this overrides the `strict`/`relaxed` profile mapping.
   - `<path>` is treated as a path to an SBPL profile file to load.
 
+Note: the debug escape hatches `FASTR_DISABLE_RENDERER_SANDBOX=1` and `FASTR_MACOS_RENDERER_SANDBOX=off`
+also disable in-process Seatbelt sandboxing, overriding `FASTR_RENDERER_SANDBOX`.
+
 Recommended: leave unset in production builds so macOS renderers default to `strict`. Use `relaxed`
 when you need system fonts, and use `off` only when debugging sandbox behaviour.
 

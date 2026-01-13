@@ -22,6 +22,9 @@ Renderer processes can select the Seatbelt sandbox mode at startup via:
 
 `FASTR_RENDERER_SANDBOX=strict|relaxed|off`
 
+Note: the debug escape hatches `FASTR_DISABLE_RENDERER_SANDBOX=1` and `FASTR_MACOS_RENDERER_SANDBOX=off`
+also disable Seatbelt sandboxing, overriding `FASTR_RENDERER_SANDBOX`.
+
 The canonical entrypoint is:
 
 - `fastrender::sandbox::maybe_apply_renderer_sandbox_from_env()` (returns `SandboxStatus` so callers
