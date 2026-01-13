@@ -71,16 +71,20 @@ fn relaxed_sandbox_profile_denies_home_file_read() {
   assert_eq!(roundtrip, SENTINEL, "home file should contain sentinel");
 
   let exe = std::env::current_exe().expect("current test exe path");
-  let test_name = concat!(
-    module_path!(),
-    "::relaxed_sandbox_profile_denies_home_file_read"
-  );
+  // `module_path!()` includes the crate name (e.g. `integration::...`) but the test harness expects
+  // `--exact` arguments without it (e.g. `guards::...`).
+  let module_path = module_path!();
+  let module_path = module_path
+    .split_once("::")
+    .map(|(_, rest)| rest)
+    .unwrap_or(module_path);
+  let test_name = format!("{module_path}::relaxed_sandbox_profile_denies_home_file_read");
 
   let output = Command::new(exe)
     .env(ENV_HOME_FILE, &path)
     .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
-    .arg(test_name)
+    .arg(&test_name)
     .arg("--nocapture")
     .output()
     .expect("spawn sandboxed child process");
