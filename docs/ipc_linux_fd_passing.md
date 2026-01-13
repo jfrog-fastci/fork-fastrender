@@ -121,6 +121,8 @@ Repo reality:
   [`src/ipc/unix_seqpacket.rs`](../src/ipc/unix_seqpacket.rs)
 - Slot-based seqpacket prototype with strict lengths + truncation handling:
   [`src/ipc/frame_slots.rs`](../src/ipc/frame_slots.rs)
+- Exec-safe `socketpair()` bootstrap helper (avoid clearing CLOEXEC in a multithreaded parent):
+  [`src/ipc/bootstrap.rs`](../src/ipc/bootstrap.rs)
 
 ### Sandbox friendliness: prefer inherited `socketpair()` endpoints
 
