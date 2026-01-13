@@ -530,6 +530,15 @@ impl<Host: 'static> EventLoop<Host> {
     None
   }
 
+  /// Returns the time until the next scheduled timer becomes due, if any.
+  ///
+  /// Like [`Self::next_timer_due_time`], this discards stale entries from the timer priority queue
+  /// before returning.
+  pub fn next_timer_due_in(&mut self) -> Option<Duration> {
+    let due = self.next_timer_due_time()?;
+    Some(due.saturating_sub(self.now()))
+  }
+
   pub fn queue_limits(&self) -> QueueLimits {
     self.queue_limits
   }
@@ -553,6 +562,10 @@ impl<Host: 'static> EventLoop<Host> {
       && self.microtask_queue.is_empty()
       && self.external_task_queue.is_empty()
       && self.idle_callback_queue.is_empty()
+  }
+
+  pub fn has_pending_timers(&self) -> bool {
+    !self.timers.is_empty()
   }
 
   pub fn has_pending_animation_frame_callbacks(&self) -> bool {

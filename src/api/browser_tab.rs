@@ -5510,6 +5510,33 @@ impl BrowserTab {
     Ok(true)
   }
 
+  /// Whether the JS event loop currently has no runnable work (tasks or microtasks) queued.
+  ///
+  /// Note: this does *not* consider future timers that are not yet due.
+  pub fn event_loop_is_idle(&self) -> bool {
+    self.event_loop.is_idle()
+  }
+
+  pub fn has_pending_animation_frame_callbacks(&self) -> bool {
+    self.event_loop.has_pending_animation_frame_callbacks()
+  }
+
+  pub fn has_pending_timers(&self) -> bool {
+    self.event_loop.has_pending_timers()
+  }
+
+  pub fn next_timer_due_time(&mut self) -> Option<std::time::Duration> {
+    self.event_loop.next_timer_due_time()
+  }
+
+  pub fn next_timer_due_in(&mut self) -> Option<std::time::Duration> {
+    self.event_loop.next_timer_due_in()
+  }
+
+  pub fn now(&self) -> std::time::Duration {
+    self.event_loop.now()
+  }
+
   /// Drive the tab's HTML-like event loop until it becomes idle (or a run limit is hit).
   ///
   /// This drains:
@@ -6762,6 +6789,38 @@ mod tests {
       .to_string();
 
     assert_eq!(log, "m1-start,m1-end,m2,dcl,load,");
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_exposes_event_loop_timer_query_methods() -> Result<()> {
+    use crate::js::clock::VirtualClock;
+    use std::time::Duration;
+
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::with_clock(clock.clone());
+
+    let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
+      "",
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      event_loop,
+      JsExecutionOptions::default(),
+    )?;
+
+    let delay = Duration::from_millis(25);
+    let id = tab
+      .event_loop
+      .set_timeout(delay, |_host, _event_loop| Ok(()))?;
+
+    assert!(tab.has_pending_timers());
+    assert_eq!(tab.next_timer_due_in(), Some(delay));
+
+    tab.event_loop.clear_timeout(id);
+
+    assert!(!tab.has_pending_timers());
+    assert_eq!(tab.next_timer_due_in(), None);
+
     Ok(())
   }
 
