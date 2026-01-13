@@ -1350,7 +1350,7 @@ mod tests {
     // stored version (and should not be treated as a duplicate match).
     let mut child_updated = accesskit::NodeBuilder::new(accesskit::Role::Button);
     child_updated.set_name("child");
-    child_updated.set_disabled(true);
+    child_updated.set_disabled();
     let incremental2 = accesskit::TreeUpdate {
       nodes: vec![(child_id, child_updated.build(&mut classes))],
       tree: None,

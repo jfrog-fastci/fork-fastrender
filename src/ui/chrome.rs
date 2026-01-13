@@ -1658,50 +1658,40 @@ pub fn chrome_ui_with_bookmarks(
     // Navigation + address bar row.
     ui.horizontal(|ui| {
       let is_compact = ui.available_width() < COMPACT_MODE_THRESHOLD_PX;
-      // Avoid holding an immutable borrow of `app` for the entire toolbar render pass: we need to
-      // mutate tab/chrome state (zoom, omnibox, etc.) based on UI interactions in this same frame.
-      let (
-        can_back,
-        can_forward,
-        loading,
-        stage,
-        load_progress,
-        zoom_factor,
-        error,
-        warning,
-        active_url,
-      ) = app
-        .active_tab()
-        .map(|t| {
-          (
-            t.can_go_back,
-            t.can_go_forward,
-            t.loading,
-            t.load_stage,
-            t.load_progress,
-            t.zoom,
-            t.error.clone(),
-            t.warning.clone(),
-            t.committed_url
-              .as_deref()
-              .or_else(|| t.current_url())
-              .unwrap_or("")
-              .to_string(),
-          )
-        })
-        .unwrap_or((
-          false,
-          false,
-          false,
-          None,
-          None,
-          zoom::DEFAULT_ZOOM,
-          None,
-          None,
-          String::new(),
-        ));
-      let error = error.as_deref();
-      let warning = warning.as_deref();
+      // Avoid holding immutable borrows of the active tab across the full chrome UI: we mutate
+      // various `BrowserAppState` fields in response to user actions.
+      let (can_back, can_forward, loading, stage, load_progress, zoom_factor, active_url, error, warning) = {
+        let active_tab = app.active_tab();
+        let (can_back, can_forward, loading, stage, load_progress, zoom_factor) = active_tab
+          .map(|t| {
+            (
+              t.can_go_back,
+              t.can_go_forward,
+              t.loading,
+              t.load_stage,
+              t.load_progress,
+              t.zoom,
+            )
+          })
+          .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
+        let active_url = active_tab
+          .and_then(|t| t.committed_url.as_deref().or_else(|| t.current_url()))
+          .unwrap_or("")
+          .to_string();
+        let error = active_tab.and_then(|t| t.error.as_deref()).map(str::to_string);
+        let warning = active_tab.and_then(|t| t.warning.as_deref()).map(str::to_string);
+        (
+          can_back,
+          can_forward,
+          loading,
+          stage,
+          load_progress,
+          zoom_factor,
+          active_url,
+          error,
+          warning,
+        )
+      };
 
       let downloads = app.downloads.aggregate_progress();
 
@@ -1903,12 +1893,12 @@ pub fn chrome_ui_with_bookmarks(
         loading_text,
       ) = {
         let cache = &mut app.chrome.address_bar_cache;
-        cache.update_active_url(&active_url, ADDRESS_BAR_DISPLAY_MAX_CHARS);
+        cache.update_active_url(active_url.as_str(), ADDRESS_BAR_DISPLAY_MAX_CHARS);
         let url_generation = cache.active_url_generation();
         let active_url_is_bookmarked = cache.is_url_bookmarked(active_url_trim, omnibox_bookmarks);
         let indicator = cache.security_indicator();
         let formatted_url = cache.formatted_url().clone();
-        let display_path_query_fragment = cache.display_path_query_fragment().map(|s| s.to_owned());
+        let display_path_query_fragment = cache.display_path_query_fragment().map(str::to_string);
         let loading_text = cache.loading_text(stage).to_string();
         (
           formatted_url,
@@ -2096,7 +2086,7 @@ pub fn chrome_ui_with_bookmarks(
           let label_width = ctx.data_mut(|d| {
             let cache_id = address_bar_id.with("loading_text_width_cache");
             let cache = d.get_temp_mut_or_default::<LoadingTextWidthCache>(cache_id);
-            cache.width(ui, stage_key, &font_id, loading_text)
+            cache.width(ui, stage_key, &font_id, loading_text.as_str())
           });
           right_sum += label_width;
           right_len += 1;
@@ -2397,11 +2387,11 @@ pub fn chrome_ui_with_bookmarks(
                   .wrap(false)
                   .truncate(true),
               );
-              show_tooltip_on_hover_or_focus(ui, &resp, loading_text);
+              show_tooltip_on_hover_or_focus(ui, &resp, loading_text.as_str());
             }
             if loading {
               let resp = spinner(ui, icon_side);
-              show_tooltip_on_hover_or_focus(ui, &resp, loading_text);
+              show_tooltip_on_hover_or_focus(ui, &resp, loading_text.as_str());
               // In compact mode the spinner may be the only visible loading affordance, so expose the
               // full loading text to screen readers (hover text is not sufficient).
               resp.widget_info({
@@ -2898,8 +2888,8 @@ pub fn chrome_ui_with_bookmarks(
           .chrome
           .omnibox
           .original_input
-          .as_deref()
-          .unwrap_or(app.chrome.address_bar_text.as_str());
+          .clone()
+          .unwrap_or_else(|| app.chrome.address_bar_text.clone());
         if has_focus
           && app.chrome.address_bar_editing
           && app.chrome.omnibox.open
@@ -2908,11 +2898,11 @@ pub fn chrome_ui_with_bookmarks(
         {
           let remote = &app.chrome.remote_search_cache;
           if remote.fetched_at != app.chrome.omnibox.last_built_remote_fetched_at {
-            let remote_is_for_current_query = resolve_omnibox_search_query(omnibox_query)
+            let remote_is_for_current_query = resolve_omnibox_search_query(omnibox_query.as_str())
               .is_some_and(|q| q == remote.query.as_str());
 
             if remote_is_for_current_query {
-              let input = omnibox_query;
+              let input = omnibox_query.as_str();
               let suggestions = {
                 let ctx = OmniboxContext {
                   open_tabs: &app.tabs,
@@ -5160,7 +5150,9 @@ mod tests {
     raw.time = Some(0.0);
     raw.focused = true;
     raw.events = events;
-    raw.accesskit_action_requests = accesskit_action_requests;
+    raw
+      .events
+      .extend(accesskit_action_requests.into_iter().map(egui::Event::AccessKitActionRequest));
     ctx.begin_frame(raw);
   }
 
@@ -5884,7 +5876,7 @@ mod tests {
         saw_listbox = true;
       }
       if node.role() == accesskit::Role::ListBoxOption && !name.is_empty() {
-        options.push((name, node.is_selected()));
+        options.push((name, node.is_selected().unwrap_or(false)));
       }
     }
 
@@ -5955,7 +5947,7 @@ mod tests {
         saw_listbox = true;
       }
       if node.role() == accesskit::Role::ListBoxOption && !name.is_empty() {
-        options.push((name, node.is_selected()));
+        options.push((name, node.is_selected().unwrap_or(false)));
       }
     }
 
@@ -8606,7 +8598,14 @@ frame={idx} repaint_after={:?}\n",
     // Wide frame.
     let ctx_wide = egui::Context::default();
     begin_frame_with_screen_size(&ctx_wide, egui::vec2(800.0, 600.0), Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx_wide, &mut app, None, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx_wide,
+      &mut app,
+      None,
+      ctx_wide.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let (wide_strip, wide_tabs) =
       super::tab_strip::load_test_layout(&ctx_wide).expect("missing tab strip layout metrics");
     let _ = ctx_wide.end_frame();
@@ -8614,7 +8613,14 @@ frame={idx} repaint_after={:?}\n",
     // Narrow frame.
     let ctx_narrow = egui::Context::default();
     begin_frame_with_screen_size(&ctx_narrow, egui::vec2(240.0, 600.0), Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx_narrow, &mut app, None, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx_narrow,
+      &mut app,
+      None,
+      ctx_narrow.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let (narrow_strip, narrow_tabs) =
       super::tab_strip::load_test_layout(&ctx_narrow).expect("missing tab strip layout metrics");
     let _ = ctx_narrow.end_frame();
@@ -10718,19 +10724,19 @@ frame={idx} repaint_after={:?}\n",
   ) -> Vec<ChromeAction> {
     // Frame 1: layout, capture the menu button rect.
     begin_frame(ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, true, |_| None);
     let _ = ctx.end_frame();
     let menu_button_rect = expect_temp_rect(ctx, "chrome_menu_button_rect");
 
     // Frame 2: click the menu button, capture the menu item rect.
     begin_frame(ctx, left_click_at(menu_button_rect.center()));
-    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, true, |_| None);
     let _ = ctx.end_frame();
     let item_rect = expect_temp_rect(ctx, item_rect_key);
 
     // Frame 3: click the menu item and return emitted actions.
     begin_frame(ctx, left_click_at(item_rect.center()));
-    let actions = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, |_| None);
+    let actions = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, true, |_| None);
     let _ = ctx.end_frame();
     actions
   }
@@ -10742,13 +10748,13 @@ frame={idx} repaint_after={:?}\n",
   ) -> egui::FullOutput {
     // Frame 0: layout, capture the menu button rect.
     begin_frame(ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, true, |_| None);
     let _ = ctx.end_frame();
     let menu_button_rect = expect_temp_rect(ctx, "chrome_menu_button_rect");
 
     // Frame 1: click the menu button to open the popup and capture AccessKit output.
     begin_frame(ctx, left_click_at(menu_button_rect.center()));
-    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(ctx, app, bookmarks, true, true, |_| None);
     ctx.end_frame()
   }
 

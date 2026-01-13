@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use crate::accessibility::AccessibilityNode;
+use crate::accessibility::accesskit_mapping::accesskit_role_for_fastr_role;
 use crate::dom::DomNode;
 use crate::interaction::InteractionState;
 use crate::ui::accesskit_bounds::AccessKitBoundsTransform;
@@ -10,20 +11,7 @@ use accesskit::{NodeBuilder, NodeId, Role, Tree, TreeUpdate};
 use std::collections::HashMap;
 
 fn accesskit_role_from_fastrender(role: &str) -> Role {
-  match role {
-    "document" => Role::Document,
-    "textbox" => Role::TextField,
-    "searchbox" => Role::SearchBox,
-    // AccessKit 0.11 does not have a dedicated combobox role; treat editable comboboxes as text
-    // inputs until we add a richer mapping.
-    "combobox" => Role::TextField,
-    "button" => Role::Button,
-    "link" => Role::Link,
-    "checkbox" => Role::CheckBox,
-    "radio" => Role::RadioButton,
-    // Fallback for roles we haven't mapped yet.
-    _ => Role::GenericContainer,
-  }
+  accesskit_role_for_fastr_role(role)
 }
 
 fn build_accesskit_node_recursive(

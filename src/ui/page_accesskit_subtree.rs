@@ -1,33 +1,22 @@
 #![cfg(feature = "browser_ui")]
 
 use crate::accessibility::AccessibilityNode;
+use crate::accessibility::accesskit_mapping::accesskit_role_for_fastr_role;
 use crate::ui::messages::PageAccessKitSubtree;
 use crate::ui::encode_page_node_id;
 use crate::ui::TabId;
 
 fn role_from_fastr_role(role: &str) -> accesskit::Role {
-  // `crate::accessibility` uses a stringy, browser-like role vocabulary. Map the subset we produce
-  // today onto AccessKit roles. Unknown roles are treated as generic containers so the subtree is
-  // still well-formed.
+  // Map the renderer-exported role string vocabulary onto AccessKit roles.
+  //
+  // `crate::accessibility` primarily emits ARIA role tokens (validated via
+  // `FASTRENDER_VALID_ARIA_ROLE_TOKENS`), plus `generic` as a fallback. Older call sites and tests
+  // also use a small set of legacy role strings; keep those working explicitly.
   match role {
-    "document" => accesskit::Role::Document,
-    "button" => accesskit::Role::Button,
-    "link" => accesskit::Role::Link,
-    "heading" => accesskit::Role::Heading,
-    "textbox" => accesskit::Role::TextField,
     "textbox-multiline" => accesskit::Role::TextField,
-    "searchbox" => accesskit::Role::SearchBox,
-    // AccessKit 0.11 does not have a dedicated combobox role; treat as a text field so screen
-    // readers can still query/set the current value.
-    "combobox" => accesskit::Role::TextField,
-    "checkbox" => accesskit::Role::CheckBox,
-    "radio" => accesskit::Role::RadioButton,
     "image" => accesskit::Role::Image,
-    "list" => accesskit::Role::List,
-    "listitem" => accesskit::Role::ListItem,
-    "paragraph" => accesskit::Role::Paragraph,
     "statictext" => accesskit::Role::StaticText,
-    _ => accesskit::Role::GenericContainer,
+    other => accesskit_role_for_fastr_role(other),
   }
 }
 

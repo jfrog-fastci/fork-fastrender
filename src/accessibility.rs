@@ -14,6 +14,8 @@ use std::ptr;
 // renderer can compile without pulling in the optional `accesskit` dependency.
 #[cfg(feature = "browser_ui")]
 pub mod accesskit_tree;
+#[cfg(feature = "browser_ui")]
+pub mod accesskit_mapping;
 
 #[cfg(feature = "a11y_accesskit")]
 pub mod accesskit_bridge;
@@ -2563,82 +2565,87 @@ enum ParsedRole {
   Presentational,
 }
 
+// Keep this list in sync with the ARIA role tokens accepted by `parse_aria_role_attr`.
+//
+// We use an explicit allowlist so that FastRender's accessibility output is stable and we can
+// deterministically map every emitted role (e.g. into AccessKit for native browser UI).
+pub(crate) const FASTRENDER_VALID_ARIA_ROLE_TOKENS: &[&str] = &[
+  "alert",
+  "alertdialog",
+  "application",
+  "article",
+  "banner",
+  "button",
+  "caption",
+  "cell",
+  "checkbox",
+  "columnheader",
+  "combobox",
+  "definition",
+  "complementary",
+  "contentinfo",
+  "dialog",
+  "directory",
+  "document",
+  "feed",
+  "figure",
+  "form",
+  "generic",
+  "grid",
+  "gridcell",
+  "group",
+  "heading",
+  "img",
+  "link",
+  "list",
+  "listbox",
+  "listitem",
+  "log",
+  "main",
+  "marquee",
+  "math",
+  "menu",
+  "menubar",
+  "menuitem",
+  "menuitemcheckbox",
+  "menuitemradio",
+  "meter",
+  "navigation",
+  "none",
+  "note",
+  "option",
+  "paragraph",
+  "presentation",
+  "progressbar",
+  "radio",
+  "radiogroup",
+  "region",
+  "row",
+  "rowgroup",
+  "rowheader",
+  "search",
+  "separator",
+  "searchbox",
+  "slider",
+  "spinbutton",
+  "status",
+  "switch",
+  "tab",
+  "table",
+  "tablist",
+  "tabpanel",
+  "term",
+  "textbox",
+  "timer",
+  "toolbar",
+  "tooltip",
+  "tree",
+  "treeitem",
+  "treegrid",
+];
+
 fn is_supported_role(role: &str) -> bool {
-  matches!(
-    role,
-    "alert"
-      | "alertdialog"
-      | "application"
-      | "article"
-      | "banner"
-      | "button"
-      | "caption"
-      | "cell"
-      | "checkbox"
-      | "columnheader"
-      | "combobox"
-      | "definition"
-      | "complementary"
-      | "contentinfo"
-      | "dialog"
-      | "directory"
-      | "document"
-      | "feed"
-      | "figure"
-      | "form"
-      | "generic"
-      | "grid"
-      | "gridcell"
-      | "group"
-      | "heading"
-      | "img"
-      | "link"
-      | "list"
-      | "listbox"
-      | "listitem"
-      | "log"
-      | "main"
-      | "marquee"
-      | "math"
-      | "menu"
-      | "menubar"
-      | "menuitem"
-      | "menuitemcheckbox"
-      | "menuitemradio"
-      | "meter"
-      | "navigation"
-      | "none"
-      | "note"
-      | "option"
-      | "paragraph"
-      | "presentation"
-      | "progressbar"
-      | "radio"
-      | "radiogroup"
-      | "region"
-      | "row"
-      | "rowgroup"
-      | "rowheader"
-      | "search"
-      | "separator"
-      | "searchbox"
-      | "slider"
-      | "spinbutton"
-      | "status"
-      | "switch"
-      | "tab"
-      | "table"
-      | "tablist"
-      | "tabpanel"
-      | "term"
-      | "textbox"
-      | "timer"
-      | "toolbar"
-      | "tooltip"
-      | "tree"
-      | "treeitem"
-      | "treegrid"
-  )
+  FASTRENDER_VALID_ARIA_ROLE_TOKENS.contains(&role)
 }
 
 fn parse_aria_role_attr(node: &DomNode, ancestors: &[&DomNode]) -> Option<ParsedRole> {
@@ -4731,7 +4738,6 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> ::accesskit::TreeUpdate
     }
     None
   }
-
   fn direct_text_name(node: &StyledNode) -> Option<String> {
     // Use *direct* text-node children to avoid assigning the same name to high-level containers
     // (html/body/document) while still surfacing simple text-only elements in tests and debug

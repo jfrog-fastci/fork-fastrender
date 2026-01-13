@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::AccessibilityNode;
+use super::accesskit_mapping::accesskit_role_for_fastr_role;
 pub use accesskit::{Node, NodeBuilder, NodeClassSet, NodeId, Role, TextDirection, Tree, TreeUpdate};
 use std::collections::HashMap;
 use std::num::NonZeroU128;
@@ -51,18 +52,7 @@ fn assign_ids<'a>(
 }
 
 fn role_from_fastrender(role: &str) -> Role {
-  match role {
-    // Web/document roots.
-    "document" => Role::Document,
-    // Common interactive controls.
-    "button" => Role::Button,
-    "checkbox" => Role::CheckBox,
-    "radio" => Role::RadioButton,
-    "link" => Role::Link,
-    "textbox" | "searchbox" => Role::TextField,
-    // Generic fallback.
-    _ => Role::Unknown,
-  }
+  accesskit_role_for_fastr_role(role)
 }
 
 fn build_accesskit_nodes(

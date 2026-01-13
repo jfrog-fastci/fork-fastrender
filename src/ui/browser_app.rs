@@ -824,11 +824,13 @@ pub struct BrowserTabState {
   pub page_accesskit_subtree: Option<crate::ui::messages::PageAccessKitSubtree>,
   debug_log: VecDeque<String>,
   #[cfg(any(test, feature = "browser_ui"))]
-  pub(crate) tab_a11y_label_cache: crate::ui::tab_accessible_label::TabAccessibleLabelCache,
+  tab_a11y_label_cache:
+    std::cell::RefCell<crate::ui::tab_accessible_label::TabAccessibleLabelCache>,
   #[cfg(any(test, feature = "browser_ui"))]
-  pub(crate) tab_close_a11y_label_cache: crate::ui::tab_accessible_label::TitlePrefixedLabelCache,
+  tab_close_a11y_label_cache:
+    std::cell::RefCell<crate::ui::tab_accessible_label::TitlePrefixedLabelCache>,
   #[cfg(any(test, feature = "browser_ui"))]
-  pub(crate) tab_search_row_a11y_label_cache:
+  tab_search_row_a11y_label_cache:
     crate::ui::tab_accessible_label::TabSearchRowAccessibleLabelCache,
 }
 
@@ -882,10 +884,14 @@ impl BrowserTabState {
       page_accesskit_subtree: None,
       debug_log: VecDeque::new(),
       #[cfg(any(test, feature = "browser_ui"))]
-      tab_a11y_label_cache: crate::ui::tab_accessible_label::TabAccessibleLabelCache::default(),
+      tab_a11y_label_cache: std::cell::RefCell::new(
+        crate::ui::tab_accessible_label::TabAccessibleLabelCache::default(),
+      ),
       #[cfg(any(test, feature = "browser_ui"))]
-      tab_close_a11y_label_cache:
+      tab_close_a11y_label_cache: std::cell::RefCell::new(
         crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
+      ),
+      ),
       #[cfg(any(test, feature = "browser_ui"))]
       tab_search_row_a11y_label_cache:
         crate::ui::tab_accessible_label::TabSearchRowAccessibleLabelCache::default(),
@@ -911,25 +917,21 @@ impl BrowserTabState {
 
   #[cfg(any(test, feature = "browser_ui"))]
   pub(crate) fn tab_accessible_label(
-    &mut self,
+    &self,
     title: &str,
     is_active: bool,
     has_error: bool,
     has_warning: bool,
   ) -> std::sync::Arc<str> {
-    self.tab_a11y_label_cache.get_or_update(
-      title,
-      is_active,
-      self.pinned,
-      self.loading,
-      has_error,
-      has_warning,
-    )
+    self
+      .tab_a11y_label_cache
+      .borrow_mut()
+      .get_or_update(title, is_active, self.pinned, self.loading, has_error, has_warning)
   }
 
   #[cfg(any(test, feature = "browser_ui"))]
-  pub(crate) fn tab_close_accessible_label(&mut self, title: &str) -> std::sync::Arc<str> {
-    let close_label: &'static str = {
+  pub(crate) fn tab_close_accessible_label(&self, title: &str) -> std::sync::Arc<str> {
+    let close_label: &str = {
       #[cfg(feature = "browser_ui")]
       {
         crate::ui::BrowserIcon::CloseTab.a11y_label()
@@ -941,6 +943,7 @@ impl BrowserTabState {
     };
     self
       .tab_close_a11y_label_cache
+      .borrow_mut()
       .get_or_update(close_label, title)
   }
 

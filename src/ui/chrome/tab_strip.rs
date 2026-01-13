@@ -6036,17 +6036,24 @@ mod tests {
 
     let mut found_case = false;
     egui::CentralPanel::default().show(&ctx, |ui| {
+      let template_group = {
+        let mut app = BrowserAppState::new();
+        let tab_id = TabId(1);
+        app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+        let group_id = app.create_group_with_tabs(&[tab_id]);
+        assert_ne!(group_id, TabGroupId(0), "expected create_group_with_tabs to succeed");
+        app
+          .tab_groups
+          .get(&group_id)
+          .expect("expected created group")
+          .clone()
+      };
+
       for len in 1..128 {
         let title = "W".repeat(len);
-        let group_id = TabGroupId(1);
-        let group_collapsed = TabGroupState {
-          id: group_id,
-          title: title.clone(),
-          color: TabGroupColor::Blue,
-          collapsed: true,
-          tab_group_chip_a11y_label_cache:
-            crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
-        };
+        let mut group_collapsed = template_group.clone();
+        group_collapsed.title = title.clone();
+        group_collapsed.collapsed = true;
         let mut group_expanded = group_collapsed.clone();
         group_expanded.collapsed = false;
 
@@ -6288,7 +6295,10 @@ mod tests {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
 
-    let find_tab_node = |output: &egui::FullOutput, name_prefix: &str| {
+    fn find_tab_node<'a>(
+      output: &'a egui::FullOutput,
+      name_prefix: &str,
+    ) -> (accesskit::NodeId, &'a accesskit::Node) {
       let update = output
         .platform_output
         .accesskit_update
@@ -6306,7 +6316,7 @@ mod tests {
         "expected a single AccessKit node with name prefix {name_prefix:?}"
       );
       (*id, node)
-    };
+    }
 
     // Frame 1: tab A is active (selected).
     begin_frame(&ctx, Vec::new());

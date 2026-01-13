@@ -424,7 +424,6 @@ mod tests {
 
     let mut search_text = String::new();
     let mut request_focus_search = false;
-    let mut searcher = crate::ui::GlobalHistorySearcher::new();
 
     begin_frame(&ctx);
     let _out = history_panel_ui(
@@ -469,6 +468,7 @@ mod tests {
     let mut searcher = crate::ui::GlobalHistorySearcher::new();
     let mut search_text = String::new();
     let mut request_focus_search = true;
+    let mut searcher = GlobalHistorySearcher::default();
 
     // Frame 1: open panel and focus the search field.
     begin_frame_with_events(&ctx, Vec::new());

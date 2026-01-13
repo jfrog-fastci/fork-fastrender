@@ -18,6 +18,7 @@
 
 use crate::accessibility::AccessibilityNode;
 use crate::Transform2D;
+use crate::accessibility::accesskit_mapping::accesskit_role_for_fastr_role;
 
 use accesskit::{Node, NodeBuilder, NodeClassSet, NodeId, Rect, Role, Tree, TreeUpdate};
 
@@ -33,49 +34,6 @@ fn normalize_optional_name(raw: Option<&str>) -> Option<String> {
     .map(|s| s.to_string())
 }
 
-fn role_from_fastrender(role: &str) -> Role {
-  match role {
-    // Document root.
-    "document" => Role::Document,
-    // Common interactive/content roles.
-    "button" => Role::Button,
-    "checkbox" => Role::CheckBox,
-    "radio" => Role::RadioButton,
-    // AccessKit uses "TextField" for text input controls.
-    "textbox" => Role::TextField,
-    "searchbox" => Role::SearchBox,
-    "link" => Role::Link,
-    "img" | "image" => Role::Image,
-    "heading" => Role::Heading,
-    "list" => Role::List,
-    "listitem" => Role::ListItem,
-    "table" => Role::Table,
-    "row" => Role::Row,
-    "cell" => Role::Cell,
-    "columnheader" => Role::ColumnHeader,
-    "rowheader" => Role::RowHeader,
-    "separator" => Role::GenericContainer,
-    "progressbar" => Role::ProgressIndicator,
-    "slider" => Role::Slider,
-    // AccessKit 0.11 does not have a dedicated combobox role; treat comboboxes as text fields for
-    // now so screen readers can still query their value.
-    "combobox" => Role::TextField,
-    "menu" => Role::Menu,
-    "menuitem" => Role::MenuItem,
-    "tab" => Role::Tab,
-    "tabpanel" => Role::TabPanel,
-    "banner" => Role::Banner,
-    "navigation" => Role::Navigation,
-    "main" => Role::Main,
-    "contentinfo" => Role::ContentInfo,
-    "form" => Role::Form,
-    "region" => Role::Region,
-    "alert" => Role::Alert,
-    // Fallback: keep the tree shape, but mark as a generic container.
-    _ => Role::GenericContainer,
-  }
-}
-
 fn build_subtree_nodes_with_ids(
   node: &AccessibilityNode,
   id_for_node: &impl Fn(&AccessibilityNode) -> NodeId,
@@ -89,14 +47,13 @@ fn build_subtree_nodes_with_ids(
 
   for child in &node.children {
     child_ids.push(id_for_node(child));
-    let child_focus =
-      build_subtree_nodes_with_ids(child, id_for_node, default_bounds, classes, out);
+    let child_focus = build_subtree_nodes_with_ids(child, id_for_node, default_bounds, classes, out);
     if focus.is_none() {
       focus = child_focus;
     }
   }
 
-  let role = role_from_fastrender(&node.role);
+  let role = accesskit_role_for_fastr_role(&node.role);
   let mut builder = NodeBuilder::new(role);
 
   if let Some(name) = normalize_optional_name(node.name.as_deref()) {
@@ -114,7 +71,10 @@ fn build_subtree_nodes_with_ids(
   // For text inputs, preserve empty-string values (screen readers expect to query current value even
   // when empty). The JSON accessibility tree omits empty `value`s, so treat `None` as empty for
   // editable controls.
-  if matches!(node.role.as_str(), "textbox" | "searchbox" | "combobox") {
+  if matches!(
+    node.role.as_str(),
+    "textbox" | "textbox-multiline" | "searchbox" | "combobox"
+  ) {
     builder.set_value(node.value.clone().unwrap_or_default());
   } else if let Some(value) = normalize_optional_name(node.value.as_deref()) {
     builder.set_value(value);
@@ -123,7 +83,9 @@ fn build_subtree_nodes_with_ids(
   // We currently do not have per-node bounds available in the exported `AccessibilityNode` tree.
   // Provide a conservative default so screen readers still have something reasonable to anchor to.
   builder.set_bounds(default_bounds);
-  builder.set_children(child_ids);
+  if !child_ids.is_empty() {
+    builder.set_children(child_ids);
+  }
 
   out.push((node_id, builder.build(classes)));
   focus

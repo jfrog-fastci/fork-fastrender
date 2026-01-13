@@ -992,16 +992,16 @@ mod tests {
       "expected action requests for other tabs to be ignored"
     );
     assert_eq!(
-      engine.focused_node_id(),
+      ctx.interaction.focused_node_id(),
       None,
       "expected focus to remain unchanged"
     );
     assert!(
-      !needs_redraw,
+      !*ctx.needs_redraw,
       "expected unrelated-tab action routing to not request redraw"
     );
 
-    needs_redraw = false;
+    *ctx.needs_redraw = false;
     let stale_target = crate::ui::encode_page_node_id(tab_id, gen - 1, button_id);
     let handled_stale = handle_accesskit_action_request(
       &mut ctx,
@@ -1018,12 +1018,12 @@ mod tests {
       "expected action requests for stale tree generations to be ignored"
     );
     assert_eq!(
-      engine.focused_node_id(),
+      ctx.interaction.focused_node_id(),
       None,
       "expected focus to remain unchanged"
     );
     assert!(
-      !needs_redraw,
+      !*ctx.needs_redraw,
       "expected stale-generation action routing to not request redraw"
     );
   }

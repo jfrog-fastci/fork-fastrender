@@ -798,9 +798,13 @@ mod tests {
     shapes.iter().find_map(|clipped| in_shape(&clipped.shape, needle))
   }
 
-  fn expect_temp_id(ctx: &egui::Context, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
+  fn expect_temp_id(
+    ctx: &egui::Context,
+    key: impl std::hash::Hash + std::fmt::Debug + Copy,
+  ) -> egui::Id {
+    let id_key = egui::Id::new(key);
     ctx
-      .data(|d| d.get_temp::<egui::Id>(egui::Id::new(key)))
+      .data(|d| d.get_temp::<egui::Id>(id_key))
       .unwrap_or_else(|| panic!("expected temp id {key:?}"))
   }
 
