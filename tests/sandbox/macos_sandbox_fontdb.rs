@@ -15,6 +15,13 @@ fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
   if is_child {
     let status = apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
       .expect("apply relaxed macOS renderer sandbox profile");
+    assert!(
+      matches!(
+        status,
+        MacosSandboxStatus::Applied | MacosSandboxStatus::AlreadySandboxed
+      ),
+      "unexpected macOS sandbox status when applying relaxed profile: {status:?}"
+    );
     if matches!(status, MacosSandboxStatus::AlreadySandboxed) {
       eprintln!(
         "skipping fontdb sandbox test: process was already sandboxed (status={status:?})"
