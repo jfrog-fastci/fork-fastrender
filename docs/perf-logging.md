@@ -12,7 +12,7 @@ When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetc
   - `fetch_and_render` also supports `--trace-out trace.json`, and library consumers can set `RenderOptions::with_trace_output`.
   - Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap the number of events retained per render (default 200000).
 
-- `FASTR_BROWSER_TRACE_OUT=/tmp/browser-trace.json`
+- `FASTR_BROWSER_TRACE_OUT=/tmp/browser-trace.json` (legacy alias: `FASTR_PERF_TRACE_OUT`)
   - Writes a Chrome trace of the windowed `browser` UI event loop (winit event handling, egui frame build, worker message drain, frame uploads, wgpu present). The trace is written when the browser process exits.
   - Open it in Perfetto by visiting <https://ui.perfetto.dev> and using "Open trace file", or in Chromium via `chrome://tracing`.
 
@@ -124,7 +124,7 @@ in [Perfetto UI](https://ui.perfetto.dev):
 
 - Renderer pipeline trace (parse/style/layout/paint): `FASTR_TRACE_OUT=/tmp/trace.json` (captures the
   most recent render).
-- UI responsiveness trace (if supported by your build): `FASTR_PERF_TRACE_OUT=/tmp/ui_trace.json`.
+- Browser UI trace: `FASTR_BROWSER_TRACE_OUT=/tmp/ui_trace.json` (legacy alias: `FASTR_PERF_TRACE_OUT`).
 
 ## Other useful profiling flags
 

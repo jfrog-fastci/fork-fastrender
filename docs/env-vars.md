@@ -164,11 +164,10 @@ interpret the metrics.
     ```
 - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` – output path for `FASTR_PERF_LOG` JSONL events.
   - When unset/empty, events go to **stdout**.
-- `FASTR_PERF_TRACE_OUT=/path/to/trace.json` – optional Perfetto/Chrome trace output for UI
-  responsiveness (when supported by your build).
 - `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` – write a Chrome trace of the windowed `browser`
   UI event loop (winit input handling, worker message draining, egui frame build, GPU submission,
   and present). The trace is written when the browser process exits.
+  - Legacy alias: `FASTR_PERF_TRACE_OUT=/path/to/trace.json`.
 
 ### Appearance / accessibility / debugging (browser UX)
 

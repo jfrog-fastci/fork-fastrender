@@ -41,6 +41,9 @@ const ENV_BROWSER_LOG_SURFACE_CONFIGURE: &str = "FASTR_BROWSER_LOG_SURFACE_CONFI
 const ENV_BROWSER_TRACE_OUT: &str = "FASTR_BROWSER_TRACE_OUT";
 
 #[cfg(feature = "browser_ui")]
+const ENV_PERF_TRACE_OUT: &str = "FASTR_PERF_TRACE_OUT";
+
+#[cfg(feature = "browser_ui")]
 const ENV_BROWSER_MAX_PENDING_FRAME_BYTES: &str = "FASTR_BROWSER_MAX_PENDING_FRAME_BYTES";
 
 #[cfg(feature = "browser_ui")]
@@ -3355,17 +3358,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   )));
   let perf_log_enabled = perf_log_enabled_from_env();
 
-  let browser_trace_out = match std::env::var(ENV_BROWSER_TRACE_OUT) {
-    Ok(raw) => {
-      let trimmed = raw.trim();
-      if trimmed.is_empty() {
+  // Prefer the explicit browser UI trace env var, but accept the older `FASTR_PERF_TRACE_OUT` as an
+  // alias so existing perf-logging docs/scripts continue to work.
+  let browser_trace_out = std::env::var_os(ENV_BROWSER_TRACE_OUT)
+    .or_else(|| std::env::var_os(ENV_PERF_TRACE_OUT))
+    .and_then(|raw| {
+      if raw.to_string_lossy().trim().is_empty() {
         None
       } else {
-        Some(std::path::PathBuf::from(trimmed))
+        Some(std::path::PathBuf::from(raw))
       }
-    }
-    Err(_) => None,
-  };
+    });
   let browser_trace = if browser_trace_out.is_some() {
     fastrender::debug::trace::TraceHandle::enabled()
   } else {
