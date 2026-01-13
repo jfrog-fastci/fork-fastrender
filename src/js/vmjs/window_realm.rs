@@ -2973,6 +2973,11 @@ const DATA_TRANSFER_BRAND_KEY: &str = "__fastrender_data_transfer";
 const DATA_TRANSFER_STORE_KEY: &str = "__fastrender_data_transfer_store";
 const DATA_TRANSFER_DROP_EFFECT_VALUE_KEY: &str = "__fastrender_data_transfer_drop_effect";
 const DATA_TRANSFER_EFFECT_ALLOWED_VALUE_KEY: &str = "__fastrender_data_transfer_effect_allowed";
+const STATIC_RANGE_BRAND_KEY: &str = "__fastrender_static_range";
+const STATIC_RANGE_START_CONTAINER_KEY: &str = "__fastrender_static_range_start_container";
+const STATIC_RANGE_START_OFFSET_KEY: &str = "__fastrender_static_range_start_offset";
+const STATIC_RANGE_END_CONTAINER_KEY: &str = "__fastrender_static_range_end_container";
+const STATIC_RANGE_END_OFFSET_KEY: &str = "__fastrender_static_range_end_offset";
 
 const WINDOW_REALM_GLOBAL_OBJECT_HOST_TAG: u64 = u64::from_be_bytes(*b"WINDOW__");
 const WINDOW_REALM_DOCUMENT_HOST_TAG: u64 = u64::from_be_bytes(*b"DOCUMENT");
@@ -3130,6 +3135,7 @@ const LIVE_COLLECTION_LENGTH_KEY: &str = "__fastrender_live_collection_length";
 const LIVE_COLLECTION_LENGTH_GET_KEY: &str = "__fastrender_live_collection_length_get";
 const LIVE_COLLECTION_ITEM_KEY: &str = "__fastrender_live_collection_item";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
+const ELEMENT_GET_ATTRIBUTE_NODE_KEY: &str = "__fastrender_element_get_attribute_node";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_REMOVE_ATTRIBUTE_KEY: &str = "__fastrender_element_remove_attribute";
 const ELEMENT_HAS_ATTRIBUTE_KEY: &str = "__fastrender_element_has_attribute";
@@ -3195,6 +3201,7 @@ const SELECT_OPTIONS_CACHE_KEY: &str = "__fastrender_select_options_cache";
 const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   // Core Element attribute APIs.
   ELEMENT_GET_ATTRIBUTE_KEY,
+  ELEMENT_GET_ATTRIBUTE_NODE_KEY,
   ELEMENT_SET_ATTRIBUTE_KEY,
   ELEMENT_REMOVE_ATTRIBUTE_KEY,
   ELEMENT_HAS_ATTRIBUTE_KEY,
@@ -8938,6 +8945,10 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_GET_ATTRIBUTE_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
+  let get_attribute_node = {
+    let key = alloc_key(scope, ELEMENT_GET_ATTRIBUTE_NODE_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
   let set_attribute = {
     let key = alloc_key(scope, ELEMENT_SET_ATTRIBUTE_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
@@ -10408,6 +10419,13 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = get_attribute {
     let key = alloc_key(scope, "getAttribute")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  if let Some(Value::Object(func)) = get_attribute_node {
+    let key = alloc_key(scope, "getAttributeNode")?;
     if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
       scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
     }
@@ -34777,6 +34795,288 @@ fn dom_ptr_for_document_id_mut(
   dom_from_vm_host_mut(host).map(NonNull::from)
 }
 
+fn static_range_init_get_required(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  init: GcObject,
+  name: &str,
+  err: &'static str,
+) -> Result<Value, VmError> {
+  // Root `init` while allocating the property key: string allocation can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(init))?;
+  let key = alloc_key(&mut scope, name)?;
+  let value = vm.get_with_host_and_hooks(host, &mut scope, hooks, init, key)?;
+  if matches!(value, Value::Undefined) {
+    return Err(VmError::TypeError(err));
+  }
+  Ok(value)
+}
+
+fn static_range_require_this(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let brand_key = alloc_key(scope, STATIC_RANGE_BRAND_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &brand_key)?
+  {
+    Some(Value::Bool(true)) => Ok(obj),
+    _ => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn static_range_get_internal(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  internal_key: &'static str,
+) -> Result<Value, VmError> {
+  let key = alloc_key(scope, internal_key)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(obj, &key)?
+      .unwrap_or(Value::Undefined),
+  )
+}
+
+fn abstract_range_start_container_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let obj = static_range_require_this(scope, this)?;
+  static_range_get_internal(scope, obj, STATIC_RANGE_START_CONTAINER_KEY)
+}
+
+fn abstract_range_start_offset_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let obj = static_range_require_this(scope, this)?;
+  static_range_get_internal(scope, obj, STATIC_RANGE_START_OFFSET_KEY)
+}
+
+fn abstract_range_end_container_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let obj = static_range_require_this(scope, this)?;
+  static_range_get_internal(scope, obj, STATIC_RANGE_END_CONTAINER_KEY)
+}
+
+fn abstract_range_end_offset_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let obj = static_range_require_this(scope, this)?;
+  static_range_get_internal(scope, obj, STATIC_RANGE_END_OFFSET_KEY)
+}
+
+fn abstract_range_collapsed_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let obj = static_range_require_this(scope, this)?;
+  let start_container = static_range_get_internal(scope, obj, STATIC_RANGE_START_CONTAINER_KEY)?;
+  let start_offset = static_range_get_internal(scope, obj, STATIC_RANGE_START_OFFSET_KEY)?;
+  let end_container = static_range_get_internal(scope, obj, STATIC_RANGE_END_CONTAINER_KEY)?;
+  let end_offset = static_range_get_internal(scope, obj, STATIC_RANGE_END_OFFSET_KEY)?;
+  Ok(Value::Bool(
+    start_container == end_container && start_offset == end_offset,
+  ))
+}
+
+fn static_range_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let init = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(init, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError("StaticRange constructor requires an init object"));
+  }
+  let init_obj = scope.to_object(vm, host, hooks, init)?;
+
+  let start_container = static_range_init_get_required(
+    vm,
+    scope,
+    host,
+    hooks,
+    init_obj,
+    "startContainer",
+    "StaticRangeInit.startContainer is required",
+  )?;
+  let start_offset = static_range_init_get_required(
+    vm,
+    scope,
+    host,
+    hooks,
+    init_obj,
+    "startOffset",
+    "StaticRangeInit.startOffset is required",
+  )?;
+  let end_container = static_range_init_get_required(
+    vm,
+    scope,
+    host,
+    hooks,
+    init_obj,
+    "endContainer",
+    "StaticRangeInit.endContainer is required",
+  )?;
+  let end_offset = static_range_init_get_required(
+    vm,
+    scope,
+    host,
+    hooks,
+    init_obj,
+    "endOffset",
+    "StaticRangeInit.endOffset is required",
+  )?;
+
+  let mut validate_container = |vm: &mut Vm, scope: &mut Scope<'_>, v: Value| -> Result<(), VmError> {
+    if matches!(v, Value::Null | Value::Undefined) {
+      return Err(VmError::TypeError("StaticRangeInit container must be a Node"));
+    }
+    let Value::Object(obj) = v else {
+      return Err(VmError::TypeError("StaticRangeInit container must be a Node"));
+    };
+
+    // Reject Attr nodes (WPT uses `Element.getAttributeNode`).
+    if is_attr_object(scope.heap(), obj)? {
+      return Err(VmError::Throw(make_dom_exception(
+        vm,
+        scope,
+        "INVALID_NODE_TYPE_ERR",
+        "StaticRangeInit containers must not be Attr nodes",
+      )?));
+    }
+
+    // Reject DocumentType nodes.
+    if let Some(platform) = dom_platform_mut(vm) {
+      if platform
+        .require_document_type_handle(scope.heap(), Value::Object(obj))
+        .is_ok()
+      {
+        return Err(VmError::Throw(make_dom_exception(
+          vm,
+          scope,
+          "INVALID_NODE_TYPE_ERR",
+          "StaticRangeInit containers must not be DocumentType nodes",
+        )?));
+      }
+    }
+
+    // WebIDL Node conversion.
+    dom_platform_mut(vm)
+      .ok_or(VmError::TypeError("StaticRange requires a DOM platform"))?
+      .require_node_handle(scope.heap(), v)
+      .map_err(|_| VmError::TypeError("StaticRangeInit container must be a Node"))?;
+
+    Ok(())
+  };
+
+  validate_container(vm, scope, start_container)?;
+  validate_container(vm, scope, end_container)?;
+
+  let start_offset = webidl_to_uint32(vm, scope, host, hooks, start_offset)?;
+  let end_offset = webidl_to_uint32(vm, scope, host, hooks, end_offset)?;
+
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  scope.push_root(Value::Object(ctor))?;
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  // Root boundary containers across allocation/property definition.
+  scope.push_roots(&[start_container, end_container])?;
+
+  let obj = scope.alloc_object_with_prototype(proto)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let brand_key = alloc_key(scope, STATIC_RANGE_BRAND_KEY)?;
+  scope.define_property(
+    obj,
+    brand_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Bool(true),
+        writable: false,
+      },
+    },
+  )?;
+
+  let start_container_key = alloc_key(scope, STATIC_RANGE_START_CONTAINER_KEY)?;
+  scope.define_property(
+    obj,
+    start_container_key,
+    non_configurable_read_only_data_desc(start_container),
+  )?;
+  let start_offset_key = alloc_key(scope, STATIC_RANGE_START_OFFSET_KEY)?;
+  scope.define_property(
+    obj,
+    start_offset_key,
+    non_configurable_read_only_data_desc(Value::Number(start_offset as f64)),
+  )?;
+  let end_container_key = alloc_key(scope, STATIC_RANGE_END_CONTAINER_KEY)?;
+  scope.define_property(
+    obj,
+    end_container_key,
+    non_configurable_read_only_data_desc(end_container),
+  )?;
+  let end_offset_key = alloc_key(scope, STATIC_RANGE_END_OFFSET_KEY)?;
+  scope.define_property(
+    obj,
+    end_offset_key,
+    non_configurable_read_only_data_desc(Value::Number(end_offset as f64)),
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
 fn range_handle_from_this(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -40484,6 +40784,109 @@ fn element_get_attribute_native(
   }
 }
 
+fn element_get_attribute_node_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.getAttributeNode must be called on an element object",
+    ));
+  };
+  scope.push_root(Value::Object(wrapper_obj))?;
+
+  let handle = element_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "Element.getAttributeNode must be called on an element object",
+  )?;
+
+  let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let query_value = scope.heap_mut().to_string(query_value)?;
+  let query = scope
+    .heap()
+    .get_string(query_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(VmError::TypeError(
+    "Element.getAttributeNode requires a DOM-backed document",
+  ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let (namespace, attrs) = match &dom.node(handle.node_id).kind {
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => (namespace.as_str(), attributes.as_slice()),
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.getAttributeNode must be called on an element object",
+      ))
+    }
+  };
+
+  let is_html = dom.is_html_case_insensitive_namespace(namespace);
+  let mut found: Option<&dom2::Attribute> = None;
+  for attr in attrs {
+    let attr_name = attr.qualified_name();
+    let matches = if is_html {
+      attr_name.as_ref().eq_ignore_ascii_case(&query)
+    } else {
+      attr_name.as_ref() == query
+    };
+    if matches {
+      found = Some(attr);
+      break;
+    }
+  }
+
+  let Some(attr) = found else {
+    return Ok(Value::Null);
+  };
+
+  // `Attr.prototype` (used for `instanceof Attr` checks).
+  scope.push_root(Value::Object(handle.document_obj))?;
+  let attr_proto_key = alloc_key(scope, ATTR_PROTOTYPE_KEY)?;
+  let attr_proto = match scope
+    .heap()
+    .object_get_own_data_property_value(handle.document_obj, &attr_proto_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::InvariantViolation("missing Attr prototype")),
+  };
+
+  let name = attr.qualified_name();
+  let name = if is_html {
+    name.as_ref().to_ascii_lowercase()
+  } else {
+    name.into_owned()
+  };
+
+  let attr_obj = make_attr_obj(
+    scope,
+    attr_proto,
+    handle.node_id.index() as u64,
+    &name,
+    &attr.value,
+    Value::Object(wrapper_obj),
+  )?;
+  Ok(Value::Object(attr_obj))
+}
+
 fn element_has_attribute_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -45774,6 +46177,7 @@ fn init_window_globals(
   // Constructors on the global object.
   let prototype_key = alloc_key(&mut scope, "prototype")?;
   let constructor_key = alloc_key(&mut scope, "constructor")?;
+  let mut abstract_range_proto: Option<GcObject> = None;
 
   // --- DOMParser -------------------------------------------------------------------------------
   //
@@ -45842,6 +46246,144 @@ fn init_window_globals(
     dom_parser_key,
     data_desc(Value::Object(dom_parser_ctor_func)),
   )?;
+
+  // --- AbstractRange / StaticRange -------------------------------------------------------------
+  //
+  // WHATWG DOM defines `AbstractRange` (non-constructible base interface) and `StaticRange`
+  // (constructible, non-live range snapshot).
+  //
+  // FastRender already exposes a live `Range` implementation; wire up `AbstractRange` so:
+  // - `typeof AbstractRange === "function"` (WPT baseline),
+  // - `range instanceof AbstractRange` via `Range.prototype` inheritance,
+  // - `StaticRange.prototype` inherits from `AbstractRange.prototype`.
+  let abstract_range_key = alloc_key(&mut scope, "AbstractRange")?;
+  if scope
+    .heap()
+    .object_get_own_property(global, &abstract_range_key)?
+    .is_none()
+  {
+    let ar_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(ar_proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(ar_proto, Some(realm.intrinsics().object_prototype()))?;
+
+    for (name, native) in [
+      (
+        "startContainer",
+        abstract_range_start_container_get_native as vm_js::NativeCall,
+      ),
+      (
+        "startOffset",
+        abstract_range_start_offset_get_native as vm_js::NativeCall,
+      ),
+      (
+        "endContainer",
+        abstract_range_end_container_get_native as vm_js::NativeCall,
+      ),
+      (
+        "endOffset",
+        abstract_range_end_offset_get_native as vm_js::NativeCall,
+      ),
+      ("collapsed", abstract_range_collapsed_get_native as vm_js::NativeCall),
+    ] {
+      let call_id = vm.register_native_call(native)?;
+      let getter_name = scope.alloc_string(&format!("get {name}"))?;
+      scope.push_root(Value::String(getter_name))?;
+      let getter_func = scope.alloc_native_function(call_id, None, getter_name, 0)?;
+      scope.heap_mut().object_set_prototype(
+        getter_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(getter_func))?;
+
+      let key = alloc_key(&mut scope, name)?;
+      scope.define_property(
+        ar_proto,
+        key,
+        idl_attribute_desc(Value::Object(getter_func), Value::Undefined),
+      )?;
+    }
+
+    let ar_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
+    let ar_ctor_construct_id = vm.register_native_construct(illegal_dom_constructor_construct_native)?;
+    let ar_ctor_name = scope.alloc_string("AbstractRange")?;
+    scope.push_root(Value::String(ar_ctor_name))?;
+    let ar_ctor_func = scope.alloc_native_function(
+      ar_ctor_call_id,
+      Some(ar_ctor_construct_id),
+      ar_ctor_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      ar_ctor_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(ar_ctor_func))?;
+    scope.define_property(
+      ar_ctor_func,
+      prototype_key,
+      ctor_link_desc(Value::Object(ar_proto)),
+    )?;
+    scope.define_property(
+      ar_proto,
+      constructor_key,
+      ctor_link_desc(Value::Object(ar_ctor_func)),
+    )?;
+    scope.define_property(global, abstract_range_key, data_desc(Value::Object(ar_ctor_func)))?;
+
+    abstract_range_proto = Some(ar_proto);
+  } else if let Some(Value::Object(ctor)) =
+    scope.heap().object_get_own_data_property_value(global, &abstract_range_key)?
+  {
+    scope.push_root(Value::Object(ctor))?;
+    let proto_val = scope
+      .heap()
+      .object_get_own_data_property_value(ctor, &prototype_key)?;
+    if let Some(Value::Object(p)) = proto_val {
+      abstract_range_proto = Some(p);
+    }
+  }
+
+  let static_range_global_key = alloc_key(&mut scope, "StaticRange")?;
+  if scope
+    .heap()
+    .object_get_own_property(global, &static_range_global_key)?
+    .is_none()
+  {
+    // StaticRange.prototype inherits from AbstractRange.prototype when available.
+    let sr_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(sr_proto))?;
+    let parent = abstract_range_proto.unwrap_or(realm.intrinsics().object_prototype());
+    scope.heap_mut().object_set_prototype(sr_proto, Some(parent))?;
+
+    let sr_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
+    let sr_ctor_construct_id = vm.register_native_construct(static_range_constructor_construct_native)?;
+    let sr_ctor_name = scope.alloc_string("StaticRange")?;
+    scope.push_root(Value::String(sr_ctor_name))?;
+    let sr_ctor_func =
+      scope.alloc_native_function(sr_ctor_call_id, Some(sr_ctor_construct_id), sr_ctor_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      sr_ctor_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(sr_ctor_func))?;
+    scope.define_property(
+      sr_ctor_func,
+      prototype_key,
+      ctor_link_desc(Value::Object(sr_proto)),
+    )?;
+    scope.define_property(
+      sr_proto,
+      constructor_key,
+      ctor_link_desc(Value::Object(sr_ctor_func)),
+    )?;
+    scope.define_property(
+      global,
+      static_range_global_key,
+      data_desc(Value::Object(sr_ctor_func)),
+    )?;
+  }
 
   // --- DataTransfer ----------------------------------------------------------------------------
   //
@@ -49152,10 +49694,12 @@ fn init_window_globals(
     if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
       let range_proto = scope.alloc_object()?;
       scope.push_root(Value::Object(range_proto))?;
-      scope.heap_mut().object_set_prototype(
-        range_proto,
-        Some(realm.intrinsics().object_prototype()),
-      )?;
+      // Link Range.prototype into `AbstractRange.prototype` when available so `range instanceof
+      // AbstractRange` is true (WHATWG DOM / WPT).
+      let range_parent_proto = abstract_range_proto.unwrap_or(realm.intrinsics().object_prototype());
+      scope
+        .heap_mut()
+        .object_set_prototype(range_proto, Some(range_parent_proto))?;
 
       // Range.prototype.startContainer
       let start_container_call_id = vm.register_native_call(range_start_container_get_native)?;
@@ -52274,6 +52818,27 @@ fn init_window_globals(
     data_desc(Value::Object(get_attribute_func)),
   )?;
 
+  let get_attribute_node_call_id = vm.register_native_call(element_get_attribute_node_native)?;
+  let get_attribute_node_name = scope.alloc_string("getAttributeNode")?;
+  scope.push_root(Value::String(get_attribute_node_name))?;
+  let get_attribute_node_func = scope.alloc_native_function(
+    get_attribute_node_call_id,
+    None,
+    get_attribute_node_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    get_attribute_node_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(get_attribute_node_func))?;
+  let get_attribute_node_key = alloc_key(&mut scope, ELEMENT_GET_ATTRIBUTE_NODE_KEY)?;
+  scope.define_property(
+    document_obj,
+    get_attribute_node_key,
+    data_desc(Value::Object(get_attribute_node_func)),
+  )?;
+
   let set_attribute_call_id = vm.register_native_call(element_set_attribute_native)?;
   let set_attribute_name = scope.alloc_string("setAttribute")?;
   scope.push_root(Value::String(set_attribute_name))?;
@@ -52352,6 +52917,7 @@ fn init_window_globals(
     define_method_if_missing("closest", element_closest_func)?;
     define_method_if_missing("getBoundingClientRect", element_get_bounding_client_rect_func)?;
     define_method_if_missing("getAttribute", get_attribute_func)?;
+    define_method_if_missing("getAttributeNode", get_attribute_node_func)?;
     define_method_if_missing("setAttribute", set_attribute_func)?;
     define_method_if_missing("removeAttribute", remove_attribute_func)?;
 
@@ -55412,6 +55978,97 @@ mod tests {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
     crate::js::HostDocumentState::from_renderer_dom(&renderer_dom)
+  }
+
+  #[test]
+  fn static_range_constructor_basics() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const r = new StaticRange({
+          startContainer: document.body,
+          startOffset: 0,
+          endContainer: document.body,
+          endOffset: 0,
+        });
+        if (r.startContainer !== document.body) return false;
+        if (r.startOffset !== 0) return false;
+        if (r.endContainer !== document.body) return false;
+        if (r.endOffset !== 0) return false;
+        return r.collapsed === true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+
+    let err = exec_script_with_dom_host(&mut realm, &mut host, "new StaticRange()")
+      .expect_err("expected new StaticRange() to throw");
+    match err {
+      VmError::TypeError(_) => {}
+      other => {
+        let obj = unwrap_thrown_object(other);
+        let (vm, heap) = realm.vm_and_heap_mut();
+        let mut scope = heap.scope();
+        scope.push_root(Value::Object(obj))?;
+        let name = get_prop(vm, &mut scope, obj, "name")?;
+        assert_eq!(get_string(scope.heap(), name), "TypeError");
+      }
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn static_range_constructor_rejects_doctype_and_attr_containers() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let err = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"new StaticRange({
+        startContainer: document.doctype,
+        startOffset: 0,
+        endContainer: document.doctype,
+        endOffset: 0,
+      })"#,
+    )
+    .expect_err("expected StaticRange to reject DocumentType container");
+    let obj = unwrap_thrown_object(err);
+    {
+      let (vm, heap) = realm.vm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(obj))?;
+      let name = get_prop(vm, &mut scope, obj, "name")?;
+      assert_eq!(get_string(scope.heap(), name), "INVALID_NODE_TYPE_ERR");
+    }
+
+    let err = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        document.body.setAttribute("id", "x");
+        const attr = document.body.getAttributeNode("id");
+        return new StaticRange({
+          startContainer: attr,
+          startOffset: 0,
+          endContainer: attr,
+          endOffset: 0,
+        });
+      })()"#,
+    )
+    .expect_err("expected StaticRange to reject Attr container");
+    let obj = unwrap_thrown_object(err);
+    let (vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(obj))?;
+    let name = get_prop(vm, &mut scope, obj, "name")?;
+    assert_eq!(get_string(scope.heap(), name), "INVALID_NODE_TYPE_ERR");
+
+    Ok(())
   }
 
   #[test]
