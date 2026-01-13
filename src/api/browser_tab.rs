@@ -7129,6 +7129,9 @@ impl BrowserTab {
   /// This is intended for integrations where external I/O (network callbacks, UI threads, etc.)
   /// needs to schedule work to run on the tab's live loop without holding `&mut BrowserTab`.
   ///
+  /// If the embedding may sleep when the tab is idle, also install a wake callback via
+  /// [`BrowserTab::set_external_wake_callback`] so externally queued tasks can wake the host.
+  ///
   /// ## Lifetime / invalidation
   ///
   /// The returned handle is tied to the **currently active** event loop. Navigations reset the
