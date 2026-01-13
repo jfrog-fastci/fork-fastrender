@@ -697,8 +697,8 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - `Navigate { tab_id, url, reason }`
 - History actions (`GoBack { tab_id }`, `GoForward { tab_id }`, `Reload { tab_id }`)
 - `Tick { tab_id }` — periodic time-step driver for time-based updates (CSS
-  animations/transitions; eventually JS timers/event loop). UIs can drive ticks for the active tab
-  while the worker reports `RenderedFrame.wants_ticks == true`.
+  animations/transitions, animated images, JS timers/rAF, etc). UIs can drive ticks for the active
+  tab while the worker reports `RenderedFrame.wants_ticks == true`.
 - `ViewportChanged { tab_id, viewport_css, dpr }`
 - `Scroll { tab_id, delta_css, pointer_css }`
 - pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)

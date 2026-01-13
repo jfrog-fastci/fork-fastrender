@@ -146,7 +146,7 @@ struct NavigationRequest {
 }
 
 // `UiToWorker::Tick` is the UI's periodic driver for time-based updates (CSS animations/transitions,
-// and eventually JS timers).
+// animated images, JS timers/rAF, etc).
 //
 // This worker-side CSS animation sampling intentionally advances by a fixed amount of time per tick
 // to keep behaviour deterministic for tests.
