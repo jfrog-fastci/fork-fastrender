@@ -1770,9 +1770,10 @@ impl<'vm> HirEvaluator<'vm> {
           let rhs_value = self.eval_expr(scope, body, *right)?;
 
           // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
-          // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw).
+          // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw) and the
+          // statement's completion value is `undefined` (not empty).
           if matches!(rhs_value, Value::Null | Value::Undefined) {
-            return Ok(Flow::empty());
+            return Ok(Flow::normal(Value::Undefined));
           }
 
           // Root the RHS while converting to object; `ToObject` can allocate/GC and the RHS might

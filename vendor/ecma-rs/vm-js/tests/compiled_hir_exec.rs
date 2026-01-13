@@ -8222,6 +8222,76 @@ fn compiled_for_in_undefined_rhs_is_empty_iteration() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_while_completion_value_overrides_previous_value() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `while (false) {}` returns a normal completion with value `undefined`, which overrides the
+  // preceding statement's completion value.
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", "1; while (false) {}")?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_while_break_preserves_completion_value() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `break` should carry the running completion value out of the loop.
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", "while (true) { 1; break; }")?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_of_completion_value_is_last_value() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", "for (let x of [0]) { 1; }")?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_in_completion_value_is_last_value() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", "for (let k in ({a: 1})) { 1; }")?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_of_labeled_break_empty_value_becomes_undefined() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // A labelled `break` exiting an iteration statement should update its empty value to the loop's
+  // running completion value (`undefined` here), which then overrides the preceding statement's
+  // completion value.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    "1; label: for (let x of [0]) { break label; }",
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
 fn compiled_for_of_sums_array() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
