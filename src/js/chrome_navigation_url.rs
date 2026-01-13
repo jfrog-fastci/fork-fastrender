@@ -1,18 +1,13 @@
+//! Host-side URL validation for privileged `chrome.navigation.navigate(url)`.
+//!
+//! The privileged JS bindings are implemented in `src/js/vmjs/chrome_api.rs` and are re-exported
+//! under `crate::js::chrome_api`. This module contains shared URL validation helpers that embedders
+//! can use before honoring a navigation request.
+
 use std::fmt;
 use url::Url;
 
-// --- vm-js privileged chrome bindings ----------------------------------------
-//
-// vm-js bindings for the privileged chrome API live in `src/js/vmjs/chrome_api.rs`. We keep the
-// shared validation/types in this module and re-export the vm-js bindings so callers can continue
-// using the stable `crate::js::chrome_api::*` paths.
-//
-// The canonical vm-js implementation lives under `crate::js::vmjs_chrome_api` (declared in
-// `src/js/mod.rs`) to avoid a `js::chrome_api` module name collision, so re-export it here rather
-// than compiling the file twice.
-pub use super::vmjs_chrome_api::{
-  install_chrome_api_bindings_vm_js, ChromeApiHost, ChromeCommand, MAX_CHROME_API_URL_CODE_UNITS,
-};
+use super::vmjs_chrome_api::MAX_CHROME_API_URL_CODE_UNITS;
 
 /// Maximum length allowed for `chrome.navigation.navigate(url)` URLs, measured in UTF-16 code units.
 ///
