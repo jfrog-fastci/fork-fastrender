@@ -15971,6 +15971,18 @@ impl FormattingContext for GridFormattingContext {
       return Ok(fragment);
     }
 
+    // FastRender models scrollbars as overlay by default: scrollbars do not affect layout unless the
+    // author opts into reserving space via `scrollbar-gutter: stable`.
+    //
+    // The `overflow:auto` convergence loop below exists for classic scrollbar experiments (where
+    // scrollbars can reduce the scrollport size). Skip it under the default overlay model to avoid
+    // redundant layout passes.
+    if !crate::debug::runtime::runtime_toggles().truthy("FASTR_CLASSIC_SCROLLBARS") {
+      return crate::layout::auto_scrollbars::with_bypass(box_node, || {
+        self.layout(box_node, constraints)
+      });
+    }
+
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
     let base_style = style_override.unwrap_or_else(|| box_node.style.clone());
     let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
