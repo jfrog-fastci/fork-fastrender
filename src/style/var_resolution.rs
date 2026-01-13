@@ -23,8 +23,12 @@ use std::cell::Cell;
 #[cfg(test)]
 use std::cell::Cell as TestCell;
 
-/// Maximum depth for recursive var() resolution to prevent infinite loops
-const MAX_RECURSION_DEPTH: usize = 10;
+/// Maximum depth for recursive var()/if()/attr()/first-valid()/toggle() resolution.
+///
+/// This serves as a hard safety cap against hostile inputs (extremely deep nesting or chains)
+/// while still supporting real-world CSS frameworks that routinely generate long *acyclic*
+/// `--a: var(--b)` custom-property chains.
+const MAX_RECURSION_DEPTH: usize = 64;
 
 /// Separator inserted when serializing token-spliced values via string concatenation.
 ///
@@ -3363,6 +3367,34 @@ mod tests {
   }
 
   // Recursion limit tests
+  #[test]
+  fn resolves_deep_non_cyclic_custom_property_chain() {
+    // Regression test: frameworks like Tailwind can generate long `--a: var(--b)` chains. We must
+    // resolve chains deeper than the historical recursion cap (10) as long as they are acyclic.
+    let mut store = CustomPropertyStore::default();
+    for i in 1..20 {
+      let name = format!("--a{i}");
+      let value = format!("var(--a{})", i + 1);
+      store.insert(name.into(), CustomPropertyValue::new(value, None));
+    }
+    store.insert("--a20".into(), CustomPropertyValue::new("10px", None));
+
+    let value = PropertyValue::Keyword("var(--a1)".to_string());
+    let resolved = resolve_var_for_property(&value, &store, "width");
+
+    let VarResolutionResult::Resolved { value, .. } = resolved else {
+      panic!("expected deep var() chain to resolve, got {resolved:?}");
+    };
+
+    match value.as_ref() {
+      PropertyValue::Length(len) => {
+        assert!((len.value - 10.0).abs() < f32::EPSILON);
+        assert_eq!(len.unit, LengthUnit::Px);
+      }
+      other => panic!("expected Length(10px), got {other:?}"),
+    }
+  }
+
   #[test]
   fn test_recursion_limit() {
     // Create a circular reference

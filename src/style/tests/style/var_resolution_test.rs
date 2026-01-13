@@ -408,8 +408,8 @@ fn test_explicit_depth_limit() {
     _ => panic!("Expected Keyword 'value', got {:?}", resolved),
   }
 
-  // At max depth, should return original
-  let resolved_max = resolve_var_with_depth(&value, &props, 10);
+  // At (or beyond) the hard recursion cap, should return the original unresolved value.
+  let resolved_max = resolve_var_with_depth(&value, &props, 64);
   match resolved_max {
     PropertyValue::Keyword(kw) => assert!(kw.contains("var(--deep)")),
     _ => panic!("Expected unresolved var(), got {:?}", resolved_max),
