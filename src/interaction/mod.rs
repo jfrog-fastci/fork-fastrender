@@ -13,6 +13,7 @@ pub mod element_geometry;
 pub mod fragment_geometry;
 pub mod hit_test;
 pub mod hit_testing;
+pub(crate) mod label_assoc_dom2;
 mod image_maps;
 pub mod selection_serialize;
 pub mod scroll_wheel;
