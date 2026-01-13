@@ -1886,8 +1886,8 @@ impl<'a> ScrollChainState<'a> {
     });
 
     let is_scroll_container = treat_as_root
-      || matches!(overflow_x, Overflow::Auto | Overflow::Scroll)
-      || matches!(overflow_y, Overflow::Auto | Overflow::Scroll)
+      || matches!(overflow_x, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
+      || matches!(overflow_y, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
       || snap.is_some();
 
     if !is_scroll_container {
