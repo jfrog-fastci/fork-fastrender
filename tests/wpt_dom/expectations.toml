@@ -326,6 +326,46 @@ status = "xfail"
 reason = "QuickJS backend does not implement shadow DOM traversal with NodeIterator/TreeWalker yet."
 
 [[expectations]]
+id = "dom/range_basic.window.js"
+status = "pass"
+reason = "Range implemented (bindings + mutation live update steps)."
+
+[[expectations]]
+id = "dom/range_basics.window.js"
+status = "pass"
+reason = "Range implemented (bindings + mutation live update steps)."
+
+[[expectations]]
+id = "dom/range_setstart_setend.window.js"
+status = "pass"
+reason = "Range implemented (bindings + mutation live update steps)."
+
+[[expectations]]
+id = "dom/range_live_updates_insert_remove.window.js"
+status = "pass"
+reason = "Range implemented (bindings + mutation live update steps)."
+
+[[expectations]]
+id = "dom/range_live_updates_characterdata.window.js"
+status = "pass"
+reason = "Range implemented (bindings + mutation live update steps)."
+
+[[expectations]]
+id = "dom/range_create_contextual_fragment.window.js"
+status = "pass"
+reason = "Range implemented (bindings + mutation live update steps)."
+
+[[expectations]]
+id = "dom/live_range_insert_remove.window.js"
+status = "pass"
+reason = "Range implemented (bindings + mutation live update steps)."
+
+[[expectations]]
+id = "dom/live_range_replace_data.window.js"
+status = "pass"
+reason = "Range implemented (bindings + mutation live update steps)."
+
+[[expectations]]
 glob = "dom/ranges/tentative/FormControlRange-*.html"
 status = "skip"
 reason = "FormControlRange is not implemented yet."
