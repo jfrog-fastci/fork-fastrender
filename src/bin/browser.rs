@@ -6582,7 +6582,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       if let Some(win) = windows.get(id) {
         let mut session_window =
           fastrender::ui::BrowserSessionWindow::from_app_state(&win.app.browser_state);
-        session_window.window_state = capture_window_state(&win.app.window);
+        session_window.window_state = capture_window_state(
+          &win.app.window,
+          win.app.window_minimized,
+          win.app.last_known_good_window_state.as_ref(),
+        );
         session_windows.push(session_window);
       }
     }
