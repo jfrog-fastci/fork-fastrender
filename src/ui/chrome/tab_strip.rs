@@ -986,8 +986,7 @@ fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visu
   let mut stroke = visuals.widgets.inactive.bg_stroke;
   stroke.color = with_alpha(stroke.color, alpha);
   // Keep favicon placeholders subtly rounded without looking fully pill-shaped.
-  let rounding =
-    egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.5).clamp(2.0, 4.0));
+  let rounding = egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.5).clamp(2.0, 4.0));
   painter.rect_filled(rect, rounding, fill);
   painter.rect_stroke(rect, rounding, stroke);
 }
@@ -1322,9 +1321,12 @@ fn tab_ui(
   if let Some(tex_id) = favicon_tex {
     if paint_ui.is_rect_visible(icon_rect) {
       let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
-      paint_ui
-        .painter()
-        .image(tex_id, icon_rect, uv, with_alpha(Color32::WHITE, close_opacity));
+      paint_ui.painter().image(
+        tex_id,
+        icon_rect,
+        uv,
+        with_alpha(Color32::WHITE, close_opacity),
+      );
     }
   } else {
     placeholder_favicon(paint_ui.painter(), icon_rect, &visuals, close_opacity);
@@ -1640,13 +1642,13 @@ fn pinned_tab_ui(
     bg = visuals.widgets.active.bg_fill;
   }
   let rounding = visuals.widgets.inactive.rounding;
-  ui
-    .painter()
+  ui.painter()
     .rect_filled(tab_rect, rounding, with_alpha(bg, close_opacity));
   if pressed {
     let mut stroke = visuals.widgets.active.bg_stroke;
     stroke.color = with_alpha(stroke.color, close_opacity);
-    ui.painter().rect_stroke(tab_rect.shrink(0.5), rounding, stroke);
+    ui.painter()
+      .rect_stroke(tab_rect.shrink(0.5), rounding, stroke);
   }
 
   // Favicon (centered).
@@ -1658,9 +1660,12 @@ fn pinned_tab_ui(
   if let Some(tex_id) = favicon_tex {
     if ui.is_rect_visible(icon_rect) {
       let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
-      ui
-        .painter()
-        .image(tex_id, icon_rect, uv, with_alpha(Color32::WHITE, close_opacity));
+      ui.painter().image(
+        tex_id,
+        icon_rect,
+        uv,
+        with_alpha(Color32::WHITE, close_opacity),
+      );
     }
   } else {
     placeholder_favicon(ui.painter(), icon_rect, &visuals, close_opacity);
@@ -1708,7 +1713,13 @@ fn pinned_tab_ui(
     warn.is_some(),
     motion.durations.progress_fade,
   );
-  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t * close_opacity, warn_t * close_opacity);
+  paint_tab_status_badges(
+    ui.painter(),
+    icon_rect,
+    &visuals,
+    err_t * close_opacity,
+    warn_t * close_opacity,
+  );
 
   if closing {
     return (tab_rect, response, None);
@@ -2745,9 +2756,7 @@ pub(super) fn tab_strip_ui(
                 }
 
                 let close_t = close_progress.get(&tab_id).copied();
-                let close_scale = close_t
-                  .map(|t| (1.0 - t).clamp(0.0, 1.0))
-                  .unwrap_or(1.0);
+                let close_scale = close_t.map(|t| (1.0 - t).clamp(0.0, 1.0)).unwrap_or(1.0);
                 let scale = (group_t * close_scale).clamp(0.0, 1.0);
 
                 maybe_insert_source_placeholder!(false);
@@ -2874,9 +2883,7 @@ pub(super) fn tab_strip_ui(
               }
 
               let close_t = close_progress.get(&tab_id).copied();
-              let close_scale = close_t
-                .map(|t| (1.0 - t).clamp(0.0, 1.0))
-                .unwrap_or(1.0);
+              let close_scale = close_t.map(|t| (1.0 - t).clamp(0.0, 1.0)).unwrap_or(1.0);
               add_gap(
                 ui,
                 &mut first_item,
@@ -3426,7 +3433,10 @@ pub(super) fn tab_strip_ui(
           ui.allocate_space(preview_rect.size());
           let visuals = ui.style().visuals.clone();
           let rounding = visuals.widgets.inactive.rounding;
-          paint_popup_shadow(ui.painter(), preview_rect, rounding, visuals.popup_shadow);
+          let mut shadow = visuals.popup_shadow;
+          shadow.extrusion *= lift_t;
+          shadow.color = with_alpha(shadow.color, lift_t);
+          paint_popup_shadow(ui.painter(), preview_rect, rounding, shadow);
 
           if dragging_is_pinned {
             pinned_tab_preview_ui(
