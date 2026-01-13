@@ -7893,6 +7893,42 @@ fn get_or_create_node_wrapper(
     }
   }
 
+  // Media element wrappers (`<video>`, `<audio>`) should inherit from `HTMLMediaElement.prototype`
+  // so scripts that probe readiness state (`readyState`, `networkState`, `seeking`, etc) see a
+  // spec-shaped surface even before FastRender implements playback.
+  if let Some(dom) = dom {
+    if let NodeKind::Element {
+      tag_name, namespace, ..
+    } = &dom.node(node_id).kind
+    {
+      let is_html_ns = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+      if is_html_ns
+        && (tag_name.eq_ignore_ascii_case("video") || tag_name.eq_ignore_ascii_case("audio"))
+      {
+        if let Some(global) = vm
+          .user_data::<WindowRealmUserData>()
+          .and_then(|data| data.window_obj())
+        {
+          scope.push_root(Value::Object(global))?;
+          let ctor_key = alloc_key(scope, "HTMLMediaElement")?;
+          if let Some(Value::Object(ctor_obj)) =
+            scope.heap().object_get_own_data_property_value(global, &ctor_key)?
+          {
+            scope.push_root(Value::Object(ctor_obj))?;
+            let proto_key = alloc_key(scope, "prototype")?;
+            if let Some(Value::Object(proto_obj)) =
+              scope.heap().object_get_own_data_property_value(ctor_obj, &proto_key)?
+            {
+              scope
+                .heap_mut()
+                .object_set_prototype(wrapper, Some(proto_obj))?;
+            }
+          }
+        }
+      }
+    }
+  }
+
   let is_html_element = dom
     .map(|dom| {
       DomInterface::primary_for_node_kind(&dom.node(node_id).kind).implements(DomInterface::HTMLElement)
@@ -46660,6 +46696,29 @@ mod tests {
         if (HTMLMediaElement.prototype.networkState !== HTMLMediaElement.NETWORK_EMPTY) return false;
         if (HTMLMediaElement.prototype.readyState !== HTMLMediaElement.HAVE_NOTHING) return false;
         if (HTMLMediaElement.prototype.seeking !== false) return false;
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_stub_applies_to_video_elements() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        if (typeof video.networkState !== 'number') return false;
+        if (typeof video.readyState !== 'number') return false;
+        if (typeof video.seeking !== 'boolean') return false;
+        if (video.networkState !== HTMLMediaElement.NETWORK_EMPTY) return false;
+        if (video.readyState !== HTMLMediaElement.HAVE_NOTHING) return false;
+        if (video.seeking !== false) return false;
         return true;
       })()"#,
     )?;
