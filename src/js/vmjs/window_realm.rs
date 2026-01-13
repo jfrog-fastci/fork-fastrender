@@ -2205,6 +2205,52 @@ fn document_constructor_native(
   ))
 }
 
+fn document_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  // Implement `new Document()` by delegating to the realm's existing
+  // `document.implementation.createDocument(null, "", null)` machinery so the created document:
+  // - is backed by a realm-owned `dom2::Document`,
+  // - inherits the same Document surface as the host document, and
+  // - behaves like an XML document (needed by curated WPT helpers).
+  let document_obj = vm
+    .user_data_mut::<WindowRealmUserData>()
+    .and_then(|data| data.document_obj)
+    .ok_or(VmError::TypeError(
+      "Document constructor requires a host-backed WindowRealm",
+    ))?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(document_obj))?;
+  let implementation_key = alloc_key(&mut scope, "implementation")?;
+  let impl_value = scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &implementation_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(impl_obj) = impl_value else {
+    return Err(VmError::TypeError(
+      "Document constructor requires document.implementation",
+    ));
+  };
+
+  let args = [Value::Null, Value::Null, Value::Null];
+  dom_implementation_create_document_native(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    impl_obj,
+    Value::Object(impl_obj),
+    &args,
+  )
+}
+
 fn storage_require_this(
   scope: &mut Scope<'_>,
   this: Value,
@@ -3379,6 +3425,7 @@ const NODE_ITERATOR_REFERENCE_KEY: &str = "__fastrender_node_iterator_reference"
 const NODE_ITERATOR_WHAT_TO_SHOW_KEY: &str = "__fastrender_node_iterator_what_to_show";
 const NODE_ITERATOR_FILTER_KEY: &str = "__fastrender_node_iterator_filter";
 const NODE_ITERATOR_ACTIVE_KEY: &str = "__fastrender_node_iterator_active";
+const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 
 const INTERSECTION_OBSERVER_ID_KEY: &str = "__fastrender_intersection_observer_id";
 const INTERSECTION_OBSERVER_CALLBACK_KEY: &str = "__fastrender_intersection_observer_callback";

@@ -153,8 +153,9 @@ reason = "QuickJS backend does not implement Document/Element.getElementsByTagNa
 
 [[expectations]]
 id = "dom/traversal_basics.window.js"
+backend = "quickjs"
 status = "xfail"
-reason = "NodeIterator/TreeWalker/NodeFilter not implemented yet"
+reason = "QuickJS backend uses minimal DOM shims and does not implement NodeIterator/TreeWalker yet."
 
 [[expectations]]
 id = "dom/traversal_filter_semantics.window.js"
@@ -277,8 +278,15 @@ reason = "QuickJS backend uses minimal Event/EventTarget shims; strict WebIDL/br
 
 [[expectations]]
 id = "dom/nodeiterator_pre_remove.window.js"
+backend = "quickjs"
 status = "xfail"
-reason = "NodeIterator pre-remove steps (live iterator updates on node removal) are not implemented yet."
+reason = "QuickJS backend uses minimal DOM shims and does not implement NodeIterator/TreeWalker yet."
+
+[[expectations]]
+id = "dom/shadow_dom_traversal_iterators.window.js"
+backend = "quickjs"
+status = "xfail"
+reason = "QuickJS backend does not implement shadow DOM traversal with NodeIterator/TreeWalker yet."
 
 [[expectations]]
 glob = "dom/ranges/tentative/FormControlRange-*.html"
