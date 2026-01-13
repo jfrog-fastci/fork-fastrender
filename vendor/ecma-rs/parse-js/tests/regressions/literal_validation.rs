@@ -11,6 +11,49 @@ fn duplicate_regex_flags_are_rejected() {
 }
 
 #[test]
+fn unicode_mode_rejects_right_bracket_as_pattern_character() {
+  // In UnicodeMode (`u`/`v`), `]` is not a PatternCharacter (Annex B extension disabled).
+  let err = parse("/]/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+
+  // Non-unicode mode still permits `]` as a literal PatternCharacter.
+  parse("/]/").unwrap();
+}
+
+#[test]
+fn unicode_mode_rejects_character_class_escape_ranges() {
+  for src in [
+    r"/[\d-a]/u",
+    r"/[a-\d]/u",
+    r"/[\w-\w]/u",
+    r"/[\s-\uFFFF]/u",
+  ] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "expected parse-time syntax error for {src}"
+    );
+  }
+
+  // These patterns are accepted in non-unicode mode (Annex B compatibility).
+  parse(r"/[\d-a]/").unwrap();
+  parse(r"/[a-\d]/").unwrap();
+}
+
+#[test]
+fn regex_literal_rejects_out_of_order_character_class_ranges() {
+  let err = parse(r"/[d-G]/").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
 fn regex_unterminated_named_backreference_is_rejected() {
   let err = parse("/\\k</u").unwrap_err();
   assert_eq!(
