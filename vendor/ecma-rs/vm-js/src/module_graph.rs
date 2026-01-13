@@ -1,4 +1,3 @@
-use crate::execution_context::{ExecutionContext, ModuleId, ScriptOrModule};
 use crate::exec::{
   instantiate_module_decls,
   run_module,
@@ -15,8 +14,8 @@ use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
 use crate::{
-  cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleRequest, RealmId, RootId,
-  Scope, ScriptOrModule, StackFrame, Value, Vm, VmError,
+  cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleId, ModuleRequest,
+  RealmId, RootId, Scope, ScriptOrModule, StackFrame, Value, Vm, VmError,
 };
 use crate::{Heap, VmHost, VmHostHooks};
 use core::mem;
