@@ -10,6 +10,7 @@ pub const ABOUT_HISTORY: &str = "about:history";
 pub const ABOUT_BOOKMARKS: &str = "about:bookmarks";
 pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
 pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
+pub const ABOUT_TEST_LAYOUT_STRESS: &str = "about:test-layout-stress";
 pub const ABOUT_TEST_FORM: &str = "about:test-form";
 
 /// Known `about:` page URLs.
@@ -29,6 +30,7 @@ pub const ABOUT_PAGE_URLS: &[&str] = &[
   ABOUT_BOOKMARKS,
   ABOUT_TEST_SCROLL,
   ABOUT_TEST_HEAVY,
+  ABOUT_TEST_LAYOUT_STRESS,
   ABOUT_TEST_FORM,
 ];
 
@@ -577,6 +579,7 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
     ABOUT_BOOKMARKS => Some(bookmarks_html(url)),
     ABOUT_TEST_SCROLL => Some(test_scroll_html()),
     ABOUT_TEST_HEAVY => Some(test_heavy_html()),
+    ABOUT_TEST_LAYOUT_STRESS => Some(test_layout_stress_html()),
     ABOUT_TEST_FORM => Some(test_form_html()),
     _ => None,
   }
@@ -1557,6 +1560,92 @@ fn test_heavy_html() -> String {
   out
 }
 
+fn test_layout_stress_html() -> String {
+  // Width-sensitive layout+scroll fixture for responsiveness benchmarks.
+  //
+  // Goals:
+  // - Reflow significantly on viewport width changes (wrapping + grid relayout).
+  // - Provide enough vertical content for scroll stress.
+  // - Remain deterministic/offline (no external resources, no scripts).
+  //
+  // Keep this bounded so debug builds and CI remain comfortable.
+  const CARD_COUNT: u32 = 100;
+  const METRIC_COUNT: u32 = 6;
+  const TAG_COUNT: u32 = 8;
+  const LOREM: &str = "FastRender layout stress fixture: long-form text that wraps across multiple lines when the viewport width changes. The card structure uses nested grid and flex containers, forcing intrinsic sizing, line breaking, and reflow work during resize.";
+
+  let mut out = String::with_capacity(512 * 1024);
+  out.push_str("<!doctype html><html><head><meta charset=\"utf-8\">");
+  out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+  out.push_str("<title>Layout Stress Test</title><style>");
+  out.push_str(about_shared_css());
+  out.push_str(
+    "body{margin:0;padding:0;font:14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;}\
+     .topbar{position:sticky;top:0;z-index:10;padding:10px 12px;border-bottom:1px solid rgba(127,127,127,0.22);\
+     background:var(--about-bg);}\
+     .topbar strong{font-weight:650;}\
+     .wrap{padding:12px;}\
+     .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:start;}\
+     .card{border:1px solid rgba(127,127,127,0.24);border-radius:14px;background:var(--about-surface);\
+     box-shadow:0 8px 28px rgba(0,0,0,0.10);padding:12px;}\
+     .card-header{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;justify-content:space-between;}\
+     .card-title{font-weight:650;letter-spacing:-0.01em;}\
+     .card-meta{display:flex;flex-wrap:wrap;gap:6px;font-size:12px;color:var(--about-muted);}\
+     .card-meta span{white-space:nowrap;}\
+     .card-body{margin-top:8px;}\
+     .card-body p{margin:0;overflow-wrap:anywhere;}\
+     .metrics{margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;}\
+     .kv{display:flex;align-items:baseline;justify-content:space-between;gap:6px;\
+     border:1px solid rgba(127,127,127,0.18);border-radius:10px;padding:6px 8px;background:var(--about-surface-2);}\
+     .kv .k{font-size:12px;color:var(--about-muted);}\
+     .kv .v{font-family:var(--about-mono);font-size:12px;}\
+     .tags{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;}\
+     .tag{display:inline-block;padding:2px 9px;border-radius:999px;border:1px solid rgba(127,127,127,0.22);\
+     background:var(--about-surface-2);font-size:12px;}\
+     .tag code{padding:0;border:0;background:transparent;}\
+     ",
+  );
+  out.push_str("</style></head><body>");
+  out.push_str("<div class=\"topbar\"><strong>Layout Stress Test</strong> — resize the window to trigger reflow + rewrap; scroll for sustained load.</div>");
+  out.push_str("<div class=\"wrap\"><div class=\"grid\">");
+
+  for i in 0..CARD_COUNT {
+    use std::fmt::Write;
+
+    let _ = write!(
+      out,
+      "<article class=\"card\"><div class=\"card-header\"><div class=\"card-title\">Card {i}</div>\
+       <div class=\"card-meta\"><span>group {}</span><span>·</span><span>item {}</span></div></div>",
+      i % 10,
+      i + 1
+    );
+    out.push_str("<div class=\"card-body\"><p>");
+    out.push_str(LOREM);
+    out.push_str("</p>");
+    out.push_str("<div class=\"metrics\">");
+    for j in 0..METRIC_COUNT {
+      let _ = write!(
+        out,
+        "<div class=\"kv\"><span class=\"k\">k{j}</span><span class=\"v\">{}</span></div>",
+        (i * 17 + j * 13) % 1000
+      );
+    }
+    out.push_str("</div>");
+    out.push_str("<div class=\"tags\">");
+    for t in 0..TAG_COUNT {
+      let _ = write!(
+        out,
+        "<span class=\"tag\">tag-{}</span>",
+        (i + t) % 32
+      );
+    }
+    out.push_str("</div></div></article>");
+  }
+
+  out.push_str("</div></div></body></html>");
+  out
+}
+
 fn test_form_html() -> String {
   // Offline form used by browser UI interaction tests.
   format!(
@@ -1748,6 +1837,7 @@ mod tests {
       (ABOUT_BOOKMARKS, Some("Bookmarks")),
       (ABOUT_TEST_SCROLL, Some("Scroll Test")),
       (ABOUT_TEST_HEAVY, Some("Heavy Test")),
+      (ABOUT_TEST_LAYOUT_STRESS, Some("Layout Stress Test")),
       (ABOUT_TEST_FORM, Some("Form Test")),
     ];
 
@@ -2075,6 +2165,7 @@ mod tests {
       ABOUT_ERROR,
       ABOUT_TEST_SCROLL,
       ABOUT_TEST_HEAVY,
+      ABOUT_TEST_LAYOUT_STRESS,
       ABOUT_TEST_FORM,
     ] {
       let html = html_for_about_url(url).unwrap();
