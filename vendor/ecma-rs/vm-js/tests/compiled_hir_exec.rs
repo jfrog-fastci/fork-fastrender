@@ -941,6 +941,29 @@ fn compiled_object_literal_inherits_from_object_prototype() -> Result<(), VmErro
 }
 
 #[test]
+fn compiled_object_literal_in_function_inherits_from_object_prototype() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        let o = {};
+        // `toString` should be inherited from %Object.prototype%.
+        return o.hasOwnProperty('toString');
+      }
+      f()
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(false));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_object_spread_copies_properties() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
@@ -993,6 +1016,50 @@ fn compiled_object_literal_object_spread_overwrites_earlier_keys() -> Result<(),
     "test.js",
     r#"
       ({ x: 1, ...{ x: 2 } }).x
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_object_spread_in_function_respects_member_order() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        let a = { x: 1 };
+        let o = { y: 2, ...a, z: 3 };
+        return o.x + o.y + o.z;
+      }
+      f()
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(6.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_object_spread_in_function_overwrites_earlier_keys() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        return ({ x: 1, ...{ x: 2 } }).x;
+      }
+      f()
     "#,
   )?;
   let result = rt.exec_compiled_script(script)?;
