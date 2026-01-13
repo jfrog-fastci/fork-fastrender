@@ -193,6 +193,15 @@ mod perf_log {
       cpu_time_ms_total: u64,
       cpu_percent_recent: f64,
     },
+    IdleSample {
+      schema_version: u32,
+      t_ms: u64,
+      window_id: &'a str,
+      rolling_window_ms: u64,
+      idle_fps: f32,
+      idle_frames_total: u64,
+      idle_frames_window: u64,
+    },
   }
 
   pub fn write_event_jsonl<W: Write>(writer: &mut W, event: &PerfEvent<'_>) -> io::Result<()> {
@@ -8672,6 +8681,30 @@ mod worker_wake_perf_log_format_tests {
   }
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiFrameActivity {
+  Active,
+  Idle,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn classify_idle_repaint_frame_activity(
+  had_winit_input_since_present: bool,
+  had_resize_since_present: bool,
+  had_worker_activity_since_present: bool,
+  egui_requested_repaint: bool,
+) -> UiFrameActivity {
+  if had_winit_input_since_present || had_resize_since_present || had_worker_activity_since_present {
+    UiFrameActivity::Active
+  } else {
+    // Frames produced solely because egui requested a repaint (or due to event-loop churn) are the
+    // core "idle repaint / spin" signal we want to detect, so they should count as idle.
+    let _ = egui_requested_repaint;
+    UiFrameActivity::Idle
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 #[derive(Debug)]
 struct IdleRepaintMonitor {
@@ -8691,10 +8724,13 @@ struct IdleRepaintMonitor {
   idle_frame_times: std::collections::VecDeque<std::time::Instant>,
   idle_frames_per_sec: f32,
 
-  perf_log_enabled: bool,
   window_id: String,
-  start_time: std::time::Instant,
   last_perf_log: Option<std::time::Instant>,
+  perf_log_writer: Option<
+    std::rc::Rc<
+      std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+    >,
+  >,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -8702,7 +8738,16 @@ impl IdleRepaintMonitor {
   const IDLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
   const PERF_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-  fn new(window_id: winit::window::WindowId, perf_log_enabled: bool) -> Self {
+  fn new(
+    window_id: winit::window::WindowId,
+    perf_log_writer: Option<
+      std::rc::Rc<
+        std::cell::RefCell<
+          perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>,
+        >,
+      >,
+    >,
+  ) -> Self {
     Self {
       has_presented_once: false,
       had_winit_input_since_present: false,
@@ -8712,10 +8757,9 @@ impl IdleRepaintMonitor {
       idle_frames_total: 0,
       idle_frame_times: std::collections::VecDeque::new(),
       idle_frames_per_sec: 0.0,
-      perf_log_enabled,
       window_id: format!("{window_id:?}"),
-      start_time: std::time::Instant::now(),
       last_perf_log: None,
+      perf_log_writer,
     }
   }
 
@@ -8754,10 +8798,13 @@ impl IdleRepaintMonitor {
     let now = std::time::Instant::now();
 
     if self.has_presented_once {
-      let is_idle = !(self.had_winit_input_since_present
-        || self.had_resize_since_present
-        || self.had_worker_activity_since_present
-        || self.had_egui_repaint_request_since_present);
+      let activity = classify_idle_repaint_frame_activity(
+        self.had_winit_input_since_present,
+        self.had_resize_since_present,
+        self.had_worker_activity_since_present,
+        self.had_egui_repaint_request_since_present,
+      );
+      let is_idle = activity == UiFrameActivity::Idle;
 
       if is_idle {
         self.idle_frames_total = self.idle_frames_total.saturating_add(1);
@@ -8780,27 +8827,31 @@ impl IdleRepaintMonitor {
       0.0
     };
 
-    if self.perf_log_enabled {
+    if self.perf_log_writer.is_some() {
       let should_log = match self.last_perf_log {
         Some(prev) => now.saturating_duration_since(prev) >= Self::PERF_LOG_INTERVAL,
         None => true,
       };
       if should_log {
         self.last_perf_log = Some(now);
-        let t_ms = now
-          .saturating_duration_since(self.start_time)
-          .as_millis()
-          .min(u128::from(u64::MAX)) as u64;
-        let line = serde_json::json!({
-          "schema_version": perf_log::SCHEMA_VERSION,
-          "event": "idle_summary",
-          "t_ms": t_ms,
-          "window_id": self.window_id.as_str(),
-          "idle_frames": self.idle_frames_per_sec,
-          "idle_frames_total": self.idle_frames_total,
-          "idle_frames_per_sec": self.idle_frames_per_sec,
-        });
-        println!("{line}");
+        if let Some(writer) = self.perf_log_writer.as_ref() {
+          let mut writer = writer.borrow_mut();
+          let t_ms = writer.ms_since_start(now);
+          let rolling_window_ms = Self::IDLE_WINDOW
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+          let idle_frames_window =
+            u64::try_from(self.idle_frame_times.len()).unwrap_or(u64::MAX);
+          writer.emit(&perf_log::PerfEvent::IdleSample {
+            schema_version: perf_log::SCHEMA_VERSION,
+            t_ms,
+            window_id: self.window_id.as_str(),
+            rolling_window_ms,
+            idle_fps: self.idle_frames_per_sec,
+            idle_frames_total: self.idle_frames_total,
+            idle_frames_window,
+          });
+        }
       }
     }
 
@@ -10240,8 +10291,9 @@ impl App {
       ChromeA11yBackend::Egui
     };
 
-    let perf_log = perf_log_writer
-      .map(|writer| PerfWindowLog::new(perf_log_start, format!("{:?}", window.id()), writer));
+    let perf_log = perf_log_writer.as_ref().map(|writer| {
+      PerfWindowLog::new(perf_log_start, format!("{:?}", window.id()), writer.clone())
+    });
 
     let system_pixels_per_point = window.scale_factor() as f32;
     let ui_scale = applied_appearance.ui_scale;
@@ -10366,9 +10418,9 @@ impl App {
       );
     }
     let window_id = window.id();
-    let perf_log_enabled = perf_log_enabled_from_env();
+    let perf_log_enabled = perf_log_writer.is_some();
     let idle_repaint_monitor = if hud.is_some() || perf_log_enabled {
-      Some(IdleRepaintMonitor::new(window_id, perf_log_enabled))
+      Some(IdleRepaintMonitor::new(window_id, perf_log_writer.clone()))
     } else {
       None
     };
@@ -22779,6 +22831,71 @@ mod perf_log_tests {
     assert_eq!(value["event"], "frame");
     assert_eq!(value["schema_version"], perf_log::SCHEMA_VERSION);
     assert_eq!(value["t_ms"], 42);
+  }
+
+  #[test]
+  fn perf_log_idle_sample_serializes() {
+    let start = std::time::Instant::now();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut writer = perf_log::JsonlPerfWriter::new(start, &mut buf);
+
+    let event = perf_log::PerfEvent::IdleSample {
+      schema_version: perf_log::SCHEMA_VERSION,
+      t_ms: 100,
+      window_id: "WindowId(9)",
+      rolling_window_ms: 2000,
+      idle_fps: 12.5,
+      idle_frames_total: 99,
+      idle_frames_window: 25,
+    };
+    writer.emit(&event);
+    drop(writer);
+
+    let text = String::from_utf8(buf).expect("valid utf-8");
+    let line = text.lines().next().expect("expected a JSONL line");
+    let value: serde_json::Value = serde_json::from_str(line).expect("valid json");
+    assert_eq!(value["event"], "idle_sample");
+    assert_eq!(value["schema_version"], perf_log::SCHEMA_VERSION);
+    assert_eq!(value["t_ms"], 100);
+    assert_eq!(value["window_id"], "WindowId(9)");
+    assert_eq!(value["rolling_window_ms"], 2000);
+  }
+}
+
+#[cfg(test)]
+mod idle_repaint_classification_tests {
+  use super::*;
+
+  #[test]
+  fn idle_repaint_is_idle_when_only_egui_requested_repaint() {
+    assert_eq!(
+      classify_idle_repaint_frame_activity(false, false, false, true),
+      UiFrameActivity::Idle
+    );
+  }
+
+  #[test]
+  fn idle_repaint_is_active_when_input_happened() {
+    assert_eq!(
+      classify_idle_repaint_frame_activity(true, false, false, true),
+      UiFrameActivity::Active
+    );
+  }
+
+  #[test]
+  fn idle_repaint_is_active_when_resize_happened() {
+    assert_eq!(
+      classify_idle_repaint_frame_activity(false, true, false, false),
+      UiFrameActivity::Active
+    );
+  }
+
+  #[test]
+  fn idle_repaint_is_active_when_worker_activity_happened() {
+    assert_eq!(
+      classify_idle_repaint_frame_activity(false, false, true, false),
+      UiFrameActivity::Active
+    );
   }
 }
 
