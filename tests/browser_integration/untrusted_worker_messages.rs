@@ -8,7 +8,9 @@ use fastrender::ui::messages::{CursorKind, TabId, WorkerToUi};
 use fastrender::ui::{BrowserAppState, BrowserTabState};
 
 fn has_control_chars(s: &str) -> bool {
-  s.chars().any(|c| c.is_control())
+  // The UI-side sanitization contract is to strip ASCII control characters. (See
+  // `ui::untrusted::sanitize_untrusted_text`.)
+  s.chars().any(|c| c.is_ascii_control())
 }
 
 #[test]
@@ -158,9 +160,9 @@ fn browser_validates_untrusted_worker_messages() {
     "expected debug log line to have control characters stripped; got: {stored:?}"
   );
 
-  // Keep the bound loose enough to allow reasonable stack traces, while still guaranteeing that
-  // absurd payloads from an untrusted renderer are truncated.
-  const MAX_DEBUG_LINE_LEN: usize = 16 * 1024;
+  // DebugLog is intended for lightweight developer diagnostics; the browser should not store or
+  // render unbounded attacker-controlled payloads.
+  const MAX_DEBUG_LINE_LEN: usize = fastrender::ui::protocol_limits::MAX_DEBUG_LOG_BYTES;
   assert!(
     stored.len() <= MAX_DEBUG_LINE_LEN,
     "expected debug log line to be truncated to <= {MAX_DEBUG_LINE_LEN} bytes, got {} bytes",
