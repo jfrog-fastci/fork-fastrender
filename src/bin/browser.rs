@@ -3021,6 +3021,7 @@ struct App {
   debug_log_ui_open: bool,
   debug_log_filter: String,
   debug_log_overlay_rect: Option<egui::Rect>,
+  debug_log_overlay_pointer_capture: bool,
   hud: Option<BrowserHud>,
 
   tab_notifications: std::collections::HashMap<fastrender::ui::TabId, TabNotificationUiState>,
@@ -3270,6 +3271,7 @@ impl App {
       || self
         .chrome_toast_rect
         .is_some_and(|rect| rect.contains(pos_points))
+      || self.debug_log_overlay_pointer_capture
   }
 
   fn cursor_over_overlay_scrollbars(&self, pos_points: egui::Pos2) -> bool {
@@ -3548,6 +3550,7 @@ impl App {
       debug_log_ui_open: debug_log_ui_enabled,
       debug_log_filter: String::new(),
       debug_log_overlay_rect: None,
+      debug_log_overlay_pointer_capture: false,
       hud: if browser_hud_enabled_from_env() {
         Some(BrowserHud::new())
       } else {
@@ -5597,8 +5600,11 @@ impl App {
       });
   }
   fn render_debug_log_overlay(&mut self, ctx: &egui::Context) {
+    let prev_rect = self.debug_log_overlay_rect;
+
     if !self.debug_log_ui_enabled {
       self.debug_log_overlay_rect = None;
+      self.debug_log_overlay_pointer_capture = false;
       return;
     }
     let margin = self.theme.sizing.padding;
@@ -5627,6 +5633,7 @@ impl App {
           }
         });
       self.debug_log_overlay_rect = Some(popup.response.rect);
+      self.update_page_hover_for_debug_log_overlay(ctx, prev_rect);
       return;
     }
 
@@ -5758,6 +5765,77 @@ impl App {
 
     self.debug_log_overlay_rect = popup.as_ref().map(|popup| popup.response.rect);
     self.debug_log_ui_open = open;
+
+    self.update_page_hover_for_debug_log_overlay(ctx, prev_rect);
+  }
+
+  fn update_page_hover_for_debug_log_overlay(
+    &mut self,
+    ctx: &egui::Context,
+    prev_rect: Option<egui::Rect>,
+  ) {
+    use fastrender::ui::CursorKind;
+    use fastrender::ui::PointerButton;
+    use fastrender::ui::UiToWorker;
+
+    let cursor_pos_points = self
+      .last_cursor_pos_points
+      .or_else(|| ctx.input(|i| i.pointer.hover_pos()));
+    let prev_contains_cursor =
+      cursor_pos_points.is_some_and(|pos| prev_rect.is_some_and(|rect| rect.contains(pos)));
+    let now_contains_cursor = cursor_pos_points.is_some_and(|pos| {
+      self
+        .debug_log_overlay_rect
+        .is_some_and(|rect| rect.contains(pos))
+    });
+
+    if !self.pointer_captured && now_contains_cursor {
+      // The debug log window/button is positioned as an overlay. If it appears under a stationary
+      // cursor, clear any active page hover state so hovered-link status and cursor overrides do
+      // not remain "stuck" beneath the overlay.
+      let active_tab_id = self.browser_state.active_tab_id();
+      let should_clear = self.cursor_in_page
+        || active_tab_id.is_some_and(|tab_id| {
+          self.browser_state.tab(tab_id).is_some_and(|tab| {
+            tab.hovered_url.is_some() || !matches!(tab.cursor, CursorKind::Default)
+          })
+        });
+
+      if should_clear {
+        self.pending_pointer_move = None;
+        self.cursor_in_page = false;
+
+        if let Some(tab) = active_tab_id.and_then(|tab_id| self.browser_state.tab_mut(tab_id)) {
+          tab.hovered_url = None;
+          tab.cursor = CursorKind::Default;
+        }
+
+        if let Some(tab_id) = self.page_input_tab.or(active_tab_id) {
+          self.send_worker_msg(UiToWorker::PointerMove {
+            tab_id,
+            pos_css: (-1.0, -1.0),
+            button: PointerButton::None,
+            modifiers: map_modifiers(self.modifiers),
+          });
+        }
+      }
+    }
+
+    if !self.pointer_captured
+      && !self.debug_log_overlay_pointer_capture
+      && prev_contains_cursor
+      && !now_contains_cursor
+    {
+      // The overlay moved/closed while the cursor stayed still. If the cursor is now inside the
+      // page rect, request a hover re-sync so the hovered URL + cursor update immediately.
+      if cursor_pos_points.is_some_and(|pos| {
+        self
+          .page_rect_points
+          .is_some_and(|page_rect| page_rect.contains(pos))
+      }) {
+        self.hover_sync_pending = true;
+      }
+    }
   }
 
   fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
@@ -7404,6 +7482,7 @@ impl App {
         }
         // Losing window focus should cancel temporary UI state such as `<select>` popups and active
         // pointer drags.
+        self.debug_log_overlay_pointer_capture = false;
         if self.open_select_dropdown.is_some() {
           self.cancel_select_dropdown();
           self.window.request_redraw();
@@ -7433,6 +7512,7 @@ impl App {
         let had_pointer_capture = self.pointer_captured;
         let had_scrollbar_drag = self.scrollbar_drag.is_some();
         let had_cursor_in_page = self.cursor_in_page;
+        let had_debug_log_pointer_capture = self.debug_log_overlay_pointer_capture;
         let had_cursor_near_scrollbars = self
           .last_cursor_pos_points
           .is_some_and(|pos| self.cursor_near_overlay_scrollbars(pos));
@@ -7442,6 +7522,7 @@ impl App {
         // Winit does not provide cursor coordinates when leaving the window. Clear our cached
         // position so hover updates are not suppressed by stale dropdown rect checks.
         self.last_cursor_pos_points = None;
+        self.debug_log_overlay_pointer_capture = false;
         if had_cursor_near_scrollbars {
           self
             .overlay_scrollbar_visibility
@@ -7467,6 +7548,7 @@ impl App {
           || had_scrollbar_drag
           || had_context_menu
           || had_cursor_near_scrollbars
+          || had_debug_log_pointer_capture
         {
           self.window.request_redraw();
         }
@@ -7650,6 +7732,28 @@ impl App {
           return;
         }
 
+        if self.debug_log_overlay_pointer_capture {
+          if matches!(state, ElementState::Released)
+            && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+          {
+            self.debug_log_overlay_pointer_capture = false;
+            if let Some(pos_points) = self.last_cursor_pos_points {
+              if self
+                .page_rect_points
+                .is_some_and(|page_rect| page_rect.contains(pos_points))
+                && !self.cursor_over_egui_overlay(pos_points)
+              {
+                // Pointer capture ended with the cursor over the page. Re-sync hover state so the
+                // worker immediately sees the current hover target without waiting for another
+                // CursorMoved event.
+                self.hover_sync_pending = true;
+                self.window.request_redraw();
+              }
+            }
+          }
+          return;
+        }
+
         if self.scrollbar_drag.is_some() {
           if matches!(state, ElementState::Released)
             && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
@@ -7743,6 +7847,13 @@ impl App {
           // Treat the debug log UI as an egui overlay: don't forward clicks to the page and clear
           // focus so keyboard input can remain in egui (e.g. the filter text edit).
           self.page_has_focus = false;
+          if matches!(state, ElementState::Pressed)
+            && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+          {
+            // Track the press so the corresponding release is also suppressed even if the debug log
+            // window moves/resizes under the cursor.
+            self.debug_log_overlay_pointer_capture = true;
+          }
           // Also clear any page hover state so hovered-link status does not remain active under the
           // overlay (this can happen if the overlay appears under a stationary cursor, e.g. when
           // toggled via menu/shortcut).
