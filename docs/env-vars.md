@@ -70,6 +70,10 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - `pure-computation` is the strict default.
   - `system-fonts` enables the relaxed system-font allowlist profile.
 - `FASTR_MACOS_USE_SANDBOX_EXEC=0|1` – **macOS-only**: opt into wrapping spawned subprocesses with `/usr/bin/sandbox-exec` when using `macos_spawn` helpers (debug/legacy; deprecated by Apple).
+- `FASTR_DISABLE_WIN_MITIGATIONS=0|1` – **Windows-only**: disable Win32 *process mitigation policies* applied at process creation (Win32k lockdown, dynamic code prohibition, etc).
+  - This disables the optional `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` layer when spawning sandboxed processes.
+  - This does **not** disable AppContainer / restricted-token sandboxing, job-object limits, or handle allowlisting.
+  - Intended for debugging and compatibility with older/unusual Windows configurations.
 - `FASTR_LOG_SANDBOX=0|1` – **Windows-only**: enable verbose Windows sandbox spawn logging (useful when debugging AppContainer/restricted-token failures).
   - In debug builds, sandbox spawn debug logs are enabled by default; set this in release builds.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
