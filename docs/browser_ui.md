@@ -603,7 +603,8 @@ discoverability and keyboard parity:
   - **Other platforms:** shown
 - Toggle at runtime via the toolbar hamburger menu: **Menu → Window → “Show menu bar”**.
 - The setting is persisted in the browser session file so it survives restarts.
-  - CI override: `FASTR_BROWSER_SHOW_MENU_BAR=0|1` (takes precedence over the persisted setting).
+  - CI override: `FASTR_BROWSER_SHOW_MENU_BAR=0|1` (takes precedence for the current process, but does
+    **not** update the persisted session preference).
 
 When hidden, the menu bar does not reserve any vertical space; keyboard shortcuts continue to work.
 

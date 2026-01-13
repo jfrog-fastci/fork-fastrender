@@ -324,7 +324,8 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - Default: `0`.
   - Useful when debugging interactive resize performance (should configure at most once per rendered frame).
 - `FASTR_BROWSER_SHOW_MENU_BAR=0|1` – override whether the in-window menu bar is shown.
-  - When set, this takes precedence over the persisted session setting (useful for CI).
+  - When set, this takes precedence over the persisted session setting for the current process
+    (useful for CI), but does **not** update the saved session preference.
 - `FASTR_BROWSER_RENDERER_CHROME=0|1` – experimental: render the browser chrome UI using FastRender
   (“renderer-chrome”) instead of egui.
   - This is a work-in-progress under [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md).
