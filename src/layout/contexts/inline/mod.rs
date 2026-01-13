@@ -17341,6 +17341,24 @@ mod tests {
   }
 
   #[test]
+  fn text_inline_item_cache_style_hash_includes_letter_spacing_value() {
+    let base = ComputedStyle::default();
+
+    let mut spaced = base.clone();
+    spaced.letter_spacing = 1.0;
+    let hash1 = text_inline_item_cache_style_hash(&spaced);
+
+    let mut spaced2 = base;
+    spaced2.letter_spacing = 2.0;
+    let hash2 = text_inline_item_cache_style_hash(&spaced2);
+
+    assert_ne!(
+      hash1, hash2,
+      "inline item cache must key TextItems by the exact `letter-spacing` value"
+    );
+  }
+
+  #[test]
   fn vertical_align_length_resolves_root_units() {
     let ifc = InlineFormattingContext::new();
     let font_size = 20.0;
