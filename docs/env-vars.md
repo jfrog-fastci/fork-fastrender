@@ -91,6 +91,8 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_MACOS_USE_SANDBOX_EXEC=0|1` – **macOS-only**: opt into wrapping supported subprocess spawns
   in `/usr/bin/sandbox-exec` (debug/legacy; deprecated by Apple). Used by
   `fastrender::sandbox::macos_spawn::*` helpers and by `fastrender::sandbox::spawn::configure_renderer_command(...)`.
+  - Note: `configure_renderer_command(...)` returns a `RendererSpawnCommand` that may contain a
+    wrapped `sandbox-exec` command; callers must spawn the returned wrapper when present.
   - Ignored when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1`, `FASTR_RENDERER_SANDBOX=off`, or `FASTR_MACOS_RENDERER_SANDBOX=off`.
 - `FASTR_DISABLE_WIN_MITIGATIONS=1` – **Windows-only**: disable Win32 *process mitigation policies* applied at process creation (Win32k lockdown, dynamic code prohibition, etc).
   - Any value disables (the check is presence-based, not `0/1` parsing).
