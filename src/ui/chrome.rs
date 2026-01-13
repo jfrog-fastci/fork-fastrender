@@ -1188,42 +1188,67 @@ pub fn chrome_ui_with_bookmarks(
         actions.push(ChromeAction::Home);
       }
 
-      // Zoom controls (optional, but useful for discoverability and as a fallback on platforms with
-      // non-US keyboard layouts).
-      if !is_compact {
-        let response = icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true);
-        if response.clicked() {
-          if let Some(tab) = app.active_tab_mut() {
-            tab.zoom = zoom::zoom_out(tab.zoom);
-          }
-        }
-        let percent = zoom::zoom_percent(zoom_factor);
-        let reset_zoom_label = format!("Zoom: {percent}% (reset)");
-        let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
-          MIN_CHROME_HIT_TARGET_POINTS,
-          MIN_CHROME_HIT_TARGET_POINTS,
-        ));
-        let reset_zoom_response = ui.add(reset_btn);
-        show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
-        paint_focus_ring(ui, &reset_zoom_response, focus_ring);
-        reset_zoom_response.widget_info({
-          let reset_zoom_label = reset_zoom_label.clone();
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
-        });
-        if reset_zoom_response.clicked() {
-          if let Some(tab) = app.active_tab_mut() {
-            tab.zoom = zoom::zoom_reset();
-          }
-        }
-        let response = icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true);
-        #[cfg(test)]
-        store_test_id(ctx, "chrome_zoom_in_button_id", response.id);
-        if response.clicked() {
-          if let Some(tab) = app.active_tab_mut() {
-            tab.zoom = zoom::zoom_in(tab.zoom);
-          }
-        }
-      }
+       // Zoom controls (optional, but useful for discoverability and as a fallback on platforms with
+       // non-US keyboard layouts).
+       //
+       // In compact mode, keep the chrome minimal, but still surface a zoom indicator when the zoom
+       // is non-default so users can discover and reset it.
+       let zoom_non_default = (zoom_factor - zoom::DEFAULT_ZOOM).abs() > 1e-3;
+       if is_compact {
+         if zoom_non_default {
+           let percent = zoom::zoom_percent(zoom_factor);
+           let reset_zoom_label = format!("Zoom: {percent}% (reset)");
+           let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
+             MIN_CHROME_HIT_TARGET_POINTS,
+             MIN_CHROME_HIT_TARGET_POINTS,
+           ));
+           let reset_zoom_response = ui.add(reset_btn);
+           show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
+           paint_focus_ring(ui, &reset_zoom_response, focus_ring);
+           reset_zoom_response.widget_info({
+             let reset_zoom_label = reset_zoom_label.clone();
+             move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
+           });
+           if reset_zoom_response.clicked() {
+             if let Some(tab) = app.active_tab_mut() {
+               tab.zoom = zoom::zoom_reset();
+             }
+           }
+         }
+       } else {
+         let response = icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true);
+         if response.clicked() {
+           if let Some(tab) = app.active_tab_mut() {
+             tab.zoom = zoom::zoom_out(tab.zoom);
+           }
+         }
+         let percent = zoom::zoom_percent(zoom_factor);
+         let reset_zoom_label = format!("Zoom: {percent}% (reset)");
+         let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
+           MIN_CHROME_HIT_TARGET_POINTS,
+           MIN_CHROME_HIT_TARGET_POINTS,
+         ));
+         let reset_zoom_response = ui.add(reset_btn);
+         show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
+         paint_focus_ring(ui, &reset_zoom_response, focus_ring);
+         reset_zoom_response.widget_info({
+           let reset_zoom_label = reset_zoom_label.clone();
+           move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
+         });
+         if reset_zoom_response.clicked() {
+           if let Some(tab) = app.active_tab_mut() {
+             tab.zoom = zoom::zoom_reset();
+           }
+         }
+         let response = icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true);
+         #[cfg(test)]
+         store_test_id(ctx, "chrome_zoom_in_button_id", response.id);
+         if response.clicked() {
+           if let Some(tab) = app.active_tab_mut() {
+             tab.zoom = zoom::zoom_in(tab.zoom);
+           }
+         }
+       }
 
       // ---------------------------------------------------------------------------
       // Address bar (pill + truncation + security indicator)
@@ -3268,7 +3293,7 @@ pub fn hover_status_overlay_ui(
       ui.visuals_mut().override_text_color =
         Some(with_alpha(ui.visuals().text_color(), open_opacity));
 
-      let high_contrast = theme::high_contrast_enabled();
+      let high_contrast = chrome_high_contrast_enabled(app);
       let visuals = ui.visuals().clone();
 
       // Prefer a "bubble" that hugs the URL text instead of spanning the max width.
