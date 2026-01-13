@@ -6940,15 +6940,13 @@ impl<'vm> HirEvaluator<'vm> {
               ));
             };
 
-            // Allocate the method function object (non-constructable).
-            let method_name = match key {
-              PropertyKey::String(s) => member_scope.heap().get_string(s)?.to_utf8_lossy(),
-              PropertyKey::Symbol(_) => String::new(),
-            };
+            // Allocate the method function object (non-constructable), and apply `SetFunctionName`
+            // based on the property key. This matches interpreter semantics and handles getter/setter
+            // prefixes and Symbol keys.
             let func_obj_member = self.alloc_user_function_object(
               &mut member_scope,
               *body_id,
-              method_name.as_str(),
+              /* name */ "",
               /* is_arrow */ false,
               /* is_constructable */ false,
               /* name_binding */ None,
@@ -6956,6 +6954,7 @@ impl<'vm> HirEvaluator<'vm> {
 
             match kind {
               hir_js::ClassMethodKind::Method => {
+                crate::function_properties::set_function_name(&mut member_scope, func_obj_member, key, None)?;
                 member_scope.define_property_or_throw(
                   target_obj,
                   key,
@@ -6969,6 +6968,12 @@ impl<'vm> HirEvaluator<'vm> {
                 )?;
               }
               hir_js::ClassMethodKind::Getter => {
+                crate::function_properties::set_function_name(
+                  &mut member_scope,
+                  func_obj_member,
+                  key,
+                  Some("get"),
+                )?;
                 member_scope.define_property_or_throw(
                   target_obj,
                   key,
@@ -6981,6 +6986,12 @@ impl<'vm> HirEvaluator<'vm> {
                 )?;
               }
               hir_js::ClassMethodKind::Setter => {
+                crate::function_properties::set_function_name(
+                  &mut member_scope,
+                  func_obj_member,
+                  key,
+                  Some("set"),
+                )?;
                 member_scope.define_property_or_throw(
                   target_obj,
                   key,
