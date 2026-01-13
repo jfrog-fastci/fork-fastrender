@@ -3607,9 +3607,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   ));
                 }
                 let pair_len = array_length(vm, scope, pair_obj)?;
-                if pair_len < 2 {
+                if pair_len != 2 {
                   return Err(VmError::TypeError(
-                    "URLSearchParams init pair does not contain two elements",
+                    "URLSearchParams init pair must contain exactly two elements",
                   ));
                 }
                 let name = array_get(vm, scope, pair_obj, 0)?;
@@ -6157,6 +6157,56 @@ mod element_replace_with_tests {
             }
           });
           return document.getElementById('a') === null && root.innerHTML === '';
+        })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod url_search_params_init_pair_length_tests {
+  use super::*;
+  use crate::js::window_realm::{DomBindingsBackend, WindowRealm, WindowRealmConfig};
+  use crate::js::window_timers::VmJsEventLoopHooks;
+  use crate::js::{DocumentHostState, WindowHostState};
+  use vm_js::Value;
+
+  #[test]
+  fn url_search_params_init_pair_length_must_be_exactly_two() -> Result<(), VmError> {
+    let dom =
+      crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = window.global_object();
+
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      r#"
+        (() => {
+          const isTypeError = (fn) => {
+            try {
+              fn();
+              return false;
+            } catch (e) {
+              return e && e.name === 'TypeError';
+            }
+          };
+          return isTypeError(() => new URLSearchParams([['a']]))
+            && isTypeError(() => new URLSearchParams([['a', 'b', 'c']]));
         })()
       "#,
     )?;
