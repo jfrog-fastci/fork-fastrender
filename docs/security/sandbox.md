@@ -8,7 +8,8 @@ This doc is a **Linux deep-dive** companion to:
 It explains:
 
 - the threat model for a sandboxed renderer process,
-- the Linux sandbox **layering and ordering** (rlimits → fd hygiene → namespaces → Landlock → seccomp),
+- the Linux sandbox **layering and ordering constraints** (setup layers like rlimits/fd hygiene/namespaces/Landlock
+  must run before seccomp; seccomp must be last),
 - the current seccomp “hybrid allowlist + denylist” policy,
 - and how to debug sandbox bring-up failures.
 
@@ -115,13 +116,15 @@ Repo reality:
 On Linux we intentionally layer multiple mechanisms. **Order matters** because later layers can
 prevent the syscalls needed to set up earlier layers.
 
-**Recommended order (Linux):**
+**Order constraints (Linux):**
 
-1. **rlimits**
-2. **close/lock down file descriptors**
-3. **Linux namespaces (best-effort hardening; if used, must be before seccomp)**
-4. **Landlock (filesystem, optional defense-in-depth)**
-5. **seccomp-bpf (syscall filter)**
+- If namespaces are enabled, they must be applied **before seccomp** (seccomp may block `unshare(2)` / `setns(2)`).
+- If Landlock is enabled, it must be applied **before seccomp**.
+- Install seccomp **last**.
+
+Rlimits and fd hygiene are orthogonal guardrails and should be applied early; in the current
+implementation, the optional namespace step runs first (when enabled), followed by rlimits/fd
+hardening, then fd cleanup, then Landlock, and finally seccomp.
 
 Repo reality:
 
@@ -306,6 +309,12 @@ Repo helper: `sandbox::spawn::configure_renderer_command(...)` (`src/sandbox/spa
 
 On Linux this uses `std::os::unix::process::CommandExt::pre_exec` and therefore has strict safety
 requirements (no allocations, no locks) — the helper is written to be `pre_exec`-safe.
+
+Important nuance: a `pre_exec` hook cannot install the *full* renderer seccomp policy (the renderer
+policy intentionally denies `execve` and path-based file opens). The spawn-time path therefore applies
+an **early hardening subset** (PDEATHSIG, rlimits, optional Landlock, and a minimal “deny socket
+creation” seccomp filter that still allows `execve`), and the renderer binary should still install
+the full renderer sandbox early during startup (via `sandbox::apply_renderer_sandbox`).
 
 Note: `configure_renderer_command` also respects the Linux sandbox env toggles
 (`FASTR_DISABLE_RENDERER_SANDBOX`, `FASTR_RENDERER_SECCOMP`, `FASTR_RENDERER_LANDLOCK`) so developers
