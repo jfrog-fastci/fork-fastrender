@@ -5,16 +5,16 @@
 //! This is implemented as an `egui::SidePanel` so it does not overlap the rendered page image
 //! (which keeps page hit-testing/pointer forwarding simple).
 
-use std::collections::HashMap;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::ui::bookmarks_io_job::{BookmarksIoJob, BookmarksIoJobUpdate};
 use crate::ui::motion::UiMotion;
 
 use super::{
-  a11y, icon_button, icon_tinted, panel_empty_state, panel_header, panel_search_field, BookmarkId,
-  BookmarkDelta, BookmarkNode, BookmarkStore, BrowserIcon,
+  a11y, a11y_labels, icon_button, icon_tinted, panel_empty_state, panel_header, panel_search_field,
+  BookmarkDelta, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon,
 };
 
 use super::string_match::contains_ascii_case_insensitive;
@@ -931,16 +931,14 @@ fn bookmarks_list(
           match row.kind {
             BookmarkRowKind::Folder => {
               let delete_clicked = match store.nodes.get(&row.id) {
-                Some(BookmarkNode::Folder(folder)) => {
-                  render_folder_row(
-                    ui,
-                    state,
-                    row.id,
-                    folder.title.as_str(),
-                    folder.children.len(),
-                    row.depth,
-                  )
-                }
+                Some(BookmarkNode::Folder(folder)) => render_folder_row(
+                  ui,
+                  state,
+                  row.id,
+                  folder.title.as_str(),
+                  folder.children.len(),
+                  row.depth,
+                ),
                 _ => {
                   // Keep row spacing stable until the cache is rebuilt next frame.
                   list_row(ui, ("missing_folder_row", row.id.0), false, |_| {});
@@ -1245,8 +1243,9 @@ fn render_bookmark_row(
       ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let del = icon_button(ui, BrowserIcon::Trash, "Delete bookmark", true);
         del.widget_info({
-          let label = format!("Delete bookmark: {title}");
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+          let label =
+            a11y_labels::bookmark_delete_label(entry.title.as_deref(), entry.url.as_str());
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
         });
         if del.clicked() {
           delete_clicked = true;
@@ -1254,16 +1253,18 @@ fn render_bookmark_row(
 
         let edit_btn = icon_button(ui, BrowserIcon::Edit, "Edit bookmark", true);
         edit_btn.widget_info({
-          let label = format!("Edit bookmark: {title}");
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+          let label = a11y_labels::bookmark_edit_label(entry.title.as_deref(), entry.url.as_str());
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
         });
         if edit_btn.clicked() {
           edit_clicked = true;
         }
 
         let new_tab = icon_button(ui, BrowserIcon::OpenInNewTab, "Open in new tab", true);
-        new_tab.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open bookmark in new tab")
+        new_tab.widget_info({
+          let label =
+            a11y_labels::bookmark_open_in_new_tab_label(entry.title.as_deref(), entry.url.as_str());
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
         });
         if new_tab.clicked() {
           open_new_tab_clicked = true;
@@ -1492,4 +1493,71 @@ fn list_row(
   });
 
   response
+}
+
+// -----------------------------------------------------------------------------
+// Tests (AccessKit / a11y labels)
+// -----------------------------------------------------------------------------
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod tests {
+  use super::{bookmarks_manager_side_panel, BookmarksManagerState};
+  use crate::ui::{a11y_test_util, BookmarkStore};
+
+  fn begin_frame(ctx: &egui::Context) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    ctx.begin_frame(raw);
+  }
+
+  #[test]
+  fn open_in_new_tab_buttons_have_contextual_accessible_names() {
+    let ctx = egui::Context::default();
+    // AccessKit output is typically enabled/disabled by the platform adapter (egui-winit).
+    // In headless unit tests we force it on to ensure egui emits an update.
+    ctx.enable_accesskit();
+
+    let mut store = BookmarkStore::default();
+    store
+      .add(
+        "https://example.com".to_string(),
+        Some(" Example\nTitle ".to_string()),
+        None,
+      )
+      .expect("bookmark add should succeed");
+    store
+      .add("https://second.example/path".to_string(), None, None)
+      .expect("bookmark add should succeed");
+
+    let mut state = BookmarksManagerState::default();
+    begin_frame(&ctx);
+    let _out = bookmarks_manager_side_panel(&ctx, &mut state, &mut store);
+    let output = ctx.end_frame();
+
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+
+    for expected in [
+      // Whitespace in bookmark titles should be collapsed for screen readers.
+      "Open bookmark in new tab: Example Title",
+      // When the title is missing, the label should fall back to the URL.
+      "Open bookmark in new tab: https://second.example/path",
+    ] {
+      assert!(
+        names.iter().any(|n| n == expected),
+        "expected AccessKit name {expected:?} in bookmarks manager output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
+
+    assert!(
+      !names.iter().any(|n| n == "Open bookmark in new tab"),
+      "expected open-in-new-tab buttons to use contextual labels, not a generic-only label.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+    );
+  }
 }
