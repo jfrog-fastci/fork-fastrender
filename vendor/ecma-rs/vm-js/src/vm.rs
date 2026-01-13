@@ -42,6 +42,7 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryFrom;
 use std::num::NonZeroU32;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -2067,7 +2068,16 @@ impl Vm {
       .get(call_id.0 as usize)
       .copied()
       .ok_or(VmError::Unimplemented("unknown native function id"))?;
-    f(self, scope, host, hooks, callee, this, args)
+    // A buggy embedding must never be able to unwind through the VM and bypass cleanup paths
+    // (microtask queue restoration, root scopes, execution contexts, etc).
+    //
+    // If a native handler panics, treat it as a fatal host contract violation and surface it as a
+    // non-catchable VM error.
+    let res = catch_unwind(AssertUnwindSafe(|| f(self, scope, host, hooks, callee, this, args)));
+    match res {
+      Ok(result) => result,
+      Err(_) => Err(VmError::InvariantViolation("native call panicked")),
+    }
   }
 
   fn dispatch_native_construct(
@@ -2085,7 +2095,13 @@ impl Vm {
       .get(construct_id.0 as usize)
       .copied()
       .ok_or(VmError::Unimplemented("unknown native constructor id"))?;
-    construct(self, scope, host, hooks, callee, args, new_target)
+    let res = catch_unwind(AssertUnwindSafe(|| {
+      construct(self, scope, host, hooks, callee, args, new_target)
+    }));
+    match res {
+      Ok(result) => result,
+      Err(_) => Err(VmError::InvariantViolation("native construct panicked")),
+    }
   }
 
   /// Pushes a stack frame and returns an RAII guard that will pop it on drop.
@@ -4104,6 +4120,30 @@ mod tests {
     Ok(Value::Undefined)
   }
 
+  fn panic_call(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    panic!("host call handler panicked");
+  }
+
+  fn panic_construct(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    panic!("host construct handler panicked");
+  }
+
   #[test]
   fn registering_too_many_native_handlers_returns_error_instead_of_panicking() {
     // Only meaningful on platforms where `usize` can exceed `u32::MAX`.
@@ -4198,6 +4238,65 @@ mod tests {
     let close_rejected_second = vm.async_iterator_close_on_rejected_call_id()?;
     assert_eq!(close_rejected_first, close_rejected_second);
     assert_eq!(close_rejected_len, vm.native_calls.len());
+    Ok(())
+  }
+
+  #[test]
+  fn native_call_panics_are_caught_and_reported_as_invariant_violation() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(crate::HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = crate::JsRuntime::new(vm, heap)?;
+
+    rt.register_global_native_function("panicFn", panic_call, 0)?;
+
+    let err = rt
+      .exec_script(r#"try { panicFn(); "ok"; } catch (e) { "caught"; }"#)
+      .unwrap_err();
+
+    assert!(
+      !err.is_throw_completion(),
+      "native call panic should surface as a non-throw fatal error, got {err:?}"
+    );
+
+    match err {
+      VmError::InvariantViolation(msg) => assert_eq!(msg, "native call panicked"),
+      other => panic!("expected invariant violation, got {other:?}"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn native_construct_panics_are_caught_and_reported_as_invariant_violation() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(crate::HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = crate::JsRuntime::new(vm, heap)?;
+
+    let call_id = rt.vm.register_native_call(noop_call)?;
+    let construct_id = rt.vm.register_native_construct(panic_construct)?;
+
+    let global = rt.realm().global_object();
+    {
+      let mut scope = rt.heap.scope();
+      let name = scope.alloc_string("PanicCtor")?;
+      let func = scope.alloc_native_function(call_id, Some(construct_id), name, 0)?;
+      scope.create_data_property(global, PropertyKey::from_string(name), Value::Object(func))?;
+    }
+
+    let err = rt
+      .exec_script(r#"try { new PanicCtor(); "ok"; } catch (e) { "caught"; }"#)
+      .unwrap_err();
+
+    assert!(
+      !err.is_throw_completion(),
+      "native construct panic should surface as a non-throw fatal error, got {err:?}"
+    );
+
+    match err {
+      VmError::InvariantViolation(msg) => assert_eq!(msg, "native construct panicked"),
+      other => panic!("expected invariant violation, got {other:?}"),
+    }
+
     Ok(())
   }
 
