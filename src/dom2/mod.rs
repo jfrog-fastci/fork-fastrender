@@ -1296,6 +1296,7 @@ impl Document {
         .map(trim_ascii_whitespace_html)
         .unwrap_or("text");
       let is_file_input = input_type.eq_ignore_ascii_case("file");
+      let is_checkable = is_input_checkable(Some(input_type));
       if is_file_input {
         // File inputs never expose pre-filled value strings from markup.
         remove_attr_ci(&mut attrs, "value");
@@ -1304,7 +1305,7 @@ impl Document {
         upsert_attr_ci(&mut attrs, "value", state.value.clone());
       }
 
-      if is_input_checkable(Some(input_type)) {
+      if is_checkable {
         ensure_bool_attr_ci(&mut attrs, "checked", state.checkedness);
       } else {
         // Ensure any stale authored `checked` doesn't leak into snapshots for non-checkable inputs.
