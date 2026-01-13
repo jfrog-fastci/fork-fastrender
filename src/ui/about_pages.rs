@@ -810,6 +810,10 @@ fn newtab_html() -> String {
           <div class="label">Bookmarks</div>
           <div class="url">about:bookmarks</div>
         </a>
+        <a class="about-tile" href="about:settings">
+          <div class="label">Settings</div>
+          <div class="url">about:settings</div>
+        </a>
         <a class="about-tile" href="about:help">
           <div class="label">Help</div>
           <div class="url">about:help</div>
@@ -2595,9 +2599,11 @@ mod tests {
       "https://example.com/",
       ABOUT_HISTORY,
       ABOUT_BOOKMARKS,
+      ABOUT_SETTINGS,
       ABOUT_HELP,
       ABOUT_VERSION,
       ABOUT_GPU,
+      ABOUT_PROCESSES,
     ] {
       assert!(
         html.contains(url),
@@ -2919,10 +2925,11 @@ mod tests {
     set_about_page_snapshot(AboutPageSnapshot::default());
 
     let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
-    for url in [ABOUT_HELP, ABOUT_VERSION, ABOUT_GPU] {
+    for url in [ABOUT_SETTINGS, ABOUT_HELP, ABOUT_VERSION, ABOUT_GPU, ABOUT_PROCESSES] {
+      let needle = format!("class=\"about-tile\" href=\"{url}\"");
       assert!(
-        html.contains(url),
-        "expected about:newtab HTML to link to {url}"
+        html.contains(&needle),
+        "expected about:newtab HTML to contain default shortcut link to {url}"
       );
     }
 
