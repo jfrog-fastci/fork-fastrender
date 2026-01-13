@@ -2670,6 +2670,13 @@ impl BrowserDocumentDom2 {
       self.dirty_structure_nodes.insert(node);
     }
 
+    // Convenience: moved nodes are already covered by inserted+removed, but keep them here so
+    // future damage tracking can treat moves distinctly without re-deriving the intersection.
+    for node in mutations.nodes_moved {
+      render_affecting = true;
+      self.dirty_structure_nodes.insert(node);
+    }
+
     // Form control state changes (e.g. `.value`, `.checked`) are render-affecting but should not be
     // treated as style-affecting attribute mutations. Conservatively mark layout+paint dirty so the
     // next render takes a fresh renderer DOM snapshot and projects live form state into it.

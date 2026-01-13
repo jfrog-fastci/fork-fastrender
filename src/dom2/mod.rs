@@ -302,6 +302,12 @@ pub(crate) struct MutationLog {
   /// Note: nodes are recorded before they become disconnected, so hosts can still map them back
   /// to previously computed layout/paint artifacts.
   pub(crate) nodes_removed: FxHashSet<NodeId>,
+  /// Nodes that were moved within a document-connected subtree.
+  ///
+  /// This is derived from the intersection of `nodes_inserted` and `nodes_removed` when the log is
+  /// taken, and is provided as a convenience for host-side damage tracking that needs to consider
+  /// both the old and new paint bounds.
+  pub(crate) nodes_moved: FxHashSet<NodeId>,
   /// Nodes whose live form control state changed (e.g. `<input>.value`, `<input>.checked`,
   /// `<textarea>.value`, `<option>.selected`).
   ///
@@ -330,6 +336,7 @@ impl MutationLog {
       && self.child_list_changed.is_empty()
       && self.nodes_inserted.is_empty()
       && self.nodes_removed.is_empty()
+      && self.nodes_moved.is_empty()
       && self.form_state_changed.is_empty()
       && self.composed_tree_changed.is_empty()
       && !self.unclassified
@@ -341,6 +348,7 @@ impl MutationLog {
     self.child_list_changed.clear();
     self.nodes_inserted.clear();
     self.nodes_removed.clear();
+    self.nodes_moved.clear();
     self.form_state_changed.clear();
     self.composed_tree_changed.clear();
     self.unclassified = false;
@@ -1017,7 +1025,19 @@ impl Document {
 
   /// Take (and clear) the accumulated mutation log.
   pub(crate) fn take_mutations(&mut self) -> MutationLog {
-    std::mem::take(&mut self.mutations)
+    let mut mutations = std::mem::take(&mut self.mutations);
+    // Derive the "moved" set from removed+inserted ids within the same log window. This captures
+    // both direct DOM moves (e.g. `insertBefore` on an existing child) and multi-step moves where
+    // a node is temporarily disconnected (e.g. move into a `DocumentFragment`, then insert the
+    // fragment) as long as they occur before the host calls `take_mutations()`.
+    if !mutations.nodes_inserted.is_empty() && !mutations.nodes_removed.is_empty() {
+      mutations.nodes_moved = mutations
+        .nodes_inserted
+        .intersection(&mutations.nodes_removed)
+        .copied()
+        .collect();
+    }
+    mutations
   }
 
   pub(crate) fn set_live_mutation_hook(

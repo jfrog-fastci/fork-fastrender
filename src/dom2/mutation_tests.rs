@@ -267,6 +267,32 @@ fn mutation_log_remove_child_records_removed_node_id() {
 }
 
 #[test]
+fn mutation_log_records_moved_node_ids() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let parent = doc.create_element("div", "");
+  let a = doc.create_element("a", "");
+  let b = doc.create_element("b", "");
+  assert!(doc.append_child(root, parent).unwrap());
+  assert!(doc.append_child(parent, a).unwrap());
+  assert!(doc.append_child(parent, b).unwrap());
+
+  // Clear the insertion mutations so we only observe the move effects.
+  let _ = doc.take_mutations();
+
+  // Move `b` from after `a` to before `a`.
+  assert!(doc.insert_before(parent, b, Some(a)).unwrap());
+  let mutations = doc.take_mutations();
+  assert!(
+    mutations.nodes_moved.contains(&b),
+    "moving an existing connected child should record nodes_moved"
+  );
+  assert!(mutations.nodes_inserted.contains(&b));
+  assert!(mutations.nodes_removed.contains(&b));
+}
+
+#[test]
 fn mutation_log_does_not_record_noop_inserts() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
