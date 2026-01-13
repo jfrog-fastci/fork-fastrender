@@ -10528,7 +10528,6 @@ mod tests {
     let _guard = MicrotaskCheckpointTestCounterGuard::install(Arc::clone(&counter));
     let mut event_loop = EventLoop::<BrowserTabHost>::new();
     event_loop.register_microtask_checkpoint_hook(microtask_checkpoint_counting_hook)?;
-
     let calls = Rc::new(Cell::new(0));
     let executor = AfterMicrotaskCheckpointCountingExecutor {
       calls: Rc::clone(&calls),
@@ -10555,6 +10554,32 @@ mod tests {
       calls.get(),
       1,
       "expected executor after_microtask_checkpoint hook to remain installed"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn tick_frame_microtask_only_checkpoint_invokes_executor_once() -> Result<()> {
+    let calls = Rc::new(Cell::new(0));
+    let executor = AfterMicrotaskCheckpointCountingExecutor {
+      calls: Rc::clone(&calls),
+    };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+
+    // Discard any parsing/lifecycle work queued while constructing the tab so this test only
+    // observes checkpoints triggered by `tick_frame`.
+    calls.set(0);
+    tab.event_loop.clear_all_pending_work();
+
+    tab
+      .event_loop
+      .queue_microtask(|_host, _event_loop| Ok(()))?;
+    let _ = tab.tick_frame()?;
+
+    assert_eq!(
+      calls.get(),
+      1,
+      "expected tick_frame microtask-only checkpoint to invoke after_microtask_checkpoint once (not twice)"
     );
     Ok(())
   }
