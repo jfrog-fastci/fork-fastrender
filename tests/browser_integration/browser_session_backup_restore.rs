@@ -9,6 +9,13 @@ fn run_browser_headless_smoke(
   extra_env: &[(&str, &str)],
 ) -> (ExitStatus, String, String) {
   let run_limited = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/run_limited.sh");
+  let profile_dir = session_path
+    .parent()
+    .filter(|p| !p.as_os_str().is_empty())
+    .unwrap_or_else(|| Path::new("."));
+  let downloads_dir = profile_dir.join("downloads");
+  // Best-effort: keep the smoke harness from touching the user's real config/downloads dirs.
+  let _ = std::fs::create_dir_all(&downloads_dir);
   let mut cmd = Command::new("bash");
   cmd
     .arg(run_limited)
@@ -18,6 +25,15 @@ fn run_browser_headless_smoke(
     .env("RAYON_NUM_THREADS", "1")
     .env("FASTR_TEST_BROWSER_HEADLESS_SMOKE", "1")
     .env("FASTR_BROWSER_SESSION_PATH", session_path)
+    .env(
+      "FASTR_BROWSER_BOOKMARKS_PATH",
+      profile_dir.join("bookmarks.json"),
+    )
+    .env(
+      "FASTR_BROWSER_HISTORY_PATH",
+      profile_dir.join("history.json"),
+    )
+    .env("FASTR_BROWSER_DOWNLOAD_DIR", &downloads_dir)
     // Ensure we truly load from disk rather than being influenced by any inherited override env
     // from other tests or a developer environment.
     .env_remove("FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON")
