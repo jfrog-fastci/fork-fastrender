@@ -32539,6 +32539,12 @@ fn init_window_globals(
     crate::js::bindings::install_element_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_fragment_bindings_vm_js(vm, heap, realm)?;
+    // Collections/DOM wrappers returned by host dispatch (e.g. `querySelectorAll`, `classList`)
+    // need their WebIDL-generated constructors/prototypes installed as globals so wrapper objects
+    // can adopt the correct prototypes and pass `instanceof` checks.
+    crate::js::bindings::install_dom_token_list_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_html_collection_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_node_list_bindings_vm_js(vm, heap, realm)?;
   }
   let mut scope = heap.scope();
   let global = realm.global_object();
@@ -40751,6 +40757,27 @@ mod tests {
     assert_eq!(data.window_obj(), Some(global));
     assert_eq!(data.document_obj(), Some(document_obj));
     assert!(data.dom_platform_mut().is_some());
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_backend_installs_collection_interface_bindings() -> Result<(), VmError> {
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let ok = realm.exec_script(
+      r#"(() => {
+        if (typeof NodeList !== 'function') return false;
+        if (typeof HTMLCollection !== 'function') return false;
+        if (typeof DOMTokenList !== 'function') return false;
+        if (typeof NodeList.prototype.item !== 'function') return false;
+        if (typeof HTMLCollection.prototype.item !== 'function') return false;
+        if (typeof DOMTokenList.prototype.item !== 'function') return false;
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
