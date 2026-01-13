@@ -66,3 +66,18 @@ pub fn validate_chrome_navigation_url(url: &str) -> Result<(), ChromeApiError> {
   }
 }
 
+// --- vm-js privileged chrome bindings ----------------------------------------
+//
+// Keep the public path stable as `crate::js::chrome_api::*` (used by both the DOM VM embedding and
+// other chrome-frame helpers). The vm-js implementation lives under `src/js/vmjs/` alongside the
+// rest of the `WindowRealm` bindings, so include it as a submodule and re-export the public API.
+//
+// This avoids a `js::chrome_api` module name collision between `src/js/chrome_api.rs` and
+// `src/js/vmjs/chrome_api.rs`.
+
+#[path = "vmjs/chrome_api.rs"]
+mod vmjs_bindings;
+
+pub use vmjs_bindings::{
+  install_chrome_api_bindings_vm_js, ChromeApiHost, ChromeCommand, MAX_CHROME_API_URL_CODE_UNITS,
+};
