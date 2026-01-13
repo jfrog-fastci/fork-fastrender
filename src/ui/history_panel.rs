@@ -7,9 +7,13 @@
 //! caller (typically `src/bin/browser.rs`).
 
 use super::{
-  a11y_labels, icon_button, panel_empty_state, panel_header_with_actions, panel_list_row,
-  panel_search_field, BrowserIcon, GlobalHistoryEntry, GlobalHistoryStore,
+  a11y_labels, history_timestamp, icon_button, panel_empty_state, panel_header_with_actions,
+  panel_list_row, panel_search_field, BrowserIcon, GlobalHistoryEntry, GlobalHistoryStore,
 };
+
+use lru::LruCache;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 #[derive(Debug, Default)]
 pub struct HistoryPanelOutput {
@@ -153,25 +157,18 @@ pub fn history_panel_ui(
               format!("{title} ({url})")
             };
 
-            let ts = format_history_timestamp_ms(entry.visited_at_ms)
-              .unwrap_or_else(|| "Unknown time".to_string());
+            let ts = format_history_timestamp_ms_cached(ctx, entry.visited_at_ms);
+            let ts_text: egui::WidgetText = match ts.as_deref() {
+              Some(ts) => ts.into(),
+              None => "Unknown time".into(),
+            };
             let mut action_clicked = false;
             let row_resp = panel_list_row(
               ui,
               ("history_row", idx),
               egui::RichText::new(title).strong(),
-              Some(
-                egui::RichText::new(url)
-                  .small()
-                  .color(ui.visuals().weak_text_color())
-                  .into(),
-              ),
-              Some(
-                egui::RichText::new(ts.as_str())
-                  .small()
-                  .color(ui.visuals().weak_text_color())
-                  .into(),
-              ),
+              Some(url.as_str().into()),
+              Some(ts_text),
               None,
               |ui| {
                 let delete_resp = icon_button(ui, BrowserIcon::Trash, "Delete", true);
@@ -213,19 +210,64 @@ pub fn history_panel_ui(
   out
 }
 
-fn format_history_timestamp_ms(visited_at_ms: u64) -> Option<String> {
-  use chrono::{DateTime, Local, Utc};
-  use std::time::{Duration, UNIX_EPOCH};
+// -----------------------------------------------------------------------------
+// Cached timestamp formatting
+// -----------------------------------------------------------------------------
 
+/// Cache capacity for formatted history timestamps.
+///
+/// The History panel can display up to 500 rows, but keeping a larger cache avoids churn when users
+/// scroll/search and when the same browser session keeps accumulating history.
+const HISTORY_TIMESTAMP_CACHE_CAPACITY: usize = 4_096;
+
+#[derive(Debug, Clone)]
+struct HistoryPanelCache {
+  // Keyed by unix-epoch minute; the UI output format does not include seconds, so all instants
+  // within the same minute map to the same display string.
+  timestamps_by_minute: LruCache<u64, Arc<str>>,
+}
+
+impl Default for HistoryPanelCache {
+  fn default() -> Self {
+    Self {
+      timestamps_by_minute: LruCache::new(
+        NonZeroUsize::new(HISTORY_TIMESTAMP_CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN),
+      ),
+    }
+  }
+}
+
+fn history_panel_cache_id() -> egui::Id {
+  egui::Id::new("fastr_history_panel_cache")
+}
+
+fn lookup_cached_timestamp(ctx: &egui::Context, minute_key: u64) -> Option<Arc<str>> {
+  ctx.data_mut(|d| {
+    let cache = d.get_temp_mut_or_default::<HistoryPanelCache>(history_panel_cache_id());
+    cache.timestamps_by_minute.get(&minute_key).cloned()
+  })
+}
+
+fn insert_cached_timestamp(ctx: &egui::Context, minute_key: u64, value: Arc<str>) {
+  ctx.data_mut(|d| {
+    let cache = d.get_temp_mut_or_default::<HistoryPanelCache>(history_panel_cache_id());
+    cache.timestamps_by_minute.put(minute_key, value);
+  });
+}
+
+fn format_history_timestamp_ms_cached(ctx: &egui::Context, visited_at_ms: u64) -> Option<Arc<str>> {
   if visited_at_ms == 0 {
     return None;
   }
-  let time = UNIX_EPOCH.checked_add(Duration::from_millis(visited_at_ms))?;
-  let utc: DateTime<Utc> = time.into();
-  Some(
-    utc
-      .with_timezone(&Local)
-      .format("%Y-%m-%d %H:%M")
-      .to_string(),
-  )
+
+  // Since we only show minutes, use the epoch minute as a stable cache key to maximize hits.
+  let minute_key = visited_at_ms / 60_000;
+  if let Some(cached) = lookup_cached_timestamp(ctx, minute_key) {
+    return Some(cached);
+  }
+
+  let formatted = history_timestamp::format_history_timestamp_ms(visited_at_ms)?;
+  let arc: Arc<str> = Arc::from(formatted);
+  insert_cached_timestamp(ctx, minute_key, arc.clone());
+  Some(arc)
 }

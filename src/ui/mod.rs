@@ -25,6 +25,7 @@ pub mod context_menu;
 pub mod frame_upload;
 pub mod global_history;
 pub mod history;
+pub mod history_timestamp;
 pub mod visited;
 pub mod omnibox;
 mod string_match;
