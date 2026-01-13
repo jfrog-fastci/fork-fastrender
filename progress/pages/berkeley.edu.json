@@ -14,7 +14,7 @@
     "layout": 43.02606221962617,
     "paint": 219.1327354906542
   },
-  "notes": "",
+  "notes": "Large diffs are dominated by the hero background video: the fixture has a 0-byte `<video>` source (assets/missing_6cc347e11cda55d8ded4a916f9817b6c.mp4) and a 0-byte hero background-image (assets/e3b0c44298fc1c149afbf4c8996fb924.jpg), so Chrome paints a dark native video surface while FastRender (no video decode; no poster) leaves the hero area blank/white. Remaining diffs are mostly text rasterization/hinting differences vs Chrome and minor per-pixel paint rounding; no additional major layout issues identified.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 17108,
