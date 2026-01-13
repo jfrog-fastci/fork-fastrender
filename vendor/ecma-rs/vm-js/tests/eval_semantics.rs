@@ -472,3 +472,57 @@ fn direct_eval_with_awaited_argument_sees_arguments_object() -> Result<(), VmErr
   assert_eq!(value, Value::Number(123.0));
   Ok(())
 }
+
+#[test]
+fn indirect_eval_does_not_inherit_strictness_across_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        "use strict";
+        const e = eval;
+        return e(await "with ({x:1}) { x }");
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn indirect_eval_var_decl_does_not_conflict_with_outer_let_across_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      var x = 0;
+      async function f() {
+        "use strict";
+        let x = 1;
+        const e = eval;
+        try { e(await "var x = 2"); }
+        catch (e) { return e.name; }
+        return x === 1 && globalThis.x === 2;
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

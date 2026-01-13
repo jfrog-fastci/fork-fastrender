@@ -376,3 +376,59 @@ fn generator_direct_eval_with_yield_argument_sees_arguments_object() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_indirect_eval_does_not_inherit_strictness_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g(){
+            "use strict";
+            // Indirect eval must not inherit strictness; `with` should be allowed.
+            return (eval)(yield 0);
+          }
+          var it = g();
+          it.next();
+          var r = it.next("with ({x:1}) { x }");
+          ok = r.done === true && r.value === 1;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_indirect_eval_var_decl_does_not_conflict_with_outer_let_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global binding visible to indirect eval.
+          var x = 0;
+          function* g(){
+            "use strict";
+            let x = 1;
+            try { (eval)(yield 0); }
+            catch (e) { return e.name; }
+            // Indirect eval `var x = 2` must target the global var binding, not conflict with the
+            // outer lexical binding.
+            return x === 1 && globalThis.x === 2;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("var x = 2");
+          ok = r.done === true && r.value === true;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
