@@ -4761,7 +4761,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               let text = match arg {
                 Value::String(_) => js_string_to_rust_string(scope, arg)?,
                 other => {
-                  let s = scope.heap_mut().to_string(other)?;
+                  let s = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+                    scope.to_string(vm, host, hooks, other)
+                  })?
+                  .ok_or(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR))?;
                   scope.heap().get_string(s)?.to_utf8_lossy()
                 }
               };
@@ -4956,6 +4959,41 @@ mod element_replace_with_tests {
           document.getElementById('a').replaceWith('x', document.createElement('b'));
           return document.getElementById('a') === null
             && document.getElementById('root').innerHTML === 'x<b></b>';
+        })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_replace_with_converts_non_node_object_via_to_string() -> Result<(), VmError> {
+    let dom =
+      crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = window.global_object();
+
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      r#"
+        (() => {
+          document.body.innerHTML = '<div id="root"><span id="a"></span></div>';
+          document.getElementById('a').replaceWith({ toString() { return 'x' } });
+          return document.getElementById('a') === null
+            && document.getElementById('root').innerHTML === 'x';
         })()
       "#,
     )?;
