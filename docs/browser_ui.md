@@ -302,6 +302,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Ctrl+H (Win/Linux); Cmd+Y (macOS) | Toggle history panel |
 | Ctrl/Cmd+Shift+Delete | Open “Clear browsing data” dialog |
 | Ctrl/Cmd+Shift+O | Toggle bookmarks manager |
+| Ctrl/Cmd+Shift+B | Toggle bookmarks bar |
 | Ctrl/Cmd+Plus / Ctrl/Cmd+Equals | Zoom in |
 | Ctrl/Cmd+Minus | Zoom out |
 | Ctrl/Cmd+0 | Reset zoom |
