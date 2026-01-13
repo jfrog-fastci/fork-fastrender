@@ -562,12 +562,17 @@ pub fn format_events(events: &[WorkerToUiEvent]) -> String {
         pixmap_px,
         viewport_css,
         dpr,
+        scroll_state,
         ..
       } => {
         let _ = writeln!(
           &mut out,
-          "FrameReady(tab={}, pixmap={}x{}, viewport_css={viewport_css:?}, dpr={dpr})",
-          tab_id.0, pixmap_px.0, pixmap_px.1
+          "FrameReady(tab={}, pixmap={}x{}, viewport_css={viewport_css:?}, dpr={dpr}, scroll_viewport={:?}, element_scrolls={})",
+          tab_id.0,
+          pixmap_px.0,
+          pixmap_px.1,
+          scroll_state.viewport,
+          scroll_state.elements.len()
         );
       }
       WorkerToUiEvent::OpenSelectDropdown {
@@ -616,9 +621,10 @@ pub fn format_events(events: &[WorkerToUiEvent]) -> String {
       WorkerToUiEvent::ScrollStateUpdated { tab_id, scroll } => {
         let _ = writeln!(
           &mut out,
-          "ScrollStateUpdated(tab={}, viewport={:?})",
+          "ScrollStateUpdated(tab={}, viewport={:?}, element_scrolls={})",
           tab_id.0,
-          scroll.viewport
+          scroll.viewport,
+          scroll.elements.len()
         );
       }
       WorkerToUiEvent::LoadingState { tab_id, loading } => {
