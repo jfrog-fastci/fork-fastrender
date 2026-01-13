@@ -143,8 +143,8 @@ fn main() -> Result<()> {
 
 For interactive/live rendering (a tab that never “finishes”), the core integration is a **tick loop**:
 
-- run some amount of event-loop work (tasks + microtasks; `requestAnimationFrame` is driven
-  separately),
+- run some amount of event-loop work (tasks + microtasks; plus at most one `requestAnimationFrame`
+  turn when callbacks are queued),
 - if the document became dirty, render and display the new frame,
 - repeat, driven by your outer UI loop (vsync, timers, network wakeups, input events).
 
@@ -154,9 +154,10 @@ In the public API this maps to:
   freshly rendered `Pixmap` *only if* something invalidated rendering.
 - `BrowserTab::run_until_stable(...)` — a bounded helper for “drive until idle + rendered”.
 
-Note: today `tick_frame()` does **not** run `requestAnimationFrame` callbacks; use
-`run_until_stable(...)` (bounded, converge-to-stable) or the lower-level event loop APIs described in
-[`docs/live_rendering_loop.md`](live_rendering_loop.md) when you need rAF turns.
+Note: `tick_frame()` runs at most one `requestAnimationFrame` “turn” when callbacks are queued, and
+it drains the post-rAF microtask checkpoint before rendering. It does **not** enforce a wall-clock
+frame cadence by itself; interactive embedders should call it on their chosen frame schedule (see
+[`docs/live_rendering_loop.md`](live_rendering_loop.md)).
 
 Conceptually:
 
