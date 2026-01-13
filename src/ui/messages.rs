@@ -375,10 +375,11 @@ pub enum UiToWorker {
   StopLoading {
     tab_id: TabId,
   },
-  /// Periodic "tick" from the UI thread used to drive the tab's event loop and repaint pipeline.
+  /// Periodic "tick" from the UI thread used to drive time-based effects and the repaint pipeline.
   ///
-  /// The render worker should execute a bounded slice of JS/event-loop work (timers, microtasks)
-  /// and, if the tab becomes dirty, render a new frame.
+  /// The render worker should advance any time-based effects (CSS animations/transitions, animated
+  /// images, JS timers/rAF, etc), execute a bounded slice of JS/event-loop work, and, if the tab
+  /// becomes dirty, render a new frame.
   ///
   /// This message is intentionally a **wake-up signal**, not a time source: it does not carry a
   /// timestamp. Subsystems that care about time (especially audio/video playback) must query their
