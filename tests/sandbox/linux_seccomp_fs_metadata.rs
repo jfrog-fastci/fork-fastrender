@@ -34,7 +34,8 @@ fn seccomp_denies_getdents64_on_inherited_dir_fd() {
     let dir_fd = dir.as_raw_fd();
 
     match fastrender::sandbox::apply_renderer_seccomp_denylist() {
-      Ok(fastrender::sandbox::SandboxStatus::Applied) => {}
+      Ok(fastrender::sandbox::SandboxStatus::Applied)
+      | Ok(fastrender::sandbox::SandboxStatus::AppliedWithoutTsync) => {}
       Ok(
         fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported,
       ) => return,
@@ -75,7 +76,9 @@ fn seccomp_denies_getdents64_on_inherited_dir_fd() {
   let exe = std::env::current_exe().expect("current test exe path");
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
-    // Avoid a large libtest threadpool: the seccomp sandbox uses TSYNC and applies to all threads.
+    // Avoid a large libtest threadpool: the sandbox is process-global. When TSYNC is supported it
+    // applies to all threads; when TSYNC is unavailable the sandbox must be installed before any
+    // additional threads spawn.
     .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
     .arg(TEST_NAME)
@@ -89,4 +92,3 @@ fn seccomp_denies_getdents64_on_inherited_dir_fd() {
     String::from_utf8_lossy(&output.stderr)
   );
 }
-

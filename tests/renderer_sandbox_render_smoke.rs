@@ -57,7 +57,8 @@ fn sandboxed_child_entrypoint() {
   let sandbox_status =
     fastrender::sandbox::apply_renderer_sandbox(fastrender::sandbox::RendererSandboxConfig::default());
   match sandbox_status {
-    Ok(fastrender::sandbox::SandboxStatus::Applied) => {}
+    Ok(fastrender::sandbox::SandboxStatus::Applied)
+    | Ok(fastrender::sandbox::SandboxStatus::AppliedWithoutTsync) => {}
     Ok(fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported) => {
       eprintln!("skipping: renderer sandbox unsupported on this platform");
       return;

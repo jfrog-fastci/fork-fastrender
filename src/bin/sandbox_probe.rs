@@ -313,6 +313,10 @@ mod enabled {
     let seccomp = if cfg.seccomp {
       match sandbox::apply_renderer_seccomp_denylist() {
         Ok(sandbox::SandboxStatus::Applied) => LayerOutcome::Applied,
+        Ok(sandbox::SandboxStatus::AppliedWithoutTsync) => {
+          println!("seccomp: applied without TSYNC (must sandbox before threads spawn)");
+          LayerOutcome::Applied
+        }
         Ok(sandbox::SandboxStatus::Unsupported) => {
           return Err("seccomp sandbox unsupported".to_string());
         }

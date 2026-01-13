@@ -33,7 +33,8 @@ mod linux {
         CString::new(dir_path.as_os_str().as_bytes()).expect("dir path must be a C string");
 
       match fastrender::sandbox::apply_renderer_seccomp_denylist() {
-        Ok(fastrender::sandbox::SandboxStatus::Applied) => {}
+        Ok(fastrender::sandbox::SandboxStatus::Applied)
+        | Ok(fastrender::sandbox::SandboxStatus::AppliedWithoutTsync) => {}
         Ok(fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported) => return,
         Err(err) => {
           if is_seccomp_unsupported_error(&err) {
@@ -74,7 +75,9 @@ mod linux {
     let test_name = "seccomp_denies_filesystem_mutation_syscalls";
     let output = Command::new(exe)
       .env(CHILD_ENV, "1")
-      // Avoid a large libtest threadpool: the seccomp sandbox uses TSYNC and applies to all threads.
+      // Avoid a large libtest threadpool: the sandbox is process-global. When TSYNC is supported it
+      // applies to all threads; when TSYNC is unavailable the sandbox must be installed before any
+      // additional threads spawn.
       .env("RUST_TEST_THREADS", "1")
       .env(FILE_ENV, tmp_file.path())
       .env(DIR_ENV, &mkdir_path)
