@@ -322,6 +322,11 @@ Security notes / rationale:
 This matches the “creator origin” intuition: about:blank created by a document is same-origin with
 that document; about:blank created by the browser UI is a fresh opaque origin.
 
+Implementation detail (normative for matching browser behavior):
+
+- `about:blank` with a query or fragment (e.g. `about:blank#foo`, `about:blank?x=1`) is still treated
+  as `about:blank` for `SiteKey` derivation and inheritance.
+
 ### 2.4 `about:srcdoc`
 
 `about:srcdoc` is the internal URL for iframe `srcdoc` documents.
@@ -375,6 +380,18 @@ Implementation note:
 Repo reality note:
 - The in-tree browser has a concrete set of built-in about pages defined in
   [`src/ui/about_pages.rs`](../src/ui/about_pages.rs) (`ABOUT_*` constants + `ABOUT_PAGE_URLS`).
+
+Navigation policy note:
+
+- Deriving `SiteKey::Internal` does **not** imply that untrusted web content is allowed to navigate
+  to (or embed) internal pages.
+  - In particular, embedding privileged internal pages in cross-origin iframes can be a UI/security
+    risk even if same-origin scripting prevents direct DOM access.
+- The browser process should enforce a policy such as:
+  - only allow `SiteKey::Internal` navigations that are initiated by the browser UI / trusted code,
+    and
+  - reject renderer-initiated navigations to internal `about:*` pages (and reject `about:*` as an
+    iframe `src` unless explicitly intended).
 
 ### 2.7 Other schemes (`blob:`, `javascript:`, unknown)
 
@@ -487,9 +504,11 @@ Process assignment must observe these URL rules:
 
 - If `srcdoc` attribute is present: the iframe document URL is `about:srcdoc`.
   - (This matches current single-process behavior in `src/paint/iframe.rs`.)
-- Else if `src` is missing or ASCII-whitespace-only: treat as `about:blank`.
-  - (Also matches current behavior; see `display_list_iframe_missing_src_defaults_to_about_blank`
+- Else if `src` is missing: treat as `about:blank`.
+  - (This matches current behavior; see `display_list_iframe_missing_src_defaults_to_about_blank`
     in `src/paint/display_list_renderer/tests/display_list/iframe.rs`.)
+- Else if `src` is ASCII-whitespace-only: do not perform a navigation and keep the initial
+  `about:blank` document.
 - Else: resolve `src` relative to the parent document base URL.
 
 #### 3.3.2 Same-`SiteKey` iframe (in-process)
