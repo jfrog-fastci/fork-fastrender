@@ -10929,6 +10929,10 @@ impl DisplayListBuilder {
           TextDecorationSkipInk::Auto | TextDecorationSkipInk::All
         ) {
           runs.map(|r| {
+            let stroke_width = r
+              .iter()
+              .map(|run| self.resolve_webkit_text_stroke_for_run(style, run.font_size).0)
+              .fold(0.0_f32, f32::max);
             self.build_underline_segments(
               r,
               inline_len,
@@ -10937,6 +10941,7 @@ impl DisplayListBuilder {
               block_baseline,
               inline_vertical,
               deco.skip_ink,
+              stroke_width,
             )
           })
         } else {
@@ -11491,6 +11496,7 @@ impl DisplayListBuilder {
     baseline_y: f32,
     inline_vertical: bool,
     skip_ink: TextDecorationSkipInk,
+    stroke_width_px: f32,
   ) -> Vec<(f32, f32)> {
     if line_width <= 0.0 {
       return Vec::new();
@@ -11498,6 +11504,11 @@ impl DisplayListBuilder {
 
     let decoration_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
     let band_half = (thickness * 0.5).abs();
+    let extra_pad = if stroke_width_px.is_finite() {
+      (stroke_width_px * 0.5).max(0.0)
+    } else {
+      0.0
+    };
     let mut exclusions = if inline_vertical {
       let band_left = center - band_half;
       let band_right = center + band_half;
@@ -11507,6 +11518,7 @@ impl DisplayListBuilder {
         band_left,
         band_right,
         skip_ink == TextDecorationSkipInk::All,
+        extra_pad,
       )
     } else {
       let band_top = center - band_half;
@@ -11517,6 +11529,7 @@ impl DisplayListBuilder {
         band_top,
         band_bottom,
         skip_ink == TextDecorationSkipInk::All,
+        extra_pad,
       )
     };
 
@@ -15832,6 +15845,7 @@ fn collect_underline_exclusions(
   band_top: f32,
   band_bottom: f32,
   skip_all: bool,
+  extra_pad_px: f32,
 ) -> Vec<(f32, f32)> {
   crate::paint::text_decoration_skip_ink::collect_underline_exclusions(
     runs,
@@ -15841,6 +15855,7 @@ fn collect_underline_exclusions(
     band_bottom,
     skip_all,
     1.0,
+    extra_pad_px,
   )
 }
 
@@ -15850,6 +15865,7 @@ fn collect_underline_exclusions_vertical(
   band_left: f32,
   band_right: f32,
   skip_all: bool,
+  extra_pad_px: f32,
 ) -> Vec<(f32, f32)> {
   crate::paint::text_decoration_skip_ink::collect_underline_exclusions_vertical(
     runs,
@@ -15859,6 +15875,7 @@ fn collect_underline_exclusions_vertical(
     band_right,
     skip_all,
     1.0,
+    extra_pad_px,
   )
 }
 
@@ -21777,7 +21794,7 @@ mod tests {
 
     let _guard = face_cache::FaceParseCountGuard::start();
     for _ in 0..3 {
-      let _ = collect_underline_exclusions(&runs, 0.0, -2.0, 2.0, false);
+      let _ = collect_underline_exclusions(&runs, 0.0, -2.0, 2.0, false, 0.0);
     }
 
     assert!(
@@ -21854,7 +21871,7 @@ mod tests {
       scale: run_scale,
     };
 
-    let intervals = collect_underline_exclusions(&[run], 0.0, -1.0, 1.0, true);
+    let intervals = collect_underline_exclusions(&[run], 0.0, -1.0, 1.0, true, 0.0);
     assert_eq!(intervals.len(), 1);
     let width = intervals[0].1 - intervals[0].0;
     assert!(

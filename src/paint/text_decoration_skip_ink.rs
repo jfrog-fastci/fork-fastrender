@@ -195,6 +195,9 @@ fn glyph_aabb(
 /// glyph metrics (stored in CSS px) into that space:
 /// - `coord_scale = 1.0` for CSS px (display-list builder)
 /// - `coord_scale = dpr` for device px (legacy painter)
+///
+/// Use `extra_pad_px` to further inflate glyph bounds in the caller's coordinate space (e.g. to
+/// account for `-webkit-text-stroke` ink; typically `stroke_width_px * 0.5 * coord_scale`).
 pub(crate) fn collect_underline_exclusions(
   runs: &[ShapedRun],
   line_start: f32,
@@ -203,10 +206,16 @@ pub(crate) fn collect_underline_exclusions(
   band_bottom: f32,
   skip_all: bool,
   coord_scale: f32,
+  extra_pad_px: f32,
 ) -> Vec<(f32, f32)> {
   let mut intervals = Vec::new();
   // Small inflation to account for antialiasing without swallowing the entire line.
   let tolerance = 0.5 * coord_scale;
+  let extra_pad_px = if extra_pad_px.is_finite() {
+    extra_pad_px.max(0.0)
+  } else {
+    0.0
+  };
 
   let mut pen_x = line_start;
   for run in runs {
@@ -229,8 +238,8 @@ pub(crate) fn collect_underline_exclusions(
     let scale = run.font_size * run.scale * coord_scale / units_per_em;
     let skew = safe_skew(run.synthetic_oblique);
     let bold_pad = safe_bold_pad(run.synthetic_bold, coord_scale);
-    let pad_x = bold_pad + tolerance;
-    let pad_y = bold_pad + tolerance;
+    let pad_x = bold_pad + tolerance + extra_pad_px;
+    let pad_y = bold_pad + tolerance + extra_pad_px;
     let variations_hash = crate::text::variations::variation_hash(&run.variations);
 
     let mut cursor_x = origin_x;
@@ -275,6 +284,9 @@ pub(crate) fn collect_underline_exclusions(
 ///
 /// Intervals are returned along the physical Y axis. The underline "band" is a vertical strip
 /// between `band_left` and `band_right` in physical X.
+///
+/// Use `extra_pad_px` to further inflate glyph bounds in the caller's coordinate space (e.g. to
+/// account for `-webkit-text-stroke` ink; typically `stroke_width_px * 0.5 * coord_scale`).
 pub(crate) fn collect_underline_exclusions_vertical(
   runs: &[ShapedRun],
   inline_start: f32,
@@ -283,9 +295,15 @@ pub(crate) fn collect_underline_exclusions_vertical(
   band_right: f32,
   skip_all: bool,
   coord_scale: f32,
+  extra_pad_px: f32,
 ) -> Vec<(f32, f32)> {
   let mut intervals = Vec::new();
   let tolerance = 0.5 * coord_scale;
+  let extra_pad_px = if extra_pad_px.is_finite() {
+    extra_pad_px.max(0.0)
+  } else {
+    0.0
+  };
 
   let mut pen_inline = inline_start;
   for run in runs {
@@ -308,8 +326,8 @@ pub(crate) fn collect_underline_exclusions_vertical(
     let scale = run.font_size * run.scale * coord_scale / units_per_em;
     let skew = safe_skew(run.synthetic_oblique);
     let bold_pad = safe_bold_pad(run.synthetic_bold, coord_scale);
-    let pad_x = bold_pad + tolerance;
-    let pad_y = bold_pad + tolerance;
+    let pad_x = bold_pad + tolerance + extra_pad_px;
+    let pad_y = bold_pad + tolerance + extra_pad_px;
     let variations_hash = crate::text::variations::variation_hash(&run.variations);
 
     let mut cursor_x = origin_x;
@@ -537,8 +555,9 @@ mod tests {
     let runs_no = [mk_run(RunRotation::None)];
     let runs_rot = [mk_run(RunRotation::Cw90)];
 
-    let excl_no = collect_underline_exclusions(&runs_no, 0.0, 0.0, -1000.0, 1000.0, true, 1.0);
-    let excl_rot = collect_underline_exclusions(&runs_rot, 0.0, 0.0, -1000.0, 1000.0, true, 1.0);
+    let excl_no = collect_underline_exclusions(&runs_no, 0.0, 0.0, -1000.0, 1000.0, true, 1.0, 0.0);
+    let excl_rot =
+      collect_underline_exclusions(&runs_rot, 0.0, 0.0, -1000.0, 1000.0, true, 1.0, 0.0);
 
     assert_eq!(excl_no.len(), 1);
     assert_eq!(excl_rot.len(), 1);
@@ -549,6 +568,78 @@ mod tests {
       "rotated glyph bbox should change exclusion width (got {} vs {})",
       width_no,
       width_rot
+    );
+  }
+
+  #[test]
+  fn underline_exclusions_expand_with_extra_padding() {
+    let font_path =
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let data = Arc::new(std::fs::read(font_path).expect("read test font"));
+    let font = LoadedFont {
+      id: None,
+      data,
+      index: 0,
+      face_metrics_overrides: FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
+      family: "DejaVu Sans Subset".to_string(),
+      weight: FontWeight::NORMAL,
+      style: FontStyle::Normal,
+      stretch: FontStretch::Normal,
+    };
+
+    let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
+    let face = cached_face.face();
+    let glyph_id = face
+      .glyph_index('g')
+      .or_else(|| face.glyph_index('p'))
+      .or_else(|| face.glyph_index('A'))
+      .expect("expected glyph in test font")
+      .0 as u32;
+
+    let run = ShapedRun {
+      text: "g".to_string(),
+      start: 0,
+      end: 1,
+      glyphs: vec![crate::text::pipeline::GlyphPosition {
+        glyph_id,
+        cluster: 0,
+        x_offset: 0.0,
+        y_offset: 0.0,
+        x_advance: 0.0,
+        y_advance: 0.0,
+      }],
+      direction: crate::text::pipeline::Direction::LeftToRight,
+      level: 0,
+      advance: 0.0,
+      font: Arc::new(font),
+      font_size: 40.0,
+      baseline_shift: 0.0,
+      language: None,
+      features: Arc::from(Vec::new()),
+      synthetic_bold: 0.0,
+      synthetic_oblique: 0.0,
+      rotation: RunRotation::None,
+      palette_index: 0,
+      palette_overrides: Arc::new(Vec::new()),
+      palette_override_hash: 0,
+      variations: Vec::new(),
+      scale: 1.0,
+    };
+
+    let no_pad =
+      collect_underline_exclusions(&[run.clone()], 0.0, 0.0, -1000.0, 1000.0, true, 1.0, 0.0);
+    let with_pad = collect_underline_exclusions(&[run], 0.0, 0.0, -1000.0, 1000.0, true, 1.0, 6.0);
+
+    assert_eq!(no_pad.len(), 1);
+    assert_eq!(with_pad.len(), 1);
+    let width_no = no_pad[0].1 - no_pad[0].0;
+    let width_pad = with_pad[0].1 - with_pad[0].0;
+    assert!(
+      width_pad > width_no + 1.0,
+      "expected exclusion width to grow with padding (no_pad={}, with_pad={})",
+      width_no,
+      width_pad
     );
   }
 }

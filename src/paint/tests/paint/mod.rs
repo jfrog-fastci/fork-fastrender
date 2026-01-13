@@ -241,6 +241,7 @@ mod text_decoration_skip_display_list_test;
 mod text_decoration_skip_ink_offset_golden_test;
 mod text_decoration_skip_ink_rtl_golden_test;
 mod text_decoration_skip_ink_sideways_rl_golden_test;
+mod text_decoration_skip_ink_text_stroke_test;
 mod text_decoration_skip_ink_variable_font_golden_test;
 mod text_decoration_skip_ink_vertical_mixed_golden_test;
 mod text_emphasis_currentcolor_palette;

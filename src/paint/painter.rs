@@ -15036,6 +15036,24 @@ impl Painter {
             | crate::style::types::TextDecorationSkipInk::All
         ) {
           runs.map(|runs| {
+            let viewport = (self.css_width, self.css_height);
+            let stroke_width = runs
+              .iter()
+              .map(|run| {
+                style
+                  .webkit_text_stroke_width
+                  .resolve_with_context(
+                    None,
+                    viewport.0,
+                    viewport.1,
+                    run.font_size,
+                    style.root_font_size,
+                  )
+                  .unwrap_or(0.0)
+              })
+              .map(|w| if w.is_finite() { w.max(0.0) } else { 0.0 })
+              .fold(0.0_f32, f32::max)
+              * self.scale;
             self.build_underline_segments(
               runs,
               inline_start,
@@ -15045,6 +15063,7 @@ impl Painter {
               block_baseline,
               inline_vertical,
               deco.skip_ink,
+              stroke_width,
             )
           })
         } else {
@@ -15261,12 +15280,18 @@ impl Painter {
     baseline_y: f32,
     inline_vertical: bool,
     skip_ink: TextDecorationSkipInk,
+    stroke_width_px: f32,
   ) -> Vec<(f32, f32)> {
     if line_width <= 0.0 {
       return Vec::new();
     }
 
     let band_half = (thickness * 0.5).abs();
+    let extra_pad = if stroke_width_px.is_finite() {
+      (stroke_width_px * 0.5).max(0.0)
+    } else {
+      0.0
+    };
     let mut exclusions = if inline_vertical {
       let band_left = center - band_half;
       let band_right = center + band_half;
@@ -15278,6 +15303,7 @@ impl Painter {
         band_right,
         skip_ink == TextDecorationSkipInk::All,
         self.scale,
+        extra_pad,
       )
     } else {
       let band_top = center - band_half;
@@ -15290,6 +15316,7 @@ impl Painter {
         band_bottom,
         skip_ink == TextDecorationSkipInk::All,
         self.scale,
+        extra_pad,
       )
     };
 
@@ -15769,6 +15796,7 @@ fn collect_underline_exclusions(
   band_bottom: f32,
   skip_all: bool,
   device_scale: f32,
+  extra_pad_px: f32,
 ) -> Vec<(f32, f32)> {
   crate::paint::text_decoration_skip_ink::collect_underline_exclusions(
     runs,
@@ -15778,6 +15806,7 @@ fn collect_underline_exclusions(
     band_bottom,
     skip_all,
     device_scale,
+    extra_pad_px,
   )
 }
 
@@ -15789,6 +15818,7 @@ fn collect_underline_exclusions_vertical(
   band_right: f32,
   skip_all: bool,
   device_scale: f32,
+  extra_pad_px: f32,
 ) -> Vec<(f32, f32)> {
   crate::paint::text_decoration_skip_ink::collect_underline_exclusions_vertical(
     runs,
@@ -15798,6 +15828,7 @@ fn collect_underline_exclusions_vertical(
     band_right,
     skip_all,
     device_scale,
+    extra_pad_px,
   )
 }
 
@@ -22356,6 +22387,7 @@ mod tests {
       baseline,
       false,
       crate::style::types::TextDecorationSkipInk::All,
+      0.0,
     );
 
     let segments_auto = painter.build_underline_segments(
@@ -22367,6 +22399,7 @@ mod tests {
       baseline,
       false,
       crate::style::types::TextDecorationSkipInk::Auto,
+      0.0,
     );
 
     assert!(
@@ -25338,9 +25371,9 @@ mod tests {
     }
 
     let light_bounds =
-      collect_underline_exclusions(&light_runs, 0.0, 0.0, -1000.0, 1000.0, true, 1.0);
+      collect_underline_exclusions(&light_runs, 0.0, 0.0, -1000.0, 1000.0, true, 1.0, 0.0);
     let heavy_bounds =
-      collect_underline_exclusions(&heavy_runs, 0.0, 0.0, -1000.0, 1000.0, true, 1.0);
+      collect_underline_exclusions(&heavy_runs, 0.0, 0.0, -1000.0, 1000.0, true, 1.0, 0.0);
     if light_bounds.is_empty() || heavy_bounds.is_empty() {
       return;
     }
