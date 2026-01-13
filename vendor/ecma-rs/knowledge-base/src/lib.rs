@@ -2977,14 +2977,29 @@ properties:
       Some("node/web_crypto.yaml")
     );
 
-    let digest = kb
-      .api_for_target("crypto.subtle.digest", &node_20)
-      .expect("crypto.subtle.digest should resolve for Node 19+");
-    assert_eq!(digest.name, "crypto.subtle.digest");
-    assert_eq!(
-      kb.source_for_target("crypto.subtle.digest", &node_20),
-      Some("node/web_crypto_subtle.yaml")
-    );
+    for name in [
+      "crypto.subtle.digest",
+      "crypto.subtle.encrypt",
+      "crypto.subtle.decrypt",
+      "crypto.subtle.sign",
+      "crypto.subtle.verify",
+      "crypto.subtle.generateKey",
+      "crypto.subtle.deriveKey",
+      "crypto.subtle.deriveBits",
+      "crypto.subtle.importKey",
+      "crypto.subtle.exportKey",
+      "crypto.subtle.wrapKey",
+      "crypto.subtle.unwrapKey",
+    ] {
+      let api = kb
+        .api_for_target(name, &node_20)
+        .unwrap_or_else(|| panic!("{name} should resolve for Node 19+"));
+      assert_eq!(api.name, name);
+      assert_eq!(
+        kb.source_for_target(name, &node_20),
+        Some("node/web_crypto_subtle.yaml")
+      );
+    }
 
     let node_18 = TargetEnv::Node {
       version: Version::parse("18.0.0").unwrap(),
@@ -2997,10 +3012,25 @@ properties:
       kb.api_for_target("crypto.randomUUID", &node_18).is_none(),
       "crypto.randomUUID should not resolve for Node < 19"
     );
-    assert!(
-      kb.api_for_target("crypto.subtle.digest", &node_18).is_none(),
-      "crypto.subtle.digest should not resolve for Node < 19"
-    );
+    for name in [
+      "crypto.subtle.digest",
+      "crypto.subtle.encrypt",
+      "crypto.subtle.decrypt",
+      "crypto.subtle.sign",
+      "crypto.subtle.verify",
+      "crypto.subtle.generateKey",
+      "crypto.subtle.deriveKey",
+      "crypto.subtle.deriveBits",
+      "crypto.subtle.importKey",
+      "crypto.subtle.exportKey",
+      "crypto.subtle.wrapKey",
+      "crypto.subtle.unwrapKey",
+    ] {
+      assert!(
+        kb.api_for_target(name, &node_18).is_none(),
+        "{name} should not resolve for Node < 19"
+      );
+    }
   }
 
   #[test]

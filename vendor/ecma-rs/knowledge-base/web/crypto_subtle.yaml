@@ -15,3 +15,183 @@
   parallelizable: true
   idempotent: true
   deterministic: true
+
+- name: crypto.subtle.encrypt
+  kind: function
+  aliases:
+    - crypto.subtle.encrypt
+    - window.crypto.subtle.encrypt
+    - globalThis.crypto.subtle.encrypt
+  since: "baseline"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: crypto.subtle.decrypt
+  kind: function
+  aliases:
+    - crypto.subtle.decrypt
+    - window.crypto.subtle.decrypt
+    - globalThis.crypto.subtle.decrypt
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.sign
+  kind: function
+  aliases:
+    - crypto.subtle.sign
+    - window.crypto.subtle.sign
+    - globalThis.crypto.subtle.sign
+  since: "baseline"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: crypto.subtle.verify
+  kind: function
+  aliases:
+    - crypto.subtle.verify
+    - window.crypto.subtle.verify
+    - globalThis.crypto.subtle.verify
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.generateKey
+  kind: function
+  aliases:
+    - crypto.subtle.generateKey
+    - window.crypto.subtle.generateKey
+    - globalThis.crypto.subtle.generateKey
+  since: "baseline"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: crypto.subtle.deriveKey
+  kind: function
+  aliases:
+    - crypto.subtle.deriveKey
+    - window.crypto.subtle.deriveKey
+    - globalThis.crypto.subtle.deriveKey
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.deriveBits
+  kind: function
+  aliases:
+    - crypto.subtle.deriveBits
+    - window.crypto.subtle.deriveBits
+    - globalThis.crypto.subtle.deriveBits
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.importKey
+  kind: function
+  aliases:
+    - crypto.subtle.importKey
+    - window.crypto.subtle.importKey
+    - globalThis.crypto.subtle.importKey
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.exportKey
+  kind: function
+  aliases:
+    - crypto.subtle.exportKey
+    - window.crypto.subtle.exportKey
+    - globalThis.crypto.subtle.exportKey
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.wrapKey
+  kind: function
+  aliases:
+    - crypto.subtle.wrapKey
+    - window.crypto.subtle.wrapKey
+    - globalThis.crypto.subtle.wrapKey
+  since: "baseline"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: crypto.subtle.unwrapKey
+  kind: function
+  aliases:
+    - crypto.subtle.unwrapKey
+    - window.crypto.subtle.unwrapKey
+    - globalThis.crypto.subtle.unwrapKey
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true

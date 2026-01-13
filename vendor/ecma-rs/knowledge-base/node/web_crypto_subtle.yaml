@@ -18,3 +18,139 @@
   parallelizable: true
   idempotent: true
   deterministic: true
+
+- name: crypto.subtle.encrypt
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: crypto.subtle.decrypt
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.sign
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: crypto.subtle.verify
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.generateKey
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: crypto.subtle.deriveKey
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.deriveBits
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.importKey
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.exportKey
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: crypto.subtle.wrapKey
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: crypto.subtle.unwrapKey
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
