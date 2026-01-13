@@ -230,8 +230,10 @@ Additional (important) size limits that sit *on top* of framing:
 | Renderer↔network header name bytes (`IpcResourceFetcher`) | 1024 bytes | `IPC_MAX_HEADER_NAME_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
 | Renderer↔network header value bytes (`IpcResourceFetcher`) | 16 KiB | `IPC_MAX_HEADER_VALUE_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
 | Renderer↔network auth token bytes (`IpcResourceFetcher`) | 1024 bytes | `IPC_MAX_AUTH_TOKEN_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
-| Browser↔network URL string max | 1 MiB | `MAX_URL_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
-| Browser↔network cookie string max | 4 KiB | `MAX_COOKIE_STRING_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
+| Browser↔network URL string max (network subprocess prototype) | 1 MiB | `MAX_URL_BYTES` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) |
+| Browser↔network auth token bytes (network subprocess prototype) | 1024 bytes | `MAX_AUTH_TOKEN_BYTES` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) |
+| Browser↔network URL string max (in-tree protocol schema) | 1 MiB | `MAX_URL_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
+| Browser↔network cookie string max (in-tree protocol schema) | 4 KiB | `MAX_COOKIE_STRING_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
 | Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
 | Default max un-acked frames in flight (renderer-side flow control) | 2 | `DEFAULT_MAX_FRAMES_IN_FLIGHT` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | WebSocket URL bytes (renderer→network) | 8 KiB | `MAX_WEBSOCKET_URL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
