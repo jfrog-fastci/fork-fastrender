@@ -196,6 +196,10 @@ include = [
   "staging/sm/Function/15.3.4.3-01.js",
   "built-ins/RegExp/prototype/flags/**/*.js",
 
+  # --- RegExp UnicodeMode (`/u`) disallow-extended-pattern restrictions (Annex B disabled) ---
+  "built-ins/RegExp/unicode_restricted_*.js",
+  "staging/sm/RegExp/unicode-disallow-extended.js",
+
   # Promise.* (targeted iterator-close / [[Done]] semantics)
   #
   # These cover spec-sensitive iterator consumption behaviors that test262 checks heavily:
