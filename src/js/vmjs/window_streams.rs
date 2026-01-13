@@ -2873,7 +2873,17 @@ fn readable_stream_tee_native(
     if stream_state.locked {
       return Err(VmError::TypeError("ReadableStream is locked"));
     }
-    if stream_state.kind != StreamKind::Bytes {
+    // `ReadableStream.prototype.tee` in this implementation only supports byte streams. However, we
+    // allow teeing streams that haven't yet observed their first `enqueue` (kind is
+    // `Uninitialized`). This is important for pipelines like:
+    //
+    //   new ReadableStream({ start(c) { c.enqueue("hi"); c.close(); } })
+    //     .pipeThrough(new TextEncoderStream())
+    //     .tee()
+    //
+    // where the resulting TransformStream readable is byte-oriented, but may not have enqueued its
+    // first chunk yet when `.tee()` is called.
+    if !matches!(stream_state.kind, StreamKind::Bytes | StreamKind::Uninitialized) {
       return Err(VmError::TypeError(
         "ReadableStream.tee only supports byte streams",
       ));
