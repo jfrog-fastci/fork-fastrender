@@ -4635,7 +4635,7 @@ fn is_labelable(node: &DomNode) -> bool {
 // This is intentionally best-effort:
 // - If an attribute is missing/invalid, the corresponding AccessKit property is left unset.
 #[cfg(feature = "browser_ui")]
-pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
+pub fn build_accesskit_tree_update(root: &StyledNode) -> ::accesskit::TreeUpdate {
   use std::num::NonZeroU128;
 
   /// Index enabling efficient ancestor traversal by `node_id`.
@@ -4682,11 +4682,11 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
     }
   }
 
-  fn accesskit_node_id(node_id: usize) -> accesskit::NodeId {
+  fn accesskit_node_id(node_id: usize) -> ::accesskit::NodeId {
     // Best-effort: `node_id` is 1-based in normal operation. If it is ever 0, fall back to 1.
     let raw = if node_id == 0 { 1 } else { node_id as u128 };
     let raw = NonZeroU128::new(raw).unwrap_or_else(|| NonZeroU128::new(1).unwrap()); // fastrender-allow-unwrap
-    accesskit::NodeId(raw)
+    ::accesskit::NodeId(raw)
   }
 
   fn resolve_effective_lang(node_id: usize, index: &DomIndex<'_>) -> Option<String> {
@@ -4736,10 +4736,10 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
     )
   }
 
-  fn role_for_node(node: &StyledNode) -> accesskit::Role {
+  fn role_for_node(node: &StyledNode) -> ::accesskit::Role {
     match node.node.node_type {
-      DomNodeType::Document { .. } => accesskit::Role::Document,
-      _ => accesskit::Role::GenericContainer,
+      DomNodeType::Document { .. } => ::accesskit::Role::Document,
+      _ => ::accesskit::Role::GenericContainer,
     }
   }
 
@@ -4749,11 +4749,11 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
   struct Frame<'a> {
     node: &'a StyledNode,
     next_child: usize,
-    child_ids: Vec<accesskit::NodeId>,
+    child_ids: Vec<::accesskit::NodeId>,
   }
 
-  let mut classes = accesskit::NodeClassSet::new();
-  let mut nodes: Vec<(accesskit::NodeId, accesskit::Node)> = Vec::new();
+  let mut classes = ::accesskit::NodeClassSet::new();
+  let mut nodes: Vec<(::accesskit::NodeId, ::accesskit::Node)> = Vec::new();
   let mut stack: Vec<Frame<'_>> = Vec::new();
 
   if should_include(root) {
@@ -4783,7 +4783,7 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
     let node = finished.node;
     let id = accesskit_node_id(node.node_id);
 
-    let mut builder = accesskit::NodeBuilder::new(role_for_node(node));
+    let mut builder = ::accesskit::NodeBuilder::new(role_for_node(node));
     if let Some(name) = direct_text_name(node) {
       builder.set_name(name);
     }
@@ -4804,9 +4804,9 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
   }
 
   let root_id = accesskit_node_id(root.node_id);
-  accesskit::TreeUpdate {
+  ::accesskit::TreeUpdate {
     nodes,
-    tree: Some(accesskit::Tree::new(root_id)),
+    tree: Some(::accesskit::Tree::new(root_id)),
     focus: None,
   }
 }
@@ -4816,9 +4816,9 @@ mod accesskit_lang_dir_tests {
   use super::*;
 
   fn find_node_by_name<'a>(
-    update: &'a accesskit::TreeUpdate,
+    update: &'a ::accesskit::TreeUpdate,
     name: &str,
-  ) -> Option<&'a accesskit::Node> {
+  ) -> Option<&'a ::accesskit::Node> {
     update
       .nodes
       .iter()

@@ -3142,139 +3142,162 @@ pub fn chrome_ui_with_bookmarks(
           const MAX_VISIBLE_ROWS: usize = 8;
           let row_height = ui.spacing().interact_size.y.max(24.0);
           let max_height = row_height * (MAX_VISIBLE_ROWS as f32);
-
-          let suggestions_list =
-            egui::ScrollArea::vertical()
-              .max_height(max_height)
-              .show(ui, |ui| {
-                let scroll_selected_id = omnibox_dropdown_id.with("scroll_selected");
-                let mut scrolled_to_selected = ctx
-                  .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
-                  .unwrap_or(None);
-                if app.chrome.omnibox.selected.is_none() {
-                  scrolled_to_selected = None;
+ 
+          let suggestions_list = egui::ScrollArea::vertical()
+            .max_height(max_height)
+            .show(ui, |ui| {
+              let scroll_selected_id = omnibox_dropdown_id.with("scroll_selected");
+              let mut scrolled_to_selected = ctx
+                .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
+                .unwrap_or(None);
+              if app.chrome.omnibox.selected.is_none() {
+                scrolled_to_selected = None;
+              }
+              for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
+                let is_selected = app.chrome.omnibox.selected == Some(idx);
+                // Use a deterministic row id so egui/AccessKit node ids stay stable across frames,
+                // even when the suggestion list is rebuilt (insert/remove/reorder).
+                let row_id = match &suggestion.action {
+                  OmniboxAction::NavigateToUrl => omnibox_dropdown_id.with((
+                    "row",
+                    "navigate",
+                    suggestion.url.as_deref(),
+                    suggestion.source,
+                    suggestion.title.as_deref(),
+                  )),
+                  OmniboxAction::Search(query) => {
+                    omnibox_dropdown_id.with(("row", "search", query, suggestion.source))
+                  }
+                  OmniboxAction::ActivateTab(tab_id) => {
+                    omnibox_dropdown_id.with(("row", "tab", tab_id))
+                  }
+                };
+ 
+                let (_auto_id, rect) =
+                  ui.allocate_space(egui::vec2(ui.available_width(), row_height));
+                let response = ui.interact(rect, row_id, egui::Sense::click());
+                response.widget_info({
+                  let label = omnibox_suggestion_a11y_label(suggestion);
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                });
+                let _ = ctx.accesskit_node_builder(row_id, |builder| {
+                  builder.set_role(accesskit::Role::ListBoxOption);
+                  builder.set_selected(is_selected);
+                });
+ 
+                let hover_t = motion.animate_bool(
+                  ctx,
+                  row_id.with("hover"),
+                  response.hovered(),
+                  motion.durations.hover_fade,
+                );
+                let selected_t = motion.animate_bool(
+                  ctx,
+                  row_id.with("selected"),
+                  is_selected,
+                  motion.durations.hover_fade,
+                );
+                if hover_t > 0.0 {
+                  ui.painter().rect_filled(
+                    rect,
+                    0.0,
+                    with_alpha(
+                      ui.visuals().widgets.hovered.bg_fill,
+                      hover_t * omnibox_open_opacity,
+                    ),
+                  );
                 }
-                for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
-                  let is_selected = app.chrome.omnibox.selected == Some(idx);
-                  let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), row_height),
-                    egui::Sense::click(),
+                if selected_t > 0.0 {
+                  ui.painter().rect_filled(
+                    rect,
+                    0.0,
+                    with_alpha(
+                      ui.visuals().selection.bg_fill,
+                      selected_t * omnibox_open_opacity,
+                    ),
                   );
-                  response.widget_info({
-                    let label = omnibox_suggestion_a11y_label(suggestion);
-                    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                  });
-                  let _ = ctx.accesskit_node_builder(response.id, |builder| {
-                    builder.set_role(accesskit::Role::ListBoxOption);
-                    builder.set_selected(is_selected);
-                  });
-
-                  let row_id = omnibox_dropdown_id.with(("row", idx));
-                  let hover_t = motion.animate_bool(
-                    ctx,
-                    row_id.with("hover"),
-                    response.hovered(),
-                    motion.durations.hover_fade,
-                  );
-                  let selected_t = motion.animate_bool(
-                    ctx,
-                    row_id.with("selected"),
-                    is_selected,
-                    motion.durations.hover_fade,
-                  );
-                  if hover_t > 0.0 {
-                    ui.painter().rect_filled(
-                      rect,
-                      0.0,
-                      with_alpha(
-                        ui.visuals().widgets.hovered.bg_fill,
-                        hover_t * omnibox_open_opacity,
-                      ),
-                    );
-                  }
-                  if selected_t > 0.0 {
-                    ui.painter().rect_filled(
-                      rect,
-                      0.0,
-                      with_alpha(
-                        ui.visuals().selection.bg_fill,
-                        selected_t * omnibox_open_opacity,
-                      ),
-                    );
-                  }
-                  if is_selected && scrolled_to_selected != Some(idx) {
-                    response.scroll_to_me(Some(egui::Align::Center));
-                    scrolled_to_selected = Some(idx);
-                  }
-
-                  ui.allocate_ui_at_rect(rect, |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.horizontal(|ui| {
-                      ui.add_space(6.0);
-                      match omnibox_suggestion_icon(suggestion) {
-                        OmniboxSuggestionIcon::Icon(icon) => {
-                          // Render decorative row icons without allocating an egui widget so we don't
-                          // add noise to the accessibility tree (the row itself has a semantic label).
-                          let icon_side = ui.spacing().icon_width;
-                          let (_id, icon_rect) =
-                            ui.allocate_space(egui::vec2(icon_side, row_height));
-                          paint_icon_in_rect(
-                            ui,
-                            icon_rect,
-                            icon,
-                            icon_side,
-                            with_alpha(ui.visuals().text_color(), omnibox_open_opacity),
-                          );
-                        }
-                        OmniboxSuggestionIcon::Text(text) => {
-                          ui.label(egui::RichText::new(text).strong());
-                        }
+                }
+                if is_selected && scrolled_to_selected != Some(idx) {
+                  response.scroll_to_me(Some(egui::Align::Center));
+                  scrolled_to_selected = Some(idx);
+                }
+ 
+                ui.allocate_ui_at_rect(rect, |ui| {
+                  ui.spacing_mut().item_spacing.x = 8.0;
+                  ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    match omnibox_suggestion_icon(suggestion) {
+                      OmniboxSuggestionIcon::Icon(icon) => {
+                        // Render decorative row icons without allocating an egui widget so we don't
+                        // add noise to the accessibility tree (the row itself has a semantic label).
+                        let icon_side = ui.spacing().icon_width;
+                        let (_id, icon_rect) =
+                          ui.allocate_space(egui::vec2(icon_side, row_height));
+                        paint_icon_in_rect(
+                          ui,
+                          icon_rect,
+                          icon,
+                          icon_side,
+                          with_alpha(ui.visuals().text_color(), omnibox_open_opacity),
+                        );
                       }
-
-                      let title = suggestion
-                        .title
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty());
-                      let url = suggestion
-                        .url
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty());
-
-                      let (primary, secondary) = if let Some(title) = title {
-                        (title, url)
-                      } else if let Some(url) = url {
-                        (url, None)
-                      } else if let OmniboxAction::Search(query) = &suggestion.action {
-                        (query.as_str(), None)
-                      } else {
-                        ("", None)
-                      };
-
-                      ui.vertical(|ui| {
-                        ui.add(egui::Label::new(primary).wrap(false).truncate(true));
-                        if let Some(secondary) = secondary {
-                          ui.add(
+                      OmniboxSuggestionIcon::Text(text) => {
+                        ui
+                          .label(egui::RichText::new(text).strong())
+                          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ""));
+                      }
+                    }
+ 
+                    let title = suggestion
+                      .title
+                      .as_deref()
+                      .map(str::trim)
+                      .filter(|s| !s.is_empty());
+                    let url = suggestion
+                      .url
+                      .as_deref()
+                      .map(str::trim)
+                      .filter(|s| !s.is_empty());
+ 
+                    let (primary, secondary) = if let Some(title) = title {
+                      (title, url)
+                    } else if let Some(url) = url {
+                      (url, None)
+                    } else if let OmniboxAction::Search(query) = &suggestion.action {
+                      (query.as_str(), None)
+                    } else {
+                      ("", None)
+                    };
+ 
+                    ui.vertical(|ui| {
+                      // The row has a semantic AccessKit label; avoid duplicating text nodes in the
+                      // accessibility tree for its visual contents.
+                      ui
+                        .add(egui::Label::new(primary).wrap(false).truncate(true))
+                        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ""));
+                      if let Some(secondary) = secondary {
+                        ui
+                          .add(
                             egui::Label::new(egui::RichText::new(secondary).small().color(
                               with_alpha(ui.visuals().weak_text_color(), omnibox_open_opacity),
                             ))
                             .wrap(false)
                             .truncate(true),
-                          );
-                        }
-                      });
+                          )
+                          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ""));
+                      }
                     });
                   });
-
-                  if response.clicked() {
-                    clicked_suggestion = Some(idx);
-                  }
-                }
-                ctx.data_mut(|d| {
-                  d.insert_temp(scroll_selected_id, scrolled_to_selected);
                 });
+ 
+                if response.clicked() {
+                  clicked_suggestion = Some(idx);
+                }
+              }
+              ctx.data_mut(|d| {
+                d.insert_temp(scroll_selected_id, scrolled_to_selected);
               });
+            });
           let _ = ctx.accesskit_node_builder(suggestions_list.response.id, |builder| {
             builder.set_role(accesskit::Role::ListBox);
             builder.set_name("Omnibox suggestions".to_string());
@@ -4146,14 +4169,17 @@ fn store_test_id(ctx: &egui::Context, key: &'static str, id: egui::Id) {
 #[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use super::{
-    chrome_focus_ring_style, chrome_ui, chrome_ui_with_bookmarks, tab_search_ranked_matches,
-    ChromeAction,
+    chrome_focus_ring_style, chrome_ui, chrome_ui_with_bookmarks, omnibox_suggestion_a11y_label,
+    tab_search_ranked_matches, ChromeAction,
   };
   use crate::ui::a11y_test_util;
   use crate::ui::browser_app::{
     BrowserAppState, BrowserTabState, OpenTabContextMenuState, UiFocusToken,
   };
-  use crate::ui::{BookmarkStore, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
+  use crate::ui::{
+    BookmarkStore, OmniboxAction, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource,
+    TabId,
+  };
 
   fn new_context() -> egui::Context {
     let ctx = egui::Context::default();
@@ -5259,6 +5285,121 @@ mod tests {
         "expected tab search option {name:?} selected={should_be_selected}, got {selected}.\n\noptions: {options:#?}\n\nsnapshot:\n{snapshot}"
       );
     }
+  }
+
+  #[test]
+  fn omnibox_dropdown_accesskit_node_ids_are_stable_for_existing_suggestions() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
+
+    app.chrome.request_focus_address_bar = true;
+    app.chrome.omnibox.open = true;
+
+    let target = OmniboxSuggestion {
+      action: OmniboxAction::NavigateToUrl,
+      title: Some("Example".to_string()),
+      url: Some("https://example.com/".to_string()),
+      source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+    };
+    let target_label = omnibox_suggestion_a11y_label(&target);
+
+    app.chrome.omnibox.suggestions = vec![
+      target.clone(),
+      OmniboxSuggestion {
+        action: OmniboxAction::Search("rust".to_string()),
+        title: None,
+        url: None,
+        source: OmniboxSuggestionSource::Primary,
+      },
+    ];
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // Frame 0: capture the AccessKit node id for the target suggestion.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output0 = ctx.end_frame();
+    let update0 = accesskit_update(&output0);
+    let (id0, _node0) = accesskit_node_by_name(update0, &target_label);
+
+    // Frame 1: mutate the suggestion list ordering (new suggestion inserted) but keep the target
+    // suggestion text identical. The AccessKit node id should remain stable.
+    app.chrome.omnibox.suggestions.insert(
+      0,
+      OmniboxSuggestion {
+        action: OmniboxAction::Search("inserted".to_string()),
+        title: None,
+        url: None,
+        source: OmniboxSuggestionSource::Primary,
+      },
+    );
+
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output1 = ctx.end_frame();
+    let update1 = accesskit_update(&output1);
+    let (id1, _node1) = accesskit_node_by_name(update1, &target_label);
+
+    assert_eq!(
+      id0, id1,
+      "expected stable AccessKit node id for omnibox suggestion label {target_label:?} across frames.\n\nframe0:\n{}\n\nframe1:\n{}",
+      a11y_test_util::accesskit_pretty_json_from_full_output(&output0),
+      a11y_test_util::accesskit_pretty_json_from_full_output(&output1),
+    );
+  }
+
+  #[test]
+  fn omnibox_dropdown_accesskit_selected_state_tracks_selected_index() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
+
+    app.chrome.request_focus_address_bar = true;
+    app.chrome.omnibox.open = true;
+
+    let a = OmniboxSuggestion {
+      action: OmniboxAction::NavigateToUrl,
+      title: Some("A".to_string()),
+      url: Some("https://a.example/".to_string()),
+      source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+    };
+    let b = OmniboxSuggestion {
+      action: OmniboxAction::NavigateToUrl,
+      title: Some("B".to_string()),
+      url: Some("https://b.example/".to_string()),
+      source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+    };
+    let label_a = omnibox_suggestion_a11y_label(&a);
+    let label_b = omnibox_suggestion_a11y_label(&b);
+
+    app.chrome.omnibox.suggestions = vec![a, b];
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // Frame 0: select index 0.
+    app.chrome.omnibox.selected = Some(0);
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output0 = ctx.end_frame();
+    let update0 = accesskit_update(&output0);
+    assert!(accesskit_node_selected(accesskit_node_by_name(update0, &label_a).1));
+    assert!(!accesskit_node_selected(accesskit_node_by_name(update0, &label_b).1));
+
+    // Frame 1: move selection to index 1.
+    app.chrome.omnibox.selected = Some(1);
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output1 = ctx.end_frame();
+    let update1 = accesskit_update(&output1);
+    assert!(!accesskit_node_selected(accesskit_node_by_name(update1, &label_a).1));
+    assert!(accesskit_node_selected(accesskit_node_by_name(update1, &label_b).1));
   }
 
   #[test]

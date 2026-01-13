@@ -3847,6 +3847,8 @@ impl BrowserRuntime {
 
   #[cfg(feature = "browser_ui")]
   fn handle_accesskit_action_request(&mut self, tab_id: TabId, request: accesskit::ActionRequest) {
+    // Currently we only support scroll-related accessibility actions. The goal is to let assistive
+    // technologies request that a node becomes visible without having to focus it.
     match request.action {
       accesskit::Action::ScrollIntoView | accesskit::Action::ScrollToPoint => {
         // Let assistive technologies request that a node becomes visible without having to focus it.
