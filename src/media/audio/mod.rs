@@ -725,6 +725,16 @@ impl dyn AudioBackend {
 
     Box::new(NullAudioBackend::new_with_config_and_trace(cfg, _trace))
   }
+
+  /// Returns a shared monotonic clock suitable for driving media time when audio is present.
+  ///
+  /// The returned clock is derived from the backend's timebase (often output-frame counts) and does
+  /// **not** apply output latency compensation. Callers that need an estimate of "time heard"
+  /// should subtract [`AudioOutputInfo::estimated_output_latency`].
+  #[must_use]
+  pub fn device_clock(&self) -> Arc<super::AudioDeviceClock> {
+    Arc::new(self.clock())
+  }
 }
 impl PcmF32QueueProducer {
   /// Push decoder-provided PCM samples in a variety of common formats/layouts.
