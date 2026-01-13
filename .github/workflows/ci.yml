@@ -554,6 +554,20 @@ jobs:
       - name: Init ecma-rs (vendored) checkout
         run: bash scripts/ci_init_ecma_rs_submodule.sh
 
+      - name: Assert browser_ui does not depend on GTK (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          # `rfd` can use a GTK backend on Linux depending on feature selection, which would require
+          # GTK system development packages on CI/minimal hosts. `browser_ui` intentionally uses the
+          # xdg-portal backend instead; assert we do not pull in `gtk-sys` to prevent regressions.
+          tree="$(cargo tree --locked -p fastrender --features browser_ui)"
+          if echo "${tree}" | grep -q "gtk-sys"; then
+            echo "error: browser_ui depends on gtk-sys on Linux; ensure rfd uses the xdg-portal backend (no GTK build deps)" >&2
+            echo "${tree}" | grep -n "gtk-sys" || true
+            exit 1
+          fi
+
       - name: Build browser binary (browser_ui feature)
         run: |
           set -euo pipefail
