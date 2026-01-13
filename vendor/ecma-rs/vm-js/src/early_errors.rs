@@ -10,6 +10,7 @@ use parse_js::ast::expr::{
   ArrowFuncExpr, BinaryExpr, CallArg, CallExpr, ClassExpr, ComputedMemberExpr, CondExpr, Expr,
   FuncExpr, ImportExpr, MemberExpr, TaggedTemplateExpr, UnaryExpr, UnaryPostfixExpr,
 };
+use parse_js::ast::import_export::ImportNames;
 use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, ParamDecl, PatDecl, VarDecl, VarDeclMode};
@@ -956,6 +957,31 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         Ok(())
       }
       Stmt::Import(import) => {
+        // Import declarations require local binding identifiers, not binding patterns.
+        if let Some(default) = &import.stx.default {
+          self.step()?;
+          if !matches!(&*default.stx.pat.stx, Pat::Id(_)) {
+            self.push_error(default.loc, "invalid import binding")?;
+          }
+        }
+        if let Some(names) = import.stx.names.as_ref() {
+          match names {
+            ImportNames::All(pat_decl) => {
+              self.step()?;
+              if !matches!(&*pat_decl.stx.pat.stx, Pat::Id(_)) {
+                self.push_error(pat_decl.loc, "invalid import binding")?;
+              }
+            }
+            ImportNames::Specific(list) => {
+              for name in list {
+                self.step()?;
+                if !matches!(&*name.stx.alias.stx.pat.stx, Pat::Id(_)) {
+                  self.push_error(name.stx.alias.loc, "invalid import binding")?;
+                }
+              }
+            }
+          }
+        }
         if let Some(attrs) = &import.stx.attributes {
           self.visit_expr(ctx, attrs)?;
         }

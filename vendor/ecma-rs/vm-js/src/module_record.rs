@@ -866,7 +866,7 @@ fn module_record_from_top_level(
             if let Some(default) = &import_stmt.stx.default {
               ctx.budget_tick()?;
               let Pat::Id(id) = &*default.stx.pat.stx else {
-                return Err(VmError::Unimplemented("default import pattern"));
+                return Err(syntax_error(default.loc, "invalid import binding"));
               };
               record.import_entries.push(ImportEntry {
                 module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
@@ -880,7 +880,7 @@ fn module_record_from_top_level(
               ImportNames::All(pat_decl) => {
                 ctx.budget_tick()?;
                 let Pat::Id(id) = &*pat_decl.stx.pat.stx else {
-                  return Err(VmError::Unimplemented("namespace import pattern"));
+                  return Err(syntax_error(pat_decl.loc, "invalid import binding"));
                 };
                 record.import_entries.push(ImportEntry {
                   module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
@@ -895,7 +895,7 @@ fn module_record_from_top_level(
                     continue;
                   }
                   let Pat::Id(id) = &*name.stx.alias.stx.pat.stx else {
-                    return Err(VmError::Unimplemented("import binding pattern"));
+                    return Err(syntax_error(name.stx.alias.loc, "invalid import binding"));
                   };
                   record.import_entries.push(ImportEntry {
                     module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
