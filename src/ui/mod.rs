@@ -5,6 +5,7 @@ pub mod appearance;
 pub mod renderer_media_prefs;
 pub mod chrome_assets;
 pub mod bookmarks;
+pub mod chrome_frame;
 pub mod browser_app;
 pub mod browser_limits;
 pub mod renderer_ipc;
