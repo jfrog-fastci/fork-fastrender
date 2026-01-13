@@ -1247,19 +1247,14 @@ status = "xfail"
 reason = "vm-js: RegExp Unicode property escapes (\\p{...}) are not fully implemented."
 
 [[expectations]]
-glob = "built-ins/RegExp/lookBehind/**"
-status = "xfail"
-reason = "lookbehind not implemented yet"
-
-[[expectations]]
 id = "built-ins/RegExp/named-groups/lookbehind.js"
 status = "xfail"
-reason = "lookbehind not implemented yet"
+reason = "vm-js: RegExp lookbehind assertions are not implemented."
 
 [[expectations]]
 id = "annexB/built-ins/RegExp/named-groups/non-unicode-malformed-lookbehind.js"
 status = "xfail"
-reason = "lookbehind not implemented yet"
+reason = "vm-js: RegExp lookbehind assertions are not implemented."
 
 # TODO: Flip the above lookbehind expectations to `pass` once regexp lookbehind lands in vm-js.
 [[expectations]]
