@@ -287,6 +287,128 @@ fn object_literal_sets_function_home_object_and_inherits_into_arrows() -> Result
 }
 
 #[test]
+fn object_literal_methods_set_function_home_object_async_ast() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // Exercise the async evaluator (`async_eval_*`) by running the object literal creation inside an
+  // `async` function body. This avoids relying on top-level await parsing in scripts.
+  rt.exec_script(
+    r#"
+      (async function () {
+        var o = {
+          m() { return 1; },
+          mArrow() { return () => 2; },
+          get x() { return 3; },
+          set x(v) { this._x = v; },
+        };
+
+        // Publish these values on the global object so the host test can inspect them.
+        globalThis.o = o;
+        globalThis.method = o.m;
+        globalThis.arrow = o.mArrow();
+        var desc = Object.getOwnPropertyDescriptor(o, "x");
+        globalThis.getter = desc.get;
+        globalThis.setter = desc.set;
+      })();
+    "#,
+  )?;
+
+  let Value::Object(o) = rt.exec_script("o")? else {
+    panic!("expected o to be object");
+  };
+
+  let method = assert_is_function(rt.exec_script("method")?);
+  let arrow = assert_is_function(rt.exec_script("arrow")?);
+  let getter = assert_is_function(rt.exec_script("getter")?);
+  let setter = assert_is_function(rt.exec_script("setter")?);
+
+  assert_eq!(rt.heap().get_function_home_object(method)?, Some(o));
+  assert_eq!(rt.heap().get_function_home_object(getter)?, Some(o));
+  assert_eq!(rt.heap().get_function_home_object(setter)?, Some(o));
+  assert_eq!(rt.heap().get_function_home_object(arrow)?, Some(o));
+
+  Ok(())
+}
+
+#[test]
+fn class_static_initialization_sets_home_object_ast() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  rt.exec_script(
+    r#"
+      var A = class {
+        static {
+          // Arrow functions created inside static blocks inherit `[[HomeObject]]` from the static
+          // block execution context (the class constructor object).
+          this.f = () => 1;
+        }
+
+        static #x = () => 2;
+        static getX() { return this.#x; }
+      };
+
+      var staticBlockArrow = A.f;
+      var staticPrivateFieldArrow = A.getX();
+    "#,
+  )?;
+
+  let ctor = assert_is_function(rt.exec_script("A")?);
+  let static_block_arrow = assert_is_function(rt.exec_script("staticBlockArrow")?);
+  let static_private_field_arrow = assert_is_function(rt.exec_script("staticPrivateFieldArrow")?);
+
+  assert_eq!(
+    rt.heap().get_function_home_object(static_block_arrow)?,
+    Some(ctor)
+  );
+  assert_eq!(
+    rt.heap().get_function_home_object(static_private_field_arrow)?,
+    Some(ctor)
+  );
+
+  Ok(())
+}
+
+#[test]
+fn async_class_static_block_restores_home_object() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // The `await` in the static block forces a suspension. After resumption, any subsequently-created
+  // arrow functions must see the *restored* outer `[[HomeObject]]` (which is `None` at top level),
+  // not the class constructor used during the static block.
+  rt.exec_script(
+    r#"
+      var before = () => 1;
+
+      class A {
+        static {
+          this.inner = () => 2;
+          await 0;
+        }
+      }
+
+      var inner = A.inner;
+      var after = () => 3;
+    "#,
+  )?;
+
+  // Before resuming, only the prefix statements have executed.
+  let before = assert_is_function(rt.exec_script("before")?);
+  assert_eq!(rt.heap().get_function_home_object(before)?, None);
+
+  // Drain the microtask queue to resume and complete the suspended static block.
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let ctor = assert_is_function(rt.exec_script("A")?);
+  let inner = assert_is_function(rt.exec_script("inner")?);
+  let after = assert_is_function(rt.exec_script("after")?);
+
+  assert_eq!(rt.heap().get_function_home_object(inner)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(after)?, None);
+
+  Ok(())
+}
+
+#[test]
 fn function_home_object_is_traced_by_gc() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 

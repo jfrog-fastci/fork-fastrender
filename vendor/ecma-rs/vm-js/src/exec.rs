@@ -11431,6 +11431,11 @@ impl<'a> Evaluator<'a> {
                   .heap_mut()
                   .set_function_script_or_module_token(func_obj, Some(token))?;
               }
+              // Object literal methods/getters/setters use the object itself as `[[HomeObject]]`
+              // (needed for `super.prop` and for arrow functions created inside the method body).
+              member_scope
+                .heap_mut()
+                .set_function_home_object(func_obj, Some(obj))?;
               if func_node.stx.generator {
                 if is_async_generator {
                   crate::function_properties::make_async_generator_function_instance_prototype(
@@ -11544,6 +11549,9 @@ impl<'a> Evaluator<'a> {
                   .heap_mut()
                   .set_function_script_or_module_token(func_obj, Some(token))?;
               }
+              member_scope
+                .heap_mut()
+                .set_function_home_object(func_obj, Some(obj))?;
               if func_node.stx.arrow {
                 member_scope
                   .heap_mut()
@@ -11650,6 +11658,9 @@ impl<'a> Evaluator<'a> {
                   .heap_mut()
                   .set_function_script_or_module_token(func_obj, Some(token))?;
               }
+              member_scope
+                .heap_mut()
+                .set_function_home_object(func_obj, Some(obj))?;
               if func_node.stx.arrow {
                 member_scope
                   .heap_mut()
@@ -23121,6 +23132,11 @@ fn async_eval_lit_obj_apply_valued_member(
           .heap_mut()
           .set_function_script_or_module_token(func_obj, Some(token))?;
       }
+      // Object literal methods/getters/setters use the object itself as `[[HomeObject]]` (needed
+      // for `super.prop` and for arrow functions created inside the method body).
+      member_scope
+        .heap_mut()
+        .set_function_home_object(func_obj, Some(obj))?;
       if func_node.stx.arrow {
         member_scope
           .heap_mut()
@@ -23221,6 +23237,9 @@ fn async_eval_lit_obj_apply_valued_member(
           .heap_mut()
           .set_function_script_or_module_token(func_obj, Some(token))?;
       }
+      member_scope
+        .heap_mut()
+        .set_function_home_object(func_obj, Some(obj))?;
       if func_node.stx.arrow {
         member_scope
           .heap_mut()
@@ -23333,6 +23352,9 @@ fn async_eval_lit_obj_apply_valued_member(
           .heap_mut()
           .set_function_script_or_module_token(func_obj, Some(token))?;
       }
+      member_scope
+        .heap_mut()
+        .set_function_home_object(func_obj, Some(obj))?;
       if func_node.stx.arrow {
         member_scope
           .heap_mut()
@@ -27557,18 +27579,16 @@ fn async_resume_from_frames(
               .ok_or(VmError::InvariantViolation(
                 "missing class static block saved new.target root",
               ))?;
-          let saved_home_object_value =
-            scope
-              .heap()
-              .get_root(saved_home_object_root)
-              .ok_or(VmError::InvariantViolation(
-                "missing class static block saved home object root",
-              ))?;
-
+          let saved_home_object_value = scope
+            .heap()
+            .get_root(saved_home_object_root)
+            .ok_or(VmError::InvariantViolation(
+              "missing class static block saved home object root",
+            ))?;
           // Root the restored values for the duration of this resumption segment. The async
-          // continuation's `this_root` / `new_target_root` will be updated only after
-          // `async_resume_from_frames` returns, so ensure GC cannot collect these values while class
-          // evaluation continues.
+          // continuation's `this_root` / `new_target_root` / `home_object_root` will be updated only
+          // after `async_resume_from_frames` returns, so ensure GC cannot collect these values while
+          // class evaluation continues.
           if let Err(err) = scope.push_roots(&[saved_this, saved_new_target, saved_home_object_value])
           {
             // Best-effort cleanup: this frame owns persistent roots that won't be torn down by the
