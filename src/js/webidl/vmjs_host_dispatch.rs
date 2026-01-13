@@ -4008,15 +4008,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         // crash, and brand it enough to support `DOMTokenList.prototype.supports` dispatch.
         let key = key_from_str(scope, ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT)?;
         let supports_key = key_from_str(scope, "supports")?;
-        let mut ensure_supports =
-          |scope: &mut Scope<'_>, token_list: GcObject| -> Result<(), VmError> {
-          if scope
-            .heap()
-            .object_get_own_property(token_list, &supports_key)?
-            .is_some()
-          {
-            return Ok(());
-          }
+        let ensure_supports =
+          |vm: &mut Vm, scope: &mut Scope<'_>, token_list: GcObject| -> Result<(), VmError> {
+            if scope
+              .heap()
+              .object_get_own_property(token_list, &supports_key)?
+              .is_some()
+            {
+              return Ok(());
+            }
 
             let global = self.global.or_else(|| {
               vm.user_data_mut::<WindowRealmUserData>()
@@ -4048,13 +4048,13 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             };
             scope.push_root(Value::Object(func_obj))?;
 
-          scope.define_property(
-            token_list,
-            supports_key.clone(),
-            data_property(Value::Object(func_obj), true, false, true),
-          )?;
-          Ok(())
-        };
+            scope.define_property(
+              token_list,
+              supports_key.clone(),
+              data_property(Value::Object(func_obj), true, false, true),
+            )?;
+            Ok(())
+          };
 
         if let Some(Value::Object(existing)) =
           scope.heap().object_get_own_data_property_value(obj, &key)?
@@ -4067,7 +4067,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               b: DOM_TOKEN_LIST_HOST_TAG,
             },
           )?;
-          ensure_supports(scope, existing)?;
+          ensure_supports(vm, scope, existing)?;
           return Ok(Value::Object(existing));
         }
 
@@ -4075,12 +4075,12 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::Object(class_list))?;
         scope.heap_mut().object_set_host_slots(
           class_list,
-            HostSlots {
-              a: element_id.index() as u64,
-              b: DOM_TOKEN_LIST_HOST_TAG,
-            },
-          )?;
-        ensure_supports(scope, class_list)?;
+          HostSlots {
+            a: element_id.index() as u64,
+            b: DOM_TOKEN_LIST_HOST_TAG,
+          },
+        )?;
+        ensure_supports(vm, scope, class_list)?;
         scope.define_property(
           obj,
           key,
