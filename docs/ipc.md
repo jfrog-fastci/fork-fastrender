@@ -178,6 +178,7 @@ Additional (important) size limits that sit *on top* of framing:
 | Renderer IPC URL string max | 8 KiB | `MAX_URL_BYTES` / `UrlString` (`BoundedString`) in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
 | WebSocket message payload (renderer→network) | 4 MiB | `MAX_WEBSOCKET_MESSAGE_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
+| WebSocket concurrent connections (per renderer, network-process side) | 256 | `NetworkWebSocketManagerLimits::max_active_per_renderer` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) |
 
 Network IPC (renderer↔network process) also enforces per-field caps via
 `NetworkMessageLimits` in [`src/net/transport.rs`](../src/net/transport.rs) (defaults today):
