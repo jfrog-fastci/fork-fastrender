@@ -3454,6 +3454,93 @@ fn profile_shortcut_action(
   None
 }
 
+#[cfg(feature = "browser_ui")]
+fn map_page_key_action(
+  key: winit::event::VirtualKeyCode,
+  modifiers: winit::event::ModifiersState,
+) -> Option<fastrender::interaction::KeyAction> {
+  use fastrender::interaction::KeyAction;
+  use winit::event::VirtualKeyCode;
+
+  // macOS native text-editing parity: Cmd+Left/Right (and shift variants) should behave like
+  // Home/End (line start/end). This is important because mac keyboards often don't expose dedicated
+  // Home/End keys.
+  //
+  // Avoid treating Ctrl as a Command equivalent here to preserve Emacs-style Ctrl bindings.
+  if cfg!(target_os = "macos") && modifiers.logo() && !modifiers.alt() {
+    match key {
+      VirtualKeyCode::Left => {
+        return Some(if modifiers.shift() {
+          KeyAction::ShiftHome
+        } else {
+          KeyAction::Home
+        });
+      }
+      VirtualKeyCode::Right => {
+        return Some(if modifiers.shift() {
+          KeyAction::ShiftEnd
+        } else {
+          KeyAction::End
+        });
+      }
+      _ => {}
+    }
+  }
+
+  Some(match key {
+    VirtualKeyCode::Back => KeyAction::Backspace,
+    VirtualKeyCode::Delete => KeyAction::Delete,
+    VirtualKeyCode::Return | VirtualKeyCode::NumpadEnter => KeyAction::Enter,
+    VirtualKeyCode::Space => {
+      if modifiers.shift() {
+        KeyAction::ShiftSpace
+      } else {
+        KeyAction::Space
+      }
+    }
+    VirtualKeyCode::Tab => {
+      if modifiers.shift() {
+        KeyAction::ShiftTab
+      } else {
+        KeyAction::Tab
+      }
+    }
+    VirtualKeyCode::Left => {
+      if modifiers.shift() {
+        KeyAction::ShiftArrowLeft
+      } else {
+        KeyAction::ArrowLeft
+      }
+    }
+    VirtualKeyCode::Right => {
+      if modifiers.shift() {
+        KeyAction::ShiftArrowRight
+      } else {
+        KeyAction::ArrowRight
+      }
+    }
+    VirtualKeyCode::Up => KeyAction::ArrowUp,
+    VirtualKeyCode::Down => KeyAction::ArrowDown,
+    VirtualKeyCode::PageUp => KeyAction::PageUp,
+    VirtualKeyCode::PageDown => KeyAction::PageDown,
+    VirtualKeyCode::Home => {
+      if modifiers.shift() {
+        KeyAction::ShiftHome
+      } else {
+        KeyAction::Home
+      }
+    }
+    VirtualKeyCode::End => {
+      if modifiers.shift() {
+        KeyAction::ShiftEnd
+      } else {
+        KeyAction::End
+      }
+    }
+    _ => return None,
+  })
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -3690,6 +3777,76 @@ mod profile_shortcut_tests {
       profile_shortcut_action(modifiers, VirtualKeyCode::H),
       Some(ProfileShortcutAction::ToggleHistoryPanel)
     );
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod macos_cmd_arrow_home_end_tests {
+  use super::map_page_key_action;
+
+  use fastrender::interaction::KeyAction;
+  use winit::event::{ModifiersState, VirtualKeyCode};
+
+  fn cmd_mods(shift: bool, alt: bool) -> ModifiersState {
+    let mut modifiers = ModifiersState::empty();
+    modifiers.insert(ModifiersState::LOGO);
+    if shift {
+      modifiers.insert(ModifiersState::SHIFT);
+    }
+    if alt {
+      modifiers.insert(ModifiersState::ALT);
+    }
+    modifiers
+  }
+
+  #[test]
+  fn cmd_left_maps_to_home_on_macos() {
+    let action = map_page_key_action(VirtualKeyCode::Left, cmd_mods(false, false));
+    if cfg!(target_os = "macos") {
+      assert_eq!(action, Some(KeyAction::Home));
+    } else {
+      assert_eq!(action, Some(KeyAction::ArrowLeft));
+    }
+  }
+
+  #[test]
+  fn shift_cmd_left_maps_to_shift_home_on_macos() {
+    let action = map_page_key_action(VirtualKeyCode::Left, cmd_mods(true, false));
+    if cfg!(target_os = "macos") {
+      assert_eq!(action, Some(KeyAction::ShiftHome));
+    } else {
+      assert_eq!(action, Some(KeyAction::ShiftArrowLeft));
+    }
+  }
+
+  #[test]
+  fn cmd_right_maps_to_end_on_macos() {
+    let action = map_page_key_action(VirtualKeyCode::Right, cmd_mods(false, false));
+    if cfg!(target_os = "macos") {
+      assert_eq!(action, Some(KeyAction::End));
+    } else {
+      assert_eq!(action, Some(KeyAction::ArrowRight));
+    }
+  }
+
+  #[test]
+  fn shift_cmd_right_maps_to_shift_end_on_macos() {
+    let action = map_page_key_action(VirtualKeyCode::Right, cmd_mods(true, false));
+    if cfg!(target_os = "macos") {
+      assert_eq!(action, Some(KeyAction::ShiftEnd));
+    } else {
+      assert_eq!(action, Some(KeyAction::ShiftArrowRight));
+    }
+  }
+
+  #[test]
+  fn cmd_alt_left_does_not_map_to_home() {
+    let action = map_page_key_action(VirtualKeyCode::Left, cmd_mods(false, true));
+    if cfg!(target_os = "macos") {
+      assert_eq!(action, Some(KeyAction::ArrowLeft));
+    } else {
+      assert_eq!(action, Some(KeyAction::ArrowLeft));
+    }
   }
 }
 
@@ -19066,48 +19223,7 @@ impl App {
           }
         }
 
-        let key_action = match key {
-          VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
-          VirtualKeyCode::Delete => Some(fastrender::interaction::KeyAction::Delete),
-          VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),
-          VirtualKeyCode::NumpadEnter => Some(fastrender::interaction::KeyAction::Enter),
-          VirtualKeyCode::Space => Some(if self.modifiers.shift() {
-            fastrender::interaction::KeyAction::ShiftSpace
-          } else {
-            fastrender::interaction::KeyAction::Space
-          }),
-          VirtualKeyCode::Tab => Some(if self.modifiers.shift() {
-            fastrender::interaction::KeyAction::ShiftTab
-          } else {
-            fastrender::interaction::KeyAction::Tab
-          }),
-          VirtualKeyCode::Left => Some(if self.modifiers.shift() {
-            fastrender::interaction::KeyAction::ShiftArrowLeft
-          } else {
-            fastrender::interaction::KeyAction::ArrowLeft
-          }),
-          VirtualKeyCode::Right => Some(if self.modifiers.shift() {
-            fastrender::interaction::KeyAction::ShiftArrowRight
-          } else {
-            fastrender::interaction::KeyAction::ArrowRight
-          }),
-          VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
-          VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
-          VirtualKeyCode::PageUp => Some(fastrender::interaction::KeyAction::PageUp),
-          VirtualKeyCode::PageDown => Some(fastrender::interaction::KeyAction::PageDown),
-          VirtualKeyCode::Home => Some(if self.modifiers.shift() {
-            fastrender::interaction::KeyAction::ShiftHome
-          } else {
-            fastrender::interaction::KeyAction::Home
-          }),
-          VirtualKeyCode::End => Some(if self.modifiers.shift() {
-            fastrender::interaction::KeyAction::ShiftEnd
-          } else {
-            fastrender::interaction::KeyAction::End
-          }),
-          _ => None,
-        };
-        let Some(key_action) = key_action else {
+        let Some(key_action) = map_page_key_action(key, self.modifiers) else {
           return;
         };
 
