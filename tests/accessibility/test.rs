@@ -618,17 +618,34 @@ fn accessibility_presentational_role_disallowed_with_aria_description() {
     <html>
       <body>
         <div id="x" role="presentation" aria-description="Extra detail">Text</div>
+        <div id="y" role="none" aria-description="Extra detail">Text</div>
       </body>
     </html>
   "##;
 
   let tree = render_accessibility_json(html);
-  let subset = snapshot_subset(&tree, &["x"]);
+  let subset = snapshot_subset(&tree, &["x", "y"]);
 
   assert_eq!(
     subset,
     json!({
       "x": {
+        "role": "generic",
+        "name": "Text",
+        "description": "Extra detail",
+        "value": null,
+        "level": null,
+        "html_tag": "div",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "y": {
         "role": "generic",
         "name": "Text",
         "description": "Extra detail",
