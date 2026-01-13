@@ -39,6 +39,7 @@ IPC links (each is a distinct connection):
 
 - **browser ↔ renderer**: navigation + input + frame submission
 - **browser ↔ network**: fetch requests/responses, DNS, cookie mediation
+- **renderer ↔ network** (optional / under development): WebSocket/fetch proxying, event streams
 
 The browser must be able to kill/restart renderer/network processes without risking browser memory
 corruption or unbounded resource consumption.
@@ -69,6 +70,12 @@ transport/codec yet:
   - `src/resource/ipc_fetcher.rs` uses a `TcpStream` to a local “network process” endpoint, framed
     as `u32_le length` + payload, serialized with JSON (`serde_json`).
   - See: [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs).
+- **Browser ↔ network (prototype `network` subprocess):**
+  - The `network` binary ([`src/bin/network.rs`](../src/bin/network.rs)) uses JSON framing helpers in
+    [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) (`u32_be length` + JSON).
+  - **Warning:** `src/network_process/ipc.rs::read_frame` currently allocates `Vec<u8>` based on the
+    peer-provided length **without a max length cap**. Do not copy this framing code for an
+    untrusted IPC boundary; migrate to `src/ipc/framing.rs`/`IpcConnection` or add an explicit cap.
 - **Shared framing helper (in-tree):**
   - `src/ipc/framing.rs` provides a length-prefixed framing layer with a hard maximum frame size.
   - See: [`src/ipc/framing.rs`](../src/ipc/framing.rs).
@@ -136,14 +143,17 @@ Repo reality:
 **Security invariant:** the browser must never allocate based on untrusted length fields without a
 hard cap.
 
-### Stream framing (current): `u32_le length` + payload
+### Stream framing (current): 4-byte length prefix (`u32`) + payload
 
-All current stream-based IPC channels use a simple frame format:
+Most current stream-based IPC channels use a simple frame format:
 
 ```
-u32_le length
+u32 length
 [length bytes payload]
 ```
+
+Endianness is part of the per-channel contract. Prefer `u32_le` for new code (and reuse
+`src/ipc/framing.rs`), but note that some legacy code uses `u32_be` (e.g. `src/network_process/ipc.rs`).
 
 Here, `MAX_MESSAGE_BYTES` is the per-channel hard cap (see table below).
 
@@ -165,6 +175,12 @@ These caps are **security limits**; do not increase casually. Keep the sender + 
 | Browser ↔ renderer (stdio + bincode, dev) | 64 MiB | `fastrender_ipc::MAX_IPC_MESSAGE_BYTES` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) (checked in [`crates/fastrender-renderer/src/main.rs`](../crates/fastrender-renderer/src/main.rs)) |
 | Generic framing helper (`read_frame`/`write_frame`) | 8 MiB | `crate::ipc::framing::MAX_IPC_MESSAGE_BYTES` in [`src/ipc/framing.rs`](../src/ipc/framing.rs) |
 | Browser ↔ network (`IpcResourceFetcher`, JSON over TCP) | 128 MiB | `IPC_MAX_FRAME_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+
+Repo reality warning: the prototype network subprocess framing helpers in
+[`src/network_process/ipc.rs`](../src/network_process/ipc.rs) do **not** currently enforce a maximum
+frame length (they allocate based on the declared `u32` length). Do not use them for an untrusted
+security boundary without first adding an explicit cap or migrating to the bounded framing helpers in
+`src/ipc/framing.rs`.
 
 Important: the 64 MiB browser↔renderer cap is intentionally large enough to carry early-development
 pixel buffers inline (see the comment in `crates/fastrender-ipc`). **Long-term, frame transfers
@@ -220,6 +236,9 @@ If using `SOCK_STREAM`, messages must be framed as:
 u32_le length
 [length bytes payload]
 ```
+
+(`u32_le` is the preferred on-wire format for new FastRender IPC stream framing; keep it consistent
+with `src/ipc/framing.rs` unless you have a strong reason to diverge.)
 
 Receiver rules:
 
