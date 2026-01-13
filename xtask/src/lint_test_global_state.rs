@@ -332,7 +332,7 @@ fn load_baseline(repo_root: &Path) -> Result<HashMap<BaselineKey, usize>> {
   let path = repo_root.join(BASELINE_PATH);
   if !path.exists() {
     bail!(
-      "missing {BASELINE_PATH}. Run `cargo run -p xtask -- lint-test-global-state --update-baseline` to generate it."
+      "missing {BASELINE_PATH}. Run `bash scripts/cargo_agent.sh xtask lint-test-global-state --update-baseline` to generate it."
     );
   }
   let raw =
@@ -614,4 +614,3 @@ fn demo() {
     assert_eq!(violations[0].kind, ViolationKind::EnvSetVar);
   }
 }
-

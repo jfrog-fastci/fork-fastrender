@@ -13,7 +13,10 @@ fn help_lists_commands() {
   );
 
   let stdout = String::from_utf8_lossy(&output.stdout);
-  let js_count = stdout.matches("\n  js ").count();
+  // Clap may choose to render the command list in either one-line or wrapped form depending on
+  // terminal width and the longest subcommand name. Count the canonical `js` command entry by
+  // matching the exact line.
+  let js_count = stdout.matches("\n  js\n").count();
   assert!(
     stdout.contains("render-page")
       && stdout.contains("page-loop")
@@ -29,7 +32,7 @@ fn help_lists_commands() {
       && stdout.contains("pageset")
       && stdout.contains("pageset-diff")
       && stdout.contains("pageset-triage")
-      && stdout.contains("\n  js ")
+      && stdout.contains("\n  js\n")
       && stdout.contains("perf-smoke")
       && stdout.contains("validate-page-fixtures")
       && stdout.contains("recapture-page-fixtures")

@@ -1941,6 +1941,195 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_insert_adjacent_element<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "where",
+          ty: IdlType::String(StringType::DomString),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "element",
+          ty: IdlType::Named(NamedType {
+            name: "Element".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Element",
+      "insertAdjacentElement",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_insert_adjacent_h_t_m_l<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "position",
+          ty: IdlType::String(StringType::DomString),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "string",
+          ty: IdlType::Union(vec![
+            IdlType::Named(NamedType {
+              name: "TrustedHTML".to_string(),
+              kind: NamedTypeKind::Unresolved,
+            }),
+            IdlType::String(StringType::DomString),
+          ]),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Element",
+      "insertAdjacentHTML",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_insert_adjacent_text<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "where",
+          ty: IdlType::String(StringType::DomString),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "data",
+          ty: IdlType::String(StringType::DomString),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Element",
+      "insertAdjacentText",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn element_matches<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -4248,24 +4437,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -4303,6 +4474,24 @@ pub mod window {
     let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -5542,6 +5731,24 @@ pub mod window {
       element_get_elements_by_tag_name_n_s::<Host, R>,
     )?;
     rt.define_method(proto_element, "getElementsByTagNameNS", func)?;
+    let func = rt.create_function(
+      "insertAdjacentElement",
+      2,
+      element_insert_adjacent_element::<Host, R>,
+    )?;
+    rt.define_method(proto_element, "insertAdjacentElement", func)?;
+    let func = rt.create_function(
+      "insertAdjacentHTML",
+      2,
+      element_insert_adjacent_h_t_m_l::<Host, R>,
+    )?;
+    rt.define_method(proto_element, "insertAdjacentHTML", func)?;
+    let func = rt.create_function(
+      "insertAdjacentText",
+      2,
+      element_insert_adjacent_text::<Host, R>,
+    )?;
+    rt.define_method(proto_element, "insertAdjacentText", func)?;
     let func = rt.create_function("matches", 1, element_matches::<Host, R>)?;
     rt.define_method(proto_element, "matches", func)?;
     let func = rt.create_function("prepend", 0, element_prepend::<Host, R>)?;
@@ -6794,24 +7001,6 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -6849,6 +7038,24 @@ pub mod worker {
     let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]

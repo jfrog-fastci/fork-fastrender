@@ -718,7 +718,25 @@ run_cargo() {
     export RUST_TEST_THREADS="${rust_test_threads}"
   fi
 
-  if [[ -n "${jobs}" ]]; then
+  # Only inject `-j` for subcommands that actually accept compilation job settings.
+  #
+  # Examples of cargo commands that *do not* accept `-j`:
+  # - `cargo metadata`
+  # - `cargo --version`
+  #
+  # Keep this list conservative; passing `-j` to an unsupported subcommand fails fast.
+  subcommand_supports_jobs() {
+    case "$1" in
+      build|check|clippy|doc|run|rustc|test|bench|install)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+
+  if [[ -n "${jobs}" ]] && subcommand_supports_jobs "${subcommand}"; then
     cargo_cmd+=(-j "${jobs}")
   fi
 

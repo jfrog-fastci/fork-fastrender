@@ -47,7 +47,7 @@ fn tests_do_not_mutate_process_env_or_cwd_directly() {
 
     let contents =
       fs::read_to_string(path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-    // Strip whitespace so we catch `std::env::set_var (\"X\"` variations too.
+    // Strip whitespace so we catch `std::env::set_var` + `(\"X\"` variations too.
     let condensed: String = contents.chars().filter(|c| !c.is_whitespace()).collect();
     for needle in &forbidden {
       assert!(
