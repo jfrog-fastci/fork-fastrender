@@ -54,9 +54,25 @@ const MQL_MATCHES_GET_SLOT_QUERY_STRING: usize = 2;
 
 const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_MAJOR_VERSION: usize = 0;
 const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_FULL_VERSION: usize = 1;
+const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_PLATFORM: usize = 2;
+const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_MOBILE: usize = 3;
+const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_PLATFORM_VERSION: usize = 4;
+const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_ARCHITECTURE: usize = 5;
+const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_BITNESS: usize = 6;
+const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_MODEL: usize = 7;
 
 const MAX_UA_DATA_STRING_CHARS: usize = 64;
 const MAX_UA_DATA_VERSION_CHARS: usize = 32;
+const MAX_UA_DATA_HINTS: usize = 32;
+const MAX_UA_DATA_HINT_STRING_CODE_UNITS: usize = 64;
+
+fn ua_data_platform_version(platform: &str) -> &'static str {
+  match platform {
+    // Keep deterministic: do not sniff host OS version.
+    "Windows" => "10.0.0",
+    _ => "0.0.0",
+  }
+}
 
 #[derive(Debug, Clone)]
 struct UaDataInfo {
@@ -1352,7 +1368,7 @@ fn navigator_ua_data_get_high_entropy_values_native(
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
-  _args: &[Value],
+  args: &[Value],
 ) -> Result<Value, VmError> {
   let intr = vm
     .intrinsics()
@@ -1365,6 +1381,30 @@ fn navigator_ua_data_get_high_entropy_values_native(
     .unwrap_or(Value::Undefined);
   let full_version = slots
     .get(UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_FULL_VERSION)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let platform = slots
+    .get(UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_PLATFORM)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let mobile = slots
+    .get(UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_MOBILE)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let platform_version = slots
+    .get(UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_PLATFORM_VERSION)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let architecture = slots
+    .get(UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_ARCHITECTURE)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let bitness = slots
+    .get(UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_BITNESS)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let model = slots
+    .get(UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_MODEL)
     .copied()
     .unwrap_or(Value::Undefined);
   let major_version_s = match major_version {
@@ -1383,6 +1423,128 @@ fn navigator_ua_data_get_high_entropy_values_native(
       s
     }
   };
+  let platform_s = match platform {
+    Value::String(s) => s,
+    _ => {
+      let s = scope.alloc_string("Windows")?;
+      scope.push_root(Value::String(s))?;
+      s
+    }
+  };
+  let mobile_b = matches!(mobile, Value::Bool(true));
+  let platform_version_s = match platform_version {
+    Value::String(s) => s,
+    _ => {
+      let s = scope.alloc_string("0.0.0")?;
+      scope.push_root(Value::String(s))?;
+      s
+    }
+  };
+  let architecture_s = match architecture {
+    Value::String(s) => s,
+    _ => {
+      let s = scope.alloc_string("x86")?;
+      scope.push_root(Value::String(s))?;
+      s
+    }
+  };
+  let bitness_s = match bitness {
+    Value::String(s) => s,
+    _ => {
+      let s = scope.alloc_string("64")?;
+      scope.push_root(Value::String(s))?;
+      s
+    }
+  };
+  let model_s = match model {
+    Value::String(s) => s,
+    _ => {
+      let s = scope.alloc_string("")?;
+      scope.push_root(Value::String(s))?;
+      s
+    }
+  };
+
+  // Parse the requested hint list. This is intentionally forgiving/non-throwing: bad hint inputs
+  // should just be ignored (real-world usage often probes without validating supported hints).
+  let mut want_brands = false;
+  let mut want_mobile = false;
+  let mut want_platform = false;
+  let mut want_platform_version = false;
+  let mut want_architecture = false;
+  let mut want_bitness = false;
+  let mut want_model = false;
+  let mut want_ua_full_version = false;
+  let mut want_form_factors = false;
+
+  if let Some(Value::Object(hints_obj)) = args.get(0).copied() {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(hints_obj))?;
+
+    let length_key = alloc_key_vm_js(&mut scope, "length")?;
+    let length_value = match scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      hints_obj,
+      length_key,
+      Value::Object(hints_obj),
+    ) {
+      Ok(v) => v,
+      Err(e @ VmError::Termination(_)) => return Err(e),
+      Err(_) => Value::Undefined,
+    };
+
+    let len = match scope.to_length(vm, host, hooks, length_value) {
+      Ok(n) => n.min(MAX_UA_DATA_HINTS),
+      Err(e @ VmError::Termination(_)) => return Err(e),
+      Err(_) => 0,
+    };
+
+    for idx in 0..len {
+      let idx_key = alloc_key_vm_js(&mut scope, &idx.to_string())?;
+      let hint_value = match scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        hints_obj,
+        idx_key,
+        Value::Object(hints_obj),
+      ) {
+        Ok(v) => v,
+        Err(e @ VmError::Termination(_)) => return Err(e),
+        Err(_) => continue,
+      };
+
+      let hint_s = match scope.to_string(vm, host, hooks, hint_value) {
+        Ok(s) => s,
+        Err(e @ VmError::Termination(_)) => return Err(e),
+        Err(_) => continue,
+      };
+      let hint_js = match scope.heap().get_string(hint_s) {
+        Ok(s) => s,
+        Err(_) => continue,
+      };
+      if hint_js.as_code_units().len() > MAX_UA_DATA_HINT_STRING_CODE_UNITS {
+        continue;
+      }
+      let hint = hint_js.to_utf8_lossy();
+
+      match hint.as_str() {
+        "brands" => want_brands = true,
+        "mobile" => want_mobile = true,
+        "platform" => want_platform = true,
+        "platformVersion" => want_platform_version = true,
+        "architecture" => want_architecture = true,
+        "bitness" => want_bitness = true,
+        "model" => want_model = true,
+        "uaFullVersion" => want_ua_full_version = true,
+        "formFactors" => want_form_factors = true,
+        // `fullVersionList` is always returned for forgiveness, even if not requested.
+        _ => {}
+      }
+    }
+  }
 
   // Always return `fullVersionList`; this keeps the shim forgiving for real-world usage which may
   // probe without validating supported hints.
@@ -1434,29 +1596,134 @@ fn navigator_ua_data_get_high_entropy_values_native(
     )?;
   }
 
-  // Ensure "0" major-version string is referenced (helps keep slot contents live even if the host
-  // passes only a full version).
-  let _ = major_version_s;
-
   let result = scope.alloc_object()?;
   scope.push_root(Value::Object(result))?;
   scope
     .heap_mut()
     .object_set_prototype(result, Some(intr.object_prototype()))?;
 
-  let full_version_list_key = alloc_key_vm_js(scope, "fullVersionList")?;
-  scope.define_property(
+  define_enumerable_read_only_vm_js(
+    scope,
     result,
-    full_version_list_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Object(full_version_list),
-        writable: false,
-      },
-    },
+    "fullVersionList",
+    Value::Object(full_version_list),
   )?;
+
+  if want_brands {
+    let brands = scope.alloc_array(3)?;
+    scope.push_root(Value::Object(brands))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(brands, Some(intr.array_prototype()))?;
+
+    for (idx, (brand, version)) in [
+      ("Not.A/Brand", "99"),
+      ("Chromium", ""),
+      ("Google Chrome", ""),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+      let entry = scope.alloc_object()?;
+      scope.push_root(Value::Object(entry))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(entry, Some(intr.object_prototype()))?;
+
+      let brand_s = scope.alloc_string(brand)?;
+      scope.push_root(Value::String(brand_s))?;
+      define_enumerable_read_only_vm_js(scope, entry, "brand", Value::String(brand_s))?;
+
+      let version_s = if version.is_empty() {
+        major_version_s
+      } else {
+        let s = scope.alloc_string(version)?;
+        scope.push_root(Value::String(s))?;
+        s
+      };
+      define_enumerable_read_only_vm_js(scope, entry, "version", Value::String(version_s))?;
+
+      let idx_key = alloc_key_vm_js(scope, &idx.to_string())?;
+      scope.define_property(
+        brands,
+        idx_key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(entry),
+            writable: false,
+          },
+        },
+      )?;
+    }
+
+    define_enumerable_read_only_vm_js(scope, result, "brands", Value::Object(brands))?;
+  }
+
+  if want_mobile {
+    define_enumerable_read_only_vm_js(scope, result, "mobile", Value::Bool(mobile_b))?;
+  }
+  if want_platform {
+    define_enumerable_read_only_vm_js(scope, result, "platform", Value::String(platform_s))?;
+  }
+  if want_platform_version {
+    define_enumerable_read_only_vm_js(
+      scope,
+      result,
+      "platformVersion",
+      Value::String(platform_version_s),
+    )?;
+  }
+  if want_architecture {
+    define_enumerable_read_only_vm_js(
+      scope,
+      result,
+      "architecture",
+      Value::String(architecture_s),
+    )?;
+  }
+  if want_bitness {
+    define_enumerable_read_only_vm_js(scope, result, "bitness", Value::String(bitness_s))?;
+  }
+  if want_model {
+    define_enumerable_read_only_vm_js(scope, result, "model", Value::String(model_s))?;
+  }
+  if want_ua_full_version {
+    define_enumerable_read_only_vm_js(
+      scope,
+      result,
+      "uaFullVersion",
+      Value::String(full_version_s),
+    )?;
+  }
+  if want_form_factors {
+    let form_factors = scope.alloc_array(1)?;
+    scope.push_root(Value::Object(form_factors))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(form_factors, Some(intr.array_prototype()))?;
+    let ff_value = if mobile_b { "Mobile" } else { "Desktop" };
+    let ff_s = scope.alloc_string(ff_value)?;
+    scope.push_root(Value::String(ff_s))?;
+    let idx_key = alloc_key_vm_js(scope, "0")?;
+    scope.define_property(
+      form_factors,
+      idx_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(ff_s),
+          writable: false,
+        },
+      },
+    )?;
+    define_enumerable_read_only_vm_js(scope, result, "formFactors", Value::Object(form_factors))?;
+  }
+
+  // Ensure the slot values remain referenced even if the caller only requests a subset of fields.
+  let _ = (major_version_s, platform_s, platform_version_s, architecture_s, bitness_s, model_s);
 
   // Resolve synchronously.
   let promise = promise_resolve_with_host_and_hooks(vm, scope, host, hooks, Value::Object(result))?;
@@ -1586,6 +1853,14 @@ pub(crate) fn install_window_shims_vm_js(
   scope.push_root(Value::String(major_version_s))?;
   let full_version_s = scope.alloc_string(&ua_data_info.full_version)?;
   scope.push_root(Value::String(full_version_s))?;
+  let platform_version_s = scope.alloc_string(ua_data_platform_version(&ua_data_info.platform))?;
+  scope.push_root(Value::String(platform_version_s))?;
+  let architecture_s = scope.alloc_string("x86")?;
+  scope.push_root(Value::String(architecture_s))?;
+  let bitness_s = scope.alloc_string("64")?;
+  scope.push_root(Value::String(bitness_s))?;
+  let model_s = scope.alloc_string("")?;
+  scope.push_root(Value::String(model_s))?;
 
   let brands = scope.alloc_array(3)?;
   scope.push_root(Value::Object(brands))?;
@@ -1648,6 +1923,12 @@ pub(crate) fn install_window_shims_vm_js(
     &[
       Value::String(major_version_s),
       Value::String(full_version_s),
+      Value::String(ua_platform_s),
+      Value::Bool(ua_data_info.mobile),
+      Value::String(platform_version_s),
+      Value::String(architecture_s),
+      Value::String(bitness_s),
+      Value::String(model_s),
     ],
   )?;
   scope.heap_mut().object_set_prototype(
@@ -1815,47 +2096,162 @@ pub fn install_window_shims(
   let brands_key = prop_key(rt, "brands")?;
   rt.define_data_property(user_agent_data, brands_key, brands, false)?;
 
-  // `getHighEntropyValues(hints)`: return a thenable that resolves to `{ fullVersionList: [...] }`.
+  // `getHighEntropyValues(hints)`: return a thenable that resolves immediately.
   // (We cannot create a real `%Promise%` without a Realm.)
-  let full_version = ua_data_info.full_version.clone();
-  let get_high_entropy_values = rt.alloc_function_value(move |rt, _this, _args| {
+  let ua_platform = ua_data_info.platform.clone();
+  let ua_platform_version = ua_data_platform_version(&ua_platform).to_string();
+  let ua_mobile = ua_data_info.mobile;
+  let chrome_major = ua_data_info.major_version.clone();
+  let chrome_full = ua_data_info.full_version.clone();
+  let get_high_entropy_values = rt.alloc_function_value(move |rt, _this, args| {
+    // See vm-js variant above: be forgiving, ignore invalid hints, and bound work.
+    let mut want_brands = false;
+    let mut want_mobile = false;
+    let mut want_platform = false;
+    let mut want_platform_version = false;
+    let mut want_architecture = false;
+    let mut want_bitness = false;
+    let mut want_model = false;
+    let mut want_ua_full_version = false;
+    let mut want_form_factors = false;
+
+    if let Some(Value::Object(hints_obj)) = args.get(0).copied() {
+      let length_key = prop_key(rt, "length")?;
+      let len = match rt.get(Value::Object(hints_obj), length_key) {
+        Ok(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+        _ => 0,
+      }
+      .min(MAX_UA_DATA_HINTS);
+
+      for idx in 0..len {
+        let idx_key = prop_key(rt, &idx.to_string())?;
+        let hint_value = rt.get(Value::Object(hints_obj), idx_key).unwrap_or(Value::Undefined);
+        let hint_s = match rt.to_string(hint_value) {
+          Ok(Value::String(s)) => s,
+          _ => continue,
+        };
+        let hint_js = match rt.heap().get_string(hint_s) {
+          Ok(s) => s,
+          Err(_) => continue,
+        };
+        if hint_js.as_code_units().len() > MAX_UA_DATA_HINT_STRING_CODE_UNITS {
+          continue;
+        }
+        let hint = hint_js.to_utf8_lossy();
+
+        match hint.as_str() {
+          "brands" => want_brands = true,
+          "mobile" => want_mobile = true,
+          "platform" => want_platform = true,
+          "platformVersion" => want_platform_version = true,
+          "architecture" => want_architecture = true,
+          "bitness" => want_bitness = true,
+          "model" => want_model = true,
+          "uaFullVersion" => want_ua_full_version = true,
+          "formFactors" => want_form_factors = true,
+          // `fullVersionList` is always returned for forgiveness.
+          _ => {}
+        }
+      }
+    }
+
     let thenable = rt.alloc_object_value()?;
-    let full_version = full_version.clone();
+    let ua_platform = ua_platform.clone();
+    let ua_platform_version = ua_platform_version.clone();
+    let chrome_major = chrome_major.clone();
+    let chrome_full = chrome_full.clone();
+
     let then_fn = rt.alloc_function_value(move |rt, _this, args| {
       let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
 
       let result = rt.alloc_object_value()?;
+
+      // Always include `fullVersionList` for real-world compatibility.
       let full_version_list = rt.alloc_array()?;
       for (idx, (brand, version)) in [
         ("Not.A/Brand", "99.0.0.0".to_string()),
-        ("Chromium", full_version.clone()),
-        ("Google Chrome", full_version.clone()),
+        ("Chromium", chrome_full.clone()),
+        ("Google Chrome", chrome_full.clone()),
       ]
       .into_iter()
       .enumerate()
       {
         let entry = rt.alloc_object_value()?;
         let brand_value = rt.alloc_string_value(brand)?;
-        define_read_only_data_property(
-          rt,
-          entry,
-          "brand",
-          brand_value,
-          true,
-        )?;
+        define_read_only_data_property(rt, entry, "brand", brand_value, true)?;
         let version_value = rt.alloc_string_value(&version)?;
-        define_read_only_data_property(
-          rt,
-          entry,
-          "version",
-          version_value,
-          true,
-        )?;
+        define_read_only_data_property(rt, entry, "version", version_value, true)?;
         let idx_key = prop_key(rt, &idx.to_string())?;
         rt.define_data_property(full_version_list, idx_key, entry, true)?;
       }
       let full_version_list_key = prop_key(rt, "fullVersionList")?;
       rt.define_data_property(result, full_version_list_key, full_version_list, true)?;
+
+      if want_brands {
+        let brands = rt.alloc_array()?;
+        for (idx, (brand, version)) in [
+          ("Not.A/Brand", "99".to_string()),
+          ("Chromium", chrome_major.clone()),
+          ("Google Chrome", chrome_major.clone()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+          let entry = rt.alloc_object_value()?;
+          let brand_value = rt.alloc_string_value(brand)?;
+          define_read_only_data_property(rt, entry, "brand", brand_value, true)?;
+          let version_value = rt.alloc_string_value(&version)?;
+          define_read_only_data_property(rt, entry, "version", version_value, true)?;
+          let idx_key = prop_key(rt, &idx.to_string())?;
+          rt.define_data_property(brands, idx_key, entry, true)?;
+        }
+        let key = prop_key(rt, "brands")?;
+        rt.define_data_property(result, key, brands, true)?;
+      }
+
+      if want_mobile {
+        let key = prop_key(rt, "mobile")?;
+        rt.define_data_property(result, key, Value::Bool(ua_mobile), true)?;
+      }
+      if want_platform {
+        let key = prop_key(rt, "platform")?;
+        let v = rt.alloc_string_value(&ua_platform)?;
+        rt.define_data_property(result, key, v, true)?;
+      }
+      if want_platform_version {
+        let key = prop_key(rt, "platformVersion")?;
+        let v = rt.alloc_string_value(&ua_platform_version)?;
+        rt.define_data_property(result, key, v, true)?;
+      }
+      if want_architecture {
+        let key = prop_key(rt, "architecture")?;
+        let v = rt.alloc_string_value("x86")?;
+        rt.define_data_property(result, key, v, true)?;
+      }
+      if want_bitness {
+        let key = prop_key(rt, "bitness")?;
+        let v = rt.alloc_string_value("64")?;
+        rt.define_data_property(result, key, v, true)?;
+      }
+      if want_model {
+        let key = prop_key(rt, "model")?;
+        let v = rt.alloc_string_value("")?;
+        rt.define_data_property(result, key, v, true)?;
+      }
+      if want_ua_full_version {
+        let key = prop_key(rt, "uaFullVersion")?;
+        let v = rt.alloc_string_value(&chrome_full)?;
+        rt.define_data_property(result, key, v, true)?;
+      }
+      if want_form_factors {
+        let factors = rt.alloc_array()?;
+        let ff = if ua_mobile { "Mobile" } else { "Desktop" };
+        let v = rt.alloc_string_value(ff)?;
+        let idx_key = prop_key(rt, "0")?;
+        rt.define_data_property(factors, idx_key, v, true)?;
+        let key = prop_key(rt, "formFactors")?;
+        rt.define_data_property(result, key, factors, true)?;
+      }
 
       // If `on_fulfilled` is callable, invoke it with the resolved value.
       if rt.is_callable(on_fulfilled) {
@@ -1864,6 +2260,7 @@ pub fn install_window_shims(
 
       Ok(Value::Undefined)
     })?;
+
     let then_key = prop_key(rt, "then")?;
     rt.define_data_property(thenable, then_key, then_fn, false)?;
     Ok(thenable)
@@ -2310,9 +2707,38 @@ mod tests {
         r#"
         globalThis.__ua_ch_done = false;
         globalThis.__ua_ch_list = null;
+        globalThis.__ua_ch_brands = null;
+        globalThis.__ua_ch_platform = null;
+        globalThis.__ua_ch_platform_version = null;
+        globalThis.__ua_ch_architecture = null;
+        globalThis.__ua_ch_bitness = null;
+        globalThis.__ua_ch_model = null;
+        globalThis.__ua_ch_ua_full_version = null;
+        globalThis.__ua_ch_mobile = null;
+        globalThis.__ua_ch_form_factors = null;
         (async () => {
-          const r = await navigator.userAgentData.getHighEntropyValues(["fullVersionList"]);
+          const r = await navigator.userAgentData.getHighEntropyValues([
+            "fullVersionList",
+            "brands",
+            "platform",
+            "platformVersion",
+            "architecture",
+            "bitness",
+            "model",
+            "uaFullVersion",
+            "mobile",
+            "formFactors",
+          ]);
           globalThis.__ua_ch_list = r.fullVersionList;
+          globalThis.__ua_ch_brands = r.brands;
+          globalThis.__ua_ch_platform = r.platform;
+          globalThis.__ua_ch_platform_version = r.platformVersion;
+          globalThis.__ua_ch_architecture = r.architecture;
+          globalThis.__ua_ch_bitness = r.bitness;
+          globalThis.__ua_ch_model = r.model;
+          globalThis.__ua_ch_ua_full_version = r.uaFullVersion;
+          globalThis.__ua_ch_mobile = r.mobile;
+          globalThis.__ua_ch_form_factors = r.formFactors;
           globalThis.__ua_ch_done = true;
         })();
         "#,
@@ -2331,6 +2757,52 @@ mod tests {
         .unwrap(),
       Value::Bool(true)
     );
+    assert_eq!(
+      host.exec_script("Array.isArray(globalThis.__ua_ch_brands)").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("typeof globalThis.__ua_ch_platform === 'string' && globalThis.__ua_ch_platform === 'Windows'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("typeof globalThis.__ua_ch_platform_version === 'string'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("typeof globalThis.__ua_ch_architecture === 'string'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("typeof globalThis.__ua_ch_bitness === 'string'").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("typeof globalThis.__ua_ch_model === 'string'").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("typeof globalThis.__ua_ch_ua_full_version === 'string'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("typeof globalThis.__ua_ch_mobile === 'boolean'").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("Array.isArray(globalThis.__ua_ch_form_factors)")
+        .unwrap(),
+      Value::Bool(true)
+    );
 
     // UAData is a platform object in Chromium: structuredClone must reject it.
     assert_eq!(
@@ -2345,6 +2817,7 @@ mod tests {
         .unwrap(),
       Value::Bool(true)
     );
+
   }
 
   #[test]
