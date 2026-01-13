@@ -2541,25 +2541,31 @@ fn lower_call_expr(
       }
     }
   }
-  // HIR does not preserve parenthesization metadata. Optional chaining call semantics depend on
-  // whether an optional member expression is *directly* in call position:
+  // HIR does not preserve parenthesization metadata. Some call semantics depend on whether a callee
+  // expression is *directly* in call position:
   //
   //   - `obj?.prop(args)` is an optional member *call* and short-circuits the call (skipping args)
   //     when the base is nullish.
   //   - `(obj?.prop)(args)` is a non-optional call of the *value* produced by the optional member
   //     expression. In that case the arguments must still be evaluated, and calling `undefined`
   //     throws.
+  //   - `eval(args)` is a direct eval candidate, but `(eval)(args)` is always an indirect eval.
   //
   // The compiled evaluator detects method calls by matching the callee expression kind against
   // `ExprKind::Member`. Encode parenthesization by wrapping parenthesized optional member callees in
-  // a comma expression so they are treated as ordinary value calls.
+  // a comma expression so they are treated as ordinary value calls. Use the same encoding to
+  // prevent direct-eval detection on parenthesized `eval`.
   let callee_is_parenthesized = call.stx.callee.assoc.get::<ParenthesizedExpr>().is_some();
   let callee_is_optional_member = match call.stx.callee.stx.as_ref() {
     parse_js::ast::expr::Expr::Member(member) => member.stx.optional_chaining,
     parse_js::ast::expr::Expr::ComputedMember(member) => member.stx.optional_chaining,
     _ => false,
   };
-  let callee = if callee_is_parenthesized && callee_is_optional_member {
+  let callee_is_eval_ident = matches!(
+    call.stx.callee.stx.as_ref(),
+    parse_js::ast::expr::Expr::Id(id) if id.stx.name == "eval"
+  );
+  let callee = if callee_is_parenthesized && (callee_is_optional_member || callee_is_eval_ident) {
     let span = ctx.to_range(call.stx.callee.loc);
     let dummy = builder.alloc_expr(span, ExprKind::Literal(Literal::Undefined));
     builder.alloc_expr(
