@@ -14,7 +14,7 @@
     "layout": 142.22499674327628,
     "paint": 33.05228797555012
   },
-  "notes": "High diff% but low perceptual. Most diffs vs Chrome are not structural/layout issues: the offline fixture contains hundreds of intentionally empty `assets/missing_*.bin` subresources (0-byte images/fonts/etc), so Chrome paints UA-specific broken-image placeholders/alt text where fastrender currently paints nothing. The rest is dominated by small pixel-level differences from text rasterization (font fallback/hinting) and subtle gradient/shadow rounding.",
+  "notes": "High diff% but low perceptual. Visually/structurally looks good; remaining diffs vs Chrome are dominated by raster-level differences (text rasterization/hinting, subtle gradient/shadow rounding). The offline fixture also contains hundreds of intentionally empty `assets/missing_*.bin` resources (0-byte), so UA-specific broken-image placeholder painting/antialiasing can contribute to pixel diffs without indicating major layout/cascade issues.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 292981,
@@ -66,10 +66,10 @@
         "css_inline_imports_cpu_ms": null,
         "css_inline_inject_ms": null,
         "css_parse_ms": 0.353278,
-        "css_parse_used_codepoints_ms": 0.000029999999999999997,
+        "css_parse_used_codepoints_ms": 2.9999999999999997e-05,
         "css_parse_collect_font_faces_ms": 0.351958,
-        "css_parse_load_webfonts_ms": 0.000029999999999999997,
-        "css_parse_collect_keyframes_ms": 0.00002,
+        "css_parse_load_webfonts_ms": 2.9999999999999997e-05,
+        "css_parse_collect_keyframes_ms": 2e-05,
         "cascade_ms": 92.030891,
         "box_tree_ms": 6.526541,
         "layout_ms": 137.634828,
