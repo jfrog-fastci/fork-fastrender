@@ -95,20 +95,6 @@ pub enum SandboxError {
   },
 }
 
-/// Apply the macOS Seatbelt `pure-computation` sandbox to the current process.
-///
-/// This is intended for sandboxing untrusted renderer subprocesses. It is a one-way operation:
-/// once applied, the sandbox cannot be removed.
-pub fn apply_pure_computation_sandbox() -> std::io::Result<()> {
-  #[cfg(target_os = "macos")]
-  return macos::apply_pure_computation_sandbox();
-
-  #[cfg(not(target_os = "macos"))]
-  return Err(std::io::Error::new(
-    std::io::ErrorKind::Unsupported,
-    "Seatbelt sandboxing is only supported on macOS",
-  ));
-}
 
 /// Apply the renderer sandbox for the current process.
 ///

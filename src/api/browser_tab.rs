@@ -15,7 +15,7 @@ use crate::js::html_script_scheduler::ScriptEventKind;
 use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use crate::js::{
-  CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
+  Clock, CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
   DocumentReadyState, DocumentWriteState, DomHost, EventLoop, HtmlScriptId, HtmlScriptScheduler,
   HtmlScriptSchedulerAction, HtmlScriptWork, JsDomEvents, JsExecutionOptions, LoadBlockerKind,
   LocationNavigationRequest, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome,
@@ -4834,6 +4834,34 @@ impl BrowserTab {
     } else {
       DocumentVisibilityState::Visible
     })
+  }
+
+  /// Overrides the clock used to derive the document timeline for real-time CSS animation sampling.
+  ///
+  /// This is forwarded to the underlying [`BrowserDocumentDom2`]. It does **not** change the event
+  /// loop's clock (construct the tab with [`EventLoop::with_clock`] to control timer/rAF time).
+  pub fn set_animation_clock(&mut self, clock: Arc<dyn Clock>) {
+    self.host.document.set_animation_clock(clock);
+  }
+
+  /// Enables/disables real-time CSS animation sampling for this tab's document timeline.
+  ///
+  /// When enabled and `RenderOptions.animation_time` is `None`, each paint call samples CSS
+  /// animations/transitions at the time elapsed since the first rendered frame after enabling.
+  pub fn set_realtime_animations_enabled(&mut self, enabled: bool) {
+    self.host.document.set_realtime_animations_enabled(enabled);
+  }
+
+  /// Updates the animation/transition sampling timestamp in milliseconds since document load.
+  ///
+  /// This is a convenience forwarder to [`BrowserDocumentDom2::set_animation_time`].
+  pub fn set_animation_time(&mut self, time_ms: Option<f32>) {
+    self.host.document.set_animation_time(time_ms);
+  }
+
+  /// Convenience wrapper for [`BrowserTab::set_animation_time`] with a concrete timestamp.
+  pub fn set_animation_time_ms(&mut self, time_ms: f32) {
+    self.set_animation_time(Some(time_ms));
   }
 
   pub fn write_trace(&self) -> Result<()> {

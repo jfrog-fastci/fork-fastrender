@@ -199,9 +199,11 @@ Real-time sampling does not schedule frames by itself; the embedder still needs 
 (typically via `tick_frame()` + `next_wake_time()`), otherwise the document will paint once and then
 stay visually frozen.
 
-> Note: `set_realtime_animations_enabled` currently exists on `BrowserDocumentDom2` (and the older
-> `BrowserDocument*` containers). `BrowserTab` is expected to expose/forward animation controls so
-> live-tab embeddings don’t need to reach into internal fields.
+`BrowserTab` forwards the document-level animation controls from `BrowserDocumentDom2`, including:
+
+- `BrowserTab::set_realtime_animations_enabled(true)`
+- `BrowserTab::set_animation_clock(...)`
+- `BrowserTab::set_animation_time(...)` / `set_animation_time_ms(...)`
 
 For deterministic tests, you generally want **both** clocks (event loop timers + CSS animation
 timeline) to be driven by the same injected clock.
@@ -230,7 +232,7 @@ fn main() -> Result<()> {
     //
     // (The explicit `Arc<dyn Clock>` cast is just to make the trait-object boundary obvious.)
     let clock_for_loop: Arc<dyn Clock> = clock.clone();
-    let event_loop: EventLoop<BrowserTabHost> = EventLoop::with_clock(clock_for_loop);
+    let event_loop: EventLoop<BrowserTabHost> = EventLoop::with_clock(clock_for_loop.clone());
 
     let mut tab = BrowserTab::from_html_with_event_loop(
         "<!doctype html><p>hi</p>",
@@ -242,10 +244,8 @@ fn main() -> Result<()> {
     // If you're sampling CSS animations in real time, you generally want the document timeline to
     // use the same clock as timers/rAF too:
     //
-    // tab.set_animation_clock(clock.clone());            // intended `BrowserTab` forwarder
-    // tab.set_realtime_animations_enabled(true);         // intended `BrowserTab` forwarder
-    //
-    // (Today those methods exist on `BrowserDocumentDom2`; `BrowserTab` is expected to forward.)
+    // tab.set_animation_clock(clock_for_loop.clone());
+    // tab.set_realtime_animations_enabled(true);
 
     // In a real deterministic harness you'd:
     // - run some steps,
