@@ -4376,6 +4376,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Synchronize profile state (bookmarks/history) across all windows.
     let mut history_update: Option<(fastrender::ui::GlobalHistoryStore, bool)> = None;
 
+    // Safety net: if a code path mutates `BookmarkStore` without recording deltas, the multi-window
+    // sync would otherwise miss the update. Detect revision changes and fall back to a full-store
+    // ReplaceAll delta (rare/slow, but correct).
+    for id in &window_order {
+      if let Some(win) = windows.get_mut(id) {
+        if win.app.pending_bookmark_deltas.is_empty()
+          && win.app.bookmarks.revision() != win.app.last_synced_bookmarks_revision
+        {
+          win
+            .app
+            .pending_bookmark_deltas
+            .push(fastrender::ui::BookmarkDelta::ReplaceAll(
+              win.app.bookmarks.clone(),
+            ));
+        }
+      }
+    }
+
     // Collect pending bookmark deltas. Most of the time only one window mutates bookmarks at a
     // time; in that case we can propagate deltas across windows without cloning the full store.
     //
@@ -4450,6 +4468,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
       for (id, win) in windows.iter_mut() {
         if *id == source_window_id && !force_full_sync {
+          win.app.last_synced_bookmarks_revision = win.app.bookmarks.revision();
           win.app.window.request_redraw();
           continue;
         }
@@ -4461,6 +4480,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           win.app.bookmarks = global_bookmarks.clone();
         }
 
+        win.app.last_synced_bookmarks_revision = win.app.bookmarks.revision();
         win.app.window.request_redraw();
       }
 
@@ -6822,6 +6842,7 @@ struct App {
   download_dir: std::path::PathBuf,
   bookmarks: fastrender::ui::BookmarkStore,
   pending_bookmark_deltas: Vec<fastrender::ui::BookmarkDelta>,
+  last_synced_bookmarks_revision: u64,
   profile_autosave_tx: Option<std::sync::mpsc::Sender<fastrender::ui::AutosaveMsg>>,
   profile_bookmarks_flush_requested: bool,
   profile_history_dirty: bool,
@@ -7633,6 +7654,8 @@ impl App {
       })
     };
 
+    let bookmarks_revision = bookmarks.revision();
+
     Ok(Self {
       window,
       window_title_cache: String::new(),
@@ -7672,6 +7695,7 @@ impl App {
       download_dir,
       bookmarks,
       pending_bookmark_deltas: Vec::new(),
+      last_synced_bookmarks_revision: bookmarks_revision,
       profile_autosave_tx: None,
       profile_bookmarks_flush_requested: false,
       profile_history_dirty: false,
