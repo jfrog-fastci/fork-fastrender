@@ -8480,57 +8480,15 @@ impl GridFormattingContext {
       span_end: f32,
     }
 
-    let (axis_style, axes_swapped) = {
-      let mut effective_writing_mode = box_node.style.writing_mode;
-      let mut effective_direction = box_node.style.direction;
-      let mut current_style: &ComputedStyle = &box_node.style;
-      let mut current_id = node_id;
-      let mut current_is_subgrid =
-        current_style.grid_row_subgrid || current_style.grid_column_subgrid;
-      while current_is_subgrid {
-        let Some(parent_id) = taffy.parent(current_id) else {
-          break;
-        };
-        let Some(parent_ptr) = taffy.get_node_context(parent_id).copied() else {
-          break;
-        };
-        let parent_box_node = unsafe { &*parent_ptr };
-
-        effective_writing_mode = parent_box_node.style.writing_mode;
-        if current_style.grid_column_subgrid {
-          effective_direction = parent_box_node.style.direction;
-        }
-
-        current_style = &parent_box_node.style;
-        current_is_subgrid = current_style.grid_row_subgrid || current_style.grid_column_subgrid;
-        current_id = parent_id;
-      }
-
-      let axis_style = GridAxisStyle {
-        writing_mode: effective_writing_mode,
-        direction: effective_direction,
-      };
-      let axes_swapped = !axis_style.inline_is_horizontal();
-      (axis_style, axes_swapped)
-    };
-
-    let inline_is_horizontal = axis_style.inline_is_horizontal();
-    let mut mirror_x = false;
-    let mut mirror_y = false;
-    if !axis_style.inline_positive() {
-      if inline_is_horizontal {
-        mirror_x = true;
-      } else {
-        mirror_y = true;
-      }
-    }
-    if !axis_style.block_positive() {
-      if inline_is_horizontal {
-        mirror_y = true;
-      } else {
-        mirror_x = true;
-      }
-    }
+    // Axis mapping for absolute-positioned static-position resolution must match the grid layout
+    // algorithm's effective writing-mode/direction rules for subgrids. Rather than re-deriving that
+    // logic from the box tree, use the already-normalized Taffy style for this node.
+    let container_style = taffy
+      .style(node_id)
+      .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+    let axes_swapped = container_style.axes_swapped;
+    let mirror_x = !container_style.start_end_axis_positive.x;
+    let mirror_y = !container_style.start_end_axis_positive.y;
 
     let mut row_offsets: Option<Vec<f32>> = None;
     let mut col_offsets: Option<Vec<f32>> = None;
@@ -8542,36 +8500,34 @@ impl GridFormattingContext {
     let mut col_subgrid_ctx: Option<SubgridAxisContext> = None;
 
     if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
-      if let Ok(container_style) = taffy.style(node_id) {
-        let row_align = container_style
-          .align_content
-          .unwrap_or(taffy::style::AlignContent::Stretch);
-        let col_align = container_style
-          .justify_content
-          .unwrap_or(taffy::style::AlignContent::Stretch);
-        row_alignment = Some(row_align);
-        col_alignment = Some(col_align);
-        row_explicit_line_count = Some(info.rows.explicit_tracks.saturating_add(1));
-        col_explicit_line_count = Some(info.columns.explicit_tracks.saturating_add(1));
-        row_offsets = Some(compute_track_offsets(
-          &info.rows,
-          bounds.height(),
-          padding_top,
-          padding_bottom,
-          border_top,
-          border_bottom,
-          row_align,
-        ));
-        col_offsets = Some(compute_track_offsets(
-          &info.columns,
-          bounds.width(),
-          padding_left,
-          padding_right,
-          border_left,
-          border_right,
-          col_align,
-        ));
-      }
+      let row_align = container_style
+        .align_content
+        .unwrap_or(taffy::style::AlignContent::Stretch);
+      let col_align = container_style
+        .justify_content
+        .unwrap_or(taffy::style::AlignContent::Stretch);
+      row_alignment = Some(row_align);
+      col_alignment = Some(col_align);
+      row_explicit_line_count = Some(info.rows.explicit_tracks.saturating_add(1));
+      col_explicit_line_count = Some(info.columns.explicit_tracks.saturating_add(1));
+      row_offsets = Some(compute_track_offsets(
+        &info.rows,
+        bounds.height(),
+        padding_top,
+        padding_bottom,
+        border_top,
+        border_bottom,
+        row_align,
+      ));
+      col_offsets = Some(compute_track_offsets(
+        &info.columns,
+        bounds.width(),
+        padding_left,
+        padding_right,
+        border_left,
+        border_right,
+        col_align,
+      ));
     } else {
       // Subgrid nodes do not always expose per-node track info in Taffy. When that happens,
       // derive track offsets from the nearest ancestor grid that does provide them, then map
@@ -15256,58 +15212,12 @@ impl FormattingContext for GridFormattingContext {
           positioned_factory.with_positioned_cb(cb_for_absolute)
         };
 
-        let (axis_style, axes_swapped) = {
-          let mut effective_writing_mode = box_node.style.writing_mode;
-          let mut effective_direction = box_node.style.direction;
-          let mut current_style: &ComputedStyle = &box_node.style;
-          let mut current_id = root_id;
-          let mut current_is_subgrid =
-            current_style.grid_row_subgrid || current_style.grid_column_subgrid;
-          while current_is_subgrid {
-            let Some(parent_id) = taffy.parent(current_id) else {
-              break;
-            };
-            let Some(parent_ptr) = taffy.get_node_context(parent_id).copied() else {
-              break;
-            };
-            let parent_box_node = unsafe { &*parent_ptr };
-
-            effective_writing_mode = parent_box_node.style.writing_mode;
-            if current_style.grid_column_subgrid {
-              effective_direction = parent_box_node.style.direction;
-            }
-
-            current_style = &parent_box_node.style;
-            current_is_subgrid =
-              current_style.grid_row_subgrid || current_style.grid_column_subgrid;
-            current_id = parent_id;
-          }
-
-          let axis_style = GridAxisStyle {
-            writing_mode: effective_writing_mode,
-            direction: effective_direction,
-          };
-          let axes_swapped = !axis_style.inline_is_horizontal();
-          (axis_style, axes_swapped)
-        };
-
-        let inline_is_horizontal = axis_style.inline_is_horizontal();
-        let mut mirror_x = false;
-        let mut mirror_y = false;
-        if !axis_style.inline_positive() {
-          if inline_is_horizontal {
-            mirror_x = true;
-          } else {
-            mirror_y = true;
-          }
-        }
-        if !axis_style.block_positive() {
-          if inline_is_horizontal {
-            mirror_y = true;
-          } else {
-            mirror_x = true;
-          }
-        }
+        let container_style = taffy
+          .style(root_id)
+          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        let axes_swapped = container_style.axes_swapped;
+        let mirror_x = !container_style.start_end_axis_positive.x;
+        let mirror_y = !container_style.start_end_axis_positive.y;
 
         #[derive(Clone, Copy, Default)]
         struct GridAreaOverride {
@@ -15318,7 +15228,6 @@ impl FormattingContext for GridFormattingContext {
         let mut static_positions: FxHashMap<usize, Point> = FxHashMap::default();
         let mut grid_area_overrides: FxHashMap<usize, GridAreaOverride> = FxHashMap::default();
         if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(root_id) {
-          if let Ok(container_style) = taffy.style(root_id) {
             let row_offsets = compute_track_offsets(
               &info.rows,
               fragment.bounds.height(),
@@ -15531,7 +15440,6 @@ impl FormattingContext for GridFormattingContext {
                 grid_area_overrides.insert(child_id, override_area);
               }
             }
-          }
         }
 
         let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(

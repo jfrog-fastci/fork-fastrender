@@ -4483,3 +4483,87 @@ fn abspos_named_lines_resolve_through_nested_subgrids_with_writing_mode_mismatch
     "named line placement resolves to the second inherited column track on the physical Y axis",
   );
 }
+
+#[test]
+fn abspos_row_subgrid_respects_local_direction_for_columns_through_subgrid_chain() {
+  // Regression: when reconstructing grid-based static positions for out-of-flow items, subgrids
+  // should use the same effective axis style as grid layout. In particular, `direction` should
+  // only be inherited when the inline axis (columns) is subgridded.
+  //
+  // This case creates a subgrid chain:
+  //   root grid (direction: rtl) -> column-subgrid -> row-subgrid (direction: ltr)
+  //
+  // The nested row-subgrid defines its own columns, so it must keep its local `direction:ltr`
+  // even though its parent is a column-subgrid (which inherits direction from the root).
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Grid;
+  root_style.position = Position::Relative;
+  root_style.direction = Direction::Rtl;
+  root_style.grid_template_columns = vec![GridTrack::Length(Length::px(50.0))];
+  root_style.grid_template_rows = vec![GridTrack::Length(Length::px(10.0))];
+  root_style.width = Some(Length::px(50.0));
+  root_style.height = Some(Length::px(10.0));
+
+  let mut outer_style = ComputedStyle::default();
+  outer_style.display = Display::Grid;
+  outer_style.grid_column_subgrid = true;
+  outer_style.grid_column_start = 1;
+  outer_style.grid_column_end = 2;
+  outer_style.grid_row_start = 1;
+  outer_style.grid_row_end = 2;
+  outer_style.grid_template_rows = vec![GridTrack::Length(Length::px(10.0))];
+  // Intentionally choose the opposite direction; because this is a column-subgrid, it should still
+  // inherit `direction: rtl` from the root grid.
+  outer_style.direction = Direction::Ltr;
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.display = Display::Grid;
+  inner_style.grid_row_subgrid = true;
+  inner_style.grid_row_start = 1;
+  inner_style.grid_row_end = 2;
+  // Columns are local to this grid (not subgridded), so direction must be honored locally.
+  inner_style.direction = Direction::Ltr;
+  inner_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(30.0)),
+  ];
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Block;
+  abs_style.position = Position::Absolute;
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+  // Place in the *second* column so incorrect RTL mirroring is observable (it would move the item
+  // to x=0 instead of x=20).
+  abs_style.grid_column_start = 2;
+  abs_style.grid_column_end = 3;
+  abs_style.grid_row_start = 1;
+  abs_style.grid_row_end = 2;
+
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Grid,
+    vec![abs_child],
+  );
+  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Grid, vec![inner]);
+  let grid = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Grid, vec![outer]);
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let outer_fragment = &fragment.children[0];
+  let inner_fragment = &outer_fragment.children[0];
+  let abs_fragment = inner_fragment
+    .iter_fragments()
+    .find(|node| matches!(node.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .expect("absolute fragment present");
+
+  assert_approx(
+    abs_fragment.bounds.x(),
+    20.0,
+    "row-subgrid should keep local direction for column placement (no RTL mirroring)",
+  );
+}
