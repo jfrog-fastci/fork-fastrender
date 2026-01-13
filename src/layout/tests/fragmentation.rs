@@ -421,6 +421,149 @@ fn grid_item_forced_column_break_does_not_force_sibling_breaks() {
 }
 
 #[test]
+fn abspos_parallel_flow_forced_page_break_creates_additional_fragmentainer() {
+  let fragmentainer_size = 100.0;
+
+  let a = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 50.0), 1, vec![]);
+  let b = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 50.0, 40.0, 50.0), 2, vec![]);
+
+  let mut abs1_style = ComputedStyle::default();
+  abs1_style.break_after = BreakBetween::Page;
+  let mut abs1 =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 3, vec![]);
+  abs1.style = Some(Arc::new(abs1_style));
+
+  let abs2 =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 4, vec![]);
+
+  let mut abspos_style = ComputedStyle::default();
+  abspos_style.position = Position::Absolute;
+  let mut abspos = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+    10,
+    vec![abs1, abs2],
+  );
+  abspos.style = Some(Arc::new(abspos_style));
+
+  // Root is only tall enough for the in-flow content. The abspos continuation should still force
+  // an additional fragmentainer slice.
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 100.0, fragmentainer_size),
+    vec![a, b, abspos],
+  );
+
+  let fragments = fragment_tree(&root, &FragmentationOptions::new(fragmentainer_size)).unwrap();
+  assert_eq!(fragments.len(), 2);
+
+  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+  assert_eq!(fragments_with_id(&fragments[0], 2).len(), 1);
+  assert!(fragments_with_id(&fragments[1], 1).is_empty());
+  assert!(fragments_with_id(&fragments[1], 2).is_empty());
+
+  assert!(
+    fragments_with_id(&fragments[0], 4).is_empty(),
+    "post-break abspos content must not appear in the first fragmentainer"
+  );
+  assert_eq!(
+    fragments_with_id(&fragments[1], 4).len(),
+    1,
+    "post-break abspos content should appear in the next fragmentainer"
+  );
+}
+
+#[test]
+fn abspos_break_before_after_are_ignored_in_parent_flow() {
+  let fragmentainer_size = 100.0;
+
+  let a = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 50.0), 1, vec![]);
+  let b = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 50.0, 40.0, 50.0), 2, vec![]);
+
+  let abs1 =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 3, vec![]);
+  let abs2 =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 4, vec![]);
+
+  let mut abspos_style = ComputedStyle::default();
+  abspos_style.position = Position::Absolute;
+  abspos_style.break_before = BreakBetween::Page;
+  abspos_style.break_after = BreakBetween::Page;
+  let mut abspos = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+    10,
+    vec![abs1, abs2],
+  );
+  abspos.style = Some(Arc::new(abspos_style));
+
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 100.0, fragmentainer_size),
+    vec![a, b, abspos],
+  );
+
+  let fragments = fragment_tree(&root, &FragmentationOptions::new(fragmentainer_size)).unwrap();
+  assert_eq!(
+    fragments.len(),
+    1,
+    "break-before/after on abspos should not force additional fragments when everything fits"
+  );
+}
+
+#[test]
+fn abspos_parallel_flow_forced_column_break_does_not_force_in_flow_siblings() {
+  let column_height = 100.0;
+
+  let a = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 50.0), 1, vec![]);
+  let b = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 50.0, 40.0, 50.0), 2, vec![]);
+
+  let mut abs1_style = ComputedStyle::default();
+  abs1_style.break_after = BreakBetween::Column;
+  let mut abs1 =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 3, vec![]);
+  abs1.style = Some(Arc::new(abs1_style));
+
+  let abs2 =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 4, vec![]);
+
+  let mut abspos_style = ComputedStyle::default();
+  abspos_style.position = Position::Absolute;
+  let mut abspos = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+    10,
+    vec![abs1, abs2],
+  );
+  abspos.style = Some(Arc::new(abspos_style));
+
+  // Root is only tall enough for the in-flow content. The abspos continuation should still create
+  // an additional column fragment.
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 100.0, column_height),
+    vec![a, b, abspos],
+  );
+
+  let options = FragmentationOptions::new(column_height).with_columns(2, 0.0);
+  let fragments = fragment_tree(&root, &options).unwrap();
+  assert_eq!(
+    fragments.len(),
+    2,
+    "forced break inside abspos parallel flow should create a continuation column"
+  );
+
+  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+  assert_eq!(fragments_with_id(&fragments[0], 2).len(), 1);
+  assert!(fragments_with_id(&fragments[1], 1).is_empty());
+  assert!(fragments_with_id(&fragments[1], 2).is_empty());
+
+  assert!(
+    fragments_with_id(&fragments[0], 4).is_empty(),
+    "post-break abspos content must not appear in the first column"
+  );
+  assert_eq!(
+    fragments_with_id(&fragments[1], 4).len(),
+    1,
+    "post-break abspos content should appear in the continuation column"
+  );
+}
+
+#[test]
 fn vertical_writing_fragment_tree_columns_use_inline_axis() {
   let mut style = ComputedStyle::default();
   style.display = Display::Block;

@@ -1174,8 +1174,78 @@ fn grid_container_parallel_flow_required_block_size(
   }
 }
 
+fn abspos_parallel_flow_required_block_size(
+  node: &FragmentNode,
+  abs_start: f32,
+  axis: &FragmentAxis,
+  fragmentainer_size: f32,
+  context: FragmentationContext,
+) -> Option<f32> {
+  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
+    return None;
+  }
+
+  let default_style = default_style();
+  let style = node
+    .style
+    .as_ref()
+    .map(|s| s.as_ref())
+    .unwrap_or(default_style);
+  if !style.position.is_absolutely_positioned() {
+    return None;
+  }
+
+  let node_block_size = axis.block_size(&node.bounds).max(0.0);
+  if node_block_size <= BREAK_EPSILON {
+    return None;
+  }
+
+  // CSS Break 3 §3: Absolutely-positioned elements establish a parallel fragmentation flow. Model
+  // forced breaks inside by inserting blank space up to the next fragmentainer boundary so
+  // continuation content overlaps later fragmentainers without forcing breaks in the main flow.
+  let node_writing_mode = node
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(default_style.writing_mode);
+  let mut collection = BreakCollection::default();
+  collect_break_opportunities(
+    node,
+    abs_start,
+    &mut collection,
+    0,
+    0,
+    context,
+    axis,
+    node_writing_mode,
+    false,
+    false,
+    false,
+  );
+
+  let abs_end = abs_start + node_block_size;
+  let mut positions: Vec<f32> = collection
+    .opportunities
+    .into_iter()
+    .filter(|o| matches!(o.strength, BreakStrength::Forced))
+    .map(|o| o.pos)
+    .collect();
+  positions.retain(|p| *p > abs_start + BREAK_EPSILON && *p < abs_end - BREAK_EPSILON);
+
+  let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) else {
+    return None;
+  };
+
+  let required = node_block_size + shifts.shift_for(abs_end);
+  if required > node_block_size + BREAK_EPSILON {
+    Some(required)
+  } else {
+    None
+  }
+}
+
 /// Computes the total block-axis extent of a fragment tree, accounting for parallel fragmentation
-/// flows (currently grid items in a row).
+/// flows (e.g. grid items in a row and absolutely-positioned subtrees).
 pub(crate) fn parallel_flow_content_extent(
   root: &FragmentNode,
   axes: FragmentAxes,
@@ -1304,6 +1374,11 @@ pub(crate) fn parallel_flow_content_extent(
       fragmentainer_size,
       context,
     ) {
+      *extent = extent.max(abs_start + required);
+    }
+    if let Some(required) =
+      abspos_parallel_flow_required_block_size(node, abs_start, axis, fragmentainer_size, context)
+    {
       *extent = extent.max(abs_start + required);
     }
 
@@ -2792,6 +2867,12 @@ pub(crate) fn clip_node(
     node_block_size = node_block_size.max(required);
     node_flow_end = node_flow_start + node_block_size;
   }
+  if let Some(required) =
+    abspos_parallel_flow_required_block_size(node, node_flow_start, axis, fragmentainer_size, context)
+  {
+    node_block_size = node_block_size.max(required);
+    node_flow_end = node_flow_start + node_block_size;
+  }
   let node_bbox = node.logical_bounding_box();
   let node_bbox_block_size = axis.block_size(&node_bbox);
   let node_bbox_flow_start = parent_abs_flow_start
@@ -2806,9 +2887,13 @@ pub(crate) fn clip_node(
   // when their laid-out bounds fit within a single fragmentainer. Boundary resolution inflates the
   // total extent using `parallel_flow_content_extent`, so clipping must also treat ancestor nodes as
   // overlapping later fragmentainers (pages/columns) or the continuation content would be dropped.
+  let parallel_flow_might_extend_past_fragment_start = node_bbox_flow_end <= fragment_start
+    || (matches!(context, FragmentationContext::Column)
+      && node_flow_end <= fragment_start
+      && node_bbox_flow_end > fragment_start + BREAK_EPSILON);
   if fragmentainer_size.is_finite()
     && fragmentainer_size > 0.0
-    && node_bbox_flow_end <= fragment_start
+    && parallel_flow_might_extend_past_fragment_start
   {
     let required = parallel_flow_content_extent(node, axes, Some(fragmentainer_size), context);
     if required > node_block_size + BREAK_EPSILON {
