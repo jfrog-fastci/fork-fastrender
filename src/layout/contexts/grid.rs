@@ -20587,6 +20587,74 @@ mod tests {
   }
 
   #[test]
+  fn grid_measure_shared_cache_caps_override_entries_per_shard() {
+    let _lock = grid_measure_size_cache_test_lock();
+    reset_grid_measure_size_cache_for_test();
+
+    let epoch = 1usize;
+    // Seed a few base-style entries in a single shard.
+    let base_entries = 64usize;
+    for i in 0..base_entries {
+      let key = MeasureKey {
+        box_id: i * GRID_MEASURE_SHARED_CACHE_SHARDS, // force shard 0
+        style_ptr: 0,
+        override_fingerprint: None,
+        known_width: None,
+        known_height: None,
+        available_width: MeasureAvailKey::Indefinite,
+        available_height: MeasureAvailKey::Indefinite,
+      };
+      GLOBAL_GRID_MEASURE_SIZE_CACHE.insert(key, epoch, taffy::tree::MeasureOutput::ZERO);
+    }
+
+    // Insert more override-key entries than the per-shard cap and ensure they don't grow
+    // unbounded or evict the base-style keyset.
+    let override_attempts = GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD * 3;
+    for i in 0..override_attempts {
+      let key = MeasureKey {
+        box_id: (i + 10_000) * GRID_MEASURE_SHARED_CACHE_SHARDS, // keep shard 0, distinct ids
+        style_ptr: 0,
+        override_fingerprint: Some(i as u64),
+        known_width: None,
+        known_height: None,
+        available_width: MeasureAvailKey::Indefinite,
+        available_height: MeasureAvailKey::Indefinite,
+      };
+      GLOBAL_GRID_MEASURE_SIZE_CACHE.insert(key, epoch, taffy::tree::MeasureOutput::ZERO);
+    }
+
+    let shard = GLOBAL_GRID_MEASURE_SIZE_CACHE
+      .shards
+      .get(0)
+      .expect("shard 0");
+    let shard = shard.read();
+    assert!(
+      shard.override_entries <= GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD,
+      "override entries should be capped (got {}, cap {})",
+      shard.override_entries,
+      GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD
+    );
+    let actual_override_entries = shard
+      .map
+      .keys()
+      .filter(|key| key.override_fingerprint.is_some())
+      .count();
+    assert_eq!(
+      actual_override_entries, shard.override_entries,
+      "override entry counter must match actual override keys"
+    );
+    let base_count = shard
+      .map
+      .keys()
+      .filter(|key| key.override_fingerprint.is_none())
+      .count();
+    assert_eq!(
+      base_count, base_entries,
+      "override eviction should not evict base-style entries when there is free capacity"
+    );
+  }
+
+  #[test]
   fn grid_measure_quantization_limits_layout_calls() {
     use taffy::style::AvailableSpace;
 
