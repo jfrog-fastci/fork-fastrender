@@ -1075,27 +1075,25 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
   // least one affected track. Doing this via `.iter().any(..)` would be O(items * span). Instead,
   // build prefix sums of relevant track predicates so each range check is O(1).
   let track_count = axis_tracks.len();
-  let mut prefix_min_or_max_content_min: Vec<u32> = Vec::with_capacity(track_count + 1);
-  let mut prefix_min_or_max_content_min_flex: Vec<u32> = Vec::with_capacity(track_count + 1);
-  let mut prefix_max_content_min: Vec<u32> = Vec::with_capacity(track_count + 1);
-  let mut prefix_max_content_min_flex: Vec<u32> = Vec::with_capacity(track_count + 1);
-  let mut prefix_auto_min: Vec<u32> = Vec::with_capacity(track_count + 1);
-  let mut prefix_auto_min_flex: Vec<u32> = Vec::with_capacity(track_count + 1);
-  let mut prefix_intrinsic_min: Vec<u32> = Vec::with_capacity(track_count + 1);
-  let mut prefix_intrinsic_min_flex: Vec<u32> = Vec::with_capacity(track_count + 1);
-  let mut prefix_intrinsic_max: Vec<u32> = Vec::with_capacity(track_count + 1);
-  let mut prefix_max_content_max: Vec<u32> = Vec::with_capacity(track_count + 1);
+  // These are consulted extremely frequently in the intrinsic sizing loops, so keep them as simple
+  // `u32` prefix counts. Using a single backing buffer avoids 10 separate heap allocations per pass.
+  const PREFIX_VEC_COUNT: usize = 10;
+  let prefix_len = track_count + 1;
+  let mut prefix_buf: Vec<u32> = Vec::with_capacity(prefix_len * PREFIX_VEC_COUNT);
+  prefix_buf.resize(prefix_len * PREFIX_VEC_COUNT, 0);
 
-  prefix_min_or_max_content_min.push(0);
-  prefix_min_or_max_content_min_flex.push(0);
-  prefix_max_content_min.push(0);
-  prefix_max_content_min_flex.push(0);
-  prefix_auto_min.push(0);
-  prefix_auto_min_flex.push(0);
-  prefix_intrinsic_min.push(0);
-  prefix_intrinsic_min_flex.push(0);
-  prefix_intrinsic_max.push(0);
-  prefix_max_content_max.push(0);
+  let remaining = prefix_buf.as_mut_slice();
+  let (prefix_min_or_max_content_min, remaining) = remaining.split_at_mut(prefix_len);
+  let (prefix_min_or_max_content_min_flex, remaining) = remaining.split_at_mut(prefix_len);
+  let (prefix_max_content_min, remaining) = remaining.split_at_mut(prefix_len);
+  let (prefix_max_content_min_flex, remaining) = remaining.split_at_mut(prefix_len);
+  let (prefix_auto_min, remaining) = remaining.split_at_mut(prefix_len);
+  let (prefix_auto_min_flex, remaining) = remaining.split_at_mut(prefix_len);
+  let (prefix_intrinsic_min, remaining) = remaining.split_at_mut(prefix_len);
+  let (prefix_intrinsic_min_flex, remaining) = remaining.split_at_mut(prefix_len);
+  let (prefix_intrinsic_max, remaining) = remaining.split_at_mut(prefix_len);
+  let (prefix_max_content_max, remaining) = remaining.split_at_mut(prefix_len);
+  debug_assert!(remaining.is_empty());
 
   let mut running_min_or_max_content_min = 0u32;
   let mut running_min_or_max_content_min_flex = 0u32;
@@ -1108,45 +1106,46 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
   let mut running_intrinsic_max = 0u32;
   let mut running_max_content_max = 0u32;
 
-  for track in axis_tracks.iter() {
+  for (track_index, track) in axis_tracks.iter().enumerate() {
+    let prefix_index = track_index + 1;
     let is_flexible = track.is_flexible();
 
     let is_min_or_max_content_min = track.min_track_sizing_function.is_min_or_max_content();
     running_min_or_max_content_min += u32::from(is_min_or_max_content_min);
     running_min_or_max_content_min_flex += u32::from(is_min_or_max_content_min && is_flexible);
-    prefix_min_or_max_content_min.push(running_min_or_max_content_min);
-    prefix_min_or_max_content_min_flex.push(running_min_or_max_content_min_flex);
+    prefix_min_or_max_content_min[prefix_index] = running_min_or_max_content_min;
+    prefix_min_or_max_content_min_flex[prefix_index] = running_min_or_max_content_min_flex;
 
     let is_max_content_min = track.min_track_sizing_function.is_max_content();
     running_max_content_min += u32::from(is_max_content_min);
     running_max_content_min_flex += u32::from(is_max_content_min && is_flexible);
-    prefix_max_content_min.push(running_max_content_min);
-    prefix_max_content_min_flex.push(running_max_content_min_flex);
+    prefix_max_content_min[prefix_index] = running_max_content_min;
+    prefix_max_content_min_flex[prefix_index] = running_max_content_min_flex;
 
     let is_auto_min = track.min_track_sizing_function.is_auto()
       && !track.max_track_sizing_function.is_min_content();
     running_auto_min += u32::from(is_auto_min);
     running_auto_min_flex += u32::from(is_auto_min && is_flexible);
-    prefix_auto_min.push(running_auto_min);
-    prefix_auto_min_flex.push(running_auto_min_flex);
+    prefix_auto_min[prefix_index] = running_auto_min;
+    prefix_auto_min_flex[prefix_index] = running_auto_min_flex;
 
     let is_intrinsic_min = has_intrinsic_min_track_sizing_function(track);
     running_intrinsic_min += u32::from(is_intrinsic_min);
     running_intrinsic_min_flex += u32::from(is_intrinsic_min && is_flexible);
-    prefix_intrinsic_min.push(running_intrinsic_min);
-    prefix_intrinsic_min_flex.push(running_intrinsic_min_flex);
+    prefix_intrinsic_min[prefix_index] = running_intrinsic_min;
+    prefix_intrinsic_min_flex[prefix_index] = running_intrinsic_min_flex;
 
     let is_intrinsic_max =
       !track.max_track_sizing_function.has_definite_value(percentage_basis(track));
     running_intrinsic_max += u32::from(is_intrinsic_max);
-    prefix_intrinsic_max.push(running_intrinsic_max);
+    prefix_intrinsic_max[prefix_index] = running_intrinsic_max;
 
     let is_max_content_max = track.max_track_sizing_function.is_max_content_alike()
       || (track.kind == GridTrackKind::Track
         && track.max_track_sizing_function.uses_percentage()
         && axis_inner_node_size.is_none());
     running_max_content_max += u32::from(is_max_content_max);
-    prefix_max_content_max.push(running_max_content_max);
+    prefix_max_content_max[prefix_index] = running_max_content_max;
   }
 
   let any_min_or_max_content_min_track_sizing_function = running_min_or_max_content_min > 0;
@@ -1357,9 +1356,9 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
         let start = item_track_range.start;
         let end = item_track_range.end;
         let item_spans_affected_track = if is_flex {
-          range_has_any(&prefix_intrinsic_min_flex, start, end)
+          range_has_any(prefix_intrinsic_min_flex, start, end)
         } else {
-          range_has_any(&prefix_intrinsic_min, start, end)
+          range_has_any(prefix_intrinsic_min, start, end)
         };
         if !item_spans_affected_track {
           continue;
@@ -1433,9 +1432,9 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
         let start = item_track_range.start;
         let end = item_track_range.end;
         let item_spans_affected_track = if is_flex {
-          range_has_any(&prefix_min_or_max_content_min_flex, start, end)
+          range_has_any(prefix_min_or_max_content_min_flex, start, end)
         } else {
-          range_has_any(&prefix_min_or_max_content_min, start, end)
+          range_has_any(prefix_min_or_max_content_min, start, end)
         };
         if !item_spans_affected_track {
           continue;
@@ -1513,17 +1512,17 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
           let item_track_range = item.track_range_excluding_lines(axis);
           let start = item_track_range.start;
           let end = item_track_range.end;
-          let prioritize_max_content_minimums = range_has_any(&prefix_max_content_min, start, end);
+          let prioritize_max_content_minimums = range_has_any(prefix_max_content_min, start, end);
           let item_spans_affected_track = if prioritize_max_content_minimums {
             if is_flex {
-              range_has_any(&prefix_max_content_min_flex, start, end)
+              range_has_any(prefix_max_content_min_flex, start, end)
             } else {
               true
             }
           } else if is_flex {
-            range_has_any(&prefix_auto_min_flex, start, end)
+            range_has_any(prefix_auto_min_flex, start, end)
           } else {
-            range_has_any(&prefix_auto_min, start, end)
+            range_has_any(prefix_auto_min, start, end)
           };
 
           if !item_spans_affected_track {
@@ -1589,9 +1588,9 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
         let start = item_track_range.start;
         let end = item_track_range.end;
         let item_spans_affected_track = if is_flex {
-          range_has_any(&prefix_max_content_min_flex, start, end)
+          range_has_any(prefix_max_content_min_flex, start, end)
         } else {
-          range_has_any(&prefix_max_content_min, start, end)
+          range_has_any(prefix_max_content_min, start, end)
         };
         if !item_spans_affected_track {
           continue;
@@ -1637,7 +1636,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
           let item_track_range = item.track_range_excluding_lines(axis);
           let start = item_track_range.start;
           let end = item_track_range.end;
-          if !range_has_any(&prefix_intrinsic_max, start, end) {
+          if !range_has_any(prefix_intrinsic_max, start, end) {
             continue;
           }
 
@@ -1671,7 +1670,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
           let item_track_range = item.track_range_excluding_lines(axis);
           let start = item_track_range.start;
           let end = item_track_range.end;
-          if !range_has_any(&prefix_max_content_max, start, end) {
+          if !range_has_any(prefix_max_content_max, start, end) {
             continue;
           }
 
