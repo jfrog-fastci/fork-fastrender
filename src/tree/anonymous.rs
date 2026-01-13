@@ -1137,6 +1137,7 @@ pub(crate) fn inherited_style(parent: &ComputedStyle) -> ComputedStyle {
   style.writing_mode = parent.writing_mode;
   style.letter_spacing = parent.letter_spacing;
   style.word_spacing = parent.word_spacing;
+  style.line_padding = parent.line_padding;
   style.justify_items = parent.justify_items;
   style.visibility = parent.visibility;
   style.visibility_is_inherited = true;
@@ -2203,10 +2204,7 @@ mod tests {
 
     // Inline fragments should preserve the inline's style.
     assert!(!fixed.children[0].children.is_empty());
-    assert!(Arc::ptr_eq(
-      &fixed.children[0].children[0].style,
-      &style
-    ));
+    assert!(Arc::ptr_eq(&fixed.children[0].children[0].style, &style));
   }
 
   #[test]

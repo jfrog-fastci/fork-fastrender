@@ -359,6 +359,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "line-break",
   "line-clamp",
   "line-height",
+  "line-padding",
   "list-style",
   "list-style-image",
   "list-style-position",

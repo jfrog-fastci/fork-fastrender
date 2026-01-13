@@ -3087,7 +3087,10 @@ fn parse_min_max_time<'i, 't>(
     if let Some(value) = values.pop() {
       return Ok(value);
     }
-    debug_assert!(false, "min()/max() values unexpectedly empty after length check");
+    debug_assert!(
+      false,
+      "min()/max() values unexpectedly empty after length check"
+    );
     return Err(input.new_custom_error::<(), ()>(()));
   }
 
@@ -3104,7 +3107,8 @@ fn parse_min_max_time<'i, 't>(
       .ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
     let mut extremum = first;
     for component in iter {
-      let ms = calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
+      let ms = calc_time_component_to_ms(component)
+        .ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
       extremum = match func {
         TimeMathFn::Min => extremum.min(ms),
         TimeMathFn::Max => extremum.max(ms),
@@ -3151,10 +3155,12 @@ fn parse_clamp_time<'i, 't>(
     || matches!(max, CalcTimeComponent::Time(_));
 
   if has_time {
-    let min_ms = calc_time_component_to_ms(min).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
-    let preferred_ms =
-      calc_time_component_to_ms(preferred).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
-    let max_ms = calc_time_component_to_ms(max).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
+    let min_ms =
+      calc_time_component_to_ms(min).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
+    let preferred_ms = calc_time_component_to_ms(preferred)
+      .ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
+    let max_ms =
+      calc_time_component_to_ms(max).ok_or_else(|| location.new_custom_error::<(), ()>(()))?;
     let upper = if max_ms < min_ms { min_ms } else { max_ms };
     Ok(CalcTimeComponent::Time(preferred_ms.max(min_ms).min(upper)))
   } else {
@@ -3198,7 +3204,8 @@ fn parse_math_time_ms(raw: &str) -> Option<f32> {
           } else {
             return Err(location.new_custom_error::<(), ()>(()));
           };
-          calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error::<(), ()>(()))
+          calc_time_component_to_ms(component)
+            .ok_or_else(|| location.new_custom_error::<(), ()>(()))
         }
         _ => Err(location.new_custom_error::<(), ()>(())),
       }
@@ -5258,6 +5265,7 @@ fn is_inherited_property(name: &str) -> bool {
       | "text-orientation"
       | "letter-spacing"
       | "word-spacing"
+      | "line-padding"
       | "text-anchor"
       | "dominant-baseline"
       | "baseline-shift"
@@ -7499,6 +7507,7 @@ pub(crate) fn apply_property_from_source(
     "text-transform" => styles.text_transform = source.text_transform,
     "letter-spacing" => styles.letter_spacing = source.letter_spacing,
     "word-spacing" => styles.word_spacing = source.word_spacing,
+    "line-padding" => styles.line_padding = source.line_padding,
     "white-space" => styles.white_space = source.white_space,
     "line-break" => styles.line_break = source.line_break,
     "break-before" => styles.break_before = source.break_before,
@@ -14658,7 +14667,9 @@ fn apply_declaration_with_base_internal_with_order(
           match TextEdgeKeyword::parse(tokens[0]) {
             Some(keyword) => {
               let (over, under) = match keyword {
-                TextEdgeKeyword::Cap | TextEdgeKeyword::Ex => (keyword, TextEdgeKeyword::Alphabetic),
+                TextEdgeKeyword::Cap | TextEdgeKeyword::Ex => {
+                  (keyword, TextEdgeKeyword::Alphabetic)
+                }
                 TextEdgeKeyword::Alphabetic => (TextEdgeKeyword::Text, TextEdgeKeyword::Alphabetic),
                 TextEdgeKeyword::Text
                 | TextEdgeKeyword::Ideographic
@@ -14722,7 +14733,7 @@ fn apply_declaration_with_base_internal_with_order(
           _ => styles.text_orientation,
         };
       }
-    },
+    }
     "text-combine-upright" => {
       if let Some(value) = parse_text_combine_upright(resolved_value) {
         styles.text_combine_upright = value;
@@ -15083,6 +15094,22 @@ fn apply_declaration_with_base_internal_with_order(
         parse_spacing_value(resolved_value, font_size, root_font_size, viewport, true)
       {
         styles.word_spacing = len;
+      }
+    }
+    "line-padding" => {
+      let font_size = if styles.font_size.is_finite() && styles.font_size > 0.0 {
+        styles.font_size
+      } else {
+        parent_font_size
+      };
+      if let Some(len) = match resolved_value {
+        PropertyValue::Number(n) if *n == 0.0 => Some(0.0),
+        PropertyValue::Length(len) => {
+          resolve_font_relative_length(*len, font_size, root_font_size, viewport)
+        }
+        _ => None,
+      } {
+        styles.line_padding = len;
       }
     }
     "white-space" => {
@@ -16680,10 +16707,7 @@ fn apply_declaration_with_base_internal_with_order(
             .get(source_idx)
             .copied()
             .unwrap_or_else(|| default.clone());
-          let inline_value = values
-            .get(idx)
-            .copied()
-            .unwrap_or(fallback_inline_value);
+          let inline_value = values.get(idx).copied().unwrap_or(fallback_inline_value);
           let explicit = match source {
             BackgroundSize::Explicit(mut x, mut y) => {
               if horizontal_inline {
@@ -16731,10 +16755,7 @@ fn apply_declaration_with_base_internal_with_order(
             .get(source_idx)
             .copied()
             .unwrap_or(default);
-          let block_value = values
-            .get(idx)
-            .copied()
-            .unwrap_or(fallback_block_value);
+          let block_value = values.get(idx).copied().unwrap_or(fallback_block_value);
           let explicit = match source {
             BackgroundSize::Explicit(mut x, mut y) => {
               if horizontal_block {
@@ -16801,11 +16822,11 @@ fn apply_declaration_with_base_internal_with_order(
             .get(source_idx)
             .copied()
             .unwrap_or(default);
-          let x_kw = values
-            .get(idx)
-            .copied()
-            .unwrap_or(fallback_x_kw);
-          repeats.push(BackgroundRepeat { x: x_kw, y: source.y });
+          let x_kw = values.get(idx).copied().unwrap_or(fallback_x_kw);
+          repeats.push(BackgroundRepeat {
+            x: x_kw,
+            y: source.y,
+          });
         }
         styles.background_repeats = repeats.into();
         styles.logical.background_repeat_order = order;
@@ -16842,11 +16863,11 @@ fn apply_declaration_with_base_internal_with_order(
             .get(source_idx)
             .copied()
             .unwrap_or(default);
-          let y_kw = values
-            .get(idx)
-            .copied()
-            .unwrap_or(fallback_y_kw);
-          repeats.push(BackgroundRepeat { x: source.x, y: y_kw });
+          let y_kw = values.get(idx).copied().unwrap_or(fallback_y_kw);
+          repeats.push(BackgroundRepeat {
+            x: source.x,
+            y: y_kw,
+          });
         }
         styles.background_repeats = repeats.into();
         styles.logical.background_repeat_order = order;
@@ -21958,7 +21979,8 @@ fn length_from_token(token: &Token) -> Option<Length> {
 fn parse_angle_degrees<'i, 't>(
   input: &mut Parser<'i, 't>,
 ) -> Result<f32, cssparser::ParseError<'i, ()>> {
-  crate::css::properties::parse_angle_component(input).map_err(|_| input.new_custom_error::<(), ()>(()))
+  crate::css::properties::parse_angle_component(input)
+    .map_err(|_| input.new_custom_error::<(), ()>(()))
 }
 
 fn parse_length_component<'i, 't>(
@@ -34593,8 +34615,8 @@ mod tests {
 
   #[test]
   fn image_set_parses_url_with_close_paren_in_string() {
-    let parsed = parse_image_set("image-set(url(\"foo).png\") 1x, url(\"bar.png\") 2x)")
-      .expect("image-set");
+    let parsed =
+      parse_image_set("image-set(url(\"foo).png\") 1x, url(\"bar.png\") 2x)").expect("image-set");
     assert_eq!(
       parsed,
       BackgroundImage::Url(BackgroundImageUrl {
@@ -34645,8 +34667,8 @@ mod tests {
 
   #[test]
   fn image_set_treats_comments_as_whitespace() {
-    let parsed =
-      parse_image_set("image-set(url(\"a.png\")/*comment*/1x, url(\"b.png\")2x)").expect("image-set");
+    let parsed = parse_image_set("image-set(url(\"a.png\")/*comment*/1x, url(\"b.png\")2x)")
+      .expect("image-set");
     assert_eq!(
       parsed,
       BackgroundImage::Url(BackgroundImageUrl {
@@ -34663,10 +34685,9 @@ mod tests {
 
   #[test]
   fn image_set_rejects_unquoted_type_descriptor() {
-    let parsed = parse_image_set(
-      "image-set(url(\"bad.png\") 1x type(image/png), url(\"good.png\") 1x)",
-    )
-    .expect("image-set");
+    let parsed =
+      parse_image_set("image-set(url(\"bad.png\") 1x type(image/png), url(\"good.png\") 1x)")
+        .expect("image-set");
     assert_eq!(
       parsed,
       BackgroundImage::Url(BackgroundImageUrl {
@@ -35894,7 +35915,9 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::RED;
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(BackgroundImageUrl::new("foo.png".to_string()))),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
+        "foo.png".to_string(),
+      ))),
       repeat: BackgroundRepeat::repeat_x(),
       origin: BackgroundBox::ContentBox,
       ..BackgroundLayer::default()
@@ -38726,7 +38749,9 @@ mod tests {
 
     assert_eq!(
       style.shape_outside,
-      ShapeOutside::Image(BackgroundImage::Url(BackgroundImageUrl::new("a.png".to_string())))
+      ShapeOutside::Image(BackgroundImage::Url(BackgroundImageUrl::new(
+        "a.png".to_string()
+      )))
     );
 
     apply_declaration(

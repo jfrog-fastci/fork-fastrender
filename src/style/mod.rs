@@ -142,8 +142,8 @@ use types::ImageOrientation;
 use types::ImageRendering;
 use types::ImageResolution;
 use types::InsetValue;
-use types::IntrinsicSizeKeyword;
 use types::InterpolateSize;
+use types::IntrinsicSizeKeyword;
 use types::Isolation;
 use types::JustifyContent;
 use types::LengthOrNumber;
@@ -207,6 +207,8 @@ use types::TabSize;
 use types::TableLayout;
 use types::TextAlign;
 use types::TextAlignLast;
+use types::TextBoxEdge;
+use types::TextBoxTrim;
 use types::TextCombineUpright;
 use types::TextDecoration;
 use types::TextDecorationSkipBox;
@@ -226,8 +228,6 @@ use types::TextSizeAdjust;
 use types::TextTransform;
 use types::TextUnderlineOffset;
 use types::TextUnderlinePosition;
-use types::TextBoxEdge;
-use types::TextBoxTrim;
 use types::TextWrap;
 use types::TimelineScopeProperty;
 use types::TouchAction;
@@ -1244,6 +1244,11 @@ pub struct ComputedStyle {
   pub writing_mode: WritingMode,
   pub letter_spacing: f32,
   pub word_spacing: f32,
+  /// CSS Text 4 `line-padding` - extra inline-axis space inserted at the start/end of each line
+  /// fragment by the innermost inline box at that edge.
+  ///
+  /// Spec: https://www.w3.org/TR/css-text-4/#line-padding-property
+  pub line_padding: f32,
   pub white_space: WhiteSpace,
   pub line_break: LineBreak,
   pub tab_size: TabSize,
@@ -1703,6 +1708,7 @@ impl Default for ComputedStyle {
       writing_mode: WritingMode::HorizontalTb,
       letter_spacing: 0.0,
       word_spacing: 0.0,
+      line_padding: 0.0,
       text_wrap: TextWrap::Auto,
       text_box_trim: TextBoxTrim::None,
       text_box_edge: TextBoxEdge::Auto,

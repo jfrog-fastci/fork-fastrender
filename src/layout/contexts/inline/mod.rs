@@ -1911,8 +1911,12 @@ impl InlineFormattingContext {
             let style = &style_arc;
             let mut item =
               self.create_replaced_item(child, replaced_box, available_width, available_height)?;
-            let gap =
-              marker_inline_gap(style, &self.font_context, self.viewport_size, root_font_metrics);
+            let gap = marker_inline_gap(
+              style,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            );
             item = item.as_marker(gap, style.list_style_position, style.direction);
             current_items.push(InlineItem::Replaced(item));
             if matches!(style.list_style_position, ListStylePosition::Outside) {
@@ -4788,9 +4792,9 @@ impl InlineFormattingContext {
         // replacement, UA styles often set `overflow: clip`, but baseline alignment still follows
         // the internal text baseline. This matches rust-lang.org's language selector in the nav.
         match fc_type {
-          FormattingContextType::Flex | FormattingContextType::Grid | FormattingContextType::Table => {
-            true
-          }
+          FormattingContextType::Flex
+          | FormattingContextType::Grid
+          | FormattingContextType::Table => true,
           _ => {
             (matches!(style.overflow_x, crate::style::types::Overflow::Visible)
               && matches!(style.overflow_y, crate::style::types::Overflow::Visible))
@@ -8662,21 +8666,21 @@ impl InlineFormattingContext {
           text_item.advance + paint_offset.abs(),
           text_item.metrics.height,
         );
-          FragmentNode::new_with_style(
-            bounds,
-            FragmentContent::Text {
-              text: Arc::from(text_item.text.clone()),
-              box_id,
-              source_range: TextSourceRange::new(text_item.source_range()),
-              baseline_offset: text_item.metrics.baseline_offset,
-              shaped: Some(Arc::from(text_item.runs.clone())),
-              is_marker: text_item.is_marker,
-              emphasis_offset: text_item.emphasis_offset,
-              document_selection: None,
-            },
-            vec![],
-            text_item.style.clone(),
-          )
+        FragmentNode::new_with_style(
+          bounds,
+          FragmentContent::Text {
+            text: Arc::from(text_item.text.clone()),
+            box_id,
+            source_range: TextSourceRange::new(text_item.source_range()),
+            baseline_offset: text_item.metrics.baseline_offset,
+            shaped: Some(Arc::from(text_item.runs.clone())),
+            is_marker: text_item.is_marker,
+            emphasis_offset: text_item.emphasis_offset,
+            document_selection: None,
+          },
+          vec![],
+          text_item.style.clone(),
+        )
       }
       InlineItem::SoftBreak => {
         // Soft breaks should be handled by `LineBuilder` and never reach fragment construction.
@@ -8850,7 +8854,7 @@ impl InlineFormattingContext {
         let (baseline, _height, child_offsets) =
           compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
         let border_inline_pos = inline_pos + box_item.margin_left;
-        let mut child_inline = box_item.start_edge;
+        let mut child_inline = box_item.start_edge + box_item.line_padding_start;
         let mut children = Vec::with_capacity(box_item.children.len());
 
         // CSS 2.1 §10.6.1: for inline non-replaced elements, vertical padding/borders are applied
@@ -9214,7 +9218,7 @@ impl InlineFormattingContext {
         // Recursively create children with horizontal and vertical offsets
         let (baseline, _height, child_offsets) =
           compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
-        let mut child_x = box_item.start_edge;
+        let mut child_x = box_item.start_edge + box_item.line_padding_start;
         let origin_x = x + box_item.margin_left;
         // CSS 2.1 §10.6.1: vertical padding/borders start at the content area's edges (font
         // metrics), not the line-height strut edges.
@@ -9230,6 +9234,12 @@ impl InlineFormattingContext {
               - child.baseline_metrics().baseline_offset;
             let fragment = self.create_item_fragment(child, child_x, child_y);
             child_x += child.width();
+            // Justification gaps are part of the inline box's used width but aren't attributed to
+            // any particular child fragment. Insert them explicitly so painted positions match
+            // line measurement.
+            if let Some(gap) = box_item.justify_gaps.get(idx).copied() {
+              child_x += gap;
+            }
             fragment
           })
           .collect();
@@ -21542,11 +21552,17 @@ mod tests {
         }
         "12<tcy><span></span>34</tcy>" => {
           let empty_span = BoxNode::new_inline(tcy_style.clone(), Vec::new());
-          vec![empty_span, BoxNode::new_text(tcy_style.clone(), "34".into())]
+          vec![
+            empty_span,
+            BoxNode::new_text(tcy_style.clone(), "34".into()),
+          ]
         }
         "12<tcy>34<span></span></tcy>" => {
           let empty_span = BoxNode::new_inline(tcy_style.clone(), Vec::new());
-          vec![BoxNode::new_text(tcy_style.clone(), "34".into()), empty_span]
+          vec![
+            BoxNode::new_text(tcy_style.clone(), "34".into()),
+            empty_span,
+          ]
         }
         _ => unreachable!("case label must be one of the spec examples"),
       };
@@ -24836,7 +24852,10 @@ mod tests {
       allow_soft_wrap,
       ..
     } = normalize_text_for_white_space("hello world", style.white_space, style.text_wrap);
-    assert!(!allow_soft_wrap, "text-wrap: nowrap should disable soft wrapping");
+    assert!(
+      !allow_soft_wrap,
+      "text-wrap: nowrap should disable soft wrapping"
+    );
 
     crate::text::line_break::debug_reset_find_break_opportunity_calls();
 

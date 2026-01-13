@@ -333,6 +333,8 @@ impl InlineItem {
           justify_gaps: _,
           start_edge,
           end_edge,
+          line_padding_start: _,
+          line_padding_end: _,
           margin_left,
           margin_right,
           content_offset_y,
@@ -403,6 +405,8 @@ impl InlineItem {
               justify_gaps: Vec::new(),
               start_edge,
               end_edge,
+              line_padding_start: 0.0,
+              line_padding_end: 0.0,
               margin_left,
               margin_right,
               content_offset_y,
@@ -2833,6 +2837,16 @@ pub struct InlineBoxItem {
   /// Closing edge width (right border + padding)
   pub end_edge: f32,
 
+  /// Extra inline-axis space inserted between the inline box's content edge and the adjacent
+  /// inline-level content when this fragment sits at a line edge (`line-padding`).
+  ///
+  /// This is applied per-line fragment, and is separate from the element's real CSS padding so it
+  /// does not affect padding-box geometry (e.g. absolute positioning containing blocks).
+  pub line_padding_start: f32,
+
+  /// Line-end counterpart to [`Self::line_padding_start`].
+  pub line_padding_end: f32,
+
   /// Horizontal margins (only apply to the outermost fragments for `box-decoration-break: slice`)
   pub margin_left: f32,
   pub margin_right: f32,
@@ -2887,6 +2901,8 @@ impl InlineBoxItem {
       justify_gaps: Vec::new(),
       start_edge,
       end_edge,
+      line_padding_start: 0.0,
+      line_padding_end: 0.0,
       margin_left: 0.0,
       margin_right: 0.0,
       content_offset_y,
@@ -2962,7 +2978,12 @@ impl InlineBoxItem {
   pub fn width(&self) -> f32 {
     let content_width: f32 = self.children.iter().map(|c| c.width()).sum();
     let gap_width: f32 = self.justify_gaps.iter().copied().sum();
-    self.start_edge + content_width + gap_width + self.end_edge
+    self.start_edge
+      + self.line_padding_start
+      + content_width
+      + gap_width
+      + self.line_padding_end
+      + self.end_edge
   }
 
   pub fn total_width(&self) -> f32 {
@@ -6076,6 +6097,7 @@ impl<'a> LineBuilder<'a> {
     // Finish any remaining line
     self.finish_line()?;
     self.reorder_lines_for_bidi()?;
+    apply_line_padding_to_lines(&mut self.lines, &mut self.deadline_counter)?;
     Ok(LineBuildResult {
       lines: self.lines,
       truncated: self.truncated,
@@ -6100,6 +6122,137 @@ impl<'a> LineBuilder<'a> {
   pub fn mark_truncated(&mut self) {
     self.truncated = true;
   }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisualLineSide {
+  Left,
+  Right,
+}
+
+fn inline_item_has_line_padding_content(item: &InlineItem) -> bool {
+  match item {
+    InlineItem::Text(_)
+    | InlineItem::Tab(_)
+    | InlineItem::InlineBlock(_)
+    | InlineItem::Ruby(_)
+    | InlineItem::Replaced(_) => true,
+    InlineItem::InlineBox(b) => b
+      .children
+      .iter()
+      .any(|child| inline_item_has_line_padding_content(child)),
+    InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => false,
+    InlineItem::SoftBreak | InlineItem::HardBreak(_) => false,
+  }
+}
+
+fn find_line_edge_content_index(items: &[PositionedItem], side: VisualLineSide) -> Option<usize> {
+  match side {
+    VisualLineSide::Left => items
+      .iter()
+      .position(|p| inline_item_has_line_padding_content(&p.item)),
+    VisualLineSide::Right => items
+      .iter()
+      .rposition(|p| inline_item_has_line_padding_content(&p.item)),
+  }
+}
+
+fn apply_line_padding_to_innermost_inline_box(
+  item: &mut InlineItem,
+  side: VisualLineSide,
+  deadline_counter: &mut usize,
+) -> Result<bool, LayoutError> {
+  check_layout_deadline(deadline_counter)?;
+  let InlineItem::InlineBox(inline_box) = item else {
+    return Ok(false);
+  };
+
+  let len = inline_box.children.len();
+  let mut child_index: Option<usize> = None;
+  match side {
+    VisualLineSide::Left => {
+      for i in 0..len {
+        if inline_item_has_line_padding_content(&inline_box.children[i]) {
+          child_index = Some(i);
+          break;
+        }
+      }
+    }
+    VisualLineSide::Right => {
+      for i in (0..len).rev() {
+        if inline_item_has_line_padding_content(&inline_box.children[i]) {
+          child_index = Some(i);
+          break;
+        }
+      }
+    }
+  }
+
+  let Some(child_idx) = child_index else {
+    return Ok(false);
+  };
+
+  if apply_line_padding_to_innermost_inline_box(
+    &mut inline_box.children[child_idx],
+    side,
+    deadline_counter,
+  )? {
+    return Ok(true);
+  }
+
+  let padding = inline_box.style.line_padding;
+  let padding = if padding.is_finite() { padding } else { 0.0 };
+  match side {
+    VisualLineSide::Left => inline_box.line_padding_start = padding,
+    VisualLineSide::Right => inline_box.line_padding_end = padding,
+  }
+  Ok(true)
+}
+
+fn apply_line_padding_to_lines(
+  lines: &mut [Line],
+  deadline_counter: &mut usize,
+) -> Result<(), LayoutError> {
+  for line in lines.iter_mut() {
+    check_layout_deadline(deadline_counter)?;
+    if line.items.is_empty() {
+      continue;
+    }
+
+    let (start_side, end_side) = match line.resolved_direction {
+      Direction::Ltr => (VisualLineSide::Left, VisualLineSide::Right),
+      Direction::Rtl => (VisualLineSide::Right, VisualLineSide::Left),
+    };
+
+    let start_index = find_line_edge_content_index(&line.items, start_side);
+    let end_index = find_line_edge_content_index(&line.items, end_side);
+
+    if let Some(index) = start_index {
+      apply_line_padding_to_innermost_inline_box(
+        &mut line.items[index].item,
+        start_side,
+        deadline_counter,
+      )?;
+    }
+
+    if let Some(index) = end_index {
+      apply_line_padding_to_innermost_inline_box(
+        &mut line.items[index].item,
+        end_side,
+        deadline_counter,
+      )?;
+    }
+
+    // Widths changed; recompute x positions and line width so downstream logic (e.g. overflow
+    // detection) sees the updated geometry.
+    let mut x = 0.0;
+    for positioned in &mut line.items {
+      positioned.x = x;
+      x += positioned.item.width();
+    }
+    line.width = x;
+  }
+  Ok(())
 }
 
 /// Resolve bidi at paragraph scope and reorder each line using the paragraph embedding levels.
