@@ -1,0 +1,49 @@
+dictionary DOMRectInit {
+  unrestricted double x = 0;
+  unrestricted double y = 0;
+  unrestricted double width = 0;
+  unrestricted double height = 0;
+};
+
+interface DOMRectReadOnly {
+  readonly attribute unrestricted double x;
+  readonly attribute unrestricted double y;
+  readonly attribute unrestricted double width;
+  readonly attribute unrestricted double height;
+  readonly attribute unrestricted double top;
+  readonly attribute unrestricted double right;
+  readonly attribute unrestricted double bottom;
+  readonly attribute unrestricted double left;
+  [Default] object toJSON();
+  static DOMRectReadOnly fromRect(optional DOMRectInit other = {});
+};
+
+interface DOMRect : DOMRectReadOnly {
+  inherit attribute unrestricted double x;
+  inherit attribute unrestricted double y;
+  inherit attribute unrestricted double width;
+  inherit attribute unrestricted double height;
+  static DOMRect fromRect(optional DOMRectInit other = {});
+};
+
+interface CSSStyleDeclaration {
+  attribute DOMString cssText;
+  DOMString getPropertyValue(DOMString property);
+  undefined setProperty(DOMString property, DOMString value, optional DOMString priority = "");
+  DOMString removeProperty(DOMString property);
+};
+
+partial interface Element {
+  DOMRectReadOnly getBoundingClientRect();
+  readonly attribute long clientWidth;
+  readonly attribute long clientHeight;
+  readonly attribute long scrollWidth;
+  readonly attribute long scrollHeight;
+  attribute unrestricted double scrollTop;
+  attribute unrestricted double scrollLeft;
+  readonly attribute long offsetWidth;
+  readonly attribute long offsetHeight;
+  readonly attribute long offsetLeft;
+  readonly attribute long offsetTop;
+  readonly attribute CSSStyleDeclaration style;
+};

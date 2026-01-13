@@ -365,6 +365,39 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "CSSStyleDeclaration",
+    inherits: None,
+    callback: false,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("cssText"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString cssText",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getPropertyValue"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString getPropertyValue(DOMString property)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setProperty"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setProperty(DOMString property, DOMString value, optional DOMString priority = \"\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("removeProperty"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString removeProperty(DOMString property)",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "CanvasGradient",
     inherits: None,
     callback: false,
@@ -1253,6 +1286,115 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "NewObject", value: None },
         ],
         raw: "Document parseFromString((TrustedHTML or DOMString) string, DOMParserSupportedType type)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "DOMRect",
+    inherits: Some("DOMRectReadOnly"),
+    callback: false,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("x"),
+        ext_attrs: &[
+        ],
+        raw: "inherit attribute unrestricted double x",
+      },
+      WebIdlInterfaceMember {
+        name: Some("y"),
+        ext_attrs: &[
+        ],
+        raw: "inherit attribute unrestricted double y",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+        ],
+        raw: "inherit attribute unrestricted double width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("height"),
+        ext_attrs: &[
+        ],
+        raw: "inherit attribute unrestricted double height",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fromRect"),
+        ext_attrs: &[
+        ],
+        raw: "static DOMRect fromRect(optional DOMRectInit other = {})",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "DOMRectReadOnly",
+    inherits: None,
+    callback: false,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("x"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double x",
+      },
+      WebIdlInterfaceMember {
+        name: Some("y"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double y",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("height"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double height",
+      },
+      WebIdlInterfaceMember {
+        name: Some("top"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double top",
+      },
+      WebIdlInterfaceMember {
+        name: Some("right"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double right",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bottom"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double bottom",
+      },
+      WebIdlInterfaceMember {
+        name: Some("left"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unrestricted double left",
+      },
+      WebIdlInterfaceMember {
+        name: Some("toJSON"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Default", value: None },
+        ],
+        raw: "object toJSON()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fromRect"),
+        ext_attrs: &[
+        ],
+        raw: "static DOMRectReadOnly fromRect(optional DOMRectInit other = {})",
       },
     ],
   },
@@ -3102,6 +3244,78 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "undefined insertAdjacentText(DOMString where, DOMString data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getBoundingClientRect"),
+        ext_attrs: &[
+        ],
+        raw: "DOMRectReadOnly getBoundingClientRect()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clientWidth"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long clientWidth",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clientHeight"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long clientHeight",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrollWidth"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long scrollWidth",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrollHeight"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long scrollHeight",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrollTop"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double scrollTop",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrollLeft"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double scrollLeft",
+      },
+      WebIdlInterfaceMember {
+        name: Some("offsetWidth"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long offsetWidth",
+      },
+      WebIdlInterfaceMember {
+        name: Some("offsetHeight"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long offsetHeight",
+      },
+      WebIdlInterfaceMember {
+        name: Some("offsetLeft"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long offsetLeft",
+      },
+      WebIdlInterfaceMember {
+        name: Some("offsetTop"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long offsetTop",
+      },
+      WebIdlInterfaceMember {
+        name: Some("style"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute CSSStyleDeclaration style",
       },
       WebIdlInterfaceMember {
         name: Some("setHTMLUnsafe"),
@@ -18901,6 +19115,38 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlDictionary {
+    name: "DOMRectInit",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("x"),
+        ext_attrs: &[
+        ],
+        raw: "unrestricted double x = 0",
+      },
+      WebIdlDictionaryMember {
+        name: Some("y"),
+        ext_attrs: &[
+        ],
+        raw: "unrestricted double y = 0",
+      },
+      WebIdlDictionaryMember {
+        name: Some("width"),
+        ext_attrs: &[
+        ],
+        raw: "unrestricted double width = 0",
+      },
+      WebIdlDictionaryMember {
+        name: Some("height"),
+        ext_attrs: &[
+        ],
+        raw: "unrestricted double height = 0",
+      },
+    ],
+  },
+  WebIdlDictionary {
     name: "DeferredRequestInit",
     inherits: Some("RequestInit"),
     ext_attrs: &[
@@ -19269,7 +19515,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
     members: &[
       WebIdlDictionaryMember {
-        name: Some("root"),
+        name: None,
         ext_attrs: &[
         ],
         raw: "(Element or Document)? root = null",
@@ -19281,7 +19527,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         raw: "DOMString rootMargin = \"0px\"",
       },
       WebIdlDictionaryMember {
-        name: Some("threshold"),
+        name: None,
         ext_attrs: &[
         ],
         raw: "(double or sequence<double>) threshold = 0",
