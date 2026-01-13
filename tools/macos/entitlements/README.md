@@ -9,8 +9,8 @@ macOS `.app` bundle with separate executables (trusted browser/UI + sandboxed re
 - `renderer.entitlements`
   - Untrusted renderer helper process.
   - Enables App Sandbox (`com.apple.security.app-sandbox`) with a deny-by-default posture
-    (no network/file entitlements).
+    (no `com.apple.security.network.*` or `com.apple.security.files.*` entitlements).
 
-See [`docs/security/macos_renderer_sandbox.md`](../../../docs/security/macos_renderer_sandbox.md) for
-how these would be applied via `codesign` and why they are not used in dev builds today.
-
+See [`docs/security/macos_renderer_sandbox.md`](../../../docs/security/macos_renderer_sandbox.md)
+(“Seatbelt now, App Sandbox later”) for how these would be applied via `codesign` and why they are
+not used in dev builds today.
