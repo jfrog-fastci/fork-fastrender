@@ -254,8 +254,13 @@ metrics map to the workstream targets.
 
 ### Where to look for logs
 
-The `browser` binary currently logs to stdout/stderr only (run it from a terminal). If the window
-opens but nothing renders, check for:
+Most `browser` output is written to stdout/stderr (run it from a terminal). The main exceptions are
+the optional file outputs:
+
+- `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` (responsiveness JSONL)
+- `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` (Perfetto/Chrome trace)
+
+If the window opens but nothing renders, check for:
 
 - `wgpu` surface errors printed by [`src/bin/browser.rs`](../src/bin/browser.rs)
 - renderer debug output enabled via `FASTR_*` env vars
