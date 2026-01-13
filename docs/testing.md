@@ -365,6 +365,7 @@ Use `bundle_page` to capture a page once, then convert that bundle into a determ
 1. Capture a bundle:
    - Online (network): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out /tmp/capture.tar` (or a directory path)
         - If a page crashes or times out during capture, add `--no-render` to crawl HTML + CSS for subresources without doing a full render.
+        - Note: crawl mode also discovers media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`). Render-mode capture may not fetch media sources yet, so use `--no-render/--crawl` if you need media bytes in the bundle.
    - Offline (from warmed pageset caches): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features disk_cache --bin bundle_page -- cache <stem> --out /tmp/capture.tar`
         - Reads HTML from `fetches/html/<stem>.html` and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` / `--cache-dir`).
 2. Import: `bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/capture.tar <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run --include-media]`
@@ -373,7 +374,7 @@ Use `bundle_page` to capture a page once, then convert that bundle into a determ
 
 The importer rewrites all HTML/CSS references to hashed files under `assets/` and refuses to leave `http(s)` URLs behind, so the resulting directory is fully offline. A synthetic bundle for testing lives under `tests/fixtures/bundle_page/simple`, and `tests/pages/fixtures/bundle_import_example/` shows the expected output produced by the importer.
 
-Note: media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty placeholder files by default so fixtures stay small. Use `--include-media` to vendor playable media, subject to size budgets (`--media-max-bytes`, `--media-max-file-bytes`; set to `0` to disable).
+Note: media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty `assets/missing_<hash>.<ext>` placeholder files by default so fixtures stay small. Use `--include-media` to vendor playable media, subject to size budgets (`--media-max-bytes` default **5 MiB** total, `--media-max-file-bytes` default **2 MiB** per file; set either to `0` to disable).
 
 Tip: if you already have a warmed pageset disk cache, `bash scripts/cargo_agent.sh xtask pageset --capture-missing-failure-fixtures` can automatically capture/import missing fixtures for pages that currently fail in `progress/pages/*.json` (it uses `bundle_page cache` + `bash scripts/cargo_agent.sh xtask import-page-fixture` under the hood).
 

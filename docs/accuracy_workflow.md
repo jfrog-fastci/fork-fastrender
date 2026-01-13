@@ -96,8 +96,12 @@ timeout -k 10 300 bash scripts/run_limited.sh --as 64G -- \
 timeout -k 10 300 bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/capture.tar my_fixture
 
 # Media sources are placeholder-only by default (fixtures stay small). Opt in to vendoring playable
-# media with --include-media, subject to size budgets (--media-max-bytes / --media-max-file-bytes;
-# set to 0 to disable).
+# media with --include-media, subject to size budgets (--media-max-bytes default 5 MiB total,
+# --media-max-file-bytes default 2 MiB per file; set either to 0 to disable).
+#
+# Note: if you need media bytes inside the bundle (not just placeholder filenames), capture with
+# `bundle_page fetch --no-render/--crawl` so crawl discovery picks up `<video>/<audio>/<source>/<track>`
+# URLs.
 ```
 
 Fixtures should be:

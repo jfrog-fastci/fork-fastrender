@@ -146,7 +146,7 @@ To turn the committed `progress/pages/*.json` scoreboard (timings/hotspots/accur
 - Each page section reports whether `tests/pages/fixtures/<stem>/index.html` exists.
 - The generated markdown includes a ready-to-run `xtask page-loop` command for each page.
 - When a fixture is missing, the report also includes turnkey `bundle_page fetch` → `xtask import-page-fixture` → `xtask validate-page-fixtures` commands to capture/import/validate the offline repro.
-  - Note: `xtask import-page-fixture` rewrites media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) to deterministic empty placeholder files by default so fixtures stay small. Use `--include-media` to vendor playable media into the fixture, subject to size budgets (`--media-max-bytes`, `--media-max-file-bytes`; set to `0` to disable).
+  - Note: `xtask import-page-fixture` rewrites media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) to deterministic empty `assets/missing_<hash>.<ext>` placeholder files by default so fixtures stay small. Use `--include-media` to vendor playable media into the fixture, subject to size budgets (`--media-max-bytes` default **5 MiB** total, `--media-max-file-bytes` default **2 MiB** per file; set either to `0` to disable).
 
 ```bash
 # Optional: generate/update the fixture diff report first.
