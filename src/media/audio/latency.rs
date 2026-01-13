@@ -51,6 +51,13 @@ mod tests {
   use super::*;
 
   #[test]
+  fn audio_output_info_latency_from_fixed_buffer_is_frames_over_sample_rate() {
+    // These values are chosen to be exactly representable as milliseconds.
+    assert_eq!(frames_to_duration(48_000, 480), Duration::from_millis(10));
+    assert_eq!(frames_to_duration(44_100, 441), Duration::from_millis(10));
+  }
+
+  #[test]
   fn frames_to_duration_exact() {
     assert_eq!(frames_to_duration(48_000, 48_000), Duration::from_secs(1));
     assert_eq!(frames_to_duration(48_000, 480), Duration::from_millis(10));
@@ -85,4 +92,3 @@ mod tests {
     );
   }
 }
-

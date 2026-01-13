@@ -9,7 +9,7 @@
 //! When audio is present, audio device time is the **master clock** for A/V sync. The UI tick should
 //! only wake the pipeline up; it must not be used as a time source.
 //!
-//! Output latency is exposed via [`AudioOutputInfo::estimated_latency`]. Backends that derive time
+//! Output latency is exposed via [`AudioOutputInfo::estimated_output_latency`]. Backends that derive time
 //! from callback frame counts (`AudioClock::OutputFrames`) can be ahead of “what the user hears” by
 //! a roughly-constant buffer duration; callers should treat this as a constant offset (not drift)
 //! and compensate using the estimated latency.
@@ -85,25 +85,27 @@ impl AudioStreamConfig {
 /// Information about the active audio output device/stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioOutputInfo {
-  pub sample_rate_hz: u32,
-  pub channels: u16,
+  /// Output stream configuration (sample rate + channel count).
+  pub config: AudioStreamConfig,
   /// The number of frames the backend expects per callback, when known.
   pub callback_frames: Option<u32>,
   /// Best-effort estimate of the latency between writing samples in the callback and the samples
   /// being heard at the output device.
-  pub estimated_latency: Duration,
+  pub estimated_output_latency: Duration,
+  /// Backend identifier for debugging/telemetry.
+  pub backend_name: &'static str,
 }
 
 impl AudioOutputInfo {
   /// Returns the estimated latency expressed in frames, rounding up.
   #[must_use]
   pub fn estimated_latency_frames(&self) -> u64 {
-    duration_to_frames_ceil(self.sample_rate_hz, self.estimated_latency)
+    duration_to_frames_ceil(self.config.sample_rate_hz, self.estimated_output_latency)
   }
 
   #[must_use]
   pub fn stream_config(&self) -> AudioStreamConfig {
-    AudioStreamConfig::new(self.sample_rate_hz, self.channels)
+    self.config
   }
 }
 
@@ -145,7 +147,7 @@ impl AudioClock {
   /// This is intended to be used as (or to derive) the master clock for A/V sync.
   ///
   /// Note: this is currently a best-effort estimate and does **not** apply an output latency model
-  /// by itself. Callers should subtract [`AudioOutputInfo::estimated_latency`] when they need a
+  /// by itself. Callers should subtract [`AudioOutputInfo::estimated_output_latency`] when they need a
   /// "time heard" estimate.
   pub fn time(&self) -> Duration {
     match self {
@@ -257,12 +259,12 @@ pub trait AudioBackend: Send + Sync {
   /// Backends should provide best-effort values even when the underlying API does not expose
   /// explicit latency information.
   fn output_info(&self) -> AudioOutputInfo {
-    let cfg = self.output_config();
+    let config = self.output_config();
     AudioOutputInfo {
-      sample_rate_hz: cfg.sample_rate_hz,
-      channels: cfg.channels,
+      config,
       callback_frames: None,
-      estimated_latency: Duration::ZERO,
+      estimated_output_latency: Duration::ZERO,
+      backend_name: "unknown",
     }
   }
 

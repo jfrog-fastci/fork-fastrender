@@ -189,10 +189,12 @@ impl AudioBackend for CpalAudioBackend {
     });
 
     AudioOutputInfo {
-      sample_rate_hz: self.config.sample_rate_hz,
-      channels: self.config.channels,
+      config: self.config,
       callback_frames,
-      estimated_latency: Duration::from_nanos(self.estimated_latency_nanos.load(Ordering::Relaxed)),
+      estimated_output_latency: Duration::from_nanos(
+        self.estimated_latency_nanos.load(Ordering::Relaxed),
+      ),
+      backend_name: "cpal",
     }
   }
 

@@ -1,8 +1,8 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use super::{AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
+use super::{AudioBackend, AudioClock, AudioOutputInfo, AudioSink, AudioStreamConfig};
 
 #[derive(Debug)]
 /// A silent audio backend used as a fallback when audio output is unavailable (e.g. CI/headless).
@@ -13,6 +13,7 @@ use super::{AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
 /// master clock (see `docs/media_clocking.md`).
 pub struct NullAudioBackend {
   config: AudioStreamConfig,
+  estimated_output_latency: Duration,
   start: Instant,
   frames_played: Arc<AtomicU64>,
 }
@@ -29,9 +30,20 @@ impl NullAudioBackend {
     let channels = channels.max(1);
     Self {
       config: AudioStreamConfig::new(sample_rate_hz, channels),
+      estimated_output_latency: Duration::ZERO,
       start: Instant::now(),
       frames_played: Arc::new(AtomicU64::new(0)),
     }
+  }
+
+  /// Create a `NullAudioBackend` with an explicit output-latency model.
+  ///
+  /// This is primarily intended for deterministic tests of A/V sync behaviour.
+  #[must_use]
+  pub fn new_with_latency(estimated_output_latency: Duration) -> Self {
+    let mut backend = Self::new();
+    backend.estimated_output_latency = estimated_output_latency;
+    backend
   }
 }
 
@@ -44,6 +56,15 @@ impl Default for NullAudioBackend {
 impl AudioBackend for NullAudioBackend {
   fn output_config(&self) -> AudioStreamConfig {
     self.config
+  }
+
+  fn output_info(&self) -> AudioOutputInfo {
+    AudioOutputInfo {
+      config: self.config,
+      callback_frames: None,
+      estimated_output_latency: self.estimated_output_latency,
+      backend_name: "null",
+    }
   }
 
   fn clock(&self) -> AudioClock {
