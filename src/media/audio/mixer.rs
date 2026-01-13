@@ -1,4 +1,4 @@
-use super::convert::{sanitize_buffer_in_place, sanitize_mix_sample};
+use super::convert::sanitize_buffer_in_place;
 use super::timed_queue::TimedAudioQueue;
 use super::{AudioClock, AudioOutputInfo};
 use std::collections::HashMap;
@@ -88,9 +88,16 @@ impl AudioMixer {
         continue;
       }
       for (dst, src) in out[..needed].iter_mut().zip(self.scratch[..needed].iter()) {
-        // Sanitize each stream's contribution before accumulation so malformed values
-        // (NaN/Inf/denormals) can't poison the entire mixed output.
-        *dst += sanitize_mix_sample(*src * gain);
+        // Avoid NaN poisoning and denormal slow paths by dropping non-normal values
+        // (NaN/Inf/0/subnormals) before they can reach the accumulation math.
+        let src = *src;
+        if !src.is_normal() {
+          continue;
+        }
+        let scaled = src * gain;
+        if scaled.is_normal() {
+          *dst += scaled;
+        }
       }
     }
 
@@ -137,7 +144,14 @@ impl AudioMixer {
         continue;
       }
       for (dst, src) in out[..needed].iter_mut().zip(self.scratch[..needed].iter()) {
-        *dst += sanitize_mix_sample(*src * gain);
+        let src = *src;
+        if !src.is_normal() {
+          continue;
+        }
+        let scaled = src * gain;
+        if scaled.is_normal() {
+          *dst += scaled;
+        }
       }
     }
 

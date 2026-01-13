@@ -3,8 +3,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
-use super::convert::sanitize_mix_sample;
-
 /// A minimal-lock ring buffer for interleaved f32 PCM samples.
 ///
 /// - The audio callback thread is the sole consumer.
@@ -113,14 +111,25 @@ impl AudioRingBuffer {
       let first = to_read.min(self.capacity - pos);
       for i in 0..first {
         let sample = unsafe { *self.buf[pos + i].get() };
-        // Sanitize per-sample before accumulation so malformed data cannot poison the entire mix
-        // and so we never feed denormals back into subsequent mixing math.
-        dst[i] += sanitize_mix_sample(sample * gain);
+        // Avoid NaN poisoning and denormal slow paths:
+        // - treat non-normal samples (NaN/Inf/0/subnormals) as silence
+        // - flush any non-normal scaled output to silence too
+        if sample.is_normal() {
+          let scaled = sample * gain;
+          if scaled.is_normal() {
+            dst[i] += scaled;
+          }
+        }
       }
       pos = 0;
       for i in 0..(to_read - first) {
         let sample = unsafe { *self.buf[pos + i].get() };
-        dst[first + i] += sanitize_mix_sample(sample * gain);
+        if sample.is_normal() {
+          let scaled = sample * gain;
+          if scaled.is_normal() {
+            dst[first + i] += scaled;
+          }
+        }
       }
     }
 
