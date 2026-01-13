@@ -4961,6 +4961,30 @@ fn create_type_error(
   )
 }
 
+fn create_range_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHostHooks,
+  message: &str,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let ctor = intr.range_error();
+ 
+  let msg = scope.alloc_string(message)?;
+  scope.push_root(Value::String(msg))?;
+ 
+  let mut host_state = ();
+  error_constructor_construct(
+    vm,
+    scope,
+    &mut host_state,
+    host,
+    ctor,
+    &[Value::String(msg)],
+    Value::Object(ctor),
+  )
+}
+
 fn create_syntax_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -6698,6 +6722,7 @@ fn if_abrupt_reject_promise(
     VmError::Throw(value) => value,
     VmError::ThrowWithStack { value, .. } => value,
     VmError::TypeError(msg) => create_type_error(vm, scope, hooks, msg)?,
+    VmError::RangeError(msg) => create_range_error(vm, scope, hooks, msg)?,
     VmError::NotCallable => create_type_error(vm, scope, hooks, "value is not callable")?,
     VmError::NotConstructable => create_type_error(vm, scope, hooks, "value is not a constructor")?,
     VmError::PrototypeCycle => create_type_error(vm, scope, hooks, "prototype cycle")?,
