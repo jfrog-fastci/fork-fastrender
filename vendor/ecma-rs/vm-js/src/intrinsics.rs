@@ -42,6 +42,7 @@ pub struct Intrinsics {
   function_prototype: GcObject,
   throw_type_error: GcObject,
   iterator_prototype: GcObject,
+  async_iterator_prototype: GcObject,
   generator_function: GcObject,
   generator_function_prototype: GcObject,
   generator_prototype: GcObject,
@@ -651,6 +652,12 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(iterator_prototype, Some(object_prototype))?;
 
+    // `%AsyncIteratorPrototype%`
+    let async_iterator_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(async_iterator_prototype, Some(object_prototype))?;
+
     // `%ArrayIteratorPrototype%`
     let array_iterator_prototype = alloc_rooted_object(scope, roots)?;
     scope
@@ -1209,6 +1216,22 @@ impl Intrinsics {
       scope.define_property(
         iterator_prototype,
         PropertyKey::Symbol(well_known_symbols.iterator),
+        data_desc(Value::Object(iter_fn), true, false, true),
+      )?;
+    }
+
+    // `%AsyncIteratorPrototype%[@@asyncIterator]`
+    {
+      let iter_name = scope.alloc_string("[Symbol.asyncIterator]")?;
+      scope.push_root(Value::String(iter_name))?;
+      let iter_fn = scope.alloc_native_function(iterator_prototype_iterator, None, iter_name, 0)?;
+      scope.push_root(Value::Object(iter_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iter_fn, Some(function_prototype))?;
+      scope.define_property(
+        async_iterator_prototype,
+        PropertyKey::Symbol(well_known_symbols.async_iterator),
         data_desc(Value::Object(iter_fn), true, false, true),
       )?;
     }
@@ -6674,6 +6697,7 @@ impl Intrinsics {
       function_prototype,
       throw_type_error,
       iterator_prototype,
+      async_iterator_prototype,
       generator_function,
       generator_function_prototype,
       generator_prototype,
@@ -6804,6 +6828,10 @@ impl Intrinsics {
 
   pub fn iterator_prototype(&self) -> GcObject {
     self.iterator_prototype
+  }
+
+  pub fn async_iterator_prototype(&self) -> GcObject {
+    self.async_iterator_prototype
   }
 
   pub fn generator_function(&self) -> GcObject {
