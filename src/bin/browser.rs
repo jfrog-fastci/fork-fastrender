@@ -10375,11 +10375,13 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       self.schedule_media_wakeup(*tab_id, *after);
     }
 
-    // Navigations reset a tab's favicon; drop any cached favicon textures eagerly so GPU resources
-    // don't accumulate when switching between many pages.
+    // Navigations reset a tab's favicon; drop any cached favicon assets eagerly so we don't render
+    // stale icons while a new page is loading (and so GPU resources don't accumulate when switching
+    // between many pages).
     match &msg {
       fastrender::ui::WorkerToUi::NavigationStarted { tab_id, .. }
       | fastrender::ui::WorkerToUi::NavigationFailed { tab_id, .. } => {
+        self.chrome_dynamic_fetcher.clear_tab_favicon(*tab_id);
         if let Some(tex) = self.tab_favicons.remove(tab_id) {
           tex.destroy(&mut self.egui_renderer);
         }
