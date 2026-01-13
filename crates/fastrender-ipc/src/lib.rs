@@ -1891,6 +1891,15 @@ pub struct NetworkWebSocketManager {
 }
 
 impl NetworkWebSocketManager {
+  #[inline]
+  fn debug_assert_state_consistent(&self) {
+    debug_assert_eq!(
+      self.active_total,
+      self.conns.values().map(HashSet::len).sum::<usize>(),
+      "NetworkWebSocketManager active_total drifted from connection map length"
+    );
+  }
+
   pub fn new() -> Self {
     Self::default()
   }
@@ -1911,6 +1920,7 @@ impl NetworkWebSocketManager {
       return Vec::new();
     };
     self.active_total = self.active_total.saturating_sub(conns.len());
+    self.debug_assert_state_consistent();
     // Return deterministic event ordering for tests/logging.
     let mut ids: Vec<WebSocketConnId> = conns.into_iter().collect();
     ids.sort_by_key(|id| id.0);
@@ -1983,6 +1993,7 @@ impl NetworkWebSocketManager {
 
         renderer_conns.insert(conn_id);
         self.active_total = self.active_total.saturating_add(1);
+        self.debug_assert_state_consistent();
 
         // Connection establishment is async in production; no immediate event is generated here.
         Vec::new()
@@ -2011,6 +2022,7 @@ impl NetworkWebSocketManager {
         if renderer_conns.is_empty() {
           self.conns.remove(&renderer_id);
         }
+        self.debug_assert_state_consistent();
         vec![WebSocketEvent::Close { conn_id }]
       }
     }
