@@ -163,7 +163,7 @@ impl SearchSuggestService {
     // `fetch_add` on every keystroke).
     self.next_gen = self.next_gen.wrapping_add(1);
     let gen = self.next_gen;
-    self.latest_gen.store(gen, Ordering::Release);
+    self.latest_gen.store(gen, Ordering::Relaxed);
     let query = match query {
       Cow::Borrowed(value) => value.to_string(),
       Cow::Owned(value) => value,
@@ -240,7 +240,7 @@ fn worker_loop(
     };
 
     // Cancellation: drop late results if a newer request was issued while we were fetching.
-    if req.gen != latest_gen.load(Ordering::Acquire) {
+    if req.gen != latest_gen.load(Ordering::Relaxed) {
       continue;
     }
 
