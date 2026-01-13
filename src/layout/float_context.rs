@@ -1360,7 +1360,7 @@ impl FloatContext {
           eprintln!("  sweep_state: <borrowed>");
         }
       },
-    }
+    };
 
     match self.range_cache.try_borrow() {
       Ok(cache) => {
