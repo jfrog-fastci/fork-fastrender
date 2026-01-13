@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use fastrender::dom2::NodeId;
 use fastrender::js::{
-  CurrentScriptStateHandle, EventLoop, HtmlScriptId, JsExecutionOptions, ScriptElementSpec, WindowRealm,
-  WindowRealmConfig, WindowRealmHost,
+  CurrentScriptStateHandle, EventLoop, HtmlScriptId, JsExecutionOptions, ScriptElementSpec,
+  WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::{
   BrowserDocumentDom2, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus, Result,
@@ -86,9 +86,14 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
     document: &mut BrowserDocumentDom2,
     event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<ModuleScriptExecutionStatus> {
-    self
-      .inner
-      .execute_module_script(script_id, script_text, spec, current_script, document, event_loop)
+    self.inner.execute_module_script(
+      script_id,
+      script_text,
+      spec,
+      current_script,
+      document,
+      event_loop,
+    )
   }
 
   fn execute_import_map_script(
@@ -429,8 +434,8 @@ pub fn recv_for_tab(
 ///
 /// The worker may emit scroll updates either before or after the corresponding `FrameReady`
 /// (e.g. when scroll state is reported immediately on input). This helper pairs messages by
-/// matching `scroll.viewport` with `frame.scroll_state.viewport`, tolerating unrelated/stale scroll
-/// updates from earlier frames.
+/// matching the scroll offsets in `scroll` with `frame.scroll_state` (viewport + element offsets),
+/// tolerating unrelated/stale scroll updates from earlier frames.
 #[cfg(feature = "browser_ui")]
 pub fn wait_for_frame_and_scroll_state_updated(
   rx: &Receiver<WorkerToUi>,
@@ -457,14 +462,11 @@ pub fn wait_for_frame_and_scroll_state_updated(
     let slice = remaining.min(RECV_SLICE);
     match rx.recv_timeout(slice) {
       Ok(msg) => match msg {
-        WorkerToUi::FrameReady {
-          tab_id: got,
-          frame,
-        } if got == tab_id => {
-          if let Some(idx) = pending_scrolls
-            .iter()
-            .position(|scroll| scroll.viewport == frame.scroll_state.viewport)
-          {
+        WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
+          if let Some(idx) = pending_scrolls.iter().rposition(|scroll| {
+            scroll.viewport == frame.scroll_state.viewport
+              && scroll.elements == frame.scroll_state.elements
+          }) {
             let scroll = pending_scrolls
               .remove(idx)
               .expect("VecDeque::remove with valid idx");
@@ -479,10 +481,10 @@ pub fn wait_for_frame_and_scroll_state_updated(
           tab_id: got,
           scroll,
         } if got == tab_id => {
-          if let Some(idx) = pending_frames
-            .iter()
-            .position(|frame| frame.scroll_state.viewport == scroll.viewport)
-          {
+          if let Some(idx) = pending_frames.iter().rposition(|frame| {
+            frame.scroll_state.viewport == scroll.viewport
+              && frame.scroll_state.elements == scroll.elements
+          }) {
             let frame = pending_frames
               .remove(idx)
               .expect("VecDeque::remove with valid idx");
@@ -772,10 +774,7 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       let _ = writeln!(
         &mut out,
         "DownloadProgress(tab={}, id={}, received={}, total={:?})",
-        tab_id.0,
-        download_id.0,
-        received_bytes,
-        total_bytes
+        tab_id.0, download_id.0, received_bytes, total_bytes
       );
       continue;
     }
@@ -788,8 +787,7 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       let _ = writeln!(
         &mut out,
         "DownloadFinished(tab={}, id={}, outcome={outcome:?})",
-        tab_id.0,
-        download_id.0,
+        tab_id.0, download_id.0,
       );
       continue;
     }
