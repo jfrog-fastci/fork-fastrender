@@ -2169,7 +2169,11 @@ impl JsRuntime {
       let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, self.env.lexical_env())?;
       env.set_source_info(source.clone(), 0, 0);
 
-      let body_eval = {
+      // Capture the evaluator's strict-mode flag after the async evaluation attempt. Class
+      // definition evaluation (and some other nested constructs) can temporarily toggle strictness
+      // and may suspend; the current strictness must be preserved in the async continuation so
+      // resumed execution uses the correct runtime semantics.
+      let body_eval: Result<(AsyncEval<Completion>, bool), VmError> = (|| {
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
           host,
@@ -2181,11 +2185,12 @@ impl JsRuntime {
         };
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
-        async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)
-      };
+        let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
+        Ok((eval, evaluator.strict))
+      })();
 
       match body_eval {
-        Ok(AsyncEval::Complete(completion)) => {
+        Ok((AsyncEval::Complete(completion), _strict_at_suspend)) => {
           let promise_result = match completion {
             Completion::Normal(v) => {
               let v = v.unwrap_or(Value::Undefined);
@@ -2235,7 +2240,7 @@ impl JsRuntime {
           };
           promise_result
         }
-        Ok(AsyncEval::Suspend(mut suspend)) => {
+        Ok((AsyncEval::Suspend(mut suspend), strict_at_suspend)) => {
           if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootScriptBody) {
             env.teardown(scope.heap_mut());
             for mut frame in suspend.frames {
@@ -2402,7 +2407,7 @@ impl JsRuntime {
 
           let cont = AsyncContinuation {
             env: env.clone(),
-            strict,
+            strict: strict_at_suspend,
             exec_ctx: None,
             script_ast: Some(top.clone()),
             this_root,
@@ -2596,7 +2601,11 @@ impl JsRuntime {
       let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, self.env.lexical_env())?;
       env.set_source_info(source.clone(), 0, 0);
 
-      let body_eval = {
+      // Capture the evaluator's strict-mode flag after the async evaluation attempt. Class
+      // definition evaluation (and some other nested constructs) can temporarily toggle strictness
+      // and may suspend; the current strictness must be preserved in the async continuation so
+      // resumed execution uses the correct runtime semantics.
+      let body_eval: Result<(AsyncEval<Completion>, bool), VmError> = (|| {
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
           host,
@@ -2608,11 +2617,12 @@ impl JsRuntime {
         };
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
-        async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)
-      };
+        let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
+        Ok((eval, evaluator.strict))
+      })();
 
       match body_eval {
-        Ok(AsyncEval::Complete(completion)) => {
+        Ok((AsyncEval::Complete(completion), _strict_at_suspend)) => {
           let promise_result = match completion {
             Completion::Normal(v) => {
               let v = v.unwrap_or(Value::Undefined);
@@ -2662,7 +2672,7 @@ impl JsRuntime {
           };
           promise_result
         }
-        Ok(AsyncEval::Suspend(mut suspend)) => {
+        Ok((AsyncEval::Suspend(mut suspend), strict_at_suspend)) => {
           if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootScriptBody) {
             env.teardown(scope.heap_mut());
             for mut frame in suspend.frames {
@@ -2829,7 +2839,7 @@ impl JsRuntime {
 
           let cont = AsyncContinuation {
             env: env.clone(),
-            strict,
+            strict: strict_at_suspend,
             exec_ctx: None,
             script_ast: Some(top.clone()),
             this_root,
@@ -11111,6 +11121,14 @@ enum AsyncFrame {
   RestoreLexEnv {
     outer: GcEnv,
   },
+  /// Restore the evaluator's strict-mode flag after a temporary override.
+  ///
+  /// This is used for constructs that are always evaluated as strict-mode code regardless of the
+  /// surrounding context, but which can suspend and resume (e.g. class definition evaluation when
+  /// a computed member key contains `await`).
+  RestoreStrict {
+    saved_strict: bool,
+  },
 
   /// Finish an expression statement after its expression is evaluated.
   ExprStmt,
@@ -12537,6 +12555,10 @@ pub(crate) fn async_resume_call(
       let frames = mem::take(&mut cont.frames);
       let resume_value = if is_reject { Err(arg0) } else { Ok(arg0) };
       let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value);
+      // `Evaluator::strict` can change temporarily during evaluation (e.g. class definition
+      // evaluation forces strict mode). Persist the current strictness into the continuation so it
+      // is restored correctly across subsequent `await` suspensions.
+      cont.strict = evaluator.strict;
 
       async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result)
     })();
@@ -12559,6 +12581,8 @@ pub(crate) fn async_resume_call(
   let frames = mem::take(&mut cont.frames);
   let resume_value = if is_reject { Err(arg0) } else { Ok(arg0) };
   let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value);
+  // Persist strictness across suspensions (see comment in the exec_ctx branch above).
+  cont.strict = evaluator.strict;
 
   async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result)
 }
@@ -14756,6 +14780,18 @@ fn async_eval_class(
   members: &Vec<Node<ClassMember>>,
   extends_null: bool,
 ) -> Result<AsyncEval<Value>, VmError> {
+  // Per ECMA-262, class definitions are always strict mode code, regardless of whether they
+  // appear in a sloppy script/function body.
+  //
+  // This matters for runtime semantics (not just early errors). For example, in sloppy mode,
+  // `unbound = 1` creates a global property, but in class bodies it must throw a ReferenceError.
+  //
+  // Mirror `Evaluator::eval_class`: temporarily force strict mode for the entire class definition
+  // evaluation, restoring it afterwards (including across `await` suspensions).
+  let saved_strict = evaluator.strict;
+  evaluator.strict = true;
+
+  let result = (|| {
   let class_env = evaluator.env.lexical_env;
 
   // Ensure the requested class binding exists before creating any class element closures that may
@@ -14990,6 +15026,31 @@ fn async_eval_class(
     AsyncEval::Complete(v) => Ok(AsyncEval::Complete(v)),
     AsyncEval::Suspend(suspend) => Ok(AsyncEval::Suspend(suspend)),
   }
+  })();
+
+  match result {
+    Ok(AsyncEval::Complete(v)) => {
+      evaluator.strict = saved_strict;
+      Ok(AsyncEval::Complete(v))
+    }
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      // Preserve strict-mode semantics across the suspension; restore strictness only after the
+      // class definition evaluation completes.
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreStrict { saved_strict }) {
+        // Best-effort cleanup: tear down any rooted frames so we don't leak GC roots on OOM.
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        evaluator.strict = saved_strict;
+        return Err(err);
+      }
+      Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.strict = saved_strict;
+      Err(err)
+    }
+  }
 }
 
 fn async_eval_class_members_from(
@@ -15064,6 +15125,12 @@ fn async_eval_class_members_from(
         continue;
       }
 
+      // Static initialization blocks are not properties on the class/prototype. They are evaluated
+      // *after* the element definition pass completes, in source order.
+      if matches!(&member.stx.val, ClassOrObjVal::StaticBlock(_)) {
+        continue;
+      }
+
       let target_obj = if member.stx.static_ { func_obj } else { prototype_obj };
 
       let key = match &member.stx.key {
@@ -15116,6 +15183,18 @@ fn async_eval_class_members_from(
         target_obj,
         key,
       )?;
+    }
+
+    // Evaluate class static blocks in source order.
+    //
+    // Note: we currently reject public/private static fields (`class fields`) earlier in the
+    // element loop, so this executes only blocks.
+    for member in members {
+      evaluator.tick()?;
+      if let ClassOrObjVal::StaticBlock(block) = &member.stx.val {
+        let mut block_scope = scope.reborrow();
+        evaluator.eval_class_static_block(&mut block_scope, func_obj, &block.stx.body)?;
+      }
     }
 
     Ok(AsyncEval::Complete(Value::Object(func_obj)))
@@ -15377,8 +15456,11 @@ fn async_define_class_member(
     ClassOrObjVal::IndexSignature(_) => {
       return Err(VmError::Unimplemented("class index signature"));
     }
+    // Class static blocks are handled in `async_eval_class_members_from` after the element loop.
     ClassOrObjVal::StaticBlock(_) => {
-      return Err(VmError::Unimplemented("class static block"));
+      return Err(VmError::InvariantViolation(
+        "static blocks should be evaluated after class member definition pass",
+      ));
     }
   }
 
@@ -24705,6 +24787,17 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::RestoreStrict { saved_strict } => match state {
+        AsyncState::Completion(c) => {
+          evaluator.strict = saved_strict;
+          state = AsyncState::Completion(c);
+        }
+        AsyncState::Expr(expr_res) => {
+          evaluator.strict = saved_strict;
+          state = AsyncState::Expr(expr_res);
+        }
+      },
+
       AsyncFrame::CatchAfterParamBind { catch, outer } => match state {
         AsyncState::Expr(param_res) => match param_res {
           Ok(_) => {
@@ -29617,7 +29710,10 @@ pub(crate) fn run_ecma_function(
 
         let cont = AsyncContinuation {
           env: evaluator.env.clone(),
-          strict,
+          // `Evaluator::strict` can change temporarily during evaluation (e.g. class definition
+          // evaluation forces strict mode). Capture the current strictness so resumption continues
+          // with the correct runtime semantics.
+          strict: evaluator.strict,
           exec_ctx: None,
           script_ast: None,
           this_root,
