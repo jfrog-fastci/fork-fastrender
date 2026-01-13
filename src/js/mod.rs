@@ -78,6 +78,8 @@ pub mod dom_platform;
 pub mod module_loader;
 #[path = "vmjs/runtime.rs"]
 pub mod runtime;
+#[path = "vmjs/chrome_api.rs"]
+pub mod chrome_api;
 #[path = "vmjs/vm_error_format.rs"]
 pub(crate) mod vm_error_format;
 #[path = "vmjs/vm_limits.rs"]

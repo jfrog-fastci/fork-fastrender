@@ -132,8 +132,12 @@ Tab management within the current window (MVP).
     (commonly `about:newtab`).
 - `chrome.tabs.closeTab(id)`
 - `chrome.tabs.activateTab(id)`
-  - `id` is an **opaque** tab identifier allocated by the host. Treat it as a `Number` that must be
-    a safe integer (`Number.isSafeInteger(id) === true`).
+  - `id` is an **opaque** tab identifier allocated by the host.
+  - Canonical JS representation: **Number safe integer**
+    - `typeof id === "number"`
+    - `Number.isSafeInteger(id) === true`
+    - `0 <= id <= Number.MAX_SAFE_INTEGER` (`2^53 - 1`)
+  - Values outside this range must throw a **TypeError** (no silent precision loss).
 
 ### State snapshot (optional)
 
@@ -201,8 +205,8 @@ The chrome bridge is privileged, but it still validates inputs:
 
 - Wrong arity / wrong types throw **synchronous** JS exceptions (typically `TypeError`).
   - Example: `chrome.tabs.closeTab("not-a-number")` → throws.
-- Tab ids must be finite safe integers. Non-integers / `NaN` / out-of-range values should throw
-  (recommended: `RangeError`).
+- Tab ids must be finite safe integers. Non-integers / `NaN` / out-of-range values throw a
+  **TypeError**.
 - Invalid/blocked URLs passed to `chrome.navigation.navigate(...)` should throw an exception rather
   than silently doing nothing. The embedder is expected to apply its scheme allowlist (e.g.
   reject `javascript:`).
