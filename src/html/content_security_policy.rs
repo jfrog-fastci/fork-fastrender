@@ -339,7 +339,11 @@ fn set_allows_url(
       }
       CspSource::Any => {
         // Follow common browser behavior: `*` matches network schemes, but not `data:`.
-        if matches!(url.scheme(), "http" | "https") {
+        //
+        // For `connect-src`, WebSocket URLs should be treated as network schemes too.
+        if matches!(url.scheme(), "http" | "https")
+          || (directive == CspDirective::ConnectSrc && matches!(url.scheme(), "ws" | "wss"))
+        {
           return true;
         }
       }
@@ -361,7 +365,9 @@ fn set_allows_url(
           }
         }
         if let Some(expected_port) = host_source.port {
-          let port = if matches!(url.scheme(), "http" | "https") {
+          let port = if matches!(url.scheme(), "http" | "https")
+            || (directive == CspDirective::ConnectSrc && matches!(url.scheme(), "ws" | "wss"))
+          {
             url.port_or_known_default()
           } else {
             url.port()
@@ -1363,6 +1369,73 @@ mod tests {
       "https://example.com/",
       "https://example.com/images/other.png"
     ));
+  }
+
+  #[test]
+  fn connect_src_wildcard_allows_websocket_schemes() {
+    let policy = CspPolicy::from_values(["connect-src *"]).expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::ConnectSrc,
+      "https://example.com/",
+      "ws://example.com/"
+    ));
+    assert!(allows(
+      &policy,
+      CspDirective::ConnectSrc,
+      "https://example.com/",
+      "wss://example.com/"
+    ));
+    assert!(
+      !allows(
+        &policy,
+        CspDirective::ConnectSrc,
+        "https://example.com/",
+        "data:text/plain,hello"
+      ),
+      "expected connect-src * to continue blocking data: URLs"
+    );
+  }
+
+  #[test]
+  fn connect_src_wss_scheme_source_allows_wss_only() {
+    let policy = CspPolicy::from_values(["connect-src wss:"]).expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::ConnectSrc,
+      "https://example.com/",
+      "wss://example.com/"
+    ));
+    assert!(!allows(
+      &policy,
+      CspDirective::ConnectSrc,
+      "https://example.com/",
+      "ws://example.com/"
+    ));
+  }
+
+  #[test]
+  fn connect_src_explicit_port_matches_defaulted_ws_wss_ports() {
+    let policy = CspPolicy::from_values(["connect-src ws://example.com:80 wss://example.com:443"])
+      .expect("parse");
+    assert!(
+      allows(
+        &policy,
+        CspDirective::ConnectSrc,
+        "https://example.com/",
+        "ws://example.com/"
+      ),
+      "expected ws:// URL without an explicit port to match ws default port 80"
+    );
+    assert!(
+      allows(
+        &policy,
+        CspDirective::ConnectSrc,
+        "https://example.com/",
+        "wss://example.com/"
+      ),
+      "expected wss:// URL without an explicit port to match wss default port 443"
+    );
   }
 
   #[test]
