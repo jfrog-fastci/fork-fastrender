@@ -14,7 +14,7 @@
     "layout": 127.05906656935818,
     "paint": 161.07487966666667
   },
-  "notes": "Visually good. Page-loop fixture diffing shows correct overall layout/structure; the very high pixel diff% at tolerance=0 is dominated by raster-level differences vs Chrome/Skia (especially large gradient/blurred backgrounds and text/shadow AA). In a local fixture run, ~71% of pixels are within 1 channel of Chrome, with the remaining diffs concentrated in the gradient-heavy hero/footer regions; no obvious missing layout/cascade primitives identified.",
+  "notes": "Visually good. Page-loop fixture diffing shows correct overall layout/structure; the very high pixel diff% at tolerance=0 is dominated by raster-level differences vs Chrome/Skia (especially large gradient/blurred backgrounds and text/shadow AA). In local fixture runs, ~65% of pixels match within 1 channel (and ~78% within 2); larger diffs are comparatively sparse and mostly in the gradient-heavy hero/footer regions. No obvious missing layout/cascade primitives identified.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 751731,
