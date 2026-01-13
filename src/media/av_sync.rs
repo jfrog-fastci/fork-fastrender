@@ -1,4 +1,19 @@
+use crate::debug::runtime;
 use std::time::Duration;
+
+/// Environment variable override for [`AvSyncConfig::tolerance`].
+pub const ENV_AV_SYNC_TOLERANCE_MS: &str = "FASTR_AV_SYNC_TOLERANCE_MS";
+/// Environment variable override for [`AvSyncConfig::max_late`].
+pub const ENV_AV_SYNC_MAX_LATE_MS: &str = "FASTR_AV_SYNC_MAX_LATE_MS";
+/// Environment variable override for [`AvSyncConfig::max_early`].
+pub const ENV_AV_SYNC_MAX_EARLY_MS: &str = "FASTR_AV_SYNC_MAX_EARLY_MS";
+
+/// Default in-sync tolerance, in milliseconds.
+pub const DEFAULT_AV_SYNC_TOLERANCE_MS: u64 = 20;
+/// Default drop threshold (video late), in milliseconds.
+pub const DEFAULT_AV_SYNC_MAX_LATE_MS: u64 = 80;
+/// Default hold threshold (video early), in milliseconds.
+pub const DEFAULT_AV_SYNC_MAX_EARLY_MS: u64 = 40;
 
 /// Maximum wake-up delay returned by [`suggest_wake_after`].
 ///
@@ -28,6 +43,118 @@ pub struct AvSyncConfig {
   pub max_late: Duration,
   /// If a frame is this far ahead of the master clock, the scheduler should wait.
   pub max_early: Duration,
+}
+
+impl Default for AvSyncConfig {
+  fn default() -> Self {
+    Self {
+      tolerance: Duration::from_millis(DEFAULT_AV_SYNC_TOLERANCE_MS),
+      max_late: Duration::from_millis(DEFAULT_AV_SYNC_MAX_LATE_MS),
+      max_early: Duration::from_millis(DEFAULT_AV_SYNC_MAX_EARLY_MS),
+    }
+  }
+}
+
+impl AvSyncConfig {
+  /// Load A/V sync thresholds from environment variables, falling back to defaults.
+  ///
+  /// Invalid values are ignored (defaults remain in effect) and will emit a warning.
+  pub fn from_env() -> Self {
+    let toggles = runtime::runtime_toggles();
+    Self::from_env_vars(|key| toggles.get(key))
+  }
+
+  fn from_env_vars(mut get: impl FnMut(&str) -> Option<&str>) -> Self {
+    let mut out = Self::default();
+    out.tolerance = parse_env_duration_ms_or_default(
+      get(ENV_AV_SYNC_TOLERANCE_MS),
+      DEFAULT_AV_SYNC_TOLERANCE_MS,
+      ENV_AV_SYNC_TOLERANCE_MS,
+    );
+    out.max_late = parse_env_duration_ms_or_default(
+      get(ENV_AV_SYNC_MAX_LATE_MS),
+      DEFAULT_AV_SYNC_MAX_LATE_MS,
+      ENV_AV_SYNC_MAX_LATE_MS,
+    );
+    out.max_early = parse_env_duration_ms_or_default(
+      get(ENV_AV_SYNC_MAX_EARLY_MS),
+      DEFAULT_AV_SYNC_MAX_EARLY_MS,
+      ENV_AV_SYNC_MAX_EARLY_MS,
+    );
+    out
+  }
+}
+
+/// Backwards-compatible A/V sync decision enum used by older call sites (e.g. the minimal
+/// `MediaPlayer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvSyncDecision {
+  /// Present this frame now.
+  Present,
+  /// Keep the previous frame and wake up after the provided duration to retry.
+  Hold { wake_after: Duration },
+  /// Drop this frame; it's too late and a newer one should be tried.
+  Drop,
+}
+
+/// Backwards-compatible helper to decide how to handle a video frame with presentation timestamp
+/// `pts` at the current master/timeline time `timeline_now`.
+pub fn decide_video_frame(pts: Duration, timeline_now: Duration, cfg: &AvSyncConfig) -> AvSyncDecision {
+  match decide(timeline_now, pts, cfg) {
+    VideoSyncAction::PresentNow => AvSyncDecision::Present,
+    VideoSyncAction::Drop => AvSyncDecision::Drop,
+    VideoSyncAction::WaitUntil(wait) => AvSyncDecision::Hold {
+      wake_after: clamp_wake_after(wait),
+    },
+  }
+}
+
+fn clamp_wake_after(wait: Duration) -> Duration {
+  let wake_after = if wait <= Duration::from_millis(1) {
+    Duration::ZERO
+  } else {
+    wait
+  };
+  wake_after.min(AV_SYNC_WAKE_AFTER_MAX)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseEnvMsError {
+  Invalid,
+  Negative,
+  TooLarge,
+}
+
+fn parse_env_ms(raw: Option<&str>) -> Result<Option<u64>, ParseEnvMsError> {
+  let raw = match raw {
+    Some(v) => v.trim(),
+    None => return Ok(None),
+  };
+  if raw.is_empty() {
+    return Ok(None);
+  }
+
+  let raw = raw.replace('_', "");
+  let parsed = raw.parse::<i128>().map_err(|_| ParseEnvMsError::Invalid)?;
+  if parsed < 0 {
+    return Err(ParseEnvMsError::Negative);
+  }
+  let parsed: u64 = parsed.try_into().map_err(|_| ParseEnvMsError::TooLarge)?;
+  Ok(Some(parsed))
+}
+
+fn parse_env_duration_ms_or_default(raw: Option<&str>, default_ms: u64, key: &str) -> Duration {
+  match parse_env_ms(raw) {
+    Ok(Some(ms)) => Duration::from_millis(ms),
+    Ok(None) => Duration::from_millis(default_ms),
+    Err(err) => {
+      eprintln!(
+        "warning: ignoring invalid {key}={:?} ({err:?}); using default {default_ms}ms",
+        raw
+      );
+      Duration::from_millis(default_ms)
+    }
+  }
 }
 
 /// Suggest when the UI/event-loop should wake up to try presenting the next video frame.
@@ -101,9 +228,31 @@ pub fn decide(master_time: Duration, frame_pts: Duration, cfg: &AvSyncConfig) ->
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime;
+  use std::collections::HashMap;
+  use std::sync::Arc;
 
   fn ms(ms: u64) -> Duration {
     Duration::from_millis(ms)
+  }
+
+  #[test]
+  fn av_sync_config_from_env_parses_overrides_and_allows_underscores() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      (
+        ENV_AV_SYNC_TOLERANCE_MS.to_string(),
+        "1_234".to_string(),
+      ),
+      (ENV_AV_SYNC_MAX_LATE_MS.to_string(), "50".to_string()),
+      (ENV_AV_SYNC_MAX_EARLY_MS.to_string(), "60".to_string()),
+    ])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let cfg = AvSyncConfig::from_env();
+      assert_eq!(cfg.tolerance, ms(1_234));
+      assert_eq!(cfg.max_late, ms(50));
+      assert_eq!(cfg.max_early, ms(60));
+    });
   }
 
   #[test]
