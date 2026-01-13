@@ -103,6 +103,30 @@ fn count_rule_fragments(fragment: &FragmentNode, color: Rgba) -> usize {
   count
 }
 
+fn collect_rule_fragments<'a>(fragment: &'a FragmentNode, color: Rgba) -> Vec<&'a FragmentNode> {
+  fn walk<'a>(fragment: &'a FragmentNode, color: Rgba, out: &mut Vec<&'a FragmentNode>) {
+    let is_rule = matches!(fragment.content, FragmentContent::Block { box_id: None })
+      && fragment.style.as_ref().is_some_and(|s| {
+        (s.border_left_color == color
+          && s.border_left_width.to_px() > 0.0
+          && !matches!(s.border_left_style, BorderStyle::None | BorderStyle::Hidden))
+          || (s.border_top_color == color
+            && s.border_top_width.to_px() > 0.0
+            && !matches!(s.border_top_style, BorderStyle::None | BorderStyle::Hidden))
+      });
+    if is_rule {
+      out.push(fragment);
+    }
+    for child in fragment.children.iter() {
+      walk(child, color, out);
+    }
+  }
+
+  let mut out = Vec::new();
+  walk(fragment, color, &mut out);
+  out
+}
+
 fn fragments_with_id<'a>(fragment: &'a FragmentNode, id: usize) -> Vec<&'a FragmentNode> {
   fn walk<'a>(fragment: &'a FragmentNode, id: usize, out: &mut Vec<&'a FragmentNode>) {
     if let FragmentContent::Block { box_id: Some(b) } = fragment.content {
@@ -1699,5 +1723,240 @@ fn column_gap_em_resolves_against_font_size() {
     (info.column_width - 74.4).abs() < 0.6,
     "expected computed column width (got {})",
     info.column_width
+  );
+}
+
+#[test]
+fn column_rule_fragments_are_generated_clamped_and_centered() {
+  let color = Rgba::new(10, 20, 30, 1.0);
+
+  let layout_with_rule_width = |rule_width: f32| -> (FragmentNode, usize) {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.width = Some(Length::px(300.0));
+    parent_style.column_count = Some(2);
+    parent_style.column_gap = Length::px(20.0);
+    parent_style.column_rule_style = BorderStyle::Solid;
+    parent_style.column_rule_width = Length::px(rule_width);
+    parent_style.column_rule_color = Some(color);
+    let parent_style = Arc::new(parent_style);
+
+    let mut first_style = ComputedStyle::default();
+    first_style.height = Some(Length::px(10.0));
+    first_style.break_after = BreakBetween::Column;
+    let mut first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+    first.id = 1;
+
+    let mut second_style = ComputedStyle::default();
+    second_style.height = Some(Length::px(10.0));
+    let mut second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+    second.id = 2;
+
+    let mut parent =
+      BoxNode::new_block(parent_style, FormattingContextType::Block, vec![first, second]);
+    parent.id = 100;
+
+    let fc = BlockFormattingContext::new();
+    let fragment = fc
+      .layout(&parent, &LayoutConstraints::definite_width(300.0))
+      .expect("layout");
+    (fragment, parent.id)
+  };
+
+  // When the declared rule width is larger than the column gap, it should clamp to the gap.
+  let (fragment, parent_id) = layout_with_rule_width(50.0);
+  let container = find_fragment(&fragment, parent_id).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info for multicol container");
+  let rule = find_rule_fragment(container, color).expect("column rule fragment");
+  assert_eq!(count_rule_fragments(container, color), 1);
+  assert!(
+    (rule.bounds.width() - info.column_gap).abs() < 0.01,
+    "rule width should clamp to the gap (got w={}, gap={})",
+    rule.bounds.width(),
+    info.column_gap
+  );
+  let expected_x = info.column_width;
+  assert!(
+    (rule.bounds.x() - expected_x).abs() < 0.01,
+    "clamped rule should start at the gap start (got x={}, expected={})",
+    rule.bounds.x(),
+    expected_x
+  );
+
+  // When the rule width is smaller than the gap, it should be centered between columns.
+  let (fragment, parent_id) = layout_with_rule_width(8.0);
+  let container = find_fragment(&fragment, parent_id).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info for multicol container");
+  let rule = find_rule_fragment(container, color).expect("column rule fragment");
+  assert_eq!(count_rule_fragments(container, color), 1);
+  assert!(
+    (rule.bounds.width() - 8.0).abs() < 0.01,
+    "expected unclamped rule width (got w={})",
+    rule.bounds.width()
+  );
+  let expected_x = info.column_width + (info.column_gap - 8.0) * 0.5;
+  assert!(
+    (rule.bounds.x() - expected_x).abs() < 0.01,
+    "rule should be centered in the gap (got x={}, expected={})",
+    rule.bounds.x(),
+    expected_x
+  );
+}
+
+#[test]
+fn column_rule_is_not_generated_between_empty_columns() {
+  let color = Rgba::new(42, 10, 200, 1.0);
+
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(300.0));
+  parent_style.column_count = Some(3);
+  parent_style.column_gap = Length::px(20.0);
+  parent_style.column_rule_style = BorderStyle::Solid;
+  parent_style.column_rule_width = Length::px(6.0);
+  parent_style.column_rule_color = Some(color);
+  let parent_style = Arc::new(parent_style);
+
+  // Force content into exactly two columns, leaving the third one empty.
+  let mut first_style = ComputedStyle::default();
+  first_style.height = Some(Length::px(10.0));
+  first_style.break_after = BreakBetween::Column;
+  let mut first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  first.id = 11;
+
+  let mut second_style = ComputedStyle::default();
+  second_style.height = Some(Length::px(10.0));
+  let mut second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  second.id = 12;
+
+  let mut parent =
+    BoxNode::new_block(parent_style, FormattingContextType::Block, vec![first, second]);
+  parent.id = 110;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite_width(300.0))
+    .expect("layout");
+
+  let container = find_fragment(&fragment, parent.id).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info for multicol container");
+  assert_eq!(info.column_count, 3);
+
+  let rules = collect_rule_fragments(container, color);
+  assert_eq!(
+    rules.len(),
+    1,
+    "expected a single rule fragment (only between the two non-empty columns)"
+  );
+  let rule = rules[0];
+  let expected_x = info.column_width + (info.column_gap - 6.0) * 0.5;
+  assert!(
+    (rule.bounds.x() - expected_x).abs() < 0.01,
+    "expected rule between the first and second columns (got x={}, expected={})",
+    rule.bounds.x(),
+    expected_x
+  );
+}
+
+#[test]
+fn column_rule_fragments_are_split_per_column_set_around_spanner() {
+  let color = Rgba::new(150, 50, 0, 1.0);
+
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(300.0));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(20.0);
+  parent_style.column_rule_style = BorderStyle::Solid;
+  parent_style.column_rule_width = Length::px(8.0);
+  parent_style.column_rule_color = Some(color);
+  let parent_style = Arc::new(parent_style);
+
+  let block = |id: usize, break_after: bool| -> BoxNode {
+    let mut style = ComputedStyle::default();
+    style.height = Some(Length::px(10.0));
+    if break_after {
+      style.break_after = BreakBetween::Column;
+    }
+    let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+    node.id = id;
+    node
+  };
+
+  let before_left = block(1, true);
+  let before_right = block(2, false);
+
+  let mut span_style = ComputedStyle::default();
+  span_style.height = Some(Length::px(15.0));
+  span_style.column_span = ColumnSpan::All;
+  let mut span = BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![]);
+  span.id = 3;
+
+  let after_left = block(4, true);
+  let after_right = block(5, false);
+
+  let mut parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![
+      before_left,
+      before_right,
+      span.clone(),
+      after_left,
+      after_right,
+    ],
+  );
+  parent.id = 200;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite_width(300.0))
+    .expect("layout");
+
+  let container = find_fragment(&fragment, parent.id).expect("multicol container");
+  let span_frag = find_fragment(&fragment, span.id).expect("spanner fragment");
+
+  let mut rules = collect_rule_fragments(container, color);
+  rules.sort_by(|a, b| {
+    a.bounds
+      .y()
+      .partial_cmp(&b.bounds.y())
+      .unwrap_or(std::cmp::Ordering::Equal)
+  });
+  assert_eq!(
+    rules.len(),
+    2,
+    "expected one rule fragment per column set (got {:#?})",
+    rules.iter().map(|r| r.bounds).collect::<Vec<_>>()
+  );
+
+  for rule in &rules {
+    let overlaps_spanner = rule.bounds.y() < span_frag.bounds.max_y() - 0.01
+      && rule.bounds.max_y() > span_frag.bounds.y() + 0.01;
+    assert!(
+      !overlaps_spanner,
+      "rule fragment should not overlap the spanner (rule={:?}, spanner={:?})",
+      rule.bounds,
+      span_frag.bounds
+    );
+  }
+
+  assert!(
+    rules[0].bounds.max_y() <= span_frag.bounds.y() + 0.05,
+    "first set rule should end at the spanner start (rule={:?}, spanner={:?})",
+    rules[0].bounds,
+    span_frag.bounds
+  );
+  assert!(
+    rules[1].bounds.y() >= span_frag.bounds.max_y() - 0.05,
+    "second set rule should start after the spanner (rule={:?}, spanner={:?})",
+    rules[1].bounds,
+    span_frag.bounds
   );
 }
