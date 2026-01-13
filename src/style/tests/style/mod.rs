@@ -76,6 +76,7 @@ mod grid_track_list_single_token_test;
 mod has_selector_quirks_bloom_test;
 mod has_selector_test;
 mod hostile_css_no_panic_smoke_test;
+mod hanging_punctuation_test;
 mod hyphenate_character_test;
 mod import_layer_supports_test;
 mod isolation_case_insensitive_test;

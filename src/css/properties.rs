@@ -334,6 +334,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "grid-template-areas",
   "grid-template-columns",
   "grid-template-rows",
+  "hanging-punctuation",
   "height",
   "hyphenate-character",
   "hyphens",

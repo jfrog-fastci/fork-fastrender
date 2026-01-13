@@ -218,6 +218,7 @@ use types::TextEmphasisSkip;
 use types::TextEmphasisStyle;
 use types::TextIndent;
 use types::TextJustify;
+use types::HangingPunctuation;
 use types::TextOrientation;
 use types::TextOverflow;
 use types::TextRendering;
@@ -1208,6 +1209,7 @@ pub struct ComputedStyle {
   pub text_align: TextAlign,
   pub text_align_last: TextAlignLast,
   pub text_justify: TextJustify,
+  pub hanging_punctuation: HangingPunctuation,
   pub text_rendering: TextRendering,
   pub allow_subpixel_aa: bool,
   pub font_smoothing: FontSmoothing,
@@ -1672,6 +1674,7 @@ impl Default for ComputedStyle {
       text_align: TextAlign::Start,
       text_align_last: TextAlignLast::Auto,
       text_justify: TextJustify::Auto,
+      hanging_punctuation: HangingPunctuation::NONE,
       text_rendering: TextRendering::Auto,
       allow_subpixel_aa: true,
       font_smoothing: FontSmoothing::Auto,

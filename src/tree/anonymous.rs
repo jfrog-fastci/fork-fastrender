@@ -1115,6 +1115,7 @@ pub(crate) fn inherited_style(parent: &ComputedStyle) -> ComputedStyle {
   style.text_align = parent.text_align;
   style.text_align_last = parent.text_align_last;
   style.text_justify = parent.text_justify;
+  style.hanging_punctuation = parent.hanging_punctuation;
   style.text_rendering = parent.text_rendering;
   style.allow_subpixel_aa = parent.allow_subpixel_aa;
   style.font_smoothing = parent.font_smoothing;

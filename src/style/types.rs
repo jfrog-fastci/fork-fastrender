@@ -3738,6 +3738,56 @@ pub enum TextJustify {
   Distribute,
 }
 
+/// CSS `hanging-punctuation`
+///
+/// Reference: CSS Text Module Level 3
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HangingPunctuation(pub u8);
+
+impl HangingPunctuation {
+  pub const NONE: Self = Self(0);
+  pub const FIRST: Self = Self(1 << 0);
+  pub const LAST: Self = Self(1 << 1);
+  pub const FORCE_END: Self = Self(1 << 2);
+  pub const ALLOW_END: Self = Self(1 << 3);
+
+  #[inline]
+  pub const fn contains(self, other: Self) -> bool {
+    self.0 & other.0 == other.0
+  }
+
+  #[inline]
+  pub const fn is_none(self) -> bool {
+    self.0 == 0
+  }
+
+  #[inline]
+  pub const fn has_first(self) -> bool {
+    self.contains(Self::FIRST)
+  }
+
+  #[inline]
+  pub const fn has_last(self) -> bool {
+    self.contains(Self::LAST)
+  }
+
+  #[inline]
+  pub const fn has_force_end(self) -> bool {
+    self.contains(Self::FORCE_END)
+  }
+
+  #[inline]
+  pub const fn has_allow_end(self) -> bool {
+    self.contains(Self::ALLOW_END)
+  }
+}
+
+impl Default for HangingPunctuation {
+  fn default() -> Self {
+    Self::NONE
+  }
+}
+
 /// CSS `text-rendering`
 ///
 /// Reference: SVG/CSS (non-standard, inherited)

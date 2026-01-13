@@ -5236,6 +5236,7 @@ fn is_inherited_property(name: &str) -> bool {
       | "text-align-all"
       | "text-align-last"
       | "text-justify"
+      | "hanging-punctuation"
       | "text-wrap"
       | "text-box-edge"
       | "text-edge"
@@ -7415,6 +7416,7 @@ pub(crate) fn apply_property_from_source(
     }
     "text-align-last" => styles.text_align_last = source.text_align_last,
     "text-justify" => styles.text_justify = source.text_justify,
+    "hanging-punctuation" => styles.hanging_punctuation = source.hanging_punctuation,
     "text-rendering" => styles.text_rendering = source.text_rendering,
     "-webkit-font-smoothing" | "-moz-osx-font-smoothing" | "font-smooth" => {
       styles.allow_subpixel_aa = source.allow_subpixel_aa;
@@ -14372,6 +14374,73 @@ fn apply_declaration_with_base_internal_with_order(
           "distribute" => TextJustify::Distribute,
           _ => styles.text_justify,
         };
+      }
+    }
+    "hanging-punctuation" => {
+      let parse_parts = |parts: &[&str]| -> Option<HangingPunctuation> {
+        if parts.is_empty() {
+          return None;
+        }
+        if parts.len() == 1 && parts[0].eq_ignore_ascii_case("none") {
+          return Some(HangingPunctuation::NONE);
+        }
+        if parts.iter().any(|p| p.eq_ignore_ascii_case("none")) {
+          // `none` is mutually exclusive with all other keywords.
+          return None;
+        }
+
+        let mut out = HangingPunctuation::NONE;
+        for part in parts {
+          if part.eq_ignore_ascii_case("first") {
+            if out.has_first() {
+              return None;
+            }
+            out.0 |= HangingPunctuation::FIRST.0;
+          } else if part.eq_ignore_ascii_case("last") {
+            if out.has_last() {
+              return None;
+            }
+            out.0 |= HangingPunctuation::LAST.0;
+          } else if part.eq_ignore_ascii_case("force-end") {
+            if out.has_force_end() || out.has_allow_end() {
+              return None;
+            }
+            out.0 |= HangingPunctuation::FORCE_END.0;
+          } else if part.eq_ignore_ascii_case("allow-end") {
+            if out.has_force_end() || out.has_allow_end() {
+              return None;
+            }
+            out.0 |= HangingPunctuation::ALLOW_END.0;
+          } else {
+            return None;
+          }
+        }
+
+        (!out.is_none()).then_some(out)
+      };
+
+      let parsed = match resolved_value {
+        PropertyValue::Keyword(raw) => {
+          let parts: Vec<&str> = raw.split_whitespace().collect();
+          parse_parts(&parts)
+        }
+        PropertyValue::Multiple(values) => {
+          let mut parts: Vec<&str> = Vec::with_capacity(values.len());
+          let mut valid = true;
+          for value in values {
+            if let PropertyValue::Keyword(kw) = value {
+              parts.push(kw.as_str());
+            } else {
+              valid = false;
+              break;
+            }
+          }
+          valid.then(|| parse_parts(&parts)).flatten()
+        }
+        _ => None,
+      };
+      if let Some(value) = parsed {
+        styles.hanging_punctuation = value;
       }
     }
     "text-size-adjust" => {

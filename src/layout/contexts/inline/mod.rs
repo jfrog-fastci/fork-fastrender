@@ -164,6 +164,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use unicode_general_category::get_general_category;
+use unicode_general_category::GeneralCategory;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Copy)]
@@ -7697,6 +7698,7 @@ impl InlineFormattingContext {
       let line_block_offset = start_y + line.y_offset;
       let line_direction = line.resolved_direction;
       let (is_last_line, _is_single_line) = paragraph_info[idx];
+      let is_first_formatted_line = idx == 0;
       let line_width = if line.available_width > 0.0 {
         line.available_width
       } else if idx == 0 {
@@ -7750,6 +7752,7 @@ impl InlineFormattingContext {
         inline_vertical,
         strut_metrics,
         relative_cb,
+        is_first_formatted_line,
         anchor_positions.as_deref_mut(),
         positioned_containing_blocks.as_deref_mut(),
       );
@@ -7773,6 +7776,7 @@ impl InlineFormattingContext {
     inline_vertical: bool,
     _strut_metrics: &BaselineMetrics,
     relative_cb: &ContainingBlock,
+    is_first_formatted_line: bool,
     mut anchor_positions: Option<&mut HashMap<usize, StaticPositionAnchorPoint>>,
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
   ) -> FragmentNode {
@@ -7808,12 +7812,306 @@ impl InlineFormattingContext {
       items = markers;
     }
 
-    let mut children = Vec::new();
     let usable_width = if available_width.is_finite() {
       available_width.max(0.0)
     } else {
       line.width
     };
+
+    // -----------------------------------------------------------------------
+    // CSS Text 3: `hanging-punctuation`
+    //
+    // We implement hanging punctuation by splitting the hangable punctuation character into its
+    // own `TextItem`, setting `advance_for_layout = 0` (so it is excluded from alignment /
+    // justification measurements), and shifting it with `paint_offset` when hanging at the start
+    // edge.
+    //
+    // Note: This currently runs during fragment construction rather than line building. This keeps
+    // the behavior focused on alignment/justification measurement and glyph positioning, and avoids
+    // perturbing the earlier line-breaking pass.
+    fn is_hangable_first_char(ch: char) -> bool {
+      matches!(
+        get_general_category(ch),
+        GeneralCategory::OpenPunctuation
+          | GeneralCategory::FinalPunctuation
+          | GeneralCategory::InitialPunctuation
+      ) || matches!(ch, '\'' | '"' | '\u{3000}')
+    }
+
+    fn is_stop_or_comma(ch: char) -> bool {
+      matches!(
+        ch,
+        ',' | '.'
+          | '\u{060C}'
+          | '\u{06D4}'
+          | '\u{3001}'
+          | '\u{3002}'
+          | '\u{FF0C}'
+          | '\u{FF0E}'
+          | '\u{FE50}'
+          | '\u{FE51}'
+          | '\u{FE52}'
+          | '\u{FF61}'
+          | '\u{FF64}'
+      )
+    }
+
+    fn is_ignorable_edge_item(item: &InlineItem) -> bool {
+      match item {
+        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) => true,
+        InlineItem::Text(t) => t.is_marker && t.advance_for_layout.abs() <= f32::EPSILON,
+        InlineItem::Replaced(r) => r.is_marker && r.total_width().abs() <= f32::EPSILON,
+        InlineItem::InlineBox(b) => {
+          b.children.is_empty()
+            && b.start_edge.abs() <= f32::EPSILON
+            && b.end_edge.abs() <= f32::EPSILON
+            && b.margin_left.abs() <= f32::EPSILON
+            && b.margin_right.abs() <= f32::EPSILON
+        }
+        _ => false,
+      }
+    }
+
+    fn hang_first_in_items(
+      items: &mut Vec<InlineItem>,
+      shaper: &ShapingPipeline,
+      font_context: &FontContext,
+      reshape_cache: &mut ReshapeCache,
+    ) -> bool {
+      let mut idx = 0usize;
+      while idx < items.len() {
+        if is_ignorable_edge_item(&items[idx]) {
+          idx += 1;
+          continue;
+        }
+        let (applied, extra) =
+          hang_first_in_item(&mut items[idx], shaper, font_context, reshape_cache, true);
+        if let Some(extra_item) = extra {
+          items.insert(idx + 1, extra_item);
+        }
+        return applied;
+      }
+      false
+    }
+
+    fn hang_first_in_item(
+      item: &mut InlineItem,
+      shaper: &ShapingPipeline,
+      font_context: &FontContext,
+      reshape_cache: &mut ReshapeCache,
+      allow_hang: bool,
+    ) -> (bool, Option<InlineItem>) {
+      match item {
+        InlineItem::Text(text) => {
+          if !allow_hang || text.is_marker {
+            return (false, None);
+          }
+          if !text.style.hanging_punctuation.has_first() {
+            return (false, None);
+          }
+          let Some(first_char) = text.text.chars().next() else {
+            return (false, None);
+          };
+          if !is_hangable_first_char(first_char) {
+            return (false, None);
+          }
+
+          let sign = marker_inline_start_sign(text.style.writing_mode, text.style.direction);
+          let split_offset = first_char.len_utf8();
+          if split_offset >= text.text.len() {
+            text.advance_for_layout = 0.0;
+            text.paint_offset = sign * text.advance;
+            return (true, None);
+          }
+
+          let Some((mut before, after)) =
+            text.split_at(split_offset, false, shaper, font_context, reshape_cache)
+          else {
+            return (false, None);
+          };
+          before.advance_for_layout = 0.0;
+          before.paint_offset = sign * before.advance;
+          *item = InlineItem::Text(before);
+          (true, Some(InlineItem::Text(after)))
+        }
+        InlineItem::InlineBox(inline_box) => {
+          if !allow_hang
+            || inline_box.start_edge.abs() > f32::EPSILON
+            || inline_box.margin_left.abs() > f32::EPSILON
+          {
+            return (false, None);
+          }
+          if inline_box.children.is_empty() {
+            return (false, None);
+          }
+          let applied = hang_first_in_items(
+            &mut inline_box.children,
+            shaper,
+            font_context,
+            reshape_cache,
+          );
+          (applied, None)
+        }
+        _ => (false, None),
+      }
+    }
+
+    fn hang_end_in_items(
+      items: &mut Vec<InlineItem>,
+      shaper: &ShapingPipeline,
+      font_context: &FontContext,
+      reshape_cache: &mut ReshapeCache,
+      allow_end_overflow: bool,
+    ) -> bool {
+      let mut idx_opt = items.len().checked_sub(1);
+      while let Some(idx) = idx_opt {
+        if is_ignorable_edge_item(&items[idx]) {
+          idx_opt = idx.checked_sub(1);
+          continue;
+        }
+        let (applied, extra) =
+          hang_end_in_item(&mut items[idx], shaper, font_context, reshape_cache, true, allow_end_overflow);
+        if let Some(extra_item) = extra {
+          items.insert(idx + 1, extra_item);
+        }
+        return applied;
+      }
+      false
+    }
+
+    fn hang_end_in_item(
+      item: &mut InlineItem,
+      shaper: &ShapingPipeline,
+      font_context: &FontContext,
+      reshape_cache: &mut ReshapeCache,
+      allow_hang: bool,
+      allow_end_overflow: bool,
+    ) -> (bool, Option<InlineItem>) {
+      match item {
+        InlineItem::Text(text) => {
+          if !allow_hang || text.is_marker {
+            return (false, None);
+          }
+          let hp = text.style.hanging_punctuation;
+          let should_hang = hp.has_force_end() || (hp.has_allow_end() && allow_end_overflow);
+          if !should_hang {
+            return (false, None);
+          }
+
+          let Some(last_char) = text.text.chars().next_back() else {
+            return (false, None);
+          };
+          if !is_stop_or_comma(last_char) {
+            return (false, None);
+          }
+
+          let split_offset = text.text.len().saturating_sub(last_char.len_utf8());
+          if split_offset == 0 {
+            text.advance_for_layout = 0.0;
+            text.paint_offset = 0.0;
+            return (true, None);
+          }
+
+          let Some((before, mut after)) =
+            text.split_at(split_offset, false, shaper, font_context, reshape_cache)
+          else {
+            return (false, None);
+          };
+          after.advance_for_layout = 0.0;
+          after.paint_offset = 0.0;
+          *item = InlineItem::Text(before);
+          (true, Some(InlineItem::Text(after)))
+        }
+        InlineItem::InlineBox(inline_box) => {
+          if !allow_hang
+            || inline_box.end_edge.abs() > f32::EPSILON
+            || inline_box.margin_right.abs() > f32::EPSILON
+          {
+            return (false, None);
+          }
+          if inline_box.children.is_empty() {
+            return (false, None);
+          }
+          let applied = hang_end_in_items(
+            &mut inline_box.children,
+            shaper,
+            font_context,
+            reshape_cache,
+            allow_end_overflow,
+          );
+          (applied, None)
+        }
+        _ => (false, None),
+      }
+    }
+
+    let mut reshape_cache = ReshapeCache::default();
+
+    if is_first_formatted_line {
+      let mut idx = 0usize;
+      while idx < items.len() {
+        if is_ignorable_edge_item(&items[idx].item) {
+          idx += 1;
+          continue;
+        }
+        let baseline_offset = items[idx].baseline_offset;
+        let (applied, extra) =
+          hang_first_in_item(&mut items[idx].item, &self.pipeline, &self.font_context, &mut reshape_cache, true);
+        if let Some(extra_item) = extra {
+          items.insert(
+            idx + 1,
+            PositionedItem {
+              item: extra_item,
+              x: 0.0,
+              baseline_offset,
+            },
+          );
+        }
+        // Whether or not we hung punctuation, only the first non-ignorable item can participate.
+        let _ = applied;
+        break;
+      }
+    }
+
+    let allow_end_overflow = {
+      // `allow-end` is conditional: only hang the stop/comma if it would otherwise overflow.
+      // Use the current line width before applying end hanging.
+      let width_before_end: f32 = items.iter().map(|p| p.item.width()).sum();
+      width_before_end > usable_width + 0.01
+    };
+
+    {
+      let mut idx_opt = items.len().checked_sub(1);
+      while let Some(idx) = idx_opt {
+        if is_ignorable_edge_item(&items[idx].item) {
+          idx_opt = idx.checked_sub(1);
+          continue;
+        }
+        let baseline_offset = items[idx].baseline_offset;
+        let (applied, extra) = hang_end_in_item(
+          &mut items[idx].item,
+          &self.pipeline,
+          &self.font_context,
+          &mut reshape_cache,
+          true,
+          allow_end_overflow,
+        );
+        if let Some(extra_item) = extra {
+          items.insert(
+            idx + 1,
+            PositionedItem {
+              item: extra_item,
+              x: 0.0,
+              baseline_offset,
+            },
+          );
+        }
+        let _ = applied;
+        break;
+      }
+    }
+
+    let mut children = Vec::new();
     let total_width: f32 = items.iter().map(|p| p.item.width()).sum();
     let hanging_end_width = {
       // CSS Text: trailing preserved whitespace can be *hanging* at the end of a line, meaning it

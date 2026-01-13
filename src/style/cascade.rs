@@ -19027,6 +19027,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.text_align = parent.text_align;
   styles.text_align_last = parent.text_align_last;
   styles.text_justify = parent.text_justify;
+  styles.hanging_punctuation = parent.hanging_punctuation;
   styles.text_rendering = parent.text_rendering;
   styles.allow_subpixel_aa = parent.allow_subpixel_aa;
   styles.font_smoothing = parent.font_smoothing;

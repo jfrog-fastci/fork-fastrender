@@ -281,6 +281,7 @@ mod grid_template_areas_override_updates_line_names;
 mod grid_track_sizing_intrinsics;
 mod grid_width_calc_percent;
 mod grid_writing_mode_in_block;
+mod hanging_punctuation_test;
 mod ifc_logical_coordinates;
 mod inline_atomic_subpixel_overflow_does_not_wrap;
 mod inline_block_baseline_ignores_floats;
