@@ -998,9 +998,19 @@ fn best_effort_site_for_url(url: &str) -> String {
   if trimmed.is_empty() {
     return "unknown".to_string();
   }
-  crate::ui::SiteKey::from_url(trimmed)
-    .map(|key| key.to_string())
-    .unwrap_or_else(|_| "unknown".to_string())
+  let parsed = match url::Url::parse(trimmed) {
+    Ok(url) => url,
+    Err(_) => return "unknown".to_string(),
+  };
+
+  match parsed.scheme() {
+    "http" | "https" => parsed
+      .host_str()
+      .map(str::to_string)
+      .unwrap_or_else(|| "unknown".to_string()),
+    "file" => "file".to_string(),
+    other => other.to_string(),
+  }
 }
 
 fn processes_html(full_url: &str) -> String {
@@ -1095,27 +1105,14 @@ fn processes_html(full_url: &str) -> String {
     for tab in &snapshot.open_tabs {
       let safe_window = escape_html(tab.window_id.as_deref().unwrap_or("-"));
       let safe_url = escape_html(&tab.url);
-      let site = tab
-        .site_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| best_effort_site_for_url(&tab.url));
+      let site = best_effort_site_for_url(&tab.url);
       let site_cell = if site == "unknown" {
         "<span class=\"muted\">unknown</span>".to_string()
       } else {
         format!("<code>{}</code>", escape_html(&site))
       };
-      let renderer = match tab.renderer_process {
-        Some(id) => format!("<code>{id}</code>"),
-        None => "<span class=\"muted\">(unassigned)</span>".to_string(),
-      };
-      let network_cell = if cfg!(feature = "direct_network") {
-        "<span class=\"muted\">in-process</span>".to_string()
-      } else {
-        "<span class=\"muted\">(not implemented)</span>".to_string()
-      };
+      let renderer = "<span class=\"muted\">(not implemented)</span>".to_string();
+      let network_cell = "<span class=\"muted\">(not implemented)</span>".to_string();
       if !tokens.is_empty() {
         use std::fmt::Write;
         let mut searchable = String::new();
@@ -2188,18 +2185,22 @@ mod tests {
     ]);
 
     let html = html_for_about_url(ABOUT_PROCESSES).unwrap();
-    assert!(
-      html.contains("<td><code>https://example.com</code></td>"),
-      "expected about:processes to render site column for https URLs, got: {html}"
-    );
-    assert!(
-      html.contains("<td><code>file:///tmp/a.html</code></td>"),
-      "expected about:processes to render site column for file URLs, got: {html}"
-    );
-    assert!(
-      html.contains("<td><code>about:newtab</code></td>"),
-      "expected about:processes to render site column for about URLs, got: {html}"
-    );
+    let normalized: String = html.chars().filter(|c| !c.is_whitespace()).collect();
+    for (url, expected_site) in [
+      ("https://example.com/a", "example.com"),
+      ("file:///tmp/a.html", "file"),
+      ("about:newtab", "about"),
+    ] {
+      let safe_url = escape_html(url);
+      let safe_site = escape_html(expected_site);
+      let needle = format!(
+        "<td><ahref=\"{safe_url}\"><code>{safe_url}</code></a></td><td><code>{safe_site}</code></td>"
+      );
+      assert!(
+        normalized.contains(&needle),
+        "expected about:processes to render site {expected_site:?} for URL {url:?}, got: {html}"
+      );
+    }
   }
 
   #[test]
