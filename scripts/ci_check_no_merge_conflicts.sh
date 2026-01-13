@@ -66,7 +66,7 @@ if [[ "${have_rg}" -eq 1 ]]; then
   matches="$(
     rg -n --hidden --no-messages \
       -e '^<<<<<<< ' \
-      -e '^||||||| ' \
+      -e '^[|]{7} ' \
       -e '^=======[[:space:]]*$' \
       -e '^>>>>>>> ' \
       --glob '!.git/**' \
