@@ -133,9 +133,12 @@ Repo reality:
   - Default values live in `RendererSandboxConfig::default()` (`src/sandbox/mod.rs`) and include
     `RLIMIT_NOFILE=256` and `RLIMIT_CORE=0` (plus `PR_SET_DUMPABLE=0`).
   - `RLIMIT_AS` is supported but is not enabled by default (`address_space_limit_bytes: None`).
-- File descriptor hygiene (closing unexpected inherited fds / setting `CLOEXEC`) is still the
-  responsibility of the **process launcher**.
-  - Helpers: `sandbox::close_fds_except(...)` and `sandbox::set_cloexec_on_fds_except(...)`
+- File descriptor hygiene (closing unexpected inherited fds / setting `CLOEXEC`) is primarily the
+  responsibility of the **process launcher** (especially for spawn-time sandboxing).
+  - `sandbox::apply_renderer_sandbox` can also close unexpected fds in-process when
+    `RendererSandboxConfig::close_extra_fds` is enabled (default), preserving fds 0-3 (stdio + the
+    IPC bootstrap fd).
+  - Helpers for launchers: `sandbox::close_fds_except(...)` and `sandbox::set_cloexec_on_fds_except(...)`
     (`src/sandbox/fd_sanitizer.rs`).
   - Prefer `close_fds_except` from a `Command::pre_exec` hook when spawning a dedicated renderer
     subprocess.
@@ -170,6 +173,8 @@ Repo reality nuance:
 
 - `sandbox::close_fds_except(...)` is designed to be used from a `pre_exec` hook where the launcher
   knows exactly which fds must remain open.
+- `sandbox::apply_renderer_sandbox` also performs post-`exec` fd cleanup when
+  `RendererSandboxConfig::close_extra_fds` is enabled (default), closing everything except fds 0-3.
 - When using `std::process::Command`, there may be internal exec-error-reporting pipes that are hard
   to include in a strict keep-list. In those cases, it can be safer to use
   `sandbox::set_cloexec_on_fds_except(...)` (mark fds close-on-exec without closing them) and/or do
