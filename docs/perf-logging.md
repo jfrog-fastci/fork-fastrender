@@ -68,7 +68,7 @@ The exact schema evolves, but each JSON line is intended to be self-describing. 
 include:
 
 - `event` (string): the event kind (e.g. `frame`, `input_latency`, `ttfp`).
-- `ts_ms` (number): monotonic timestamp in milliseconds (relative to process start).
+- `t_ms` (number): monotonic timestamp in milliseconds (relative to process start).
 - `tab_id` / `window_id` (optional): identifiers for multi-tab/multi-window sessions.
 - `dt_ms` / `frame_ms` / `latency_ms` (number): the measured duration in milliseconds.
 - `reason` (string, optional): why a frame was produced (e.g. `scroll`, `resize`, `idle`,
