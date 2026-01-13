@@ -3852,6 +3852,67 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn dom_query_and_hit_testing_layout_flushes_stay_in_sync() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = "<!doctype html><html><body style=\"margin:0;padding:0;\"><div id=\"target\" style=\"width:10px;height:10px;background:black;\">Hello</div></body></html>";
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(64, 64))?;
+
+    // Seed a prepared cache + mapping.
+    doc.render_frame()?;
+    let target = doc.dom().get_element_by_id("target").expect("#target element");
+    let text_id = first_text_node_id(doc.dom()).expect("text node");
+
+    let start = doc.invalidation_counters();
+    assert_eq!(start.full_restyles, 1);
+    assert_eq!(start.full_relayouts, 1);
+
+    // 1) DOM query flush after a text mutation should use incremental relayout, and a subsequent
+    // hit-testing flush should observe the same up-to-date layout without re-running pipeline work.
+    assert!(doc.mutate_dom(|dom| dom.set_text_data(text_id, "Updated").expect("set text")));
+    doc.ensure_layout_for_dom_queries()?;
+    let after_dom_flush = doc.invalidation_counters();
+    assert_eq!(after_dom_flush.incremental_relayouts, start.incremental_relayouts + 1);
+    assert_eq!(after_dom_flush.full_restyles, start.full_restyles);
+    assert_eq!(after_dom_flush.full_relayouts, start.full_relayouts);
+
+    let hit = doc.element_from_point(1.0, 1.0)?;
+    assert_eq!(hit, Some(target));
+    assert_eq!(
+      doc.invalidation_counters(),
+      after_dom_flush,
+      "hit-testing flush should not redo layout when a DOM-query flush already updated caches"
+    );
+
+    // 2) Hit-testing flush should also satisfy layout after text mutations, and a subsequent DOM
+    // query flush should be a no-op with respect to layout work.
+    assert!(doc.mutate_dom(|dom| {
+      dom
+        .set_text_data(text_id, "Updated again")
+        .expect("set text")
+    }));
+    let before_hit_flush = doc.invalidation_counters();
+    let hit2 = doc.element_from_point(1.0, 1.0)?;
+    assert_eq!(hit2, Some(target));
+    let after_hit_flush = doc.invalidation_counters();
+    assert_eq!(
+      after_hit_flush.incremental_relayouts,
+      before_hit_flush.incremental_relayouts + 1
+    );
+    assert_eq!(after_hit_flush.full_restyles, before_hit_flush.full_restyles);
+    assert_eq!(after_hit_flush.full_relayouts, before_hit_flush.full_relayouts);
+
+    doc.ensure_layout_for_dom_queries()?;
+    assert_eq!(
+      doc.invalidation_counters(),
+      after_hit_flush,
+      "DOM-query flush should not redo layout when hit-testing already flushed layout"
+    );
+
+    Ok(())
+  }
+
   fn first_child_text_node_id(
     doc: &crate::dom2::Document,
     parent: crate::dom2::NodeId,
