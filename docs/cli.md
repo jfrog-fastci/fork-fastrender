@@ -455,6 +455,9 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Purpose: fetch one URL (or read one `file://` target) and render to a PNG.
 - Entry: `src/bin/fetch_and_render.rs`
 - Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- --help`
+- JavaScript: pass `--js` to execute author scripts using the `vm-js`-backed [`api::BrowserTab`](../src/api/browser_tab.rs),
+  driven via `BrowserTab::run_until_stable` (bounded by `--js-max-frames`). For background on which
+  public containers include JS + an event loop, see [`docs/runtime_stacks.md`](runtime_stacks.md).
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
 - Disk cache directory: `--cache-dir <dir>` overrides the disk-backed subresource cache location (defaults to `fetches/assets/`; only has an effect when built with `--features disk_cache`).
 - Security defaults mirror the library: `file://` subresources are blocked for HTTP(S) documents. Use `--allow-file-from-http` to override during local testing, `--block-mixed-content` to forbid HTTP under HTTPS, and `--same-origin-subresources` (plus optional `--allow-subresource-origin`) to block cross-origin CSS/images/fonts when rendering untrusted pages. This flag does not block cross-origin iframe/embed document navigation.
