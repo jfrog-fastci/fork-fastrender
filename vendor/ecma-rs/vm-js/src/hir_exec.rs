@@ -4805,6 +4805,8 @@ impl<'vm> HirEvaluator<'vm> {
         scope.push_root(left)?;
         let right = self.eval_expr(&mut scope, body, value)?;
         scope.push_root(right)?;
+        // `||=` / `&&=` / `??=` are assignment expressions. When the RHS is an anonymous
+        // function/class definition, infer its `name` from the assignment target.
         maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
         self.env.set_resolved_binding(
           self.vm,
@@ -4840,6 +4842,8 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
+            // `||=` / `&&=` / `??=` are assignment expressions. When the RHS is an anonymous
+            // function/class definition, infer its `name` from the assignment target.
             maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
             self.env.set_resolved_binding(
               self.vm,
@@ -4885,6 +4889,8 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
+            // `||=` / `&&=` / `??=` are assignment expressions. When the RHS is an anonymous
+            // function/class definition, infer its `name` from the assignment target.
             let reference = AssignmentReference::Property { base, key };
             self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, right)?;
 

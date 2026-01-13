@@ -2015,6 +2015,40 @@ fn compiled_assignment_expression_sets_function_names() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_logical_assignment_sets_function_names() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      var f;
+      f ||= function() {};
+      var g = 1;
+      g &&= function() {};
+      var h = null;
+      h ??= function() {};
+
+      var o = { p: undefined, q: 1, r: null };
+      o.p ||= function() {};
+      o.q &&= function() {};
+      o.r ??= function() {};
+
+      f.name + "|" + g.name + "|" + h.name + "|" + o.p.name + "|" + o.q.name + "|" + o.r.name
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(result)?;
+  let expected = scope.alloc_string("f|g|h|p|q|r")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
 fn compiled_member_get_boxes_primitive_base_via_to_object() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
