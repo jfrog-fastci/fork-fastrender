@@ -1057,7 +1057,7 @@ impl Document {
 
     let old_value = match &self.node_checked(node_id)?.kind {
       NodeKind::Text { content } => content.clone(),
-      _ => return Err(DomError::InvalidNodeType),
+      _ => return Err(DomError::InvalidNodeTypeError),
     };
 
     // Offsets are defined in UTF-16 code units.
