@@ -220,11 +220,29 @@ fn compute_function_name(
   let base_units_len = match name {
     PropertyKey::String(s) => scope.heap().get_string(s)?.len_code_units(),
     PropertyKey::Symbol(sym) => {
-      let desc_len = match scope.heap().get_symbol_description(sym)? {
+      let desc = scope.heap().get_symbol_description(sym)?;
+      let desc_len = match desc {
         Some(desc) => scope.heap().get_string(desc)?.len_code_units(),
         None => 0,
       };
-      desc_len.saturating_add(2) // "[" + desc + "]"
+      // Private names are represented using internal symbols whose description is the literal
+      // `"#x"` string. These should participate in `SetFunctionName` like ordinary string property
+      // keys (no `[...]` wrapping).
+      let is_private_name_symbol = match desc {
+        Some(desc) if scope.heap().is_internal_symbol(sym) => scope
+          .heap()
+          .get_string(desc)?
+          .as_code_units()
+          .first()
+          .copied()
+          == Some('#' as u16),
+        _ => false,
+      };
+      if is_private_name_symbol {
+        desc_len
+      } else {
+        desc_len.saturating_add(2) // "[" + desc + "]"
+      }
     }
   };
 
@@ -245,11 +263,29 @@ fn compute_function_name(
       units.extend_from_slice(scope.heap().get_string(s)?.as_code_units());
     }
     PropertyKey::Symbol(sym) => {
-      units.push('[' as u16);
-      if let Some(desc) = scope.heap().get_symbol_description(sym)? {
-        units.extend_from_slice(scope.heap().get_string(desc)?.as_code_units());
+      let desc = scope.heap().get_symbol_description(sym)?;
+      let is_private_name_symbol = match desc {
+        Some(desc) if scope.heap().is_internal_symbol(sym) => scope
+          .heap()
+          .get_string(desc)?
+          .as_code_units()
+          .first()
+          .copied()
+          == Some('#' as u16),
+        _ => false,
+      };
+
+      if is_private_name_symbol {
+        if let Some(desc) = desc {
+          units.extend_from_slice(scope.heap().get_string(desc)?.as_code_units());
+        }
+      } else {
+        units.push('[' as u16);
+        if let Some(desc) = desc {
+          units.extend_from_slice(scope.heap().get_string(desc)?.as_code_units());
+        }
+        units.push(']' as u16);
       }
-      units.push(']' as u16);
     }
   }
 

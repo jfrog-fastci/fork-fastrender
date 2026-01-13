@@ -6392,20 +6392,47 @@ mod regexp_unicode_sets_tests {
     let mut rt = JsRuntime::new(vm, heap)?;
 
     // Binary property.
-    assert!(eval_bool(&mut rt, r#"(/\p{ASCII}/u.test("A"))"#)?);
-    assert!(!eval_bool(&mut rt, r#"(/\p{ASCII}/u.test("é"))"#)?);
-    assert!(!eval_bool(&mut rt, r#"(/\P{ASCII}/u.test("A"))"#)?);
-    assert!(eval_bool(&mut rt, r#"(/\P{ASCII}/u.test("é"))"#)?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(new RegExp("\\p{ASCII}", "u").test("A"))"#,
+    )?);
+    assert!(!eval_bool(
+      &mut rt,
+      r#"(new RegExp("\\p{ASCII}", "u").test("é"))"#,
+    )?);
+    assert!(!eval_bool(
+      &mut rt,
+      r#"(new RegExp("\\P{ASCII}", "u").test("A"))"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(new RegExp("\\P{ASCII}", "u").test("é"))"#,
+    )?);
 
     // General_Category lone-value precedence (`Lu` => `General_Category=Uppercase_Letter`).
-    assert!(eval_bool(&mut rt, r#"(/\p{Lu}/u.test("A"))"#)?);
-    assert!(!eval_bool(&mut rt, r#"(/\p{Lu}/u.test("a"))"#)?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(new RegExp("\\p{Lu}", "u").test("A"))"#,
+    )?);
+    assert!(!eval_bool(
+      &mut rt,
+      r#"(new RegExp("\\p{Lu}", "u").test("a"))"#,
+    )?);
     // ignoreCase should apply (case folding), so `Lu` matches "a" under `/iu`.
-    assert!(eval_bool(&mut rt, r#"(/\p{Lu}/iu.test("a"))"#)?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(new RegExp("\\p{Lu}", "iu").test("a"))"#,
+    )?);
 
     // Non-binary `Script=...`.
-    assert!(eval_bool(&mut rt, r#"(/\p{Script=Greek}/u.test("Ω"))"#)?);
-    assert!(!eval_bool(&mut rt, r#"(/\p{Script=Greek}/u.test("A"))"#)?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(new RegExp("\\p{Script=Greek}", "u").test("Ω"))"#,
+    )?);
+    assert!(!eval_bool(
+      &mut rt,
+      r#"(new RegExp("\\p{Script=Greek}", "u").test("A"))"#,
+    )?);
 
     // Invalid / unsupported names.
     assert!(eval_bool(
