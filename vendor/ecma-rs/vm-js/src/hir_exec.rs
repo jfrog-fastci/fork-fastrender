@@ -5902,24 +5902,82 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(Value::Object(obj_val))
   }
 
+  fn eval_call_arguments(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    call_args: &[hir_js::CallArg],
+  ) -> Result<Vec<Value>, VmError> {
+    let mut args: Vec<Value> = Vec::new();
+    // Best-effort lower bound: spread args can expand beyond this.
+    args
+      .try_reserve_exact(call_args.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    for arg in call_args {
+      if arg.spread {
+        let spread_value = self.eval_expr(scope, body, arg.expr)?;
+        scope.push_root(spread_value)?;
+
+        let mut iter =
+          iterator::get_iterator(self.vm, &mut *self.host, &mut *self.hooks, scope, spread_value)?;
+        scope.push_roots(&[iter.iterator, iter.next_method])?;
+
+        loop {
+          let next_value = match iterator::iterator_step_value(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            scope,
+            &mut iter,
+          ) {
+            Ok(v) => v,
+            // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
+            // while stepping the iterator (`next`/`done`/`value`).
+            Err(err) => return Err(err),
+          };
+          let Some(value) = next_value else {
+            break;
+          };
+
+          let step_res: Result<(), VmError> = (|| {
+            // Per-spread-element tick: spreading large iterators should be budgeted even when the
+            // iterator's `next()` is native/cheap.
+            self.vm.tick()?;
+            scope.push_root(value)?;
+            args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+            args.push(value);
+            Ok(())
+          })();
+          if let Err(err) = step_res {
+            return Err(self.iterator_close_on_error(scope, &iter, err));
+          }
+        }
+      } else {
+        let value = self.eval_expr(scope, body, arg.expr)?;
+        scope.push_root(value)?;
+        args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        args.push(value);
+      }
+    }
+
+    Ok(args)
+  }
+
   fn eval_call(
     &mut self,
     scope: &mut Scope<'_>,
     body: &hir_js::Body,
     call: &hir_js::CallExpr,
   ) -> Result<Value, VmError> {
-    // Only support non-spread arguments for now.
-    if call.args.iter().any(|arg| arg.spread) {
-      return Err(VmError::Unimplemented("spread arguments (hir-js compiled path)"));
-    }
-
     // Track whether this call is *syntactically* a direct eval candidate (`eval(...)`).
     //
     // A call is only a direct eval if:
     // - it is syntactically `eval(...)`, and
     // - `eval` resolves to the original `%eval%` intrinsic function object.
     let callee_expr = self.get_expr(body, call.callee)?;
-    let direct_eval_syntax = !call.optional
+    let direct_eval_syntax = !call.is_new
+      && !call.optional
       && matches!(
         &callee_expr.kind,
         hir_js::ExprKind::Ident(name_id)
@@ -5941,21 +5999,11 @@ impl<'vm> HirEvaluator<'vm> {
       if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
         return Ok(Value::Undefined);
       }
-
-      // Root callee while evaluating args.
       scope.push_root(callee_value)?;
 
-      let mut args: Vec<Value> = Vec::new();
-      args
-        .try_reserve_exact(call.args.len())
-        .map_err(|_| VmError::OutOfMemory)?;
-      for arg in &call.args {
-        let v = self.eval_expr(&mut scope, body, arg.expr)?;
-        scope.push_root(v)?;
-        args.push(v);
-      }
+      let args = self.eval_call_arguments(&mut scope, body, call.args.as_slice())?;
 
-      // For `new F(...)`, the `newTarget` is `F` itself.
+      // For `new`, the `newTarget` is the same as the constructor.
       return self.vm.construct_with_host_and_hooks(
         &mut *self.host,
         &mut scope,
@@ -5966,7 +6014,7 @@ impl<'vm> HirEvaluator<'vm> {
       );
     }
 
-    // Method call detection: `obj.prop(...)` uses `this = obj`.
+    // Method call detection: `obj.prop(...)` uses `this = obj` (or primitive base for strict mode).
     let (callee_value, this_value) = match &callee_expr.kind {
       hir_js::ExprKind::Member(member) => {
         let base = self.eval_expr(&mut scope, body, member.object)?;
@@ -5997,6 +6045,7 @@ impl<'vm> HirEvaluator<'vm> {
       }
     };
 
+    // Optional call: if the callee is nullish, return `undefined` without evaluating args.
     if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
       return Ok(Value::Undefined);
     }
@@ -6004,15 +6053,7 @@ impl<'vm> HirEvaluator<'vm> {
     // Root callee/this while evaluating args.
     scope.push_roots(&[callee_value, this_value])?;
 
-    let mut args: Vec<Value> = Vec::new();
-    args
-      .try_reserve_exact(call.args.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-    for arg in &call.args {
-      let v = self.eval_expr(&mut scope, body, arg.expr)?;
-      scope.push_root(v)?;
-      args.push(v);
-    }
+    let args = self.eval_call_arguments(&mut scope, body, call.args.as_slice())?;
 
     if direct_eval_syntax {
       let intr = self
