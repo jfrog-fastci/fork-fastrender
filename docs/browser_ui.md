@@ -224,8 +224,9 @@ The session file format is versioned (currently v2) and includes:
 - A crash marker (`did_exit_cleanly`) for detecting unclean exits
 - Appearance settings (theme mode, accent color, high contrast, reduced motion, UI scale)
 
-The windowed `browser` app uses a background autosave helper (`SessionAutosave`) so session writes
-do not block the UI thread:
+The windowed `browser` app uses a background autosave helper (`SessionAutosave` in
+[`src/ui/session_autosave.rs`](../src/ui/session_autosave.rs), wired up by the entrypoint in
+[`src/bin/browser.rs`](../src/bin/browser.rs)) so session writes do not block the UI thread:
 
 - **Crash marker:** on startup, the browser immediately persists `did_exit_cleanly=false`. If the
   process is terminated unexpectedly, this marker remains false on disk and the next launch can
