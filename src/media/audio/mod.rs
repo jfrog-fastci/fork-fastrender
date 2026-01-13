@@ -83,7 +83,7 @@ pub use stream::{AudioStreamError, AudioStreamHandle};
 pub use timed_queue::{PopResult, PushError, ReadResult, TimedAudioQueue, TimedAudioSegment};
 
 pub use mixer::{AudioMixer, AudioStreamId, AudioStreamParams};
-pub use types::{AudioBuffer, AudioSamples, ChannelLayout, SampleFormat};
+pub use types::{AudioBuffer, AudioSamples, ChannelLayout, SampleFormat, SampleLayout};
 
 impl From<DecodedAudioChunk> for TimedAudioSegment {
   fn from(chunk: DecodedAudioChunk) -> Self {
@@ -528,6 +528,48 @@ pub trait AudioSink: Send + Sync {
       out_frames,
     );
     self.push_interleaved_f32(&resampled)
+  }
+
+  /// Queue PCM samples for playback in one of the supported input formats/layouts.
+  ///
+  /// This validates buffer lengths, converts the input into the internal f32 interleaved
+  /// representation, and sanitizes decoded samples.
+  ///
+  /// For maximum throughput when you already have interleaved f32, prefer
+  /// [`AudioSink::push_interleaved_f32`].
+  fn push_buffer(&self, buffer: &AudioBuffer<'_>) -> Result<usize> {
+    // Treat decoder-provided metadata as untrusted; reject absurd values early before any
+    // conversion/normalization work.
+    let max_channels = usize::from(limits::MAX_CHANNELS);
+    if buffer.channels == 0 || buffer.channels > max_channels {
+      return Err(AudioError::invalid_spec(format!(
+        "channels {} is outside supported range 1..={}",
+        buffer.channels, max_channels
+      )));
+    }
+    if buffer.sample_rate == 0 || buffer.sample_rate > limits::MAX_SAMPLE_RATE_HZ {
+      return Err(AudioError::invalid_spec(format!(
+        "sample_rate {} is outside supported range 1..={}",
+        buffer.sample_rate,
+        limits::MAX_SAMPLE_RATE_HZ
+      )));
+    }
+
+    let cfg = self.config();
+    let expected_channels = usize::from(cfg.channels.max(1));
+    let expected_sample_rate_hz = cfg.sample_rate_hz;
+
+    if buffer.channels != expected_channels || buffer.sample_rate != expected_sample_rate_hz {
+      return Err(AudioError::StreamConfigMismatch {
+        expected_channels,
+        expected_sample_rate_hz,
+        channels: buffer.channels,
+        sample_rate_hz: buffer.sample_rate,
+      });
+    }
+
+    let converted = convert_to_f32_interleaved(buffer)?;
+    Ok(self.push_interleaved_f32(&converted))
   }
 
   /// Sets the playback volume (gain) for this sink.

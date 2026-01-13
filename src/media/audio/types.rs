@@ -8,10 +8,13 @@ pub enum SampleFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelLayout {
+pub enum SampleLayout {
   Interleaved,
   Planar,
 }
+
+/// Backwards-compatible alias for [`SampleLayout`].
+pub type ChannelLayout = SampleLayout;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AudioSamples<'a> {
@@ -32,7 +35,7 @@ impl AudioSamples<'_> {
     }
   }
 
-  pub fn layout(&self) -> ChannelLayout {
+  pub fn layout(&self) -> SampleLayout {
     match self {
       AudioSamples::InterleavedF32(_)
       | AudioSamples::InterleavedI16(_)
@@ -47,7 +50,7 @@ impl AudioSamples<'_> {
 #[derive(Debug, Clone, Copy)]
 pub struct AudioBuffer<'a> {
   pub format: SampleFormat,
-  pub layout: ChannelLayout,
+  pub layout: SampleLayout,
   pub channels: usize,
   pub sample_rate: u32,
   pub pts: Option<Duration>,
@@ -71,4 +74,3 @@ impl<'a> AudioBuffer<'a> {
     }
   }
 }
-

@@ -59,21 +59,41 @@ pub fn convert_to_f32_interleaved(buffer: &AudioBuffer<'_>) -> Result<Vec<f32>, 
     AudioSamples::InterleavedF32(samples) => {
       validate_interleaved_len(samples.len(), buffer.channels)?;
       validate_frames_limit(samples.len() / buffer.channels)?;
-      Ok(samples.to_vec())
+      Ok(samples.iter().copied().map(sanitize_sample).collect())
     }
     AudioSamples::InterleavedI16(samples) => {
       validate_interleaved_len(samples.len(), buffer.channels)?;
       validate_frames_limit(samples.len() / buffer.channels)?;
-      Ok(samples.iter().copied().map(i16_to_f32).collect())
+      Ok(
+        samples
+          .iter()
+          .copied()
+          .map(|sample| sanitize_sample(i16_to_f32(sample)))
+          .collect(),
+      )
     }
     AudioSamples::InterleavedU16(samples) => {
       validate_interleaved_len(samples.len(), buffer.channels)?;
       validate_frames_limit(samples.len() / buffer.channels)?;
-      Ok(samples.iter().copied().map(u16_to_f32).collect())
+      Ok(
+        samples
+          .iter()
+          .copied()
+          .map(|sample| sanitize_sample(u16_to_f32(sample)))
+          .collect(),
+      )
     }
-    AudioSamples::PlanarF32(planes) => planar_to_f32_interleaved(planes, buffer.channels, |s| s),
-    AudioSamples::PlanarI16(planes) => planar_to_f32_interleaved(planes, buffer.channels, i16_to_f32),
-    AudioSamples::PlanarU16(planes) => planar_to_f32_interleaved(planes, buffer.channels, u16_to_f32),
+    AudioSamples::PlanarF32(planes) => planar_to_f32_interleaved(planes, buffer.channels, sanitize_sample),
+    AudioSamples::PlanarI16(planes) => {
+      planar_to_f32_interleaved(planes, buffer.channels, |sample| {
+        sanitize_sample(i16_to_f32(sample))
+      })
+    }
+    AudioSamples::PlanarU16(planes) => {
+      planar_to_f32_interleaved(planes, buffer.channels, |sample| {
+        sanitize_sample(u16_to_f32(sample))
+      })
+    }
   }
 }
 
@@ -464,6 +484,81 @@ mod tests {
 
     let max = 32767.0 / 32768.0;
     let expected = [-1.0, max, 0.0, 0.0, max, -1.0];
+    assert_f32_slice_eq_eps(&converted, &expected, 1e-6);
+  }
+
+  #[test]
+  fn audio_format_convert_interleaved_f32() {
+    let samples = [0.0f32, f32::NAN, 2.0, -2.0];
+    let buffer = AudioBuffer::new(
+      2,
+      48_000,
+      None,
+      AudioSamples::InterleavedF32(&samples),
+    );
+
+    let converted = convert_to_f32_interleaved(&buffer).unwrap();
+    let expected = [0.0, 0.0, 1.0, -1.0];
+    assert_f32_slice_eq_eps(&converted, &expected, 1e-6);
+  }
+
+  #[test]
+  fn audio_format_convert_planar_f32() {
+    let left = [0.0f32, 2.0];
+    let right = [f32::INFINITY, -0.5];
+    let planes: [&[f32]; 2] = [&left, &right];
+    let buffer = AudioBuffer::new(2, 48_000, None, AudioSamples::PlanarF32(&planes));
+
+    let converted = convert_to_f32_interleaved(&buffer).unwrap();
+    let expected = [0.0, 0.0, 1.0, -0.5];
+    assert_f32_slice_eq_eps(&converted, &expected, 1e-6);
+  }
+
+  #[test]
+  fn audio_format_convert_interleaved_i16() {
+    let max = 32767.0 / 32768.0;
+    let samples: [i16; 4] = [0, i16::MAX, i16::MIN, 16384];
+    let buffer = AudioBuffer::new(2, 48_000, None, AudioSamples::InterleavedI16(&samples));
+
+    let converted = convert_to_f32_interleaved(&buffer).unwrap();
+    let expected = [0.0, max, -1.0, 0.5];
+    assert_f32_slice_eq_eps(&converted, &expected, 1e-6);
+  }
+
+  #[test]
+  fn audio_format_convert_planar_i16() {
+    let max = 32767.0 / 32768.0;
+    let left: [i16; 2] = [0, i16::MIN];
+    let right: [i16; 2] = [i16::MAX, 16384];
+    let planes: [&[i16]; 2] = [&left, &right];
+    let buffer = AudioBuffer::new(2, 48_000, None, AudioSamples::PlanarI16(&planes));
+
+    let converted = convert_to_f32_interleaved(&buffer).unwrap();
+    let expected = [0.0, max, -1.0, 0.5];
+    assert_f32_slice_eq_eps(&converted, &expected, 1e-6);
+  }
+
+  #[test]
+  fn audio_format_convert_interleaved_u16() {
+    let max = 32767.0 / 32768.0;
+    let samples: [u16; 4] = [0, u16::MAX, 32768, 32767];
+    let buffer = AudioBuffer::new(2, 48_000, None, AudioSamples::InterleavedU16(&samples));
+
+    let converted = convert_to_f32_interleaved(&buffer).unwrap();
+    let expected = [-1.0, max, 0.0, -1.0 / 32768.0];
+    assert_f32_slice_eq_eps(&converted, &expected, 1e-6);
+  }
+
+  #[test]
+  fn audio_format_convert_planar_u16() {
+    let max = 32767.0 / 32768.0;
+    let left: [u16; 2] = [0, 32768];
+    let right: [u16; 2] = [u16::MAX, 32767];
+    let planes: [&[u16]; 2] = [&left, &right];
+    let buffer = AudioBuffer::new(2, 48_000, None, AudioSamples::PlanarU16(&planes));
+
+    let converted = convert_to_f32_interleaved(&buffer).unwrap();
+    let expected = [-1.0, max, 0.0, -1.0 / 32768.0];
     assert_f32_slice_eq_eps(&converted, &expected, 1e-6);
   }
 
