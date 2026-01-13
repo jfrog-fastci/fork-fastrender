@@ -101,6 +101,20 @@ fn regexp_invalid_character_class_range_throws_syntax_error() {
 }
 
 #[test]
+fn regexp_invalid_range_ordering_throws_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("[d-G\\c0001]"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+
+  let value = rt
+    .exec_script(r#"try { new RegExp("[\\c0001d-G]"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
 fn regexp_valid_character_class_range_still_matches() {
   let mut rt = new_runtime();
   let value = rt

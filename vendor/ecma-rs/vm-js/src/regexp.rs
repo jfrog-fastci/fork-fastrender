@@ -3467,7 +3467,7 @@ impl<'a> Parser<'a> {
           if let (CharClassItem::Char(a), CharClassItem::Char(b)) = (atom, atom2) {
             if a > b {
               return Err(RegExpSyntaxError {
-                message: "Invalid character class",
+                message: "Invalid regular expression",
               }
               .into());
             }
