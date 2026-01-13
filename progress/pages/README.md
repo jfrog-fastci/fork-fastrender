@@ -35,6 +35,9 @@ This directory contains the **committed pageset scoreboard**: one tiny JSON file
   - `tolerance`: per-channel tolerance used for pixel comparisons (0-255).
   - `max_diff_percent`: threshold used to classify diffs as acceptable/unacceptable (0-100).
   - `computed_at_commit`: git SHA captured when the metrics were computed (omitted when unknown).
+  - Triage note:
+    - `diff_percent` is a **raw pixel mismatch** rate. On real pages it can be dominated by tiny differences (subpixel anti-aliasing, font rasterization, rounding, or 1–2 LSB per-channel noise) and therefore read as “high” even when the render looks visually correct.
+    - `perceptual` is usually a better indicator of **visually meaningful** differences; prefer it when prioritizing which pages are actually “broken”.
 - Migration note (perceptual metric evolution):
   - `accuracy.perceptual` values computed on different commits may not be directly comparable, since the underlying perceptual metric implementation can change (for example: global SSIM → windowed SSIM over downsampled luminance).
   - `accuracy.computed_at_commit` records the git SHA of the run so you can tell which implementation produced the stored number.

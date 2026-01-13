@@ -184,10 +184,17 @@ Each `progress/pages/<stem>.json` may include accuracy metrics when computed:
 }
 ```
 
+`diff_pixels` / `diff_percent` are **raw pixel mismatch** metrics (after applying `tolerance`). In
+practice they can be noisy on real pages: tiny anti-aliasing differences, font rasterization, and
+small per-channel rounding differences can flip large numbers of pixels even when the images look
+visually correct.
+
 `perceptual` is a SSIM-derived perceptual distance (currently a **windowed SSIM over downsampled
-luminance**), where `0.0` means identical. The exact implementation can change over time; newer
-artifacts may include `perceptual_metric` and `computed_at_commit` to help interpret mixed
-historical values without requiring a repo-wide refresh.
+luminance**), where `0.0` means identical. It is usually a better indicator of **visually
+meaningful** differences, so prefer it when prioritizing which pages are actually “broken”. The
+exact implementation can change over time; newer artifacts may include `perceptual_metric` and
+`computed_at_commit` to help interpret mixed historical values without requiring a repo-wide
+refresh.
 
 See [`progress/pages/README.md`](../progress/pages/README.md) for the full schema and migration
 guidance.
