@@ -13,8 +13,12 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
     .args([
       "--output",
       output.to_str().unwrap(),
-      "--only",
+      "--scenario",
       "tab_switch",
+      "--iterations",
+      "1",
+      "--warmup",
+      "0",
     ])
     .stdout(Stdio::null())
     .output()
@@ -37,7 +41,7 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
   let scenarios = summary["scenarios"]
     .as_array()
     .expect("scenarios array must exist");
-  assert_eq!(scenarios.len(), 1, "--only should filter to one scenario");
+  assert_eq!(scenarios.len(), 1, "--scenario should filter to one scenario");
   let scenario = &scenarios[0];
 
   assert_eq!(

@@ -64,7 +64,7 @@ struct Args {
   fail_on_regression: bool,
 
   /// Only run these scenarios (comma-separated).
-  #[arg(long, value_delimiter = ',')]
+  #[arg(long, value_delimiter = ',', alias = "scenario")]
   only: Option<Vec<String>>,
 
   /// Additional warmup iterations per scenario.
@@ -81,6 +81,7 @@ struct Args {
   /// - `ttfp_newtab`: number of tab open+navigate measurements.
   /// - `scroll_fixture` / `resize_fixture`: number of scroll/resize actions measured.
   /// - `input_text`: number of insert+delete cycles measured (2 samples per cycle).
+  /// - `tab_switch`: number of tab switch measurements (A→B and B→A are each one sample).
   #[arg(long)]
   iterations: Option<usize>,
 
