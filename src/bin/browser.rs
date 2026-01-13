@@ -16547,11 +16547,11 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           let paste_cap_after = self.paste_events_buf.capacity();
           if wheel_cap_after > wheel_cap_before || paste_cap_after > paste_cap_before {
             eprintln!(
-            "[{ENV_PERF_LOG}] egui scratch buffers grew: wheel {wheel_cap_before}→{wheel_cap_after}, paste {paste_cap_before}→{paste_cap_after} (raw.events={}, wheel={}, paste={})",
-            raw.events.len(),
-            self.wheel_events_buf.len(),
-            self.paste_events_buf.len(),
-          );
+              "[{ENV_PERF_LOG}] egui scratch buffers grew: wheel {wheel_cap_before}→{wheel_cap_after}, paste {paste_cap_before}→{paste_cap_after} (raw.events={}, wheel={}, paste={})",
+              raw.events.len(),
+              self.wheel_events_buf.len(),
+              self.paste_events_buf.len(),
+            );
           }
         }
 
