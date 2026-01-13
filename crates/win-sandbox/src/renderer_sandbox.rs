@@ -8,7 +8,7 @@ use windows_sys::Win32::Foundation::{
   CloseHandle, GetHandleInformation, SetHandleInformation, ERROR_ACCESS_DENIED, FALSE,
   HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, TRUE,
 };
-use windows_sys::Win32::Security::{NO_INHERITANCE, SECURITY_CAPABILITIES};
+use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
 use windows_sys::Win32::System::Console::{
   GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -25,6 +25,10 @@ use windows_sys::Win32::Security::Authorization::{
   TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::ACL;
+
+// `accctrl.h` defines `NO_INHERITANCE` as 0, but `windows-sys` does not reliably export the constant
+// across all versions/targets. Keep a local copy so the crate remains resilient to API drift.
+const NO_INHERITANCE: u32 = 0;
 
 // `PROC_THREAD_ATTRIBUTE_*` values are stable ABI constants from winbase.h:
 //   ProcThreadAttributeValue(Number, Thread, Input, Additive)

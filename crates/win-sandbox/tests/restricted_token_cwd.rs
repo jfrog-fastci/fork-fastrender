@@ -18,7 +18,7 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
   GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-  NO_INHERITANCE, PSID, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+  PSID, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -45,6 +45,9 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
   const USERS_SID: &str = "S-1-5-32-545";
   // Generic access rights from winnt.h.
   const GENERIC_ALL: u32 = 0x1000_0000;
+  // `NO_INHERITANCE` from `accctrl.h` is defined as 0. Keep a local copy so this test does not rely
+  // on `windows-sys` exporting the constant.
+  const NO_INHERITANCE: u32 = 0;
   // `DACL_SECURITY_INFORMATION` from winnt.h.
   const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
   // `PROTECTED_DACL_SECURITY_INFORMATION` from winnt.h (disable DACL inheritance).
