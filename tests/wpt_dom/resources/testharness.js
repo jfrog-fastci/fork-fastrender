@@ -510,10 +510,18 @@ function assert_throws_dom(name, target, func, message) {
     thrown_name = null;
   }
   //
+  var canonical_thrown_name = thrown_name;
+  try {
+    if (typeof canonical_thrown_name === "string") {
+      var mapped_thrown_name = __dom_exception_legacy_name_map[canonical_thrown_name];
+      if (typeof mapped_thrown_name === "string") {
+        canonical_thrown_name = mapped_thrown_name;
+      }
+    }
+  } catch (_e3) {}
+  //
   var ok = false;
-  if (thrown_name === expected_name) ok = true;
-  // If the environment still uses legacy DOMException names, accept those too.
-  if (ok !== true && expected_name !== name && thrown_name === name) ok = true;
+  if (canonical_thrown_name === expected_name) ok = true;
   if (ok !== true) {
     var actual_name = thrown_name;
     if (actual_name === null) {
