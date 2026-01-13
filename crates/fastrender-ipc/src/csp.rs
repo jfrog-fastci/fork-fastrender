@@ -435,6 +435,14 @@ pub struct FrameNode {
   pub url: Option<String>,
   pub origin: Option<DocumentOrigin>,
   pub csp: Option<CspPolicy>,
+  /// Mirror of the in-process `ResourceAccessPolicy::allow_file_from_http` knob for document loads.
+  ///
+  /// When `false` (default), `file://` navigations are blocked for HTTP(S) embedding documents.
+  pub allow_file_from_http: bool,
+  /// Mirror of the in-process `ResourceAccessPolicy::block_mixed_content` knob for document loads.
+  ///
+  /// When `true`, `http://` navigations are blocked for `https://` embedding documents.
+  pub block_mixed_content: bool,
 }
 
 impl FrameNode {
@@ -444,6 +452,8 @@ impl FrameNode {
       url: None,
       origin: None,
       csp: None,
+      allow_file_from_http: false,
+      block_mixed_content: false,
     }
   }
 
@@ -452,6 +462,44 @@ impl FrameNode {
     self.origin = DocumentOrigin::from_url_str(&url);
     self.url = Some(url);
     self.csp = CspPolicy::from_values(csp_values.iter().map(|s| s.as_str()));
+  }
+
+  /// Configure the subset of `ResourceAccessPolicy` needed to enforce embedder restrictions for
+  /// out-of-process iframe navigations.
+  ///
+  /// These flags are typically inherited from the embedding document's `ResourceContext`.
+  pub fn set_resource_policy(&mut self, allow_file_from_http: bool, block_mixed_content: bool) {
+    self.allow_file_from_http = allow_file_from_http;
+    self.block_mixed_content = block_mixed_content;
+  }
+
+  /// Check whether a child-frame navigation is allowed by the parent document policy
+  /// (mixed-content + `file://` from HTTP(S)).
+  ///
+  /// This intentionally mirrors the in-process `ResourceAccessPolicy::allows_document` behaviour:
+  /// it does **not** enforce same-origin restrictions.
+  pub fn check_document_policy(&self, candidate: &str) -> Result<(), String> {
+    check_document_policy(
+      self.origin.as_ref(),
+      self.url.as_deref(),
+      candidate,
+      self.allow_file_from_http,
+      self.block_mixed_content,
+    )
+  }
+
+  /// Check whether a child-frame navigation is allowed by the parent document policy, validating
+  /// both the requested URL and (when present) the final URL after redirects.
+  pub fn check_document_policy_with_final(
+    &self,
+    requested_url: &str,
+    final_url: Option<&str>,
+  ) -> Result<(), String> {
+    self.check_document_policy(requested_url)?;
+    if let Some(final_url) = final_url {
+      self.check_document_policy(final_url)?;
+    }
+    Ok(())
   }
 
   /// Check whether a child-frame navigation is allowed by the parent CSP (`frame-src`).
@@ -559,6 +607,52 @@ fn check_frame_src_labeled(
       CspDirective::FrameSrc.as_str()
     ))
   }
+}
+
+fn is_http_like(origin: &DocumentOrigin) -> bool {
+  matches!(origin.scheme.as_str(), "http" | "https")
+}
+
+fn is_secure_http(origin: &DocumentOrigin) -> bool {
+  origin.scheme == "https"
+}
+
+/// Evaluate the embedder's document policy (mixed content + `file://` from HTTP(S)) for a candidate
+/// child-frame navigation.
+///
+/// This is a minimal browser-side mirror of the in-process `ResourceAccessPolicy::allows_document`
+/// logic. We keep this small because the multiprocess prototype treats the renderer as untrusted
+/// and needs deterministic enforcement in the browser process.
+pub fn check_document_policy(
+  document_origin: Option<&DocumentOrigin>,
+  document_url: Option<&str>,
+  candidate: &str,
+  allow_file_from_http: bool,
+  block_mixed_content: bool,
+) -> Result<(), String> {
+  let Some(origin) = document_origin else {
+    return Ok(());
+  };
+
+  // Follow in-process policy behavior: if the URL cannot be parsed/resolved, avoid over-blocking.
+  let Some(parsed) = resolve_for_csp(candidate, document_url, document_origin) else {
+    return Ok(());
+  };
+  let scheme = parsed.scheme().to_ascii_lowercase();
+
+  if scheme == "data" {
+    return Ok(());
+  }
+
+  if is_http_like(origin) && scheme == "file" && !allow_file_from_http {
+    return Err("Blocked file:// resource from HTTP(S) document".to_string());
+  }
+
+  if is_secure_http(origin) && block_mixed_content && scheme == "http" {
+    return Err("Blocked mixed HTTP content from HTTPS document".to_string());
+  }
+
+  Ok(())
 }
 
 fn resolve_for_csp(
@@ -673,5 +767,36 @@ mod tests {
       err,
       "Blocked by Content-Security-Policy (frame-src) for requested URL (invalid URL): http://example.com:99999/"
     );
+  }
+
+  #[test]
+  fn mixed_content_blocks_final_url_after_redirect() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed("https://secure.example/".to_string(), Vec::new());
+    frame.set_resource_policy(false, true);
+
+    let err = frame
+      .check_document_policy_with_final(
+        "https://allowed.example/start",
+        Some("http://insecure.example/landing"),
+      )
+      .expect_err("expected mixed-content policy to reject final redirected URL");
+    assert_eq!(err, "Blocked mixed HTTP content from HTTPS document");
+  }
+
+  #[test]
+  fn file_from_http_blocks_final_url_after_redirect() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed("https://example.com/".to_string(), Vec::new());
+    // Default allow_file_from_http is false.
+    frame.set_resource_policy(false, false);
+
+    let err = frame
+      .check_document_policy_with_final(
+        "https://allowed.example/start",
+        Some("file:///etc/passwd"),
+      )
+      .expect_err("expected file:// policy to reject final redirected URL");
+    assert_eq!(err, "Blocked file:// resource from HTTP(S) document");
   }
 }
