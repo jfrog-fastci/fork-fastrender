@@ -1256,24 +1256,6 @@ impl Document {
     Ok(fragment)
   }
 
-  /// Live range pre-insert steps.
-  ///
-  /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-insert
-  pub(super) fn live_range_pre_insert_steps(&mut self, parent: NodeId, index: usize, count: usize) {
-    if count == 0 || self.ranges.is_empty() {
-      return;
-    }
-
-    for range in self.ranges.values_mut() {
-      if range.start.node == parent && range.start.offset > index {
-        range.start.offset = range.start.offset.saturating_add(count);
-      }
-      if range.end.node == parent && range.end.offset > index {
-        range.end.offset = range.end.offset.saturating_add(count);
-      }
-    }
-  }
-
   /// Live range pre-remove steps.
   ///
   /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-remove
