@@ -361,6 +361,8 @@ pub struct Vm {
   ecma_function_cache: HashMap<EcmaFunctionKey, EcmaFunctionId>,
   template_registry: HashMap<TemplateRegistryKey, TemplateRegistryEntry>,
   async_resume_call: Option<NativeFunctionId>,
+  exec_module_load_on_fulfilled_call: Option<NativeFunctionId>,
+  exec_module_load_on_rejected_call: Option<NativeFunctionId>,
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
   module_tla_on_rejected_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_fulfilled_call: Option<NativeFunctionId>,
@@ -638,6 +640,8 @@ impl Vm {
       ecma_function_cache: HashMap::new(),
       template_registry: HashMap::new(),
       async_resume_call: None,
+      exec_module_load_on_fulfilled_call: None,
+      exec_module_load_on_rejected_call: None,
       module_tla_on_fulfilled_call: None,
       module_tla_on_rejected_call: None,
       dynamic_import_eval_on_fulfilled_call: None,
@@ -996,6 +1000,28 @@ impl Vm {
     }
     let id = self.register_native_call(crate::exec::async_resume_call)?;
     self.async_resume_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn exec_module_load_on_fulfilled_call_id(
+    &mut self,
+  ) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.exec_module_load_on_fulfilled_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::exec::exec_module_load_on_fulfilled)?;
+    self.exec_module_load_on_fulfilled_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn exec_module_load_on_rejected_call_id(
+    &mut self,
+  ) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.exec_module_load_on_rejected_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::exec::exec_module_load_on_rejected)?;
+    self.exec_module_load_on_rejected_call = Some(id);
     Ok(id)
   }
 

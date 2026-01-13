@@ -10,9 +10,9 @@ use crate::iterator;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
   EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,
-  GcSymbol, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm,
-  RealmId, RootId, Scope, ScriptOrModule, SourceText, StackFrame, Value, Vm, VmError, VmHost,
-  VmHostHooks, VmJobContext, ToPrimitiveHint,
+  GcSymbol, HostDefined, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
+  PropertyKind, Realm, RealmId, RootId, Scope, ScriptOrModule, SourceText, SourceTextModuleRecord,
+  StackFrame, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, ToPrimitiveHint,
 };
 use crate::bigint::JsBigInt;
 use core::cmp::Ordering;
@@ -3197,6 +3197,405 @@ impl JsRuntime {
     let mut dummy_host = ();
     self.exec_script_source_with_host_and_hooks(&mut dummy_host, hooks, source)
   }
+
+  /// Parse, load, link, and evaluate an ECMAScript module, returning its evaluation Promise.
+  ///
+  /// This is the module analogue of [`JsRuntime::exec_script_source_with_host_and_hooks`]. Unlike
+  /// classic scripts, module evaluation is **always** Promise-returning (even when it contains no
+  /// top-level `await`).
+  ///
+  /// ## Top-level await
+  ///
+  /// This API does **not** run Promise jobs. Embeddings must drive the microtask queue until the
+  /// returned Promise settles (fulfilled or rejected).
+  ///
+  /// If an embedding cannot run microtasks (for example, aborting execution mid-task), it should
+  /// call [`ModuleGraph::abort_tla_evaluation`] on this runtime's module graph to tear down any
+  /// in-progress top-level-await continuations and avoid leaking persistent roots.
+  pub fn exec_module_source_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    source: Arc<SourceText>,
+  ) -> Result<Value, VmError> {
+    // Parse as a Source Text Module Record using VM budget state.
+    let record = SourceTextModuleRecord::parse_source_with_vm(&mut self.vm, source.clone())?;
+
+    // Register the module under its source name/specifier so tests and embeddings can easily
+    // associate `import` specifiers with graph modules.
+    let module = self.modules.add_module_with_specifier(&source.name, record)?;
+
+    // Start loading the static import graph.
+    let mut scope = self.heap.scope();
+    let load_promise = crate::load_requested_modules_with_host_and_hooks(
+      &mut self.vm,
+      &mut scope,
+      &mut *self.modules,
+      host,
+      hooks,
+      module,
+      HostDefined::default(),
+    )?;
+
+    // Root the load promise while inspecting its state and attaching reactions: these operations
+    // allocate and may trigger GC.
+    scope.push_root(load_promise)?;
+
+    let Value::Object(load_promise_obj) = load_promise else {
+      return Err(VmError::InvariantViolation(
+        "LoadRequestedModules did not return a Promise object",
+      ));
+    };
+    if !scope.heap().is_promise_object(load_promise_obj) {
+      return Err(VmError::InvariantViolation(
+        "LoadRequestedModules did not return a Promise object",
+      ));
+    }
+
+    // Fast path: if loading completed synchronously, evaluate the module immediately and return
+    // the module evaluation promise.
+    if scope.heap().promise_state(load_promise_obj)? == crate::PromiseState::Fulfilled {
+      let promise = self.modules.evaluate_with_scope(
+        &mut self.vm,
+        &mut scope,
+        self.realm.global_object(),
+        self.realm.id(),
+        module,
+        host,
+        hooks,
+      )?;
+
+      // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask
+      // queue (for example by native handlers calling `vm.microtask_queue_mut()`) into the
+      // embedding's host hook implementation.
+      while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
+        hooks.host_enqueue_promise_job(job, realm);
+      }
+
+      return Ok(promise);
+    }
+
+    // Loading did not complete synchronously. Create an embedder-visible Promise that will be
+    // resolved (adopting) the module evaluation promise once loading completes.
+    let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+      &mut self.vm,
+      &mut scope,
+      host,
+      hooks,
+    )?;
+    let result_promise = cap.promise;
+
+    let attach_result = (|| -> Result<(), VmError> {
+      let intr = self.vm.intrinsics().ok_or(VmError::Unimplemented(
+        "module execution requires intrinsics (create a Realm first)",
+      ))?;
+
+      // Root all captured values while allocating callback functions and attaching Promise
+      // reactions.
+      let mut attach_scope = scope.reborrow();
+      attach_scope.push_roots(&[load_promise, cap.resolve, cap.reject, result_promise])?;
+
+      let on_fulfilled_call = self.vm.exec_module_load_on_fulfilled_call_id()?;
+      let on_rejected_call = self.vm.exec_module_load_on_rejected_call_id()?;
+
+      let on_fulfilled_name = attach_scope.alloc_string("execModuleOnLoaded")?;
+      attach_scope.push_root(Value::String(on_fulfilled_name))?;
+      let on_rejected_name = attach_scope.alloc_string("execModuleOnLoadRejected")?;
+      attach_scope.push_root(Value::String(on_rejected_name))?;
+
+      // Slots: [module_id, realm_id, global_object, resolve, reject]
+      let slots = [
+        Value::Number(module.to_raw() as f64),
+        Value::Number(self.realm.id().to_raw() as f64),
+        Value::Object(self.realm.global_object()),
+        cap.resolve,
+        cap.reject,
+      ];
+
+      let on_fulfilled = attach_scope.alloc_native_function_with_slots(
+        on_fulfilled_call,
+        None,
+        on_fulfilled_name,
+        1,
+        &slots,
+      )?;
+      attach_scope
+        .heap_mut()
+        .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
+      attach_scope
+        .heap_mut()
+        .set_function_realm(on_fulfilled, self.realm.global_object())?;
+      attach_scope
+        .heap_mut()
+        .set_function_job_realm(on_fulfilled, self.realm.id())?;
+      attach_scope.push_root(Value::Object(on_fulfilled))?;
+
+      let on_rejected = attach_scope.alloc_native_function_with_slots(
+        on_rejected_call,
+        None,
+        on_rejected_name,
+        1,
+        &slots,
+      )?;
+      attach_scope
+        .heap_mut()
+        .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
+      attach_scope
+        .heap_mut()
+        .set_function_realm(on_rejected, self.realm.global_object())?;
+      attach_scope
+        .heap_mut()
+        .set_function_job_realm(on_rejected, self.realm.id())?;
+      attach_scope.push_root(Value::Object(on_rejected))?;
+
+      crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
+        &mut self.vm,
+        &mut attach_scope,
+        host,
+        hooks,
+        load_promise,
+        Value::Object(on_fulfilled),
+        Value::Object(on_rejected),
+      )?;
+      Ok(())
+    })();
+
+    if let Err(err) = attach_result {
+      // Best-effort cleanup: reject the returned promise. If we cannot allocate, propagate the
+      // error to the embedder.
+      if let Some(reason) = err.thrown_value() {
+        let _ = (|| -> Result<(), VmError> {
+          let mut call_scope = scope.reborrow();
+          call_scope.push_roots(&[cap.reject, reason])?;
+          let _ = self.vm.call_with_host_and_hooks(
+            host,
+            &mut call_scope,
+            hooks,
+            cap.reject,
+            Value::Undefined,
+            &[reason],
+          )?;
+          Ok(())
+        })();
+      }
+      return Err(err);
+    }
+
+    // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
+    // into the embedding's host hook implementation.
+    while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
+      hooks.host_enqueue_promise_job(job, realm);
+    }
+
+    Ok(result_promise)
+  }
+
+  /// Convenience wrapper around [`JsRuntime::exec_module_source_with_host_and_hooks`] for string
+  /// module sources.
+  pub fn exec_module_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    name: &str,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    let source = Arc::new(SourceText::new_charged(&mut self.heap, name, source)?);
+    self.exec_module_source_with_host_and_hooks(host, hooks, source)
+  }
+
+  /// Hook-only variant of [`JsRuntime::exec_module_with_host_and_hooks`].
+  ///
+  /// This passes a dummy host context (`()`) to native call/construct handlers.
+  pub fn exec_module_with_hooks(
+    &mut self,
+    hooks: &mut dyn VmHostHooks,
+    name: &str,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    let mut dummy_host = ();
+    self.exec_module_with_host_and_hooks(&mut dummy_host, hooks, name, source)
+  }
+
+  /// Parse and execute an ECMAScript module (string source), using the VM-owned microtask queue.
+  ///
+  /// This passes a dummy host context (`()`) to native call/construct handlers.
+  pub fn exec_module(&mut self, name: &str, source: &str) -> Result<Value, VmError> {
+    let mut host = ();
+    self.exec_module_with_host(&mut host, name, source)
+  }
+
+  /// Parse and execute an ECMAScript module (string source), using an explicit host context and the
+  /// VM-owned microtask queue.
+  pub fn exec_module_with_host(
+    &mut self,
+    host: &mut dyn VmHost,
+    name: &str,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    let source = Arc::new(SourceText::new_charged(&mut self.heap, name, source)?);
+    self.exec_module_source_with_host(host, source)
+  }
+
+  /// Execute an ECMAScript module using a pre-constructed [`SourceText`], passing a dummy host
+  /// context (`()`).
+  pub fn exec_module_source(&mut self, source: Arc<SourceText>) -> Result<Value, VmError> {
+    let mut host = ();
+    self.exec_module_source_with_host(&mut host, source)
+  }
+
+  /// Execute an ECMAScript module using a pre-constructed [`SourceText`], using an explicit host
+  /// context and the VM-owned microtask queue.
+  pub fn exec_module_source_with_host(
+    &mut self,
+    host: &mut dyn VmHost,
+    source: Arc<SourceText>,
+  ) -> Result<Value, VmError> {
+    // Move the VM-owned microtask queue out so we can borrow both `&mut Vm` and `&mut dyn VmHostHooks`
+    // simultaneously.
+    let mut hooks = mem::take(self.vm.microtask_queue_mut());
+    let result = self.exec_module_source_with_host_and_hooks(host, &mut hooks, source);
+
+    // Drain any Promise jobs that were enqueued onto the VM-owned queue while it was moved out.
+    while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
+      hooks.enqueue_promise_job(job, realm);
+    }
+    *self.vm.microtask_queue_mut() = hooks;
+    result
+  }
+
+  /// Hook-only variant of [`JsRuntime::exec_module_source_with_host_and_hooks`].
+  pub fn exec_module_source_with_hooks(
+    &mut self,
+    hooks: &mut dyn VmHostHooks,
+    source: Arc<SourceText>,
+  ) -> Result<Value, VmError> {
+    let mut dummy_host = ();
+    self.exec_module_source_with_host_and_hooks(&mut dummy_host, hooks, source)
+  }
+}
+
+struct ExecModuleLoadSlots {
+  module: ModuleId,
+  realm_id: RealmId,
+  global_object: GcObject,
+  resolve: Value,
+  reject: Value,
+}
+
+fn exec_module_load_slots(scope: &Scope<'_>, callee: GcObject) -> Result<ExecModuleLoadSlots, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let module_raw = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => n as u64,
+    _ => return Err(VmError::InvariantViolation("execModule callback missing module id slot")),
+  };
+  let realm_raw = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => n as u64,
+    _ => return Err(VmError::InvariantViolation("execModule callback missing realm id slot")),
+  };
+  let global_object = match slots.get(2).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "execModule callback missing global object slot",
+      ))
+    }
+  };
+  let resolve = slots.get(3).copied().unwrap_or(Value::Undefined);
+  let reject = slots.get(4).copied().unwrap_or(Value::Undefined);
+
+  Ok(ExecModuleLoadSlots {
+    module: ModuleId::from_raw(module_raw),
+    realm_id: RealmId::from_raw(realm_raw),
+    global_object,
+    resolve,
+    reject,
+  })
+}
+
+/// Promise reaction callback used by [`JsRuntime::exec_module_source_with_host_and_hooks`].
+pub(crate) fn exec_module_load_on_fulfilled(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = exec_module_load_slots(scope, callee)?;
+  let Some(modules_ptr) = vm.module_graph_ptr() else {
+    return Err(VmError::InvariantViolation(
+      "execModule callback requires an attached module graph",
+    ));
+  };
+  // Safety: `Vm::module_graph_ptr` is only set by embeddings that ensure the graph outlives the VM.
+  let modules = unsafe { &mut *modules_ptr };
+
+  let promise = match modules.evaluate_with_scope(
+    vm,
+    scope,
+    slots.global_object,
+    slots.realm_id,
+    slots.module,
+    host,
+    hooks,
+  ) {
+    Ok(promise) => promise,
+    Err(err) => {
+      if let Some(reason) = err.thrown_value() {
+        let mut call_scope = scope.reborrow();
+        call_scope.push_roots(&[slots.reject, reason])?;
+        let _ = vm.call_with_host_and_hooks(
+          host,
+          &mut call_scope,
+          hooks,
+          slots.reject,
+          Value::Undefined,
+          &[reason],
+        )?;
+        return Ok(Value::Undefined);
+      }
+      return Err(err);
+    }
+  };
+
+  let mut call_scope = scope.reborrow();
+  call_scope.push_roots(&[slots.resolve, promise])?;
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    &mut call_scope,
+    hooks,
+    slots.resolve,
+    Value::Undefined,
+    &[promise],
+  )?;
+  Ok(Value::Undefined)
+}
+
+/// Promise reaction callback used by [`JsRuntime::exec_module_source_with_host_and_hooks`].
+pub(crate) fn exec_module_load_on_rejected(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = exec_module_load_slots(scope, callee)?;
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let mut call_scope = scope.reborrow();
+  call_scope.push_roots(&[slots.reject, reason])?;
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    &mut call_scope,
+    hooks,
+    slots.reject,
+    Value::Undefined,
+    &[reason],
+  )?;
+  Ok(Value::Undefined)
 }
 
 impl Drop for JsRuntime {
