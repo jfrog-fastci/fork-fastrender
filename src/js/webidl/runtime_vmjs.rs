@@ -2381,11 +2381,15 @@ impl<Host> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host>
     // - thenables are assimilated via their `then` method, and
     // - the returned value is always a Promise object.
     let mut dummy_hooks = NoopVmHostHooks;
-    let promise = if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
-      vm_js::promise_resolve(&mut *self.cx.vm, &mut self.cx.scope, hooks, value)?
-    } else {
-      vm_js::promise_resolve(&mut *self.cx.vm, &mut self.cx.scope, &mut dummy_hooks, value)?
-    };
+    // Root `value` across Promise resolution: `PromiseResolve` can allocate and (when resolving
+    // thenables) invoke user code.
+    let promise = webidl_js_runtime::JsRuntime::with_stack_roots(self, &[value], |rt| {
+      if let Some(hooks) = rt.vm_host_hooks.as_deref_mut() {
+        vm_js::promise_resolve(&mut *rt.cx.vm, &mut rt.cx.scope, hooks, value)
+      } else {
+        vm_js::promise_resolve(&mut *rt.cx.vm, &mut rt.cx.scope, &mut dummy_hooks, value)
+      }
+    })?;
     self.cx.scope.push_root(promise)?;
     Ok(promise)
   }
@@ -3120,6 +3124,52 @@ mod tests {
     let mut host = TestHost::default();
     let out = runtime.exec_script_with_host(&mut host, "add(1, 2)")?;
     assert!(matches!(out, Value::Number(n) if (n - 3.0).abs() < f64::EPSILON));
+    Ok(())
+  }
+
+  #[test]
+  fn vmjs_webidl_promise_resolve_returns_promise() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut runtime = VmJsRuntime::new(vm, heap)?;
+    let state = Box::new(VmJsWebIdlBindingsState::<TestHost>::new(
+      runtime.realm().global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    // Create `p = PromiseResolve(%Promise%, 1)`.
+    {
+      let (vm, heap, _realm) = webidl_vm_js::split_js_runtime(&mut runtime);
+      let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
+
+      let promise =
+        webidl_js_runtime::WebIdlJsRuntime::promise_resolve(&mut cx, Value::Number(1.0))?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::TypeError("promise_resolve returned non-object"));
+      };
+      assert!(cx.cx.scope.heap().is_promise_object(promise_obj));
+
+      // `promise.then` exists and is callable.
+      let then_key = webidl_js_runtime::JsRuntime::property_key_from_str(&mut cx, "then")?;
+      let then = webidl_js_runtime::JsRuntime::get(&mut cx, promise, then_key)?;
+      assert!(webidl_js_runtime::JsRuntime::is_callable(&cx, then));
+
+      let global = cx.global_object()?;
+      cx.define_data_property_str(
+        global,
+        "p",
+        promise,
+        DataPropertyAttributes::new(true, true, true),
+      )?;
+    }
+
+    // Smoke-test from JavaScript.
+    let mut host = TestHost::default();
+    let out = runtime.exec_script_with_host(&mut host, "p instanceof Promise")?;
+    assert!(matches!(out, Value::Bool(true)));
+    let out = runtime.exec_script_with_host(&mut host, "typeof p.then === 'function'")?;
+    assert!(matches!(out, Value::Bool(true)));
     Ok(())
   }
 
