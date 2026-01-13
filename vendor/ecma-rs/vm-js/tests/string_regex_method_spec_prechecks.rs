@@ -71,51 +71,60 @@ fn string_regex_methods_do_not_consult_symbol_methods_on_primitive_arguments() -
         }
       }
 
-      // @@match
-      poison(Boolean.prototype, Symbol.match);
-      poison(Number.prototype, Symbol.match);
-      poison(String.prototype, Symbol.match);
-      const match_ok = [
-        noThrow(() => "abc".match(true)),
-        noThrow(() => "abc".match(1)),
-        noThrow(() => "abc".match("a")),
-      ].every(Boolean);
+       // @@match
+       poison(Boolean.prototype, Symbol.match);
+       poison(Number.prototype, Symbol.match);
+       poison(String.prototype, Symbol.match);
+       poison(BigInt.prototype, Symbol.match);
+       const match_ok = [
+         noThrow(() => "abc".match(true)),
+         noThrow(() => "abc".match(1)),
+         noThrow(() => "abc".match("a")),
+         noThrow(() => "abc".match(1n)),
+       ].every(Boolean);
 
-      // @@search
-      poison(Boolean.prototype, Symbol.search);
-      poison(Number.prototype, Symbol.search);
-      poison(String.prototype, Symbol.search);
-      const search_ok = [
-        noThrow(() => "abc".search(true)),
-        noThrow(() => "abc".search(1)),
-        noThrow(() => "abc".search("a")),
-      ].every(Boolean);
+       // @@search
+       poison(Boolean.prototype, Symbol.search);
+       poison(Number.prototype, Symbol.search);
+       poison(String.prototype, Symbol.search);
+       poison(BigInt.prototype, Symbol.search);
+       const search_ok = [
+         noThrow(() => "abc".search(true)),
+         noThrow(() => "abc".search(1)),
+         noThrow(() => "abc".search("a")),
+         noThrow(() => "abc".search(1n)),
+       ].every(Boolean);
 
-      // @@replace (both replace + replaceAll consult @@replace)
-      poison(Boolean.prototype, Symbol.replace);
-      poison(Number.prototype, Symbol.replace);
-      poison(String.prototype, Symbol.replace);
-      const replace_ok = [
-        noThrow(() => "abc".replace(true, "x")),
-        noThrow(() => "abc".replace(1, "x")),
-        noThrow(() => "abc".replace("a", "x")),
-      ].every(Boolean);
+       // @@replace (both replace + replaceAll consult @@replace)
+       poison(Boolean.prototype, Symbol.replace);
+       poison(Number.prototype, Symbol.replace);
+       poison(String.prototype, Symbol.replace);
+       poison(BigInt.prototype, Symbol.replace);
+       const replace_ok = [
+         noThrow(() => "abc".replace(true, "x")),
+         noThrow(() => "abc".replace(1, "x")),
+         noThrow(() => "abc".replace("a", "x")),
+         noThrow(() => "abc".replace(1n, "x")),
+       ].every(Boolean);
 
-      const replace_all_ok = [
-        noThrow(() => "abc".replaceAll(true, "x")),
-        noThrow(() => "abc".replaceAll(1, "x")),
-        noThrow(() => "abc".replaceAll("a", "x")),
-      ].every(Boolean);
+       const replace_all_ok = [
+         noThrow(() => "abc".replaceAll(true, "x")),
+         noThrow(() => "abc".replaceAll(1, "x")),
+         noThrow(() => "abc".replaceAll("a", "x")),
+         noThrow(() => "abc".replaceAll(1n, "x")),
+       ].every(Boolean);
 
-      // @@split
-      poison(Boolean.prototype, Symbol.split);
-      poison(Number.prototype, Symbol.split);
-      poison(String.prototype, Symbol.split);
-      const split_ok = [
-        noThrow(() => "abc".split(true)),
-        noThrow(() => "abc".split(1)),
-        noThrow(() => "abc".split("a")),
-      ].every(Boolean);
+       // @@split
+       poison(Boolean.prototype, Symbol.split);
+       poison(Number.prototype, Symbol.split);
+       poison(String.prototype, Symbol.split);
+       poison(BigInt.prototype, Symbol.split);
+       const split_ok = [
+         noThrow(() => "abc".split(true)),
+         noThrow(() => "abc".split(1)),
+         noThrow(() => "abc".split("a")),
+         noThrow(() => "abc".split(1n)),
+       ].every(Boolean);
 
       match_ok && search_ok && replace_ok && replace_all_ok && split_ok;
     "#,
@@ -125,4 +134,3 @@ fn string_regex_methods_do_not_consult_symbol_methods_on_primitive_arguments() -
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
-
