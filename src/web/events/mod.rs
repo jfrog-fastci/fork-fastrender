@@ -214,7 +214,7 @@ pub trait EventListenerInvoker {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Event {
   pub type_: String,
   pub bubbles: bool,

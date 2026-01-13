@@ -126,6 +126,16 @@ fn element(tag_name: &str, children: Vec<DomNode>) -> DomNode {
   }
 }
 
+fn first_element_child(doc: &Document, parent: NodeId) -> NodeId {
+  doc
+    .node(parent)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| matches!(doc.node(child).kind, NodeKind::Element { .. }))
+    .unwrap_or_else(|| panic!("expected {parent:?} to have an element child"))
+}
+
 fn make_dom_abc() -> (Document, NodeId, NodeId, NodeId) {
   // Document → <a> → <b> → <c>
   let root = DomNode {
@@ -140,9 +150,11 @@ fn make_dom_abc() -> (Document, NodeId, NodeId, NodeId) {
 
   // `dom2::NodeId` is opaque (constructor is private); use the known tree shape to grab IDs.
   let root_id = doc.root();
-  let a = doc.node(root_id).children[0];
-  let b = doc.node(a).children[0];
-  let c = doc.node(b).children[0];
+  // `Document::from_renderer_dom` may materialize a synthetic doctype node; skip to the first
+  // element.
+  let a = first_element_child(&doc, root_id);
+  let b = first_element_child(&doc, a);
+  let c = first_element_child(&doc, b);
   (doc, a, b, c)
 }
 
@@ -179,7 +191,7 @@ fn make_dom_div_target() -> (Document, NodeId) {
     }],
   };
   let doc = Document::from_renderer_dom(&root);
-  let target = doc.node(doc.root()).children[0];
+  let target = first_element_child(&doc, doc.root());
   (doc, target)
 }
 
@@ -3426,10 +3438,10 @@ fn transfer_node_listeners_moves_listeners_between_registries_and_remaps_node_id
   };
   let dst_doc = Document::from_renderer_dom(&root);
   let dst_root_id = dst_doc.root();
-  let dst_a = dst_doc.node(dst_root_id).children[0];
-  let dst_b = dst_doc.node(dst_a).children[0];
-  let dst_x = dst_doc.node(dst_b).children[0];
-  let new_node_id = dst_doc.node(dst_x).children[0];
+  let dst_a = first_element_child(&dst_doc, dst_root_id);
+  let dst_b = first_element_child(&dst_doc, dst_a);
+  let dst_x = first_element_child(&dst_doc, dst_b);
+  let new_node_id = first_element_child(&dst_doc, dst_x);
 
   assert_ne!(
     old_node_id, new_node_id,

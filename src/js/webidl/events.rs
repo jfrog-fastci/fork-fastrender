@@ -833,9 +833,20 @@ mod tests {
       children: vec![element("body", vec![element("div", vec![])])],
     };
     let doc = dom2::Document::from_renderer_dom(&root);
+    fn first_element_child(doc: &dom2::Document, parent: dom2::NodeId) -> dom2::NodeId {
+      doc
+        .node(parent)
+        .children
+        .iter()
+        .copied()
+        .find(|&child| matches!(doc.node(child).kind, dom2::NodeKind::Element { .. }))
+        .expect("expected element child")
+    }
+
     let root_id = doc.root();
-    let body = doc.node(root_id).children[0];
-    let target = doc.node(body).children[0];
+    // Document imports may materialize a doctype node; skip to the first element.
+    let body = first_element_child(&doc, root_id);
+    let target = first_element_child(&doc, body);
     (doc, body, target)
   }
 
