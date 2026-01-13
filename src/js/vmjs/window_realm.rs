@@ -47286,6 +47286,7 @@ fn init_window_globals(
         .heap_mut()
         .object_set_prototype(document_ctor, Some(realm.intrinsics().function_prototype()))?;
       scope.push_root(Value::Object(document_ctor))?;
+
       scope.define_property(
         document_ctor,
         prototype_key,
@@ -63226,6 +63227,29 @@ mod tests {
         if (p.childNodes.length !== 2) return 'len:' + p.childNodes.length;\n\
         if (p.childNodes[0].nodeType !== 3) return 't0:' + p.childNodes[0].nodeType;\n\
         if (p.childNodes[1].nodeType !== 3) return 't1:' + p.childNodes[1].nodeType;\n\
+        return 'ok';\n\
+      })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn document_constructor_creates_detached_documents_and_supports_create_cdata_section() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const xmlDocument = new Document();\n\
+        const node = xmlDocument.createCDATASection('1234');\n\
+        const p = document.createElement('p');\n\
+        p.appendChild(node);\n\
+        if (p.textContent !== '1234') return 'text:' + p.textContent;\n\
         return 'ok';\n\
       })()",
     )?;
