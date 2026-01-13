@@ -533,3 +533,21 @@ fn regexp_prototype_to_string_is_generic() {
     .unwrap();
   assert_eq!(v, Value::Bool(true));
 }
+
+#[test]
+fn regexp_lookbehind_with_literal_gt_does_not_parse_as_named_capture_group() {
+  let mut rt = new_runtime();
+
+  // `(?<=>)` is a lookbehind whose body is the literal `>`. It must *not* be parsed as a named
+  // capturing group with name `=` terminated by the `>` from the body.
+  let v = rt.exec_script(r#"/(?<=>)a/.test("a")"#).unwrap();
+  assert_eq!(v, Value::Bool(false));
+  let v = rt.exec_script(r#"/(?<=>)a/.test(">a")"#).unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  // Same pitfall for negative lookbehind: `(?<!a>)` must not treat `!a` as a group name.
+  let v = rt.exec_script(r#"/(?<!a>)a$/.test("a")"#).unwrap();
+  assert_eq!(v, Value::Bool(true));
+  let v = rt.exec_script(r#"/(?<!a>)a$/.test("a>a")"#).unwrap();
+  assert_eq!(v, Value::Bool(false));
+}
