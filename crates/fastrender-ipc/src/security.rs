@@ -146,7 +146,7 @@ impl BrowserIpcSecurityState {
       }
       RendererToBrowser::SubframesDiscovered {
         parent_frame_id,
-        subframes,
+        subframes: _,
       } => {
         if !self.check_frame(
           sender,
@@ -155,12 +155,6 @@ impl BrowserIpcSecurityState {
         ) {
           return;
         }
-        let _ = self.check_subframes(
-          sender,
-          parent_frame_id,
-          &subframes,
-          RendererToBrowserKind::SubframesDiscovered,
-        );
       }
       RendererToBrowser::NavigationCommitted { frame_id, .. } => {
         let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::NavigationCommitted);
@@ -528,70 +522,26 @@ mod tests {
   }
 
   #[test]
-  fn subframes_discovered_rejects_invalid_child_parent() {
+  fn subframes_discovered_accepts_owned_parent() {
     let mut browser = BrowserIpcSecurityState::default();
     let renderer = RendererId(1);
 
     let parent = FrameId(10);
-    let child = FrameId(11);
     browser.assign_frame(parent, renderer);
-    // Browser frame tree says `child` belongs elsewhere.
-    browser.set_frame_parent(child, FrameId(999));
 
     browser.handle_renderer_message(
       renderer,
       RendererToBrowser::SubframesDiscovered {
         parent_frame_id: parent,
-        subframes: vec![crate::SubframeInfo {
-          child,
-          src: None,
-          transform: crate::AffineTransform::IDENTITY,
-          clip_stack: Vec::new(),
-          z_index: 0,
-          hit_testable: true,
-          referrer_policy: None,
-          sandbox_flags: crate::SandboxFlags::NONE,
-          opaque_origin: false,
-        }],
-      },
-    );
-
-    assert!(browser.is_process_terminated(renderer));
-    let events = browser.take_events();
-    assert!(
-      events.iter().any(|evt| matches!(
-        evt,
-        IpcSecurityEvent::ProtocolViolation {
-          process_id,
-          frame_id,
-          message: RendererToBrowserKind::SubframesDiscovered,
-          violation: FrameOwnershipViolation::InvalidSubframe { child_frame_id, .. },
-        } if *process_id == renderer && *frame_id == parent && *child_frame_id == child
-      )),
-      "expected invalid subframe reference violation (events={events:?})"
-    );
-  }
-
-  #[test]
-  fn subframes_discovered_accepts_valid_children() {
-    let mut browser = BrowserIpcSecurityState::default();
-    let renderer = RendererId(1);
-
-    let parent = FrameId(10);
-    let child = FrameId(11);
-    browser.assign_frame(parent, renderer);
-    browser.set_frame_parent(child, parent);
-
-    browser.handle_renderer_message(
-      renderer,
-      RendererToBrowser::SubframesDiscovered {
-        parent_frame_id: parent,
-        subframes: vec![crate::SubframeInfo {
-          child,
-          src: None,
-          transform: crate::AffineTransform::IDENTITY,
-          clip_stack: Vec::new(),
-          z_index: 0,
+        subframes: vec![crate::DiscoveredSubframe {
+          token: crate::SubframeToken(1),
+          navigation: crate::IframeNavigation::Url("https://example.test/".to_string()),
+          rect: crate::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+          },
           hit_testable: true,
           referrer_policy: None,
           sandbox_flags: crate::SandboxFlags::NONE,
