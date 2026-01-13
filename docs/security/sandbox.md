@@ -75,6 +75,8 @@ Practical implications on Linux:
 - With the default `NetworkPolicy::DenyAllSockets`, the renderer should not create sockets at all
   (even `AF_UNIX`). IPC endpoints (pipes or socketpairs) must be created by the browser and
   inherited/passed into the renderer.
+  - In this mode, inherited Unix sockets are still usable via `read(2)`/`write(2)`, but FD passing
+    via `sendmsg`/`recvmsg` is not available after the sandbox is installed.
 - Shared memory should be created by the browser (for example via `memfd_create` in the broker) and
   passed to the renderer. The seccomp allowlist does **not** include `memfd_create`, so calling it
   after the sandbox is installed would typically be a fatal seccomp violation.
