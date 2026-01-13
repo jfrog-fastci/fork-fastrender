@@ -729,6 +729,7 @@ pub fn apply_macos_sandbox_from_env() -> io::Result<MacosSandboxStatus> {
 
   apply_renderer_sandbox_inner(mode)
 }
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1127,6 +1128,55 @@ mod tests {
   }
 
   #[test]
+  fn seatbelt_pure_computation_allows_inherited_stdout_pipe() {
+    const SENTINEL: &[u8] = b"fastrender-seatbelt-stdout-ok";
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      let status = apply_pure_computation_sandbox().expect("apply pure-computation sandbox");
+      assert!(
+        matches!(
+          status,
+          MacosSandboxStatus::Applied | MacosSandboxStatus::AlreadySandboxed
+        ),
+        "expected sandbox apply to succeed, got {status:?}"
+      );
+      std::io::stdout()
+        .write_all(SENTINEL)
+        .and_then(|_| std::io::stdout().flush())
+        .expect("write sentinel to stdout after sandbox");
+      return;
+    }
+
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name =
+      "sandbox::macos::tests::seatbelt_pure_computation_allows_inherited_stdout_pipe";
+    let output = Command::new(exe)
+      .env(CHILD_ENV, "1")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn sandbox child process");
+
+    assert!(
+      output.status.success(),
+      "sandbox child should exit 0 (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+      output
+        .stdout
+        .windows(SENTINEL.len())
+        .any(|window| window == SENTINEL),
+      "expected sandbox child to write sentinel to stdout; got stdout={}, stderr={}",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  #[test]
   fn seatbelt_strict_sandbox_falls_back_when_named_profile_missing() {
     let is_child = std::env::var_os(CHILD_ENV).is_some();
     if is_child {
@@ -1321,7 +1371,6 @@ mod tests {
       String::from_utf8_lossy(&output.stderr)
     );
   }
-
   #[test]
   fn seatbelt_reapply_returns_already_sandboxed_status() {
     let is_child = std::env::var_os(CHILD_ENV).is_some();
