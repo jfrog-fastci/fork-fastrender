@@ -156,7 +156,7 @@ mod tests {
       ContrastPreference::More
     );
 
-    let mut rm = base;
+    let mut rm = base.clone();
     rm.reduced_motion = true;
     assert!(media_prefs_from_appearance(&rm, SystemTheme::Light).prefers_reduced_motion);
   }

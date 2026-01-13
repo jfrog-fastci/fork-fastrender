@@ -7910,7 +7910,7 @@ fn inline_svg_malformed_style_attribute_is_stripped_before_inlined_presentation_
   </svg>
   "#;
 
-  let content = serialized_inline_svg(html, 30.0, 30.0).expect("svg content");
+  let content = serialized_inline_svg_content_from_html(html, 30.0, 30.0).expect("svg content");
   assert!(
     !content.svg.contains("var(--c"),
     "serialized SVG should drop malformed authored style before appending computed declarations; got: {}",
@@ -7949,7 +7949,7 @@ fn inline_svg_serialization_preserves_mask_attributes_and_mask_affects_alpha_in_
   </svg>
   "#;
 
-  let serialized = serialized_inline_svg(html, 30.0, 30.0).expect("serialize svg");
+  let serialized = serialized_inline_svg_content_from_html(html, 30.0, 30.0).expect("serialize svg");
   assert!(
     serialized.svg.contains("mask=\"url(#fade)\""),
     "serialized SVG should preserve mask attributes (svg={})",
@@ -7990,7 +7990,7 @@ fn inline_svg_wraps_document_css_in_cdata() {
       "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
       "1".to_string(),
     )]))),
-    || serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg"),
+    || serialized_inline_svg_content_from_html(html, 20.0, 20.0).expect("serialize svg"),
   );
   let injection = serialized
     .document_css_injection
@@ -8065,7 +8065,7 @@ fn foreign_object_shared_css_respects_limit() {
       );
 
       let serialized =
-        serialized_inline_svg(&html, 32.0, 16.0).expect("serialize svg with foreignObject");
+        serialized_inline_svg_content_from_html(&html, 32.0, 16.0).expect("serialize svg with foreignObject");
       assert!(
         serialized.shared_css.is_empty(),
         "shared CSS should be dropped when it exceeds the limit (len={})",
@@ -8113,7 +8113,7 @@ fn foreign_object_css_sanitizes_style_tag_sequences() {
       "#;
 
       let serialized =
-        serialized_inline_svg(html, 16.0, 16.0).expect("serialize svg with foreignObject");
+        serialized_inline_svg_content_from_html(html, 16.0, 16.0).expect("serialize svg with foreignObject");
       assert!(
         !serialized.shared_css.is_empty(),
         "CSS under the limit should be preserved for foreignObject rendering"
@@ -8144,7 +8144,7 @@ fn foreign_object_background_from_svg_style_attribute_is_captured() {
   </svg>
   "#;
 
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
+  let serialized = serialized_inline_svg_content_from_html(html, 20.0, 20.0).expect("serialize svg");
   assert_eq!(
     serialized.foreign_objects.len(),
     1,
@@ -8173,7 +8173,7 @@ fn foreign_object_without_dimensions_uses_placeholder_comment() {
   </svg>
   "#;
 
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
+  let serialized = serialized_inline_svg_content_from_html(html, 20.0, 20.0).expect("serialize svg");
   assert!(
     serialized
       .svg
@@ -8192,7 +8192,7 @@ fn foreign_object_with_dimensions_emits_marker() {
   </svg>
   "#;
 
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
+  let serialized = serialized_inline_svg_content_from_html(html, 20.0, 20.0).expect("serialize svg");
   assert!(
     serialized.svg.contains("FASTRENDER_FOREIGN_OBJECT_0"),
     "foreignObject should be replaced with marker for nested rendering"
@@ -8218,7 +8218,7 @@ fn foreign_object_display_none_does_not_emit_foreign_object_info() {
   </svg>
   "#;
 
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
+  let serialized = serialized_inline_svg_content_from_html(html, 20.0, 20.0).expect("serialize svg");
   assert!(
     serialized.foreign_objects.is_empty(),
     "display:none foreignObject should not allocate foreign object info"
@@ -8239,7 +8239,7 @@ fn foreign_object_accepts_absolute_units_for_dimensions() {
   </svg>
   "#;
 
-  let serialized = serialized_inline_svg(html, 200.0, 200.0).expect("serialize svg");
+  let serialized = serialized_inline_svg_content_from_html(html, 200.0, 200.0).expect("serialize svg");
   assert!(
     serialized.svg.contains("FASTRENDER_FOREIGN_OBJECT_0"),
     "absolute units should resolve to a valid foreignObject"
@@ -8262,7 +8262,7 @@ fn foreign_object_percentage_units_do_not_emit_unresolved_placeholder() {
   </svg>
   "#;
 
-  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
+  let serialized = serialized_inline_svg_content_from_html(html, 20.0, 20.0).expect("serialize svg");
   assert!(
     serialized.svg.contains("FASTRENDER_FOREIGN_OBJECT_0"),
     "percentage dimensions should resolve to a valid foreignObject"
