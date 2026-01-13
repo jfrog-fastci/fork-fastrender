@@ -11,7 +11,6 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 use publicsuffix::{List, Psl};
-use url::Url;
 
 /// The input + state available to [`OmniboxProvider`] implementations.
 ///
@@ -585,7 +584,7 @@ fn score_suggestion(
   };
 
   let mut match_total = 0i64;
-  let parsed_url = suggestion.url.as_deref().and_then(|u| Url::parse(u).ok());
+  let parsed_url = suggestion.url.as_deref().and_then(parse_http_url_for_scoring);
 
   for token_lower in tokens_lower {
     let mut best_token_match = None::<i64>;
@@ -618,27 +617,172 @@ fn match_score(haystack: &str, needle_lower: &str) -> Option<i64> {
   Some(prefix_bonus + position_bonus)
 }
 
-fn match_score_url(parsed: Option<&Url>, raw: &str, needle_lower: &str) -> Option<i64> {
+#[derive(Debug, Clone, Copy)]
+struct OmniboxHttpUrl<'a> {
+  host: &'a str,
+  // Always has a leading `/`. If the raw URL has no explicit path, this is `/`.
+  path: &'a str,
+  // Excludes the leading `?`.
+  query: Option<&'a str>,
+}
+
+/// Lightweight, allocation-free URL parser for omnibox scoring.
+///
+/// We only care about http(s) URLs, and we only need to extract the host, path, and query string
+/// (for match weighting). Full RFC-compliant parsing is unnecessary here and `url::Url::parse`
+/// is relatively expensive when the omnibox fanout is large (e.g. visited history provider).
+fn parse_http_url_for_scoring(raw: &str) -> Option<OmniboxHttpUrl<'_>> {
+  // Fast scheme classifier: only treat `http://` and `https://` as eligible for structured
+  // scoring. Everything else falls back to raw substring scoring.
+  let bytes = raw.as_bytes();
+  let scheme_len = if bytes.len() >= 7 && bytes[..7].eq_ignore_ascii_case(b"http://") {
+    7
+  } else if bytes.len() >= 8 && bytes[..8].eq_ignore_ascii_case(b"https://") {
+    8
+  } else {
+    return None;
+  };
+
+  let rest = &raw[scheme_len..];
+
+  // Authority ends at the first `/`, `?`, or `#` (or end of string).
+  let mut authority_end = rest.len();
+  for (i, &b) in rest.as_bytes().iter().enumerate() {
+    if matches!(b, b'/' | b'?' | b'#') {
+      authority_end = i;
+      break;
+    }
+  }
+  let authority = &rest[..authority_end];
+  if authority.is_empty() {
+    return None;
+  }
+
+  // Strip userinfo (`user:pass@`).
+  let hostport = match authority.rfind('@') {
+    Some(at) => &authority[at + 1..],
+    None => authority,
+  };
+  if hostport.is_empty() {
+    return None;
+  }
+
+  // Extract host and validate optional port.
+  let host = if hostport.starts_with('[') {
+    // IPv6 literal. Format: `[host]` or `[host]:port`.
+    //
+    // Note: `url::Url::host_str()` returns the bracketed form (`[::1]`), so we keep the brackets
+    // here for scoring parity.
+    let close = hostport.find(']')?;
+    if close <= 1 {
+      return None;
+    }
+
+    let after = &hostport[close + 1..];
+    if !after.is_empty() {
+      if !after.starts_with(':') {
+        return None;
+      }
+      if !is_valid_url_port(&after[1..]) {
+        return None;
+      }
+    }
+
+    &hostport[..(close + 1)]
+  } else {
+    match hostport.find(':') {
+      Some(colon) => {
+        let host = &hostport[..colon];
+        let port = &hostport[colon + 1..];
+        if host.is_empty() || !is_valid_url_port(port) {
+          return None;
+        }
+        host
+      }
+      None => hostport,
+    }
+  };
+
+  if host.is_empty() {
+    return None;
+  }
+
+  // Remaining part begins with `/`, `?`, `#`, or is empty.
+  let after_auth = &rest[authority_end..];
+
+  // For `http(s)://host` URLs, `url::Url::path()` returns `/` even when no explicit path is
+  // present. Mirror that behavior so scoring stays comparable.
+  let mut path: &str = "/";
+  let mut query: Option<&str> = None;
+
+  if after_auth.starts_with('/') {
+    // Path ends at `?` or `#`.
+    let mut path_end = after_auth.len();
+    for (i, &b) in after_auth.as_bytes().iter().enumerate() {
+      if matches!(b, b'?' | b'#') {
+        path_end = i;
+        break;
+      }
+    }
+    path = &after_auth[..path_end];
+
+    // Query (optional) begins after `?` and ends at `#` (or end).
+    if after_auth.as_bytes().get(path_end) == Some(&b'?') {
+      let query_start = path_end + 1;
+      let mut query_end = after_auth.len();
+      for (i, &b) in after_auth.as_bytes()[query_start..].iter().enumerate() {
+        if b == b'#' {
+          query_end = query_start + i;
+          break;
+        }
+      }
+      query = Some(&after_auth[query_start..query_end]);
+    }
+  } else if after_auth.starts_with('?') {
+    let query_start = 1;
+    let mut query_end = after_auth.len();
+    for (i, &b) in after_auth.as_bytes()[query_start..].iter().enumerate() {
+      if b == b'#' {
+        query_end = query_start + i;
+        break;
+      }
+    }
+    query = Some(&after_auth[query_start..query_end]);
+  }
+
+  Some(OmniboxHttpUrl { host, path, query })
+}
+
+fn is_valid_url_port(port: &str) -> bool {
+  // `url::Url` parses ports as `u16` (0-65535). Keep the validation lightweight and avoid
+  // allocating or calling `str::parse`.
+  if port.is_empty() {
+    return false;
+  }
+  let mut value: u32 = 0;
+  for b in port.as_bytes() {
+    if !b.is_ascii_digit() {
+      return false;
+    }
+    value = value * 10 + (*b - b'0') as u32;
+    if value > 65_535 {
+      return false;
+    }
+  }
+  true
+}
+
+fn match_score_url(parsed: Option<&OmniboxHttpUrl<'_>>, raw: &str, needle_lower: &str) -> Option<i64> {
   let raw_score = match_score(raw, needle_lower);
 
   let Some(url) = parsed else {
     return raw_score;
   };
-  if !matches!(url.scheme(), "http" | "https") {
-    return raw_score;
-  }
-
-  let Some(host) = url.host_str() else {
-    return raw_score;
-  };
-
-  let host_score = match_score_http_host(host, needle_lower);
+  let host_score = match_score_http_host(url.host, needle_lower);
 
   // Score path + query, but keep it lower than host matches.
-  let path_score = match_score_pathish(url.path(), needle_lower);
-  let query_score = url
-    .query()
-    .and_then(|q| match_score_pathish(q, needle_lower));
+  let path_score = match_score_pathish(url.path, needle_lower);
+  let query_score = url.query.and_then(|q| match_score_pathish(q, needle_lower));
   let path_query_score = path_score.max(query_score);
 
   raw_score.max(host_score).max(path_query_score)
@@ -818,6 +962,28 @@ fn tokenize_lower(input: &str) -> Vec<String> {
 mod tests {
   use super::*;
   use std::time::SystemTime;
+  use url::Url;
+
+  fn match_score_url_via_url_crate(raw: &str, needle_lower: &str) -> Option<i64> {
+    let raw_score = match_score(raw, needle_lower);
+    let parsed = Url::parse(raw).ok();
+    let Some(url) = parsed.as_ref() else {
+      return raw_score;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+      return raw_score;
+    }
+    let Some(host) = url.host_str() else {
+      return raw_score;
+    };
+
+    let host_score = match_score_http_host(host, needle_lower);
+    let path_score = match_score_pathish(url.path(), needle_lower);
+    let query_score = url.query().and_then(|q| match_score_pathish(q, needle_lower));
+    let path_query_score = path_score.max(query_score);
+
+    raw_score.max(host_score).max(path_query_score)
+  }
 
   #[test]
   fn engine_produces_expected_local_suggestions() {
@@ -1407,6 +1573,57 @@ mod tests {
         "https://example.com/path/git/one"
       ]
     );
+  }
+
+  #[test]
+  fn url_scoring_fast_path_matches_url_crate_for_common_urls() {
+    // We intentionally avoid `url::Url::parse` in omnibox scoring for performance. This test keeps
+    // the lightweight parser honest by comparing its scoring behavior to the previous
+    // `Url::parse`-based implementation for a representative set of URLs.
+    let cases: &[(&str, &[&str])] = &[
+      (
+        "https://example.com/path/to/page?query=one&two=three",
+        &["example", "path", "query=one", "two=three", "/path", "/"],
+      ),
+      (
+        "HTTP://Sub.Example.co.uk/a/b?c=d#frag",
+        &["sub", "example", "co.uk", "/a", "c=d", "frag"],
+      ),
+      (
+        "https://user:pass@example.com:8080/secure/path?token=ABC#ignored",
+        &["user", "pass", "example.com", "8080", "secure", "token=abc"],
+      ),
+      (
+        "https://[2001:db8::1]:443/ipv6/path?x=y",
+        &["2001:db8::1", "443", "ipv6", "x=y"],
+      ),
+      ("https://example.com", &["example", "com", "/"]),
+      ("https://example.com?only_query=1", &["only_query", "/"]),
+      ("https://example.com/%7Euser?foo=bar%2Fbaz", &["%7euser", "bar%2fbaz"]),
+      // Non-http(s) schemes should fall back to raw scoring.
+      ("ftp://example.com/path", &["example", "path"]),
+      ("about:help", &["help"]),
+      ("file:///Users/alice/test.txt", &["users", "test.txt"]),
+      // Invalid ports should behave like the `url::Url::parse` fallback (raw scoring only).
+      ("https://example.com:99999/path", &["example", "path", "99999"]),
+      ("https://[::1]bad/path", &["::1", "bad", "path"]),
+    ];
+
+    for (raw, needles) in cases {
+      for needle in *needles {
+        let needle_lower = needle.to_ascii_lowercase();
+
+        let old_score = match_score_url_via_url_crate(raw, &needle_lower);
+
+        let parsed = parse_http_url_for_scoring(raw);
+        let new_score = match_score_url(parsed.as_ref(), raw, &needle_lower);
+
+        assert_eq!(
+          new_score, old_score,
+          "score mismatch for raw={raw:?} needle={needle:?}: new={new_score:?} old={old_score:?}"
+        );
+      }
+    }
   }
 
   #[test]
