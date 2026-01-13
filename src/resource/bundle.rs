@@ -488,44 +488,12 @@ fn clone_bytes_range_fallible(
   url: &str,
   bytes: &[u8],
   start: u64,
-  mut end: u64,
+  end: u64,
   max_bytes: usize,
   context: &'static str,
 ) -> Result<Vec<u8>> {
-  if max_bytes == 0 {
-    return Ok(Vec::new());
-  }
-
-  let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
-  end = end.min(cap_end);
-
-  let start_idx = usize::try_from(start).map_err(|_| {
-    Error::Resource(ResourceError::new(
-      url,
-      format!("byte range start {start} is too large to slice in memory"),
-    ))
-  })?;
-  if start_idx >= bytes.len() {
-    return Err(Error::Resource(ResourceError::new(
-      url,
-      format!(
-        "byte range start {start} is beyond end of response body (len={})",
-        bytes.len()
-      ),
-    )));
-  }
-
-  let end_idx = usize::try_from(end).map_err(|_| {
-    Error::Resource(ResourceError::new(
-      url,
-      format!("byte range end {end} is too large to slice in memory"),
-    ))
-  })?;
-  let available_end = bytes.len().saturating_sub(1);
-  let end_idx = end_idx.min(available_end);
-
-  let bytes = clone_bytes_fallible(&bytes[start_idx..=end_idx], context)?;
-  Ok(bytes)
+  let slice = super::normalize_fetch_range(url, bytes.len(), start..=end, max_bytes)?;
+  clone_bytes_fallible(&bytes[slice], context)
 }
 
 impl Bundle {
@@ -1492,10 +1460,13 @@ impl ResourceFetcher for BundledFetcher {
     let start = *range.start();
     let end = *range.end();
     if start > end {
-      return Err(Error::Resource(ResourceError::new(
-        req.url,
-        format!("invalid byte range: start {start} is greater than end {end}"),
-      )));
+      return Err(Error::Resource(
+        ResourceError::new(
+          req.url,
+          format!("invalid byte range: start {start} is greater than end {end}"),
+        )
+        .with_status(416),
+      ));
     }
 
     let (capped_end, max_bytes) =
@@ -1738,34 +1709,14 @@ impl ResourceFetcher for BundledFetcher {
           ))
         })?;
       let mut res = super::data_url::decode_data_url_prefix(req.url, decode_len)?;
-      let start_idx = usize::try_from(start).map_err(|_| {
-        Error::Resource(ResourceError::new(
-          req.url,
-          format!("byte range start {start} is too large to slice in memory"),
-        ))
-      })?;
-      if start_idx >= res.bytes.len() {
-        return Err(Error::Resource(ResourceError::new(
-          req.url,
-          format!(
-            "byte range start {start} is beyond end of decoded data URL (len={})",
-            res.bytes.len()
-          ),
-        )));
-      }
-      let end_idx = usize::try_from(capped_end).map_err(|_| {
-        Error::Resource(ResourceError::new(
-          req.url,
-          format!("byte range end {capped_end} is too large to slice in memory"),
-        ))
-      })?;
-      let available_end = res.bytes.len().saturating_sub(1);
-      let end_idx = end_idx.min(available_end);
-      res.bytes = res.bytes[start_idx..=end_idx].to_vec();
-      if res.bytes.len() > max_bytes {
-        res.bytes.truncate(max_bytes);
-      }
-      super::reserve_policy_bytes(&self.policy, &res)?;
+      res.bytes = clone_bytes_range_fallible(
+        req.url,
+        &res.bytes,
+        start,
+        capped_end,
+        max_bytes,
+        "bundle data URL bytes",
+      )?;
       return Ok(res);
     }
 

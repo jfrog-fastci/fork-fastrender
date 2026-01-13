@@ -2306,32 +2306,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
 
     let read_stage = stage_for_cached_content_type(meta.content_type.as_deref());
-    let start = *range.start();
-    let end = *range.end();
-    if start > end {
-      return SnapshotRangeRead::Error(Error::Resource(ResourceError::new(
-        url,
-        format!("invalid byte range: start {start} is greater than end {end}"),
-      )));
-    }
-
-    // Honor the `max_bytes` cap even if the requested range is larger.
-    let range_len = end.saturating_sub(start).saturating_add(1);
-    let target_len_u64 = if max_bytes == 0 {
-      0
-    } else {
-      range_len.min(max_bytes as u64)
+    let slice_range = match super::normalize_fetch_range(url, meta.len, range.clone(), max_bytes) {
+      Ok(slice) => slice,
+      Err(err) => return SnapshotRangeRead::Error(err),
     };
-    // Safe cast: `target_len_u64 <= max_bytes as u64 <= usize::MAX as u64`.
-    let target_len = usize::try_from(target_len_u64).unwrap_or(max_bytes);
-
-    let offset = usize::try_from(start).unwrap_or(meta.len);
-    let expected_len = if target_len == 0 || offset >= meta.len {
-      0
-    } else {
-      let remaining = meta.len.saturating_sub(offset);
-      target_len.min(remaining)
-    };
+    let offset = slice_range.start;
+    let expected_len = slice_range.end.saturating_sub(slice_range.start);
 
     let bytes = if expected_len == 0 {
       Vec::new()
@@ -4535,15 +4515,17 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     let start = *range.start();
     let end = *range.end();
     if start > end {
-      return Err(Error::Resource(ResourceError::new(
-        url,
-        format!("invalid byte range: start {start} is greater than end {end}"),
-      )));
+      return Err(Error::Resource(
+        ResourceError::new(
+          url,
+          format!("invalid byte range: start {start} is greater than end {end}"),
+        )
+        .with_status(416),
+      ));
     }
 
     let (_capped_end, target_len) =
       super::enforce_range_request_size_limit(self.policy.as_ref(), start, end, max_bytes)?;
-
     let origin_key = super::cors_cache_partition_key(&req);
     let key = CacheKey::new_with_origin(
       kind,
@@ -4555,18 +4537,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     if let Some(snapshot) = self.memory.cached_entry(&key, Some(req)) {
       let result = snapshot.value.as_result();
       if let Ok(mut res) = result {
-        if target_len == 0 {
-          res.bytes.clear();
-        } else {
-          let start_idx = usize::try_from(start).unwrap_or(res.bytes.len());
-          if start_idx >= res.bytes.len() {
-            res.bytes.clear();
-          } else {
-            let available = res.bytes.len().saturating_sub(start_idx);
-            let slice_len = target_len.min(available);
-            res.bytes = res.bytes[start_idx..start_idx.saturating_add(slice_len)].to_vec();
-          }
-        }
+        res.bytes = super::slice_bytes_for_fetch_range(url, &res.bytes, range.clone(), max_bytes)?;
         super::record_cache_fresh_hit();
         super::record_resource_cache_bytes(res.bytes.len());
         super::reserve_policy_bytes(&self.policy, &res)?;

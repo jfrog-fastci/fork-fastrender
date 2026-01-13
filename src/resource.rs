@@ -4042,16 +4042,26 @@ pub trait ResourceFetcher: Send + Sync {
 
   /// Fetch a byte range of a resource body using a contextual request (destination + referrer).
   ///
-  /// This is primarily intended for media pipelines that need to seek within large assets without
-  /// downloading the entire response body.
+  /// This API exists primarily for media playback (video/audio) where callers need deterministic,
+  /// seekable byte ranges.
   ///
-  /// Semantics:
+  /// ## Range semantics (shared across all implementations)
+  ///
+  /// - `range` is a **zero-based**, **inclusive** byte range (`start..=end`), matching HTTP `Range:
+  ///   bytes=<start>-<end>` semantics.
+  /// - To represent an open-ended range (`bytes=<start>-`), callers should pass `start..=u64::MAX`.
+  ///   Implementations must treat that as extending through EOF (subject to `max_bytes`).
+  /// - `max_bytes` is a hard cap on the returned body length. Implementations must never return
+  ///   more than `max_bytes` bytes (and `max_bytes=0` is allowed and returns an empty body).
+  ///
+  /// ## Additional semantics
+  ///
   /// - The returned `bytes` are always capped to `max_bytes` (even if the requested range is
   ///   larger, or the origin ignores the `Range` header).
   /// - When a [`ResourcePolicy`] is enforced, the requested range length (after applying the
   ///   `max_bytes` cap) must not exceed the policy's per-response limit. Implementations should
   ///   reject oversized ranges instead of silently truncating them.
-  /// - For HTTP(S) URLs, this issues a `GET` with a `Range: bytes=start-end` header via
+  /// - For HTTP(S) URLs, this issues a `GET` with a `Range: bytes=<start>-<end>` header via
   ///   [`ResourceFetcher::fetch_http_request`] so implementations can keep their existing header
   ///   construction, caching, and CORS logic.
   /// - For `file://` URLs and relative filesystem paths, implementations **may** read only the
@@ -4059,9 +4069,14 @@ pub trait ResourceFetcher: Send + Sync {
   ///   slicing, so fetchers that need efficient filesystem range reads should override this method.
   /// - For `data:` URLs, this decodes then slices.
   ///
-  /// When the server ignores the range request and returns a `200 OK` response, this method will
-  /// slice the returned body when possible. If the range start is beyond the returned body length,
-  /// it returns an [`Error::Resource`] instead of panicking.
+  /// ## Out-of-bounds behaviour
+  ///
+  /// When the resource length is known (e.g. cached/bundled bytes, local file reads, or when an
+  /// origin ignores `Range` and returns the full body), implementations must normalize ranges
+  /// deterministically:
+  ///
+  /// - If `start >= len`, return an error with `status=416` (Range Not Satisfiable).
+  /// - If `end` exceeds `len - 1`, clamp it to `len - 1`.
   fn fetch_range_with_request(
     &self,
     req: FetchRequest<'_>,
@@ -4071,10 +4086,13 @@ pub trait ResourceFetcher: Send + Sync {
     let start = *range.start();
     let end = *range.end();
     if start > end {
-      return Err(Error::Resource(ResourceError::new(
-        req.url,
-        format!("invalid byte range: start {start} is greater than end {end}"),
-      )));
+      return Err(Error::Resource(
+        ResourceError::new(
+          req.url,
+          format!("invalid byte range: start {start} is greater than end {end}"),
+        )
+        .with_status(416),
+      ));
     }
 
     // Clamp the requested end so we never return more than `max_bytes`.
@@ -4110,30 +4128,8 @@ pub trait ResourceFetcher: Send + Sync {
 
         // If the server ignored the range and returned a full 200 response, slice when possible.
         if res.status == Some(200) {
-          let start_idx = usize::try_from(start).map_err(|_| {
-            Error::Resource(ResourceError::new(
-              req.url,
-              format!("byte range start {start} is too large to slice in memory"),
-            ))
-          })?;
-          if start_idx >= res.bytes.len() {
-            return Err(Error::Resource(ResourceError::new(
-              req.url,
-              format!(
-                "byte range start {start} is beyond end of response body (len={})",
-                res.bytes.len()
-              ),
-            )));
-          }
-          let end_idx = usize::try_from(capped_end).map_err(|_| {
-            Error::Resource(ResourceError::new(
-              req.url,
-              format!("byte range end {capped_end} is too large to slice in memory"),
-            ))
-          })?;
-          let available_end = res.bytes.len().saturating_sub(1);
-          let end_idx = end_idx.min(available_end);
-          res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+          let sliced = slice_bytes_for_fetch_range(req.url, &res.bytes, start..=capped_end, max_bytes)?;
+          res.bytes = sliced;
           return Ok(res);
         }
 
@@ -4226,34 +4222,8 @@ pub trait ResourceFetcher: Send + Sync {
           res.bytes.clear();
           return Ok(res);
         }
-
-        let start_idx = usize::try_from(start).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            req.url,
-            format!("byte range start {start} is too large to slice in memory"),
-          ))
-        })?;
-        if start_idx >= res.bytes.len() {
-          return Err(Error::Resource(ResourceError::new(
-            req.url,
-            format!(
-              "byte range start {start} is beyond end of response body (len={})",
-              res.bytes.len()
-            ),
-          )));
-        }
-        let end_idx = usize::try_from(capped_end).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            req.url,
-            format!("byte range end {capped_end} is too large to slice in memory"),
-          ))
-        })?;
-        let available_end = res.bytes.len().saturating_sub(1);
-        let end_idx = end_idx.min(available_end);
-        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
-        if res.bytes.len() > max_bytes {
-          res.bytes.truncate(max_bytes);
-        }
+        let sliced = slice_bytes_for_fetch_range(req.url, &res.bytes, start..=capped_end, max_bytes)?;
+        res.bytes = sliced;
         Ok(res)
       }
       ResourceScheme::Data => {
@@ -4268,33 +4238,8 @@ pub trait ResourceFetcher: Send + Sync {
           ))
         })?;
         let mut res = data_url::decode_data_url_prefix(req.url, decode_len)?;
-        let start_idx = usize::try_from(start).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            req.url,
-            format!("byte range start {start} is too large to slice in memory"),
-          ))
-        })?;
-        if start_idx >= res.bytes.len() {
-          return Err(Error::Resource(ResourceError::new(
-            req.url,
-            format!(
-              "byte range start {start} is beyond end of decoded data URL (len={})",
-              res.bytes.len()
-            ),
-          )));
-        }
-        let end_idx = usize::try_from(capped_end).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            req.url,
-            format!("byte range end {capped_end} is too large to slice in memory"),
-          ))
-        })?;
-        let available_end = res.bytes.len().saturating_sub(1);
-        let end_idx = end_idx.min(available_end);
-        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
-        if res.bytes.len() > max_bytes {
-          res.bytes.truncate(max_bytes);
-        }
+        let sliced = slice_bytes_for_fetch_range(req.url, &res.bytes, start..=capped_end, max_bytes)?;
+        res.bytes = sliced;
         Ok(res)
       }
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
@@ -4454,34 +4399,27 @@ fn fetch_file_range_with_backend(
     .unwrap_or_else(|| std::path::PathBuf::from(url));
   let content_type = guess_content_type_from_path(chosen_path_for_type.to_string_lossy().as_ref());
 
+  if let Some(len) = chosen_meta_len {
+    if len == 0 {
+      return Err(Error::Resource(
+        ResourceError::new(url, "byte range start is beyond end of empty file".to_string())
+          .with_status(416),
+      ));
+    }
+    if start >= len {
+      return Err(Error::Resource(
+        ResourceError::new(url, format!("byte range start {start} is beyond end of file (len={len})"))
+          .with_status(416),
+      ));
+    }
+  }
+
   if max_bytes == 0 {
     return Ok(FetchedResource::with_final_url(
       Vec::new(),
       content_type,
       Some(url.to_string()),
     ));
-  }
-
-  if let Some(len) = chosen_meta_len {
-    if len == 0 {
-      if start == 0 {
-        return Ok(FetchedResource::with_final_url(
-          Vec::new(),
-          content_type,
-          Some(url.to_string()),
-        ));
-      }
-      return Err(Error::Resource(ResourceError::new(
-        url,
-        "byte range start is beyond end of empty file".to_string(),
-      )));
-    }
-    if start >= len {
-      return Err(Error::Resource(ResourceError::new(
-        url,
-        format!("byte range start {start} is beyond end of file (len={len})"),
-      )));
-    }
   }
 
   if start > 0 {
@@ -4494,10 +4432,10 @@ fn fetch_file_range_with_backend(
       )
     })?;
     if skipped < start {
-      return Err(Error::Resource(ResourceError::new(
-        url,
-        format!("byte range start {start} is beyond end of file"),
-      )));
+      return Err(Error::Resource(
+        ResourceError::new(url, format!("byte range start {start} is beyond end of file"))
+          .with_status(416),
+      ));
     }
   }
 
@@ -4656,6 +4594,82 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
   }
 }
 
+/// Normalize a requested `fetch_range_with_request` byte range against a known resource length.
+///
+/// `range` is inclusive (`start..=end`). `max_bytes` is a hard cap on the returned slice length.
+///
+/// Returns a Rust `start..end_exclusive` range suitable for slicing `&[u8]`.
+pub(crate) fn normalize_fetch_range(
+  url: &str,
+  len: usize,
+  range: std::ops::RangeInclusive<u64>,
+  max_bytes: usize,
+) -> Result<std::ops::Range<usize>> {
+  let start = *range.start();
+  let end = *range.end();
+  if start > end {
+    return Err(Error::Resource(
+      ResourceError::new(
+        url,
+        format!("invalid byte range: start {start} is greater than end {end}"),
+      )
+      .with_status(416),
+    ));
+  }
+
+  let len_u64 = u64::try_from(len).unwrap_or(u64::MAX);
+  if start >= len_u64 {
+    return Err(Error::Resource(
+      ResourceError::new(url, format!("byte range start {start} is out of bounds (len={len})"))
+        .with_status(416),
+    ));
+  }
+
+  let start_usize = usize::try_from(start).map_err(|_| {
+    Error::Resource(
+      ResourceError::new(url, format!("byte range start {start} is too large for this platform"))
+        .with_status(416),
+    )
+  })?;
+
+  if max_bytes == 0 {
+    debug_assert!(start_usize < len);
+    return Ok(start_usize..start_usize);
+  }
+
+  // Clamp the requested end so we never return more than `max_bytes`.
+  let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+  let mut end_inclusive = end.min(cap_end);
+  // Clamp to EOF (len-1) when `end` is too large (including open-ended `..=u64::MAX`).
+  if end_inclusive >= len_u64 {
+    end_inclusive = len_u64.saturating_sub(1);
+  }
+
+  let end_exclusive_u64 = end_inclusive.saturating_add(1);
+  let end_usize = usize::try_from(end_exclusive_u64).map_err(|_| {
+    Error::Resource(
+      ResourceError::new(
+        url,
+        format!("byte range end {end_exclusive_u64} is too large for this platform"),
+      )
+      .with_status(416),
+    )
+  })?;
+  debug_assert!(end_usize <= len);
+  Ok(start_usize..end_usize)
+}
+
+/// Slice `bytes` according to the `fetch_range_with_request` contract.
+pub(crate) fn slice_bytes_for_fetch_range(
+  url: &str,
+  bytes: &[u8],
+  range: std::ops::RangeInclusive<u64>,
+  max_bytes: usize,
+) -> Result<Vec<u8>> {
+  let range = normalize_fetch_range(url, bytes.len(), range, max_bytes)?;
+  Ok(bytes[range].to_vec())
+}
+
 // ============================================================================
 // HttpFetcher - Default implementation
 // ============================================================================
@@ -4802,10 +4816,13 @@ impl ResourceFetcher for HttpFetcher {
     let start = *range.start();
     let end = *range.end();
     if start > end {
-      return Err(Error::Resource(ResourceError::new(
-        req.url,
-        format!("invalid byte range: start {start} is greater than end {end}"),
-      )));
+      return Err(Error::Resource(
+        ResourceError::new(
+          req.url,
+          format!("invalid byte range: start {start} is greater than end {end}"),
+        )
+        .with_status(416),
+      ));
     }
 
     let kind: FetchContextKind = req.destination.into();
@@ -4857,35 +4874,9 @@ impl ResourceFetcher for HttpFetcher {
               url,
               format!("byte range end {capped_end} is too large to decode"),
             ))
-          })?;
+        })?;
         let mut res = data_url::decode_data_url_prefix(url, decode_len)?;
-        let start_idx = usize::try_from(start).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            url,
-            format!("byte range start {start} is too large to slice in memory"),
-          ))
-        })?;
-        if start_idx >= res.bytes.len() {
-          return Err(Error::Resource(ResourceError::new(
-            url,
-            format!(
-              "byte range start {start} is beyond end of decoded data URL (len={})",
-              res.bytes.len()
-            ),
-          )));
-        }
-        let end_idx = usize::try_from(capped_end).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            url,
-            format!("byte range end {capped_end} is too large to slice in memory"),
-          ))
-        })?;
-        let available_end = res.bytes.len().saturating_sub(1);
-        let end_idx = end_idx.min(available_end);
-        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
-        if res.bytes.len() > target_len {
-          res.bytes.truncate(target_len);
-        }
+        res.bytes = slice_bytes_for_fetch_range(url, &res.bytes, start..=capped_end, max_bytes)?;
         self.policy.reserve_budget(res.bytes.len())?;
         Ok(res)
       }
@@ -10307,10 +10298,13 @@ impl ResourceFetcher for HttpFetcher {
     let start = *range.start();
     let end = *range.end();
     if start > end {
-      return Err(Error::Resource(ResourceError::new(
-        req.url,
-        format!("invalid byte range: start {start} is greater than end {end}"),
-      )));
+      return Err(Error::Resource(
+        ResourceError::new(
+          req.url,
+          format!("invalid byte range: start {start} is greater than end {end}"),
+        )
+        .with_status(416),
+      ));
     }
 
     let kind: FetchContextKind = req.destination.into();
@@ -10346,30 +10340,7 @@ impl ResourceFetcher for HttpFetcher {
 
         // If the server ignored the range and returned a full 200 response, slice when possible.
         if res.status == Some(200) {
-          let start_idx = usize::try_from(start).map_err(|_| {
-            Error::Resource(ResourceError::new(
-              url,
-              format!("byte range start {start} is too large to slice in memory"),
-            ))
-          })?;
-          if start_idx >= res.bytes.len() {
-            return Err(Error::Resource(ResourceError::new(
-              url,
-              format!(
-                "byte range start {start} is beyond end of response body (len={})",
-                res.bytes.len()
-              ),
-            )));
-          }
-          let end_idx = usize::try_from(capped_end).map_err(|_| {
-            Error::Resource(ResourceError::new(
-              url,
-              format!("byte range end {capped_end} is too large to slice in memory"),
-            ))
-          })?;
-          let available_end = res.bytes.len().saturating_sub(1);
-          let end_idx = end_idx.min(available_end);
-          res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+          res.bytes = slice_bytes_for_fetch_range(url, &res.bytes, start..=capped_end, max_bytes)?;
           return Ok(res);
         }
 
@@ -10473,33 +10444,7 @@ impl ResourceFetcher for HttpFetcher {
           ))
         })?;
         let mut res = data_url::decode_data_url_prefix(url, decode_len)?;
-        let start_idx = usize::try_from(start).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            url,
-            format!("byte range start {start} is too large to slice in memory"),
-          ))
-        })?;
-        if start_idx >= res.bytes.len() {
-          return Err(Error::Resource(ResourceError::new(
-            url,
-            format!(
-              "byte range start {start} is beyond end of decoded data URL (len={})",
-              res.bytes.len()
-            ),
-          )));
-        }
-        let end_idx = usize::try_from(capped_end).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            url,
-            format!("byte range end {capped_end} is too large to slice in memory"),
-          ))
-        })?;
-        let available_end = res.bytes.len().saturating_sub(1);
-        let end_idx = end_idx.min(available_end);
-        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
-        if res.bytes.len() > max_bytes {
-          res.bytes.truncate(max_bytes);
-        }
+        res.bytes = slice_bytes_for_fetch_range(url, &res.bytes, start..=capped_end, max_bytes)?;
         self.policy.reserve_budget(res.bytes.len())?;
         Ok(res)
       }
@@ -13367,10 +13312,13 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     let start = *range.start();
     let end = *range.end();
     if start > end {
-      return Err(Error::Resource(ResourceError::new(
-        req.url,
-        format!("invalid byte range: start {start} is greater than end {end}"),
-      )));
+      return Err(Error::Resource(
+        ResourceError::new(
+          req.url,
+          format!("invalid byte range: start {start} is greater than end {end}"),
+        )
+        .with_status(416),
+      ));
     }
 
     let kind: FetchContextKind = req.destination.into();
@@ -13381,6 +13329,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
 
     let (capped_end, max_bytes) =
       enforce_range_request_size_limit(self.policy.as_ref(), start, end, max_bytes)?;
+    let range = start..=capped_end;
 
     // Use the same cache partitioning as `fetch_with_request` so range fetches can reuse cached
     // full responses, while remaining isolated across origins/credentials.
@@ -13392,40 +13341,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     );
 
     if let Some(result) = self.with_cached_resource(&key, Some(req), |cached| {
-      if max_bytes == 0 {
-        return Ok(clone_fetched_resource_with_bytes(cached, Vec::new()));
-      }
-
-      // Range semantics when serving from cached full responses:
-      // - Clamp end to the last available byte
-      // - Return an error (instead of panicking) when the start is out-of-bounds
-      let start_idx = usize::try_from(start).map_err(|_| {
-        Error::Resource(ResourceError::new(
-          url,
-          format!("byte range start {start} is too large to slice in memory"),
-        ))
-      })?;
-
-      if start_idx >= cached.bytes.len() {
-        return Err(Error::Resource(ResourceError::new(
-          url,
-          format!(
-            "byte range start {start} is beyond end of cached response body (len={})",
-            cached.bytes.len()
-          ),
-        )));
-      }
-
-      let end_idx = usize::try_from(capped_end).map_err(|_| {
-        Error::Resource(ResourceError::new(
-          url,
-          format!("byte range end {capped_end} is too large to slice in memory"),
-        ))
-      })?;
-      let available_end = cached.bytes.len().saturating_sub(1);
-      let end_idx = end_idx.min(available_end);
-
-      let bytes = cached.bytes[start_idx..=end_idx].to_vec();
+      let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), max_bytes)?;
       Ok(clone_fetched_resource_with_bytes(cached, bytes))
     }) {
       let res = result?;
@@ -14496,6 +14412,42 @@ mod tests_minimal {
       )
       .expect("arc range fetch should use inner override");
     assert_eq!(res.bytes, b"range");
+  }
+
+  #[test]
+  fn slice_bytes_for_fetch_range_returns_expected_slice() {
+    let url = "https://example.invalid/range.bin";
+    let bytes = b"abcdefghij";
+    let sliced = slice_bytes_for_fetch_range(url, bytes, 2..=5, 100).expect("slice");
+    assert_eq!(sliced, b"cdef");
+  }
+
+  #[test]
+  fn slice_bytes_for_fetch_range_clamps_end_to_eof() {
+    let url = "https://example.invalid/range.bin";
+    let bytes = b"abcdefghij";
+    let sliced = slice_bytes_for_fetch_range(url, bytes, 2..=100, 100).expect("slice");
+    assert_eq!(sliced, b"cdefghij");
+  }
+
+  #[test]
+  fn slice_bytes_for_fetch_range_returns_416_when_start_is_at_eof() {
+    let url = "https://example.invalid/range.bin";
+    let bytes = b"abcdefghij";
+    let err = slice_bytes_for_fetch_range(url, bytes, 10..=10, 100).expect_err("expected error");
+    let Error::Resource(resource) = err else {
+      panic!("expected Resource error, got: {err:?}");
+    };
+    assert_eq!(resource.status, Some(416), "unexpected error: {resource:?}");
+  }
+
+  #[test]
+  fn slice_bytes_for_fetch_range_supports_open_ended_ranges() {
+    let url = "https://example.invalid/range.bin";
+    let bytes = b"abcdefghij";
+    let sliced =
+      slice_bytes_for_fetch_range(url, bytes, 7..=u64::MAX, 100).expect("slice open ended");
+    assert_eq!(sliced, b"hij");
   }
 }
 
