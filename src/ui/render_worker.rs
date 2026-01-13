@@ -1035,7 +1035,6 @@ fn dom_tree_eq(a: &crate::dom::DomNode, b: &crate::dom::DomNode) -> bool {
   }
   true
 }
-
 fn dom_input_type(node: &crate::dom::DomNode) -> &str {
   node
     .get_attribute_ref("type")
@@ -5198,8 +5197,8 @@ impl BrowserRuntime {
     let _ = ui_tx.send(WorkerToUi::HoverChanged {
       tab_id,
       hovered_url,
-      cursor,
       tooltip,
+      cursor,
     });
   }
 
@@ -5381,16 +5380,24 @@ impl BrowserRuntime {
         } else {
           match hit {
             Some(hit) => {
-               let tooltip =
-                 tooltip_from_hover_chain(dom, engine.interaction_state().hover_chain());
-               let cursor = cursor_kind_for_hit(Some(&hit));
-               let crate::interaction::HitTestResult {
-                 element_id,
-                 dom_node_id,
-                 kind,
-                 href,
-                 ..
-               } = hit;
+              let cursor = cursor_kind_for_hit(Some(&hit));
+              let crate::interaction::HitTestResult {
+                element_id,
+                dom_node_id,
+                kind,
+                href,
+                ..
+              } = hit;
+
+              // Tooltip semantics: prefer the semantic hit target (e.g. `<area>` for client-side
+              // image maps). If it doesn't have a title, fall back to the hovered element chain.
+              let semantic_title = crate::dom::find_node_mut_by_preorder_id(dom, dom_node_id)
+                .and_then(|node| node.get_attribute_ref("title"))
+                .map(trim_ascii_whitespace)
+                .filter(|t| !t.is_empty())
+                .map(|t| t.to_string());
+              let tooltip = semantic_title
+                .or_else(|| tooltip_from_hover_chain(dom, engine.interaction_state().hover_chain()));
 
               // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
               let hovered_url = match kind {
@@ -5400,18 +5407,18 @@ impl BrowserRuntime {
                 _ => None,
               };
 
-               (
-                 hovered_url,
-                 cursor,
-                 tooltip,
-                 Some(dom_node_id),
-                 element_id,
-                 hover_is_drop_target,
-               )
-             }
-             None => (None, CursorKind::Default, None, None, None, false),
-           }
-         };
+              (
+                hovered_url,
+                cursor,
+                tooltip,
+                Some(dom_node_id),
+                element_id,
+                hover_is_drop_target,
+              )
+            }
+            None => (None, CursorKind::Default, None, None, None, false),
+          }
+        };
 
         if pointer_in_page && drag_drop_active {
           cursor = if hover_is_drop_target {
@@ -5420,6 +5427,7 @@ impl BrowserRuntime {
             CursorKind::NotAllowed
           };
         }
+
         (
           changed,
           (

@@ -3205,8 +3205,8 @@ impl BrowserAppState {
       WorkerToUi::HoverChanged {
         tab_id,
         hovered_url,
-        cursor,
         tooltip,
+        cursor,
       } => {
         let safe_hovered =
           hovered_url.and_then(|url| crate::ui::url::sanitize_worker_url_for_ui(&url));

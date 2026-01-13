@@ -189,8 +189,8 @@ pub enum WorkerToUiEvent {
   HoverChanged {
     tab_id: TabId,
     hovered_url: Option<String>,
-    cursor: CursorKind,
     tooltip: Option<String>,
+    cursor: CursorKind,
   },
   FindResult {
     tab_id: TabId,
@@ -473,14 +473,14 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::HoverChanged {
       tab_id,
       hovered_url,
-      cursor,
       tooltip,
+      cursor,
     } => (
       WorkerToUiEvent::HoverChanged {
         tab_id,
         hovered_url,
-        cursor,
         tooltip,
+        cursor,
       },
       None,
     ),
@@ -690,13 +690,15 @@ pub fn format_events(events: &[WorkerToUiEvent]) -> String {
       WorkerToUiEvent::HoverChanged {
         tab_id,
         hovered_url,
+        tooltip,
         cursor,
       } => {
         let _ = writeln!(
           &mut out,
-          "HoverChanged(tab={}, cursor={cursor:?}, hovered_url={:?})",
+          "HoverChanged(tab={}, cursor={cursor:?}, hovered_url={:?}, tooltip={:?})",
           tab_id.0,
-          hovered_url.as_deref()
+          hovered_url.as_deref(),
+          tooltip.as_deref()
         );
       }
       WorkerToUiEvent::FindResult {
