@@ -37,16 +37,20 @@ const BPF_RET_K: u16 = BPF_RET | BPF_K;
 const SECCOMP_DATA_NR_OFFSET: u32 = 0;
 const SECCOMP_DATA_ARCH_OFFSET: u32 = 4;
 
+// `AUDIT_ARCH_*` constants are defined in `linux/audit.h`. `libc` does not expose them
+// consistently across targets, so we define the minimal set we need here.
+//
+// Values are `EM_* | __AUDIT_ARCH_{64BIT,LE}`.
 #[cfg(target_arch = "x86_64")]
-const AUDIT_ARCH: u32 = libc::AUDIT_ARCH_X86_64;
+const AUDIT_ARCH: u32 = 0xC000_003E; // EM_X86_64 (62) | 64BIT | LE
 #[cfg(target_arch = "aarch64")]
-const AUDIT_ARCH: u32 = libc::AUDIT_ARCH_AARCH64;
+const AUDIT_ARCH: u32 = 0xC000_00B7; // EM_AARCH64 (183) | 64BIT | LE
 #[cfg(target_arch = "x86")]
-const AUDIT_ARCH: u32 = libc::AUDIT_ARCH_I386;
+const AUDIT_ARCH: u32 = 0x4000_0003; // EM_386 (3) | LE
 #[cfg(target_arch = "arm")]
-const AUDIT_ARCH: u32 = libc::AUDIT_ARCH_ARM;
+const AUDIT_ARCH: u32 = 0x4000_0028; // EM_ARM (40) | LE
 #[cfg(target_arch = "riscv64")]
-const AUDIT_ARCH: u32 = libc::AUDIT_ARCH_RISCV64;
+const AUDIT_ARCH: u32 = 0xC000_00F3; // EM_RISCV (243) | 64BIT | LE
 
 #[cfg(not(any(
   target_arch = "x86_64",
