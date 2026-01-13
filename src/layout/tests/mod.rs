@@ -107,6 +107,7 @@ mod flex_intrinsic_gap;
 mod flex_intrinsic_gap_vertical_writing_mode;
 mod flex_intrinsic_gap_wrap;
 mod flex_intrinsic_inline_size_accounts_for_flex_item_snapping;
+mod flex_intrinsic_inline_sizes_cache;
 mod flex_intrinsic_margins_vertical_writing_mode;
 mod flex_intrinsic_mixed_writing_mode_axis_selection;
 mod flex_intrinsic_probe_empty_item_does_not_expand;
