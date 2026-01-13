@@ -19241,8 +19241,8 @@ pub fn string_prototype_locale_compare(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let o = crate::spec_ops::require_object_coercible(this)?;
-  let a = scope.to_string(vm, host, hooks, o)?;
+  let this = crate::spec_ops::require_object_coercible(this)?;
+  let a = scope.to_string(vm, host, hooks, this)?;
   scope.push_root(Value::String(a))?;
 
   let that = args.get(0).copied().unwrap_or(Value::Undefined);
