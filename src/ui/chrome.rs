@@ -4986,6 +4986,64 @@ frame={idx} repaint_after={:?}\n",
   }
 
   #[test]
+  fn address_bar_copy_copies_selected_text() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+
+    let ctx = egui::Context::default();
+
+    // Frame 1: focus + select all.
+    app.chrome.request_focus_address_bar = true;
+    app.chrome.request_select_all_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+
+    let before = app.chrome.address_bar_text.clone();
+
+    // Frame 2: copy via egui platform event.
+    begin_frame(&ctx, vec![egui::Event::Copy]);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let output = ctx.end_frame();
+
+    assert_eq!(output.platform_output.copied_text, "https://example.com/");
+    assert_eq!(app.chrome.address_bar_text, before);
+  }
+
+  #[test]
+  fn address_bar_cut_copies_and_removes_selected_text() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+
+    let ctx = egui::Context::default();
+
+    // Frame 1: focus + select all.
+    app.chrome.request_focus_address_bar = true;
+    app.chrome.request_select_all_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: cut via egui platform event.
+    begin_frame(&ctx, vec![egui::Event::Cut]);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let output = ctx.end_frame();
+
+    assert_eq!(output.platform_output.copied_text, "https://example.com/");
+    // Egui `TextEdit` handles `Event::Cut` by removing the current selection. With the entire URL
+    // selected, cutting should clear the address bar.
+    assert_eq!(app.chrome.address_bar_text, "");
+  }
+
+  #[test]
   fn click_type_enter_in_same_frame_emits_navigate_action() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
