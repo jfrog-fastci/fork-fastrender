@@ -5702,6 +5702,11 @@ pub struct CachedImage {
   pub orientation: Option<OrientationTransform>,
   /// Resolution in image pixels per CSS px (dppx) when provided by metadata.
   pub resolution: Option<f32>,
+  /// True when the source image is animated (e.g. multi-frame GIF).
+  ///
+  /// Note: `CachedImage` stores a single decoded frame for formats like GIF, but callers may still
+  /// need to know whether the underlying resource is animated so they can schedule repaints/ticks.
+  pub is_animated: bool,
   /// True when the decoded source image contains alpha information.
   ///
   /// Note: Some bitmap decoders normalize to RGBA (adding an opaque alpha channel) even when the
@@ -6025,7 +6030,7 @@ impl From<&CachedImage> for CachedImageMetadata {
       orientation: image.orientation,
       resolution: image.resolution,
       is_vector: image.is_vector,
-      is_animated: false,
+      is_animated: image.is_animated,
       intrinsic_ratio: image.intrinsic_ratio,
       aspect_ratio_none: image.aspect_ratio_none,
     }
@@ -6074,6 +6079,7 @@ fn about_url_placeholder_image() -> Arc<CachedImage> {
       image: Arc::new(DynamicImage::ImageRgba8(img)),
       orientation: None,
       resolution: None,
+      is_animated: false,
       has_alpha: true,
       is_vector: false,
       intrinsic_ratio: None,
@@ -8860,10 +8866,22 @@ impl ImageCache {
     let decode_ms = decode_start.map(|_| decode_ms_value);
     record_image_decode_ms(decode_ms_value);
 
+    let is_animated = if !is_vector
+      && (resource.bytes.starts_with(b"GIF87a") || resource.bytes.starts_with(b"GIF89a"))
+    {
+      matches!(
+        Self::gif_is_animated(&resource.bytes),
+        GifAnimationProbe::Determined(true)
+      )
+    } else {
+      false
+    };
+
     let img_arc = Arc::new(CachedImage {
       image: Arc::new(img),
       orientation,
       resolution,
+      is_animated,
       has_alpha,
       is_vector,
       intrinsic_ratio,
@@ -8969,10 +8987,22 @@ impl ImageCache {
     let decode_ms = decode_start.map(|_| decode_ms_value);
     record_image_decode_ms(decode_ms_value);
 
+    let is_animated = if !is_vector
+      && (resource.bytes.starts_with(b"GIF87a") || resource.bytes.starts_with(b"GIF89a"))
+    {
+      matches!(
+        Self::gif_is_animated(&resource.bytes),
+        GifAnimationProbe::Determined(true)
+      )
+    } else {
+      false
+    };
+
     let img_arc = Arc::new(CachedImage {
       image: Arc::new(img),
       orientation,
       resolution,
+      is_animated,
       has_alpha,
       is_vector,
       intrinsic_ratio,
@@ -9477,6 +9507,7 @@ impl ImageCache {
       image: Arc::new(img),
       orientation: None,
       resolution: None,
+      is_animated: false,
       has_alpha: true,
       is_vector: true,
       intrinsic_ratio,
@@ -11240,8 +11271,7 @@ impl ImageCache {
 
     check_root(RenderStage::Paint).map_err(Error::Render)?;
 
-    let icc_transform =
-      extract_webp_icc_profile(bytes).and_then(|icc| icc_transform_to_srgb(&icc));
+    let icc_transform = extract_webp_icc_profile(bytes).and_then(|icc| icc_transform_to_srgb(&icc));
 
     let mut width: c_int = 0;
     let mut height: c_int = 0;
@@ -12768,7 +12798,9 @@ mod tests_inline {
 
   #[test]
   fn url_looks_like_gif_detects_common_sources() {
-    assert!(url_looks_like_gif("data:image/gif;base64,R0lGODlhAQABAAAAACw="));
+    assert!(url_looks_like_gif(
+      "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+    ));
     assert!(url_looks_like_gif("file:///tmp/x.gif"));
     assert!(url_looks_like_gif("https://example.com/x.gif?query#frag"));
     assert!(!url_looks_like_gif("https://example.com/x.png"));
@@ -13640,6 +13672,32 @@ mod tests_inline {
       meta.is_animated,
       "expected GIF probe to detect multiple frames"
     );
+  }
+
+  #[test]
+  fn probe_after_load_detects_animated_gif() {
+    let mut bytes = Vec::new();
+    {
+      let red = RgbaImage::from_pixel(1, 1, ImageRgba([255, 0, 0, 255]));
+      let blue = RgbaImage::from_pixel(1, 1, ImageRgba([0, 0, 255, 255]));
+      let delay = Delay::from_numer_denom_ms(100, 1);
+
+      let mut encoder = GifEncoder::new(&mut bytes);
+      encoder
+        .encode_frame(Frame::from_parts(red, 0, 0, delay))
+        .expect("encode gif frame 0");
+      encoder
+        .encode_frame(Frame::from_parts(blue, 0, 0, delay))
+        .expect("encode gif frame 1");
+    }
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let url = format!("data:image/gif;base64,{encoded}");
+
+    let cache = ImageCache::new();
+    cache.load(&url).expect("load animated gif");
+    let meta = cache.probe(&url).expect("probe animated gif after load");
+    assert!(meta.is_animated);
   }
 
   #[test]
@@ -16456,6 +16514,7 @@ mod tests_inline {
       image: Arc::new(DynamicImage::ImageRgba8(RgbaImage::new(100, 200))),
       orientation: None,
       resolution: None,
+      is_animated: false,
       has_alpha: true,
       is_vector: false,
       intrinsic_ratio: None,
@@ -19368,12 +19427,12 @@ mod tests_inline {
 
     // Reference pixels sampled from Chrome (headless) output.
     for (x, y, expected) in [
-      (0, 0, [28, 62, 107, 255]),   // top-left
+      (0, 0, [28, 62, 107, 255]),     // top-left
       (30, 40, [207, 200, 174, 255]), // interior
-      (40, 30, [0, 1, 10, 255]),    // interior (dark)
-      (79, 0, [9, 41, 80, 255]),    // top-right
-      (0, 79, [0, 0, 2, 255]),      // bottom-left
-      (79, 79, [0, 0, 0, 255]),     // bottom-right
+      (40, 30, [0, 1, 10, 255]),      // interior (dark)
+      (79, 0, [9, 41, 80, 255]),      // top-right
+      (0, 79, [0, 0, 2, 255]),        // bottom-left
+      (79, 79, [0, 0, 0, 255]),       // bottom-right
     ] {
       assert_eq!(
         rgba.get_pixel(x, y).0,
