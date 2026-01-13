@@ -496,7 +496,11 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
       let Some(score) = score_suggestion(ctx, now, &suggestion, &tokens_lower) else {
         continue;
       };
-      scored.push(ScoredSuggestion { suggestion, score });
+      scored.push(ScoredSuggestion {
+        sort_key: suggestion_sort_key(&suggestion),
+        suggestion,
+        score,
+      });
     }
   }
 
@@ -518,6 +522,7 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
 
 #[derive(Debug)]
 struct ScoredSuggestion {
+  sort_key: SuggestionSortKey,
   suggestion: OmniboxSuggestion,
   score: i64,
 }
@@ -712,9 +717,7 @@ fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ord
 
   // Tertiary: prefer URL/title lexicographically for deterministic ordering (independent of
   // provider order).
-  let a_key = suggestion_sort_key(&a.suggestion);
-  let b_key = suggestion_sort_key(&b.suggestion);
-  a_key.cmp(&b_key)
+  a.sort_key.cmp(&b.sort_key)
 }
 
 fn suggestion_source_rank(source: OmniboxSuggestionSource) -> i64 {
