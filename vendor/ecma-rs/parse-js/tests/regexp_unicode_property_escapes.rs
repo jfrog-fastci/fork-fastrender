@@ -41,3 +41,11 @@ fn rejects_unclosed_body() {
   assert!(!parses_ecma(r"/\p{/u;"));
 }
 
+#[test]
+fn rejects_property_escape_as_range_endpoint_in_unicode_mode() {
+  // test262: built-ins/RegExp/property-escapes/character-class-range-*.js
+  assert!(!parses_ecma(r"/[\p{Hex}--]/u;"));
+  assert!(!parses_ecma(r"/[--\p{Hex}]/u;"));
+  assert!(!parses_ecma(r"/[\p{Hex}-\uFFFF]/u;"));
+  assert!(!parses_ecma(r"/[\uFFFF-\p{Hex}]/u;"));
+}
