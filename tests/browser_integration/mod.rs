@@ -84,6 +84,7 @@ mod ui_context_menu_preserves_text_selection;
 mod ui_context_menu_select_all_available;
 mod ui_context_menu_bookmarks;
 mod ui_context_menu_prevent_default;
+mod ui_context_menu_event_target_image_inside_link;
 mod ui_context_menu_image_srcset;
 mod ui_file_drop;
 mod ui_file_drop_label_for;

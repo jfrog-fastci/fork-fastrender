@@ -4223,8 +4223,8 @@ impl BrowserRuntime {
 
     struct HitContextMenuInfo {
       href: Option<String>,
-      target_id: Option<usize>,
-      target_element_id: Option<String>,
+      dispatch_target_id: Option<usize>,
+      dispatch_target_element_id: Option<String>,
       image_url: Option<String>,
       text_control_target: Option<usize>,
       text_control_disabled: bool,
@@ -4238,8 +4238,37 @@ impl BrowserRuntime {
           (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
         let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
         let hit = hit_test_dom(dom, box_tree, hit_tree, page_point);
-        let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
-        let target_element_id = target_id.and_then(|target_id| {
+        // `hit_test_dom` resolves `dom_node_id` to a *semantic* target (e.g. link ancestor). For JS
+        // `contextmenu` dispatch, we want the deepest element under the cursor so listeners on nested
+        // elements (like an `<img>` inside a link) fire correctly.
+        let dispatch_target_id = hit.as_ref().map(|hit| {
+          let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
+          let mut current = hit.styled_node_id;
+          // 1) Prefer the styled node if it is an element.
+          let mut found = dom_index
+            .node(current)
+            .is_some_and(|node| node.is_element())
+            .then_some(current);
+          // 2) Otherwise, climb ancestors until we find an element.
+          if found.is_none() {
+            while current != 0 {
+              current = dom_index.parent.get(current).copied().unwrap_or(0);
+              if current == 0 {
+                break;
+              }
+              if dom_index
+                .node(current)
+                .is_some_and(|node| node.is_element())
+              {
+                found = Some(current);
+                break;
+              }
+            }
+          }
+          // 3) Fallback to the semantic hit target (e.g. a link or form control).
+          found.unwrap_or(hit.dom_node_id)
+        });
+        let dispatch_target_element_id = dispatch_target_id.and_then(|target_id| {
           crate::dom::find_node_mut_by_preorder_id(dom, target_id)
             .and_then(|node| node.get_attribute_ref("id"))
             .map(|id| id.to_string())
@@ -4330,15 +4359,15 @@ impl BrowserRuntime {
         false,
         (
           changed,
-          HitContextMenuInfo {
-            href,
-            target_id,
-            target_element_id,
-            image_url,
-            text_control_target,
-            text_control_disabled,
-            text_control_readonly,
-          },
+            HitContextMenuInfo {
+              href,
+              dispatch_target_id,
+              dispatch_target_element_id,
+              image_url,
+              text_control_target,
+              text_control_disabled,
+              text_control_readonly,
+            },
         ),
       )
     }) {
@@ -4347,8 +4376,8 @@ impl BrowserRuntime {
         false,
         HitContextMenuInfo {
           href: None,
-          target_id: None,
-          target_element_id: None,
+          dispatch_target_id: None,
+          dispatch_target_element_id: None,
           image_url: None,
           text_control_target: None,
           text_control_disabled: false,
@@ -4373,10 +4402,10 @@ impl BrowserRuntime {
     // If JS calls `preventDefault()`, report `default_prevented=true` so UIs can suppress the
     // default menu (matching browser behavior) while still clearing any pending context-menu state.
     let mut default_prevented = false;
-    if let Some(target_id) = hit_info.target_id {
+    if let Some(target_id) = hit_info.dispatch_target_id {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let target =
-          js_dom_node_for_preorder_id(js_tab, target_id, hit_info.target_element_id.as_deref());
+          js_dom_node_for_preorder_id(js_tab, target_id, hit_info.dispatch_target_element_id.as_deref());
         if let Some(node_id) = target {
           let mouse = web_events::MouseEvent {
             client_x: mouse_client_coord(pos_css.0),
