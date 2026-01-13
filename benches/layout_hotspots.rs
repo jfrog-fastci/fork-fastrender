@@ -7,6 +7,7 @@
 //! that has historically been performance sensitive:
 //! - Flex item measurement (Taffy measure callback)
 //! - Block intrinsic sizing (min/max-content width)
+//! - Grid track sizing + intrinsic measurement fanout (Taffy grid measure callback)
 //! - Table cell intrinsic sizing + column width distribution
 
 use std::sync::Arc;
@@ -22,7 +23,9 @@ use fastrender::layout::taffy_integration::{
 };
 use fastrender::style::display::Display;
 use fastrender::style::float::Float;
-use fastrender::style::types::{BorderCollapse, BorderStyle, FlexWrap, TableLayout, TextWrap, WhiteSpace};
+use fastrender::style::types::{
+  BorderCollapse, BorderStyle, FlexWrap, GridTrack, TableLayout, TextWrap, WhiteSpace,
+};
 use fastrender::style::values::Length;
 use fastrender::{
   BoxNode, BoxTree, ComputedStyle, FormattingContext, FormattingContextFactory,
@@ -85,6 +88,57 @@ fn build_flex_measure_tree(item_count: usize) -> BoxTree {
   }
 
   let root = BoxNode::new_block(flex_style, FormattingContextType::Flex, children);
+  BoxTree::new(root)
+}
+
+fn build_grid_track_sizing_measure_tree(item_count: usize) -> BoxTree {
+  // Regression protected:
+  // - Grid track sizing can become dominated by intrinsic measurement of grid items (Taffy invoking
+  //   the measure callback repeatedly for min/max-content probes). This tree is constructed to
+  //   force auto minimum track sizing (`1fr` -> `minmax(auto, 1fr)`) across many text-heavy items.
+  const TEXT: &str =
+    "supercalifragilisticexpialidocious lorem ipsum dolor sit amet consectetur adipiscing elit";
+
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  // A definite inline size keeps the benchmark focused on track sizing rather than container sizing.
+  grid_style.width = Some(Length::px(420.0));
+  // `repeat(12, 1fr)` (min track sizing defaults to `auto`, which triggers intrinsic sizing).
+  grid_style.grid_template_columns = vec![GridTrack::Fr(1.0); 12];
+  // Keep the block axis simple so we mainly exercise column sizing.
+  grid_style.grid_auto_rows = vec![GridTrack::Length(Length::px(10.0))].into();
+  let grid_style = Arc::new(grid_style);
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  item_style.padding_left = Length::px(2.0);
+  item_style.padding_right = Length::px(2.0);
+  let item_style = Arc::new(item_style);
+
+  let mut inline_style = ComputedStyle::default();
+  inline_style.display = Display::Block;
+  let inline_style = Arc::new(inline_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.display = Display::Inline;
+  let text_style = Arc::new(text_style);
+
+  let mut children = Vec::with_capacity(item_count);
+  for idx in 0..item_count {
+    let text = BoxNode::new_text(text_style.clone(), format!("cell-{idx} {TEXT} {TEXT}"));
+    let inline = BoxNode::new_block(
+      inline_style.clone(),
+      FormattingContextType::Inline,
+      vec![text],
+    );
+    children.push(BoxNode::new_block(
+      item_style.clone(),
+      FormattingContextType::Block,
+      vec![inline],
+    ));
+  }
+
+  let root = BoxNode::new_block(grid_style, FormattingContextType::Grid, children);
   BoxTree::new(root)
 }
 
@@ -341,7 +395,11 @@ fn build_float_shrink_to_fit_tree(float_count: usize) -> BoxTree {
   let mut children = Vec::with_capacity(float_count);
   for idx in 0..float_count {
     let text = BoxNode::new_text(text_style.clone(), format!("float-{idx} {FLOAT_TEXT}"));
-    let mut float = BoxNode::new_block(float_style.clone(), FormattingContextType::Block, vec![text]);
+    let mut float = BoxNode::new_block(
+      float_style.clone(),
+      FormattingContextType::Block,
+      vec![text],
+    );
     // Use stable, non-zero ids so intrinsic sizing can be cached.
     float.id = 10_000 + idx;
     children.push(float);
@@ -429,7 +487,9 @@ fn bench_float_shrink_to_fit_intrinsic_cache_reuse(c: &mut Criterion) {
   {
     let stats_engine = LayoutEngine::new(LayoutConfig::for_viewport(viewport));
     let before = stats_engine.stats();
-    let _ = bfc.layout(&tree.root, &constraints).expect("layout should succeed");
+    let _ = bfc
+      .layout(&tree.root, &constraints)
+      .expect("layout should succeed");
     let after = stats_engine.stats();
     let delta_hits = after.cache_hits.saturating_sub(before.cache_hits);
     let delta_misses = after.cache_misses.saturating_sub(before.cache_misses);
@@ -439,7 +499,10 @@ fn bench_float_shrink_to_fit_intrinsic_cache_reuse(c: &mut Criterion) {
     } else {
       0.0
     };
-    assert!(delta_hits > 0, "expected intrinsic cache hits from cached float sizing");
+    assert!(
+      delta_hits > 0,
+      "expected intrinsic cache hits from cached float sizing"
+    );
     eprintln!(
       "layout_hotspots float_shrink_to_fit_cached: intrinsic_cache lookups={} hits={} misses={} hit_rate={:.2}%",
       delta_lookups, delta_hits, delta_misses, hit_rate
@@ -629,6 +692,61 @@ fn bench_table_cell_intrinsic_and_distribution(c: &mut Criterion) {
   group.finish();
 }
 
+fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  let viewport = Size::new(800.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+  let engine = LayoutEngine::with_font_context(
+    LayoutConfig::for_viewport(viewport).with_parallelism(LayoutParallelism::disabled()),
+    font_ctx,
+  );
+
+  // 256 grid items * ~3 nodes/item ~= 769 nodes total.
+  let box_tree = build_grid_track_sizing_measure_tree(256);
+
+  // Document the workload once (and assert we are actually exercising grid measurement).
+  {
+    let _taffy_usage_guard = enable_taffy_counters(true);
+    reset_taffy_counters();
+    let _taffy_perf_guard = TaffyPerfCountersGuard::new();
+    let _ = engine
+      .layout_tree(black_box(&box_tree))
+      .expect("grid layout should succeed");
+    let perf = taffy_perf_counters();
+    let usage = taffy_counters();
+    assert!(perf.grid_measure_calls > 0);
+    eprintln!(
+      "layout_hotspots grid_track_sizing: taffy_grid_measure_calls={} taffy_grid_compute_cpu_ms={:.2} taffy_nodes_built={} taffy_nodes_reused={}",
+      perf.grid_measure_calls,
+      perf.grid_compute_ns as f64 / 1_000_000.0,
+      usage.grid_nodes_built,
+      usage.grid_nodes_reused,
+    );
+  }
+
+  // Enable counters for the benchmark body. (We reset them per-iteration below.)
+  let _taffy_usage_guard = enable_taffy_counters(true);
+
+  let mut group = c.benchmark_group("layout_hotspots_grid_track_sizing");
+  group.bench_function("grid_track_sizing_measure_fanout", |b| {
+    b.iter(|| {
+      reset_taffy_counters();
+      let _taffy_perf_guard = TaffyPerfCountersGuard::new();
+      let fragments = engine
+        .layout_tree(black_box(&box_tree))
+        .expect("grid layout should succeed");
+      let perf = taffy_perf_counters();
+      let usage = taffy_counters();
+      black_box(fragments);
+      // Keep the counters live so compiler/LTO cannot elide the instrumentation path.
+      black_box(perf.grid_measure_calls);
+      black_box(perf.grid_compute_ns);
+      black_box((usage.grid_nodes_built, usage.grid_nodes_reused));
+    })
+  });
+  group.finish();
+}
+
 fn bench_inline_layout_cache(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(480.0, 600.0);
@@ -678,6 +796,7 @@ criterion_group!(
   config = micro_criterion();
   targets =
     bench_flex_measure_hot_path,
+    bench_grid_track_sizing_measure_fanout,
     bench_float_shrink_to_fit_intrinsic_cache_reuse,
     bench_block_intrinsic_sizing,
     bench_block_intrinsic_sizing_nowrap,
