@@ -43,6 +43,7 @@ pub mod worker_wake;
 pub mod global_history;
 pub mod history;
 pub mod history_timestamp;
+pub mod history_url_validation;
 pub mod visited;
 pub mod omnibox;
 pub mod omnibox_nav;
