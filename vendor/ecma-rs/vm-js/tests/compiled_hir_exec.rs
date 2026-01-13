@@ -11323,6 +11323,30 @@ fn compiled_var_decl_object_destructuring_default() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_var_decl_array_destructuring_default() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f(){ let [a=1] = []; return a; }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_var_decl_object_destructuring_alias_executes() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f(){ let {x, y: z} = ({x: 1, y: 2}); return x + z; }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_var_decl_array_destructuring_elision() -> Result<(), VmError> {
   let result = compile_and_call0(
     r#"
