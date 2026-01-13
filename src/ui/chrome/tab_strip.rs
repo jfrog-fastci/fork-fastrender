@@ -2219,6 +2219,11 @@ pub(super) fn tab_strip_ui(
               if (next - prev).abs() > 0.01 {
                 scroll_state.offset.x = next;
                 scroll_state.store(ui.ctx(), scroll_state_id);
+                // Keep our "desired scroll" state in sync with programmatic scrolling so the
+                // clamp-animation logic (used when content shrinks) sees the updated offset.
+                unpinned_ui
+                  .ctx()
+                  .data_mut(|d| d.insert_temp(desired_scroll_id, next));
                 ui.ctx().request_repaint();
               }
             }
