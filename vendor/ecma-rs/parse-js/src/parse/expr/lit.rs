@@ -1720,6 +1720,30 @@ fn validate_regex_pattern(
             value = (value << 4) + regex_hex_value(bytes[j]).unwrap();
             j += 1;
           }
+          // In UnicodeMode, a `\u` escape that yields a leading surrogate may be followed by
+          // another `\u` escape yielding a trailing surrogate; treat the pair as a single
+          // code point (e.g. `\uD83D\uDE00` → U+1F600).
+          if (0xD800..=0xDBFF).contains(&value)
+            && j + 6 <= bytes.len()
+            && bytes[j] == b'\\'
+            && bytes[j + 1] == b'u'
+          {
+            let mut k = j + 2;
+            let mut low: u32 = 0;
+            let mut ok = true;
+            for _ in 0..4 {
+              let Some(digit) = regex_hex_value(bytes[k]) else {
+                ok = false;
+                break;
+              };
+              low = (low << 4) | digit;
+              k += 1;
+            }
+            if ok && (0xDC00..=0xDFFF).contains(&low) {
+              value = 0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00);
+              j = k;
+            }
+          }
           return Ok((j, Some(value), false));
         }
         if esc == 'x' {
@@ -2231,6 +2255,29 @@ fn validate_regex_pattern(
           };
           value = (value << 4) | digit;
           j += 1;
+        }
+        // In UnicodeMode, a `\u` escape that yields a leading surrogate may be followed by another
+        // `\u` escape yielding a trailing surrogate; treat the pair as a single code point.
+        if (0xD800..=0xDBFF).contains(&value)
+          && j + 6 <= bytes.len()
+          && bytes[j] == b'\\'
+          && bytes[j + 1] == b'u'
+        {
+          let mut k = j + 2;
+          let mut low: u32 = 0;
+          let mut ok = true;
+          for _ in 0..4 {
+            let Some(digit) = regex_hex_value(bytes[k]) else {
+              ok = false;
+              break;
+            };
+            low = (low << 4) | digit;
+            k += 1;
+          }
+          if ok && (0xDC00..=0xDFFF).contains(&low) {
+            value = 0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00);
+            j = k;
+          }
         }
         return Ok((j, RegexClassAtom::Single(value)));
       }
@@ -3361,6 +3408,15 @@ mod regex_validation_tests {
     assert_valid(r"/^[[0-9]\p{ASCII_Hex_Digit}]+$/v");
     assert_valid(r"/^[\p{ASCII_Hex_Digit}--[0-9]]+$/v");
     assert_valid(r"/^[[0-9]&&\p{ASCII_Hex_Digit}]+$/v");
+  }
+
+  #[test]
+  fn unicode_sets_mode_accepts_surrogate_pair_operands_and_ranges() {
+    // In UnicodeMode (`u`/`v`), surrogate pairs expressed as consecutive `\uXXXX` escapes form a
+    // single character. This matters for set-operator grammar and class range validation.
+    assert_valid(r"/[\uD83D\uDE00&&a]/v");
+    assert_valid(r"/[\uD83D\uDE00--a]/v");
+    assert_valid(r"/[\uD83D\uDE00-\uD83D\uDE01]/v");
   }
 
   #[test]

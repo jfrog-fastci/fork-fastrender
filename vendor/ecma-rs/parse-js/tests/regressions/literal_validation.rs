@@ -127,6 +127,17 @@ fn unicode_sets_mode_rejects_out_of_order_character_class_ranges() {
 }
 
 #[test]
+fn unicode_mode_accepts_surrogate_pair_character_class_ranges() {
+  // In UnicodeMode, surrogate pairs expressed via consecutive `\uXXXX` escapes form a single
+  // character and can be used as range endpoints.
+  parse(r"/[\uD83D\uDE00-\uD83D\uDE01]/u").unwrap();
+  parse(r"/[\uD83D\uDE00-\uD83D\uDE01]/v").unwrap();
+
+  // Non-UnicodeMode still treats them as separate code units and rejects the range (out of order).
+  assert!(parse(r"/[\uD83D\uDE00-\uD83D\uDE01]/").is_err());
+}
+
+#[test]
 fn regex_unterminated_named_backreference_is_rejected() {
   let err = parse("/\\k</u").unwrap_err();
   assert_eq!(
