@@ -1203,11 +1203,15 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     self.collect_bound_names_from_pat_budgeted(&pat_decl.stx.pat, &mut bound_names)?;
 
     // Duplicate bound name early error (ECMA-262 `IsSimpleParameterList`-style validation).
-    let mut seen = HashSet::<String>::new();
+    let mut seen = HashSet::<&str>::new();
     for (name, loc) in &bound_names {
-      if !seen.insert(name.clone()) {
+      let name_str = name.as_str();
+      if seen.contains(name_str) {
         self.push_error(*loc, "Identifier has already been declared")?;
+        continue;
       }
+      seen.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      seen.insert(name_str);
     }
 
     // In non-strict mode, the binding name "let" is disallowed in ForDeclarations.
@@ -1244,7 +1248,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     self.step()?;
     match &*pat.stx {
       Pat::Id(id) => {
-        out.push((id.stx.name.clone(), pat.loc));
+        out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        out.push((try_clone_string(&id.stx.name)?, pat.loc));
         Ok(())
       }
       Pat::Obj(obj) => {
