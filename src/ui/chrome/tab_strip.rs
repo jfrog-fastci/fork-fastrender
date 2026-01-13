@@ -61,6 +61,45 @@ impl Default for TabStripScrollClampAnim {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabStripItemKey {
+  GroupChip(TabGroupId),
+  Tab(TabId),
+}
+
+#[derive(Debug, Clone)]
+struct TabStripLayoutSnapshot {
+  pinned_tabs: Vec<TabId>,
+  unpinned_items: Vec<TabStripItemKey>,
+  tab_rects: HashMap<TabId, Rect>,
+  unpinned_tab_width: f32,
+  scroll_offset_x: f32,
+  pinned_count: usize,
+  unpinned_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabPinAnimKind {
+  Pin,
+  Unpin,
+}
+
+#[derive(Debug, Clone)]
+struct TabPinAnim {
+  tab_id: TabId,
+  kind: TabPinAnimKind,
+  start_time: f64,
+  duration: f32,
+  from_rect: Rect,
+  // For the source segment (where the tab is being removed), this is the insertion index at which
+  // we add a shrinking placeholder to preserve old→new reflow.
+  source_index: usize,
+  // Snapshot of layout parameters from the frame before the pin/unpin state change.
+  from_pinned_count: usize,
+  from_unpinned_count: usize,
+  from_unpinned_tab_width: f32,
+}
+
 // Tab-strip drag auto-scroll parameters (when the unpinned segment overflows).
 const DRAG_AUTOSCROLL_EDGE_ZONE_PX: f32 = 36.0;
 const DRAG_AUTOSCROLL_MAX_SPEED_PX_PER_S: f32 = 1200.0;
@@ -255,6 +294,23 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 fn ease_out_quad(t: f32) -> f32 {
   let t = t.clamp(0.0, 1.0);
   1.0 - (1.0 - t) * (1.0 - t)
+}
+
+fn lerp_pos(a: Pos2, b: Pos2, t: f32) -> Pos2 {
+  Pos2::new(lerp(a.x, b.x, t), lerp(a.y, b.y, t))
+}
+
+fn lerp_rect(a: Rect, b: Rect, t: f32) -> Rect {
+  Rect::from_min_max(lerp_pos(a.min, b.min, t), lerp_pos(a.max, b.max, t))
+}
+
+fn ease_in_out_cubic(t: f32) -> f32 {
+  let t = t.clamp(0.0, 1.0);
+  if t < 0.5 {
+    4.0 * t * t * t
+  } else {
+    1.0 - (-2.0 * t + 2.0).powf(3.0) * 0.5
+  }
 }
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
@@ -590,6 +646,98 @@ fn pinned_tab_preview_ui(
     motion.durations.progress_fade,
   );
   paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t, warn_t);
+}
+
+fn paint_tab_pin_ghost(
+  ui: &egui::Ui,
+  motion: UiMotion,
+  tab: &BrowserTabState,
+  rect: Rect,
+  favicon_tex: Option<egui::TextureId>,
+  is_active: bool,
+  kind: TabPinAnimKind,
+  t: f32,
+) {
+  if rect.width() <= 0.0 || rect.height() <= 0.0 {
+    return;
+  }
+
+  let visuals = ui.style().visuals.clone();
+  let bg = if is_active {
+    visuals.widgets.active.bg_fill
+  } else {
+    visuals.widgets.inactive.bg_fill
+  };
+  let rounding = visuals.widgets.inactive.rounding;
+  let painter = ui.painter().with_clip_rect(rect);
+  painter.rect_filled(rect, rounding, bg);
+
+  // Let the favicon migrate from "unpinned" (left aligned) → "pinned" (centered) as the tab
+  // transitions, so the motion feels like a single morph rather than a hard style swap.
+  let icon_t = match kind {
+    TabPinAnimKind::Pin => t,
+    TabPinAnimKind::Unpin => 1.0 - t,
+  };
+  let unpinned_center_x = rect.min.x + TAB_PADDING_X + ICON_SIZE * 0.5;
+  let pinned_center_x = rect.center().x;
+  let icon_center_x = lerp(unpinned_center_x, pinned_center_x, icon_t);
+  let icon_center = Pos2::new(icon_center_x, rect.center().y);
+  let icon_rect = Rect::from_center_size(icon_center, Vec2::splat(ICON_SIZE));
+
+  if let Some(tex_id) = favicon_tex {
+    let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
+    painter.image(tex_id, icon_rect, uv, Color32::WHITE);
+  } else {
+    placeholder_favicon(&painter, icon_rect, &visuals);
+    let title = tab.display_title();
+    let glyph = title
+      .trim()
+      .chars()
+      .next()
+      .map(|ch| ch.to_ascii_uppercase().to_string())
+      .unwrap_or_else(|| "?".to_string());
+    painter.text(
+      icon_rect.center(),
+      Align2::CENTER_CENTER,
+      glyph,
+      FontId::proportional(12.0),
+      with_alpha(visuals.text_color(), 0.75),
+    );
+  }
+
+  if tab.loading {
+    let time = if motion.enabled {
+      ui.ctx().request_repaint();
+      ui.input(|i| i.time)
+    } else {
+      0.0
+    };
+    paint_spinner(&painter, icon_rect.expand(2.0), time, visuals.text_color());
+  }
+
+  let (err, warn) = tab_status_messages(tab);
+  paint_tab_status_badges(
+    &painter,
+    icon_rect,
+    &visuals,
+    if err.is_some() { 1.0 } else { 0.0 },
+    if warn.is_some() { 1.0 } else { 0.0 },
+  );
+
+  // Title (clipped). We intentionally omit the close button so the moving tab doesn't invite
+  // interaction mid-flight.
+  let title = tab.display_title();
+  let title_start_x = rect.min.x + TAB_PADDING_X + ICON_SIZE + ICON_GAP;
+  if rect.width() > PINNED_TAB_WIDTH + 16.0 && title_start_x < rect.max.x - 4.0 {
+    let font_id = egui::TextStyle::Button.resolve(ui.style());
+    painter.text(
+      Pos2::new(title_start_x, rect.center().y),
+      Align2::LEFT_CENTER,
+      title,
+      font_id,
+      visuals.text_color(),
+    );
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1551,23 +1699,146 @@ pub(super) fn tab_strip_ui(
   ui.ctx()
     .data_mut(|d| d.insert_temp(last_active_id_key, active_id));
 
+  let ctx = ui.ctx();
+  let motion_enabled = motion.enabled && ctx.style().animation_time > 0.0;
+  let now = ui.input(|i| i.time);
+
+  let snapshot_key = ui.make_persistent_id("tab_strip_layout_snapshot");
+  let anim_key = ui.make_persistent_id("tab_strip_pin_anim");
+
+  let prev_snapshot = ctx
+    .data(|d| d.get_temp::<Option<TabStripLayoutSnapshot>>(snapshot_key))
+    .unwrap_or(None);
+  let mut pin_anim = ctx
+    .data(|d| d.get_temp::<Option<TabPinAnim>>(anim_key))
+    .unwrap_or(None);
+
+  // If animations are disabled or the tab disappeared, snap to the new state.
+  if !motion_enabled {
+    pin_anim = None;
+  } else if let Some(anim) = &pin_anim {
+    if app.tab(anim.tab_id).is_none() {
+      pin_anim = None;
+    }
+  }
+
+  // Detect pin/unpin transitions by diffing against the previous frame's layout snapshot.
+  if pin_anim.is_none() && motion_enabled {
+    if let Some(prev) = prev_snapshot.as_ref() {
+      let mut changed: Option<(TabId, bool, bool)> = None;
+      let mut changed_count = 0usize;
+      for tab in &app.tabs {
+        let was_pinned = prev.pinned_tabs.iter().any(|id| *id == tab.id);
+        if was_pinned != tab.pinned {
+          changed_count += 1;
+          changed = Some((tab.id, was_pinned, tab.pinned));
+        }
+      }
+
+      if changed_count == 1 {
+        if let Some((tab_id, _was_pinned, now_pinned)) = changed {
+          if let Some(from_rect) = prev.tab_rects.get(&tab_id).copied() {
+            let kind = if now_pinned {
+              TabPinAnimKind::Pin
+            } else {
+              TabPinAnimKind::Unpin
+            };
+            let source_index = match kind {
+              TabPinAnimKind::Pin => prev.unpinned_items.iter().position(|item| match item {
+                TabStripItemKey::Tab(id) => *id == tab_id,
+                _ => false,
+              }),
+              TabPinAnimKind::Unpin => prev.pinned_tabs.iter().position(|id| *id == tab_id),
+            };
+
+            if let Some(source_index) = source_index {
+              pin_anim = Some(TabPinAnim {
+                tab_id,
+                kind,
+                start_time: now,
+                duration: motion.durations.tab_pin,
+                from_rect,
+                source_index,
+                from_pinned_count: prev.pinned_count,
+                from_unpinned_count: prev.unpinned_count,
+                from_unpinned_tab_width: prev.unpinned_tab_width,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  let mut pin_t_raw: f32 = 1.0;
+  let mut pin_t: f32 = 1.0;
+  if let Some(anim) = &pin_anim {
+    let dur = anim.duration;
+    if motion_enabled && dur > 0.0 {
+      let elapsed = (now - anim.start_time).max(0.0) as f32;
+      pin_t_raw = (elapsed / dur).clamp(0.0, 1.0);
+      pin_t = ease_in_out_cubic(pin_t_raw);
+      if pin_t_raw < 1.0 {
+        ctx.request_repaint();
+      }
+    }
+  }
+  let pin_anim_render = pin_anim.as_ref().filter(|_| pin_t_raw < 1.0);
+
   let pinned_content_width = if pinned_count == 0 {
     0.0
   } else {
     (pinned_count as f32) * PINNED_TAB_WIDTH + (pinned_count.saturating_sub(1) as f32) * TAB_GAP
   };
-  let (pinned_viewport_width, reserved_unpinned_viewport_width) = compute_pinned_viewport_width(
-    tabs_viewport_width,
-    pinned_content_width,
-    unpinned_count > 0,
-  );
+  let (pinned_viewport_width_final, reserved_unpinned_viewport_width_final) =
+    compute_pinned_viewport_width(
+      tabs_viewport_width,
+      pinned_content_width,
+      unpinned_count > 0,
+    );
   // `compute_pinned_viewport_width` may drop the inter-segment gap under very narrow widths. Infer
   // the effective gap from the remaining space.
-  let segment_gap = if pinned_count > 0 && unpinned_count > 0 {
-    (tabs_viewport_width - pinned_viewport_width - reserved_unpinned_viewport_width).max(0.0)
+  let segment_gap_final = if pinned_count > 0 && unpinned_count > 0 {
+    (tabs_viewport_width - pinned_viewport_width_final - reserved_unpinned_viewport_width_final)
+      .max(0.0)
   } else {
     0.0
   };
+
+  let final_pinned_viewport_max_x =
+    (tabs_rect.min.x + pinned_viewport_width_final).min(tabs_rect.max.x);
+  let final_unpinned_viewport_min_x =
+    (final_pinned_viewport_max_x + segment_gap_final).min(tabs_rect.max.x);
+  let final_unpinned_viewport_width = (tabs_rect.max.x - final_unpinned_viewport_min_x).max(0.0);
+
+  let mut pinned_viewport_width = pinned_viewport_width_final;
+  let mut segment_gap = segment_gap_final;
+  if let Some(anim) = &pin_anim {
+    let from_pinned_content_width = if anim.from_pinned_count == 0 {
+      0.0
+    } else {
+      (anim.from_pinned_count as f32) * PINNED_TAB_WIDTH
+        + (anim.from_pinned_count.saturating_sub(1) as f32) * TAB_GAP
+    };
+    let (from_pinned_viewport_width, from_reserved_unpinned_viewport_width) =
+      compute_pinned_viewport_width(
+        tabs_viewport_width,
+        from_pinned_content_width,
+        anim.from_unpinned_count > 0,
+      );
+    let from_segment_gap = if anim.from_pinned_count > 0 && anim.from_unpinned_count > 0 {
+      (tabs_viewport_width - from_pinned_viewport_width - from_reserved_unpinned_viewport_width)
+        .max(0.0)
+    } else {
+      0.0
+    };
+    pinned_viewport_width = lerp(
+      from_pinned_viewport_width,
+      pinned_viewport_width_final,
+      pin_t,
+    );
+    segment_gap = lerp(from_segment_gap, segment_gap_final, pin_t);
+  }
 
   let pinned_viewport_max_x = (tabs_rect.min.x + pinned_viewport_width).min(tabs_rect.max.x);
   let pinned_viewport_rect = Rect::from_min_max(
@@ -1694,12 +1965,26 @@ pub(super) fn tab_strip_ui(
       idx += 1;
     }
   }
-  let sizing = compute_tab_strip_sizing_with_scaled_tabs(
-    unpinned_viewport_width,
+  let sizing_target = compute_tab_strip_sizing_with_scaled_tabs(
+    final_unpinned_viewport_width,
     tab_units,
     group_chip_total_width,
     total_gap_width,
   );
+
+  // Animate the shared unpinned tab width so the strip doesn't "jump" when the unpinned count
+  // changes due to pinning/unpinning.
+  let sizing = if let Some(anim) = &pin_anim {
+    let tab_width = lerp(anim.from_unpinned_tab_width, sizing_target.tab_width, pin_t);
+    let total_content_width = tab_width * tab_units + group_chip_total_width + total_gap_width;
+    TabStripSizing {
+      tab_width,
+      overflow: sizing_target.overflow,
+      total_content_width,
+    }
+  } else {
+    sizing_target
+  };
 
   let mut ops: Vec<TabStripOp> = Vec::new();
 
@@ -1718,9 +2003,15 @@ pub(super) fn tab_strip_ui(
   let mut scroll_offset_x: f32 = 0.0;
   let mut unpinned_max_scroll_x: f32 = 0.0;
   let mut unpinned_scroll_viewport_rect: Option<Rect> = None;
+  let mut layout_rects: HashMap<TabId, Rect> = HashMap::new();
+  let mut unpinned_items_for_snapshot: Vec<TabStripItemKey> = Vec::new();
+  let mut ghost_dest_anchor_rect: Option<Rect> = None;
 
   if tabs_viewport_width > 0.0 {
-    if pinned_count > 0 && pinned_viewport_rect.width() > 0.0 {
+    if pinned_viewport_rect.width() > 0.0
+      || pin_anim_render.is_some_and(|anim| anim.kind == TabPinAnimKind::Pin)
+      || pin_anim_render.is_some_and(|anim| anim.kind == TabPinAnimKind::Unpin)
+    {
       let mut pinned_ui = ui.child_ui(
         pinned_viewport_rect,
         egui::Layout::left_to_right(egui::Align::Center),
@@ -1749,12 +2040,98 @@ pub(super) fn tab_strip_ui(
         .auto_shrink([false, true])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(&mut pinned_ui, |ui| {
-          ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
+          // We apply gaps manually so we can animate pin/unpin placeholder gaps without leaving
+          // behind fixed `TAB_GAP` spacers.
+          ui.spacing_mut().item_spacing = Vec2::ZERO;
           ui.horizontal(|ui| {
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            enum GapKind {
+              Normal,
+              SourcePlaceholder,
+              DestPlaceholder,
+            }
+
+            let mut prev_kind: Option<GapKind> = None;
+            let gap_before =
+              |prev: GapKind, current: GapKind, current_is_last_source: bool| -> f32 {
+                let mut gap = TAB_GAP;
+                if let Some(anim) = pin_anim_render {
+                  match anim.kind {
+                    TabPinAnimKind::Pin => {
+                      // Pinned dest placeholder: grow the gap before it so the pinned segment doesn't
+                      // jump when the item is inserted.
+                      if current == GapKind::DestPlaceholder {
+                        gap = TAB_GAP * pin_t;
+                      }
+                    }
+                    TabPinAnimKind::Unpin => {
+                      // Source placeholder: collapse one adjacent gap so removing the tab doesn't
+                      // leave behind an extra `TAB_GAP`.
+                      if prev == GapKind::SourcePlaceholder {
+                        gap = TAB_GAP * (1.0 - pin_t);
+                      } else if current == GapKind::SourcePlaceholder && current_is_last_source {
+                        gap = TAB_GAP * (1.0 - pin_t);
+                      }
+                    }
+                  }
+                }
+                gap
+              };
+
             let (tabs, chrome) = (&app.tabs, &mut app.chrome);
+            let mut inserted_source_placeholder = false;
+            let source_placeholder_index = pin_anim_render
+              .filter(|anim| anim.kind == TabPinAnimKind::Unpin)
+              .map(|anim| anim.source_index);
+
             for idx in 0..pinned_count {
+              if let Some(source_idx) = source_placeholder_index {
+                if !inserted_source_placeholder && idx == source_idx {
+                  if let Some(prev) = prev_kind {
+                    ui.add_space(gap_before(prev, GapKind::SourcePlaceholder, false));
+                  }
+                  let w = PINNED_TAB_WIDTH * (1.0 - pin_t);
+                  let (_, rect) = ui.allocate_space(Vec2::new(w, TAB_HEIGHT));
+                  #[cfg(test)]
+                  tab_rects_for_test.push(rect);
+                  prev_kind = Some(GapKind::SourcePlaceholder);
+                  inserted_source_placeholder = true;
+                }
+              }
+
               let tab = &tabs[idx];
               let tab_id = tab.id;
+
+              // Pinning: the tab is already in the pinned segment (at its final position). Replace
+              // it with a growing placeholder and draw the real tab as a moving ghost above the
+              // strip.
+              if pin_anim_render
+                .is_some_and(|anim| anim.kind == TabPinAnimKind::Pin && anim.tab_id == tab_id)
+              {
+                if let Some(prev) = prev_kind {
+                  ui.add_space(gap_before(prev, GapKind::DestPlaceholder, false));
+                }
+                let w = PINNED_TAB_WIDTH * pin_t;
+                let (_, rect) = ui.allocate_space(Vec2::new(w, TAB_HEIGHT));
+                ghost_dest_anchor_rect = Some(Rect::from_min_size(
+                  rect.min,
+                  Vec2::new(PINNED_TAB_WIDTH, TAB_HEIGHT),
+                ));
+                let placeholder_id = ui.make_persistent_id(("tab_strip_pin_placeholder", tab_id));
+                let resp = ui.interact(rect, placeholder_id, Sense::hover());
+                if !ui.is_rect_visible(rect) {
+                  resp.scroll_to_me(Some(egui::Align::Center));
+                }
+                #[cfg(test)]
+                tab_rects_for_test.push(rect);
+                prev_kind = Some(GapKind::DestPlaceholder);
+                continue;
+              }
+
+              if let Some(prev) = prev_kind {
+                ui.add_space(gap_before(prev, GapKind::Normal, false));
+              }
+
               let is_active = active_id == Some(tab_id);
               let favicon_tex = favicon_for_tab(tab_id);
               let is_dragged = chrome.dragging_tab_id == Some(tab_id);
@@ -1775,6 +2152,9 @@ pub(super) fn tab_strip_ui(
                 );
                 (rect, Some(resp), action)
               };
+
+              layout_rects.insert(tab_id, tab_rect);
+
               if is_active {
                 active_tab_rect = Some(tab_rect);
                 active_tab_is_pinned = true;
@@ -1787,6 +2167,7 @@ pub(super) fn tab_strip_ui(
               #[cfg(test)]
               tab_rects_for_test.push(tab_rect);
               pinned_tab_rects_for_drag.push((tab_id, tab_rect));
+
               let is_close_action = maybe_action
                 .as_ref()
                 .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
@@ -1805,6 +2186,21 @@ pub(super) fn tab_strip_ui(
               }
               if let Some(action) = maybe_action {
                 actions.push(action);
+              }
+
+              prev_kind = Some(GapKind::Normal);
+            }
+
+            // Placeholder at end (unpinning the last pinned tab).
+            if let Some(source_idx) = source_placeholder_index {
+              if !inserted_source_placeholder && source_idx >= pinned_count {
+                if let Some(prev) = prev_kind {
+                  ui.add_space(gap_before(prev, GapKind::SourcePlaceholder, true));
+                }
+                let w = PINNED_TAB_WIDTH * (1.0 - pin_t);
+                let (_, rect) = ui.allocate_space(Vec2::new(w, TAB_HEIGHT));
+                #[cfg(test)]
+                tab_rects_for_test.push(rect);
               }
             }
           });
@@ -1845,7 +2241,10 @@ pub(super) fn tab_strip_ui(
       }
     }
 
-    if unpinned_count > 0 && unpinned_viewport_rect.width() > 0.0 {
+    if unpinned_count > 0
+      || pin_anim_render.is_some_and(|anim| anim.kind == TabPinAnimKind::Pin)
+      || pin_anim_render.is_some_and(|anim| anim.kind == TabPinAnimKind::Unpin)
+    {
       let mut unpinned_ui = ui.child_ui(
         unpinned_viewport_rect,
         egui::Layout::left_to_right(egui::Align::Center),
@@ -1974,35 +2373,128 @@ pub(super) fn tab_strip_ui(
           // spacers.
           ui.spacing_mut().item_spacing = Vec2::ZERO;
           ui.horizontal(|ui| {
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            enum GapKind {
+              Normal,
+              SourcePlaceholder,
+              DestPlaceholder,
+            }
+
             let mut idx = pinned_len;
             let mut first_item = true;
+            let mut prev_kind: GapKind = GapKind::Normal;
+
             // Gap scaling is driven by the *previous* item: gaps after group-member tabs shrink
             // with the group, while gaps after chips/normal tabs remain full. This avoids a
             // chip→next-item "pop" at the end of collapse while still shrinking intra-group gaps.
             let mut prev_gap_scale: Option<f32> = None;
 
-            let mut add_gap =
-              |ui: &mut egui::Ui, first_item: &mut bool, prev_gap_scale: Option<f32>| {
-                if *first_item {
-                  *first_item = false;
-                  return;
+            let mut add_gap = |ui: &mut egui::Ui,
+                               first_item: &mut bool,
+                               prev_kind: GapKind,
+                               prev_gap_scale: Option<f32>,
+                               curr_kind: GapKind,
+                               current_is_last_source: bool| {
+              if *first_item {
+                *first_item = false;
+                return;
+              }
+              let scale = prev_gap_scale.unwrap_or(1.0).clamp(0.0, 1.0);
+              let mut gap = TAB_GAP * scale;
+              if let Some(anim) = pin_anim_render {
+                match anim.kind {
+                  TabPinAnimKind::Pin => {
+                    // Removing from unpinned: collapse the gap *after* the placeholder (i.e. the
+                    // gap before whatever comes next).
+                    if prev_kind == GapKind::SourcePlaceholder {
+                      gap *= 1.0 - pin_t;
+                    } else if curr_kind == GapKind::SourcePlaceholder && current_is_last_source {
+                      // Placeholder inserted at end: collapse the trailing gap.
+                      gap *= 1.0 - pin_t;
+                    }
+                  }
+                  TabPinAnimKind::Unpin => {
+                    // Inserting into unpinned: grow the gap after the placeholder so existing
+                    // content doesn't jump when a new leading item appears.
+                    if prev_kind == GapKind::DestPlaceholder {
+                      gap *= pin_t;
+                    }
+                  }
                 }
-                let scale = prev_gap_scale.unwrap_or(1.0).clamp(0.0, 1.0);
-                let gap = TAB_GAP * scale;
-                if gap > 0.0 {
-                  ui.add_space(gap);
+              }
+              if gap > 0.0 {
+                ui.add_space(gap);
+              }
+            };
+
+            let mut item_pos: usize = 0;
+            let mut inserted_source_placeholder = false;
+            let source_placeholder_index = pin_anim_render
+              .filter(|anim| anim.kind == TabPinAnimKind::Pin)
+              .map(|anim| anim.source_index);
+            let source_placeholder_from_w = pin_anim_render
+              .filter(|anim| anim.kind == TabPinAnimKind::Pin)
+              .map(|anim| anim.from_rect.width())
+              .unwrap_or(sizing.tab_width);
+            let source_placeholder_scale = pin_anim_render
+              .filter(|anim| anim.kind == TabPinAnimKind::Pin)
+              .map(|anim| {
+                if anim.from_unpinned_tab_width > 0.0 {
+                  (anim.from_rect.width() / anim.from_unpinned_tab_width).clamp(0.0, 1.0)
+                } else {
+                  1.0
+                }
+              })
+              .unwrap_or(1.0);
+
+            macro_rules! maybe_insert_source_placeholder {
+              ($is_last:expr) => {
+                if let Some(source_idx) = source_placeholder_index {
+                  if !inserted_source_placeholder && item_pos == source_idx {
+                    add_gap(
+                      ui,
+                      &mut first_item,
+                      prev_kind,
+                      prev_gap_scale,
+                      GapKind::SourcePlaceholder,
+                      $is_last,
+                    );
+                    let w = source_placeholder_from_w * (1.0 - pin_t);
+                    let (_, rect) = ui.allocate_space(Vec2::new(w, TAB_HEIGHT));
+                    #[cfg(test)]
+                    tab_rects_for_test.push(rect);
+                    prev_kind = GapKind::SourcePlaceholder;
+                    prev_gap_scale = Some(source_placeholder_scale);
+                    inserted_source_placeholder = true;
+                    item_pos += 1;
+                  }
                 }
               };
+            }
+
             while idx < app.tabs.len() {
+              maybe_insert_source_placeholder!(false);
+
               let tab_id = app.tabs[idx].id;
               let tab_group = app.tabs[idx].group;
 
               if let Some(group_id) = tab_group {
                 let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
                 if is_first {
-                  add_gap(ui, &mut first_item, prev_gap_scale);
+                  maybe_insert_source_placeholder!(false);
+                  add_gap(
+                    ui,
+                    &mut first_item,
+                    prev_kind,
+                    prev_gap_scale,
+                    GapKind::Normal,
+                    false,
+                  );
                   group_chip_ui(ui, motion, app, group_id, &mut ops, focus_ring);
+                  unpinned_items_for_snapshot.push(TabStripItemKey::GroupChip(group_id));
+                  prev_kind = GapKind::Normal;
                   prev_gap_scale = None;
+                  item_pos += 1;
                 }
 
                 let collapsed = app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed);
@@ -2019,7 +2511,15 @@ pub(super) fn tab_strip_ui(
                   continue;
                 }
 
-                add_gap(ui, &mut first_item, prev_gap_scale);
+                maybe_insert_source_placeholder!(false);
+                add_gap(
+                  ui,
+                  &mut first_item,
+                  prev_kind,
+                  prev_gap_scale,
+                  GapKind::Normal,
+                  false,
+                );
                 let interactive = !collapsed && group_t > 0.95;
                 let tab_width = sizing.tab_width * group_t;
                 let is_active = active_id == Some(tab_id);
@@ -2049,6 +2549,7 @@ pub(super) fn tab_strip_ui(
                   );
                   (rect, Some(resp), action)
                 };
+                layout_rects.insert(tab_id, tab_rect);
                 if is_active {
                   active_tab_rect = Some(tab_rect);
                   active_tab_is_pinned = false;
@@ -2060,6 +2561,9 @@ pub(super) fn tab_strip_ui(
                 }
                 #[cfg(test)]
                 tab_rects_for_test.push(tab_rect);
+
+                unpinned_items_for_snapshot.push(TabStripItemKey::Tab(tab_id));
+                item_pos += 1;
 
                 if interactive {
                   unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
@@ -2086,12 +2590,57 @@ pub(super) fn tab_strip_ui(
                   actions.push(action);
                 }
 
+                prev_kind = GapKind::Normal;
                 prev_gap_scale = Some(group_t);
                 idx += 1;
                 continue;
               }
 
-              add_gap(ui, &mut first_item, prev_gap_scale);
+              maybe_insert_source_placeholder!(false);
+
+              // Destination placeholder (unpinning): keep the moving tab non-interactive while it
+              // expands into the scrollable segment.
+              if pin_anim_render
+                .is_some_and(|anim| anim.kind == TabPinAnimKind::Unpin && anim.tab_id == tab_id)
+              {
+                add_gap(
+                  ui,
+                  &mut first_item,
+                  prev_kind,
+                  prev_gap_scale,
+                  GapKind::DestPlaceholder,
+                  false,
+                );
+                let w = sizing.tab_width * pin_t;
+                let (_, rect) = ui.allocate_space(Vec2::new(w, TAB_HEIGHT));
+                ghost_dest_anchor_rect = Some(Rect::from_min_size(
+                  rect.min,
+                  Vec2::new(sizing_target.tab_width, TAB_HEIGHT),
+                ));
+                let placeholder_id = ui.make_persistent_id(("tab_strip_pin_placeholder", tab_id));
+                let resp = ui.interact(rect, placeholder_id, Sense::hover());
+                if !ui.is_rect_visible(rect) {
+                  resp.scroll_to_me(Some(egui::Align::Center));
+                }
+                #[cfg(test)]
+                tab_rects_for_test.push(rect);
+                unpinned_items_for_snapshot.push(TabStripItemKey::Tab(tab_id));
+                prev_kind = GapKind::DestPlaceholder;
+                prev_gap_scale = None;
+                item_pos += 1;
+                idx += 1;
+                continue;
+              }
+
+              add_gap(
+                ui,
+                &mut first_item,
+                prev_kind,
+                prev_gap_scale,
+                GapKind::Normal,
+                false,
+              );
+              prev_kind = GapKind::Normal;
               prev_gap_scale = None;
               let is_active = active_id == Some(tab_id);
               let favicon_tex = favicon_for_tab(tab_id);
@@ -2120,6 +2669,7 @@ pub(super) fn tab_strip_ui(
                 );
                 (rect, Some(resp), action)
               };
+              layout_rects.insert(tab_id, tab_rect);
               if is_active {
                 active_tab_rect = Some(tab_rect);
                 active_tab_is_pinned = false;
@@ -2134,6 +2684,9 @@ pub(super) fn tab_strip_ui(
               }
               #[cfg(test)]
               tab_rects_for_test.push(tab_rect);
+
+              unpinned_items_for_snapshot.push(TabStripItemKey::Tab(tab_id));
+              item_pos += 1;
 
               unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
               let is_close_action = maybe_action
@@ -2158,6 +2711,22 @@ pub(super) fn tab_strip_ui(
               }
 
               idx += 1;
+            }
+
+            // Placeholder at end (pinning the last unpinned tab).
+            if source_placeholder_index.is_some() && !inserted_source_placeholder {
+              add_gap(
+                ui,
+                &mut first_item,
+                prev_kind,
+                prev_gap_scale,
+                GapKind::SourcePlaceholder,
+                true,
+              );
+              let w = source_placeholder_from_w * (1.0 - pin_t);
+              let (_, rect) = ui.allocate_space(Vec2::new(w, TAB_HEIGHT));
+              #[cfg(test)]
+              tab_rects_for_test.push(rect);
             }
 
             if end_spacer_x > 0.0 {
@@ -2230,10 +2799,7 @@ pub(super) fn tab_strip_ui(
   }
 
   // Visual separator between pinned and unpinned tabs.
-  if pinned_count > 0
-    && unpinned_count > 0
-    && pinned_viewport_rect.width() > 0.0
-    && unpinned_viewport_rect.width() > 0.0
+  if segment_gap > 0.0 && pinned_viewport_rect.width() > 0.0 && unpinned_viewport_rect.width() > 0.0
   {
     let x = pinned_viewport_rect.max.x + segment_gap * 0.5;
     let y0 = tabs_rect.top() + 6.0;
@@ -2245,6 +2811,30 @@ pub(super) fn tab_strip_ui(
     ui.painter()
       .with_clip_rect(tabs_rect)
       .line_segment([Pos2::new(x, y0), Pos2::new(x, y1)], stroke);
+  }
+
+  // Animate pin/unpin transitions using a "ghost" tab that morphs between the old and new layout
+  // positions, while the underlying state change (pinned flag + ordering) remains immediate.
+  let mut moving_tab_ghost_rect: Option<Rect> = None;
+  if let (Some(anim), Some(dest_rect)) = (pin_anim_render, ghost_dest_anchor_rect) {
+    if let Some(tab) = app.tab(anim.tab_id) {
+      let ghost_rect = lerp_rect(anim.from_rect, dest_rect, pin_t);
+      moving_tab_ghost_rect = Some(ghost_rect);
+      let favicon_tex = favicon_for_tab(anim.tab_id);
+      let is_active = active_id == Some(anim.tab_id);
+      let mut ghost_ui = ui.child_ui(tabs_rect, egui::Layout::left_to_right(egui::Align::Center));
+      ghost_ui.set_clip_rect(tabs_rect);
+      paint_tab_pin_ghost(
+        &ghost_ui,
+        motion,
+        tab,
+        ghost_rect,
+        favicon_tex,
+        is_active,
+        anim.kind,
+        pin_t,
+      );
+    }
   }
 
   // Edge fades: scrollbars are hidden, so use subtle fades as the overflow affordance.
@@ -2263,7 +2853,21 @@ pub(super) fn tab_strip_ui(
   }
 
   // Micro-interaction: animate the active tab underline position/width.
-  if let Some(active_rect) = active_tab_rect {
+  // If the active tab is currently pinning/unpinning, draw the underline directly under the moving
+  // ghost rect (so it doesn't lag behind or disappear while the real widget is suppressed).
+  if let Some(active_rect) = pin_anim_render
+    .filter(|anim| active_id == Some(anim.tab_id))
+    .and_then(|_| moving_tab_ghost_rect)
+  {
+    let width = (active_rect.width() - 20.0).max(0.0);
+    let x0 = active_rect.center().x - width * 0.5;
+    let x1 = active_rect.center().x + width * 0.5;
+    let y = active_rect.max.y - ACTIVE_UNDERLINE_HEIGHT * 0.5;
+    ui.painter().with_clip_rect(tabs_rect).line_segment(
+      [Pos2::new(x0, y), Pos2::new(x1, y)],
+      Stroke::new(ACTIVE_UNDERLINE_HEIGHT, ui.visuals().selection.stroke.color),
+    );
+  } else if let Some(active_rect) = active_tab_rect {
     let pinned_scroll_rect = pinned_scroll_viewport_rect.unwrap_or(pinned_viewport_rect);
     let unpinned_scroll_rect = unpinned_scroll_viewport_rect.unwrap_or(unpinned_viewport_rect);
     let underline_id = ui.make_persistent_id("tab_strip_active_underline");
@@ -2307,6 +2911,29 @@ pub(super) fn tab_strip_ui(
       Stroke::new(ACTIVE_UNDERLINE_HEIGHT, ui.visuals().selection.stroke.color),
     );
   }
+
+  // Persist the layout snapshot for pin/unpin animations.
+  ctx.data_mut(|d| {
+    let pinned_tabs = app
+      .tabs
+      .iter()
+      .take(pinned_len)
+      .map(|t| t.id)
+      .collect::<Vec<_>>();
+    d.insert_temp(
+      snapshot_key,
+      Some(TabStripLayoutSnapshot {
+        pinned_tabs,
+        unpinned_items: unpinned_items_for_snapshot.clone(),
+        tab_rects: layout_rects,
+        unpinned_tab_width: sizing.tab_width,
+        scroll_offset_x,
+        pinned_count,
+        unpinned_count,
+      }),
+    );
+    d.insert_temp(anim_key, pin_anim_render.cloned());
+  });
 
   // Drag-to-reorder: apply the reorder while dragging, but render the dragged tab as a floating
   // preview so it feels "picked up".
