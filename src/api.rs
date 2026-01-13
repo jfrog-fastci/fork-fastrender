@@ -986,6 +986,12 @@ impl FastRenderBuilder {
     self
   }
 
+  /// Configures layout fan-out parallelism for this renderer.
+  pub fn layout_parallelism(mut self, parallelism: LayoutParallelism) -> Self {
+    self.config.layout_parallelism = parallelism;
+    self
+  }
+
   /// Sets the DOM compatibility mode applied during parsing.
   pub fn dom_compatibility_mode(mut self, mode: DomCompatibilityMode) -> Self {
     self.config.dom_compat_mode = mode;

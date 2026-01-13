@@ -81,7 +81,6 @@ fn hover_changed_rejects_disallowed_schemes() {
     hovered_url: Some("javascript:alert(1)".to_string()),
     tooltip: None,
     cursor: CursorKind::Pointer,
-    tooltip: None,
   });
   assert!(
     app.active_tab().unwrap().hovered_url.is_none(),
@@ -93,7 +92,6 @@ fn hover_changed_rejects_disallowed_schemes() {
     hovered_url: Some("data:text/plain,hello".to_string()),
     tooltip: None,
     cursor: CursorKind::Pointer,
-    tooltip: None,
   });
   assert!(
     app.active_tab().unwrap().hovered_url.is_none(),

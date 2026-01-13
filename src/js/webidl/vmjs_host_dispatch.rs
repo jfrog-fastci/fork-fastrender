@@ -67,6 +67,7 @@ const STATIC_RANGE_END_CONTAINER_KEY: &str = "__fastrender_static_range_end_cont
 const STATIC_RANGE_END_OFFSET_KEY: &str = "__fastrender_static_range_end_offset";
 const NODE_ITERATOR_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMNIT");
 const TREE_WALKER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMTWK");
+const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG");
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
 const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 // Must match `window_realm::NODE_LIST_ROOT_KEY`.
@@ -497,6 +498,40 @@ fn require_tree_walker_receiver(
     return Err(VmError::TypeError("Illegal invocation"));
   }
   Ok(obj)
+}
+
+fn require_range_receiver(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  receiver: Option<Value>,
+) -> Result<(RangeId, DocumentId), VmError> {
+  let Some(Value::Object(obj)) = receiver else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  if !matches!(slots, Some(slots) if slots.b == RANGE_HOST_TAG) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  let range_id = RangeId::from_u64(slots.unwrap().a); // fastrender-allow-unwrap
+
+  // Range wrappers store their owning document wrapper so host dispatch can validate cross-document
+  // operations and route to owned documents when present.
+  let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+  let Some(Value::Object(document_obj)) =
+    scope.heap().object_get_own_data_property_value(obj, &wrapper_document_key)?
+  else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let document_handle = platform.require_document_handle(scope.heap(), Value::Object(document_obj))?;
+
+  Ok((range_id, document_handle.document_id))
 }
 
 fn read_internal_node_id_slot(
@@ -7133,7 +7168,188 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         scope.push_root(Value::Object(walker_obj))?;
         Ok(Value::Object(walker_obj))
-      }
+      },
+      ("Document", "createRange", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(document_obj))?;
+
+        {
+          let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
+        }
+
+        // Create a JS wrapper object whose prototype is `Range.prototype`.
+        let global = self
+          .global
+          .or_else(|| vm.user_data_mut::<WindowRealmUserData>().and_then(|data| data.window_obj()))
+          .ok_or(VmError::TypeError("Illegal invocation"))?;
+        scope.push_root(Value::Object(global))?;
+        let ctor_key = key_from_str(scope, "Range")?;
+        let Some(Value::Object(ctor_obj)) =
+          scope.heap().object_get_own_data_property_value(global, &ctor_key)?
+        else {
+          return Err(VmError::TypeError("Range constructor not available"));
+        };
+        scope.push_root(Value::Object(ctor_obj))?;
+        let proto_key = key_from_str(scope, "prototype")?;
+        let Some(Value::Object(proto_obj)) =
+          scope.heap().object_get_own_data_property_value(ctor_obj, &proto_key)?
+        else {
+          return Err(VmError::TypeError("Range.prototype not available"));
+        };
+        scope.push_root(Value::Object(proto_obj))?;
+
+        let range_obj = scope.alloc_object_with_prototype(Some(proto_obj))?;
+        scope.push_root(Value::Object(range_obj))?;
+
+        // Keep a reference to the wrapper document for receiver branding.
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        scope.define_property(
+          range_obj,
+          wrapper_document_key,
+          data_property(Value::Object(document_obj), false, false, false),
+        )?;
+
+        // Allocate and register a live range in the associated dom2 document. This does not mutate the
+        // live DOM tree (only internal range state), so report `changed=false`.
+        //
+        // Register the wrapper in the document's weak live-traversal registry so range state can be
+        // swept when the JS object is collected.
+        let range_id = {
+          let heap = scope.heap();
+          with_active_vm_host(vm, |host| {
+            mutate_dom_detached(host, |dom| dom.register_live_range(heap, range_obj))
+          })?
+        };
+
+        // Set wrapper host slots after registration so the weak registry can observe wrapper GC and prune
+        // stale `dom2::Document` range state.
+        scope.heap_mut().object_set_host_slots(
+          range_obj,
+          HostSlots {
+            a: range_id.as_u64(),
+            b: RANGE_HOST_TAG,
+          },
+        )?;
+
+        Ok(Value::Object(range_obj))
+      },
+
+      ("Range", "constructor", 0) => {
+        let obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(obj))?;
+
+        let document_obj = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| data.document_obj())
+          .ok_or(VmError::TypeError("Range constructor missing document object"))?;
+        scope.push_root(Value::Object(document_obj))?;
+
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        scope.define_property(
+          obj,
+          wrapper_document_key,
+          data_property(Value::Object(document_obj), false, false, false),
+        )?;
+
+        let range_id = {
+          let heap = scope.heap();
+          with_active_vm_host(vm, |host| {
+            mutate_dom_detached(host, |dom| dom.register_live_range(heap, obj))
+          })?
+        };
+        scope.heap_mut().object_set_host_slots(
+          obj,
+          HostSlots {
+            a: range_id.as_u64(),
+            b: RANGE_HOST_TAG,
+          },
+        )?;
+
+        Ok(Value::Undefined)
+      },
+
+      ("Range", "setStart", 0) => {
+        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
+
+        let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let offset = match args.get(1).copied().unwrap_or(Value::Number(0.0)) {
+          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
+          _ => 0,
+        } as usize;
+
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), node_value)?;
+
+        let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
+          mutate_dom_detached(host, |dom| dom.range_set_start(range_id, node_id, offset))
+        })?;
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      },
+
+      ("Range", "setEnd", 0) => {
+        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
+
+        let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let offset = match args.get(1).copied().unwrap_or(Value::Number(0.0)) {
+          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
+          _ => 0,
+        } as usize;
+
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), node_value)?;
+
+        let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
+          mutate_dom_detached(host, |dom| dom.range_set_end(range_id, node_id, offset))
+        })?;
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      },
+
+      ("Range", "selectNodeContents", 0) => {
+        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
+
+        let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), node_value)?;
+
+        let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
+          mutate_dom_detached(host, |dom| dom.range_select_node_contents(range_id, node_id))
+        })?;
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      },
+
+      ("Range", "toString", 0) => {
+        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
+
+        let result: Result<String, DomError> =
+          self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.range_to_string(range_id))))?;
+        match result {
+          Ok(s) => Ok(Value::String(scope.alloc_string(&s)?)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      },
+
+      ("AbstractRange", "collapsed", 0) => {
+        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
+
+        let result: Result<bool, DomError> = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let start = dom.range_start(range_id)?;
+            let end = dom.range_end(range_id)?;
+            Ok(start == end)
+          }))
+        })?;
+        match result {
+          Ok(b) => Ok(Value::Bool(b)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      },
 
       ("Document", "createRange", 0) => {
         let document_obj = Self::require_receiver_object(receiver)?;

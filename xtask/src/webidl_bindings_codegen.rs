@@ -840,7 +840,11 @@ fn window_parse_interface_entry(
 
     let mut found = false;
     for member in &iface.members {
-      if member.name.as_deref() != Some(op_name.as_str()) {
+      // Most operations can be matched by name directly, but WebIDL's `stringifier;` shorthand has
+      // the synthetic member name `"stringifier"` even though it defines `toString()`.
+      if member.name.as_deref() != Some(op_name.as_str())
+        && !(op_name == "toString" && member.name.as_deref() == Some("stringifier"))
+      {
         continue;
       }
       let parsed = crate::webidl::parse_interface_member(&member.raw).with_context(|| {

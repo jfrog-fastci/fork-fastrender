@@ -20,6 +20,7 @@ mod js_execution_budgets;
 mod js_indexed_db_shim;
 mod js_intersection_observer;
 mod js_data_transfer_items_files;
+mod js_range_stringifier;
 mod js_time_determinism;
 mod js_url_bindings;
 mod js_vm_budget_tests;

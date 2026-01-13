@@ -190,10 +190,8 @@ fn native_select_combobox_expanded_state_tracks_open_dropdown_overlay() {
   let select = find_dom_by_id(&dom, "s").expect("select");
   let select_id = *ids.get(&(select as *const DomNode)).expect("select id");
 
-  let interaction_state = InteractionState {
-    open_select_dropdown: Some(select_id),
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.open_select_dropdown = Some(select_id);
   let tree = renderer
     .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
     .expect("accessibility tree");

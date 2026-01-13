@@ -6039,6 +6039,43 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn range_select_node_contents(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "selectNodeContents",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn range_set_end(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -6161,6 +6198,35 @@ pub mod window {
         receiver,
         "Range",
         "surroundContents",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_to_string(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "toString",
         0,
         &converted_args,
       )
@@ -13226,6 +13292,23 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("selectNodeContents")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_select_node_contents, None, "selectNodeContents", 1)?;
+        rt.define_data_property_str(
+          proto_range,
+          "selectNodeContents",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("setEnd")?;
       if rt
         .scope
@@ -13267,11 +13350,27 @@ pub mod window {
         .object_get_own_property(proto_range, &key)?
         .is_none()
       {
-        let func =
-          rt.alloc_native_function(range_surround_contents, None, "surroundContents", 1)?;
+        let func = rt.alloc_native_function(range_surround_contents, None, "surroundContents", 1)?;
         rt.define_data_property_str(
           proto_range,
           "surroundContents",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("toString")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_to_string, None, "toString", 0)?;
+        rt.define_data_property_str(
+          proto_range,
+          "toString",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;

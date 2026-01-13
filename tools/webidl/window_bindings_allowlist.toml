@@ -100,8 +100,8 @@ operations = [
   "createTextNode",
   "createDocumentFragment",
   "createNodeIterator",
-  "createTreeWalker",
   "createRange",
+  "createTreeWalker",
 ]
 
 [[interface]]
@@ -123,6 +123,7 @@ attributes = []
 operations = [
   "setStart",
   "setEnd",
+  "selectNodeContents",
   "isPointInRange",
   "comparePoint",
   "intersectsNode",
@@ -132,6 +133,7 @@ operations = [
   "insertNode",
   "surroundContents",
   "detach",
+  "toString",
 ]
 
 [[interface]]

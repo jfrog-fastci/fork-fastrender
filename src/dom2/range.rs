@@ -504,16 +504,14 @@ impl Document {
       return Ok(String::new());
     }
 
-    // If both endpoints are in the same Text node, return the substring between offsets.
-    if start.node == end.node {
-      let node = self.node_checked(start.node)?;
-      if matches!(&node.kind, NodeKind::Text { .. }) {
-        return self.substring_character_data_for_range(
-          start.node,
-          start.offset,
-          end.offset.saturating_sub(start.offset),
-        );
-      }
+    // If both endpoints are in the same CharacterData node (Text/Comment/PI), return the substring
+    // between offsets.
+    if start.node == end.node && self.node_is_character_data_for_range(start.node) {
+      return self.substring_character_data_for_range(
+        start.node,
+        start.offset,
+        end.offset.saturating_sub(start.offset),
+      );
     }
 
     let mut out = String::new();
@@ -574,6 +572,16 @@ impl Document {
 
   pub fn range_set_end(&mut self, range: RangeId, node: NodeId, offset: usize) -> DomResult<()> {
     self.range_set_start_or_end(range, node, offset, /* is_start */ false)
+  }
+
+  /// `Range.prototype.selectNodeContents(node)`.
+  ///
+  /// Sets the range's start to `(node, 0)` and its end to `(node, nodeLength)`.
+  pub fn range_select_node_contents(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
+    let len = self.node_length(node)?;
+    self.range_set_start(range, node, 0)?;
+    self.range_set_end(range, node, len)?;
+    Ok(())
   }
 
   /// Collapse a live range to one of its boundary points.

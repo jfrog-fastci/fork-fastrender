@@ -9179,7 +9179,7 @@ pub(crate) fn dom_from_vm_host(host: &mut dyn VmHost) -> Option<&dom2::Document>
   None
 }
 
-fn dom_from_vm_host_mut(host: &mut dyn VmHost) -> Option<&mut dom2::Document> {
+pub(crate) fn dom_from_vm_host_mut(host: &mut dyn VmHost) -> Option<&mut dom2::Document> {
   use std::any::TypeId;
 
   let any = host.as_any_mut();
@@ -48818,6 +48818,8 @@ fn init_window_globals(
     crate::js::bindings::install_node_iterator_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_tree_walker_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_character_data_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_abstract_range_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_range_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_event_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_custom_event_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_text_bindings_vm_js(vm, heap, realm)?;

@@ -408,6 +408,19 @@ pub fn parse_interface_member(input: &str) -> Result<InterfaceMember> {
   let mut s = input.trim();
   s = s.strip_suffix(';').unwrap_or(s).trim();
 
+  // WebIDL allows a `stringifier;` shorthand form (e.g. `Range` in the WHATWG DOM snapshot). This is
+  // equivalent to `stringifier DOMString toString();`.
+  if s == "stringifier" {
+    return Ok(InterfaceMember::Operation {
+      name: Some("toString".to_string()),
+      return_type: IdlType::Builtin(BuiltinType::DOMString),
+      arguments: Vec::new(),
+      static_: false,
+      stringifier: true,
+      special: None,
+    });
+  }
+
   let mut p = Parser::new(s)?;
 
   // Fast-path variants that must come first.
