@@ -16,13 +16,13 @@
 //!
 //! See `docs/media_clocking.md` for the broader clocking model and recommended sync tolerances.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
 use super::clock::MediaClock;
+use crate::media::audio_clock::InterpolatedAudioClock;
 
 mod config;
 #[cfg(feature = "audio_cpal")]
@@ -112,10 +112,7 @@ impl AudioOutputInfo {
 #[derive(Clone, Debug)]
 pub enum AudioClock {
   /// Clock derived from the number of frames the output backend reports as delivered.
-  OutputFrames {
-    frames_played: Arc<AtomicU64>,
-    sample_rate_hz: u32,
-  },
+  OutputFrames { clock: Arc<InterpolatedAudioClock> },
   /// Clock derived from wall time (used by `NullAudioBackend`).
   Instant { start: Instant, sample_rate_hz: u32 },
 }
@@ -124,16 +121,15 @@ impl AudioClock {
   #[must_use]
   pub fn sample_rate_hz(&self) -> u32 {
     match self {
-      Self::OutputFrames { sample_rate_hz, .. } | Self::Instant { sample_rate_hz, .. } => {
-        *sample_rate_hz
-      }
+      Self::OutputFrames { clock } => clock.sample_rate_hz(),
+      Self::Instant { sample_rate_hz, .. } => *sample_rate_hz,
     }
   }
 
   #[must_use]
   pub fn frames(&self) -> u64 {
     match self {
-      Self::OutputFrames { frames_played, .. } => frames_played.load(Ordering::Relaxed),
+      Self::OutputFrames { clock } => clock.frames_written(),
       Self::Instant {
         start,
         sample_rate_hz,
@@ -151,13 +147,7 @@ impl AudioClock {
   /// "time heard" estimate.
   pub fn time(&self) -> Duration {
     match self {
-      Self::OutputFrames {
-        frames_played,
-        sample_rate_hz,
-      } => {
-        let frames = frames_played.load(Ordering::Relaxed);
-        frames_to_duration(*sample_rate_hz, frames)
-      }
+      Self::OutputFrames { clock } => clock.now(),
       Self::Instant { start, .. } => start.elapsed(),
     }
   }

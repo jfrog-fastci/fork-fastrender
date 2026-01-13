@@ -10,6 +10,7 @@ use super::{
   AudioSink, AudioStreamConfig,
 };
 use super::convert::sanitize_sample;
+use crate::media::audio_clock::InterpolatedAudioClock;
 use crate::media::audio::ring_buffer::AudioRingBuffer;
 use cpal::traits::{HostTrait, StreamTrait};
 
@@ -30,7 +31,7 @@ pub struct CpalAudioBackend {
   last_callback_frames: Arc<AtomicU32>,
   estimated_latency_nanos: Arc<AtomicU64>,
   mixer: Arc<MixerState>,
-  frames_played: Arc<AtomicU64>,
+  clock: Arc<InterpolatedAudioClock>,
   // `cpal::Stream` is neither `Send` nor `Sync`, so it cannot live inside a `Send + Sync`
   // `AudioBackend` implementation. Keep the stream on a dedicated thread and control its lifetime
   // via a shutdown channel + join handle.
@@ -55,7 +56,7 @@ impl CpalAudioBackend {
       Arc<AtomicU32>,
       Arc<AtomicU64>,
       Arc<MixerState>,
-      Arc<AtomicU64>,
+      Arc<InterpolatedAudioClock>,
     );
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<ReadyState, AudioError>>();
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
@@ -83,7 +84,7 @@ impl CpalAudioBackend {
         let estimated_latency_nanos =
           Arc::new(AtomicU64::new(duration_to_nanos_u64(initial_latency)));
 
-        let frames_played = Arc::new(AtomicU64::new(0));
+        let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz));
         let mixer = Arc::new(MixerState::new(config));
 
         let stream = build_stream(
@@ -91,7 +92,7 @@ impl CpalAudioBackend {
           &stream_config,
           sample_format,
           mixer.clone(),
-          frames_played.clone(),
+          clock.clone(),
           fixed_callback_frames,
           last_callback_frames.clone(),
           estimated_latency_nanos.clone(),
@@ -107,7 +108,7 @@ impl CpalAudioBackend {
             last_callback_frames,
             estimated_latency_nanos,
             mixer,
-            frames_played,
+            clock,
           ),
           stream,
         ))
@@ -133,7 +134,7 @@ impl CpalAudioBackend {
       last_callback_frames,
       estimated_latency_nanos,
       mixer,
-      frames_played,
+      clock,
     ) = match ready_rx.recv() {
       Ok(Ok(ok)) => ok,
       Ok(Err(err)) => {
@@ -155,7 +156,7 @@ impl CpalAudioBackend {
       last_callback_frames,
       estimated_latency_nanos,
       mixer,
-      frames_played,
+      clock,
       shutdown_tx,
       stream_thread: Mutex::new(Some(thread)),
     })
@@ -200,8 +201,7 @@ impl AudioBackend for CpalAudioBackend {
 
   fn clock(&self) -> AudioClock {
     AudioClock::OutputFrames {
-      frames_played: self.frames_played.clone(),
-      sample_rate_hz: self.config.sample_rate_hz,
+      clock: self.clock.clone(),
     }
   }
 
@@ -368,7 +368,7 @@ fn build_stream(
   config: &cpal::StreamConfig,
   sample_format: cpal::SampleFormat,
   mixer: Arc<MixerState>,
-  frames_played: Arc<AtomicU64>,
+  clock: Arc<InterpolatedAudioClock>,
   fixed_callback_frames: Option<u32>,
   last_callback_frames: Arc<AtomicU32>,
   estimated_latency_nanos: Arc<AtomicU64>,
@@ -378,7 +378,7 @@ fn build_stream(
       device,
       config,
       mixer,
-      frames_played,
+      clock,
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
@@ -387,7 +387,7 @@ fn build_stream(
       device,
       config,
       mixer,
-      frames_played,
+      clock,
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
@@ -396,7 +396,7 @@ fn build_stream(
       device,
       config,
       mixer,
-      frames_played,
+      clock,
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
@@ -409,7 +409,7 @@ fn build_stream_typed<T>(
   device: &cpal::Device,
   config: &cpal::StreamConfig,
   mixer: Arc<MixerState>,
-  frames_played: Arc<AtomicU64>,
+  clock: Arc<InterpolatedAudioClock>,
   fixed_callback_frames: Option<u32>,
   last_callback_frames: Arc<AtomicU32>,
   estimated_latency_nanos: Arc<AtomicU64>,
@@ -446,10 +446,9 @@ where
 
         if channels != 0 {
           let frames = (output.len() / channels) as u64;
-          frames_played.fetch_add(frames, Ordering::Relaxed);
-          if let Ok(frames_u32) = u32::try_from(frames) {
-            last_callback_frames.store(frames_u32, Ordering::Relaxed);
-          }
+          let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+          last_callback_frames.store(frames_u32, Ordering::Relaxed);
+          clock.on_callback_end(frames_u32);
         }
 
         // Best-effort latency estimate:

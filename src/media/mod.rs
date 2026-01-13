@@ -16,6 +16,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub mod audio;
+pub mod audio_clock;
 pub mod audio_engine;
 pub mod av_sync;
 pub mod clock;
@@ -25,6 +26,7 @@ pub mod master_clock;
 pub mod mp4;
 pub mod timebase;
 
+pub use audio_clock::InterpolatedAudioClock;
 pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, RealAudioDeviceClock};
 pub use master_clock::{ClockSource, MasterClock};
 pub use mp4::{Mp4Demuxer, Mp4Sample, Mp4Track, SeekMethod};
