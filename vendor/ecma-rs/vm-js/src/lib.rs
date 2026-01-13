@@ -234,6 +234,10 @@ mod compound_assignment_bitwise_shift_tests;
 #[path = "../tests/unit/error_coercion.rs"]
 mod error_coercion_tests;
 
+#[cfg(test)]
+#[path = "../tests/logical_assignment.rs"]
+mod logical_assignment_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;
