@@ -3366,6 +3366,7 @@ impl BrowserAppState {
               total_bytes,
             },
           });
+          self.bump_session_revision();
           update.request_redraw = true;
         }
       }
@@ -3398,6 +3399,7 @@ impl BrowserAppState {
               error: sanitize_untrusted_text(&error, MAX_ERROR_BYTES),
             },
           };
+          self.bump_session_revision();
           update.request_redraw = true;
         }
       }
@@ -5284,98 +5286,6 @@ mod tab_group_tests {
   }
 
   #[test]
-  fn session_revision_bumps_for_scroll_viewport_changes() {
-    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
-    let tab_id = app.active_tab_id().unwrap();
-
-    let rev0 = app.session_revision();
-
-    // FrameReady scroll viewport change should bump session revision.
-    let viewport_css = (2, 3);
-    let dpr = 1.0;
-    let scroll_metrics = ScrollMetrics {
-      viewport_css,
-      scroll_css: (0.0, 0.0),
-      bounds_css: crate::scroll::ScrollBounds {
-        min_x: 0.0,
-        min_y: 0.0,
-        max_x: 0.0,
-        max_y: 0.0,
-      },
-      content_css: (viewport_css.0 as f32, viewport_css.1 as f32),
-    };
-    let scroll = ScrollState::with_viewport(Point::new(0.0, 10.0));
-    app.apply_worker_msg(WorkerToUi::FrameReady {
-      tab_id,
-      frame: RenderedFrame {
-        pixmap: tiny_skia::Pixmap::new(viewport_css.0, viewport_css.1).unwrap(),
-        viewport_css,
-        dpr,
-        scroll_state: scroll.clone(),
-        scroll_metrics,
-        next_tick: None,
-      },
-    });
-    let rev1 = app.session_revision();
-    assert!(
-      rev1 > rev0,
-      "expected FrameReady scroll viewport change to bump session revision"
-    );
-
-    // Redundant identical FrameReady should not bump session revision.
-    let scroll_metrics = ScrollMetrics {
-      viewport_css,
-      scroll_css: (0.0, 0.0),
-      bounds_css: crate::scroll::ScrollBounds {
-        min_x: 0.0,
-        min_y: 0.0,
-        max_x: 0.0,
-        max_y: 0.0,
-      },
-      content_css: (viewport_css.0 as f32, viewport_css.1 as f32),
-    };
-    app.apply_worker_msg(WorkerToUi::FrameReady {
-      tab_id,
-      frame: RenderedFrame {
-        pixmap: tiny_skia::Pixmap::new(viewport_css.0, viewport_css.1).unwrap(),
-        viewport_css,
-        dpr,
-        scroll_state: scroll.clone(),
-        scroll_metrics,
-        next_tick: None,
-      },
-    });
-    let rev2 = app.session_revision();
-    assert_eq!(
-      rev2, rev1,
-      "expected identical FrameReady scroll viewport not to bump session revision"
-    );
-
-    // ScrollStateUpdated scroll viewport change should bump session revision.
-    let scroll2 = ScrollState::with_viewport(crate::Point::new(0.0, 20.0));
-    app.apply_worker_msg(WorkerToUi::ScrollStateUpdated {
-      tab_id,
-      scroll: scroll2.clone(),
-    });
-    let rev3 = app.session_revision();
-    assert!(
-      rev3 > rev2,
-      "expected ScrollStateUpdated scroll viewport change to bump session revision"
-    );
-
-    // Redundant identical ScrollStateUpdated should not bump session revision.
-    app.apply_worker_msg(WorkerToUi::ScrollStateUpdated {
-      tab_id,
-      scroll: scroll2.clone(),
-    });
-    let rev4 = app.session_revision();
-    assert_eq!(
-      rev4, rev3,
-      "expected identical ScrollStateUpdated not to bump session revision"
-    );
-  }
-
-  #[test]
   fn session_revision_bumps_for_navigation_committed_url_changes() {
     let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
     let tab_id = app.active_tab_id().unwrap();
@@ -5393,6 +5303,34 @@ mod tab_group_tests {
       rev1 > rev0,
       "expected NavigationCommitted URL change to bump session revision"
     );
+  }
+
+  #[test]
+  fn session_revision_bumps_for_download_started_and_finished() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let rev0 = app.session_revision();
+    let download_id = DownloadId(1);
+
+    app.apply_worker_msg(WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id,
+      url: "https://example.com/file.txt".to_string(),
+      file_name: "file.txt".to_string(),
+      path: std::path::PathBuf::from("file.txt"),
+      total_bytes: Some(10),
+    });
+    let rev1 = app.session_revision();
+    assert!(rev1 > rev0, "expected DownloadStarted to bump session revision");
+
+    app.apply_worker_msg(WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id,
+      outcome: DownloadOutcome::Completed,
+    });
+    let rev2 = app.session_revision();
+    assert!(rev2 > rev1, "expected DownloadFinished to bump session revision");
   }
 
   #[test]

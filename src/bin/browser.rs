@@ -8197,6 +8197,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               continue;
             }
 
+            let session_revision_before = win.app.browser_state.session_revision();
             let mut span = win.app.trace.span("worker_drain", "ui.worker");
             let hud_enabled = win.app.hud.is_some();
             let breakdown_timer_start = win
@@ -8237,17 +8238,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               let prev_scroll_viewport = scroll_tab_id
                 .and_then(|tab_id| win.app.browser_state.tab(tab_id))
                 .map(|tab| tab.scroll_state.viewport);
-              if let QueuedMsg::Worker(msg) = &item {
-                session_dirty |= matches!(
-                  msg,
-                  fastrender::ui::WorkerToUi::NavigationCommitted { .. }
-                    | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
-                    | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
-                    | fastrender::ui::WorkerToUi::DownloadStarted { .. }
-                    | fastrender::ui::WorkerToUi::DownloadFinished { .. }
-                );
-              }
-
               let window_is_active = active_window_id == Some(window_id);
               let result = match item {
                 QueuedMsg::Worker(msg) => win.app.handle_worker_message(msg, window_is_active),
@@ -8358,6 +8348,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .pending_worker_msg_time
                 .saturating_add(start.elapsed());
             }
+            let session_revision_after = win.app.browser_state.session_revision();
+            session_dirty |=
+              fastrender::ui::session_save_scheduler::session_dirty_from_revision_delta(
+                session_revision_before,
+                session_revision_after,
+              );
           }
 
           // Propagate history updates immediately so subsequent windows process their worker

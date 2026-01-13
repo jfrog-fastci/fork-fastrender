@@ -69,6 +69,14 @@ impl SessionSaveScheduler {
   }
 }
 
+/// Returns `true` when a persisted session may have changed based on `session_revision()` deltas.
+///
+/// Front-ends can capture `BrowserAppState::session_revision()` before and after processing a batch
+/// of events, and schedule an autosave when this returns `true`.
+pub fn session_dirty_from_revision_delta(before: u64, after: u64) -> bool {
+  before != after
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -118,5 +126,10 @@ mod tests {
     assert!(!scheduler.should_flush(t1 + Duration::from_millis(99)));
     assert!(scheduler.should_flush(t1 + Duration::from_millis(100)));
   }
-}
 
+  #[test]
+  fn session_dirty_from_revision_delta_detects_change() {
+    assert!(!session_dirty_from_revision_delta(5, 5));
+    assert!(session_dirty_from_revision_delta(5, 6));
+  }
+}
