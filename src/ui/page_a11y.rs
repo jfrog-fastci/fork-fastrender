@@ -77,6 +77,7 @@ mod accesskit_ids {
   #[cfg(test)]
   mod tests {
     use super::*;
+    use std::num::NonZeroU128;
 
     #[test]
     fn encode_decode_round_trip_includes_generation() {
@@ -112,6 +113,31 @@ mod accesskit_ids {
         dom_node_id_for_current_page_action(current_node_id, tab_id, current_gen),
         Some(dom)
       );
+    }
+
+    #[test]
+    fn wrapper_node_ids_do_not_decode_as_page_nodes() {
+      // Wrapper nodes (window/chrome/page roots) typically use small ids like `1`/`2`/`3` in the
+      // lower bits. These must never be interpreted as page/content nodes.
+      let wrapper = accesskit::NodeId(NonZeroU128::new(1).unwrap());
+      assert_eq!(decode_page_node_id(wrapper), None);
+    }
+
+    #[test]
+    fn dom_id_one_does_not_collide_with_wrapper_id_one() {
+      let wrapper = accesskit::NodeId(NonZeroU128::new(1).unwrap());
+      let dom_root = encode_page_node_id(TabId(1), 1, 1);
+      assert_ne!(dom_root.0.get(), wrapper.0.get());
+    }
+
+    #[test]
+    fn encode_decode_round_trips_for_typical_dom_ids() {
+      let tab_id = TabId(9);
+      let gen = 1u32;
+      for dom in [1usize, 2, 42, 10_000] {
+        let node_id = encode_page_node_id(tab_id, gen, dom);
+        assert_eq!(decode_page_node_id(node_id), Some((tab_id, gen, dom.min(u32::MAX as usize))));
+      }
     }
   }
 }

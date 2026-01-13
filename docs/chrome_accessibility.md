@@ -206,41 +206,38 @@ If you need to validate id stability, use `dump_accesskit` for manual inspection
 
 ### FastRender node ids (renderer-chrome / page content)
 
-When chrome and/or page content are rendered by FastRender (instead of egui widgets), we will need to mint AccessKit ids from FastRender’s own node identifiers (e.g. DOM/styled/layout node ids).
+When chrome and/or page content are rendered by FastRender (instead of egui widgets), we mint
+AccessKit ids from FastRender’s own stable node identifiers (e.g. DOM pre-order ids).
 
-There is already a **prototype** id mapping used by the AccessKit→interaction routing helper in
-[`src/ui/fast_accesskit_actions.rs`](../src/ui/fast_accesskit_actions.rs):
+FastRender DOM nodes have stable **1-indexed pre-order ids** (`crate::dom::enumerate_dom_ids`), but
+we cannot store them “as-is” in `accesskit::NodeId` because:
 
-- FastRender DOM nodes have stable **1-indexed pre-order ids** (`crate::dom::enumerate_dom_ids`).
-- `accesskit_node_id_from_fastrender(node_id)` stores that `usize` directly into the `u128` (and
-  relies on it being non-zero).
-- `fastrender_node_id_from_accesskit(node_id)` decodes the reverse mapping.
+- chrome wrapper nodes (window/chrome/page placeholders) also need stable ids, and
+- multiple documents/tabs will reuse DOM ids starting at `1`.
 
-This “identity mapping” is intentionally simple and debug-friendly, but it imposes a critical
-constraint:
+To avoid collisions (and to make action routing reversible without a global hashmap), page/content
+nodes use a packed `u128` encoding implemented in:
 
-- **All AccessKit nodes that represent DOM nodes must use the same encoding**, otherwise action
-  routing can target the wrong DOM node (or fail to decode).
+- [`src/ui/page_a11y.rs`](../src/ui/page_a11y.rs) (`encode_page_node_id` / `decode_page_node_id`)
 
-Constraints to keep in mind (even if the exact scheme changes):
+#### Encoding (page/content nodes)
 
-- Avoid collisions between:
-  - chrome tree vs content tree
-  - multiple tabs/documents
-  - “virtual” wrapper nodes (window root, split panes, etc) vs DOM nodes
-- Prefer a reversible mapping (helpful for debugging action routing): you should be able to recover `(tree_kind, tab_id, node_id)` from an AccessKit `NodeId` without a global hashmap where possible.
+Layout (u128):
 
-Collision note: the current renderer-chrome AccessKit tree (`src/ui/compositor_accessibility.rs`)
-uses fixed ids (`1` window root, `2` chrome, `3` page). If we adopt the identity mapping above
-for DOM nodes (where DOM root is `1`), we **must** reserve id space for these wrapper/root nodes or
-use a namespacing scheme, otherwise we will collide immediately.
+- bits 127..64: `TabId` (u64, non-zero)
+- bits 63..32: document generation (u32)
+- bits 31..0: DOM pre-order node id (u32; clamped)
 
-One reasonable (but **not implemented**) approach for collision avoidance is to encode a small namespace header into the high bits of the `u128`, for example:
+This gives each node a stable `(tab_id, generation, dom_node_id)` identity and ensures stale action
+requests from a previous navigation can be ignored (generation mismatch).
 
-- high bits: `(tree_kind, tab_id)` (or a per-tab “document generation”)
-- low bits: a stable FastRender node id (DOM/styled/layout id)
+#### Wrapper nodes (window/chrome/page roots)
 
-If/when this lands, update this section to match the real encoding and ensure it is documented in the code where ids are minted (so tooling can reverse-map ids during debugging).
+Wrapper/root nodes in the compositor/renderer-chrome accessibility tree (see
+[`src/ui/compositor_accessibility.rs`](../src/ui/compositor_accessibility.rs)) use small fixed ids
+in the “non-page” namespace (upper 64 bits are `0`, so `decode_page_node_id` returns `None`).
+
+This guarantees that DOM node id `1` in any tab will never collide with wrapper/root ids like `1`/`2`/`3`.
 
 ---
 
