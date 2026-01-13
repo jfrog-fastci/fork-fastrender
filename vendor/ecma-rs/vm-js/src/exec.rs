@@ -900,10 +900,16 @@ impl<'a> ResolvedBinding<'a> {
 
 impl RuntimeEnv {
   fn new(heap: &mut Heap, global_object: GcObject, lexical_env: GcEnv) -> Result<Self, VmError> {
+    let mut scope = heap.scope();
     // Root the global object and lexical environment across root registration in case it triggers
     // GC.
-    let mut scope = heap.scope();
-    scope.push_root(Value::Object(global_object))?;
+    //
+    // Note: pushing stack roots can grow `root_stack`, which may trigger a GC. Ensure the freshly
+    // created `lexical_env` is treated as a root during that operation; otherwise it could be
+    // collected before we register the persistent env root.
+    let values = [Value::Object(global_object)];
+    let envs = [lexical_env];
+    scope.push_roots_with_extra_roots(&values, &[], &envs)?;
     scope.push_env_root(lexical_env)?;
     let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
@@ -926,9 +932,14 @@ impl RuntimeEnv {
     lexical_env: GcEnv,
     var_env: GcEnv,
   ) -> Result<Self, VmError> {
-    // Root the global object across root registration in case it triggers GC.
     let mut scope = heap.scope();
-    scope.push_root(Value::Object(global_object))?;
+    // Root the global object and env records across root registration in case it triggers GC.
+    //
+    // See `RuntimeEnv::new` for why `lexical_env`/`var_env` must be treated as roots while growing
+    // `root_stack`.
+    let values = [Value::Object(global_object)];
+    let envs = [lexical_env, var_env];
+    scope.push_roots_with_extra_roots(&values, &[], &envs)?;
     scope.push_env_root(lexical_env)?;
     scope.push_env_root(var_env)?;
 
@@ -952,9 +963,12 @@ impl RuntimeEnv {
     global_object: GcObject,
     lexical_env: GcEnv,
   ) -> Result<Self, VmError> {
-    // Root the global object across root registration in case it triggers GC.
     let mut scope = heap.scope();
-    scope.push_root(Value::Object(global_object))?;
+    // Root the global object and lexical env across root registration in case it triggers GC. See
+    // `RuntimeEnv::new` for details.
+    let values = [Value::Object(global_object)];
+    let envs = [lexical_env];
+    scope.push_roots_with_extra_roots(&values, &[], &envs)?;
     scope.push_env_root(lexical_env)?;
     let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
