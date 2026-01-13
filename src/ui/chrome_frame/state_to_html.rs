@@ -53,7 +53,9 @@ fn omnibox_suggestion_href(suggestion: &OmniboxSuggestion) -> Option<String> {
 
 fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
   let omnibox = &app.chrome.omnibox;
-  if !omnibox.open || omnibox.suggestions.is_empty() {
+  let show = omnibox.open && !omnibox.suggestions.is_empty();
+  if !show {
+    out.push_str("      <div id=\"omnibox-popup\" class=\"omnibox-popup\" role=\"listbox\" hidden></div>\n");
     return;
   }
 
@@ -195,45 +197,68 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("  <div class=\"toolbar\" id=\"toolbar\">\n");
 
   // Helper for toolbar button links.
-  fn push_toolbar_button(out: &mut String, class: &str, label: &str, href: &str, enabled: bool) {
-    if enabled {
-      out.push_str("    <a class=\"toolbar-button ");
-      out.push_str(class);
-      out.push_str("\" role=\"button\" href=\"");
-      out.push_str(href);
-      out.push_str("\">");
-      out.push_str(label);
-      out.push_str("</a>\n");
-    } else {
-      out.push_str("    <span class=\"toolbar-button ");
-      out.push_str(class);
+  fn push_toolbar_button(
+    out: &mut String,
+    id: &str,
+    class: &str,
+    label: &str,
+    href: &str,
+    enabled: bool,
+  ) {
+    out.push_str("    <a id=\"");
+    out.push_str(id);
+    out.push_str("\" class=\"toolbar-button ");
+    out.push_str(class);
+    if !enabled {
       out.push_str(" disabled\" role=\"button\" aria-disabled=\"true\">");
       out.push_str(label);
-      out.push_str("</span>\n");
+      out.push_str("</a>\n");
+      return;
     }
+    out.push_str("\" role=\"button\" href=\"");
+    out.push_str(href);
+    out.push_str("\">");
+    out.push_str(label);
+    out.push_str("</a>\n");
   }
 
-  push_toolbar_button(&mut out, "back", "←", "chrome-action:back", can_go_back);
   push_toolbar_button(
     &mut out,
+    "toolbar-back",
+    "back",
+    "←",
+    "chrome-action:back",
+    can_go_back,
+  );
+  push_toolbar_button(
+    &mut out,
+    "toolbar-forward",
     "forward",
     "→",
     "chrome-action:forward",
     can_go_forward,
   );
-  push_toolbar_button(&mut out, "reload", "↻", "chrome-action:reload", !loading);
+  push_toolbar_button(
+    &mut out,
+    "toolbar-reload",
+    "reload",
+    "↻",
+    "chrome-action:reload",
+    !loading,
+  );
   // Keep action names in sync with `ui::ChromeActionUrl` parsing ("stop-loading").
   push_toolbar_button(
     &mut out,
+    "toolbar-stop",
     "stop",
     "✕",
     "chrome-action:stop-loading",
     loading,
   );
-  push_toolbar_button(&mut out, "home", "⌂", "chrome-action:home", true);
+  push_toolbar_button(&mut out, "toolbar-home", "home", "⌂", "chrome-action:home", true);
 
   // Address bar.
-  out.push_str("    <div class=\"address-bar-wrap\">\n");
+  out.push_str("    <div id=\"address-bar-wrap\" class=\"address-bar-wrap\">\n");
   out.push_str(
     "      <form id=\"address-form\" class=\"address-bar-form\" action=\"chrome-action:navigate\" method=\"get\" autocomplete=\"off\">\n",
   );

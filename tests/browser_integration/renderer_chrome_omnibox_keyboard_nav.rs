@@ -3,12 +3,12 @@
 use fastrender::dom::DomNode;
 use fastrender::ui::about_pages;
 use fastrender::ui::omnibox::{build_omnibox_suggestions_default_limit, OmniboxAction, OmniboxContext};
+use fastrender::ui::omnibox_nav::OmniboxNavKey;
 use fastrender::ui::messages::{RepaintReason, UiToWorker};
 use fastrender::ui::{BrowserAppState, BrowserTabState, ChromeAction, ChromeFrameDocument, TabId};
 
 use super::support;
 use super::worker_harness::WorkerHarness;
-use winit::event::VirtualKeyCode;
 
 fn seed_omnibox_suggestions(app: &mut BrowserAppState) {
   let input = app.chrome.address_bar_text.clone();
@@ -31,9 +31,13 @@ fn seed_omnibox_suggestions(app: &mut BrowserAppState) {
 fn selected_suggestion_index_from_dom(dom: &DomNode) -> Option<usize> {
   let mut stack: Vec<&DomNode> = vec![dom];
   while let Some(node) = stack.pop() {
-    if node.get_attribute_ref("data-selected").is_some() {
-      if let Some(idx) = node.get_attribute_ref("data-index") {
-        return idx.parse::<usize>().ok();
+    if node.get_attribute_ref("aria-selected") == Some("true") {
+      if let Some(id) = node.get_attribute_ref("id") {
+        if let Some(idx) = id.strip_prefix("omnibox-suggestion-") {
+          if let Ok(parsed) = idx.parse::<usize>() {
+            return Some(parsed);
+          }
+        }
       }
     }
     for child in node.children.iter().rev() {
@@ -71,13 +75,12 @@ fn renderer_chrome_omnibox_arrow_nav_and_escape_update_state_and_dom() {
   let renderer = support::deterministic_renderer();
   let mut doc =
     ChromeFrameDocument::new_with_renderer(renderer, (320, 200), 1.0).expect("chrome doc");
-  doc.sync_state(&app).expect("initial sync_state");
+  doc.sync_state(&app);
 
   assert_eq!(selected_suggestion_index_from_dom(doc.dom()), None);
 
   // ArrowDown selects the first suggestion and captures original input.
-  let out = doc.preempt_omnibox_key_action(&mut app, VirtualKeyCode::Down);
-  assert!(out.is_some(), "expected ArrowDown to be consumed");
+  doc.handle_address_bar_key(&mut app, OmniboxNavKey::ArrowDown);
   assert_eq!(app.chrome.omnibox.selected, Some(0));
   assert_eq!(selected_suggestion_index_from_dom(doc.dom()), Some(0));
   assert_eq!(
@@ -87,8 +90,7 @@ fn renderer_chrome_omnibox_arrow_nav_and_escape_update_state_and_dom() {
   );
 
   // ArrowDown again moves selection and fills address bar text.
-  let out = doc.preempt_omnibox_key_action(&mut app, VirtualKeyCode::Down);
-  assert!(out.is_some(), "expected ArrowDown to be consumed");
+  doc.handle_address_bar_key(&mut app, OmniboxNavKey::ArrowDown);
   assert_eq!(app.chrome.omnibox.selected, Some(1));
   assert_eq!(selected_suggestion_index_from_dom(doc.dom()), Some(1));
   let expected_fill = fill_text_for_suggestion(&app.chrome.omnibox.suggestions[1])
@@ -97,27 +99,23 @@ fn renderer_chrome_omnibox_arrow_nav_and_escape_update_state_and_dom() {
   assert_eq!(app.chrome.address_bar_text, expected_fill);
 
   // ArrowUp moves back to the previous suggestion.
-  let out = doc.preempt_omnibox_key_action(&mut app, VirtualKeyCode::Up);
-  assert!(out.is_some(), "expected ArrowUp to be consumed");
+  doc.handle_address_bar_key(&mut app, OmniboxNavKey::ArrowUp);
   assert_eq!(app.chrome.omnibox.selected, Some(0));
   assert_eq!(selected_suggestion_index_from_dom(doc.dom()), Some(0));
 
   // Escape closes the dropdown and restores the original input.
-  let out = doc.preempt_omnibox_key_action(&mut app, VirtualKeyCode::Escape);
-  assert!(out.is_some(), "expected Escape to be consumed");
+  doc.handle_address_bar_key(&mut app, OmniboxNavKey::Escape);
   assert!(!app.chrome.omnibox.open);
   assert_eq!(app.chrome.omnibox.selected, None);
   assert_eq!(app.chrome.omnibox.original_input, None);
   assert_eq!(app.chrome.address_bar_text, "about:h");
   assert_eq!(selected_suggestion_index_from_dom(doc.dom()), None);
 
-  // When the dropdown is closed, ArrowDown should not be preempted (caret movement should work).
-  assert!(
-    doc
-      .preempt_omnibox_key_action(&mut app, VirtualKeyCode::Down)
-      .is_none(),
-    "expected ArrowDown to be forwarded when the omnibox is closed"
-  );
+  // ArrowDown should reopen the dropdown after dismissal, matching browser omnibox UX.
+  doc.handle_address_bar_key(&mut app, OmniboxNavKey::ArrowDown);
+  assert!(app.chrome.omnibox.open);
+  assert_eq!(app.chrome.omnibox.selected, Some(0));
+  assert_eq!(selected_suggestion_index_from_dom(doc.dom()), Some(0));
 }
 
 #[test]
@@ -169,12 +167,11 @@ fn renderer_chrome_omnibox_enter_accepts_selected_suggestion() {
   let renderer = support::deterministic_renderer();
   let mut doc =
     ChromeFrameDocument::new_with_renderer(renderer, (320, 200), 1.0).expect("chrome doc");
-  doc.sync_state(&app).expect("initial sync_state");
+  doc.sync_state(&app);
 
   // Move selection to the activate-tab suggestion.
   for _ in 0..=activate_idx {
-    let out = doc.preempt_omnibox_key_action(&mut app, VirtualKeyCode::Down);
-    assert!(out.is_some(), "expected ArrowDown to be consumed");
+    doc.handle_address_bar_key(&mut app, OmniboxNavKey::ArrowDown);
   }
   assert_eq!(app.chrome.omnibox.selected, Some(activate_idx));
   assert_eq!(
@@ -183,38 +180,26 @@ fn renderer_chrome_omnibox_enter_accepts_selected_suggestion() {
     "expected DOM highlight to track selected index"
   );
 
-  let actions = doc
-    .preempt_omnibox_key_action(&mut app, VirtualKeyCode::Return)
-    .expect("expected Enter to be consumed when a suggestion is selected");
+  let action = doc
+    .handle_address_bar_key(&mut app, OmniboxNavKey::Enter)
+    .expect("expected Enter to accept the selected suggestion");
 
   // Apply the emitted chrome actions as the browser front-end would.
-  for action in &actions {
-    match *action {
-      ChromeAction::ActivateTab(id) => {
-        assert_eq!(id, tab_b);
-        assert!(
-          app.set_active_tab(id),
-          "expected ActivateTab to update BrowserAppState"
-        );
-        worker.send(UiToWorker::SetActiveTab { tab_id: id });
-        worker.send(UiToWorker::RequestRepaint {
-          tab_id: id,
-          reason: RepaintReason::Explicit,
-        });
+  if let ChromeAction::ActivateTab(id) = action {
+    assert_eq!(id, tab_b);
+    assert!(
+      app.set_active_tab(id),
+      "expected ActivateTab to update BrowserAppState"
+    );
+    worker.send(UiToWorker::SetActiveTab { tab_id: id });
+    worker.send(UiToWorker::RequestRepaint {
+      tab_id: id,
+      reason: RepaintReason::Explicit,
+    });
 
-        // The repaint should result in a FrameReady for the activated tab.
-        let _ = worker.wait_for_frame(id, support::DEFAULT_TIMEOUT);
-      }
-      _ => {}
-    }
+    // The repaint should result in a FrameReady for the activated tab.
+    let _ = worker.wait_for_frame(id, support::DEFAULT_TIMEOUT);
   }
-
-  assert!(
-    actions
-      .iter()
-      .any(|a| matches!(a, ChromeAction::AddressBarFocusChanged(false))),
-    "expected Enter to emit AddressBarFocusChanged(false), got {actions:?}"
-  );
 
   assert_eq!(app.active_tab_id(), Some(tab_b));
   assert!(!app.chrome.address_bar_editing);

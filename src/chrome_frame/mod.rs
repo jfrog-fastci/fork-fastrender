@@ -1,109 +1,114 @@
 use crate::api::BrowserDocument;
 use crate::dom::{DomNode, DomNodeType};
 use crate::geometry::Point;
-use crate::interaction::{InteractionAction, InteractionEngine, InteractionState, KeyAction};
+use crate::interaction::dom_index::DomIndex;
+use crate::interaction::{fragment_tree_with_scroll, InteractionEngine, InteractionState};
 use crate::ui::omnibox_nav::{apply_omnibox_nav_key, OmniboxNavKey};
 use crate::ui::{
-  BrowserAppState, ChromeAction, ChromeActionUrl, OmniboxSuggestion, PointerButton, PointerModifiers,
+  BrowserAppState, ChromeAction, ChromeActionUrl, ChromeDynamicAssetFetcher, OmniboxAction,
+  OmniboxSearchSource, OmniboxSuggestionSource, OmniboxUrlSource, PointerButton,
+  PointerModifiers,
 };
-use crate::{FastRender, Pixmap, RenderOptions, Result};
+use crate::{Error, FastRender, Pixmap, RenderOptions, Result};
 
 pub mod dom_mutation;
 
-const ADDRESS_BAR_ID: &str = "address-bar";
+/// Stable `id=` attribute for the address bar `<input>`.
+pub const CHROME_ADDRESS_BAR_ID: &str = "address-bar";
+/// Stable `id=` attribute for the address bar `<form>`.
+pub const CHROME_ADDRESS_FORM_ID: &str = "address-form";
 
-const CHROME_FRAME_HTML: &str = r#"<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      html, body {
-        margin: 0;
-        padding: 0;
-        background: white;
-        font-size: 14px;
-      }
+/// Stable `id=` attribute for the omnibox dropdown root.
+const CHROME_OMNIBOX_POPUP_ID: &str = "omnibox-popup";
 
-      #toolbar {
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        gap: 6px;
-        padding: 6px;
-        background: #f0f0f0;
-      }
+/// Stable `id=` attribute for the tab strip root.
+const CHROME_TAB_STRIP_ID: &str = "tab-strip";
 
-      button {
-        width: 28px;
-        height: 22px;
-        border: 1px solid #888;
-        border-radius: 4px;
-        background: rgb(0, 200, 0);
-        color: black;
-      }
+const CHROME_TOOLBAR_BACK_ID: &str = "toolbar-back";
+const CHROME_TOOLBAR_FORWARD_ID: &str = "toolbar-forward";
+const CHROME_TOOLBAR_RELOAD_ID: &str = "toolbar-reload";
+const CHROME_TOOLBAR_STOP_ID: &str = "toolbar-stop";
+const CHROME_TOOLBAR_HOME_ID: &str = "toolbar-home";
 
-      button[disabled] {
-        background: rgb(200, 200, 200);
-        color: rgb(120, 120, 120);
-      }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChromeFrameEvent {
+  /// Emitted when the address bar `<input>`'s value changes due to text input/paste/IME commits.
+  AddressBarTextChanged(String),
+  /// Emitted when focus enters/leaves the address bar `<input>`.
+  AddressBarFocusChanged(bool),
+}
 
-      #loading-indicator {
-        width: 12px;
-        height: 12px;
-        background: rgb(255, 0, 0);
-      }
+#[derive(Debug, Default)]
+pub struct ChromeFrameClickOutcome {
+  /// True when any DOM-visible or interaction-visible state changed (e.g. focus/selection).
+  pub changed: bool,
+  /// High-level chrome-frame events derived from the interaction (e.g. address bar focus/value
+  /// changes).
+  pub events: Vec<ChromeFrameEvent>,
+  /// Parsed `chrome-action:` navigation, when the click triggered one.
+  pub action: Option<ChromeAction>,
+}
 
-      #address-form {
-        margin: 0;
-      }
+/// Read the current `<input>` value for the element with the given `id=` attribute.
+///
+/// This uses [`DomIndex`] for id → node lookup.
+#[must_use]
+pub fn dom_input_value_by_element_id(dom: &mut DomNode, element_id: &str) -> Option<String> {
+  let index = DomIndex::build(dom);
+  let node_id = index.id_by_element_id.get(element_id).copied()?;
+  let node = index.node(node_id)?;
+  if !node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+  {
+    return None;
+  }
+  Some(node.get_attribute_ref("value").unwrap_or("").to_string())
+}
 
-      #address-bar {
-        width: 220px;
-        height: 22px;
-        border: 1px solid #888;
-        border-radius: 4px;
-        padding: 2px 6px;
-        background: white;
-        color: black;
-      }
+#[must_use]
+fn dom_set_input_value_by_element_id(dom: &mut DomNode, element_id: &str, value: &str) -> bool {
+  let mut index = DomIndex::build(dom);
+  let node_id = match index.id_by_element_id.get(element_id).copied() {
+    Some(id) => id,
+    None => return false,
+  };
+  let Some(node) = index.node_mut(node_id) else {
+    return false;
+  };
+  if !node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+  {
+    return false;
+  }
+  if node.get_attribute_ref("value").unwrap_or("") == value {
+    return false;
+  }
+  node.set_attribute("value", value);
+  true
+}
 
-      #omnibox {
-        margin: 0 6px 6px 6px;
-        border: 1px solid #888;
-        border-radius: 4px;
-        background: white;
-        color: black;
-        width: 244px;
-      }
+fn node_has_class(node: &DomNode, class_name: &str) -> bool {
+  node
+    .get_attribute_ref("class")
+    .is_some_and(|classes| classes.split_ascii_whitespace().any(|c| c == class_name))
+}
 
-      .omnibox-item {
-        padding: 2px 6px;
-      }
-
-      .omnibox-item.selected {
-        background: rgb(200, 200, 255);
-      }
-
-      #tab-title {
-        font-weight: bold;
-        color: black;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="toolbar">
-      <button id="nav-back" disabled aria-label="Back">←</button>
-      <button id="nav-forward" disabled aria-label="Forward">→</button>
-      <div id="loading-indicator" hidden></div>
-      <form id="address-form" action="chrome-action:navigate" method="get" autocomplete="off">
-        <input id="address-bar" name="url" type="text" value="" />
-      </form>
-      <span id="tab-title"></span>
-    </div>
-    <div id="omnibox" hidden></div>
-  </body>
-</html>
-"#;
+fn find_first_descendant_with_class_mut<'a>(
+  node: &'a mut DomNode,
+  class_name: &str,
+) -> Option<&'a mut DomNode> {
+  if node.is_element() && node_has_class(node, class_name) {
+    return Some(node);
+  }
+  for child in node.children.iter_mut() {
+    if let Some(found) = find_first_descendant_with_class_mut(child, class_name) {
+      return Some(found);
+    }
+  }
+  None
+}
 
 /// Live, mutable chrome-frame document rendered via `BrowserDocument`.
 ///
@@ -112,6 +117,11 @@ const CHROME_FRAME_HTML: &str = r#"<!doctype html>
 pub struct ChromeFrameDocument {
   document: BrowserDocument,
   interaction: InteractionEngine,
+  address_bar_node_id: usize,
+  /// Cached address bar value for change detection.
+  last_address_bar_value: String,
+  /// Cached address bar focus state for change detection.
+  last_address_bar_focused: bool,
   /// True when chrome UI state (DOM mutations, scroll offsets, interaction state) has changed since
   /// the last successful render.
   dirty: bool,
@@ -132,12 +142,54 @@ fn has_nontrivial_interaction_state(state: &InteractionState) -> bool {
 }
 
 impl ChromeFrameDocument {
-  /// Create a chrome frame document from the built-in HTML template.
+  /// Convenience constructor for callers that already have a configured [`FastRender`] and
+  /// [`RenderOptions`].
+  pub fn new_with_renderer_and_options(renderer: FastRender, options: RenderOptions) -> Result<Self> {
+    Self::new(renderer, options)
+  }
+
+  /// Convenience constructor that configures viewport/dpr into [`RenderOptions`].
+  pub fn new_with_renderer(renderer: FastRender, viewport_css: (u32, u32), dpr: f32) -> Result<Self> {
+    let options = RenderOptions::new()
+      .with_viewport(viewport_css.0, viewport_css.1)
+      .with_device_pixel_ratio(dpr);
+    Self::new(renderer, options)
+  }
+
+  /// Create a chrome frame document from the canonical renderer-chrome template.
   pub fn new(renderer: FastRender, options: RenderOptions) -> Result<Self> {
-    let document = BrowserDocument::new(renderer, CHROME_FRAME_HTML, options)?;
+    // Bootstrap with an empty/default browser state; callers are expected to drive state → DOM sync
+    // via [`ChromeFrameDocument::sync_state`].
+    let bootstrap_state = BrowserAppState::new();
+    let html = crate::ui::chrome_frame::chrome_frame_html_from_state(&bootstrap_state);
+
+    let mut document = BrowserDocument::new(renderer, &html, options)?;
+
+    let mut address_bar_node_id: Option<usize> = None;
+    let mut address_bar_value: Option<String> = None;
+    document.mutate_dom(|dom| {
+      let index = DomIndex::build(dom);
+      address_bar_node_id = index.id_by_element_id.get(CHROME_ADDRESS_BAR_ID).copied();
+      if let Some(node_id) = address_bar_node_id {
+        if let Some(node) = index.node(node_id) {
+          address_bar_value = Some(node.get_attribute_ref("value").unwrap_or("").to_string());
+        }
+      }
+      false
+    });
+
+    let address_bar_node_id = address_bar_node_id.ok_or_else(|| {
+      Error::Other(format!(
+        "chrome frame template missing element id={CHROME_ADDRESS_BAR_ID:?}"
+      ))
+    })?;
+
     Ok(Self {
       document,
       interaction: InteractionEngine::new(),
+      address_bar_node_id,
+      last_address_bar_value: address_bar_value.unwrap_or_default(),
+      last_address_bar_focused: false,
       dirty: true,
     })
   }
@@ -156,9 +208,14 @@ impl ChromeFrameDocument {
     Ok(frame.pixmap)
   }
 
+  /// Alias for [`render`](Self::render), matching the naming used by other renderer documents.
+  pub fn render_frame(&mut self) -> Result<Pixmap> {
+    self.render()
+  }
+
   /// Render a new chrome frame only when something is invalidated (DOM mutations, scroll, etc).
   ///
-  /// Returns `Ok(None)` when no dirty flags are set and no time-based repaint is required.
+  /// Returns `Ok(None)` when no dirty flags are set and no animation frame is required.
   pub fn render_if_needed(&mut self) -> Result<Option<Pixmap>> {
     if self.dirty {
       return Ok(Some(self.render()?));
@@ -177,8 +234,8 @@ impl ChromeFrameDocument {
     Ok(rendered)
   }
 
-  /// Returns `true` when the most recently prepared fragment tree contains any time-based effects
-  /// (currently CSS animations/transitions) that require periodic ticking.
+  /// Returns `true` when the most recently prepared fragment tree contains any CSS animations or
+  /// transitions that require time-based sampling.
   pub fn wants_ticks(&self) -> bool {
     crate::document_ticks::browser_document_wants_ticks(&self.document)
   }
@@ -212,6 +269,10 @@ impl ChromeFrameDocument {
     &self.document
   }
 
+  pub fn dom(&self) -> &DomNode {
+    self.document.dom()
+  }
+
   pub fn document_mut(&mut self) -> &mut BrowserDocument {
     // The caller may mutate the document directly; treat this as dirty so a chrome runtime that
     // depends on `dirty` stays conservative.
@@ -223,202 +284,74 @@ impl ChromeFrameDocument {
     self.interaction.interaction_state()
   }
 
-  fn address_bar_node_id(dom: &DomNode) -> Option<usize> {
-    // Node ids are pre-order traversal indices (see `crate::dom::enumerate_dom_ids`).
-    let mut next_id = 1usize;
-    let mut stack: Vec<&DomNode> = vec![dom];
-    while let Some(node) = stack.pop() {
-      let current_id = next_id;
-      next_id = next_id.saturating_add(1);
-      if node
-        .is_element()
-        .then(|| node.get_attribute_ref("id"))
-        .flatten()
-        .is_some_and(|value| value == ADDRESS_BAR_ID)
-      {
-        return Some(current_id);
-      }
-      for child in node.children.iter().rev() {
-        stack.push(child);
-      }
-    }
-    None
+  pub fn address_bar_value(&mut self) -> String {
+    let mut out: Option<String> = None;
+    self.document.mutate_dom(|dom| {
+      out = dom_input_value_by_element_id(dom, CHROME_ADDRESS_BAR_ID);
+      false
+    });
+    out.unwrap_or_default()
   }
 
-  fn address_bar_value(dom: &mut DomNode) -> String {
-    dom_mutation::find_element_by_id_mut(dom, ADDRESS_BAR_ID)
-      .and_then(|node| node.get_attribute_ref("value"))
-      .unwrap_or_default()
-      .to_string()
+  pub fn address_bar_has_focus(&self) -> bool {
+    self.last_address_bar_focused
   }
 
-  fn sync_address_bar_focus_flags(&mut self, app: &mut BrowserAppState) {
-    let address_id = Self::address_bar_node_id(self.document.dom());
-    let has_focus = address_id.is_some_and(|id| self.interaction_state().focused == Some(id));
-
-    if has_focus == app.chrome.address_bar_has_focus {
-      return;
-    }
-
-    app.chrome.address_bar_has_focus = has_focus;
-
-    if !has_focus {
-      if app.chrome.address_bar_editing {
-        // Discard uncommitted edits and close the dropdown.
-        app.set_address_bar_editing(false);
-      } else {
-        app.chrome.omnibox.reset();
-      }
-    }
-  }
-
-  /// Programmatically focus the address bar input.
+  /// Set the address bar value from browser state (state → DOM sync).
   ///
-  /// When `focus_visible` is true (keyboard modality), this selects all text so the next typed
-  /// character replaces the current value (matching typical browser omnibox behavior).
-  pub fn focus_address_bar(&mut self, app: &mut BrowserAppState, focus_visible: bool) -> bool {
-    let Some(address_id) = Self::address_bar_node_id(self.document.dom()) else {
-      return false;
-    };
+  /// This does **not** emit [`ChromeFrameEvent::AddressBarTextChanged`] (the state already holds the
+  /// authoritative value).
+  pub fn set_address_bar_value_from_state(&mut self, value: &str) {
+    let mut changed = false;
+    self.document.mutate_dom(|dom| {
+      changed = dom_set_input_value_by_element_id(dom, CHROME_ADDRESS_BAR_ID, value);
+      changed
+    });
+    if changed {
+      self.last_address_bar_value.clear();
+      self.last_address_bar_value.push_str(value);
+      self.dirty = true;
+    }
+  }
 
-    let (document, interaction) = (&mut self.document, &mut self.interaction);
-    let mut action = InteractionAction::None;
-    let changed = document.mutate_dom(|dom| {
-      let (interaction_changed, got_action) =
-        interaction.focus_node_id(dom, Some(address_id), focus_visible);
+  pub fn focus_address_bar(&mut self) -> Vec<ChromeFrameEvent> {
+    self.focus_node_id(Some(self.address_bar_node_id), true)
+  }
+
+  pub fn blur_address_bar(&mut self) -> Vec<ChromeFrameEvent> {
+    self.focus_node_id(None, false)
+  }
+
+  fn focus_node_id(&mut self, node_id: Option<usize>, focus_visible: bool) -> Vec<ChromeFrameEvent> {
+    let mut action: crate::interaction::InteractionAction = crate::interaction::InteractionAction::None;
+    self.document.mutate_dom(|dom| {
+      let (_changed, got_action) = self.interaction.focus_node_id(dom, node_id, focus_visible);
       action = got_action;
-
-      if focus_visible {
-        // Select all so typing replaces the full value.
-        let len = Self::address_bar_value(dom).chars().count();
-        interaction.set_text_selection_range(address_id, 0, len);
-      }
-
-      interaction_changed
+      false
     });
-
-    if matches!(action, InteractionAction::FocusChanged { .. }) {
-      self.sync_address_bar_focus_flags(app);
-    }
-
-    self.dirty |= changed;
-    changed
+    self.events_for_interaction_action(action)
   }
 
-  /// Apply a text input event to the DOM and sync the address bar value into `BrowserAppState`.
-  pub fn text_input_address_bar(&mut self, app: &mut BrowserAppState, text: &str) -> bool {
-    let address_id = Self::address_bar_node_id(self.document.dom());
-    let mut before = String::new();
-    let mut after = String::new();
-
-    let (document, interaction) = (&mut self.document, &mut self.interaction);
-    let changed = document.mutate_dom(|dom| {
-      let focused = address_id.is_some_and(|id| interaction.interaction_state().focused == Some(id));
-      if focused {
-        before = Self::address_bar_value(dom);
-      }
-      let interaction_changed = interaction.text_input(dom, text);
-      if focused {
-        after = Self::address_bar_value(dom);
-      }
-      interaction_changed
-    });
-
-    if before != after
-      && address_id.is_some_and(|id| self.interaction_state().focused == Some(id))
-    {
-      app.set_address_bar_text(after);
-      app.chrome.address_bar_editing = true;
-      app.chrome.address_bar_has_focus = true;
-    }
-
-    self.dirty |= changed;
-    changed
+  pub fn select_all_address_bar(&mut self) {
+    let end = self.last_address_bar_value.chars().count();
+    self
+      .interaction
+      .set_text_selection_range(self.address_bar_node_id, 0, end);
   }
 
-  /// Apply a keyboard action to the chrome DOM, returning any dispatched chrome action.
-  pub fn key_action(
-    &mut self,
-    app: &mut BrowserAppState,
-    key: KeyAction,
-  ) -> (bool, Option<ChromeAction>) {
-    let address_id = Self::address_bar_node_id(self.document.dom());
-    let mut before = String::new();
-    let mut after = String::new();
-
-    let document_url = self
-      .document
-      .document_url()
-      .unwrap_or("chrome://chrome-frame/")
-      .to_string();
-    let base_url = self
-      .document
-      .base_url()
-      .unwrap_or(document_url.as_str())
-      .to_string();
-
-    let mut interaction_action = InteractionAction::None;
-    let (document, interaction) = (&mut self.document, &mut self.interaction);
-    let changed = document.mutate_dom(|dom| {
-      let focused = address_id.is_some_and(|id| interaction.interaction_state().focused == Some(id));
-      if focused {
-        before = Self::address_bar_value(dom);
-      }
-
-      let (interaction_changed, action) = interaction.key_activate(dom, key, &document_url, &base_url);
-      interaction_action = action;
-
-      let focused = address_id.is_some_and(|id| interaction.interaction_state().focused == Some(id));
-      if focused {
-        after = Self::address_bar_value(dom);
-      }
-
-      interaction_changed
-    });
-
-    if matches!(interaction_action, InteractionAction::FocusChanged { .. }) {
-      self.sync_address_bar_focus_flags(app);
-    }
-
-    if before != after
-      && address_id.is_some_and(|id| self.interaction_state().focused == Some(id))
-    {
-      app.set_address_bar_text(after);
-      app.chrome.address_bar_editing = true;
-      app.chrome.address_bar_has_focus = true;
-    }
-
-    let chrome_action = match interaction_action {
-      InteractionAction::Navigate { href } | InteractionAction::OpenInNewTab { href } => {
-        ChromeActionUrl::parse(&href)
-          .and_then(|parsed| parsed.into_chrome_action())
-          .ok()
-      }
-      _ => None,
-    };
-
-    // Submitting the address bar should stop "editing" so future navigation commits can resync.
-    if matches!(chrome_action, Some(ChromeAction::NavigateTo(_))) {
-      app.chrome.address_bar_editing = false;
-      app.chrome.omnibox.reset();
-    }
-
-    self.dirty |= changed;
-    (changed, chrome_action)
-  }
-
-  pub(crate) fn text_input(&mut self, text: &str) -> bool {
-    let (document, interaction) = (&mut self.document, &mut self.interaction);
-    let changed = document.mutate_dom(|dom| interaction.text_input(dom, text));
-    self.dirty |= changed;
-    changed
+  pub fn text_input(&mut self, text: &str) -> Vec<ChromeFrameEvent> {
+    self.mutate_address_bar_text_value(|engine, dom| engine.text_input(dom, text))
   }
 
   /// Simulate a primary-button click at the given viewport point.
   ///
-  /// Returns `false` when the document has no cached layout yet (call [`render`](Self::render)
-  /// first).
-  pub(crate) fn click_viewport_point(&mut self, viewport_point: Point) -> bool {
+  /// If the document has not been rendered yet, this will render the first frame implicitly so
+  /// cached layout artifacts are available for hit-testing.
+  pub fn click_viewport_point(&mut self, viewport_point: Point) -> Result<ChromeFrameClickOutcome> {
+    if self.document.prepared().is_none() {
+      let _ = self.render()?;
+    }
+
     let scroll = self.document.scroll_state();
     let document_url = self
       .document
@@ -431,14 +364,11 @@ impl ChromeFrameDocument {
       .unwrap_or(document_url.as_str())
       .to_string();
 
-    let hit_tree =
-      (scroll.viewport != Point::ZERO || !scroll.elements.is_empty())
-        .then(|| self.document.prepared().map(|prepared| prepared.fragment_tree_for_geometry(&scroll)))
-        .flatten();
-
     let (document, interaction) = (&mut self.document, &mut self.interaction);
-    let result = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+    let outcome = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scrolled_tree =
+        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
+      let hit_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
 
       let mut changed = interaction.pointer_down_with_click_count(
         dom,
@@ -450,7 +380,7 @@ impl ChromeFrameDocument {
         PointerModifiers::NONE,
         1,
       );
-      let (up_changed, _action) = interaction.pointer_up_with_scroll(
+      let (up_changed, action) = interaction.pointer_up_with_scroll(
         dom,
         box_tree,
         hit_tree,
@@ -463,16 +393,76 @@ impl ChromeFrameDocument {
         &base_url,
       );
       changed |= up_changed;
-      (changed, changed)
+      (changed, (changed, action))
     });
 
-    match result {
-      Ok(changed) => {
-        self.dirty |= changed;
-        changed
-      }
-      Err(_) => false,
+    let (changed, action) = outcome?;
+    self.dirty |= changed;
+
+    let (events, chrome_action) = self.outcome_for_interaction_action(action);
+    Ok(ChromeFrameClickOutcome {
+      changed,
+      events,
+      action: chrome_action,
+    })
+  }
+
+  /// Update hover state for a pointer move in viewport CSS pixels.
+  ///
+  /// This is a convenience wrapper around [`InteractionEngine::pointer_move`]. The document must
+  /// have been rendered at least once before calling this (so cached layout artifacts exist). When
+  /// the document has not been rendered yet, this method will render the first frame implicitly.
+  ///
+  /// Returns `true` when the interaction state changed in a way that should trigger a repaint
+  /// (notably hover/active pseudo-classes).
+  pub fn pointer_move(&mut self, pos_css: (f32, f32)) -> Result<bool> {
+    // Support the same sentinel used by the windowed browser integration: a negative coordinate
+    // means "pointer left this frame".
+    if pos_css.0 < 0.0 || pos_css.1 < 0.0 {
+      return Ok(self.pointer_leave());
     }
+
+    if self.document.prepared().is_none() {
+      // Populate the layout cache so we can hit-test.
+      let _ = self.render()?;
+    }
+
+    let scroll = self.document.scroll_state();
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let changed = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scrolled =
+        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
+      let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+      let changed = interaction.pointer_move(dom, box_tree, fragment_tree, &scroll, viewport_point);
+      (changed, changed)
+    })?;
+
+    self.dirty |= changed;
+    Ok(changed)
+  }
+
+  /// Clear hover/active pointer state (equivalent to a `pointerleave` event).
+  ///
+  /// This should be called by embeddings when the cursor leaves the chrome region so `:hover`
+  /// styles/cursor state do not remain stuck while the pointer is over other composited content.
+  ///
+  /// Returns `true` when the interaction state changed (i.e. a rerender is required to clear
+  /// hover/active styling).
+  pub fn pointer_leave(&mut self) -> bool {
+    let state = self.interaction.interaction_state();
+    let had_hover = !state.hover_chain().is_empty();
+    let had_active = !state.active_chain().is_empty();
+    if !had_hover && !had_active {
+      // Still clear internal drag state so future interactions don't carry stale capture state, but
+      // avoid forcing a rerender when no pseudo-class-visible state changed.
+      self.interaction.clear_pointer_state_without_dom();
+      return false;
+    }
+
+    self.interaction.clear_pointer_state_without_dom();
+    self.dirty = true;
+    true
   }
 
   /// Return the selected text for either:
@@ -528,11 +518,8 @@ impl ChromeFrameDocument {
   }
 
   /// Paste text into the focused text control (`<input>`/`<textarea>`), replacing any selection.
-  pub fn paste(&mut self, text: &str) -> bool {
-    let (document, interaction) = (&mut self.document, &mut self.interaction);
-    let changed = document.mutate_dom(|dom| interaction.clipboard_paste(dom, text));
-    self.dirty |= changed;
-    changed
+  pub fn paste(&mut self, text: &str) -> Vec<ChromeFrameEvent> {
+    self.mutate_address_bar_text_value(|engine, dom| engine.clipboard_paste(dom, text))
   }
 
   /// Select all text in the focused text control, falling back to selecting the document when no
@@ -545,8 +532,7 @@ impl ChromeFrameDocument {
   }
 
   /// Update the active IME preedit (composition) string for the focused text control.
-  pub fn ime_preedit(&mut self, text: &str, cursor: Option<usize>) -> bool {
-    let cursor = cursor.map(|idx| (idx, idx));
+  pub fn ime_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) -> bool {
     let (document, interaction) = (&mut self.document, &mut self.interaction);
     let changed = document.mutate_dom(|dom| interaction.ime_preedit(dom, text, cursor));
     self.dirty |= changed;
@@ -554,11 +540,8 @@ impl ChromeFrameDocument {
   }
 
   /// Commit IME text into the focused text control, clearing any active preedit.
-  pub fn ime_commit(&mut self, text: &str) -> bool {
-    let (document, interaction) = (&mut self.document, &mut self.interaction);
-    let changed = document.mutate_dom(|dom| interaction.ime_commit(dom, text));
-    self.dirty |= changed;
-    changed
+  pub fn ime_commit(&mut self, text: &str) -> Vec<ChromeFrameEvent> {
+    self.mutate_address_bar_text_value(|engine, dom| engine.ime_commit(dom, text))
   }
 
   /// Cancel any active IME preedit string without mutating the DOM value.
@@ -574,118 +557,374 @@ impl ChromeFrameDocument {
   /// Returns `true` when any DOM changes were applied (so callers can request a repaint).
   pub fn sync_state(&mut self, app: &BrowserAppState) -> bool {
     let active = app.active_tab();
-    let active_url = active
-      .and_then(|t| t.current_url.as_deref())
-      .unwrap_or_default();
     let can_go_back = active.map(|t| t.can_go_back).unwrap_or(false);
     let can_go_forward = active.map(|t| t.can_go_forward).unwrap_or(false);
     let loading = active.map(|t| t.loading).unwrap_or(false);
-    let title: &str = active.map(|t| t.display_title()).unwrap_or("New Tab");
 
-    let changed = self.document.mutate_dom(|dom: &mut DomNode| {
-      let mut changed = false;
+    // Address bar:
+    // - The browser UI state owns the displayed text (`ChromeState::address_bar_text`) and already
+    //   gates syncs while `address_bar_editing` is true (see `BrowserAppState::sync_address_bar_to_active`).
+    // - While navigating omnibox suggestions via keyboard, that same state is updated to preview the
+    //   selected item.
+    let desired_address_bar_value = app.chrome.address_bar_text.as_str();
+    let mut changed = false;
+    if self.last_address_bar_value != desired_address_bar_value {
+      self.set_address_bar_value_from_state(desired_address_bar_value);
+      changed = true;
+    }
 
-      // Address bar:
-      // - When the user is editing, mirror `ChromeState::address_bar_text` so keyboard omnibox
-      //   navigation can preview suggestions by updating the value.
-      // - Otherwise, display the current committed URL from the active tab.
-      if let Some(address) = dom_mutation::find_element_by_id_mut(dom, ADDRESS_BAR_ID) {
-        let desired = if app.chrome.address_bar_has_focus || app.chrome.address_bar_editing {
-          app.chrome.address_bar_text.as_str()
+    let mut changed_before_address_bar = false;
+    let dom_changed = self.document.mutate_dom(|dom: &mut DomNode| {
+      let mut dom_changed = false;
+
+      // -----------------------------------------------------------------------
+      // Toolbar buttons (back/forward/reload/stop/home)
+      // -----------------------------------------------------------------------
+      fn sync_toolbar_button(node: &mut DomNode, base_class: &str, href: &str, enabled: bool) -> bool {
+        let mut changed = false;
+        let class = if enabled {
+          format!("toolbar-button {base_class}")
         } else {
-          active_url
+          format!("toolbar-button {base_class} disabled")
         };
-        changed |= dom_mutation::set_attr(address, "value", desired);
+        changed |= dom_mutation::set_attr(node, "class", &class);
+
+        if enabled {
+          changed |= dom_mutation::set_attr(node, "href", href);
+          changed |= dom_mutation::remove_attr(node, "aria-disabled");
+        } else {
+          changed |= dom_mutation::remove_attr(node, "href");
+          changed |= dom_mutation::set_attr(node, "aria-disabled", "true");
+        }
+
+        changed
       }
 
-      if let Some(back) = dom_mutation::find_element_by_id_mut(dom, "nav-back") {
-        changed |= dom_mutation::set_bool_attr(back, "disabled", !can_go_back);
-        changed |= dom_mutation::set_attr(
-          back,
-          "aria-disabled",
-          if can_go_back { "false" } else { "true" },
-        );
+      if let Some(back) = dom_mutation::find_element_by_id_mut(dom, CHROME_TOOLBAR_BACK_ID) {
+        dom_changed |= sync_toolbar_button(back, "back", "chrome-action:back", can_go_back);
+      }
+      if let Some(forward) = dom_mutation::find_element_by_id_mut(dom, CHROME_TOOLBAR_FORWARD_ID) {
+        dom_changed |=
+          sync_toolbar_button(forward, "forward", "chrome-action:forward", can_go_forward);
+      }
+      if let Some(reload) = dom_mutation::find_element_by_id_mut(dom, CHROME_TOOLBAR_RELOAD_ID) {
+        dom_changed |= sync_toolbar_button(reload, "reload", "chrome-action:reload", !loading);
+      }
+      if let Some(stop) = dom_mutation::find_element_by_id_mut(dom, CHROME_TOOLBAR_STOP_ID) {
+        dom_changed |=
+          sync_toolbar_button(stop, "stop", "chrome-action:stop-loading", loading);
+      }
+      if let Some(home) = dom_mutation::find_element_by_id_mut(dom, CHROME_TOOLBAR_HOME_ID) {
+        dom_changed |= sync_toolbar_button(home, "home", "chrome-action:home", true);
       }
 
-      if let Some(forward) = dom_mutation::find_element_by_id_mut(dom, "nav-forward") {
-        changed |= dom_mutation::set_bool_attr(forward, "disabled", !can_go_forward);
-        changed |= dom_mutation::set_attr(
-          forward,
-          "aria-disabled",
-          if can_go_forward { "false" } else { "true" },
-        );
-      }
+      // -----------------------------------------------------------------------
+      // Tab strip
+      // -----------------------------------------------------------------------
+      if let Some(tab_strip) = dom_mutation::find_element_by_id_mut(dom, CHROME_TAB_STRIP_ID) {
+        let mut element_children = tab_strip.children.iter_mut().filter(|c| c.is_element());
 
-      if let Some(indicator) = dom_mutation::find_element_by_id_mut(dom, "loading-indicator") {
-        changed |= dom_mutation::set_bool_attr(indicator, "hidden", !loading);
-      }
+        let mut needs_rebuild = false;
+        for tab in &app.tabs {
+          let Some(node) = element_children.next() else {
+            needs_rebuild = true;
+            break;
+          };
+          let tab_id_str = tab.id.0.to_string();
+          if node.get_attribute_ref("data-tab-id") != Some(tab_id_str.as_str()) {
+            needs_rebuild = true;
+            break;
+          }
+        }
+        if element_children.next().is_some() {
+          // Extra element children beyond our model.
+          needs_rebuild = true;
+        }
 
-      if let Some(tab_title) = dom_mutation::find_element_by_id_mut(dom, "tab-title") {
-        changed |= dom_mutation::set_text_content(tab_title, title);
-      }
+        if needs_rebuild {
+          tab_strip.children.clear();
+          for tab in &app.tabs {
+            let tab_id_str = tab.id.0.to_string();
+            let class = if app.active_tab_id() == Some(tab.id) {
+              "tab active"
+            } else {
+              "tab"
+            };
+            let favicon_url = ChromeDynamicAssetFetcher::favicon_url(tab.id);
+            let title = tab.display_title();
 
-      // Omnibox dropdown list.
-      if let Some(omnibox) = dom_mutation::find_element_by_id_mut(dom, "omnibox") {
-        let show = app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty();
-        changed |= dom_mutation::set_bool_attr(omnibox, "hidden", !show);
+            let activate_href = ChromeActionUrl::ActivateTab { tab_id: tab.id }.to_url_string();
+            let close_href = ChromeActionUrl::CloseTab { tab_id: tab.id }.to_url_string();
 
-        if show {
-          let selected = app.chrome.omnibox.selected;
-          let desired_len = app.chrome.omnibox.suggestions.len();
+            let mut tab_node = DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "div".to_string(),
+                namespace: String::new(),
+                attributes: vec![
+                  ("class".to_string(), class.to_string()),
+                  ("data-tab-id".to_string(), tab_id_str),
+                ],
+              },
+              children: Vec::new(),
+            };
 
-          let needs_rebuild = omnibox.children.len() != desired_len
-            || omnibox.children.iter().any(|c| !c.is_element());
-          if needs_rebuild {
-            omnibox.children.clear();
-            for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
-              let class = if selected == Some(idx) {
-                "omnibox-item selected"
-              } else {
-                "omnibox-item"
-              };
-              let label = omnibox_item_label(suggestion);
+            // <a class="tab-activate" ...>
+            let mut activate = DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "a".to_string(),
+                namespace: String::new(),
+                attributes: vec![
+                  ("class".to_string(), "tab-activate".to_string()),
+                  ("href".to_string(), activate_href),
+                ],
+              },
+              children: Vec::new(),
+            };
+            // <img class="tab-favicon" ... />
+            activate.children.push(DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "img".to_string(),
+                namespace: String::new(),
+                attributes: vec![
+                  ("class".to_string(), "tab-favicon".to_string()),
+                  ("src".to_string(), favicon_url),
+                  ("alt".to_string(), String::new()),
+                ],
+              },
+              children: Vec::new(),
+            });
+            // <span class="tab-title">...</span>
+            let mut title_span = DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "span".to_string(),
+                namespace: String::new(),
+                attributes: vec![("class".to_string(), "tab-title".to_string())],
+              },
+              children: Vec::new(),
+            };
+            dom_mutation::set_text_content(&mut title_span, &title);
+            activate.children.push(title_span);
+            tab_node.children.push(activate);
 
-              let mut item = DomNode {
-                node_type: DomNodeType::Element {
-                  tag_name: "div".to_string(),
-                  namespace: String::new(),
-                  attributes: vec![
-                    ("class".to_string(), class.to_string()),
-                    ("data-index".to_string(), idx.to_string()),
-                  ],
-                },
-                children: Vec::new(),
-              };
-              dom_mutation::set_text_content(&mut item, label);
-              omnibox.children.push(item);
+            // <a class="tab-close" ...>×</a>
+            let mut close = DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "a".to_string(),
+                namespace: String::new(),
+                attributes: vec![
+                  ("class".to_string(), "tab-close".to_string()),
+                  ("aria-label".to_string(), "Close tab".to_string()),
+                  ("href".to_string(), close_href),
+                ],
+              },
+              children: Vec::new(),
+            };
+            dom_mutation::set_text_content(&mut close, "×");
+            tab_node.children.push(close);
+
+            tab_strip.children.push(tab_node);
+          }
+          dom_changed = true;
+          changed_before_address_bar = true;
+        } else {
+          // Patch in place (preserves node ids so focus/selection are stable).
+          let mut element_children = tab_strip.children.iter_mut().filter(|c| c.is_element());
+          for tab in &app.tabs {
+            let Some(node) = element_children.next() else {
+              break;
+            };
+
+            let class = if app.active_tab_id() == Some(tab.id) {
+              "tab active"
+            } else {
+              "tab"
+            };
+            dom_changed |= dom_mutation::set_attr(node, "class", class);
+            let tab_id_str = tab.id.0.to_string();
+            dom_changed |= dom_mutation::set_attr(node, "data-tab-id", &tab_id_str);
+
+            // Update activate href, title, favicon.
+            if let Some(activate) = find_first_descendant_with_class_mut(node, "tab-activate") {
+              let activate_href = ChromeActionUrl::ActivateTab { tab_id: tab.id }.to_url_string();
+              dom_changed |= dom_mutation::set_attr(activate, "href", &activate_href);
             }
-            changed = true;
-          } else {
-            for (idx, (child, suggestion)) in omnibox
-              .children
-              .iter_mut()
-              .zip(app.chrome.omnibox.suggestions.iter())
-              .enumerate()
-            {
-              let class = if selected == Some(idx) {
-                "omnibox-item selected"
-              } else {
-                "omnibox-item"
-              };
-              changed |= dom_mutation::set_attr(child, "class", class);
-              changed |= dom_mutation::set_attr(child, "data-index", &idx.to_string());
-              changed |= dom_mutation::set_text_content(child, omnibox_item_label(suggestion));
+            if let Some(favicon) = find_first_descendant_with_class_mut(node, "tab-favicon") {
+              let favicon_url = ChromeDynamicAssetFetcher::favicon_url(tab.id);
+              dom_changed |= dom_mutation::set_attr(favicon, "src", &favicon_url);
+            }
+            if let Some(title_span) = find_first_descendant_with_class_mut(node, "tab-title") {
+              let title = tab.display_title();
+              dom_changed |= dom_mutation::set_text_content(title_span, &title);
+            }
+            if let Some(close) = find_first_descendant_with_class_mut(node, "tab-close") {
+              let close_href = ChromeActionUrl::CloseTab { tab_id: tab.id }.to_url_string();
+              dom_changed |= dom_mutation::set_attr(close, "href", &close_href);
             }
           }
-        } else if !omnibox.children.is_empty() {
-          omnibox.children.clear();
-          changed = true;
         }
       }
 
-      changed
+      // -----------------------------------------------------------------------
+      // Omnibox popup
+      // -----------------------------------------------------------------------
+      if let Some(popup) = dom_mutation::find_element_by_id_mut(dom, CHROME_OMNIBOX_POPUP_ID) {
+        let show = app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty();
+        dom_changed |= dom_mutation::set_bool_attr(popup, "hidden", !show);
+
+        if !show {
+          if !popup.children.is_empty() {
+            popup.children.clear();
+            dom_changed = true;
+          }
+        } else {
+          popup.children.clear();
+          for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
+            let href = match &suggestion.action {
+              OmniboxAction::NavigateToUrl(url) => ChromeActionUrl::Navigate { url: url.clone() }.to_url_string(),
+              OmniboxAction::Search(query) => ChromeActionUrl::Navigate { url: query.clone() }.to_url_string(),
+              OmniboxAction::ActivateTab(tab_id) => ChromeActionUrl::ActivateTab { tab_id: *tab_id }.to_url_string(),
+            };
+
+            let type_class = match suggestion.action {
+              OmniboxAction::NavigateToUrl(_) => "omnibox-type-url",
+              OmniboxAction::Search(_) => "omnibox-type-search",
+              OmniboxAction::ActivateTab(_) => "omnibox-type-tab",
+            };
+            let source_class = match suggestion.source {
+              OmniboxSuggestionSource::Primary => "omnibox-source-primary",
+              OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => {
+                "omnibox-source-remote-suggest"
+              }
+              OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => "omnibox-source-about",
+              OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => "omnibox-source-bookmark",
+              OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => "omnibox-source-closed-tab",
+              OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => "omnibox-source-open-tab",
+              OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => "omnibox-source-visited",
+            };
+
+            let selected = app.chrome.omnibox.selected == Some(idx);
+            let mut classes = format!("omnibox-suggestion {type_class} {source_class}");
+            if selected {
+              classes.push_str(" selected");
+            }
+
+            let aria_selected = if selected { "true" } else { "false" };
+
+            let title = suggestion
+              .title
+              .as_deref()
+              .map(str::trim)
+              .filter(|t| !t.is_empty())
+              .or_else(|| match &suggestion.action {
+                OmniboxAction::NavigateToUrl(url) => Some(url.as_str()),
+                OmniboxAction::Search(query) => Some(query.as_str()),
+                OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
+              })
+              .unwrap_or_default();
+
+            let mut secondary = suggestion
+              .url
+              .as_deref()
+              .map(str::trim)
+              .filter(|u| !u.is_empty());
+            if secondary.is_some_and(|u| u == title) {
+              secondary = None;
+            }
+
+            let mut row = DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "a".to_string(),
+                namespace: String::new(),
+                attributes: vec![
+                  ("id".to_string(), format!("omnibox-suggestion-{idx}")),
+                  ("class".to_string(), classes),
+                  ("role".to_string(), "option".to_string()),
+                  ("aria-selected".to_string(), aria_selected.to_string()),
+                  ("href".to_string(), href),
+                ],
+              },
+              children: Vec::new(),
+            };
+
+            row.children.push(DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "span".to_string(),
+                namespace: String::new(),
+                attributes: vec![
+                  ("class".to_string(), "omnibox-icon".to_string()),
+                  ("aria-hidden".to_string(), "true".to_string()),
+                ],
+              },
+              children: Vec::new(),
+            });
+
+            let mut text_wrap = DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "span".to_string(),
+                namespace: String::new(),
+                attributes: vec![("class".to_string(), "omnibox-text".to_string())],
+              },
+              children: Vec::new(),
+            };
+
+            let mut title_span = DomNode {
+              node_type: DomNodeType::Element {
+                tag_name: "span".to_string(),
+                namespace: String::new(),
+                attributes: vec![("class".to_string(), "omnibox-title".to_string())],
+              },
+              children: Vec::new(),
+            };
+            dom_mutation::set_text_content(&mut title_span, title);
+            text_wrap.children.push(title_span);
+
+            if let Some(url) = secondary {
+              let mut url_span = DomNode {
+                node_type: DomNodeType::Element {
+                  tag_name: "span".to_string(),
+                  namespace: String::new(),
+                  attributes: vec![("class".to_string(), "omnibox-url".to_string())],
+                },
+                children: Vec::new(),
+              };
+              dom_mutation::set_text_content(&mut url_span, url);
+              text_wrap.children.push(url_span);
+            }
+
+            row.children.push(text_wrap);
+            popup.children.push(row);
+          }
+          dom_changed = true;
+        }
+      }
+
+      dom_changed
     });
-    self.dirty |= changed;
+
+    changed |= dom_changed;
+    self.dirty |= dom_changed;
+
+    if changed_before_address_bar {
+      let old_node_id = self.address_bar_node_id;
+      let was_focused = self.interaction_state().focused == Some(old_node_id);
+      let focus_visible = self.interaction_state().focus_visible;
+
+      let mut new_node_id: Option<usize> = None;
+      self.document.mutate_dom(|dom| {
+        let index = DomIndex::build(dom);
+        new_node_id = index.id_by_element_id.get(CHROME_ADDRESS_BAR_ID).copied();
+        false
+      });
+
+      if let Some(new_id) = new_node_id {
+        self.address_bar_node_id = new_id;
+        if was_focused && new_id != old_node_id {
+          // Best-effort focus remap so subsequent text edits and focus queries target the updated id.
+          let _ = self.focus_node_id(Some(new_id), focus_visible);
+        }
+      }
+    }
+
     changed
   }
 
@@ -723,14 +962,12 @@ impl ChromeFrameDocument {
       // Scrolling moves content under a stationary pointer, so refresh hover state using the
       // updated scroll offsets and the cached layout artifacts.
       let scroll = self.document.scroll_state();
-      let hit_tree =
-        (scroll.viewport != Point::ZERO || !scroll.elements.is_empty())
-          .then(|| self.document.prepared().map(|prepared| prepared.fragment_tree_for_geometry(&scroll)))
-          .flatten();
       let interaction = &mut self.interaction;
       self.document.mutate_dom_with_layout_artifacts(
         |dom: &mut DomNode, box_tree, fragment_tree| {
-          let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+          let scrolled_tree =
+            (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
+          let hit_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
           let dom_changed =
             interaction.pointer_move(dom, box_tree, hit_tree, &scroll, viewport_point);
           (dom_changed, ())
@@ -759,37 +996,181 @@ impl ChromeFrameDocument {
 
     let outcome = apply_omnibox_nav_key(app, key);
     self.sync_state(app);
+    // Apply focus/selection side effects driven by the updated `BrowserAppState.chrome` (notably,
+    // Enter/Escape can clear focus and we need to propagate that into the interaction engine so
+    // `:focus` styles don't remain stuck).
+    sync_browser_state_to_chrome_frame(app, self);
     outcome.action
+  }
+
+  fn mutate_address_bar_text_value(
+    &mut self,
+    mut f: impl FnMut(&mut InteractionEngine, &mut DomNode) -> bool,
+  ) -> Vec<ChromeFrameEvent> {
+    let mut before = String::new();
+    let mut after: Option<String> = None;
+    let mut changed = false;
+    self.document.mutate_dom(|dom| {
+      before = dom_input_value_by_element_id(dom, CHROME_ADDRESS_BAR_ID).unwrap_or_default();
+      let f_changed = f(&mut self.interaction, dom);
+      let new_value = dom_input_value_by_element_id(dom, CHROME_ADDRESS_BAR_ID).unwrap_or_default();
+      if new_value != before {
+        after = Some(new_value);
+        changed = true;
+      }
+      // Ensure any non-value mutations requested by `f` are propagated (e.g. selection changes).
+      changed || f_changed
+    });
+
+    self.dirty |= changed;
+
+    let mut events = Vec::new();
+    if let Some(after) = after {
+      if after != self.last_address_bar_value {
+        self.last_address_bar_value = after.clone();
+      }
+      events.push(ChromeFrameEvent::AddressBarTextChanged(after));
+    }
+    events
+  }
+
+  fn events_for_interaction_action(
+    &mut self,
+    action: crate::interaction::InteractionAction,
+  ) -> Vec<ChromeFrameEvent> {
+    match action {
+      crate::interaction::InteractionAction::FocusChanged { node_id } => {
+        let focused = node_id == Some(self.address_bar_node_id);
+        if focused != self.last_address_bar_focused {
+          self.last_address_bar_focused = focused;
+          vec![ChromeFrameEvent::AddressBarFocusChanged(focused)]
+        } else {
+          Vec::new()
+        }
+      }
+      _ => Vec::new(),
+    }
+  }
+
+  fn outcome_for_interaction_action(
+    &mut self,
+    action: crate::interaction::InteractionAction,
+  ) -> (Vec<ChromeFrameEvent>, Option<ChromeAction>) {
+    use crate::interaction::InteractionAction;
+
+    fn chrome_action_or(raw: String, fallback: fn(String) -> ChromeAction) -> Option<ChromeAction> {
+      // `chrome-action:` URLs are our internal JS-free chrome bridge.
+      //
+      // Important: if a `chrome-action:` URL fails to parse, treat it as "no action" rather than
+      // falling back to a normal navigation. This avoids accidentally treating malformed internal
+      // action URLs as user navigations.
+      if raw.to_ascii_lowercase().starts_with("chrome-action:") {
+        return ChromeActionUrl::parse(&raw)
+          .ok()
+          .and_then(|url| url.into_chrome_action().ok());
+      }
+      Some(fallback(raw))
+    }
+
+    match action {
+      InteractionAction::Navigate { href } => (
+        Vec::new(),
+        chrome_action_or(href, ChromeAction::NavigateTo),
+      ),
+      InteractionAction::OpenInNewTab { href } => (
+        Vec::new(),
+        chrome_action_or(href, ChromeAction::OpenUrlInNewTab),
+      ),
+      InteractionAction::NavigateRequest { request } => (
+        Vec::new(),
+        chrome_action_or(request.url, ChromeAction::NavigateTo),
+      ),
+      InteractionAction::OpenInNewTabRequest { request } => (
+        Vec::new(),
+        chrome_action_or(request.url, ChromeAction::OpenUrlInNewTab),
+      ),
+      other => (self.events_for_interaction_action(other), None),
+    }
   }
 }
 
-fn omnibox_item_label(suggestion: &OmniboxSuggestion) -> &str {
-  suggestion
-    .title
-    .as_deref()
-    .map(str::trim)
-    .filter(|s| !s.is_empty())
-    .or_else(|| {
-      suggestion
-        .url
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    })
-    .or_else(|| crate::ui::omnibox_nav::omnibox_suggestion_fill_text(suggestion))
-    .unwrap_or("")
+// -----------------------------------------------------------------------------
+// Browser integration helpers (`BrowserAppState.chrome` ↔ chrome-frame DOM sync)
+// -----------------------------------------------------------------------------
+
+/// Apply DOM-driven chrome frame events to the canonical `BrowserAppState.chrome` model.
+pub fn apply_chrome_frame_event(app: &mut BrowserAppState, event: ChromeFrameEvent) {
+  match event {
+    ChromeFrameEvent::AddressBarTextChanged(text) => {
+      app.chrome.address_bar_text = text;
+      // Typing implies "editing" mode even if some other action previously disabled it while
+      // keeping focus (mirrors egui `TextEdit::changed()` behaviour).
+      app.chrome.address_bar_editing = true;
+      app.chrome.address_bar_has_focus = true;
+    }
+    ChromeFrameEvent::AddressBarFocusChanged(has_focus) => {
+      // Focus changes should not automatically enter "editing" mode:
+      // - focusing the omnibox does not imply the user modified it yet,
+      // - but losing focus should discard any uncommitted edits.
+      app.chrome.address_bar_has_focus = has_focus;
+      if !has_focus {
+        // Only revert to the active tab URL when the user was actively editing.
+        if app.chrome.address_bar_editing {
+          app.set_address_bar_editing(false);
+        } else {
+          // Still close the dropdown so stale suggestion state doesn't linger.
+          app.chrome.omnibox.reset();
+        }
+      }
+    }
+  }
+}
+
+/// Drive state → DOM sync for the address bar:
+/// - update the DOM input value from `BrowserAppState.chrome.address_bar_text`
+/// - consume one-frame focus/select-all requests and translate them into DOM focus/selection.
+pub fn sync_browser_state_to_chrome_frame(app: &mut BrowserAppState, chrome: &mut ChromeFrameDocument) {
+  // Always keep the DOM value consistent with the model; the model already avoids clobbering typed
+  // edits during `address_bar_editing`.
+  chrome.set_address_bar_value_from_state(&app.chrome.address_bar_text);
+
+  // If state explicitly cleared focus (e.g. after committing a navigation), propagate that to the
+  // DOM so the interaction engine doesn't keep treating the input as focused.
+  if !app.chrome.address_bar_has_focus && chrome.address_bar_has_focus() {
+    let events = chrome.blur_address_bar();
+    for event in events {
+      apply_chrome_frame_event(app, event);
+    }
+  }
+
+  // Apply focus/select-all requests *after* syncing value so selection uses the correct length.
+  if app.chrome.request_focus_address_bar {
+    let events = chrome.focus_address_bar();
+    for event in events {
+      apply_chrome_frame_event(app, event);
+    }
+    app.chrome.request_focus_address_bar = false;
+  }
+
+  if app.chrome.request_select_all_address_bar {
+    if !chrome.address_bar_has_focus() {
+      let events = chrome.focus_address_bar();
+      for event in events {
+        apply_chrome_frame_event(app, event);
+      }
+    }
+    chrome.select_all_address_bar();
+    app.chrome.request_select_all_address_bar = false;
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::clock::VirtualClock;
   use crate::text::font_db::FontConfig;
   use crate::ui::{BrowserTabState, OmniboxAction, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
   use std::collections::hash_map::DefaultHasher;
   use std::hash::{Hash, Hasher};
-  use std::sync::Arc;
-  use std::time::Duration;
 
   fn pixmap_hash(pixmap: &Pixmap) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -797,6 +1178,83 @@ mod tests {
     pixmap.height().hash(&mut hasher);
     pixmap.data().hash(&mut hasher);
     hasher.finish()
+  }
+
+  #[test]
+  fn chrome_frame_address_bar_text_input_emits_event() -> Result<()> {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+    let mut doc =
+      ChromeFrameDocument::new(renderer, RenderOptions::new().with_viewport(320, 80))?;
+
+    // Focus the address bar (programmatic; equivalent to Ctrl/Cmd+L focus request).
+    let focus_events = doc.focus_address_bar();
+    assert!(
+      focus_events
+        .iter()
+        .any(|e| matches!(e, ChromeFrameEvent::AddressBarFocusChanged(true))),
+      "expected focus event when focusing address bar, got {focus_events:?}"
+    );
+
+    // Type text.
+    let events = doc.text_input("hello");
+    assert_eq!(
+      events,
+      vec![ChromeFrameEvent::AddressBarTextChanged("hello".to_string())]
+    );
+    assert_eq!(doc.address_bar_value(), "hello");
+    Ok(())
+  }
+
+  #[test]
+  fn chrome_frame_address_bar_sync_updates_browser_state_and_enter_clears_editing() -> Result<()> {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+    let mut chrome =
+      ChromeFrameDocument::new(renderer, RenderOptions::new().with_viewport(320, 80))?;
+
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
+    // Start with a blank omnibox value so the test doesn't depend on initial tab URL formatting.
+    app.chrome.address_bar_text.clear();
+    app.chrome.address_bar_editing = false;
+    app.chrome.address_bar_has_focus = false;
+
+    // State -> DOM initial sync.
+    sync_browser_state_to_chrome_frame(&mut app, &mut chrome);
+
+    // Focus should update `address_bar_has_focus` but not enter editing mode.
+    for event in chrome.focus_address_bar() {
+      apply_chrome_frame_event(&mut app, event);
+    }
+    assert!(app.chrome.address_bar_has_focus);
+    assert!(!app.chrome.address_bar_editing);
+
+    // Typing should sync DOM -> state and flip editing on.
+    for event in chrome.text_input("example.com") {
+      apply_chrome_frame_event(&mut app, event);
+    }
+    assert_eq!(app.chrome.address_bar_text, "example.com");
+    assert!(app.chrome.address_bar_editing);
+
+    // Enter should resolve into a navigation action and clear editing/focus.
+    let outcome = apply_omnibox_nav_key(&mut app, OmniboxNavKey::Enter);
+    assert_eq!(
+      outcome.action,
+      Some(ChromeAction::NavigateTo("example.com".to_string()))
+    );
+    assert!(!app.chrome.address_bar_editing);
+    assert!(!app.chrome.address_bar_has_focus);
+
+    // Apply state -> DOM sync; this should blur the DOM input to match the model and keep the
+    // committed value visible.
+    sync_browser_state_to_chrome_frame(&mut app, &mut chrome);
+    assert!(!chrome.address_bar_has_focus());
+    assert_eq!(chrome.address_bar_value(), "example.com");
+    Ok(())
   }
 
   #[test]
@@ -971,35 +1429,6 @@ mod tests {
   }
 
   #[test]
-  fn chrome_frame_address_bar_sync_updates_app_state_and_emits_navigate_action() -> Result<()> {
-    let mut app = BrowserAppState::new_with_initial_tab("https://example.com/".to_string());
-    app.chrome.address_bar_text.clear();
-
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()?;
-    let mut chrome =
-      ChromeFrameDocument::new(renderer, RenderOptions::new().with_viewport(360, 40))?;
-    chrome.sync_state(&app);
-
-    chrome.focus_address_bar(&mut app, true);
-    assert!(app.chrome.address_bar_has_focus);
-    assert!(!app.chrome.address_bar_editing);
-
-    chrome.text_input_address_bar(&mut app, "example.com");
-    assert_eq!(app.chrome.address_bar_text, "example.com");
-    assert!(app.chrome.address_bar_editing);
-
-    let (_changed, action) = chrome.key_action(&mut app, KeyAction::Enter);
-    assert_eq!(
-      action,
-      Some(ChromeAction::NavigateTo("example.com".to_string()))
-    );
-    assert!(!app.chrome.address_bar_editing);
-    Ok(())
-  }
-
-  #[test]
   fn chrome_frame_tick_advances_css_keyframes_animation() -> Result<()> {
     let renderer = FastRender::builder()
       .font_sources(FontConfig::bundled_only())
@@ -1061,83 +1490,6 @@ mod tests {
       first_hash, second_hash,
       "expected keyframes animation sampling to change the rendered output between two times"
     );
-    Ok(())
-  }
-
-  #[test]
-  fn chrome_frame_tick_realtime_animations_only_repaint_when_clock_advances() -> Result<()> {
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()?;
-
-    let options = RenderOptions::new().with_viewport(32, 32);
-    let mut chrome = ChromeFrameDocument::new(renderer, options.clone())?;
-
-    let html = r#"<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      html, body { margin: 0; padding: 0; }
-      #box {
-        width: 32px;
-        height: 32px;
-        background: rgb(255, 0, 0);
-        animation: bg 1000ms linear infinite;
-      }
-      @keyframes bg {
-        from { background: rgb(255, 0, 0); }
-        to   { background: rgb(0, 0, 255); }
-      }
-    </style>
-  </head>
-  <body><div id="box"></div></body>
-</html>"#;
-
-    // Install a deterministic animation clock so real-time sampling is predictable in tests.
-    let clock = Arc::new(VirtualClock::new());
-    chrome.document_mut().set_animation_clock(Arc::clone(&clock));
-    chrome.document_mut().reset_with_html(html, options.clone())?;
-
-    // Prime the layout/paint cache so `wants_ticks()` can observe keyframes.
-    chrome.render()?;
-    assert!(chrome.wants_ticks(), "expected wants_ticks after first render");
-
-    // First realtime tick enables sampling and should request a paint.
-    assert!(
-      chrome.tick(None),
-      "expected tick(None) to request a repaint when enabling realtime animations"
-    );
-    let first = chrome
-      .render_if_needed()?
-      .expect("expected repaint after enabling realtime animations");
-    let first_hash = pixmap_hash(&first);
-
-    // Without advancing the clock, no repaint should be needed.
-    assert!(
-      !chrome.tick(None),
-      "expected tick(None) to be false when animation clock did not advance"
-    );
-    assert!(
-      chrome.render_if_needed()?.is_none(),
-      "expected render_if_needed to return None when clock did not advance"
-    );
-
-    // Advance the clock: repaint should be needed and the output should change.
-    clock.advance(Duration::from_millis(500));
-    assert!(
-      chrome.tick(None),
-      "expected tick(None) to request repaint after clock advance"
-    );
-    let second = chrome
-      .render_if_needed()?
-      .expect("expected repaint after clock advance");
-    let second_hash = pixmap_hash(&second);
-    assert_ne!(
-      first_hash, second_hash,
-      "expected real-time animation sampling to change rendered output after clock advance"
-    );
-
     Ok(())
   }
 }

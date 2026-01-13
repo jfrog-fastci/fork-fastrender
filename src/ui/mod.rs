@@ -17,7 +17,6 @@ pub mod chrome_action;
 pub mod chrome_action_url;
 pub mod chrome_dialog_action_url;
 pub mod chrome_compositor_layout;
-pub mod chrome_frame_document;
 pub mod chrome_loading_progress;
 pub mod process_assignment_config;
 pub mod document_ticks;
@@ -86,7 +85,6 @@ pub mod viewport_throttle;
 pub mod notifications;
 pub mod async_scroll;
 pub mod chrome_dynamic_asset_fetcher;
-pub mod renderer_chrome_html;
 pub mod multiprocess;
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -138,10 +136,6 @@ pub mod page_accesskit_subtree;
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
 pub mod chrome;
-
-// Experimental: render browser chrome using FastRender itself (HTML/CSS), rather than egui.
-#[cfg(feature = "browser_ui")]
-pub mod renderer_chrome;
 
 #[cfg(feature = "browser_ui")]
 pub mod bookmarks_manager;
@@ -298,6 +292,11 @@ pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
 pub use chrome_frame::chrome_frame_html_from_state;
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, chrome_ui_with_bookmarks};
+pub use crate::chrome_frame::{
+  apply_chrome_frame_event, dom_input_value_by_element_id, sync_browser_state_to_chrome_frame,
+  ChromeFrameClickOutcome, ChromeFrameDocument, ChromeFrameEvent, CHROME_ADDRESS_BAR_ID,
+  CHROME_ADDRESS_FORM_ID,
+};
 #[cfg(feature = "browser_ui")]
 pub use menu_bar::{dispatch_menu_command, menu_bar_ui, MenuBarState, MenuCommand};
 #[cfg(feature = "browser_ui")]
@@ -320,3 +319,5 @@ pub use profile_persistence::{
   parse_history_json, save_bookmarks_atomic, save_history_atomic, LoadOutcome, LoadSource,
   PersistedGlobalHistoryStore,
 };
+
+// NOTE: `ChromeFrameDocument` is re-exported from `crate::chrome_frame` above.

@@ -1,4 +1,5 @@
 use crate::chrome_frame::ChromeFrameDocument;
+use crate::chrome_frame::ChromeFrameEvent;
 use crate::dom::DomNode;
 use crate::geometry::Point;
 use crate::interaction::absolute_bounds_by_styled_node_id;
@@ -72,17 +73,18 @@ fn chrome_frame_address_bar_supports_clipboard_and_ime() -> Result<()> {
     .expect("expected #address-bar element id");
   let click_point = click_point_for_styled_node(&chrome, address_id);
 
-  assert!(
-    chrome.click_viewport_point(click_point),
-    "expected click to update chrome interaction state"
-  );
+  let outcome = chrome.click_viewport_point(click_point)?;
+  assert!(outcome.changed, "expected click to update chrome interaction state");
   assert_eq!(
     chrome.interaction_state().focused,
     Some(address_id),
     "expected click to focus #address-bar"
   );
 
-  assert!(chrome.text_input("hello"));
+  assert_eq!(
+    chrome.text_input("hello"),
+    vec![ChromeFrameEvent::AddressBarTextChanged("hello".to_string())]
+  );
   assert_eq!(
     input_value_by_id(chrome.document().dom(), "address-bar").as_deref(),
     Some("hello"),
@@ -102,9 +104,9 @@ fn chrome_frame_address_bar_supports_clipboard_and_ime() -> Result<()> {
     "expected Ctrl+C to copy selected text"
   );
 
-  assert!(
+  assert_eq!(
     chrome.paste("world"),
-    "expected Ctrl+V to replace selection with pasted text"
+    vec![ChromeFrameEvent::AddressBarTextChanged("world".to_string())]
   );
   assert_eq!(
     input_value_by_id(chrome.document().dom(), "address-bar").as_deref(),
@@ -113,7 +115,7 @@ fn chrome_frame_address_bar_supports_clipboard_and_ime() -> Result<()> {
   );
 
   // IME preedit should update interaction state without mutating the DOM value.
-  assert!(chrome.ime_preedit("あ", Some(1)));
+  assert!(chrome.ime_preedit("あ", Some((1, 1))));
   assert_eq!(
     input_value_by_id(chrome.document().dom(), "address-bar").as_deref(),
     Some("world"),
@@ -128,7 +130,10 @@ fn chrome_frame_address_bar_supports_clipboard_and_ime() -> Result<()> {
   assert_eq!(preedit.text, "あ");
   assert_eq!(preedit.cursor, Some((1, 1)));
 
-  assert!(chrome.ime_commit("い"));
+  assert_eq!(
+    chrome.ime_commit("い"),
+    vec![ChromeFrameEvent::AddressBarTextChanged("worldい".to_string())]
+  );
   assert!(chrome.interaction_state().ime_preedit.is_none());
   assert_eq!(
     input_value_by_id(chrome.document().dom(), "address-bar").as_deref(),
@@ -136,7 +141,7 @@ fn chrome_frame_address_bar_supports_clipboard_and_ime() -> Result<()> {
     "expected committed IME text to be inserted into the input value"
   );
 
-  assert!(chrome.ime_preedit("x", Some(1)));
+  assert!(chrome.ime_preedit("x", Some((1, 1))));
   assert!(chrome.ime_cancel());
   assert!(chrome.interaction_state().ime_preedit.is_none());
   assert_eq!(
@@ -150,4 +155,3 @@ fn chrome_frame_address_bar_supports_clipboard_and_ime() -> Result<()> {
 
   Ok(())
 }
-

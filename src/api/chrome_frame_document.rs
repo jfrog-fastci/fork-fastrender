@@ -1,3 +1,13 @@
+//! Standalone chrome-frame helper built on [`BrowserDocument`].
+//!
+//! This type exists in the public `api` surface for embeddings that want to render *custom* chrome
+//! HTML/CSS and still get correct interaction behaviour (notably `:hover` clearing via
+//! [`ChromeFrameDocument::pointer_leave`]).
+//!
+//! For the *renderer-chrome* runtime (the browser UI rendered by FastRender itself, driven by
+//! `BrowserAppState` + `chrome-action:` URLs), prefer [`crate::chrome_frame::ChromeFrameDocument`]
+//! (re-exported as [`crate::ui::ChromeFrameDocument`]).
+
 use crate::geometry::Point;
 use crate::interaction::{InteractionEngine, InteractionState};
 use crate::scroll::ScrollState;
