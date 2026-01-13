@@ -1340,3 +1340,141 @@ fn range_delete_contents_detaches_nodes_removed_from_partially_contained_element
   // The range collapses to the computed collapse point (between <b> and <u>).
   assert_range_collapsed(&doc, range, root, 1);
 }
+
+#[test]
+fn range_point_methods_basic_positions() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>",
+    "<span id=a></span>",
+    "<span id=b></span>",
+    "<span id=c></span>",
+    "</div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let a = doc.get_element_by_id("a").expect("a node not found");
+  let b = doc.get_element_by_id("b").expect("b node not found");
+  let c = doc.get_element_by_id("c").expect("c node not found");
+
+  // Select the middle <span id=b> node.
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 1).unwrap();
+  doc.range_set_end(range, host, 2).unwrap();
+
+  assert_eq!(doc.range_compare_point(range, host, 0).unwrap(), -1);
+  assert_eq!(doc.range_compare_point(range, a, 0).unwrap(), -1);
+  assert_eq!(doc.range_compare_point(range, host, 1).unwrap(), 0);
+  assert_eq!(doc.range_compare_point(range, b, 0).unwrap(), 0);
+  assert_eq!(doc.range_compare_point(range, c, 0).unwrap(), 1);
+  assert_eq!(doc.range_compare_point(range, host, 3).unwrap(), 1);
+
+  assert!(!doc.range_is_point_in_range(range, host, 0).unwrap());
+  assert!(doc.range_is_point_in_range(range, host, 1).unwrap());
+  assert!(doc.range_is_point_in_range(range, b, 0).unwrap());
+  assert!(doc.range_is_point_in_range(range, host, 2).unwrap());
+  assert!(!doc.range_is_point_in_range(range, c, 0).unwrap());
+  assert!(!doc.range_is_point_in_range(range, host, 3).unwrap());
+
+  assert!(!doc.range_intersects_node(range, a).unwrap());
+  assert!(doc.range_intersects_node(range, b).unwrap());
+  assert!(!doc.range_intersects_node(range, c).unwrap());
+
+  // Ancestors should intersect if they contain any of the range.
+  assert!(doc.range_intersects_node(range, host).unwrap());
+  assert!(doc.range_intersects_node(range, doc.root()).unwrap());
+}
+
+#[test]
+fn range_point_methods_use_utf16_offsets_for_character_data() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>a😃b</div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let text = doc.first_child(host).expect("expected text child");
+
+  // "a😃b" has UTF-16 length 4: "a" (1) + "😃" (2) + "b" (1).
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 3).unwrap();
+
+  assert_eq!(doc.range_compare_point(range, text, 0).unwrap(), -1);
+  assert_eq!(doc.range_compare_point(range, text, 2).unwrap(), 0); // inside surrogate pair
+  assert_eq!(doc.range_compare_point(range, text, 4).unwrap(), 1);
+
+  assert!(doc.range_is_point_in_range(range, text, 2).unwrap());
+  assert!(!doc.range_is_point_in_range(range, text, 4).unwrap());
+
+  assert!(matches!(
+    doc.range_compare_point(range, text, 5),
+    Err(DomError::IndexSizeError)
+  ));
+  assert!(matches!(
+    doc.range_is_point_in_range(range, text, 5),
+    Err(DomError::IndexSizeError)
+  ));
+}
+
+#[test]
+fn range_point_methods_handle_disconnected_and_other_roots() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>",
+    "<template shadowrootmode=open><span id=inside></span></template>",
+    "</div>",
+    "<p id=light></p>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let light = doc.get_element_by_id("light").expect("light node not found");
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let shadow_root = doc.node(host).children[0];
+  let inside = doc.node(shadow_root).children[0];
+
+  assert!(
+    matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }),
+    "expected host to have an attached ShadowRoot"
+  );
+
+  let range = doc.create_range();
+  doc.range_set_start(range, light, 0).unwrap();
+  doc.range_set_end(range, light, 0).unwrap();
+
+  // Node inside a different tree root (shadow tree) should be treated as out-of-range.
+  assert!(!doc.range_is_point_in_range(range, inside, 0).unwrap());
+  assert!(matches!(
+    doc.range_compare_point(range, inside, 0),
+    Err(DomError::WrongDocumentError)
+  ));
+  assert!(!doc.range_intersects_node(range, inside).unwrap());
+
+  // Disconnected nodes behave similarly: comparePoint throws, others return false.
+  let detached = doc.create_element("div", "");
+  assert!(!doc.range_is_point_in_range(range, detached, 999).unwrap());
+  assert!(matches!(
+    doc.range_compare_point(range, detached, 999),
+    Err(DomError::WrongDocumentError)
+  ));
+  assert!(!doc.range_intersects_node(range, detached).unwrap());
+
+  // Doctype is a valid node in the same root but is not a valid boundary point.
+  let doctype = doc.doctype().expect("doctype node not found");
+  assert!(matches!(
+    doc.range_is_point_in_range(range, doctype, 0),
+    Err(DomError::InvalidNodeTypeError)
+  ));
+  assert!(matches!(
+    doc.range_compare_point(range, doctype, 0),
+    Err(DomError::InvalidNodeTypeError)
+  ));
+}

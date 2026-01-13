@@ -558,6 +558,139 @@ impl Document {
     Ok(id)
   }
 
+  /// `Range.prototype.isPointInRange(node, offset)`.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-ispointinrange
+  pub fn range_is_point_in_range(
+    &self,
+    range: RangeId,
+    node: NodeId,
+    offset: usize,
+  ) -> DomResult<bool> {
+    // Validate `node` exists (defensive; callers should only pass valid NodeIds).
+    let _ = self.node_checked(node)?;
+
+    let range = self.range(range)?;
+    let range_root = self.tree_root_for_range(range.start.node);
+    let node_root = self.tree_root_for_range(node);
+    if range_root != node_root {
+      // Spec: return false when the point is in a different tree root.
+      return Ok(false);
+    }
+
+    if matches!(&self.node(node).kind, NodeKind::Doctype { .. }) {
+      return Err(DomError::InvalidNodeTypeError);
+    }
+
+    if offset > self.node_length(node)? {
+      return Err(DomError::IndexSizeError);
+    }
+
+    let point = BoundaryPoint { node, offset };
+    let start = range.start;
+    let end = range.end;
+    if matches!(
+      self.boundary_point_position(point, start),
+      BoundaryPointPosition::Before
+    ) || matches!(
+      self.boundary_point_position(point, end),
+      BoundaryPointPosition::After
+    ) {
+      return Ok(false);
+    }
+
+    Ok(true)
+  }
+
+  /// `Range.prototype.comparePoint(node, offset)`.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-comparepoint
+  pub fn range_compare_point(&self, range: RangeId, node: NodeId, offset: usize) -> DomResult<i16> {
+    // Validate `node` exists (defensive; callers should only pass valid NodeIds).
+    let _ = self.node_checked(node)?;
+
+    let range = self.range(range)?;
+    let range_root = self.tree_root_for_range(range.start.node);
+    let node_root = self.tree_root_for_range(node);
+    if range_root != node_root {
+      return Err(DomError::WrongDocumentError);
+    }
+
+    if matches!(&self.node(node).kind, NodeKind::Doctype { .. }) {
+      return Err(DomError::InvalidNodeTypeError);
+    }
+
+    if offset > self.node_length(node)? {
+      return Err(DomError::IndexSizeError);
+    }
+
+    let point = BoundaryPoint { node, offset };
+    let start = range.start;
+    let end = range.end;
+
+    if matches!(
+      self.boundary_point_position(point, start),
+      BoundaryPointPosition::Before
+    ) {
+      return Ok(-1);
+    }
+    if matches!(
+      self.boundary_point_position(point, end),
+      BoundaryPointPosition::After
+    ) {
+      return Ok(1);
+    }
+    Ok(0)
+  }
+
+  /// `Range.prototype.intersectsNode(node)`.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-intersectsnode
+  pub fn range_intersects_node(&self, range: RangeId, node: NodeId) -> DomResult<bool> {
+    // Validate `node` exists (defensive; callers should only pass valid NodeIds).
+    let _ = self.node_checked(node)?;
+
+    let range = self.range(range)?;
+    let range_root = self.tree_root_for_range(range.start.node);
+    let node_root = self.tree_root_for_range(node);
+    if range_root != node_root {
+      return Ok(false);
+    }
+
+    let Some(parent) = self.range_parent(node) else {
+      // Spec: if the node has no parent, it intersects the range (assuming same root).
+      return Ok(true);
+    };
+
+    let Some(offset) = self.node_index(node) else {
+      return Ok(false);
+    };
+
+    let start = range.start;
+    let end = range.end;
+
+    let before_end = matches!(
+      self.boundary_point_position(
+        BoundaryPoint { node: parent, offset },
+        end
+      ),
+      BoundaryPointPosition::Before
+    );
+
+    let after_start = matches!(
+      self.boundary_point_position(
+        BoundaryPoint {
+          node: parent,
+          offset: offset.saturating_add(1),
+        },
+        start
+      ),
+      BoundaryPointPosition::After
+    );
+
+    Ok(before_end && after_start)
+  }
+
   /// ShadowRoot-aware "root of node" helper for DOM Range algorithms.
   ///
   /// `dom2` stores ShadowRoot nodes in the main tree with a `parent` pointer to the host element so
