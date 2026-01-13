@@ -10,7 +10,7 @@ use clap::{ArgAction, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use common::args::{
   cpu_budget, default_jobs, parse_bool_preference, parse_color_scheme, parse_contrast, parse_shard,
   parse_viewport, AnimationTimeArgs, CompatArgs, DiskCacheArgs, DiskCacheStalePolicyArg,
-  LayoutParallelArgs, MemoryGuardArgs, RenderParseArgs, ResourceAccessArgs,
+  JsExecutionArgs, LayoutParallelArgs, MemoryGuardArgs, RenderParseArgs, ResourceAccessArgs,
 };
 use common::render_pipeline::{
   append_timeout_stderr_note, apply_test_render_delay, apply_worker_common_args,
@@ -20,14 +20,16 @@ use common::render_pipeline::{
   render_fetched_document_with_artifacts, summarize_exit_status, ExitStatusSummary,
   RenderConfigBundle, RenderSurface, WorkerCommonArgs, CLI_RENDER_STACK_SIZE,
 };
-use fastrender::api::{FastRenderPool, FastRenderPoolConfig};
+use fastrender::api::{BrowserTab, FastRenderPool, FastRenderPoolConfig};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::debug::snapshot::QuirksModeSnapshot;
 use fastrender::dom::{DomNode, DomNodeType};
 use fastrender::error::ResourceError;
 use fastrender::image_output::encode_image;
+use fastrender::js::JsExecutionOptions;
 use fastrender::pageset::{pageset_stem, PagesetFilter, CACHE_HTML_DIR};
 use fastrender::paint::display_list::DisplayItem;
+use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::resource::normalize_user_agent_for_log;
 #[cfg(not(feature = "disk_cache"))]
 use fastrender::resource::CachingFetcher;
@@ -72,10 +74,6 @@ const WORKER_RAYON_THREADS_ENV: &str = "RAYON_NUM_THREADS";
 
 fn env_value_is_nonempty(value: Option<&std::ffi::OsStr>) -> bool {
   value.is_some_and(|value| !value.is_empty())
-}
-
-fn env_var_is_nonempty(key: &str) -> bool {
-  env_value_is_nonempty(std::env::var_os(key).as_deref())
 }
 
 fn default_rayon_threads_per_worker(total_cpus: usize, jobs: usize) -> usize {
@@ -287,6 +285,20 @@ struct Args {
   #[command(flatten)]
   render_parse: RenderParseArgs,
 
+  /// Enable JavaScript execution (experimental)
+  #[arg(long = "js", action = ArgAction::SetTrue)]
+  js_enabled: bool,
+
+  /// Maximum number of frames to render while driving JavaScript until stable.
+  ///
+  /// This bounds `BrowserTab::run_until_stable` so hostile pages cannot keep scheduling work
+  /// indefinitely.
+  #[arg(long = "js-max-frames", default_value_t = 50, value_name = "N")]
+  js_max_frames: usize,
+
+  #[command(flatten)]
+  js: JsExecutionArgs,
+
   /// Enable per-stage timing logs
   #[arg(long)]
   timings: bool,
@@ -356,6 +368,9 @@ struct RenderShared {
   render_pool: FastRenderPool,
   fetcher: Arc<dyn ResourceFetcher>,
   base_options: fastrender::api::RenderOptions,
+  js_enabled: bool,
+  js_max_frames: usize,
+  js_execution_options: JsExecutionOptions,
   artifact_request: RenderArtifactRequest,
   dump_mode: DumpMode,
   only_failures: bool,
@@ -412,6 +427,17 @@ struct RenderOutcome {
   png: Vec<u8>,
   diagnostics: fastrender::RenderDiagnostics,
   artifacts: RenderArtifacts,
+}
+
+enum RenderJob {
+  Static {
+    resource: FetchedResource,
+    base_hint: String,
+  },
+  Js {
+    document_url: String,
+    html: String,
+  },
 }
 
 fn main() {
@@ -547,6 +573,9 @@ fn run(args: Args) -> io::Result<()> {
     println!("Mode: in-process (no worker isolation)");
   } else {
     println!("Mode: per-page worker isolation");
+  }
+  if args.js_enabled {
+    println!("JavaScript: enabled (max_frames={})", args.js_max_frames);
   }
   println!();
 
@@ -896,7 +925,7 @@ fn build_render_shared(
     Arc::new(CachingFetcher::with_config(http, memory_config));
 
   let RenderConfigBundle {
-    config,
+    mut config,
     mut options,
   } = build_render_configs(&RenderSurface {
     viewport: args.viewport,
@@ -920,6 +949,12 @@ fn build_render_shared(
     compat_profile: args.compat.compat_profile(),
     dom_compat_mode: args.compat.dom_compat_mode(),
   });
+
+  if args.js_enabled {
+    // When JavaScript execution is enabled, render with "scripting enabled" semantics (affects the
+    // `(scripting: ...)` media feature baseline and other JS-aware defaults).
+    config = config.with_dom_scripting_enabled(true);
+  }
 
   if args.memory.stage_mem_budget_mb > 0 {
     let Some(bytes) = args.memory.stage_mem_budget_mb.checked_mul(1024 * 1024) else {
@@ -952,6 +987,17 @@ fn build_render_shared(
     }
   }
 
+  let mut js_execution_options = args.js.to_options();
+  // Treat `--js-max-script-bytes 0` as "unbounded" (disables the script size limit).
+  if js_execution_options.max_script_bytes == 0 {
+    js_execution_options.max_script_bytes = usize::MAX;
+  }
+  // `render_pages --js` uses the `vm-js` executor, which can evaluate module scripts. Enable
+  // module script support so `<script type="module">` works.
+  if args.js_enabled {
+    js_execution_options.supports_module_scripts = true;
+  }
+
   let render_pool = FastRenderPool::with_config(
     FastRenderPoolConfig::new()
       .with_renderer_config(config.clone())
@@ -964,6 +1010,9 @@ fn build_render_shared(
     render_pool,
     fetcher,
     base_options: options,
+    js_enabled: args.js_enabled,
+    js_max_frames: args.js_max_frames,
+    js_execution_options,
     artifact_request: args.dump_intermediate.artifact_request(),
     dump_mode: args.dump_intermediate,
     only_failures: args.only_failures,
@@ -1078,59 +1127,119 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
     }
   };
 
-  let _ = writeln!(log, "HTML bytes: {}", cached.byte_len);
-  if let Some(ct) = &cached.resource.content_type {
+  let common::render_pipeline::CachedDocument {
+    resource: cached_resource,
+    document: cached_document,
+    byte_len,
+  } = cached;
+  let common::render_pipeline::PreparedDocument {
+    html: cached_html,
+    base_hint: requested_url,
+    base_url: cached_base_url,
+    referrer_policy: _,
+  } = cached_document;
+
+  let _ = writeln!(log, "HTML bytes: {}", byte_len);
+  if let Some(ct) = &cached_resource.content_type {
     let _ = writeln!(log, "Content-Type: {}", ct);
   }
   let _ = writeln!(log, "Viewport: {}x{}", shared.viewport.0, shared.viewport.1);
   let _ = writeln!(log, "Scroll-X: {}px", shared.base_options.scroll_x);
   let _ = writeln!(log, "Scroll-Y: {}px", shared.base_options.scroll_y);
 
-  let _ = writeln!(log, "Resource base: {}", cached.document.base_url);
+  let _ = writeln!(log, "Resource base: {}", cached_base_url);
 
-  let requested_url = cached.document.base_hint.clone();
-  let resource = follow_client_redirects_resource(
-    shared.fetcher.as_ref(),
-    cached.resource,
-    &requested_url,
-    |line| {
-      let _ = writeln!(log, "{line}");
-    },
-  );
-  let base_hint = resource
-    .final_url
-    .clone()
-    .unwrap_or_else(|| requested_url.clone());
-  let doc = decode_html_resource(&resource, &base_hint);
-  let _ = writeln!(log, "Final resource base: {}", doc.base_url);
+  let render_job = if shared.js_enabled {
+    let _ = writeln!(
+      log,
+      "JavaScript: enabled (max_frames={})",
+      shared.js_max_frames
+    );
+    RenderJob::Js {
+      document_url: requested_url,
+      html: cached_html,
+    }
+  } else {
+    let resource = follow_client_redirects_resource(
+      shared.fetcher.as_ref(),
+      cached_resource,
+      &requested_url,
+      |line| {
+        let _ = writeln!(log, "{line}");
+      },
+    );
+    let base_hint = resource
+      .final_url
+      .clone()
+      .unwrap_or_else(|| requested_url.clone());
+    let doc = decode_html_resource(&resource, &base_hint);
+    let _ = writeln!(log, "Final resource base: {}", doc.base_url);
+    RenderJob::Static { resource, base_hint }
+  };
 
   let worker_name = name.clone();
   let render_opts = shared.base_options.clone();
-  let resource_for_render = resource;
-  let base_hint_for_render = base_hint;
   let render_request = shared.artifact_request;
 
   let run_render = {
     let render_pool = shared.render_pool.clone();
     let verbose = shared.verbose;
     let timeout_secs = shared.timeout_secs;
+    let js_execution_options = shared.js_execution_options;
+    let js_max_frames = shared.js_max_frames;
+    let render_job = render_job;
     move || -> Result<RenderOutcome, Status> {
       let render_work = move || -> Result<RenderOutcome, fastrender::Error> {
-        let report = render_pool.with_renderer(|renderer| {
-          render_fetched_document_with_artifacts(
-            renderer,
-            &resource_for_render,
-            Some(&base_hint_for_render),
-            &render_opts,
-            render_request,
-          )
-        })?;
-        let png = encode_image(&report.pixmap, OutputFormat::Png)?;
-        Ok(RenderOutcome {
-          png,
-          diagnostics: report.diagnostics,
-          artifacts: report.artifacts,
-        })
+        match render_job {
+          RenderJob::Static { resource, base_hint } => {
+            let report = render_pool.with_renderer(|renderer| {
+              render_fetched_document_with_artifacts(
+                renderer,
+                &resource,
+                Some(&base_hint),
+                &render_opts,
+                render_request,
+              )
+            })?;
+            let png = encode_image(&report.pixmap, OutputFormat::Png)?;
+            Ok(RenderOutcome {
+              png,
+              diagnostics: report.diagnostics,
+              artifacts: report.artifacts,
+            })
+          }
+          RenderJob::Js { document_url, html } => {
+            // Ensure JavaScript execution is bounded by the same cooperative render timeout. We keep
+            // this deadline alive through navigation + JS + render so `check_root` operations share
+            // one budget (see `fetch_and_render --js`).
+            let deadline =
+              RenderDeadline::new(render_opts.timeout, render_opts.cancel_callback.clone());
+            let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+
+            let factory = render_pool.factory();
+            let renderer = factory.build_renderer()?;
+            let mut tab = BrowserTab::with_renderer_and_vmjs_and_js_execution_options(
+              renderer,
+              render_opts.clone(),
+              js_execution_options,
+            )?;
+
+            tab.register_html_source(document_url.clone(), html);
+            tab.navigate_to_url(&document_url, render_opts.clone())?;
+
+            let _ = tab.run_until_stable(js_max_frames)?;
+
+            let pixmap = tab.render_frame()?;
+            tab.write_trace()?;
+            let diagnostics = tab.diagnostics_snapshot().unwrap_or_default();
+            let png = encode_image(&pixmap, OutputFormat::Png)?;
+            Ok(RenderOutcome {
+              png,
+              diagnostics,
+              artifacts: RenderArtifacts::new(render_request),
+            })
+          }
+        }
       };
 
       let (tx, rx) = channel();
@@ -1407,6 +1516,60 @@ fn build_worker_command(
   }
   if args.timings {
     cmd.arg("--timings");
+  }
+  if args.js_enabled {
+    cmd.arg("--js");
+  }
+  cmd
+    .arg("--js-max-frames")
+    .arg(args.js_max_frames.to_string());
+  if let Some(max_script_bytes) = args.js.max_script_bytes {
+    cmd
+      .arg("--js-max-script-bytes")
+      .arg(max_script_bytes.to_string());
+  }
+  if let Some(max_pending_tasks) = args.js.max_pending_tasks {
+    cmd
+      .arg("--js-max-pending-tasks")
+      .arg(max_pending_tasks.to_string());
+  }
+  if let Some(max_pending_microtasks) = args.js.max_pending_microtasks {
+    cmd
+      .arg("--js-max-pending-microtasks")
+      .arg(max_pending_microtasks.to_string());
+  }
+  if let Some(max_pending_timers) = args.js.max_pending_timers {
+    cmd
+      .arg("--js-max-pending-timers")
+      .arg(max_pending_timers.to_string());
+  }
+  if let Some(max_tasks_per_spin) = args.js.max_tasks_per_spin {
+    cmd.arg("--js-max-tasks").arg(max_tasks_per_spin.to_string());
+  }
+  if let Some(max_microtasks_per_spin) = args.js.max_microtasks_per_spin {
+    cmd
+      .arg("--js-max-microtasks")
+      .arg(max_microtasks_per_spin.to_string());
+  }
+  if let Some(max_wall_time_per_spin_ms) = args.js.max_wall_time_per_spin_ms {
+    cmd
+      .arg("--js-max-wall-ms")
+      .arg(max_wall_time_per_spin_ms.to_string());
+  }
+  if let Some(max_instruction_count) = args.js.max_instruction_count {
+    cmd
+      .arg("--js-max-instructions")
+      .arg(max_instruction_count.to_string());
+  }
+  if let Some(max_vm_heap_bytes) = args.js.max_vm_heap_bytes {
+    cmd
+      .arg("--js-max-vm-heap-bytes")
+      .arg(max_vm_heap_bytes.to_string());
+  }
+  if let Some(max_stack_depth) = args.js.max_stack_depth {
+    cmd
+      .arg("--js-max-stack-depth")
+      .arg(max_stack_depth.to_string());
   }
 
   maybe_set_worker_rayon_threads(&mut cmd, rayon_threads_per_worker);
