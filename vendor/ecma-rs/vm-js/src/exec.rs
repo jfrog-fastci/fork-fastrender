@@ -14197,6 +14197,61 @@ pub(crate) enum GenFrame {
     left: Value,
   },
 
+  /// Continue an assignment expression after evaluating a member base expression.
+  AssignMemberAfterBase {
+    expr: *const BinaryExpr,
+    member: *const MemberExpr,
+  },
+  /// Continue an assignment expression after evaluating a computed member base expression.
+  AssignComputedMemberAfterBase {
+    expr: *const BinaryExpr,
+    member: *const ComputedMemberExpr,
+  },
+  /// Continue an assignment expression after evaluating a computed member key expression.
+  AssignComputedMemberAfterMember {
+    expr: *const BinaryExpr,
+    member: *const ComputedMemberExpr,
+    base: Value,
+  },
+  /// Continue a simple assignment after evaluating the RHS.
+  ///
+  /// For binding assignments, `base`/`key` are `None`. For property/private-name assignments, `base`
+  /// and `key` are set, where `key` is a `Value::String` or `Value::Symbol`.
+  AssignAfterRhs {
+    expr: *const BinaryExpr,
+    base: Option<Value>,
+    key: Option<Value>,
+  },
+  /// Continue a `+=` assignment after evaluating the RHS.
+  ///
+  /// `left` stores the original `GetValue` result of the reference before evaluating the RHS.
+  AssignAddAfterRhs {
+    expr: *const BinaryExpr,
+    base: Option<Value>,
+    key: Option<Value>,
+    left: Value,
+  },
+
+  /// Continue an update expression after evaluating a member base expression.
+  UpdateMemberAfterBase {
+    member: *const MemberExpr,
+    delta: i8,
+    prefix: bool,
+  },
+  /// Continue an update expression after evaluating a computed member base expression.
+  UpdateComputedMemberAfterBase {
+    member: *const ComputedMemberExpr,
+    delta: i8,
+    prefix: bool,
+  },
+  /// Continue an update expression after evaluating a computed member key expression.
+  UpdateComputedMemberAfterMember {
+    member: *const ComputedMemberExpr,
+    base: Value,
+    delta: i8,
+    prefix: bool,
+  },
+
   /// Continue a call expression while evaluating arguments.
   CallAfterCallee { expr: *const CallExpr },
   CallMemberAfterBase {
@@ -14245,6 +14300,25 @@ impl Trace for GenFrame {
       GenFrame::ComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
       GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
       GenFrame::BinaryAfterRight { left, .. } => tracer.trace_value(*left),
+      GenFrame::AssignComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
+      GenFrame::UpdateComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
+      GenFrame::AssignAfterRhs { base, key, .. } => {
+        if let Some(v) = base {
+          tracer.trace_value(*v);
+        }
+        if let Some(v) = key {
+          tracer.trace_value(*v);
+        }
+      }
+      GenFrame::AssignAddAfterRhs { base, key, left, .. } => {
+        if let Some(v) = base {
+          tracer.trace_value(*v);
+        }
+        if let Some(v) = key {
+          tracer.trace_value(*v);
+        }
+        tracer.trace_value(*left);
+      }
       GenFrame::CallArgs {
         callee, this, args, ..
       } => {
@@ -31750,6 +31824,14 @@ fn gen_eval_expr(
         }
       }
     }
+    Expr::Unary(unary)
+      if matches!(
+        unary.stx.operator,
+        OperatorName::PrefixIncrement | OperatorName::PrefixDecrement
+      ) =>
+    {
+      gen_eval_update_expression(evaluator, scope, &unary.stx.argument, unary.stx.operator)
+    }
     // For now, defer to the async-style continuation evaluator for expression forms that can nest
     // yield within larger expressions.
     Expr::Unary(unary) => match gen_eval_expr(evaluator, scope, &unary.stx.argument)? {
@@ -31778,6 +31860,14 @@ fn gen_eval_expr(
         Ok(GenEval::Suspend(suspend))
       }
     },
+    Expr::UnaryPostfix(unary)
+      if matches!(
+        unary.stx.operator,
+        OperatorName::PostfixIncrement | OperatorName::PostfixDecrement
+      ) =>
+    {
+      gen_eval_update_expression(evaluator, scope, &unary.stx.argument, unary.stx.operator)
+    }
     Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
@@ -31845,6 +31935,14 @@ fn gen_eval_expr(
         Ok(GenEval::Suspend(suspend))
       }
     },
+    Expr::Binary(binary)
+      if matches!(
+        binary.stx.operator,
+        OperatorName::Assignment | OperatorName::AssignmentAddition
+      ) =>
+    {
+      gen_eval_assignment_expr(evaluator, scope, &binary.stx)
+    }
     Expr::Binary(binary) => match gen_eval_expr(evaluator, scope, &binary.stx.left)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
@@ -32166,6 +32264,586 @@ fn gen_binary_after_left(
       }
     },
     _ => Err(VmError::Unimplemented("yield in binary operator")),
+  }
+}
+
+fn gen_apply_update_to_reference(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  reference: &Reference<'_>,
+  delta: i8,
+  prefix: bool,
+) -> Result<Value, VmError> {
+  let mut update_scope = scope.reborrow();
+  evaluator.root_reference(&mut update_scope, reference)?;
+
+  let old_value = evaluator.get_value_from_reference(&mut update_scope, reference)?;
+  update_scope.push_root(old_value)?;
+
+  let old_numeric = evaluator.to_numeric(&mut update_scope, old_value)?;
+  let delta_bigint = JsBigInt::from_i128(delta as i128)?;
+
+  let (old_out, new_value) = match old_numeric {
+    NumericValue::Number(n) => {
+      let new_n = n + f64::from(delta);
+      (Value::Number(n), Value::Number(new_n))
+    }
+    NumericValue::BigInt(b) => {
+      update_scope.push_root(Value::BigInt(b))?;
+      let bi = update_scope.heap().get_bigint(b)?;
+      let out = bi.add(&delta_bigint)?;
+      let out = update_scope.alloc_bigint(out)?;
+      (Value::BigInt(b), Value::BigInt(out))
+    }
+  };
+
+  update_scope.push_root(new_value)?;
+  evaluator.put_value_to_reference(&mut update_scope, reference, new_value)?;
+
+  if prefix {
+    Ok(new_value)
+  } else {
+    Ok(old_out)
+  }
+}
+
+fn gen_eval_update_expression(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  argument: &Node<Expr>,
+  operator: OperatorName,
+) -> Result<GenEval<Completion>, VmError> {
+  let (delta, prefix) = match operator {
+    OperatorName::PrefixIncrement => (1, true),
+    OperatorName::PrefixDecrement => (-1, true),
+    OperatorName::PostfixIncrement => (1, false),
+    OperatorName::PostfixDecrement => (-1, false),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "generator update evaluator called for non-update operator",
+      ))
+    }
+  };
+
+  match &*argument.stx {
+    Expr::Id(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
+      Ok(GenEval::Complete(Completion::normal(value)))
+    }
+    Expr::IdPat(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
+      Ok(GenEval::Complete(Completion::normal(value)))
+    }
+    Expr::Member(member) => {
+      let member = &*member.stx;
+      if member.optional_chaining {
+        return Err(VmError::InvariantViolation(
+          "optional chaining used in update target",
+        ));
+      }
+
+      match gen_eval_expr(evaluator, scope, &member.left)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let base = v.unwrap_or(Value::Undefined);
+            let reference = gen_reference_from_member(evaluator, scope, member, base)?;
+            let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
+            Ok(GenEval::Complete(Completion::normal(value)))
+          }
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::UpdateMemberAfterBase {
+              member: member as *const MemberExpr,
+              delta,
+              prefix,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    Expr::ComputedMember(member) => {
+      let member = &*member.stx;
+      if member.optional_chaining {
+        return Err(VmError::InvariantViolation(
+          "optional chaining used in update target",
+        ));
+      }
+
+      match gen_eval_expr(evaluator, scope, &member.object)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            gen_update_computed_member_after_base(evaluator, scope, member, v.unwrap_or(Value::Undefined), delta, prefix)
+          }
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::UpdateComputedMemberAfterBase {
+              member: member as *const ComputedMemberExpr,
+              delta,
+              prefix,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    _ => Err(VmError::Unimplemented("expression is not a reference")),
+  }
+}
+
+fn gen_update_computed_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  member: &ComputedMemberExpr,
+  base: Value,
+  delta: i8,
+  prefix: bool,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut member_scope = scope.reborrow();
+  member_scope.push_root(base)?;
+
+  match gen_eval_expr(evaluator, &mut member_scope, &member.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => {
+        gen_update_computed_member_after_member(evaluator, &mut member_scope, member, base, v.unwrap_or(Value::Undefined), delta, prefix)
+      }
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      drop(member_scope);
+      // Root the base value so it survives until the next yield boundary.
+      scope.push_root(base)?;
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::UpdateComputedMemberAfterMember {
+          member: member as *const ComputedMemberExpr,
+          base,
+          delta,
+          prefix,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_update_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  _member: &ComputedMemberExpr,
+  base: Value,
+  member_value: Value,
+  delta: i8,
+  prefix: bool,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut key_scope = scope.reborrow();
+  key_scope.push_roots(&[base, member_value])?;
+  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
+
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut key_scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
+  let reference = Reference::Property { base, key };
+  let value = gen_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)?;
+  Ok(GenEval::Complete(Completion::normal(value)))
+}
+
+fn gen_eval_assignment_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  match expr.operator {
+    OperatorName::Assignment | OperatorName::AssignmentAddition => {}
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "generator assignment evaluator called for non-assignment operator",
+      ))
+    }
+  }
+
+  // Destructuring assignment with yield in the RHS is not yet supported in the generator
+  // continuation path.
+  if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
+    return Err(VmError::Unimplemented(
+      "yield in destructuring assignment expression",
+    ));
+  }
+
+  match &*expr.left.stx {
+    Expr::Id(id) => gen_eval_assignment_apply_reference(
+      evaluator,
+      scope,
+      expr,
+      Reference::Binding(&id.stx.name),
+      None,
+      None,
+    ),
+    Expr::IdPat(id) => gen_eval_assignment_apply_reference(
+      evaluator,
+      scope,
+      expr,
+      Reference::Binding(&id.stx.name),
+      None,
+      None,
+    ),
+    Expr::Member(member) => gen_eval_assignment_to_member(evaluator, scope, expr, &member.stx),
+    Expr::ComputedMember(member) => {
+      gen_eval_assignment_to_computed_member(evaluator, scope, expr, &member.stx)
+    }
+    _ => Err(VmError::Unimplemented("expression is not a reference")),
+  }
+}
+
+fn gen_eval_assignment_to_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+  member: &MemberExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining {
+    return Err(VmError::InvariantViolation(
+      "optional chaining used in assignment target",
+    ));
+  }
+
+  match gen_eval_expr(evaluator, scope, &member.left)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_eval_assignment_to_member_after_base(
+        evaluator,
+        scope,
+        expr,
+        member,
+        v.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::AssignMemberAfterBase {
+          expr: expr as *const BinaryExpr,
+          member: member as *const MemberExpr,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_assignment_to_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+  member: &MemberExpr,
+  base: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
+  let (reference, key_value) = if member.right.starts_with('#') {
+    let sym = scope
+      .heap()
+      .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
+      .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+    (
+      Reference::Private {
+        base,
+        sym,
+        name: &member.right,
+      },
+      Value::Symbol(sym),
+    )
+  } else {
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(base)?;
+    let key_s = key_scope.alloc_string(&member.right)?;
+    (
+      Reference::Property {
+        base,
+        key: PropertyKey::from_string(key_s),
+      },
+      Value::String(key_s),
+    )
+  };
+
+  gen_eval_assignment_apply_reference(
+    evaluator,
+    scope,
+    expr,
+    reference,
+    Some(base),
+    Some(key_value),
+  )
+}
+
+fn gen_eval_assignment_to_computed_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+  member: &ComputedMemberExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining {
+    return Err(VmError::InvariantViolation(
+      "optional chaining used in assignment target",
+    ));
+  }
+
+  match gen_eval_expr(evaluator, scope, &member.object)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_eval_assignment_to_computed_member_after_base(
+        evaluator,
+        scope,
+        expr,
+        member,
+        v.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::AssignComputedMemberAfterBase {
+          expr: expr as *const BinaryExpr,
+          member: member as *const ComputedMemberExpr,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_assignment_to_computed_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+  member: &ComputedMemberExpr,
+  base: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut member_scope = scope.reborrow();
+  member_scope.push_root(base)?;
+
+  match gen_eval_expr(evaluator, &mut member_scope, &member.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_eval_assignment_to_computed_member_after_member(
+        evaluator,
+        &mut member_scope,
+        expr,
+        member,
+        base,
+        v.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      drop(member_scope);
+      // Root the base value so it survives until the next yield boundary.
+      scope.push_root(base)?;
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::AssignComputedMemberAfterMember {
+          expr: expr as *const BinaryExpr,
+          member: member as *const ComputedMemberExpr,
+          base,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_assignment_to_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+  _member: &ComputedMemberExpr,
+  base: Value,
+  member_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut key_scope = scope.reborrow();
+  key_scope.push_roots(&[base, member_value])?;
+  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
+
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut key_scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
+  let reference = Reference::Property { base, key };
+  let key_value = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+
+  gen_eval_assignment_apply_reference(
+    evaluator,
+    &mut key_scope,
+    expr,
+    reference,
+    Some(base),
+    Some(key_value),
+  )
+}
+
+fn gen_eval_assignment_apply_reference(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+  reference: Reference<'_>,
+  base: Option<Value>,
+  key: Option<Value>,
+) -> Result<GenEval<Completion>, VmError> {
+  match expr.operator {
+    OperatorName::Assignment => {
+      let mut rhs_scope = scope.reborrow();
+      evaluator.root_reference(&mut rhs_scope, &reference)?;
+
+      match gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let value = v.unwrap_or(Value::Undefined);
+            rhs_scope.push_root(value)?;
+            evaluator.put_value_to_reference(&mut rhs_scope, &reference, value)?;
+            Ok(GenEval::Complete(Completion::normal(value)))
+          }
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          drop(rhs_scope);
+          // Root the assignment target across the yield boundary.
+          if let (Some(base), Some(key)) = (base, key) {
+            scope.push_roots(&[base, key])?;
+            gen_frames_push(
+              &mut suspend.frames,
+              GenFrame::AssignAfterRhs {
+                expr: expr as *const BinaryExpr,
+                base: Some(base),
+                key: Some(key),
+              },
+            )?;
+          } else {
+            gen_frames_push(
+              &mut suspend.frames,
+              GenFrame::AssignAfterRhs {
+                expr: expr as *const BinaryExpr,
+                base: None,
+                key: None,
+              },
+            )?;
+          }
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    OperatorName::AssignmentAddition => {
+      let mut op_scope = scope.reborrow();
+      evaluator.root_reference(&mut op_scope, &reference)?;
+
+      let left = evaluator.get_value_from_reference(&mut op_scope, &reference)?;
+      op_scope.push_root(left)?;
+
+      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let right = v.unwrap_or(Value::Undefined);
+            let mut add_scope = op_scope.reborrow();
+            add_scope.push_root(right)?;
+            let value = evaluator.addition_operator(&mut add_scope, left, right)?;
+            add_scope.push_root(value)?;
+            evaluator.put_value_to_reference(&mut add_scope, &reference, value)?;
+            Ok(GenEval::Complete(Completion::normal(value)))
+          }
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          drop(op_scope);
+          // Root the assignment target + left operand across the yield boundary.
+          let mut roots: Vec<Value> = Vec::new();
+          roots.try_reserve_exact(3).map_err(|_| VmError::OutOfMemory)?;
+          if let (Some(base), Some(key)) = (base.as_ref(), key.as_ref()) {
+            roots.push(*base);
+            roots.push(*key);
+          }
+          roots.push(left);
+          scope.push_roots(&roots)?;
+
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::AssignAddAfterRhs {
+              expr: expr as *const BinaryExpr,
+              base,
+              key,
+              left,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    _ => Err(VmError::InvariantViolation(
+      "generator assignment apply called for unsupported operator",
+    )),
+  }
+}
+
+fn gen_reference_from_member<'a>(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  member: &'a MemberExpr,
+  base: Value,
+) -> Result<Reference<'a>, VmError> {
+  if member.optional_chaining {
+    return Err(VmError::InvariantViolation(
+      "optional chaining used in reference position",
+    ));
+  }
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
+  if member.right.starts_with('#') {
+    let sym = scope
+      .heap()
+      .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
+      .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+    Ok(Reference::Private {
+      base,
+      sym,
+      name: &member.right,
+    })
+  } else {
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(base)?;
+    let key_s = key_scope.alloc_string(&member.right)?;
+    Ok(Reference::Property {
+      base,
+      key: PropertyKey::from_string(key_s),
+    })
   }
 }
 
@@ -33067,6 +33745,268 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::AssignMemberAfterBase { expr, member } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let member = unsafe { &*member };
+          match gen_eval_assignment_to_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            member,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::AssignComputedMemberAfterBase { expr, member } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let member = unsafe { &*member };
+          match gen_eval_assignment_to_computed_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            member,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::AssignComputedMemberAfterMember { expr, member, base } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let member = unsafe { &*member };
+          match gen_eval_assignment_to_computed_member_after_member(
+            evaluator,
+            scope,
+            expr,
+            member,
+            base,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::AssignAfterRhs { expr, base, key } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let value = v.unwrap_or(Value::Undefined);
+
+          let reference = match (base, key) {
+            (None, None) => match &*expr.left.stx {
+              Expr::Id(id) => Reference::Binding(&id.stx.name),
+              Expr::IdPat(id) => Reference::Binding(&id.stx.name),
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "AssignAfterRhs used for non-binding LHS without base/key",
+                ))
+              }
+            },
+            (Some(base), Some(key_value)) => match key_value {
+              Value::String(s) => Reference::Property {
+                base,
+                key: PropertyKey::from_string(s),
+              },
+              Value::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
+                let name = match &*expr.left.stx {
+                  Expr::Member(member) => member.stx.right.as_str(),
+                  _ => "",
+                };
+                Reference::Private { base, sym, name }
+              }
+              Value::Symbol(sym) => Reference::Property {
+                base,
+                key: PropertyKey::from_symbol(sym),
+              },
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "assignment key should be a string or symbol",
+                ))
+              }
+            },
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "AssignAfterRhs has mismatched base/key values",
+              ))
+            }
+          };
+
+          let mut put_scope = scope.reborrow();
+          evaluator.root_reference(&mut put_scope, &reference)?;
+          put_scope.push_root(value)?;
+          match evaluator.put_value_to_reference(&mut put_scope, &reference, value) {
+            Ok(()) => state = Completion::normal(value),
+            Err(err) => state = gen_error_to_completion(evaluator, &mut put_scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::AssignAddAfterRhs {
+        expr,
+        base,
+        key,
+        left,
+      } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let right = v.unwrap_or(Value::Undefined);
+
+          let reference = match (base, key) {
+            (None, None) => match &*expr.left.stx {
+              Expr::Id(id) => Reference::Binding(&id.stx.name),
+              Expr::IdPat(id) => Reference::Binding(&id.stx.name),
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "AssignAddAfterRhs used for non-binding LHS without base/key",
+                ))
+              }
+            },
+            (Some(base), Some(key_value)) => match key_value {
+              Value::String(s) => Reference::Property {
+                base,
+                key: PropertyKey::from_string(s),
+              },
+              Value::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
+                let name = match &*expr.left.stx {
+                  Expr::Member(member) => member.stx.right.as_str(),
+                  _ => "",
+                };
+                Reference::Private { base, sym, name }
+              }
+              Value::Symbol(sym) => Reference::Property {
+                base,
+                key: PropertyKey::from_symbol(sym),
+              },
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "assignment key should be a string or symbol",
+                ))
+              }
+            },
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "AssignAddAfterRhs has mismatched base/key values",
+              ))
+            }
+          };
+
+          let mut op_scope = scope.reborrow();
+          evaluator.root_reference(&mut op_scope, &reference)?;
+          op_scope.push_roots(&[left, right])?;
+          match evaluator.addition_operator(&mut op_scope, left, right) {
+            Ok(value) => {
+              op_scope.push_root(value)?;
+              match evaluator.put_value_to_reference(&mut op_scope, &reference, value) {
+                Ok(()) => state = Completion::normal(value),
+                Err(err) => state = gen_error_to_completion(evaluator, &mut op_scope, err)?,
+              }
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, &mut op_scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::UpdateMemberAfterBase {
+        member,
+        delta,
+        prefix,
+      } => match state {
+        Completion::Normal(v) => {
+          let member = unsafe { &*member };
+          let base = v.unwrap_or(Value::Undefined);
+          match gen_reference_from_member(evaluator, scope, member, base) {
+            Ok(reference) => match gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix) {
+              Ok(v) => state = Completion::normal(v),
+              Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+            },
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::UpdateComputedMemberAfterBase {
+        member,
+        delta,
+        prefix,
+      } => match state {
+        Completion::Normal(v) => {
+          let member = unsafe { &*member };
+          match gen_update_computed_member_after_base(
+            evaluator,
+            scope,
+            member,
+            v.unwrap_or(Value::Undefined),
+            delta,
+            prefix,
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::UpdateComputedMemberAfterMember {
+        member,
+        base,
+        delta,
+        prefix,
+      } => match state {
+        Completion::Normal(v) => {
+          let member = unsafe { &*member };
+          match gen_update_computed_member_after_member(
+            evaluator,
+            scope,
+            member,
+            base,
+            v.unwrap_or(Value::Undefined),
+            delta,
+            prefix,
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(_)) => {
+              return Err(VmError::InvariantViolation(
+                "UpdateComputedMemberAfterMember should not suspend",
+              ))
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::CallAfterCallee { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
@@ -33506,6 +34446,25 @@ fn gen_root_values_for_continuation(
       GenFrame::ComputedMemberAfterMember { base, .. }
       | GenFrame::CallComputedMemberAfterMember { base, .. } => values.push(*base),
       GenFrame::BinaryAfterRight { left, .. } => values.push(*left),
+      GenFrame::AssignComputedMemberAfterMember { base, .. }
+      | GenFrame::UpdateComputedMemberAfterMember { base, .. } => values.push(*base),
+      GenFrame::AssignAfterRhs { base, key, .. } => {
+        if let Some(base) = base {
+          values.push(*base);
+        }
+        if let Some(key) = key {
+          values.push(*key);
+        }
+      }
+      GenFrame::AssignAddAfterRhs { base, key, left, .. } => {
+        if let Some(base) = base {
+          values.push(*base);
+        }
+        if let Some(key) = key {
+          values.push(*key);
+        }
+        values.push(*left);
+      }
       GenFrame::CallArgs {
         callee, this, args, ..
       } => {
