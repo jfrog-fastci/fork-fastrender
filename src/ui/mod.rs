@@ -111,6 +111,10 @@ pub mod accesskit_bridge;
 #[cfg(feature = "browser_ui")]
 pub mod fastrender_accesskit;
 
+// AccessKit node ID helpers for in-page accessibility nodes (distinct from egui's own nodes).
+#[cfg(feature = "browser_ui")]
+pub mod page_accesskit_ids;
+
 // Test-only helpers for extracting egui/AccessKit accessibility output.
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;
