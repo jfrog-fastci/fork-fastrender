@@ -26,31 +26,52 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let build_dir = out_dir.join("libvpx-build");
     let lib_path = build_dir.join("libvpx.a");
+    let build_stamp_path = build_dir.join("build.stamp");
 
-    if !lib_path.exists() {
+    // If `build.rs` or any other input changes, Cargo will re-run this script. However, that does
+    // *not* automatically invalidate artifacts we produced inside `OUT_DIR`.
+    //
+    // Keep a small stamp file keyed by the configuration we pass to libvpx so we only skip the
+    // (expensive) configure+make steps when we're sure the existing `libvpx.a` matches.
+    let configure_args: [&str; 11] = [
+        "--target=generic-gnu",
+        "--disable-examples",
+        "--disable-tools",
+        "--disable-unit-tests",
+        "--disable-docs",
+        "--enable-vp9",
+        "--enable-vp8",
+        "--disable-webm-io",
+        "--enable-static",
+        "--disable-shared",
+        "--enable-pic",
+        // NOTE: libvpx does not support `--disable-asm`. Using the generic target produces a
+        // portable C-only build, avoiding `nasm`/`yasm` requirements in CI.
+    ];
+    let build_fingerprint = format!(
+        "target={target}\nconfigure_args={}\n",
+        configure_args.join(" ")
+    );
+
+    let existing_fingerprint_ok = match fs::read_to_string(&build_stamp_path) {
+        Ok(s) => s == build_fingerprint,
+        Err(_) => false,
+    };
+
+    if !(lib_path.exists() && existing_fingerprint_ok) {
+        if build_dir.exists() {
+            // If we got here then either the build output is missing/corrupt, or it was produced
+            // with a different set of configure flags. Start fresh to avoid mixing objects from
+            // incompatible configurations.
+            fs::remove_dir_all(&build_dir).expect("remove stale libvpx build dir");
+        }
         fs::create_dir_all(&build_dir).expect("create libvpx build dir");
 
         let configure = src_dir.join("configure");
         let mut configure_cmd = Command::new(configure);
         configure_cmd
             .current_dir(&build_dir)
-            // Build a portable C-only libvpx (no yasm/nasm dependency).
-            .arg("--target=generic-gnu")
-            // Minimize build output and dependencies.
-            .arg("--disable-examples")
-            .arg("--disable-tools")
-            .arg("--disable-unit-tests")
-            .arg("--disable-docs")
-            // Ensure decode support for VP8/VP9 is built in.
-            .arg("--enable-vp9")
-            .arg("--enable-vp8")
-            // Avoid libwebm dependency.
-            .arg("--disable-webm-io")
-            // We only need a static library for Rust linking.
-            .arg("--enable-static")
-            .arg("--disable-shared")
-            // Allow linking into shared objects if the final Rust crate is a cdylib.
-            .arg("--enable-pic");
+            .args(configure_args);
 
         run(configure_cmd, "libvpx configure");
 
@@ -65,6 +86,9 @@ fn main() {
                 lib_path.display()
             );
         }
+
+        fs::write(&build_stamp_path, build_fingerprint)
+            .expect("write libvpx build stamp file");
     }
 
     println!("cargo:rustc-link-search=native={}", build_dir.display());
