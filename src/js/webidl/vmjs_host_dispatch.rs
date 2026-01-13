@@ -4779,7 +4779,17 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
         let position =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
-        let html = js_string_to_rust_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
+        let html_value = args.get(1).copied().unwrap_or(Value::Undefined);
+        let html = match html_value {
+          Value::String(_) => js_string_to_rust_string(scope, html_value)?,
+          other => {
+            let s = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+              scope.to_string(vm, host, hooks, other)
+            })?
+            .ok_or(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR))?;
+            scope.heap().get_string(s)?.to_utf8_lossy()
+          }
+        };
 
         let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {

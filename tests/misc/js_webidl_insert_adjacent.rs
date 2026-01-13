@@ -78,25 +78,36 @@ fn window_realm_webidl_element_insert_adjacent_apis_mutate_dom() -> Result<(), V
         // Ensure these APIs come from the WebIDL-generated prototype, not per-wrapper fallback shims.
         if (Object.prototype.hasOwnProperty.call(t, 'insertAdjacentHTML')) return false;
         if (Object.prototype.hasOwnProperty.call(t, 'insertAdjacentElement')) return false;
-        if (Object.prototype.hasOwnProperty.call(t, 'insertAdjacentText')) return false;
-
-        t.insertAdjacentHTML('beforeend', '<span id="a">x</span>');
-        if (!t.firstChild) return false;
-        if (t.firstChild.tagName !== 'SPAN') return false;
-        if (t.firstChild.id !== 'a') return false;
-        if (t.textContent !== 'x') return false;
-
-        const p = document.createElement('p');
-        p.id = 'p';
-        const inserted = t.insertAdjacentElement('afterbegin', p);
-        if (inserted !== p) return false;
-        if (t.firstChild !== p) return false;
-
-        t.insertAdjacentText('beforeend', 'y');
-        return t.textContent === 'xy';
-      })()
-    "#,
-  )?;
+         if (Object.prototype.hasOwnProperty.call(t, 'insertAdjacentText')) return false;
+ 
+         t.insertAdjacentHTML('beforeend', '<span id="a">x</span>');
+         let called = false;
+         t.insertAdjacentHTML('beforeend', {
+           toString() {
+             called = true;
+             return '<span id="b">z</span>';
+           },
+         });
+         if (!called) return false;
+         if (!t.firstChild) return false;
+         if (t.firstChild.tagName !== 'SPAN') return false;
+         if (t.firstChild.id !== 'a') return false;
+         if (!t.lastChild) return false;
+         if (t.lastChild.tagName !== 'SPAN') return false;
+         if (t.lastChild.id !== 'b') return false;
+         if (t.textContent !== 'xz') return false;
+ 
+         const p = document.createElement('p');
+         p.id = 'p';
+         const inserted = t.insertAdjacentElement('afterbegin', p);
+         if (inserted !== p) return false;
+         if (t.firstChild !== p) return false;
+ 
+         t.insertAdjacentText('beforeend', 'y');
+         return t.textContent === 'xzy';
+       })()
+     "#,
+   )?;
   if let Some(err) = hooks.finish(window.heap_mut()) {
     panic!("VmJsEventLoopHooks finish returned error: {err}");
   }
