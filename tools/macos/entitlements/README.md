@@ -15,6 +15,15 @@ See [`docs/security/macos_renderer_sandbox.md`](../../../docs/security/macos_ren
 (“Seatbelt now, App Sandbox later”) for how these would be applied via `codesign` and why they are
 not used in dev builds today.
 
+## Validation helper (optional)
+
+You can sanity-check that the entitlement files are valid XML plists (and that the renderer
+entitlements remain deny-by-default) with:
+
+```bash
+python tools/macos/entitlements/validate_entitlements.py
+```
+
 ## Editing notes
 
 These `*.entitlements` files are XML plists. If you add or edit comments inside them, remember that
