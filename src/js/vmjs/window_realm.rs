@@ -17069,6 +17069,64 @@ fn node_list_item_native(
   )
 }
 
+fn node_list_for_each_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(list_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(list_obj))?;
+
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback).unwrap_or(false) {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host,
+      hooks,
+      "NodeList.forEach callback must be callable",
+    ));
+  }
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let length_key = alloc_key(scope, "length")?;
+  let len_value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, length_key)?;
+  let len_n = match len_value {
+    Value::Number(n) => n,
+    other => scope.to_number(vm, host, hooks, other)?,
+  };
+  let len_n = if !len_n.is_finite() || len_n.is_nan() {
+    0.0
+  } else {
+    len_n.trunc()
+  };
+  let len = if len_n <= 0.0 {
+    0usize
+  } else if len_n >= usize::MAX as f64 {
+    usize::MAX
+  } else {
+    len_n as usize
+  };
+
+  let mut idx_buf = [0u8; 20];
+  for idx in 0..len {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key = alloc_key(scope, idx_str)?;
+    let value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, key)?;
+    let args = [value, Value::Number(idx as f64), Value::Object(list_obj)];
+    let _ = vm.call_with_host_and_hooks(host, scope, hooks, callback, this_arg, &args)?;
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn node_list_iterator_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -26332,6 +26390,95 @@ fn html_collection_item_native(
   )
 }
 
+fn html_collection_named_item_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(collection_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(collection_obj))?;
+
+  let key_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key_s = match key_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(key_s))?;
+  let key = scope
+    .heap()
+    .get_string(key_s)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  // WHATWG DOM: HTMLCollection.namedItem returns null for the empty string.
+  if key.is_empty() {
+    return Ok(Value::Null);
+  }
+
+  let length_key = alloc_key(scope, "length")?;
+  let len_value = vm.get_with_host_and_hooks(host, scope, hooks, collection_obj, length_key)?;
+  let len_n = match len_value {
+    Value::Number(n) => n,
+    other => scope.to_number(vm, host, hooks, other)?,
+  };
+  let len_n = if !len_n.is_finite() || len_n.is_nan() {
+    0.0
+  } else {
+    len_n.trunc()
+  };
+  let len = if len_n <= 0.0 {
+    0usize
+  } else if len_n >= usize::MAX as f64 {
+    usize::MAX
+  } else {
+    len_n as usize
+  };
+
+  let mut idx_buf = [0u8; 20];
+  for idx in 0..len {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key_prop = alloc_key(scope, idx_str)?;
+    let value = vm.get_with_host_and_hooks(host, scope, hooks, collection_obj, key_prop)?;
+    let Value::Object(element_obj) = value else {
+      continue;
+    };
+
+    let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, element_obj) else {
+      continue;
+    };
+    let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
+      continue;
+    };
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+
+    if dom.element_id(handle.node_id) == key.as_str() {
+      return Ok(Value::Object(element_obj));
+    }
+
+    let (namespace, name_attr_value) = match &dom.node(handle.node_id).kind {
+      NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => {
+        let name_attr = dom.get_attribute(handle.node_id, "name").ok().flatten();
+        (namespace.as_str(), name_attr)
+      }
+      _ => continue,
+    };
+    if dom.is_html_case_insensitive_namespace(namespace)
+      && name_attr_value.is_some_and(|value| value == key.as_str())
+    {
+      return Ok(Value::Object(element_obj));
+    }
+  }
+
+  Ok(Value::Null)
+}
+
 fn parent_node_children_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -33678,6 +33825,116 @@ fn ensure_webidl_html_collection_iterable(
   Ok(())
 }
 
+fn ensure_webidl_html_collection_named_item(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  global: GcObject,
+) -> Result<(), VmError> {
+  let html_collection_key = alloc_key(scope, "HTMLCollection")?;
+  let html_collection_ctor = scope
+    .heap()
+    .object_get_own_data_property_value(global, &html_collection_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(html_collection_ctor) = html_collection_ctor else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(html_collection_ctor))?;
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto_val = scope
+    .heap()
+    .object_get_own_data_property_value(html_collection_ctor, &prototype_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(html_collection_proto) = proto_val else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(html_collection_proto))?;
+
+  let named_item_key = alloc_key(scope, "namedItem")?;
+  let existing = match scope
+    .heap()
+    .object_get_own_data_property_value(html_collection_proto, &named_item_key)
+  {
+    Ok(value) => value,
+    Err(VmError::PropertyNotData) => None,
+    Err(err) => return Err(err),
+  };
+  if let Some(existing) = existing {
+    if scope.heap().is_callable(existing).unwrap_or(false) {
+      return Ok(());
+    }
+  }
+
+  let call_id = vm.register_native_call(html_collection_named_item_native)?;
+  let name = scope.alloc_string("namedItem")?;
+  scope.push_root(Value::String(name))?;
+  let func = scope.alloc_native_function(call_id, None, name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(func))?;
+  scope.define_property(
+    html_collection_proto,
+    named_item_key,
+    data_desc(Value::Object(func)),
+  )?;
+  Ok(())
+}
+
+fn ensure_webidl_node_list_for_each(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  global: GcObject,
+) -> Result<(), VmError> {
+  let node_list_key = alloc_key(scope, "NodeList")?;
+  let node_list_ctor = scope
+    .heap()
+    .object_get_own_data_property_value(global, &node_list_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(node_list_ctor) = node_list_ctor else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(node_list_ctor))?;
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto_val = scope
+    .heap()
+    .object_get_own_data_property_value(node_list_ctor, &prototype_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(node_list_proto) = proto_val else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(node_list_proto))?;
+
+  let for_each_key = alloc_key(scope, "forEach")?;
+  let existing = match scope
+    .heap()
+    .object_get_own_data_property_value(node_list_proto, &for_each_key)
+  {
+    Ok(value) => value,
+    Err(VmError::PropertyNotData) => None,
+    Err(err) => return Err(err),
+  };
+  if let Some(existing) = existing {
+    if scope.heap().is_callable(existing).unwrap_or(false) {
+      return Ok(());
+    }
+  }
+
+  let call_id = vm.register_native_call(node_list_for_each_native)?;
+  let name = scope.alloc_string("forEach")?;
+  scope.push_root(Value::String(name))?;
+  let func = scope.alloc_native_function(call_id, None, name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(func))?;
+  scope.define_property(node_list_proto, for_each_key, data_desc(Value::Object(func)))?;
+  Ok(())
+}
+
 fn init_window_globals(
   vm: &mut Vm,
   heap: &mut Heap,
@@ -37410,6 +37667,29 @@ fn init_window_globals(
       data_desc(Value::Object(html_collection_item_func)),
     )?;
 
+    // HTMLCollection.prototype.namedItem(name)
+    let html_collection_named_item_call_id =
+      vm.register_native_call(html_collection_named_item_native)?;
+    let html_collection_named_item_name = scope.alloc_string("namedItem")?;
+    scope.push_root(Value::String(html_collection_named_item_name))?;
+    let html_collection_named_item_func = scope.alloc_native_function(
+      html_collection_named_item_call_id,
+      None,
+      html_collection_named_item_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      html_collection_named_item_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(html_collection_named_item_func))?;
+    let html_collection_named_item_key = alloc_key(&mut scope, "namedItem")?;
+    scope.define_property(
+      html_collection_proto,
+      html_collection_named_item_key,
+      data_desc(Value::Object(html_collection_named_item_func)),
+    )?;
+
     // Store the HTMLCollection prototype on `document` so node wrappers can create collections
     // without walking the global object.
     let html_collection_proto_key = alloc_key(&mut scope, HTML_COLLECTION_PROTOTYPE_KEY)?;
@@ -37500,6 +37780,24 @@ fn init_window_globals(
       node_list_proto,
       node_list_item_key,
       data_desc(Value::Object(node_list_item_func)),
+    )?;
+
+    // NodeList.prototype.forEach(callback[, thisArg])
+    let node_list_for_each_call_id = vm.register_native_call(node_list_for_each_native)?;
+    let node_list_for_each_name = scope.alloc_string("forEach")?;
+    scope.push_root(Value::String(node_list_for_each_name))?;
+    let node_list_for_each_func =
+      scope.alloc_native_function(node_list_for_each_call_id, None, node_list_for_each_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      node_list_for_each_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_list_for_each_func))?;
+    let node_list_for_each_key = alloc_key(&mut scope, "forEach")?;
+    scope.define_property(
+      node_list_proto,
+      node_list_for_each_key,
+      data_desc(Value::Object(node_list_for_each_func)),
     )?;
 
     // NodeList iterator.
@@ -42066,6 +42364,8 @@ fn init_window_globals(
   // not declare it `iterable<>`, but real browsers still expose `values()` / @@iterator.
   if config.dom_bindings_backend == DomBindingsBackend::WebIdl {
     ensure_webidl_html_collection_iterable(vm, &mut scope, realm, global)?;
+    ensure_webidl_html_collection_named_item(vm, &mut scope, realm, global)?;
+    ensure_webidl_node_list_for_each(vm, &mut scope, realm, global)?;
   }
 
   // Install WHATWG URL bindings (`URL`/`URLSearchParams`) so real-world scripts can parse and
