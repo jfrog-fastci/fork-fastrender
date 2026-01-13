@@ -78,8 +78,8 @@ Notes for Windows:
 - For MSVC targets, the build uses libvpx's generated Visual Studio solution and runs `msbuild.exe`
   via the vendored makefiles. Ensure you are running under a VS Developer Command Prompt (or
   otherwise have `msbuild.exe` available in PATH).
-- MSVC builds also require an assembler (`yasm` preferred) for the small amount of remaining
-  x86_64 Windows assembly in libvpx (e.g. `vpx_ports/float_control_word.asm`).
+- By default, the MSVC build is also C-only (no `yasm`/`nasm` required). If you change the build
+  configuration to enable x86 SIMD/assembly, you may need to install `yasm` or `nasm`.
 
 ## ABI helpers
 
