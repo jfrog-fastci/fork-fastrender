@@ -59,6 +59,6 @@ pub(crate) fn is_3d_flattening_boundary(style: &ComputedStyle) -> bool {
 fn overflow_axis_forces_3d_flattening(overflow: Overflow) -> bool {
   matches!(
     overflow,
-    Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+    Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
   )
 }
