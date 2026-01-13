@@ -107,7 +107,7 @@ pub struct DownloadsPanelOutput {
   pub close_requested: bool,
   pub clear_completed_requested: bool,
   pub cancel_requests: Vec<(TabId, DownloadId)>,
-  pub retry_requests: Vec<(TabId, String)>,
+  pub retry_requests: Vec<(TabId, String, Option<String>)>,
   pub open_requests: Vec<PathBuf>,
   pub reveal_requests: Vec<PathBuf>,
   pub copy_requests: Vec<String>,
@@ -486,7 +486,7 @@ pub fn downloads_panel_ui(
                           )
                         });
                       if retry_resp.clicked() {
-                        out.retry_requests.push((entry.tab_id, entry.url.clone()));
+                        out.retry_requests.push(entry.retry_request());
                       }
 
                       let copy_path_resp = ui.small_button("Copy path");
@@ -532,7 +532,7 @@ pub fn downloads_panel_ui(
                           )
                         });
                       if retry_resp.clicked() {
-                        out.retry_requests.push((entry.tab_id, entry.url.clone()));
+                        out.retry_requests.push(entry.retry_request());
                       }
 
                       let copy_path_resp = ui.small_button("Copy path");

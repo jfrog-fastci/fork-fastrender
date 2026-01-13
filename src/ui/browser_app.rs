@@ -247,6 +247,39 @@ pub struct DownloadEntry {
   pub status: DownloadStatus,
 }
 
+impl DownloadEntry {
+  /// Build a downloads-panel retry request that preserves the original file name.
+  pub fn retry_request(&self) -> (TabId, String, Option<String>) {
+    (self.tab_id, self.url.clone(), Some(self.file_name.clone()))
+  }
+}
+
+#[cfg(test)]
+mod download_entry_retry_tests {
+  use super::{DownloadEntry, DownloadId, DownloadStatus, TabId};
+  use std::path::PathBuf;
+
+  #[test]
+  fn retry_request_preserves_filename_hint_for_failed_download() {
+    let tab_id = TabId(1);
+    let url = "https://example.com/file.zip".to_string();
+    let file_name = "file.zip".to_string();
+
+    let entry = DownloadEntry {
+      download_id: DownloadId(1),
+      tab_id,
+      url: url.clone(),
+      file_name: file_name.clone(),
+      path: PathBuf::from("/tmp/file.zip"),
+      status: DownloadStatus::Failed {
+        error: "network error".to_string(),
+      },
+    };
+
+    assert_eq!(entry.retry_request(), (tab_id, url, Some(file_name)));
+  }
+}
+
 #[derive(Debug, Default)]
 pub struct DownloadsState {
   pub downloads: Vec<DownloadEntry>,

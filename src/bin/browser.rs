@@ -19731,11 +19731,11 @@ impl App {
         download_id,
       });
     }
-    for (tab_id, url) in output.retry_requests {
+    for (tab_id, url, filename_hint) in output.retry_requests {
       let _ = self.send_worker_msg(UiToWorker::StartDownload {
         tab_id,
         url,
-        filename_hint: None,
+        filename_hint,
       });
     }
 
