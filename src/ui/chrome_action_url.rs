@@ -1,5 +1,45 @@
+//! Canonical `chrome-action:` URL parser/formatter.
+//!
+//! Renderer-chrome uses *trusted*, JS-free HTML documents to render the browser chrome. UI widgets
+//! in those documents (links/forms) request browser actions by navigating to `chrome-action:` URLs.
+//!
+//! This module provides a strict, round-trippable encoding that acts as glue between those
+//! navigations and the strongly-typed [`crate::ui::ChromeAction`] pipeline.
+//!
+//! # URL form
+//!
+//! The accepted grammar is intentionally narrow (fail closed):
+//!
+//! ```text
+//! chrome-action:<action-name>[?<query>]
+//! ```
+//!
+//! - The scheme (`chrome-action`) is case-insensitive.
+//! - The URL must be absolute and must **not** use an authority/path form like `chrome-action://…`.
+//! - Fragments (`#...`) are rejected.
+//! - The optional query uses `application/x-www-form-urlencoded` decoding rules (i.e. `+` → space,
+//!   percent decoding).
+//!
+//! # Canonical parameter names
+//!
+//! - `url`: used by actions that accept a URL string.
+//!   - Example: `chrome-action:navigate?url=https%3A%2F%2Fexample.com%2F`
+//!   - (Legacy alias accepted by the parser: `input`)
+//! - `tab`: used by actions that target a specific tab id.
+//!   - Example: `chrome-action:close-tab?tab=123`
+//!   - (Legacy alias accepted by the parser: `tab_id`)
+//! - `show`: used by `set-show-menu-bar` (boolean).
+//! - `has_focus`: used by `address-bar-focus-changed` (boolean).
+//! - `query`: used by `find-query` (find-in-page text).
+//! - `case_sensitive`: used by `find-query` (boolean).
+//!
+//! Boolean parameters accept `1`, `0`, `true`, or `false` (case-insensitive). The formatter uses
+//! `1`/`0`.
+
 use crate::ui::messages::TabId;
 use crate::ui::ChromeAction;
+use std::collections::HashMap;
+use url::form_urlencoded;
 use url::Url;
 
 pub const CHROME_ACTION_SCHEME: &str = "chrome-action";
@@ -36,55 +76,25 @@ pub enum ChromeActionUrl {
     query: String,
     case_sensitive: bool,
   },
-  FindNext {
-    tab_id: TabId,
-  },
-  FindPrev {
-    tab_id: TabId,
-  },
-  CloseFindInPage {
-    tab_id: TabId,
-  },
+  FindNext { tab_id: TabId },
+  FindPrev { tab_id: TabId },
+  CloseFindInPage { tab_id: TabId },
   SavePage,
   PrintPage,
-  SetShowMenuBar {
-    show: bool,
-  },
-  AddressBarFocusChanged {
-    has_focus: bool,
-  },
+  SetShowMenuBar { show: bool },
+  AddressBarFocusChanged { has_focus: bool },
   /// Raw omnibox/address-bar input string (URL or search query).
-  Navigate {
-    url: String,
-  },
+  Navigate { url: String },
   /// Raw omnibox/address-bar input string opened in a new foreground tab.
-  OpenUrlInNewTab {
-    url: String,
-  },
-  CloseTab {
-    tab_id: TabId,
-  },
-  DetachTab {
-    tab_id: TabId,
-  },
-  ReloadTab {
-    tab_id: TabId,
-  },
-  DuplicateTab {
-    tab_id: TabId,
-  },
-  CloseOtherTabs {
-    tab_id: TabId,
-  },
-  CloseTabsToRight {
-    tab_id: TabId,
-  },
-  ActivateTab {
-    tab_id: TabId,
-  },
-  TogglePinTab {
-    tab_id: TabId,
-  },
+  OpenUrlInNewTab { url: String },
+  CloseTab { tab_id: TabId },
+  DetachTab { tab_id: TabId },
+  ReloadTab { tab_id: TabId },
+  DuplicateTab { tab_id: TabId },
+  CloseOtherTabs { tab_id: TabId },
+  CloseTabsToRight { tab_id: TabId },
+  ActivateTab { tab_id: TabId },
+  TogglePinTab { tab_id: TabId },
 }
 
 fn validate_tab_id(tab_id: TabId) -> Result<TabId, String> {
@@ -98,9 +108,55 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn parse_tab_id(raw: &str) -> Result<TabId, String> {
+  let raw = trim_ascii_whitespace(raw);
+  let id: u64 = raw
+    .parse()
+    .map_err(|_| format!("invalid tab id: {raw:?}"))?;
+  validate_tab_id(TabId(id))
+}
+
+fn parse_bool(raw: &str) -> Result<bool, String> {
+  let v = trim_ascii_whitespace(raw);
+  if v.eq_ignore_ascii_case("true") || v == "1" {
+    Ok(true)
+  } else if v.eq_ignore_ascii_case("false") || v == "0" {
+    Ok(false)
+  } else {
+    Err(format!("invalid boolean value: {raw:?}"))
+  }
+}
+
+fn parse_query_params(query: &str) -> Result<HashMap<String, String>, String> {
+  let mut params: HashMap<String, String> = HashMap::new();
+
+  for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+    if key.is_empty() {
+      return Err("query parameter name must not be empty".to_string());
+    }
+    let key = key.into_owned();
+    if params.contains_key(&key) {
+      return Err(format!("duplicate query parameter: {key}"));
+    }
+    params.insert(key, value.into_owned());
+  }
+
+  Ok(params)
+}
+
 impl ChromeActionUrl {
-  /// Parse a `chrome-action:` URL string.
+  /// Parse an absolute `chrome-action:` URL string into a strongly-typed action.
+  ///
+  /// The parser is intentionally strict: unknown actions, unknown parameters, duplicated
+  /// parameters, fragments, and disallowed URL forms (e.g. `chrome-action://...`) are rejected.
   pub fn parse(raw: &str) -> Result<Self, String> {
+    if raw.is_empty() {
+      return Err("empty URL".to_string());
+    }
+    if raw.as_bytes().iter().any(|b| b.is_ascii_whitespace()) {
+      return Err("chrome-action URL must not contain ASCII whitespace".to_string());
+    }
+
     let url = Url::parse(raw).map_err(|err| err.to_string())?;
     Self::parse_url(&url)
   }
@@ -114,133 +170,400 @@ impl ChromeActionUrl {
       ));
     }
 
-    let action = chrome_action_name(url)
-      .map(str::to_ascii_lowercase)
-      .ok_or_else(|| "missing chrome-action name".to_string())?;
+    // Enforce the narrow grammar `chrome-action:<action>[?<query>]`.
+    if url.fragment().is_some() {
+      return Err("chrome-action URLs must not contain fragments (#...)".to_string());
+    }
+    if !url.cannot_be_a_base() {
+      return Err(
+        "chrome-action URL must use the form chrome-action:<action>[?<query>] (no // or /)".to_string(),
+      );
+    }
 
-    let mut tab_id: Option<TabId> = None;
-    let mut url_value: Option<String> = None;
-    let mut query: Option<String> = None;
-    let mut show: Option<bool> = None;
-    let mut has_focus: Option<bool> = None;
-    let mut case_sensitive: Option<bool> = None;
+    let action = url.path();
+    if action.is_empty() {
+      return Err("chrome-action URL missing action name".to_string());
+    }
+    let action = action.to_ascii_lowercase();
+    let action_str = action.as_str();
 
-    for (k, v) in url.query_pairs() {
-      match k.as_ref() {
-        "tab" | "tab_id" => tab_id = Some(parse_tab_id(&v)?),
-        // For compatibility with older docs/examples, accept both `url` and `input`.
-        "url" | "input" => {
-          if v.as_bytes().len() > crate::ui::protocol_limits::MAX_URL_BYTES {
-            return Err(format!(
-              "url exceeds MAX_URL_BYTES ({})",
-              crate::ui::protocol_limits::MAX_URL_BYTES
-            ));
+    let has_query = url.query().is_some();
+    let params = url.query().map(parse_query_params).transpose()?.unwrap_or_default();
+
+    let ensure_no_params = || -> Result<(), String> {
+      if has_query {
+        return Err(format!(
+          "chrome-action:{action_str} does not take query parameters"
+        ));
+      }
+      Ok(())
+    };
+
+    let parse_tab_only = || -> Result<TabId, String> {
+      // Allow either `tab` or legacy `tab_id`, but not both and no extra params.
+      if params.len() != 1 {
+        return Err(format!(
+          "chrome-action:{action_str} expects exactly one query parameter: tab"
+        ));
+      }
+      if let Some(v) = params.get("tab") {
+        return parse_tab_id(v);
+      }
+      if let Some(v) = params.get("tab_id") {
+        return parse_tab_id(v);
+      }
+      Err("missing required query parameter: tab".to_string())
+    };
+
+    let parse_url_only = || -> Result<String, String> {
+      // Allow either canonical `url` or legacy `input`, but not both and no extra params.
+      if params.len() != 1 {
+        return Err(format!(
+          "chrome-action:{action_str} expects exactly one query parameter: url"
+        ));
+      }
+      let raw = if let Some(v) = params.get("url") {
+        v
+      } else if let Some(v) = params.get("input") {
+        v
+      } else {
+        return Err("missing required query parameter: url".to_string());
+      };
+
+      let trimmed = trim_ascii_whitespace(raw);
+      if trimmed.is_empty() {
+        return Err(format!("chrome-action:{action_str} requires a non-empty url"));
+      }
+      if trimmed.as_bytes().len() > crate::ui::protocol_limits::MAX_URL_BYTES {
+        return Err(format!(
+          "url exceeds MAX_URL_BYTES ({})",
+          crate::ui::protocol_limits::MAX_URL_BYTES
+        ));
+      }
+      Ok(trimmed.to_string())
+    };
+
+    let parse_bool_only = |expected_key: &str, legacy_key: Option<&str>| -> Result<bool, String> {
+      if params.len() != 1 {
+        return Err(format!(
+          "chrome-action:{action_str} expects exactly one query parameter: {expected_key}"
+        ));
+      }
+      let raw = if let Some(v) = params.get(expected_key) {
+        v
+      } else if let Some(legacy) = legacy_key {
+        params
+          .get(legacy)
+          .ok_or_else(|| format!("missing required query parameter: {expected_key}"))?
+      } else {
+        return Err(format!("missing required query parameter: {expected_key}"));
+      };
+      parse_bool(raw)
+    };
+
+    Ok(match action_str {
+      "back" => {
+        ensure_no_params()?;
+        Self::Back
+      }
+      "forward" => {
+        ensure_no_params()?;
+        Self::Forward
+      }
+      "reload" => {
+        ensure_no_params()?;
+        Self::Reload
+      }
+      "stop-loading" => {
+        ensure_no_params()?;
+        Self::StopLoading
+      }
+      "home" => {
+        ensure_no_params()?;
+        Self::Home
+      }
+      "new-tab" => {
+        ensure_no_params()?;
+        Self::NewTab
+      }
+      "reopen-closed-tab" => {
+        ensure_no_params()?;
+        Self::ReopenClosedTab
+      }
+      "open-tab-search" => {
+        ensure_no_params()?;
+        Self::OpenTabSearch
+      }
+      "close-tab-search" => {
+        ensure_no_params()?;
+        Self::CloseTabSearch
+      }
+      "toggle-bookmarks-bar" => {
+        ensure_no_params()?;
+        Self::ToggleBookmarksBar
+      }
+      "toggle-history-panel" => {
+        ensure_no_params()?;
+        Self::ToggleHistoryPanel
+      }
+      "toggle-bookmarks-manager" => {
+        ensure_no_params()?;
+        Self::ToggleBookmarksManager
+      }
+      "open-clear-browsing-data-dialog" => {
+        ensure_no_params()?;
+        Self::OpenClearBrowsingDataDialog
+      }
+      "toggle-downloads-panel" => {
+        ensure_no_params()?;
+        Self::ToggleDownloadsPanel
+      }
+      "toggle-bookmark-for-active-tab" => {
+        ensure_no_params()?;
+        Self::ToggleBookmarkForActiveTab
+      }
+      "focus-address-bar" => {
+        ensure_no_params()?;
+        Self::FocusAddressBar
+      }
+      "new-window" => {
+        ensure_no_params()?;
+        Self::NewWindow
+      }
+      "toggle-full-screen" => {
+        ensure_no_params()?;
+        Self::ToggleFullScreen
+      }
+      "open-find-in-page" => {
+        ensure_no_params()?;
+        Self::OpenFindInPage
+      }
+      "find-query" => {
+        // Allowed params: tab/tab_id + query/q + optional case_sensitive/case.
+        for key in params.keys() {
+          match key.as_str() {
+            "tab" | "tab_id" | "query" | "q" | "case_sensitive" | "case" => {}
+            other => {
+              return Err(format!(
+                "unknown query parameter for chrome-action:{action_str}: {other}"
+              ));
+            }
           }
-          url_value = Some(v.to_string());
         }
-        "query" | "q" => {
-          if v.as_bytes().len() > crate::ui::protocol_limits::MAX_FIND_QUERY_BYTES {
-            return Err(format!(
-              "query exceeds MAX_FIND_QUERY_BYTES ({})",
-              crate::ui::protocol_limits::MAX_FIND_QUERY_BYTES
-            ));
+
+        let tab_raw = match (params.get("tab"), params.get("tab_id")) {
+          (Some(_), Some(_)) => {
+            return Err("find-query must specify only one of tab/tab_id".to_string());
           }
-          query = Some(v.to_string());
+          (Some(v), None) | (None, Some(v)) => v,
+          (None, None) => return Err("missing required query parameter: tab".to_string()),
+        };
+        let tab_id = parse_tab_id(tab_raw)?;
+
+        let query_raw = match (params.get("query"), params.get("q")) {
+          (Some(_), Some(_)) => {
+            return Err("find-query must specify only one of query/q".to_string());
+          }
+          (Some(v), None) | (None, Some(v)) => v,
+          (None, None) => return Err("missing required query parameter: query".to_string()),
+        };
+        if query_raw.as_bytes().len() > crate::ui::protocol_limits::MAX_FIND_QUERY_BYTES {
+          return Err(format!(
+            "query exceeds MAX_FIND_QUERY_BYTES ({})",
+            crate::ui::protocol_limits::MAX_FIND_QUERY_BYTES
+          ));
         }
-        "show" => show = Some(parse_bool(&v)?),
-        "has_focus" | "focus" => has_focus = Some(parse_bool(&v)?),
-        "case_sensitive" | "case" => case_sensitive = Some(parse_bool(&v)?),
-        _ => {}
+        let query = query_raw.to_string();
+
+        let case_sensitive = match (params.get("case_sensitive"), params.get("case")) {
+          (Some(_), Some(_)) => {
+            return Err("find-query must specify only one of case_sensitive/case".to_string());
+          }
+          (Some(v), None) | (None, Some(v)) => parse_bool(v)?,
+          (None, None) => false,
+        };
+
+        Self::FindQuery {
+          tab_id,
+          query,
+          case_sensitive,
+        }
+      }
+      "find-next" => Self::FindNext {
+        tab_id: parse_tab_only()?,
+      },
+      "find-prev" => Self::FindPrev {
+        tab_id: parse_tab_only()?,
+      },
+      "close-find-in-page" => Self::CloseFindInPage {
+        tab_id: parse_tab_only()?,
+      },
+      "save-page" => {
+        ensure_no_params()?;
+        Self::SavePage
+      }
+      "print-page" => {
+        ensure_no_params()?;
+        Self::PrintPage
+      }
+      "set-show-menu-bar" => Self::SetShowMenuBar {
+        show: parse_bool_only("show", None)?,
+      },
+      "address-bar-focus-changed" => Self::AddressBarFocusChanged {
+        has_focus: parse_bool_only("has_focus", Some("focus"))?,
+      },
+      "navigate" => Self::Navigate {
+        url: parse_url_only()?,
+      },
+      "open-url-in-new-tab" => Self::OpenUrlInNewTab {
+        url: parse_url_only()?,
+      },
+      "close-tab" => Self::CloseTab {
+        tab_id: parse_tab_only()?,
+      },
+      "detach-tab" => Self::DetachTab {
+        tab_id: parse_tab_only()?,
+      },
+      "reload-tab" => Self::ReloadTab {
+        tab_id: parse_tab_only()?,
+      },
+      "duplicate-tab" => Self::DuplicateTab {
+        tab_id: parse_tab_only()?,
+      },
+      "close-other-tabs" => Self::CloseOtherTabs {
+        tab_id: parse_tab_only()?,
+      },
+      "close-tabs-to-right" => Self::CloseTabsToRight {
+        tab_id: parse_tab_only()?,
+      },
+      "activate-tab" => Self::ActivateTab {
+        tab_id: parse_tab_only()?,
+      },
+      "toggle-pin-tab" => Self::TogglePinTab {
+        tab_id: parse_tab_only()?,
+      },
+      other => return Err(format!("unknown chrome-action: {other}")),
+    })
+  }
+
+  /// Format this action as a canonical `chrome-action:` URL.
+  ///
+  /// The output is deterministic and round-trippable with [`ChromeActionUrl::parse`].
+  pub fn to_url(&self) -> String {
+    fn with_query(action: &str, params: &[(&str, &str)]) -> String {
+      let mut serializer = form_urlencoded::Serializer::new(String::new());
+      for (k, v) in params {
+        serializer.append_pair(k, v);
+      }
+      let query = serializer.finish();
+      if query.is_empty() {
+        format!("{CHROME_ACTION_SCHEME}:{action}")
+      } else {
+        format!("{CHROME_ACTION_SCHEME}:{action}?{query}")
       }
     }
 
-    let require_tab = || tab_id.ok_or_else(|| "missing required query param `tab`".to_string());
-    let require_url = || {
-      url_value
-        .clone()
-        .ok_or_else(|| "missing required query param `url`".to_string())
-    };
-    let require_query = || {
-      query
-        .clone()
-        .ok_or_else(|| "missing required query param `query`".to_string())
-    };
-
-    match action.as_str() {
-      "back" => Ok(Self::Back),
-      "forward" => Ok(Self::Forward),
-      "reload" => Ok(Self::Reload),
-      "stop-loading" => Ok(Self::StopLoading),
-      "home" => Ok(Self::Home),
-      "new-tab" => Ok(Self::NewTab),
-      "reopen-closed-tab" => Ok(Self::ReopenClosedTab),
-      "open-tab-search" => Ok(Self::OpenTabSearch),
-      "close-tab-search" => Ok(Self::CloseTabSearch),
-      "toggle-bookmarks-bar" => Ok(Self::ToggleBookmarksBar),
-      "toggle-history-panel" => Ok(Self::ToggleHistoryPanel),
-      "toggle-bookmarks-manager" => Ok(Self::ToggleBookmarksManager),
-      "open-clear-browsing-data-dialog" => Ok(Self::OpenClearBrowsingDataDialog),
-      "toggle-downloads-panel" => Ok(Self::ToggleDownloadsPanel),
-      "toggle-bookmark-for-active-tab" => Ok(Self::ToggleBookmarkForActiveTab),
-      "focus-address-bar" => Ok(Self::FocusAddressBar),
-      "new-window" => Ok(Self::NewWindow),
-      "toggle-full-screen" => Ok(Self::ToggleFullScreen),
-      "open-find-in-page" => Ok(Self::OpenFindInPage),
-      "find-query" => Ok(Self::FindQuery {
-        tab_id: require_tab()?,
-        query: require_query()?,
-        case_sensitive: case_sensitive.unwrap_or(false),
-      }),
-      "find-next" => Ok(Self::FindNext {
-        tab_id: require_tab()?,
-      }),
-      "find-prev" => Ok(Self::FindPrev {
-        tab_id: require_tab()?,
-      }),
-      "close-find-in-page" => Ok(Self::CloseFindInPage {
-        tab_id: require_tab()?,
-      }),
-      "save-page" => Ok(Self::SavePage),
-      "print-page" => Ok(Self::PrintPage),
-      "set-show-menu-bar" => Ok(Self::SetShowMenuBar {
-        show: show.ok_or_else(|| "missing required query param `show`".to_string())?,
-      }),
-      "address-bar-focus-changed" => Ok(Self::AddressBarFocusChanged {
-        has_focus: has_focus
-          .ok_or_else(|| "missing required query param `has_focus`".to_string())?,
-      }),
-      "navigate" => Ok(Self::Navigate {
-        url: require_url()?,
-      }),
-      "open-url-in-new-tab" => Ok(Self::OpenUrlInNewTab {
-        url: require_url()?,
-      }),
-      "close-tab" => Ok(Self::CloseTab {
-        tab_id: require_tab()?,
-      }),
-      "detach-tab" => Ok(Self::DetachTab {
-        tab_id: require_tab()?,
-      }),
-      "reload-tab" => Ok(Self::ReloadTab {
-        tab_id: require_tab()?,
-      }),
-      "duplicate-tab" => Ok(Self::DuplicateTab {
-        tab_id: require_tab()?,
-      }),
-      "close-other-tabs" => Ok(Self::CloseOtherTabs {
-        tab_id: require_tab()?,
-      }),
-      "close-tabs-to-right" => Ok(Self::CloseTabsToRight {
-        tab_id: require_tab()?,
-      }),
-      "activate-tab" => Ok(Self::ActivateTab {
-        tab_id: require_tab()?,
-      }),
-      "toggle-pin-tab" => Ok(Self::TogglePinTab {
-        tab_id: require_tab()?,
-      }),
-      _ => Err(format!("unknown chrome-action name: {action:?}")),
+    match self {
+      Self::Back => format!("{CHROME_ACTION_SCHEME}:back"),
+      Self::Forward => format!("{CHROME_ACTION_SCHEME}:forward"),
+      Self::Reload => format!("{CHROME_ACTION_SCHEME}:reload"),
+      Self::StopLoading => format!("{CHROME_ACTION_SCHEME}:stop-loading"),
+      Self::Home => format!("{CHROME_ACTION_SCHEME}:home"),
+      Self::NewTab => format!("{CHROME_ACTION_SCHEME}:new-tab"),
+      Self::ReopenClosedTab => format!("{CHROME_ACTION_SCHEME}:reopen-closed-tab"),
+      Self::OpenTabSearch => format!("{CHROME_ACTION_SCHEME}:open-tab-search"),
+      Self::CloseTabSearch => format!("{CHROME_ACTION_SCHEME}:close-tab-search"),
+      Self::ToggleBookmarksBar => format!("{CHROME_ACTION_SCHEME}:toggle-bookmarks-bar"),
+      Self::ToggleHistoryPanel => format!("{CHROME_ACTION_SCHEME}:toggle-history-panel"),
+      Self::ToggleBookmarksManager => format!("{CHROME_ACTION_SCHEME}:toggle-bookmarks-manager"),
+      Self::OpenClearBrowsingDataDialog => {
+        format!("{CHROME_ACTION_SCHEME}:open-clear-browsing-data-dialog")
+      }
+      Self::ToggleDownloadsPanel => format!("{CHROME_ACTION_SCHEME}:toggle-downloads-panel"),
+      Self::ToggleBookmarkForActiveTab => {
+        format!("{CHROME_ACTION_SCHEME}:toggle-bookmark-for-active-tab")
+      }
+      Self::FocusAddressBar => format!("{CHROME_ACTION_SCHEME}:focus-address-bar"),
+      Self::NewWindow => format!("{CHROME_ACTION_SCHEME}:new-window"),
+      Self::ToggleFullScreen => format!("{CHROME_ACTION_SCHEME}:toggle-full-screen"),
+      Self::OpenFindInPage => format!("{CHROME_ACTION_SCHEME}:open-find-in-page"),
+      Self::FindQuery {
+        tab_id,
+        query,
+        case_sensitive,
+      } => {
+        let tab = tab_id.0.to_string();
+        with_query(
+          "find-query",
+          &[
+            ("tab", tab.as_str()),
+            ("query", query.as_str()),
+            ("case_sensitive", if *case_sensitive { "1" } else { "0" }),
+          ],
+        )
+      }
+      Self::FindNext { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("find-next", &[("tab", tab.as_str())])
+      }
+      Self::FindPrev { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("find-prev", &[("tab", tab.as_str())])
+      }
+      Self::CloseFindInPage { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("close-find-in-page", &[("tab", tab.as_str())])
+      }
+      Self::SavePage => format!("{CHROME_ACTION_SCHEME}:save-page"),
+      Self::PrintPage => format!("{CHROME_ACTION_SCHEME}:print-page"),
+      Self::SetShowMenuBar { show } => with_query(
+        "set-show-menu-bar",
+        &[("show", if *show { "1" } else { "0" })],
+      ),
+      Self::AddressBarFocusChanged { has_focus } => with_query(
+        "address-bar-focus-changed",
+        &[("has_focus", if *has_focus { "1" } else { "0" })],
+      ),
+      Self::Navigate { url } => with_query("navigate", &[("url", url.as_str())]),
+      Self::OpenUrlInNewTab { url } => with_query("open-url-in-new-tab", &[("url", url.as_str())]),
+      Self::CloseTab { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("close-tab", &[("tab", tab.as_str())])
+      }
+      Self::DetachTab { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("detach-tab", &[("tab", tab.as_str())])
+      }
+      Self::ReloadTab { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("reload-tab", &[("tab", tab.as_str())])
+      }
+      Self::DuplicateTab { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("duplicate-tab", &[("tab", tab.as_str())])
+      }
+      Self::CloseOtherTabs { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("close-other-tabs", &[("tab", tab.as_str())])
+      }
+      Self::CloseTabsToRight { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("close-tabs-to-right", &[("tab", tab.as_str())])
+      }
+      Self::ActivateTab { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("activate-tab", &[("tab", tab.as_str())])
+      }
+      Self::TogglePinTab { tab_id } => {
+        let tab = tab_id.0.to_string();
+        with_query("toggle-pin-tab", &[("tab", tab.as_str())])
+      }
     }
+  }
+
+  /// Backwards-compatible alias for [`ChromeActionUrl::to_url`].
+  pub fn to_url_string(&self) -> String {
+    self.to_url()
   }
 
   /// Convert into the browser UI's higher-level action enum.
@@ -330,143 +653,11 @@ impl ChromeActionUrl {
       Self::TogglePinTab { tab_id } => ChromeAction::TogglePinTab(validate_tab_id(tab_id)?),
     })
   }
-
-  /// Format as a canonical `chrome-action:` URL string.
-  pub fn to_url_string(&self) -> String {
-    match self {
-      Self::Back => format!("{CHROME_ACTION_SCHEME}:back"),
-      Self::Forward => format!("{CHROME_ACTION_SCHEME}:forward"),
-      Self::Reload => format!("{CHROME_ACTION_SCHEME}:reload"),
-      Self::StopLoading => format!("{CHROME_ACTION_SCHEME}:stop-loading"),
-      Self::Home => format!("{CHROME_ACTION_SCHEME}:home"),
-      Self::NewTab => format!("{CHROME_ACTION_SCHEME}:new-tab"),
-      Self::ReopenClosedTab => format!("{CHROME_ACTION_SCHEME}:reopen-closed-tab"),
-      Self::OpenTabSearch => format!("{CHROME_ACTION_SCHEME}:open-tab-search"),
-      Self::CloseTabSearch => format!("{CHROME_ACTION_SCHEME}:close-tab-search"),
-      Self::ToggleBookmarksBar => format!("{CHROME_ACTION_SCHEME}:toggle-bookmarks-bar"),
-      Self::ToggleHistoryPanel => format!("{CHROME_ACTION_SCHEME}:toggle-history-panel"),
-      Self::ToggleBookmarksManager => format!("{CHROME_ACTION_SCHEME}:toggle-bookmarks-manager"),
-      Self::OpenClearBrowsingDataDialog => {
-        format!("{CHROME_ACTION_SCHEME}:open-clear-browsing-data-dialog")
-      }
-      Self::ToggleDownloadsPanel => format!("{CHROME_ACTION_SCHEME}:toggle-downloads-panel"),
-      Self::ToggleBookmarkForActiveTab => {
-        format!("{CHROME_ACTION_SCHEME}:toggle-bookmark-for-active-tab")
-      }
-      Self::FocusAddressBar => format!("{CHROME_ACTION_SCHEME}:focus-address-bar"),
-      Self::NewWindow => format!("{CHROME_ACTION_SCHEME}:new-window"),
-      Self::ToggleFullScreen => format!("{CHROME_ACTION_SCHEME}:toggle-full-screen"),
-      Self::OpenFindInPage => format!("{CHROME_ACTION_SCHEME}:open-find-in-page"),
-      Self::FindQuery {
-        tab_id,
-        query,
-        case_sensitive,
-      } => format!(
-        "{CHROME_ACTION_SCHEME}:find-query?{}",
-        url::form_urlencoded::Serializer::new(String::new())
-          .append_pair("tab", &tab_id.0.to_string())
-          .append_pair("query", query)
-          .append_pair("case_sensitive", if *case_sensitive { "1" } else { "0" })
-          .finish()
-      ),
-      Self::FindNext { tab_id } => {
-        format!("{CHROME_ACTION_SCHEME}:find-next?tab={}", tab_id.0)
-      }
-      Self::FindPrev { tab_id } => {
-        format!("{CHROME_ACTION_SCHEME}:find-prev?tab={}", tab_id.0)
-      }
-      Self::CloseFindInPage { tab_id } => {
-        format!("{CHROME_ACTION_SCHEME}:close-find-in-page?tab={}", tab_id.0)
-      }
-      Self::SavePage => format!("{CHROME_ACTION_SCHEME}:save-page"),
-      Self::PrintPage => format!("{CHROME_ACTION_SCHEME}:print-page"),
-      Self::SetShowMenuBar { show } => format!(
-        "{CHROME_ACTION_SCHEME}:set-show-menu-bar?{}",
-        url::form_urlencoded::Serializer::new(String::new())
-          .append_pair("show", if *show { "1" } else { "0" })
-          .finish()
-      ),
-      Self::AddressBarFocusChanged { has_focus } => format!(
-        "{CHROME_ACTION_SCHEME}:address-bar-focus-changed?{}",
-        url::form_urlencoded::Serializer::new(String::new())
-          .append_pair("has_focus", if *has_focus { "1" } else { "0" })
-          .finish()
-      ),
-      Self::Navigate { url } => format!(
-        "{CHROME_ACTION_SCHEME}:navigate?{}",
-        url::form_urlencoded::Serializer::new(String::new())
-          .append_pair("url", url)
-          .finish()
-      ),
-      Self::OpenUrlInNewTab { url } => format!(
-        "{CHROME_ACTION_SCHEME}:open-url-in-new-tab?{}",
-        url::form_urlencoded::Serializer::new(String::new())
-          .append_pair("url", url)
-          .finish()
-      ),
-      Self::CloseTab { tab_id } => format!("{CHROME_ACTION_SCHEME}:close-tab?tab={}", tab_id.0),
-      Self::DetachTab { tab_id } => {
-        format!("{CHROME_ACTION_SCHEME}:detach-tab?tab={}", tab_id.0)
-      }
-      Self::ReloadTab { tab_id } => {
-        format!("{CHROME_ACTION_SCHEME}:reload-tab?tab={}", tab_id.0)
-      }
-      Self::DuplicateTab { tab_id } => {
-        format!("{CHROME_ACTION_SCHEME}:duplicate-tab?tab={}", tab_id.0)
-      }
-      Self::CloseOtherTabs { tab_id } => {
-        format!("{CHROME_ACTION_SCHEME}:close-other-tabs?tab={}", tab_id.0)
-      }
-      Self::CloseTabsToRight { tab_id } => {
-        format!(
-          "{CHROME_ACTION_SCHEME}:close-tabs-to-right?tab={}",
-          tab_id.0
-        )
-      }
-      Self::ActivateTab { tab_id } => {
-        format!("{CHROME_ACTION_SCHEME}:activate-tab?tab={}", tab_id.0)
-      }
-      Self::TogglePinTab { tab_id } => {
-        format!("{CHROME_ACTION_SCHEME}:toggle-pin-tab?tab={}", tab_id.0)
-      }
-    }
-  }
-}
-
-fn chrome_action_name(url: &Url) -> Option<&str> {
-  // Canonical form: `chrome-action:<action>` (opaque/cannot-be-a-base URLs).
-  let path = url.path().trim_start_matches('/');
-  if !path.is_empty() {
-    return Some(path);
-  }
-  // Be permissive and accept `chrome-action://<action>` if a caller produced it.
-  url.host_str()
-}
-
-fn parse_tab_id(raw: &str) -> Result<TabId, String> {
-  let id: u64 = raw
-    .trim()
-    .parse()
-    .map_err(|_| format!("invalid tab id: {raw:?}"))?;
-  if id == 0 {
-    return Err("tab id must be non-zero".to_string());
-  }
-  Ok(TabId(id))
-}
-
-fn parse_bool(raw: &str) -> Result<bool, String> {
-  let v = raw.trim().to_ascii_lowercase();
-  match v.as_str() {
-    "1" | "true" | "yes" | "on" => Ok(true),
-    "0" | "false" | "no" | "off" => Ok(false),
-    _ => Err(format!("invalid boolean value: {raw:?}")),
-  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::ui::bookmarks::BookmarkId;
 
   #[test]
   fn maps_all_variants() {
@@ -479,23 +670,11 @@ mod tests {
       (ChromeActionUrl::StopLoading, ChromeAction::StopLoading),
       (ChromeActionUrl::Home, ChromeAction::Home),
       (ChromeActionUrl::NewTab, ChromeAction::NewTab),
-      (
-        ChromeActionUrl::ReopenClosedTab,
-        ChromeAction::ReopenClosedTab,
-      ),
+      (ChromeActionUrl::ReopenClosedTab, ChromeAction::ReopenClosedTab),
       (ChromeActionUrl::OpenTabSearch, ChromeAction::OpenTabSearch),
-      (
-        ChromeActionUrl::CloseTabSearch,
-        ChromeAction::CloseTabSearch,
-      ),
-      (
-        ChromeActionUrl::ToggleBookmarksBar,
-        ChromeAction::ToggleBookmarksBar,
-      ),
-      (
-        ChromeActionUrl::ToggleHistoryPanel,
-        ChromeAction::ToggleHistoryPanel,
-      ),
+      (ChromeActionUrl::CloseTabSearch, ChromeAction::CloseTabSearch),
+      (ChromeActionUrl::ToggleBookmarksBar, ChromeAction::ToggleBookmarksBar),
+      (ChromeActionUrl::ToggleHistoryPanel, ChromeAction::ToggleHistoryPanel),
       (
         ChromeActionUrl::ToggleBookmarksManager,
         ChromeAction::ToggleBookmarksManager,
@@ -512,19 +691,10 @@ mod tests {
         ChromeActionUrl::ToggleBookmarkForActiveTab,
         ChromeAction::ToggleBookmarkForActiveTab,
       ),
-      (
-        ChromeActionUrl::FocusAddressBar,
-        ChromeAction::FocusAddressBar,
-      ),
+      (ChromeActionUrl::FocusAddressBar, ChromeAction::FocusAddressBar),
       (ChromeActionUrl::NewWindow, ChromeAction::NewWindow),
-      (
-        ChromeActionUrl::ToggleFullScreen,
-        ChromeAction::ToggleFullScreen,
-      ),
-      (
-        ChromeActionUrl::OpenFindInPage,
-        ChromeAction::OpenFindInPage,
-      ),
+      (ChromeActionUrl::ToggleFullScreen, ChromeAction::ToggleFullScreen),
+      (ChromeActionUrl::OpenFindInPage, ChromeAction::OpenFindInPage),
       (
         ChromeActionUrl::FindQuery {
           tab_id,
@@ -537,14 +707,8 @@ mod tests {
           case_sensitive: true,
         },
       ),
-      (
-        ChromeActionUrl::FindNext { tab_id },
-        ChromeAction::FindNext(tab_id),
-      ),
-      (
-        ChromeActionUrl::FindPrev { tab_id },
-        ChromeAction::FindPrev(tab_id),
-      ),
+      (ChromeActionUrl::FindNext { tab_id }, ChromeAction::FindNext(tab_id)),
+      (ChromeActionUrl::FindPrev { tab_id }, ChromeAction::FindPrev(tab_id)),
       (
         ChromeActionUrl::CloseFindInPage { tab_id },
         ChromeAction::CloseFindInPage(tab_id),
@@ -629,75 +793,16 @@ mod tests {
       .unwrap(),
       ChromeAction::OpenUrlInNewTab("about:blank".to_string())
     );
-
-    assert_eq!(
-      ChromeActionUrl::FindQuery {
-        tab_id: TabId(1),
-        query: "  cats \n".to_string(),
-        case_sensitive: false,
-      }
-      .into_chrome_action()
-      .unwrap(),
-      ChromeAction::FindQuery {
-        tab_id: TabId(1),
-        query: "cats".to_string(),
-        case_sensitive: false,
-      }
-    );
   }
 
   #[test]
   fn errors_on_empty_url() {
-    assert!(ChromeActionUrl::Navigate {
-      url: "   ".to_string(),
-    }
-    .into_chrome_action()
-    .is_err());
-    assert!(ChromeActionUrl::OpenUrlInNewTab {
-      url: "".to_string()
-    }
-    .into_chrome_action()
-    .is_err());
-  }
-
-  #[test]
-  fn errors_on_oversized_url_payload() {
-    let max = crate::ui::protocol_limits::MAX_URL_BYTES;
-    let mut url = String::from("https://example.com/");
-    while url.as_bytes().len() <= max {
-      url.push('a');
-    }
-
-    assert!(ChromeActionUrl::Navigate { url: url.clone() }
+    assert!(ChromeActionUrl::Navigate { url: "   ".to_string() }
       .into_chrome_action()
       .is_err());
-    assert!(ChromeActionUrl::OpenUrlInNewTab { url }
+    assert!(ChromeActionUrl::OpenUrlInNewTab { url: "".to_string() }
       .into_chrome_action()
       .is_err());
-  }
-
-  #[test]
-  fn errors_on_empty_find_query() {
-    assert!(ChromeActionUrl::FindQuery {
-      tab_id: TabId(1),
-      query: " \n\t".to_string(),
-      case_sensitive: false,
-    }
-    .into_chrome_action()
-    .is_err());
-  }
-
-  #[test]
-  fn errors_on_oversized_find_query() {
-    let max = crate::ui::protocol_limits::MAX_FIND_QUERY_BYTES;
-    let query = "a".repeat(max + 1);
-    assert!(ChromeActionUrl::FindQuery {
-      tab_id: TabId(1),
-      query,
-      case_sensitive: false,
-    }
-    .into_chrome_action()
-    .is_err());
   }
 
   #[test]
@@ -711,11 +816,6 @@ mod tests {
       ChromeActionUrl::CloseTabsToRight { tab_id: TabId(0) },
       ChromeActionUrl::ActivateTab { tab_id: TabId(0) },
       ChromeActionUrl::TogglePinTab { tab_id: TabId(0) },
-      ChromeActionUrl::FindQuery {
-        tab_id: TabId(0),
-        query: "cats".to_string(),
-        case_sensitive: false,
-      },
       ChromeActionUrl::FindNext { tab_id: TabId(0) },
       ChromeActionUrl::FindPrev { tab_id: TabId(0) },
       ChromeActionUrl::CloseFindInPage { tab_id: TabId(0) },
@@ -728,41 +828,108 @@ mod tests {
   }
 
   #[test]
-  fn chrome_action_url_round_trip_examples() {
-    let cases = vec![
+  fn roundtrips_all_variants_via_url_format() {
+    let tab_id = TabId(123);
+
+    let cases: Vec<ChromeActionUrl> = vec![
       ChromeActionUrl::Back,
       ChromeActionUrl::Forward,
       ChromeActionUrl::Reload,
       ChromeActionUrl::StopLoading,
       ChromeActionUrl::Home,
       ChromeActionUrl::NewTab,
-      ChromeActionUrl::FindNext { tab_id: TabId(7) },
-      ChromeActionUrl::FindPrev { tab_id: TabId(7) },
-      ChromeActionUrl::CloseFindInPage { tab_id: TabId(7) },
+      ChromeActionUrl::ReopenClosedTab,
+      ChromeActionUrl::OpenTabSearch,
+      ChromeActionUrl::CloseTabSearch,
+      ChromeActionUrl::ToggleBookmarksBar,
+      ChromeActionUrl::ToggleHistoryPanel,
+      ChromeActionUrl::ToggleBookmarksManager,
+      ChromeActionUrl::OpenClearBrowsingDataDialog,
+      ChromeActionUrl::ToggleDownloadsPanel,
+      ChromeActionUrl::ToggleBookmarkForActiveTab,
+      ChromeActionUrl::FocusAddressBar,
+      ChromeActionUrl::NewWindow,
+      ChromeActionUrl::ToggleFullScreen,
+      ChromeActionUrl::OpenFindInPage,
       ChromeActionUrl::FindQuery {
-        tab_id: TabId(7),
-        query: "cats & dogs".to_string(),
-        case_sensitive: true,
+        tab_id,
+        query: "cats".to_string(),
+        case_sensitive: false,
       },
-      ChromeActionUrl::ActivateTab { tab_id: TabId(7) },
-      ChromeActionUrl::CloseTab { tab_id: TabId(42) },
-      ChromeActionUrl::DetachTab { tab_id: TabId(123) },
+      ChromeActionUrl::FindNext { tab_id },
+      ChromeActionUrl::FindPrev { tab_id },
+      ChromeActionUrl::CloseFindInPage { tab_id },
+      ChromeActionUrl::SavePage,
+      ChromeActionUrl::PrintPage,
+      ChromeActionUrl::SetShowMenuBar { show: true },
+      ChromeActionUrl::AddressBarFocusChanged { has_focus: false },
       ChromeActionUrl::Navigate {
-        url: "https://example.com/?q=cats & dogs".to_string(),
+        url: "https://example.com/a?b=c&d=e".to_string(),
       },
       ChromeActionUrl::OpenUrlInNewTab {
-        url: "cats".to_string(),
+        url: "about:blank".to_string(),
       },
-      ChromeActionUrl::ToggleHistoryPanel,
-      ChromeActionUrl::ToggleDownloadsPanel,
+      ChromeActionUrl::CloseTab { tab_id },
+      ChromeActionUrl::DetachTab { tab_id },
+      ChromeActionUrl::ReloadTab { tab_id },
+      ChromeActionUrl::DuplicateTab { tab_id },
+      ChromeActionUrl::CloseOtherTabs { tab_id },
+      ChromeActionUrl::CloseTabsToRight { tab_id },
+      ChromeActionUrl::ActivateTab { tab_id },
+      ChromeActionUrl::TogglePinTab { tab_id },
     ];
 
-    for action in cases {
-      let url = action.to_url_string();
+    for case in cases {
+      let url = case.to_url();
       let parsed = ChromeActionUrl::parse(&url).unwrap_or_else(|err| {
-        panic!("failed to parse {url:?}: {err}");
+        panic!("failed to parse formatted chrome-action URL {url:?}: {err}");
       });
-      assert_eq!(parsed, action, "round-trip mismatch for {url:?}");
+      assert_eq!(parsed, case, "roundtrip mismatch for {url}");
+    }
+  }
+
+  #[test]
+  fn parses_representative_strings() {
+    assert_eq!(ChromeActionUrl::parse("chrome-action:back").unwrap(), ChromeActionUrl::Back);
+    assert_eq!(
+      ChromeActionUrl::parse("chrome-action:navigate?url=https%3A%2F%2Fexample.com%2F").unwrap(),
+      ChromeActionUrl::Navigate {
+        url: "https://example.com/".to_string(),
+      }
+    );
+
+    // Scheme must be case-insensitive.
+    assert_eq!(
+      ChromeActionUrl::parse("ChRoMe-AcTiOn:reload").unwrap(),
+      ChromeActionUrl::Reload
+    );
+  }
+
+  #[test]
+  fn rejects_whitespace_and_invalid_inputs() {
+    let cases = vec![
+      " chrome-action:back",
+      "chrome-action:back ",
+      "chrome-action:back\n",
+      "chrome-action://back",
+      "chrome-action:unknown",
+      "chrome-action:navigate?url=",
+      "chrome-action:navigate?url=+",
+      "chrome-action:navigate",
+      "chrome-action:close-tab?tab=0",
+      "chrome-action:close-tab?tab=not-a-number",
+      "chrome-action:navigate?url=a&url=b",
+      "chrome-action:back?x=1",
+      "chrome-action:set-show-menu-bar?show=maybe",
+      // Mixed alias keys should be rejected.
+      "chrome-action:activate-tab?tab=1&tab_id=2",
+    ];
+
+    for input in cases {
+      assert!(
+        ChromeActionUrl::parse(input).is_err(),
+        "expected parse error for input {input:?}"
+      );
     }
   }
 
@@ -771,184 +938,27 @@ mod tests {
     let action = ChromeActionUrl::Navigate {
       url: "cats & dogs".to_string(),
     };
-    // `application/x-www-form-urlencoded` encoding:
-    // - spaces become `+`
-    // - `&` becomes `%26` so it can't terminate the query pair.
+
     assert_eq!(
-      action.to_url_string(),
+      action.to_url(),
       format!("{CHROME_ACTION_SCHEME}:navigate?url=cats+%26+dogs")
     );
 
-    // Ensure the parser accepts the legacy `input=` parameter name too.
-    let parsed = ChromeActionUrl::parse(&format!(
-      "{CHROME_ACTION_SCHEME}:navigate?input=cats+%26+dogs"
-    ))
-    .expect("parse input= alias");
-    assert_eq!(parsed, action);
-  }
+    assert_eq!(
+      ChromeActionUrl::parse(&format!(
+        "{CHROME_ACTION_SCHEME}:navigate?url=cats+%26+dogs"
+      ))
+      .unwrap(),
+      action
+    );
 
-  #[test]
-  fn chrome_action_variants_are_accounted_for() {
-    #[derive(Debug)]
-    enum UrlCoverage {
-      Expressible(ChromeActionUrl),
-      NotExpressible(&'static str),
-    }
-
-    let tab_id = TabId(1);
-    let sample_actions = vec![
-      ChromeAction::FocusAddressBar,
-      ChromeAction::NewWindow,
-      ChromeAction::ToggleFullScreen,
-      ChromeAction::OpenFindInPage,
-      ChromeAction::SavePage,
-      ChromeAction::PrintPage,
-      ChromeAction::FindQuery {
-        tab_id,
-        query: "cats".to_string(),
-        case_sensitive: true,
-      },
-      ChromeAction::FindNext(tab_id),
-      ChromeAction::FindPrev(tab_id),
-      ChromeAction::CloseFindInPage(tab_id),
-      ChromeAction::NewTab,
-      ChromeAction::CloseTab(tab_id),
-      ChromeAction::DetachTab(tab_id),
-      ChromeAction::ReloadTab(tab_id),
-      ChromeAction::DuplicateTab(tab_id),
-      ChromeAction::CloseOtherTabs(tab_id),
-      ChromeAction::CloseTabsToRight(tab_id),
-      ChromeAction::ReopenClosedTab,
-      ChromeAction::ActivateTab(tab_id),
-      ChromeAction::TogglePinTab(tab_id),
-      ChromeAction::NavigateTo("https://example.com/".to_string()),
-      ChromeAction::OpenUrlInNewTab("about:blank".to_string()),
-      ChromeAction::Back,
-      ChromeAction::Forward,
-      ChromeAction::Reload,
-      ChromeAction::StopLoading,
-      ChromeAction::Home,
-      ChromeAction::OpenTabSearch,
-      ChromeAction::CloseTabSearch,
-      ChromeAction::ToggleBookmarksBar,
-      ChromeAction::SetShowMenuBar(true),
-      ChromeAction::AddressBarFocusChanged(false),
-      ChromeAction::ToggleBookmarkForActiveTab,
-      ChromeAction::ReorderBookmarksBar(vec![BookmarkId(1), BookmarkId(2)]),
-      ChromeAction::ToggleHistoryPanel,
-      ChromeAction::ToggleBookmarksManager,
-      ChromeAction::OpenClearBrowsingDataDialog,
-      ChromeAction::ToggleDownloadsPanel,
-    ];
-
-    // Exhaustive match over ChromeAction to ensure new variants must be classified.
-    let coverage_for = |action: &ChromeAction| {
-      match action {
-      ChromeAction::Back => UrlCoverage::Expressible(ChromeActionUrl::Back),
-      ChromeAction::Forward => UrlCoverage::Expressible(ChromeActionUrl::Forward),
-      ChromeAction::Reload => UrlCoverage::Expressible(ChromeActionUrl::Reload),
-      ChromeAction::StopLoading => UrlCoverage::Expressible(ChromeActionUrl::StopLoading),
-      ChromeAction::Home => UrlCoverage::Expressible(ChromeActionUrl::Home),
-      ChromeAction::NewTab => UrlCoverage::Expressible(ChromeActionUrl::NewTab),
-      ChromeAction::ReopenClosedTab => UrlCoverage::Expressible(ChromeActionUrl::ReopenClosedTab),
-      ChromeAction::OpenTabSearch => UrlCoverage::Expressible(ChromeActionUrl::OpenTabSearch),
-      ChromeAction::CloseTabSearch => UrlCoverage::Expressible(ChromeActionUrl::CloseTabSearch),
-      ChromeAction::ToggleBookmarksBar => UrlCoverage::Expressible(ChromeActionUrl::ToggleBookmarksBar),
-      ChromeAction::ToggleHistoryPanel => UrlCoverage::Expressible(ChromeActionUrl::ToggleHistoryPanel),
-      ChromeAction::ToggleBookmarksManager => {
-        UrlCoverage::Expressible(ChromeActionUrl::ToggleBookmarksManager)
-      }
-      ChromeAction::OpenClearBrowsingDataDialog => {
-        UrlCoverage::Expressible(ChromeActionUrl::OpenClearBrowsingDataDialog)
-      }
-      ChromeAction::ToggleDownloadsPanel => {
-        UrlCoverage::Expressible(ChromeActionUrl::ToggleDownloadsPanel)
-      }
-      ChromeAction::ToggleBookmarkForActiveTab => {
-        UrlCoverage::Expressible(ChromeActionUrl::ToggleBookmarkForActiveTab)
-      }
-      ChromeAction::FocusAddressBar => UrlCoverage::Expressible(ChromeActionUrl::FocusAddressBar),
-      ChromeAction::NewWindow => UrlCoverage::Expressible(ChromeActionUrl::NewWindow),
-      ChromeAction::ToggleFullScreen => UrlCoverage::Expressible(ChromeActionUrl::ToggleFullScreen),
-      ChromeAction::OpenFindInPage => UrlCoverage::Expressible(ChromeActionUrl::OpenFindInPage),
-      ChromeAction::SavePage => UrlCoverage::Expressible(ChromeActionUrl::SavePage),
-      ChromeAction::PrintPage => UrlCoverage::Expressible(ChromeActionUrl::PrintPage),
-      ChromeAction::FindQuery {
-        tab_id,
-        query,
-        case_sensitive,
-      } => UrlCoverage::Expressible(ChromeActionUrl::FindQuery {
-        tab_id: *tab_id,
-        query: query.clone(),
-        case_sensitive: *case_sensitive,
-      }),
-      ChromeAction::FindNext(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::FindNext {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::FindPrev(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::FindPrev {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::CloseFindInPage(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::CloseFindInPage {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::CloseTab(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::CloseTab {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::DetachTab(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::DetachTab {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::ReloadTab(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::ReloadTab {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::DuplicateTab(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::DuplicateTab {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::CloseOtherTabs(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::CloseOtherTabs {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::CloseTabsToRight(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::CloseTabsToRight {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::ActivateTab(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::ActivateTab {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::TogglePinTab(tab_id) => UrlCoverage::Expressible(ChromeActionUrl::TogglePinTab {
-        tab_id: *tab_id,
-      }),
-      ChromeAction::NavigateTo(url) => UrlCoverage::Expressible(ChromeActionUrl::Navigate { url: url.clone() }),
-      ChromeAction::OpenUrlInNewTab(url) => {
-        UrlCoverage::Expressible(ChromeActionUrl::OpenUrlInNewTab { url: url.clone() })
-      }
-      ChromeAction::SetShowMenuBar(show) => UrlCoverage::Expressible(ChromeActionUrl::SetShowMenuBar {
-        show: *show,
-      }),
-      ChromeAction::AddressBarFocusChanged(has_focus) => {
-        UrlCoverage::Expressible(ChromeActionUrl::AddressBarFocusChanged {
-          has_focus: *has_focus,
-        })
-      }
-      ChromeAction::ReorderBookmarksBar(_ids) => UrlCoverage::NotExpressible(
-        "ReorderBookmarksBar is not URL-expressible because it carries an arbitrary list of bookmark IDs",
-      ),
-    }
-    };
-
-    for action in sample_actions {
-      match coverage_for(&action) {
-        UrlCoverage::Expressible(url_action) => {
-          assert_eq!(
-            url_action.clone().into_chrome_action().unwrap(),
-            action,
-            "ChromeActionUrl mapping must preserve action: {url_action:?} -> {action:?}",
-          );
-        }
-        UrlCoverage::NotExpressible(reason) => {
-          assert!(
-            !reason.trim().is_empty(),
-            "non-expressible actions must document a reason"
-          );
-        }
-      }
-    }
+    // Legacy alias accepted.
+    assert_eq!(
+      ChromeActionUrl::parse(&format!(
+        "{CHROME_ACTION_SCHEME}:navigate?input=cats+%26+dogs"
+      ))
+      .unwrap(),
+      action
+    );
   }
 }
