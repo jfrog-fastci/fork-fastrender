@@ -1,6 +1,6 @@
 use crate::code::{CompiledFunctionRef, CompiledScript};
 use crate::conversion_ops::ToPrimitiveHint;
-use crate::exec::RuntimeEnv;
+use crate::exec::{ResolvedBinding, RuntimeEnv};
 use crate::function::ThisMode;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::tick::DEFAULT_TICK_EVERY;
@@ -1222,6 +1222,7 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::ExprKind::This => Ok(self.this),
       hir_js::ExprKind::Literal(lit) => self.eval_literal(scope, lit),
       hir_js::ExprKind::Unary { op, expr } => self.eval_unary(scope, body, *op, *expr),
+      hir_js::ExprKind::Update { op, expr, prefix } => self.eval_update(scope, body, *op, *expr, *prefix),
       hir_js::ExprKind::Binary { op, left, right } => self.eval_binary(scope, body, *op, *left, *right),
       hir_js::ExprKind::Assignment { op, target, value } => self.eval_assignment(scope, body, *op, *target, *value),
       hir_js::ExprKind::Call(call) => self.eval_call(scope, body, call),
@@ -1267,7 +1268,6 @@ impl<'vm> HirEvaluator<'vm> {
         hir_js::ExprKind::Super | hir_js::ExprKind::NewTarget => {
           VmError::Unimplemented("super/new.target (hir-js compiled path)")
         }
-        hir_js::ExprKind::Update { .. } => VmError::Unimplemented("update expression (hir-js compiled path)"),
         hir_js::ExprKind::Jsx(_) => VmError::Unimplemented("jsx (hir-js compiled path)"),
         hir_js::ExprKind::TypeAssertion { .. }
         | hir_js::ExprKind::NonNull { .. }
@@ -1604,6 +1604,110 @@ impl<'vm> HirEvaluator<'vm> {
     }
   }
 
+  fn eval_update(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    op: hir_js::UpdateOp,
+    expr: hir_js::ExprId,
+    prefix: bool,
+  ) -> Result<Value, VmError> {
+    let delta = match op {
+      hir_js::UpdateOp::Increment => 1.0,
+      hir_js::UpdateOp::Decrement => -1.0,
+    };
+
+    let target_expr = self.get_expr(body, expr)?;
+    match &target_expr.kind {
+      hir_js::ExprKind::Ident(name_id) => {
+        let name = self.resolve_name(*name_id)?;
+
+        // Root the name as `ResolvedBinding` borrows it and `env` operations can invoke user code.
+        let reference = self.env.resolve_binding_reference(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          scope,
+          name.as_str(),
+        )?;
+
+        let old_value = self.get_value_from_resolved_binding(scope, reference)?;
+        let mut tick = || self.vm.tick();
+        let old_num = crate::ops::to_number_with_tick(scope.heap_mut(), old_value, &mut tick)?;
+        let new_num = old_num + delta;
+        let new_value = Value::Number(new_num);
+
+        // Assignment can invoke user code (e.g. setters via `with` envs). Root the value first.
+        let mut assign_scope = scope.reborrow();
+        assign_scope.push_root(new_value)?;
+        self.env.set_resolved_binding(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut assign_scope,
+          reference,
+          new_value,
+          self.strict,
+        )?;
+
+        if prefix {
+          Ok(new_value)
+        } else {
+          Ok(Value::Number(old_num))
+        }
+      }
+      hir_js::ExprKind::Member(member) => {
+        let object = self.eval_expr(scope, body, member.object)?;
+        let Value::Object(obj) = object else {
+          return Err(VmError::TypeError("member assignment requires object"));
+        };
+
+        let mut update_scope = scope.reborrow();
+        update_scope.push_root(Value::Object(obj))?;
+
+        let key = self.eval_object_key(&mut update_scope, body, &member.property)?;
+        root_property_key(&mut update_scope, key)?;
+
+        let receiver = Value::Object(obj);
+        let old_value = update_scope.get_with_host_and_hooks(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          obj,
+          key,
+          receiver,
+        )?;
+
+        // `ToNumber` does not allocate for supported primitive types.
+        let mut tick = || self.vm.tick();
+        let old_num = crate::ops::to_number_with_tick(update_scope.heap_mut(), old_value, &mut tick)?;
+        let new_num = old_num + delta;
+        let new_value = Value::Number(new_num);
+
+        let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+          self.vm,
+          &mut update_scope,
+          &mut *self.host,
+          &mut *self.hooks,
+          obj,
+          key,
+          new_value,
+          receiver,
+        )?;
+        if !ok && self.strict {
+          return Err(VmError::TypeError("Cannot assign to read-only property"));
+        }
+
+        if prefix {
+          Ok(new_value)
+        } else {
+          Ok(Value::Number(old_num))
+        }
+      }
+      _ => Err(VmError::Unimplemented("update target (hir-js compiled path)")),
+    }
+  }
+
   fn eval_binary(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1643,35 +1747,7 @@ impl<'vm> HirEvaluator<'vm> {
 
     match op {
       hir_js::BinaryOp::Add => {
-        // Root operands while coercing/allocating.
-        let mut scope = scope.reborrow();
-        scope.push_roots(&[l, r])?;
-        let lp = scope.to_primitive(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          l,
-          ToPrimitiveHint::Default,
-        )?;
-        let rp = scope.to_primitive(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          r,
-          ToPrimitiveHint::Default,
-        )?;
-        scope.push_roots(&[lp, rp])?;
-        if matches!(lp, Value::String(_)) || matches!(rp, Value::String(_)) {
-          let ls = scope.heap_mut().to_string(lp)?;
-          let rs = scope.heap_mut().to_string(rp)?;
-          let out = concat_strings(&mut scope, ls, rs, || self.vm.tick())?;
-          Ok(Value::String(out))
-        } else {
-          let mut tick = || self.vm.tick();
-          let ln = crate::ops::to_number_with_tick(scope.heap_mut(), lp, &mut tick)?;
-          let rn = crate::ops::to_number_with_tick(scope.heap_mut(), rp, &mut tick)?;
-          Ok(Value::Number(ln + rn))
-        }
+        self.addition_operator(scope, l, r)
       }
       hir_js::BinaryOp::Subtract => {
         let mut tick = || self.vm.tick();
@@ -1904,14 +1980,314 @@ impl<'vm> HirEvaluator<'vm> {
     target: hir_js::PatId,
     value: hir_js::ExprId,
   ) -> Result<Value, VmError> {
-    if op != hir_js::AssignOp::Assign {
-      return Err(VmError::Unimplemented(
+    match op {
+      hir_js::AssignOp::Assign => {
+        // Root the RHS across assignment target evaluation in case it allocates and triggers GC.
+        let mut scope = scope.reborrow();
+        let v = self.eval_expr(&mut scope, body, value)?;
+        scope.push_root(v)?;
+        self.assign_to_pat(&mut scope, body, target, v)?;
+        Ok(v)
+      }
+      hir_js::AssignOp::AddAssign
+      | hir_js::AssignOp::SubAssign
+      | hir_js::AssignOp::MulAssign
+      | hir_js::AssignOp::DivAssign
+      | hir_js::AssignOp::RemAssign
+      | hir_js::AssignOp::ExponentAssign => self.eval_compound_assignment(scope, body, op, target, value),
+      _ => Err(VmError::Unimplemented(
         "compound assignment (hir-js compiled path)",
-      ));
+      )),
     }
-    let v = self.eval_expr(scope, body, value)?;
-    self.assign_to_pat(scope, body, target, v)?;
-    Ok(v)
+  }
+
+  fn eval_compound_assignment(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    op: hir_js::AssignOp,
+    target: hir_js::PatId,
+    value: hir_js::ExprId,
+  ) -> Result<Value, VmError> {
+    // Only identifier + member targets are supported in the compiled path for now.
+    let pat = self.get_pat(body, target)?;
+
+    match pat.kind {
+      hir_js::PatKind::Ident(name_id) => {
+        let name = self.resolve_name(name_id)?;
+
+        let mut scope = scope.reborrow();
+
+        let left = match self.env.get(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut scope,
+          name.as_str(),
+        )? {
+          Some(v) => v,
+          None => {
+            let msg = format!("{} is not defined", name);
+            return Err(throw_reference_error(self.vm, &mut scope, &msg)?);
+          }
+        };
+
+        // Root LHS across RHS evaluation and operator application.
+        scope.push_root(left)?;
+
+        let right = self.eval_expr(&mut scope, body, value)?;
+        scope.push_root(right)?;
+
+        let out = self.apply_compound_assignment_op(&mut scope, op, left, right)?;
+
+        // Root the result across binding resolution/assignment.
+        scope.push_root(out)?;
+        self.env.set(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut scope,
+          name.as_str(),
+          out,
+          self.strict,
+        )?;
+        Ok(out)
+      }
+      hir_js::PatKind::AssignTarget(expr_id) => {
+        let target_expr = self.get_expr(body, expr_id)?;
+        match &target_expr.kind {
+          hir_js::ExprKind::Ident(name_id) => {
+            let name = self.resolve_name(*name_id)?;
+
+            let mut scope = scope.reborrow();
+
+            let left = match self.env.get(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut scope,
+              name.as_str(),
+            )? {
+              Some(v) => v,
+              None => {
+                let msg = format!("{} is not defined", name);
+                return Err(throw_reference_error(self.vm, &mut scope, &msg)?);
+              }
+            };
+
+            scope.push_root(left)?;
+            let right = self.eval_expr(&mut scope, body, value)?;
+            scope.push_root(right)?;
+
+            let out = self.apply_compound_assignment_op(&mut scope, op, left, right)?;
+            scope.push_root(out)?;
+            self.env.set(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut scope,
+              name.as_str(),
+              out,
+              self.strict,
+            )?;
+            Ok(out)
+          }
+          hir_js::ExprKind::Member(member) => {
+            let object = self.eval_expr(scope, body, member.object)?;
+            let Value::Object(obj) = object else {
+              return Err(VmError::TypeError("member assignment requires object"));
+            };
+
+            let mut scope = scope.reborrow();
+            scope.push_root(Value::Object(obj))?;
+
+            let key = self.eval_object_key(&mut scope, body, &member.property)?;
+            root_property_key(&mut scope, key)?;
+            let receiver = Value::Object(obj);
+
+            let left = scope.get_with_host_and_hooks(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              obj,
+              key,
+              receiver,
+            )?;
+            scope.push_root(left)?;
+
+            let right = self.eval_expr(&mut scope, body, value)?;
+            scope.push_root(right)?;
+
+            let out = self.apply_compound_assignment_op(&mut scope, op, left, right)?;
+            scope.push_root(out)?;
+
+            let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+              self.vm,
+              &mut scope,
+              &mut *self.host,
+              &mut *self.hooks,
+              obj,
+              key,
+              out,
+              receiver,
+            )?;
+            if !ok && self.strict {
+              return Err(VmError::TypeError("Cannot assign to read-only property"));
+            }
+            Ok(out)
+          }
+          _ => Err(VmError::Unimplemented(
+            "assignment target (hir-js compiled path)",
+          )),
+        }
+      }
+      _ => Err(VmError::Unimplemented(
+        "assignment pattern (hir-js compiled path)",
+      )),
+    }
+  }
+
+  fn apply_compound_assignment_op(
+    &mut self,
+    scope: &mut Scope<'_>,
+    op: hir_js::AssignOp,
+    left: Value,
+    right: Value,
+  ) -> Result<Value, VmError> {
+    match op {
+      hir_js::AssignOp::AddAssign => self.addition_operator(scope, left, right),
+      hir_js::AssignOp::SubAssign => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(
+          crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?
+            - crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?,
+        ))
+      }
+      hir_js::AssignOp::MulAssign => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(
+          crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?
+            * crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?,
+        ))
+      }
+      hir_js::AssignOp::DivAssign => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(
+          crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?
+            / crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?,
+        ))
+      }
+      hir_js::AssignOp::RemAssign => {
+        let mut tick = || self.vm.tick();
+        Ok(Value::Number(
+          crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?
+            % crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?,
+        ))
+      }
+      hir_js::AssignOp::ExponentAssign => {
+        let mut tick = || self.vm.tick();
+        let base = crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?;
+        let exp = crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?;
+        Ok(Value::Number(base.powf(exp)))
+      }
+      _ => Err(VmError::Unimplemented(
+        "compound assignment operator (hir-js compiled path)",
+      )),
+    }
+  }
+
+  fn addition_operator(&mut self, scope: &mut Scope<'_>, l: Value, r: Value) -> Result<Value, VmError> {
+    // Root operands while coercing/allocating.
+    let mut scope = scope.reborrow();
+    scope.push_roots(&[l, r])?;
+    let lp = scope.to_primitive(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      l,
+      ToPrimitiveHint::Default,
+    )?;
+    let rp = scope.to_primitive(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      r,
+      ToPrimitiveHint::Default,
+    )?;
+    scope.push_roots(&[lp, rp])?;
+    if matches!(lp, Value::String(_)) || matches!(rp, Value::String(_)) {
+      let ls = scope.heap_mut().to_string(lp)?;
+      let rs = scope.heap_mut().to_string(rp)?;
+      let out = concat_strings(&mut scope, ls, rs, || self.vm.tick())?;
+      Ok(Value::String(out))
+    } else {
+      let mut tick = || self.vm.tick();
+      let ln = crate::ops::to_number_with_tick(scope.heap_mut(), lp, &mut tick)?;
+      let rn = crate::ops::to_number_with_tick(scope.heap_mut(), rp, &mut tick)?;
+      Ok(Value::Number(ln + rn))
+    }
+  }
+
+  fn get_value_from_resolved_binding(
+    &mut self,
+    scope: &mut Scope<'_>,
+    reference: ResolvedBinding<'_>,
+  ) -> Result<Value, VmError> {
+    match reference {
+      ResolvedBinding::Declarative { env, name } => match scope.heap().env_get_binding_value(env, name, false) {
+        Ok(v) => Ok(v),
+        // TDZ sentinel from `Heap::{env_get_binding_value, env_set_mutable_binding}`.
+        Err(VmError::Throw(Value::Null)) => {
+          let msg = crate::fallible_format::try_format_error_message(
+            "Cannot access '",
+            name,
+            "' before initialization",
+          )?;
+          Err(throw_reference_error(self.vm, scope, &msg)?)
+        }
+        Err(err) => Err(err),
+      },
+      ResolvedBinding::Object {
+        binding_object,
+        name,
+      } => {
+        let receiver = Value::Object(binding_object);
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(receiver)?;
+        let key_s = key_scope.alloc_string(name)?;
+        key_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        key_scope.get_with_host_and_hooks(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          binding_object,
+          key,
+          receiver,
+        )
+      }
+      ResolvedBinding::GlobalProperty { name } => {
+        let global_object = self.env.global_object();
+        let receiver = Value::Object(global_object);
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(receiver)?;
+        let key_s = key_scope.alloc_string(name)?;
+        key_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        key_scope.get_with_host_and_hooks(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          global_object,
+          key,
+          receiver,
+        )
+      }
+      ResolvedBinding::Unresolvable { name } => {
+        let msg = format!("{} is not defined", name);
+        Err(throw_reference_error(self.vm, scope, &msg)?)
+      }
+    }
   }
 
   fn assign_to_pat(
