@@ -237,11 +237,11 @@ JSONL stream to a file via `FASTR_PERF_LOG_OUT`), see
   - CPU usage summary (`event=cpu_summary`, emitted ~once per second):
     - `cpu_time_ms_total`: total process CPU time (user + system) since startup (milliseconds).
     - `cpu_percent_recent`: CPU usage over the most recent interval (`Δcpu / Δwall * 100`).
-  - Example:
+    - Example:
     ```bash
     FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
-      bash scripts/run_limited.sh --as 64G -- \
-      bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+      timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+      bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
     ```
 - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` – output path for `FASTR_PERF_LOG` JSONL events.
   - When unset/empty, events go to **stdout**.
@@ -292,6 +292,8 @@ Not all builds implement all of these toggles yet; unsupported values are expect
     - Pages see `prefers-reduced-motion: reduce` by default unless explicitly overridden via
       `FASTR_PREFERS_REDUCED_MOTION=...`.
 - `FASTR_BROWSER_HUD=0|1` – show an in-app HUD overlay with browser/debug metrics.
+  - Includes FPS / frame-time samples, frame queue/backpressure stats, and (when enabled) UI latency
+    + CPU summary metrics.
   - Default: `0`.
 - `FASTR_BROWSER_DEBUG_LOG=0|1` – enable browser/worker debug logging UI.
   - Default: enabled in debug builds; disabled in release builds unless set to `1`.

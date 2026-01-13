@@ -44,28 +44,33 @@ profiling above (which focuses on parse/style/layout/paint timings during page r
 See the workstream goals/metric definitions in
 [`instructions/browser_responsiveness.md`](../instructions/browser_responsiveness.md).
 
+Quick start (HUD + JSONL perf log enabled):
+
+```bash
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud --perf-log about:test-layout-stress
+```
+
 ### Windowed JSONL perf logging (`FASTR_PERF_LOG=1`)
 
 Set `FASTR_PERF_LOG=1` when running the windowed browser to emit **JSON Lines** (one JSON object per
 line) describing UI responsiveness events.
 
-For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1` and tees the
-JSONL stdout stream to a file under repo guardrails):
+For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1` and writes the
+JSONL stream to a file under repo guardrails):
 
 ```bash
-bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --out target/browser_perf.jsonl --url about:test-layout-stress
 
 # Capture + summarize (runs `browser_perf_log_summary` after the browser exits):
-bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl --summary
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --out target/browser_perf.jsonl --url about:test-layout-stress --summary
 ```
 
 Typical run (writes a JSONL log you can post-process with `jq`, pandas, etc.):
 
 ```bash
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT= \
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress \
-  | tee target/browser_perf.jsonl
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
 ```
 
 When enabled, you should expect events covering at least:
@@ -95,7 +100,7 @@ small scripted set of UI scenarios and writes a single JSON summary.
 Via `xtask` (recommended):
 
 ```bash
-bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
 ```
 
 Or run the binary directly:
@@ -114,10 +119,10 @@ Examples:
 
 ```bash
 # Run a single scenario (see `ui_perf_smoke --help` for the full list).
-bash scripts/cargo_agent.sh xtask ui-perf-smoke -- --only ttfp_newtab
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke -- --only ttfp_newtab
 
 # Compare against a saved baseline and fail on regressions.
-bash scripts/cargo_agent.sh xtask ui-perf-smoke \
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke \
   --baseline baseline/ui_perf_smoke.json --threshold 0.05 --fail-on-regression \
   -- --only ttfp_newtab
 ```
@@ -208,15 +213,15 @@ To turn a captured JSONL log into p50/p95/max summary numbers, pipe it into the 
 
 ```bash
 FASTR_PERF_LOG=1 \
-  bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser \
-  | bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary
+  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress \
+  | timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary
 ```
 
 You can also summarize an existing file:
 
 ```bash
-bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input perf.jsonl
+timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input perf.jsonl
 ```
 
 Filtering options (see `browser_perf_log_summary --help`):
@@ -230,7 +235,7 @@ To capture a CPU profile while interacting with the windowed `browser` UI (resiz
 the samply helper:
 
 ```bash
-bash scripts/profile_browser_samply.sh [--url <url>] [-- <browser args...>]
+timeout -k 10 600 bash scripts/profile_browser_samply.sh [--url <url>] [-- <browser args...>]
 ```
 
 Close the browser window to finish recording; the script writes a terminal-friendly profile artifact

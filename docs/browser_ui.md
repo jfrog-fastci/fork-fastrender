@@ -32,13 +32,13 @@ The easiest entry point is the wrapper-safe `xtask browser` command, which alrea
 
 ```bash
 # Release browser with HUD + responsiveness/perf logging enabled:
-bash scripts/cargo_agent.sh xtask browser --release --hud --perf-log about:test-layout-stress
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud --perf-log about:test-layout-stress
 ```
 
 To save the JSONL perf log and/or a browser UI trace to disk:
 
 ```bash
-bash scripts/cargo_agent.sh xtask browser --release \
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release \
   --perf-log --perf-log-out target/browser_perf.jsonl \
   --trace-out target/browser_trace.json \
   about:test-layout-stress
@@ -46,11 +46,11 @@ bash scripts/cargo_agent.sh xtask browser --release \
 
 ```bash
 # Debug build:
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 
 # Release build:
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 ```
 
@@ -60,7 +60,7 @@ On Linux, `browser_ui` builds with the **X11** backend only (so minimal/CI hosts
 development packages). To build with both **X11 + Wayland** support, enable `browser_ui_wayland`:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui,browser_ui_wayland --bin browser
 ```
 
@@ -69,7 +69,7 @@ You can force a specific backend with:
 
 ```bash
 # Force Wayland:
-WINIT_UNIX_BACKEND=wayland bash scripts/run_limited.sh --as 64G -- \
+WINIT_UNIX_BACKEND=wayland timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui,browser_ui_wayland --bin browser
 ```
 
@@ -85,7 +85,7 @@ Audio output backends are opt-in so CI/minimal hosts don't need system audio dev
 - Real-time audio output: enable `audio_cpal` (may require ALSA dev packages on Linux).
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui,audio_cpal --bin browser
 ```
 
@@ -115,7 +115,7 @@ When running the browser UI against arbitrary real-world pages, consider using t
 limit wrapper (especially on multi-agent hosts):
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 ```
 
@@ -183,15 +183,15 @@ Run smoke modes under the repo’s resource-limit wrapper:
 
 ```bash
 # Headless “does it start / is UI↔worker wired up” smoke test:
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke
 
 # JS smoke test (vm-js `BrowserTab` execution path):
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke --js
 
 # Headless “renderer crash shouldn’t take down the browser” smoke test:
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-crash-smoke
 ```
 
@@ -291,7 +291,8 @@ The browser chrome uses an accent color for links, focus rings, and selection.
 
 ### HUD / debug overlays
 
-- `FASTR_BROWSER_HUD=1` shows an in-app HUD overlay with browser/debug metrics.
+- `FASTR_BROWSER_HUD=1` shows an in-app HUD overlay with browser/debug metrics (FPS / frame time,
+  frame queue/backpressure stats, and when enabled: input/resize latency + CPU usage summaries).
 - `FASTR_BROWSER_LOG_SURFACE_CONFIGURE=1` logs `wgpu::Surface::configure` calls to stderr (useful
   when debugging interactive resize performance; swapchain reconfiguration should be coalesced).
 - Debug log UI:
@@ -318,6 +319,8 @@ there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / trac
 - `scripts/capture_browser_perf_log.sh` wraps an interactive windowed run (under `run_limited`) and
   writes the JSONL stream to a file via `FASTR_PERF_LOG_OUT`; pass `--summary` to run
   `browser_perf_log_summary` automatically.
+- `scripts/profile_browser_samply.sh` records an interactive Linux CPU profile (Samply) for the
+  windowed browser UI.
 
 See [perf-logging.md#browser-responsiveness](perf-logging.md#browser-responsiveness) (and the
 “Measuring browser responsiveness” section below) for full details.
@@ -629,7 +632,7 @@ worker-produced page accessibility snapshot (or any injected page subtree); use 
 `browser` + a platform accessibility inspector to debug page nodes.
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- --help
 ```
 
@@ -1032,24 +1035,24 @@ navigation TTFP), enable JSONL perf logging:
 
 ```bash
 # Convenience wrapper: runs under run_limited, sets FASTR_PERF_LOG=1, and writes JSONL to a file.
-bash scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
 
-# Capture + summarize (runs browser_perf_log_summary after the browser exits):
-bash scripts/capture_browser_perf_log.sh --summary --url about:test-scroll --out target/browser_perf.jsonl
+# Capture + summarize (runs `browser_perf_log_summary` after the browser exits):
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --summary --url about:test-scroll --out target/browser_perf.jsonl
 ```
 
 Manual invocation (equivalent, but requires setting env vars / output paths yourself):
 
 ```bash
 FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
-  bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-scroll
 ```
 
 For automated/headless runs, use the `ui_perf_smoke` harness:
 
 ```bash
-bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
 ```
 
 See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness) for

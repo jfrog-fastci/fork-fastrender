@@ -209,23 +209,24 @@ Most renderer debug knobs are environment variables; the canonical list is
 To capture machine-readable browser responsiveness metrics:
 
 ```bash
-bash scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
 
 # Wrapper-friendly helper (sets env vars for you):
-bash scripts/cargo_agent.sh xtask browser --release \
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud \
   --perf-log --perf-log-out target/browser_perf.jsonl \
   about:test-scroll
 
 # Manual invocation:
 FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
-  bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-scroll
 ```
 
 Summarize a captured log with:
 
 ```bash
-bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input target/browser_perf.jsonl
+timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
+  --input target/browser_perf.jsonl
 ```
 
 (`bash scripts/capture_browser_perf_log.sh --summary ...` runs the summary tool automatically after the
@@ -234,7 +235,13 @@ browser exits.)
 For automated, headless measurements (JSON summary):
 
 ```bash
-bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
+```
+
+For interactive CPU attribution while reproducing jank (Linux), use the Samply wrapper:
+
+```bash
+timeout -k 10 600 bash scripts/profile_browser_samply.sh --url about:test-scroll
 ```
 
 See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness) for how the
@@ -251,6 +258,6 @@ opens but nothing renders, check for:
 For panics, use:
 
 ```bash
-RUST_BACKTRACE=1 bash scripts/run_limited.sh --as 64G -- \
+RUST_BACKTRACE=1 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 ```

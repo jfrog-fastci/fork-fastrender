@@ -168,30 +168,31 @@ Examples:
 
 ```bash
 # Local HTML file (optionally with a sidecar .meta file)
-bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
-    tests/pages/fixtures/apple.com/index.html
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run -p fastrender --release --bin dump_a11y -- \
+  tests/pages/fixtures/apple.com/index.html
 
 # URL
-bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
-    https://example.com/
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run -p fastrender --release --bin dump_a11y -- \
+  https://example.com/
 
 # Change viewport / DPR
-bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
-    --viewport 800x600 --dpr 2.0 https://example.com/
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run -p fastrender --release --bin dump_a11y -- \
+  --viewport 800x600 --dpr 2.0 https://example.com/
 
 # Pipe into jq for quick inspection
-bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
-    https://example.com/ | jq '.role, .children[0].role'
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run -p fastrender --release --bin dump_a11y -- \
+  https://example.com/ | jq '.role, .children[0].role'
 ```
 
 Worked example (stable fixture + expected output):
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run -p fastrender --release --bin dump_a11y -- \
   tests/fixtures/accessibility/headings_links.html \
   | jq '.. | objects | select(.id? == "title") | {role,name,level,html_tag,id,states,children}'
 ```
@@ -220,7 +221,7 @@ Expected output snippet:
 Notes:
 
 - In agent/CI environments, prefer the repo wrappers for resource limits and consistent Cargo flags:
-  `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- ...`
+  `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run -p fastrender --release --bin dump_a11y -- ...`
 - Cached HTML produced by `fetch_pages` (under `fetches/html/*.html`) can be passed directly; the tool
   will auto-load the `*.html.meta` sidecar when present.
 - Debug-only fields:
@@ -229,9 +230,9 @@ Notes:
   - In release builds, build with `--features a11y_debug` to include the debug fields:
 
     ```bash
-    bash scripts/run_limited.sh --as 64G -- \
-      bash scripts/cargo_agent.sh run --release --features a11y_debug --bin dump_a11y -- \
-        https://example.com/
+    timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+      bash scripts/cargo_agent.sh run -p fastrender --release --features a11y_debug --bin dump_a11y -- \
+      https://example.com/
     ```
 
 ### `dump_a11y --include-bounds` (Task 141 / optional)
@@ -258,9 +259,9 @@ Coordinate conventions to expect (and to keep consistent with the UI/input pipel
 Example (when available):
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
-  --include-bounds tests/fixtures/accessibility/headings_links.html \
-  | jq '.children[0]'
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run -p fastrender --release --bin dump_a11y -- \
+  --include-bounds tests/fixtures/accessibility/headings_links.html | jq '.children[0]'
 ```
 
 If you need bounds today and the flag is not available:
@@ -303,7 +304,7 @@ To inspect what the **windowed browser chrome UI** is exposing to the OS via Acc
 from the page semantics tree), use `dump_accesskit`:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- --help
 ```
 
@@ -326,7 +327,7 @@ These tests are compiled into the unified integration test binary (`tests/integr
 them via:
 
 ```bash
-bash scripts/cargo_agent.sh test --test integration accessibility::
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration accessibility::
 ```
 
 Helpful patterns:
@@ -346,7 +347,7 @@ Accessibility semantics are validated by unit tests in:
 Run a focused subset:
 
 ```bash
-bash scripts/cargo_agent.sh test accessibility_
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender accessibility_
 ```
 
 ### Unit tests: geometry (bounds + mapping)
@@ -361,8 +362,8 @@ Geometry/bounds logic is validated separately from semantics:
 Focused runs:
 
 ```bash
-bash scripts/cargo_agent.sh test absolute_bounds_for_box_id
-bash scripts/cargo_agent.sh test input_mapping
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender absolute_bounds_for_box_id
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender input_mapping
 ```
 
 ### AccessKit tests (browser chrome)
@@ -376,7 +377,7 @@ compiled with `browser_ui`):
 Run:
 
 ```bash
-bash scripts/cargo_agent.sh test --features browser_ui accesskit
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --features browser_ui accesskit
 ```
 
 ### Browser integration tests (a11y interaction plumbing)
@@ -385,14 +386,14 @@ Some browser-level tests exercise accessibility-adjacent interaction paths (e.g.
 used by native controls / eventual AT action routing):
 
 ```bash
-bash scripts/cargo_agent.sh test --test integration browser_integration::a11y_select_action
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration browser_integration::a11y_select_action
 ```
 
 The UI worker also has an integration test that asserts it emits the `WorkerToUi::PageAccessibility`
 snapshot (semantic tree + bounds) after navigating:
 
 ```bash
-bash scripts/cargo_agent.sh test --features browser_ui --test integration browser_integration::ui_worker_page_accessibility
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --features browser_ui --test integration browser_integration::ui_worker_page_accessibility
 ```
 
 There are also focused AccessKit bridge tests:
@@ -401,8 +402,8 @@ There are also focused AccessKit bridge tests:
 - `tests/accesskit_scroll.rs` (requires `--features browser_ui`)
 
 ```bash
-bash scripts/cargo_agent.sh test --features a11y_accesskit --test accesskit_dom2_node_ids
-bash scripts/cargo_agent.sh test --features browser_ui --test accesskit_scroll
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --features a11y_accesskit --test accesskit_dom2_node_ids
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --features browser_ui --test accesskit_scroll
 ```
 
 ## Known limitations (current gaps)
@@ -449,7 +450,7 @@ bash scripts/cargo_agent.sh test --features browser_ui --test accesskit_scroll
 - Build/run the windowed browser UI with AccessKit enabled (requires `browser_ui`):
 
   ```bash
-  bash scripts/run_limited.sh --as 64G -- \
+  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
     bash scripts/cargo_agent.sh run --features browser_ui --bin browser
   ```
 
