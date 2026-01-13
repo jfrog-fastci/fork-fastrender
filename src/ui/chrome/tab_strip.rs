@@ -783,9 +783,9 @@ fn group_chip_ui(
         }
       }
     });
-    change_color_menu.response.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, "Change group color")
-    });
+    change_color_menu
+      .response
+      .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Change group color"));
 
     ui.separator();
 
@@ -1637,17 +1637,19 @@ pub(super) fn tab_strip_ui(
           ui.horizontal(|ui| {
             let mut idx = pinned_len;
             let mut first_item = true;
-            // If the previous rendered element was a tab inside a group, the following gap should
-            // shrink/grow with that group's expand factor.
-            let mut prev_gap_scale: Option<f32> = None;
+            // Scale gaps based on the visibility of adjacent items so collapsing tabs don't leave
+            // behind fixed `TAB_GAP` holes. We use `min(prev, curr)` so:
+            // - chip<->tab gaps shrink with the tab during collapse/expand
+            // - chip<->chip and chip<->ungrouped tab gaps remain at full size
+            let mut prev_item_scale: f32 = 1.0;
 
             let mut add_gap =
-              |ui: &mut egui::Ui, first_item: &mut bool, prev_gap_scale: Option<f32>| {
+              |ui: &mut egui::Ui, first_item: &mut bool, prev_scale: f32, curr_scale: f32| {
                 if *first_item {
                   *first_item = false;
                   return;
                 }
-                let scale = prev_gap_scale.unwrap_or(1.0);
+                let scale = prev_scale.min(curr_scale).clamp(0.0, 1.0);
                 let gap = (TAB_GAP * scale).max(0.0);
                 if gap > 0.0 {
                   ui.add_space(gap);
@@ -1660,13 +1662,17 @@ pub(super) fn tab_strip_ui(
               if let Some(group_id) = tab_group {
                 let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
                 if is_first {
-                  add_gap(ui, &mut first_item, prev_gap_scale);
-                  prev_gap_scale = None;
+                  add_gap(ui, &mut first_item, prev_item_scale, 1.0);
                   group_chip_ui(ui, motion, app, group_id, &mut ops, focus_ring);
+                  prev_item_scale = 1.0;
                 }
 
                 let collapsed = app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed);
-                let group_t = group_expand_t.get(&group_id).copied().unwrap_or(1.0);
+                let group_t = group_expand_t
+                  .get(&group_id)
+                  .copied()
+                  .unwrap_or(1.0)
+                  .clamp(0.0, 1.0);
                 if collapsed && group_t <= 0.001 {
                   // Fully collapsed: hide all member tabs (but keep the chip visible).
                   while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
@@ -1675,9 +1681,9 @@ pub(super) fn tab_strip_ui(
                   continue;
                 }
 
-                add_gap(ui, &mut first_item, prev_gap_scale);
+                add_gap(ui, &mut first_item, prev_item_scale, group_t);
                 let interactive = !collapsed && group_t > 0.95;
-                let tab_width = sizing.tab_width * group_t.clamp(0.0, 1.0);
+                let tab_width = sizing.tab_width * group_t;
                 let is_active = active_id == Some(tab_id);
                 let favicon_tex = favicon_for_tab(tab_id);
                 let (tab_rect, tab_response, maybe_action) = {
@@ -1724,13 +1730,13 @@ pub(super) fn tab_strip_ui(
                   actions.push(action);
                 }
 
-                prev_gap_scale = Some(group_t.clamp(0.0, 1.0));
+                prev_item_scale = group_t;
                 idx += 1;
                 continue;
               }
 
-              add_gap(ui, &mut first_item, prev_gap_scale);
-              prev_gap_scale = None;
+              add_gap(ui, &mut first_item, prev_item_scale, 1.0);
+              prev_item_scale = 1.0;
               let is_active = active_id == Some(tab_id);
               let favicon_tex = favicon_for_tab(tab_id);
               let is_dragged = app.chrome.dragging_tab_id == Some(tab_id);
