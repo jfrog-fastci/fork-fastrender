@@ -72,6 +72,7 @@ cycling should be tested with <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<
 | Test | Win/Linux shortcut | macOS shortcut | Expected / parity notes |
 |---|---|---|---|
 | Toggle history panel | Ctrl+H | Cmd+Y | Panel opens; search works; clicking an entry navigates. |
+| Toggle bookmarks panel | Menu bar: Bookmarks → Bookmarks panel (or page context menu) | Same | Side panel opens/closes; search and navigation behave; focus doesn’t get trapped. |
 | Bookmark current page | Ctrl+D | Cmd+D | Bookmark state updates; bookmark appears in bar/manager. |
 | Open bookmarks manager | Ctrl+Shift+O | Cmd+Shift+O | Manager opens; search + remove/edit works. |
 
@@ -94,4 +95,3 @@ cycling should be tested with <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<
 |---|---|---|---|
 | Focus order | Tab/Shift+Tab through chrome controls | Same | Focus order matches visual order; focus indicator is visible. |
 | Screen reader labels | Narrator/Orca can traverse chrome | VoiceOver can traverse chrome | Controls announce meaningful labels (“Back”, “Address bar”, “Downloads”, etc). |
-
