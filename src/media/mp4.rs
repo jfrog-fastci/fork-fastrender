@@ -43,7 +43,6 @@ pub enum SeekMethod {
 pub struct Mp4Sample {
   pub offset: u64,
   pub size: u32,
-  pub pts_ns: u64,
   pub dts_ticks: u64,
   pub duration_ticks: u32,
   pub is_sync: bool,
@@ -53,6 +52,7 @@ pub struct Mp4Sample {
 pub struct Mp4Track {
   timescale: u32,
   samples: Vec<Mp4Sample>,
+  pts_ns_by_sample: Vec<u64>,
   pts_index: PtsIndex,
   /// Next sample index in *decode order*.
   next_sample: usize,
@@ -68,6 +68,11 @@ impl Mp4Track {
   #[must_use]
   pub fn samples(&self) -> &[Mp4Sample] {
     &self.samples
+  }
+
+  #[must_use]
+  pub fn pts_ns_by_sample(&self) -> &[u64] {
+    &self.pts_ns_by_sample
   }
 
   #[must_use]
@@ -88,15 +93,12 @@ impl Mp4Track {
 
   fn find_sample_for_time_ns(&self, time_ns: u64) -> (usize, SeekMethod) {
     match &self.pts_index {
-      PtsIndex::Monotonic(pts_ns_by_sample) => {
-        let idx = pts_ns_by_sample.partition_point(|&pts| pts < time_ns);
+      PtsIndex::Monotonic => {
+        let idx = self.pts_ns_by_sample.partition_point(|&pts| pts < time_ns);
         (idx, SeekMethod::MonotonicBinarySearch)
       }
-      PtsIndex::Sorted {
-        pts_ns_sorted,
-        sample_indices_by_pts,
-      } => {
-        let pos = pts_ns_sorted.partition_point(|&pts| pts < time_ns);
+      PtsIndex::Sorted { sample_indices_by_pts } => {
+        let pos = sample_indices_by_pts.partition_point(|&i| self.pts_ns_by_sample[i] < time_ns);
         let idx = sample_indices_by_pts
           .get(pos)
           .copied()
@@ -155,12 +157,9 @@ impl Mp4Demuxer {
 #[derive(Debug, Clone)]
 enum PtsIndex {
   /// PTS values are monotonic in sample order (common for audio and baseline-profile H.264).
-  Monotonic(Vec<u64>),
+  Monotonic,
   /// PTS values are non-monotonic in sample order; binary search over sorted PTS.
-  Sorted {
-    pts_ns_sorted: Vec<u64>,
-    sample_indices_by_pts: Vec<usize>,
-  },
+  Sorted { sample_indices_by_pts: Vec<usize> },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -212,7 +211,8 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
     return Ok(Mp4Track {
       timescale,
       samples: Vec::new(),
-      pts_index: PtsIndex::Monotonic(Vec::new()),
+      pts_ns_by_sample: Vec::new(),
+      pts_index: PtsIndex::Monotonic,
       next_sample: 0,
       last_seek_method: None,
     });
@@ -277,7 +277,6 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
       samples.push(Mp4Sample {
         offset: start,
         size,
-        pts_ns: 0,
         dts_ticks: 0,
         duration_ticks: 0,
         is_sync: sync_flags[sample_idx],
@@ -312,25 +311,24 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
 
     let pts_ticks = dts_ticks.saturating_add(ctts_off);
     let pts_ns = duration_to_ns(ticks_to_duration(pts_ticks, Timebase::new(1, timescale)));
-    sample.pts_ns = pts_ns;
-
     pts_ns_by_sample.push(pts_ns);
 
     dts_ticks = dts_ticks.saturating_add(i64::from(dur));
   }
 
-  let pts_index = build_pts_index(pts_ns_by_sample);
+  let pts_index = build_pts_index(&pts_ns_by_sample);
 
   Ok(Mp4Track {
     timescale,
     samples,
+    pts_ns_by_sample,
     pts_index,
     next_sample: 0,
     last_seek_method: None,
   })
 }
 
-fn build_pts_index(pts_ns_by_sample: Vec<u64>) -> PtsIndex {
+fn build_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
   // Fast path: monotonic in sample order => binary search directly.
   let mut is_monotonic = true;
   for i in 1..pts_ns_by_sample.len() {
@@ -341,24 +339,14 @@ fn build_pts_index(pts_ns_by_sample: Vec<u64>) -> PtsIndex {
   }
 
   if is_monotonic {
-    return PtsIndex::Monotonic(pts_ns_by_sample);
+    return PtsIndex::Monotonic;
   }
 
   // Non-monotonic (e.g. B-frames / CTTS reordering). Build a sorted index.
-  let mut indices: Vec<usize> = (0..pts_ns_by_sample.len()).collect();
-  indices.sort_by_key(|&i| (pts_ns_by_sample[i], i));
+  let mut sample_indices_by_pts: Vec<usize> = (0..pts_ns_by_sample.len()).collect();
+  sample_indices_by_pts.sort_by_key(|&i| (pts_ns_by_sample[i], i));
 
-  let mut pts_ns_sorted = Vec::with_capacity(indices.len());
-  let mut sample_indices_by_pts = Vec::with_capacity(indices.len());
-  for &i in &indices {
-    pts_ns_sorted.push(pts_ns_by_sample[i]);
-    sample_indices_by_pts.push(i);
-  }
-
-  PtsIndex::Sorted {
-    pts_ns_sorted,
-    sample_indices_by_pts,
-  }
+  PtsIndex::Sorted { sample_indices_by_pts }
 }
 
 fn duration_to_ns(d: Duration) -> u64 {
@@ -872,7 +860,7 @@ mod tests {
     // monotonic in decode order for both tracks.
     for (i, track) in demuxer.tracks.iter().enumerate() {
       assert!(
-        matches!(track.pts_index, PtsIndex::Monotonic(_)),
+        matches!(track.pts_index, PtsIndex::Monotonic),
         "track {i} should have monotonic pts in fixture"
       );
     }
