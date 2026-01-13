@@ -277,12 +277,16 @@ pub enum RendererSeccompPolicy {
 }
 #[derive(Debug, Clone, Copy)]
 pub struct RendererSandboxConfig {
-  /// Enable a seccomp syscall filter.
+  /// Master gate for installing a seccomp syscall filter.
+  ///
+  /// When `false`, no seccomp filter will be installed even if [`Self::seccomp`] selects a policy.
   ///
   /// Default: enabled on Linux, disabled elsewhere.
   pub enable_seccomp: bool,
 
-  /// Enable Landlock-based filesystem sandboxing (Linux-only).
+  /// Master gate for Landlock-based filesystem sandboxing (Linux-only).
+  ///
+  /// When `false`, Landlock will not be applied even if [`Self::landlock`] selects a policy.
   ///
   /// Default: enabled on Linux (best-effort; treated as unsupported on older kernels).
   pub enable_landlock: bool,
