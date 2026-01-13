@@ -40,6 +40,24 @@ pub enum SandboxStatus {
   Unsupported,
 }
 
+/// Apply the strictest available sandbox profile for the current process.
+///
+/// This is primarily intended for sandboxing untrusted renderer subprocesses. It is a one-way
+/// operation: once applied, the sandbox cannot be removed.
+///
+/// Today this is only supported on macOS (Seatbelt). On other platforms this returns
+/// `io::ErrorKind::Unsupported`.
+pub fn apply_pure_computation_sandbox() -> std::io::Result<()> {
+  #[cfg(target_os = "macos")]
+  return macos::apply_pure_computation_sandbox();
+
+  #[cfg(not(target_os = "macos"))]
+  return Err(std::io::Error::new(
+    std::io::ErrorKind::Unsupported,
+    "pure-computation sandboxing is only supported on macOS",
+  ));
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RendererSandboxConfig {
   // Reserved for future policy knobs.
