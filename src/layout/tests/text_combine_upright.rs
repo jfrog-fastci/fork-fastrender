@@ -1,4 +1,5 @@
 use crate::style::types::TextOrientation;
+use crate::text::pipeline::RunRotation;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 use crate::{FastRender, FontConfig};
 
@@ -198,4 +199,96 @@ fn text_combine_upright_counts_as_a_single_unit_for_line_breaking() {
   lines.sort();
 
   assert_eq!(lines, ["A12", "B"]);
+}
+
+#[test]
+fn text_combine_upright_all_end_to_end_layout_and_shaping() {
+  // Regression coverage for `text-combine-upright: all` (tate-chu-yoko) in vertical writing mode.
+  //
+  // This complements the existing `digits` tests by ensuring non-digit characters are combined and
+  // shaped horizontally inside the 1em cell, without introducing run rotations.
+  let html = r#"
+    <html>
+      <body style="margin:0">
+        <div style="writing-mode: vertical-rl; font-family: 'DejaVu Sans', sans-serif; font-size: 20px; line-height: 2; width: 200px; height: 200px">
+          A<span style="text-combine-upright: all">ab</span>B
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+  let dom = renderer.parse_html(html).expect("parse HTML");
+  let fragments = renderer
+    .layout_document(&dom, 400, 400)
+    .expect("layout document");
+
+  let frag = find_first_text_fragment(&fragments.root, "ab").expect("combined text fragment");
+  let style = frag.style.as_ref().expect("fragment style");
+  assert_eq!(style.text_orientation, TextOrientation::Upright);
+
+  let (baseline_offset, bounds, shaped) = match &frag.content {
+    FragmentContent::Text {
+      baseline_offset,
+      shaped,
+      ..
+    } => (*baseline_offset, frag.bounds, shaped.as_ref()),
+    other => panic!("expected FragmentContent::Text, got {other:?}"),
+  };
+
+  // In vertical writing mode, `Text` fragment bounds are (block_size, inline_advance).
+  let expected = 20.0;
+  assert!(
+    (bounds.width() - expected).abs() < 0.2,
+    "expected combined fragment to be 1em wide: got {:.3} (bounds={bounds:?})",
+    bounds.width()
+  );
+  assert!(
+    (bounds.height() - expected).abs() < 0.2,
+    "expected combined fragment to advance 1em: got {:.3} (bounds={bounds:?})",
+    bounds.height()
+  );
+
+  // Baseline should be centered within the 1em square.
+  assert!(
+    (baseline_offset - bounds.width() * 0.5).abs() < 0.6,
+    "expected baseline centered: baseline_offset={baseline_offset:.3} width={:.3}",
+    bounds.width()
+  );
+
+  let shaped = shaped
+    .expect("expected combined fragment to carry shaped runs")
+    .as_ref();
+  assert!(
+    !shaped.is_empty(),
+    "expected combined fragment to contain at least one shaped run"
+  );
+
+  for run in shaped {
+    assert_eq!(
+      run.rotation,
+      RunRotation::None,
+      "expected combined run to be unrotated; got {:?} (text={:?})",
+      run.rotation,
+      run.text
+    );
+    assert!(
+      !run.glyphs.is_empty(),
+      "expected shaped run to contain glyphs (text={:?})",
+      run.text
+    );
+    for glyph in &run.glyphs {
+      assert!(
+        glyph.x_advance.abs() > 0.001,
+        "expected glyph to advance horizontally inside the tate-chu-yoko cell: {glyph:?}"
+      );
+      assert!(
+        glyph.y_advance.abs() < 0.001,
+        "expected glyph y_advance ~0 inside the tate-chu-yoko cell: {glyph:?}"
+      );
+    }
+  }
 }
