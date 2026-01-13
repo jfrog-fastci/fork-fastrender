@@ -3786,10 +3786,14 @@ fn compiled_class_methods_and_accessors_are_not_constructors() -> Result<(), VmE
       let ok = true;
       ok = ok && (new C()).m.name === "m";
       ok = ok && C.sm.name === "sm";
+      ok = ok && (new C()).m.prototype === undefined;
+      ok = ok && C.sm.prototype === undefined;
 
       const d = Object.getOwnPropertyDescriptor(C.prototype, "x");
       ok = ok && d.get.name === "get x";
       ok = ok && d.set.name === "set x";
+      ok = ok && d.get.prototype === undefined;
+      ok = ok && d.set.prototype === undefined;
 
       try { new (new C()).m(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
       try { new C.sm(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
@@ -9933,6 +9937,111 @@ fn compiled_user_function_prototype_is_used_for_instances() -> Result<(), VmErro
 
   let result = rt.exec_compiled_script(script)?;
   assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_user_function_prototype_constructor_points_to_function() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function C() {}
+      C.prototype.constructor === C
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_arrow_function_does_not_have_prototype() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      (() => {}).prototype
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_arrow_function_is_not_constructable() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = true;
+      try { new (() => {})(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
+      ok
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_accessor_functions_do_not_have_prototype() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let o = { get x() { return 1; }, set x(v) {} };
+      let d = Object.getOwnPropertyDescriptor(o, "x");
+      d.get.prototype === undefined && d.set.prototype === undefined
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_accessor_functions_are_not_constructors() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let o = { get x() { return 1; }, set x(v) {} };
+      let d = Object.getOwnPropertyDescriptor(o, "x");
+      let ok = true;
+      try { new (d.get)(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
+      try { new (d.set)(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
+      ok
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
   Ok(())
 }
 
