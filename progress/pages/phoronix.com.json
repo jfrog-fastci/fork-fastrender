@@ -16,15 +16,16 @@
     "layout": 40.132358277511955,
     "paint": 40.132358277511955
   },
-  "notes": "",
+  "notes": "Visually close to Chrome. Remaining diffs are dominated by subpixel text/font rasterization and minor form-control sizing/rounding; diff_percent is noisy but perceptual is low.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 246237,
-    "diff_percent": 25.6497,
-    "perceptual": 0.3673,
+    "diff_pixels": 129902,
+    "diff_percent": 13.5315,
+    "perceptual": 0.0637,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 31,
-      "y": 0,
+      "x": 66,
+      "y": 8,
       "baseline_rgba": [
         34,
         34,
@@ -32,15 +33,15 @@
         255
       ],
       "rendered_rgba": [
-        200,
-        200,
-        200,
+        37,
+        37,
+        37,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,

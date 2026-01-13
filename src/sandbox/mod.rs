@@ -122,12 +122,22 @@ mod linux_prelude;
 #[cfg(target_os = "linux")]
 pub mod linux_landlock;
 
+#[cfg(target_os = "linux")]
 pub mod linux_namespaces;
+
+#[cfg(target_os = "linux")]
+mod linux_seccomp;
 
 // macOS Seatbelt sandbox support lives in `macos.rs`. Keep it behind a cfg so the crate still
 // builds on non-macOS targets without linking against `libsandbox`.
 #[cfg(target_os = "macos")]
 pub mod macos;
+
+#[cfg(target_os = "macos")]
+pub mod macos_spawn;
+
+#[cfg(target_os = "windows")]
+pub mod windows;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
   /// Sandboxing was not applied because sandboxing was disabled via configuration/environment.
@@ -1140,14 +1150,6 @@ mod env_override_tests {
 
 #[cfg(target_os = "linux")]
 mod linux_hardening;
-
-#[cfg(target_os = "linux")]
-mod linux_seccomp;
-
-#[cfg(target_os = "macos")]
-pub mod macos_spawn;
-#[cfg(target_os = "windows")]
-pub mod windows;
 
 // ============================================================================
 // macOS renderer sandbox env API (`FASTR_RENDERER_SANDBOX`)
