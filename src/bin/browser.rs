@@ -4518,6 +4518,25 @@ mod tests {
   }
 
   #[test]
+  fn new_window_error_detail_does_not_split_utf8() {
+    // "é" is 2 bytes in UTF-8; this should truncate (and not split codepoints).
+    let long = "é".repeat(NEW_WINDOW_ERROR_DETAIL_MAX_BYTES);
+    let detail = format_new_window_error_detail(&long);
+    assert!(
+      detail.len() <= NEW_WINDOW_ERROR_DETAIL_MAX_BYTES,
+      "expected detail to be clamped to max bytes"
+    );
+    assert!(
+      detail.ends_with('…'),
+      "expected clamped detail to end with ellipsis, got {detail:?}"
+    );
+    assert!(
+      detail.chars().all(|ch| ch == 'é' || ch == '…'),
+      "expected only original characters plus ellipsis, got {detail:?}"
+    );
+  }
+
+  #[test]
   fn bookmark_reorder_failure_toast_maps_invalid_reorder_to_error_toast() {
     let (kind, text) =
       bookmark_reorder_failure_toast(&fastrender::ui::BookmarkError::InvalidReorder);
