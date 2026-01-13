@@ -3752,9 +3752,14 @@ impl<'vm> HirEvaluator<'vm> {
               )),
             }
           }
-          _ => Err(VmError::Unimplemented(
-            "assignment pattern (hir-js compiled path)",
-          )),
+          _ => {
+            // Destructuring assignment evaluates the RHS expression first, then performs
+            // `DestructuringAssignmentEvaluation` on the resulting value.
+            let mut scope = scope.reborrow();
+            let v = self.eval_expr(&mut scope, body, value)?;
+            self.assign_pattern(&mut scope, body, target, v)?;
+            Ok(v)
+          }
         }
       }
       hir_js::AssignOp::AddAssign
@@ -3763,9 +3768,7 @@ impl<'vm> HirEvaluator<'vm> {
       | hir_js::AssignOp::DivAssign
       | hir_js::AssignOp::RemAssign
       | hir_js::AssignOp::ExponentAssign => self.eval_compound_assignment(scope, body, op, target, value),
-      _ => Err(VmError::Unimplemented(
-        "compound assignment (hir-js compiled path)",
-      )),
+      _ => Err(VmError::Unimplemented("assignment operator (hir-js compiled path)")),
     }
   }
 
