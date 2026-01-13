@@ -5452,6 +5452,15 @@ mod tab_group_tests {
     }
 
     assert_eq!(app.downloads.downloads.len(), MAX_DOWNLOAD_ENTRIES);
+    assert_eq!(
+      app.downloads.downloads.first().unwrap().download_id,
+      DownloadId(11),
+      "expected pruning to evict the oldest in-progress entries deterministically"
+    );
+    assert_eq!(
+      app.downloads.downloads.last().unwrap().download_id,
+      DownloadId((MAX_DOWNLOAD_ENTRIES + 10) as u64)
+    );
   }
 
   #[test]
