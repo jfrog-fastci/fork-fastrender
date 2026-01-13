@@ -1025,30 +1025,36 @@ fn help_html() -> String {
         <li>Bookmarks and history are persisted as JSON files under FastRender’s per-user config directory (for example <code>~/.config/fastrender/</code> on Linux). You can override the file paths with <code>FASTR_BROWSER_BOOKMARKS_PATH</code> / <code>FASTR_BROWSER_HISTORY_PATH</code>.</li>
       </ul>
 
-       <h2>Keyboard shortcuts</h2>
-       <ul>
-         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>L</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>K</kbd> — Focus address bar</li>
-         <li><kbd>Alt</kbd>+<kbd>Enter</kbd> (Win/Linux); <kbd>Option</kbd>+<kbd>Enter</kbd> (macOS) — Open omnibox input in a new tab</li>
-         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> — New tab</li>
-         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> — Reopen last closed tab</li>
-         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>W</kbd> — Close tab</li>
-         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> — Next/prev tab</li>
-         <li><kbd>Alt</kbd>+<kbd>Left</kbd> / <kbd>Alt</kbd>+<kbd>Right</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> (macOS) — Back/forward</li>
-         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload</li>
-         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>1</kbd>…<kbd>9</kbd> — Activate tab (9 = last)</li>
-        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd> — Toggle bookmark</li>
-        <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> — Show bookmarks manager</li>
-        <li><kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Y</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS) — Show history</li>
-      </ul>
+        <h2>Keyboard shortcuts</h2>
+        <ul>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>L</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>K</kbd> — Focus address bar</li>
+          <li><kbd>Alt</kbd>+<kbd>Enter</kbd> (Win/Linux); <kbd>Option</kbd>+<kbd>Enter</kbd> (macOS) — Open omnibox input in a new tab</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd> — Find in page</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> — New tab</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> — Reopen last closed tab</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>W</kbd> — Close tab</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> — Next/prev tab</li>
+          <li><kbd>Alt</kbd>+<kbd>Left</kbd> / <kbd>Alt</kbd>+<kbd>Right</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> (macOS) — Back/forward</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>0</kbd> — Zoom in/out/reset</li>
+          <li><kbd>F11</kbd> (Win/Linux); <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd> (macOS) — Toggle fullscreen</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>1</kbd>…<kbd>9</kbd> — Activate tab (9 = last)</li>
+         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd> — Toggle bookmark</li>
+         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> — Toggle bookmarks bar</li>
+         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> — Show bookmarks manager</li>
+         <li><kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS) — Show downloads (<code>Window → Show Downloads…</code>)</li>
+         <li><kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Y</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS) — Show history</li>
+       </ul>
 
-      <h2>Built-in pages</h2>
-      <ul>
-        <li><a href=\"about:newtab\">about:newtab</a></li>
-        <li><a href=\"about:history\">about:history</a></li>
-        <li><a href=\"about:bookmarks\">about:bookmarks</a></li>
-        <li><a href=\"about:version\">about:version</a></li>
-        <li><a href=\"about:gpu\">about:gpu</a></li>
-      </ul>",
+       <h2>Built-in pages</h2>
+       <ul>
+         <li><a href=\"about:newtab\">about:newtab</a></li>
+         <li><a href=\"about:history\">about:history</a></li>
+         <li><a href=\"about:bookmarks\">about:bookmarks</a></li>
+         <li><a href=\"about:settings\">about:settings</a></li>
+         <li><a href=\"about:version\">about:version</a></li>
+         <li><a href=\"about:gpu\">about:gpu</a></li>
+       </ul>",
     "",
   )
 }
@@ -2688,6 +2694,25 @@ mod tests {
       html.contains("<span class=\"about-kbd\">L</span>"),
       "expected about:newtab to contain L key hint, got: {html}"
     );
+  }
+
+  #[test]
+  fn help_page_lists_common_chrome_shortcuts_and_settings_page() {
+    let html = html_for_about_url(ABOUT_HELP).unwrap();
+
+    for needle in [
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd> — Find in page"#,
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>0</kbd> — Zoom in/out/reset"#,
+      r#"<kbd>F11</kbd> (Win/Linux); <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd> (macOS) — Toggle fullscreen"#,
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> — Toggle bookmarks bar"#,
+      r#"<kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS) — Show downloads (<code>Window → Show Downloads…</code>)"#,
+      r#"<a href="about:settings">about:settings</a>"#,
+    ] {
+      assert!(
+        html.contains(needle),
+        "expected about:help HTML to contain {needle:?}, got: {html}"
+      );
+    }
   }
 
   #[cfg(feature = "browser_ui")]
