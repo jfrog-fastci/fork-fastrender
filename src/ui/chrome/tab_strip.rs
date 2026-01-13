@@ -1896,9 +1896,12 @@ pub(super) fn tab_strip_ui(
     let underline_id = ui.make_persistent_id("tab_strip_active_underline");
     let pinned_offset = unpinned_viewport_rect.min.x - tabs_rect.min.x;
     // Animate in a unified content coordinate space so the underline tracks scroll (unpinned tabs)
-    // without lag, while still supporting pinned tabs which sit outside the scroll area.
+    // without lag, while still supporting pinned tabs which live in a separate scroll area.
     let target_center_content_x = if active_tab_is_pinned {
-      active_rect.center().x - tabs_rect.min.x
+      // Pinned tabs are inside their own horizontal scroll area. Convert the active tab's *screen*
+      // position back into *pinned-content* space so `animate_f32` doesn't "chase" the scroll and
+      // visibly lag behind when the pinned strip is scrolled (wheel or drag autoscroll).
+      (active_rect.center().x - pinned_viewport_rect.min.x) + pinned_scroll_offset_x
     } else {
       pinned_offset + (active_rect.center().x - unpinned_viewport_rect.min.x + scroll_offset_x)
     };
@@ -1917,7 +1920,9 @@ pub(super) fn tab_strip_ui(
     );
 
     let center_screen_x = if active_tab_is_pinned {
-      tabs_rect.min.x + center_content_x
+      // Convert back to screen space for painting, applying the current scroll offset so the
+      // underline tracks pinned scrolling without lag.
+      pinned_viewport_rect.min.x + (center_content_x - pinned_scroll_offset_x)
     } else {
       unpinned_viewport_rect.min.x + (center_content_x - pinned_offset) - scroll_offset_x
     };
