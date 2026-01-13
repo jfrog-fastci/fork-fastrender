@@ -1,5 +1,5 @@
 use std::fmt::Write;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
@@ -599,10 +599,37 @@ fn bench_taffy_measure_call_counts(c: &mut Criterion) {
   });
 
   group.bench_function("grid_layout_with_taffy_counts", |b| {
+    let print_grid_cache_counters = common::bench_verbose()
+      || common::env_flag("FASTR_BENCH_PRINT_GRID_MEASURE_CACHE_COUNTERS");
+    static PRINT_ONCE: Once = Once::new();
     b.iter(|| {
       let _perf_guard = fastrender::layout::taffy_integration::TaffyPerfCountersGuard::new();
+      if print_grid_cache_counters {
+        fastrender::layout::contexts::grid::reset_grid_measure_cache_counters();
+      }
       engine.layout_tree(black_box(&grid_tree)).unwrap();
       let perf = fastrender::layout::taffy_integration::taffy_perf_counters();
+      if print_grid_cache_counters {
+        let counters = fastrender::layout::contexts::grid::grid_measure_cache_counters();
+        let toggles = fastrender::debug::runtime::runtime_toggles();
+        let profile_enabled = toggles.truthy("FASTR_GRID_MEASURE_CACHE_PROFILE")
+          || toggles.truthy("FASTR_LAYOUT_PROFILE");
+        let share_overrides = toggles.truthy("FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES");
+        PRINT_ONCE.call_once(|| {
+          eprintln!(
+            "grid taffy_measure_calls={} grid_measure_cache: tls_hits={} shared_hits={} misses={} override_lookups={} override_shared_bypass_misses={} override_shared_hits={} (profile_enabled={} share_overrides={})",
+            perf.grid_measure_calls,
+            counters.tls_hits,
+            counters.shared_hits,
+            counters.misses,
+            counters.override_lookups,
+            counters.override_shared_bypass_misses,
+            counters.override_shared_hits,
+            profile_enabled,
+            share_overrides,
+          );
+        });
+      }
       black_box(perf.grid_measure_calls);
     })
   });

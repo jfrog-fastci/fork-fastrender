@@ -214,12 +214,11 @@ pub fn log_layout_profile(total: Duration) {
       float_stats.range_boundaries_scanned
     ));
   }
-  let (grid_tls_hits, grid_shared_hits, grid_misses) =
-    crate::layout::contexts::grid::grid_measure_cache_counters();
-  if grid_tls_hits > 0 || grid_shared_hits > 0 || grid_misses > 0 {
+  let grid_counters = crate::layout::contexts::grid::grid_measure_cache_counters();
+  if grid_counters.tls_hits > 0 || grid_counters.shared_hits > 0 || grid_counters.misses > 0 {
     parts.push(format!(
       "grid_measure_cache_tls_hits={} grid_measure_cache_shared_hits={} grid_measure_cache_misses={}",
-      grid_tls_hits, grid_shared_hits, grid_misses
+      grid_counters.tls_hits, grid_counters.shared_hits, grid_counters.misses
     ));
   }
   eprintln!(

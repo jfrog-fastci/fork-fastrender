@@ -7552,11 +7552,10 @@ impl FastRender {
         }
         if toggles.truthy("FASTR_GRID_MEASURE_CACHE_PROFILE") || toggles.truthy("FASTR_LAYOUT_PROFILE")
         {
-          let (tls_hits, shared_hits, misses) =
-            crate::layout::contexts::grid::grid_measure_cache_counters();
-          rec.stats.layout.grid_measure_cache_tls_hits = Some(tls_hits);
-          rec.stats.layout.grid_measure_cache_shared_hits = Some(shared_hits);
-          rec.stats.layout.grid_measure_cache_misses = Some(misses);
+          let counters = crate::layout::contexts::grid::grid_measure_cache_counters();
+          rec.stats.layout.grid_measure_cache_tls_hits = Some(counters.tls_hits);
+          rec.stats.layout.grid_measure_cache_shared_hits = Some(counters.shared_hits);
+          rec.stats.layout.grid_measure_cache_misses = Some(counters.misses);
         }
         let fragment_metrics = crate::tree::fragment_tree::fragment_instrumentation_counters();
         rec.stats.layout.fragment_deep_clones = Some(fragment_metrics.deep_clones);

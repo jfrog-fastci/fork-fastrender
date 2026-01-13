@@ -452,11 +452,19 @@ static GLOBAL_GRID_MEASURE_SIZE_CACHE_EPOCH: AtomicUsize = AtomicUsize::new(0);
 static GRID_MEASURE_CACHE_TLS_HITS: AtomicU64 = AtomicU64::new(0);
 static GRID_MEASURE_CACHE_SHARED_HITS: AtomicU64 = AtomicU64::new(0);
 static GRID_MEASURE_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+static GRID_MEASURE_CACHE_OVERRIDE_LOOKUPS: AtomicU64 = AtomicU64::new(0);
+static GRID_MEASURE_CACHE_OVERRIDE_SHARED_BYPASS_MISSES: AtomicU64 = AtomicU64::new(0);
+static GRID_MEASURE_CACHE_OVERRIDE_SHARED_HITS: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 fn grid_measure_cache_profile_enabled() -> bool {
   crate::debug::runtime::runtime_toggles().truthy("FASTR_GRID_MEASURE_CACHE_PROFILE")
     || crate::debug::runtime::runtime_toggles().truthy("FASTR_LAYOUT_PROFILE")
+}
+
+#[inline]
+fn grid_measure_cache_share_overrides_enabled() -> bool {
+  crate::debug::runtime::runtime_toggles().truthy("FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES")
 }
 
 #[inline]
@@ -483,18 +491,59 @@ fn record_grid_measure_cache_miss() {
   GRID_MEASURE_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) fn grid_measure_cache_counters() -> (u64, u64, u64) {
-  (
-    GRID_MEASURE_CACHE_TLS_HITS.load(Ordering::Relaxed),
-    GRID_MEASURE_CACHE_SHARED_HITS.load(Ordering::Relaxed),
-    GRID_MEASURE_CACHE_MISSES.load(Ordering::Relaxed),
-  )
+#[inline]
+fn record_grid_measure_cache_override_lookup() {
+  if !grid_measure_cache_profile_enabled() {
+    return;
+  }
+  GRID_MEASURE_CACHE_OVERRIDE_LOOKUPS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) fn reset_grid_measure_cache_counters() {
+#[inline]
+fn record_grid_measure_cache_override_shared_bypass_miss() {
+  if !grid_measure_cache_profile_enabled() {
+    return;
+  }
+  GRID_MEASURE_CACHE_OVERRIDE_SHARED_BYPASS_MISSES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+fn record_grid_measure_cache_override_shared_hit() {
+  if !grid_measure_cache_profile_enabled() {
+    return;
+  }
+  GRID_MEASURE_CACHE_OVERRIDE_SHARED_HITS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GridMeasureCacheCounters {
+  pub tls_hits: u64,
+  pub shared_hits: u64,
+  pub misses: u64,
+  pub override_lookups: u64,
+  pub override_shared_bypass_misses: u64,
+  pub override_shared_hits: u64,
+}
+
+pub fn grid_measure_cache_counters() -> GridMeasureCacheCounters {
+  GridMeasureCacheCounters {
+    tls_hits: GRID_MEASURE_CACHE_TLS_HITS.load(Ordering::Relaxed),
+    shared_hits: GRID_MEASURE_CACHE_SHARED_HITS.load(Ordering::Relaxed),
+    misses: GRID_MEASURE_CACHE_MISSES.load(Ordering::Relaxed),
+    override_lookups: GRID_MEASURE_CACHE_OVERRIDE_LOOKUPS.load(Ordering::Relaxed),
+    override_shared_bypass_misses: GRID_MEASURE_CACHE_OVERRIDE_SHARED_BYPASS_MISSES
+      .load(Ordering::Relaxed),
+    override_shared_hits: GRID_MEASURE_CACHE_OVERRIDE_SHARED_HITS.load(Ordering::Relaxed),
+  }
+}
+
+pub fn reset_grid_measure_cache_counters() {
   GRID_MEASURE_CACHE_TLS_HITS.store(0, Ordering::Relaxed);
   GRID_MEASURE_CACHE_SHARED_HITS.store(0, Ordering::Relaxed);
   GRID_MEASURE_CACHE_MISSES.store(0, Ordering::Relaxed);
+  GRID_MEASURE_CACHE_OVERRIDE_LOOKUPS.store(0, Ordering::Relaxed);
+  GRID_MEASURE_CACHE_OVERRIDE_SHARED_BYPASS_MISSES.store(0, Ordering::Relaxed);
+  GRID_MEASURE_CACHE_OVERRIDE_SHARED_HITS.store(0, Ordering::Relaxed);
 }
 
 fn grid_measure_size_cache_store_with_policy(
@@ -615,6 +664,11 @@ fn grid_measure_size_cache_lookup(key: &MeasureKey) -> Option<taffy::tree::Measu
     return None;
   }
 
+  let has_override = key.override_fingerprint.is_some();
+  if has_override {
+    record_grid_measure_cache_override_lookup();
+  }
+
   let epoch = grid_measure_size_cache_use_epoch();
   if let Some(hit) = GRID_MEASURE_SIZE_CACHE.with(|cache| cache.borrow().get(key).copied()) {
     record_grid_measure_cache_tls_hit();
@@ -622,9 +676,11 @@ fn grid_measure_size_cache_lookup(key: &MeasureKey) -> Option<taffy::tree::Measu
   }
 
   // Avoid polluting the shared cache with style-override probes; they are typically short-lived and
-  // local to a single measurement pass.
-  if key.override_fingerprint.is_some() {
+  // local to a single measurement pass. Override sharing can be enabled for profiling / workload
+  // exploration via `FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES`.
+  if has_override && !grid_measure_cache_share_overrides_enabled() {
     record_grid_measure_cache_miss();
+    record_grid_measure_cache_override_shared_bypass_miss();
     return None;
   }
 
@@ -633,6 +689,9 @@ fn grid_measure_size_cache_lookup(key: &MeasureKey) -> Option<taffy::tree::Measu
     return None;
   };
   record_grid_measure_cache_shared_hit();
+  if has_override {
+    record_grid_measure_cache_override_shared_hit();
+  }
 
   GRID_MEASURE_SIZE_CACHE.with(|cache| {
     let mut cache = cache.borrow_mut();
@@ -665,8 +724,15 @@ fn grid_measure_size_cache_store(key: MeasureKey, output: taffy::tree::MeasureOu
     );
   });
 
-  if key_copy.override_fingerprint.is_none() {
-    GLOBAL_GRID_MEASURE_SIZE_CACHE.insert(key_copy, epoch, output);
+  match key_copy.override_fingerprint {
+    None => {
+      GLOBAL_GRID_MEASURE_SIZE_CACHE.insert(key_copy, epoch, output);
+    }
+    Some(_) => {
+      if grid_measure_cache_share_overrides_enabled() {
+        GLOBAL_GRID_MEASURE_SIZE_CACHE.insert(key_copy, epoch, output);
+      }
+    }
   }
 }
 
