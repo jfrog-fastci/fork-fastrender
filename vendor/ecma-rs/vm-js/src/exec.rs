@@ -32459,6 +32459,14 @@ fn gen_binary_after_left(
   left: Value,
 ) -> Result<GenEval<Completion>, VmError> {
   match expr.operator {
+    OperatorName::Comma => {
+      // Spec: `a, b` evaluates `a` (discarding its value) and then evaluates `b`, returning `b`.
+      //
+      // Generator continuation semantics: `a` has already been evaluated before entering this
+      // function (possibly yielding). The comma operator does not need to preserve the `a` value
+      // across yields, so we can directly evaluate the RHS and forward its completion.
+      gen_eval_expr(evaluator, scope, &expr.right)
+    }
     OperatorName::LogicalAnd => {
       if !to_boolean(scope.heap(), left)? {
         return Ok(GenEval::Complete(Completion::normal(left)));
