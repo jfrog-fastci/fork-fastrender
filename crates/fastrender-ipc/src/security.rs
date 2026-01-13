@@ -1,4 +1,4 @@
-use crate::{FrameBuffer, FrameId, RendererId, RendererToBrowser};
+use crate::{FrameBuffer, FrameId, RendererId, RendererToBrowser, SubframeInfo};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +18,11 @@ pub enum FrameOwnershipViolation {
     frame_id: FrameId,
     expected: RendererId,
     actual: RendererId,
+  },
+  InvalidSubframe {
+    parent_frame_id: FrameId,
+    child_frame_id: FrameId,
+    expected_parent_frame_id: Option<FrameId>,
   },
 }
 
@@ -42,6 +47,7 @@ pub enum IpcSecurityEvent {
 #[derive(Debug, Default)]
 pub struct BrowserIpcSecurityState {
   frame_owner: HashMap<FrameId, RendererId>,
+  frame_parent: HashMap<FrameId, FrameId>,
   process_frames: HashMap<RendererId, HashSet<FrameId>>,
   terminated_processes: HashSet<RendererId>,
   crashed_frames: HashSet<FrameId>,
@@ -66,6 +72,14 @@ impl BrowserIpcSecurityState {
 
   pub fn take_events(&mut self) -> Vec<IpcSecurityEvent> {
     std::mem::take(&mut self.events)
+  }
+
+  /// Set the browser-owned parent relationship for `child`.
+  ///
+  /// This is part of the browser's frame tree state, not renderer authority. Renderer messages that
+  /// reference subframes should be validated against this mapping.
+  pub fn set_frame_parent(&mut self, child: FrameId, parent: FrameId) {
+    self.frame_parent.insert(child, parent);
   }
 
   pub fn assign_frame(&mut self, frame_id: FrameId, process_id: RendererId) {
@@ -94,15 +108,34 @@ impl BrowserIpcSecurityState {
     }
 
     match msg {
-      RendererToBrowser::FrameReady { frame_id, buffer, .. } => {
-        if self.check_frame(sender, frame_id, RendererToBrowserKind::FrameReady) {
-          self.latest_frame.insert(frame_id, buffer);
+      RendererToBrowser::FrameReady {
+        frame_id,
+        buffer,
+        subframes,
+      } => {
+        if !self.check_frame(sender, frame_id, RendererToBrowserKind::FrameReady) {
+          return;
         }
+        if !self.check_subframes(sender, frame_id, &subframes, RendererToBrowserKind::FrameReady) {
+          return;
+        }
+        self.latest_frame.insert(frame_id, buffer);
       }
-      RendererToBrowser::SubframesDiscovered { parent_frame_id, .. } => {
-        let _ = self.check_frame(
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id,
+        subframes,
+      } => {
+        if !self.check_frame(
           sender,
           parent_frame_id,
+          RendererToBrowserKind::SubframesDiscovered,
+        ) {
+          return;
+        }
+        let _ = self.check_subframes(
+          sender,
+          parent_frame_id,
+          &subframes,
           RendererToBrowserKind::SubframesDiscovered,
         );
       }
@@ -154,6 +187,33 @@ impl BrowserIpcSecurityState {
         false
       }
     }
+  }
+
+  fn check_subframes(
+    &mut self,
+    sender: RendererId,
+    parent_frame_id: FrameId,
+    subframes: &[SubframeInfo],
+    message: RendererToBrowserKind,
+  ) -> bool {
+    for subframe in subframes {
+      let child = subframe.child;
+      let expected_parent = self.frame_parent.get(&child).copied();
+      if expected_parent != Some(parent_frame_id) {
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::InvalidSubframe {
+            parent_frame_id,
+            child_frame_id: child,
+            expected_parent_frame_id: expected_parent,
+          },
+        );
+        return false;
+      }
+    }
+    true
   }
 
   fn protocol_violation(
@@ -343,6 +403,57 @@ mod tests {
     assert!(
       browser.take_events().is_empty(),
       "expected terminated process messages to be ignored"
+    );
+  }
+
+  #[test]
+  fn frame_ready_cannot_reference_non_child_subframes() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let other = RendererId(2);
+
+    let parent = FrameId(10);
+    let unrelated_child = FrameId(11);
+
+    browser.assign_frame(parent, renderer);
+    browser.assign_frame(unrelated_child, other);
+    // Record that the child's expected parent is some other frame (not `parent`).
+    browser.set_frame_parent(unrelated_child, FrameId(999));
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: FrameBuffer {
+          width: 1,
+          height: 1,
+          rgba8: vec![0, 0, 0, 255],
+        },
+        subframes: vec![crate::SubframeInfo {
+          child: unrelated_child,
+          transform: crate::AffineTransform::IDENTITY,
+          clip_stack: Vec::new(),
+          z_index: 0,
+          referrer_policy: None,
+          sandbox_flags: crate::SandboxFlags::NONE,
+          opaque_origin: false,
+        }],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::InvalidSubframe { child_frame_id, .. },
+        } if *process_id == renderer && *frame_id == parent && *child_frame_id == unrelated_child
+      )),
+      "expected invalid subframe reference violation (events={events:?})"
     );
   }
 }
