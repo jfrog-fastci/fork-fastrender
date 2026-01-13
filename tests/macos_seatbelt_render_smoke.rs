@@ -20,6 +20,7 @@ impl ResourceFetcher for NoNetworkFetcher {
 #[test]
 fn sandboxed_render_smoke_seatbelt_profile() {
   const CHILD_ENV: &str = "FASTR_TEST_SEATBELT_RENDER_SMOKE_CHILD";
+  const SENTINEL: &str = "FASTR_SEATBELT_RENDER_SMOKE_OK";
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     // Apply the strictest built-in profile (`pure-computation`) so this smoke test fails if the
@@ -61,23 +62,31 @@ fn sandboxed_render_smoke_seatbelt_profile() {
       }
     }
     assert!(has_non_white, "expected rendered output to contain some non-white pixels");
+
+    // Emit a sentinel so the parent process can assert this child test actually executed (avoids
+    // false positives if test filtering semantics change).
+    println!("{SENTINEL}");
     return;
   }
 
   let exe = std::env::current_exe().expect("current test exe path");
-  let test_name = "sandboxed_render_smoke_seatbelt_profile";
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
     // Keep test harness output deterministic under strict sandboxing.
     .arg("--test-threads=1")
-    .arg("--exact")
-    .arg(test_name)
+    .arg("sandboxed_render_smoke_seatbelt_profile")
     .arg("--nocapture")
     .output()
     .expect("spawn sandboxed child test process");
   assert!(
     output.status.success(),
     "child process should exit successfully (stdout={}, stderr={})",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+  assert!(
+    String::from_utf8_lossy(&output.stdout).contains(SENTINEL),
+    "expected child process to emit sentinel; stdout={}, stderr={}",
     String::from_utf8_lossy(&output.stdout),
     String::from_utf8_lossy(&output.stderr)
   );
