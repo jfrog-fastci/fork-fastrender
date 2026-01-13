@@ -1116,12 +1116,14 @@ mod tests {
     assert!(posix_shm_name(&too_long).is_err());
 
     // Invalid charset.
-    assert!(posix_shm_name("has_underscore").is_err());
-    assert!(posix_shm_name("HasUppercase").is_err());
     assert!(posix_shm_name("has/slash").is_err());
     assert!(posix_shm_name("has.dot").is_err());
+    assert!(posix_shm_name("has space").is_err());
+    assert!(posix_shm_name("has:colon").is_err());
 
     // Valid.
+    posix_shm_name("has_underscore").expect("underscore should be allowed");
+    posix_shm_name("HasUppercase").expect("uppercase should be allowed");
     let ok = posix_shm_name("fastrender-shm-deadbeef").expect("valid posix shm name");
     assert_eq!(ok.to_bytes()[0], b'/');
     assert_eq!(ok.to_bytes(), b"/fastrender-shm-deadbeef");
