@@ -14,6 +14,7 @@
 
 use crate::js::event_loop::TaskSource;
 use crate::js::url_resolve::resolve_url;
+use crate::js::{window_blob, window_fetch, window_form_data, window_url};
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
@@ -103,6 +104,7 @@ struct EnvState {
   env: WindowXhrEnv,
   next_xhr_id: u64,
   xhrs: HashMap<u64, XhrState>,
+  multipart_boundary_counter: u64,
   upload_add_event_listener_call: NativeFunctionId,
   upload_remove_event_listener_call: NativeFunctionId,
   upload_dispatch_event_call: NativeFunctionId,
@@ -119,6 +121,7 @@ impl EnvState {
       env,
       next_xhr_id: 1,
       xhrs: HashMap::new(),
+      multipart_boundary_counter: 1,
       upload_add_event_listener_call,
       upload_remove_event_listener_call,
       upload_dispatch_event_call,
@@ -1398,6 +1401,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
 
   // Parse body eagerly in the native call so we can enforce limits and fail fast.
   let body_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut inferred_content_type: Option<String> = None;
   let body: Option<Vec<u8>> = match body_val {
     Value::Undefined | Value::Null => None,
     Value::Object(obj) if scope.heap().is_array_buffer_object(obj) => {
@@ -1407,6 +1411,54 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     Value::Object(obj) if scope.heap().is_uint8_array_object(obj) => {
       let bytes = scope.heap().uint8_array_data(obj)?.to_vec();
       Some(bytes)
+    }
+    Value::Object(obj) => {
+      if let Some(serialized) =
+        window_url::serialize_url_search_params_for_fetch(vm, scope.heap(), obj)?
+      {
+        if serialized.as_bytes().len() > limits.max_request_body_bytes {
+          return Err(VmError::TypeError(XHR_BODY_TOO_LONG_ERROR));
+        }
+        inferred_content_type = Some("application/x-www-form-urlencoded;charset=UTF-8".to_string());
+        Some(serialized.into_bytes())
+      } else if let Some(blob) =
+        window_blob::clone_blob_data_for_fetch(vm, scope.heap(), body_val)?
+      {
+        if blob.bytes.len() > limits.max_request_body_bytes {
+          return Err(VmError::TypeError(XHR_BODY_TOO_LONG_ERROR));
+        }
+        if !blob.r#type.is_empty() {
+          inferred_content_type = Some(blob.r#type);
+        }
+        Some(blob.bytes)
+      } else if let Some(entries) =
+        window_form_data::clone_form_data_entries_for_fetch(vm, scope.heap(), body_val)?
+      {
+        let boundary_id = with_env_state_mut(env_id, |state| {
+          let id = state.multipart_boundary_counter;
+          state.multipart_boundary_counter = state.multipart_boundary_counter.saturating_add(1);
+          Ok(id)
+        })?;
+        let boundary = format!("----fastrenderformdata{boundary_id}");
+        let multipart = window_fetch::encode_form_data_as_multipart(
+          &entries,
+          &boundary,
+          limits.max_request_body_bytes,
+          XHR_BODY_TOO_LONG_ERROR,
+        )?;
+        inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
+        Some(multipart)
+      } else {
+        Some(
+          to_rust_string_limited(
+            scope.heap_mut(),
+            body_val,
+            limits.max_request_body_bytes,
+            XHR_BODY_TOO_LONG_ERROR,
+          )?
+          .into_bytes(),
+        )
+      }
     }
     other => Some(
       to_rust_string_limited(
@@ -1450,6 +1502,29 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
         req.body = None;
       } else {
         req.body = body;
+        if req.body.is_some() {
+          if let Some(content_type) = inferred_content_type {
+            let has_content_type = req
+              .headers
+              .iter()
+              .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
+            if !has_content_type {
+              if req.headers.len() >= limits.max_header_count {
+                return Err(VmError::TypeError(
+                  "XMLHttpRequest.send exceeded header count limit",
+                ));
+              }
+              let current_bytes: usize = req.headers.iter().map(|(k, v)| k.len() + v.len()).sum();
+              let add_bytes = "Content-Type".len() + content_type.len();
+              if current_bytes.saturating_add(add_bytes) > limits.max_total_header_bytes {
+                return Err(VmError::TypeError(
+                  "XMLHttpRequest.send exceeded total header bytes limit",
+                ));
+              }
+              req.headers.push(("Content-Type".to_string(), content_type));
+            }
+          }
+        }
       }
       xhr.request = Some(req.clone());
       xhr.send_in_progress = true;
@@ -3124,6 +3199,13 @@ mod tests {
     heap.get_string(s).unwrap().to_utf8_lossy().to_string()
   }
 
+  fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+      .iter()
+      .find(|(k, _)| k.eq_ignore_ascii_case(name))
+      .map(|(_, v)| v.as_str())
+  }
+
   #[test]
   fn object_prototype_to_string_uses_xhr_to_string_tag() -> Result<(), VmError> {
     let fetcher = Arc::new(MockFetcher::default());
@@ -3355,6 +3437,159 @@ mod tests {
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].method, "GET");
     assert_eq!(reqs[0].body, None);
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_send_blob_sends_bytes_and_sets_content_type() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher.clone());
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "var xhr = new XMLHttpRequest();\n\
+         xhr.open('POST', '/upload', true);\n\
+         xhr.send(new Blob(['hi'], { type: 'text/plain' }));",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let reqs = fetcher.requests.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].method, "POST");
+    assert_eq!(reqs[0].url, "https://example.invalid/upload");
+    assert_eq!(reqs[0].body.as_deref(), Some(b"hi".as_slice()));
+    assert_eq!(
+      header_value(&reqs[0].headers, "content-type"),
+      Some("text/plain"),
+      "headers={:?}",
+      reqs[0].headers
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_send_url_search_params_sets_content_type_and_serializes() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher.clone());
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "var xhr = new XMLHttpRequest();\n\
+         xhr.open('POST', '/submit', true);\n\
+         xhr.send(new URLSearchParams('a=1&b=2'));",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let reqs = fetcher.requests.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].method, "POST");
+    assert_eq!(reqs[0].url, "https://example.invalid/submit");
+    assert_eq!(reqs[0].body.as_deref(), Some(b"a=1&b=2".as_slice()));
+    assert_eq!(
+      header_value(&reqs[0].headers, "content-type"),
+      Some("application/x-www-form-urlencoded;charset=UTF-8"),
+      "headers={:?}",
+      reqs[0].headers
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_send_form_data_encodes_multipart_and_sets_boundary() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher.clone());
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        r#"
+          const fd = new FormData();
+          fd.append('a', 'b');
+          fd.append('file', new Blob(['hi'], { type: 'text/plain' }), 'f.txt');
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/multipart', true);
+          xhr.send(fd);
+        "#,
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let reqs = fetcher.requests.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].method, "POST");
+    assert_eq!(reqs[0].url, "https://example.invalid/multipart");
+
+    assert_eq!(
+      header_value(&reqs[0].headers, "content-type"),
+      Some("multipart/form-data; boundary=----fastrenderformdata1"),
+      "headers={:?}",
+      reqs[0].headers
+    );
+
+    let expected = concat!(
+      "------fastrenderformdata1\r\n",
+      "Content-Disposition: form-data; name=\"a\"\r\n",
+      "\r\n",
+      "b\r\n",
+      "------fastrenderformdata1\r\n",
+      "Content-Disposition: form-data; name=\"file\"; filename=\"f.txt\"\r\n",
+      "Content-Type: text/plain\r\n",
+      "\r\n",
+      "hi\r\n",
+      "------fastrenderformdata1--\r\n"
+    );
+    assert_eq!(
+      reqs[0].body.as_deref(),
+      Some(expected.as_bytes()),
+      "body={:?}",
+      reqs[0].body.as_deref()
+    );
     Ok(())
   }
 

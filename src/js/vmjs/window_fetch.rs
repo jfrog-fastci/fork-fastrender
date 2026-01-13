@@ -3049,13 +3049,18 @@ fn escape_multipart_quoted_string_value(value: &str) -> String {
   out
 }
 
-fn push_bytes_limited(out: &mut Vec<u8>, bytes: &[u8], max_len: usize) -> Result<(), VmError> {
+fn push_bytes_limited(
+  out: &mut Vec<u8>,
+  bytes: &[u8],
+  max_len: usize,
+  too_long_error: &'static str,
+) -> Result<(), VmError> {
   let next_len = out
     .len()
     .checked_add(bytes.len())
     .ok_or(VmError::OutOfMemory)?;
   if next_len > max_len {
-    return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+    return Err(VmError::TypeError(too_long_error));
   }
   out
     .try_reserve_exact(bytes.len())
@@ -3086,46 +3091,51 @@ fn normalize_content_type_for_blob(header_value: &str) -> String {
     .collect()
 }
 
-fn encode_form_data_as_multipart(
+/// Encode a `FormData` entry list into a `multipart/form-data` body.
+///
+/// This is shared between `fetch()` and `XMLHttpRequest.send()` so both use identical multipart
+/// escaping and boundary framing.
+pub(crate) fn encode_form_data_as_multipart(
   entries: &[window_form_data::FormDataEntry],
   boundary: &str,
   max_len: usize,
+  too_long_error: &'static str,
 ) -> Result<Vec<u8>, VmError> {
   let mut out = Vec::<u8>::new();
 
   for entry in entries {
-    push_bytes_limited(&mut out, b"--", max_len)?;
-    push_bytes_limited(&mut out, boundary.as_bytes(), max_len)?;
-    push_bytes_limited(&mut out, b"\r\n", max_len)?;
+    push_bytes_limited(&mut out, b"--", max_len, too_long_error)?;
+    push_bytes_limited(&mut out, boundary.as_bytes(), max_len, too_long_error)?;
+    push_bytes_limited(&mut out, b"\r\n", max_len, too_long_error)?;
 
     let escaped_name = escape_multipart_quoted_string_value(&entry.name);
     match &entry.value {
       window_form_data::FormDataValue::String(value) => {
         let header = format!("Content-Disposition: form-data; name=\"{escaped_name}\"\r\n\r\n");
-        push_bytes_limited(&mut out, header.as_bytes(), max_len)?;
-        push_bytes_limited(&mut out, value.as_bytes(), max_len)?;
-        push_bytes_limited(&mut out, b"\r\n", max_len)?;
+        push_bytes_limited(&mut out, header.as_bytes(), max_len, too_long_error)?;
+        push_bytes_limited(&mut out, value.as_bytes(), max_len, too_long_error)?;
+        push_bytes_limited(&mut out, b"\r\n", max_len, too_long_error)?;
       }
       window_form_data::FormDataValue::File { data, filename, .. } => {
         let escaped_filename = escape_multipart_quoted_string_value(filename);
         let header = format!(
           "Content-Disposition: form-data; name=\"{escaped_name}\"; filename=\"{escaped_filename}\"\r\n"
         );
-        push_bytes_limited(&mut out, header.as_bytes(), max_len)?;
+        push_bytes_limited(&mut out, header.as_bytes(), max_len, too_long_error)?;
         if !data.r#type.is_empty() {
           let content_type = format!("Content-Type: {}\r\n", data.r#type);
-          push_bytes_limited(&mut out, content_type.as_bytes(), max_len)?;
+          push_bytes_limited(&mut out, content_type.as_bytes(), max_len, too_long_error)?;
         }
-        push_bytes_limited(&mut out, b"\r\n", max_len)?;
-        push_bytes_limited(&mut out, &data.bytes, max_len)?;
-        push_bytes_limited(&mut out, b"\r\n", max_len)?;
+        push_bytes_limited(&mut out, b"\r\n", max_len, too_long_error)?;
+        push_bytes_limited(&mut out, &data.bytes, max_len, too_long_error)?;
+        push_bytes_limited(&mut out, b"\r\n", max_len, too_long_error)?;
       }
     }
   }
 
-  push_bytes_limited(&mut out, b"--", max_len)?;
-  push_bytes_limited(&mut out, boundary.as_bytes(), max_len)?;
-  push_bytes_limited(&mut out, b"--\r\n", max_len)?;
+  push_bytes_limited(&mut out, b"--", max_len, too_long_error)?;
+  push_bytes_limited(&mut out, boundary.as_bytes(), max_len, too_long_error)?;
+  push_bytes_limited(&mut out, b"--\r\n", max_len, too_long_error)?;
 
   Ok(out)
 }
@@ -3598,7 +3608,12 @@ fn apply_request_init(
               Ok(id)
             })?;
             let boundary = format!("----fastrenderformdata{boundary_id}");
-            let multipart = encode_form_data_as_multipart(&entries, &boundary, max_body_bytes)?;
+            let multipart = encode_form_data_as_multipart(
+              &entries,
+              &boundary,
+              max_body_bytes,
+              FETCH_BODY_TOO_LONG_ERROR,
+            )?;
             inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
             multipart
           } else {
@@ -6699,7 +6714,12 @@ fn response_ctor_construct(
               Ok(id)
             })?;
             let boundary = format!("----fastrenderformdata{boundary_id}");
-            let multipart = encode_form_data_as_multipart(&entries, &boundary, max_body_bytes)?;
+            let multipart = encode_form_data_as_multipart(
+              &entries,
+              &boundary,
+              max_body_bytes,
+              FETCH_BODY_TOO_LONG_ERROR,
+            )?;
             inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
             multipart
           } else {
