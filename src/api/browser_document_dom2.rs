@@ -4826,6 +4826,60 @@ mod tests {
   }
 
   #[test]
+  fn incremental_relayout_preserves_svg_filter_defs_metadata() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; }
+      </style>
+      <svg width="0" height="0" style="position:absolute">
+        <defs>
+          <filter id="blur">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="1" />
+          </filter>
+        </defs>
+      </svg>
+      <p id="text">Hello</p>
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+    doc.render_frame()?;
+
+    let prepared = doc.prepared().expect("prepared");
+    let defs = prepared
+      .fragment_tree
+      .svg_filter_defs
+      .as_deref()
+      .expect("svg_filter_defs should be collected on initial layout");
+    assert!(
+      defs.contains_key("blur"),
+      "expected svg filter defs to contain blur filter"
+    );
+
+    let before = doc.invalidation_counters();
+    let p = doc.dom().get_element_by_id("text").expect("p#text element");
+    let text_node = first_text_child(doc.dom(), p).expect("text child node");
+    let changed = doc.mutate_dom(|dom| dom.set_text_data(text_node, "Updated").expect("set text"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+
+    let prepared = doc.prepared().expect("prepared");
+    let defs = prepared
+      .fragment_tree
+      .svg_filter_defs
+      .as_deref()
+      .expect("svg_filter_defs should be preserved after incremental relayout");
+    assert!(
+      defs.contains_key("blur"),
+      "incremental relayout should preserve fragment-tree svg_filter_defs metadata"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn mutate_dom_false_does_not_invalidate() {
     let renderer = renderer_for_tests();
     let mut doc = BrowserDocumentDom2::new(
