@@ -1305,11 +1305,7 @@ fn render_folder_row(
   });
 
   row_resp.widget_info({
-    let label = if open {
-      format!("Collapse folder: {title}")
-    } else {
-      format!("Expand folder: {title}")
-    };
+    let label = format!("Folder: {title}");
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
   });
 
@@ -1317,13 +1313,49 @@ fn render_folder_row(
     return true;
   }
 
-  if row_resp.clicked() {
+  // AccessKit may request explicit expand/collapse actions when the node exposes an expanded state.
+  // Prefer Expand when both actions are requested in the same frame.
+  let expand_requested =
+    ui.input(|i| i.has_accesskit_action_request(row_resp.id, accesskit::Action::Expand));
+  let collapse_requested =
+    ui.input(|i| i.has_accesskit_action_request(row_resp.id, accesskit::Action::Collapse));
+
+  let mut open_changed = false;
+  let mut open_changed_via_a11y = false;
+  if expand_requested || collapse_requested {
+    let desired = if expand_requested { true } else { false };
+    if open != desired {
+      open = desired;
+      open_changed = true;
+      open_changed_via_a11y = true;
+    }
+  } else if row_resp.clicked() {
     open = !open;
+    open_changed = true;
+  }
+
+  if open_changed {
     ui.ctx().data_mut(|d| d.insert_persisted(open_id, open));
     // Rebuild the flattened representation next frame.
     state.folder_open_revision = state.folder_open_revision.wrapping_add(1);
     ui.ctx().request_repaint();
+    if open_changed_via_a11y {
+      row_resp.request_focus();
+    }
   }
+
+  // Expose expanded state and explicit Expand/Collapse actions to assistive tech (AccessKit) so
+  // screen readers can announce the expanded/collapsed state and request explicit actions.
+  let _ = row_resp.ctx.accesskit_node_builder(row_resp.id, |builder| {
+    builder.set_expanded(open);
+    if open {
+      builder.add_action(accesskit::Action::Collapse);
+      builder.remove_action(accesskit::Action::Expand);
+    } else {
+      builder.add_action(accesskit::Action::Expand);
+      builder.remove_action(accesskit::Action::Collapse);
+    }
+  });
 
   false
 }
@@ -1666,6 +1698,30 @@ mod tests {
       })
   }
 
+  fn accesskit_node_by_name<'a>(
+    output: &'a egui::FullOutput,
+    expected_name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    let update = output
+      .platform_output
+      .accesskit_update
+      .as_ref()
+      .expect("expected AccessKit update to be emitted");
+    update
+      .nodes
+      .iter()
+      .find_map(|(id, node)| {
+        let name = node.name().unwrap_or("").trim();
+        (name == expected_name).then_some((*id, node))
+      })
+      .unwrap_or_else(|| {
+        panic!(
+          "expected AccessKit node named {expected_name:?}.\n\nsnapshot:\n{}",
+          a11y_test_util::accesskit_pretty_json_from_full_output(output)
+        )
+      })
+  }
+
   #[test]
   fn row_action_button_accesskit_id_is_stable_across_reorder() {
     let ctx = egui::Context::default();
@@ -1892,5 +1948,124 @@ mod tests {
     assert!(!state.apply_export_dialog_selection(None));
     assert_eq!(state.import_path, before_import);
     assert_eq!(state.export_path, before_export);
+  }
+
+  #[test]
+  fn folder_row_exposes_expanded_state_and_expand_collapse_actions() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let mut store = BookmarkStore::default();
+    store
+      .create_folder("Work".to_string(), None)
+      .expect("create folder");
+    let mut state = BookmarksManagerState::default();
+
+    let output = render_bookmarks_manager(&ctx, &mut state, &mut store);
+    let (node_id, node) = accesskit_node_by_name(&output, "Folder: Work");
+    assert_eq!(node.is_expanded(), Some(false));
+    assert!(node.supports_action(accesskit::Action::Expand));
+    assert!(!node.supports_action(accesskit::Action::Collapse));
+
+    let (_out, output) = bm_frame(
+      &ctx,
+      &mut state,
+      &mut store,
+      vec![egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
+        action: accesskit::Action::Expand,
+        target: node_id,
+        data: None,
+      })],
+    );
+    let (_node_id, node) = accesskit_node_by_name(&output, "Folder: Work");
+    assert_eq!(node.is_expanded(), Some(true));
+    assert!(node.supports_action(accesskit::Action::Collapse));
+    assert!(!node.supports_action(accesskit::Action::Expand));
+  }
+
+  #[test]
+  fn folder_row_expand_collapse_action_requests_toggle_open_state() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let mut store = BookmarkStore::default();
+    store
+      .create_folder("Work".to_string(), None)
+      .expect("create folder");
+    let mut state = BookmarksManagerState::default();
+
+    let output = render_bookmarks_manager(&ctx, &mut state, &mut store);
+    let (node_id, node) = accesskit_node_by_name(&output, "Folder: Work");
+    assert_eq!(node.is_expanded(), Some(false));
+
+    let (_out, output) = bm_frame(
+      &ctx,
+      &mut state,
+      &mut store,
+      vec![egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
+        action: accesskit::Action::Expand,
+        target: node_id,
+        data: None,
+      })],
+    );
+    let (_node_id, node) = accesskit_node_by_name(&output, "Folder: Work");
+    assert_eq!(node.is_expanded(), Some(true));
+    assert_eq!(
+      output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("expected AccessKit update")
+        .focus,
+      Some(node_id),
+      "expected folder row to retain focus after Expand action request"
+    );
+
+    let (_out, output) = bm_frame(
+      &ctx,
+      &mut state,
+      &mut store,
+      vec![egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
+        action: accesskit::Action::Collapse,
+        target: node_id,
+        data: None,
+      })],
+    );
+    let (_node_id, node) = accesskit_node_by_name(&output, "Folder: Work");
+    assert_eq!(node.is_expanded(), Some(false));
+    assert_eq!(
+      output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("expected AccessKit update")
+        .focus,
+      Some(node_id),
+      "expected folder row to retain focus after Collapse action request"
+    );
+
+    let (_out, output) = bm_frame(
+      &ctx,
+      &mut state,
+      &mut store,
+      vec![
+        egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
+          action: accesskit::Action::Expand,
+          target: node_id,
+          data: None,
+        }),
+        egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
+          action: accesskit::Action::Collapse,
+          target: node_id,
+          data: None,
+        }),
+      ],
+    );
+    let (_node_id, node) = accesskit_node_by_name(&output, "Folder: Work");
+    assert_eq!(
+      node.is_expanded(),
+      Some(true),
+      "expected Expand to win when both Expand and Collapse are requested in the same frame"
+    );
   }
 }
