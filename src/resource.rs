@@ -12850,6 +12850,98 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
 
     self.inner.fetch_partial_with_request(req, max_bytes)
   }
+
+  fn fetch_range_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    range: std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let start = *range.start();
+    let end = *range.end();
+    if start > end {
+      return Err(Error::Resource(ResourceError::new(
+        req.url,
+        format!("invalid byte range: start {start} is greater than end {end}"),
+      )));
+    }
+
+    let kind: FetchContextKind = req.destination.into();
+    let url = req.url;
+    if let Some(policy) = &self.policy {
+      policy.ensure_url_allowed(url)?;
+    }
+
+    // Use the same cache partitioning as `fetch_with_request` so range fetches can reuse cached
+    // full responses, while remaining isolated across origins/credentials.
+    let key = CacheKey::new_with_origin(
+      kind,
+      url.to_string(),
+      cors_cache_partition_key(&req),
+      CacheCredentialsPartition::for_request(&req),
+    );
+
+    if let Some(snapshot) = self.cached_entry(&key, Some(req)) {
+      if let CacheValue::Resource(mut res) = snapshot.value {
+        if max_bytes == 0 {
+          res.bytes.clear();
+          record_cache_fresh_hit();
+          record_resource_cache_bytes(res.bytes.len());
+          reserve_policy_bytes(&self.policy, &res)?;
+          return Ok(res);
+        }
+
+        // Clamp the requested end so we never return more than `max_bytes`.
+        let capped_end = {
+          let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+          end.min(cap_end)
+        };
+
+        // Range semantics when serving from cached full responses:
+        // - Clamp end to the last available byte
+        // - Return an error (instead of panicking) when the start is out-of-bounds
+        let start_idx = usize::try_from(start).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            url,
+            format!("byte range start {start} is too large to slice in memory"),
+          ))
+        })?;
+
+        if start_idx >= res.bytes.len() {
+          return Err(Error::Resource(ResourceError::new(
+            url,
+            format!(
+              "byte range start {start} is beyond end of cached response body (len={})",
+              res.bytes.len()
+            ),
+          )));
+        }
+
+        let end_idx = usize::try_from(capped_end).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            url,
+            format!("byte range end {capped_end} is too large to slice in memory"),
+          ))
+        })?;
+        let available_end = res.bytes.len().saturating_sub(1);
+        let end_idx = end_idx.min(available_end);
+
+        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+        record_cache_fresh_hit();
+        record_resource_cache_bytes(res.bytes.len());
+        reserve_policy_bytes(&self.policy, &res)?;
+        return Ok(res);
+      }
+    }
+
+    // Critical safety: never store range responses into the normal cache. Range responses are not
+    // complete representations and could poison future full-body reads if cached.
+    let res = self
+      .inner
+      .fetch_range_with_request(req, range, max_bytes)?;
+    reserve_policy_bytes(&self.policy, &res)?;
+    Ok(res)
+  }
 }
 
 /// Returns a sanitized header value from a response header map.
@@ -23615,6 +23707,73 @@ mod tests {
     );
   }
 
+  #[test]
+  fn caching_fetcher_fetch_range_does_not_populate_full_cache() {
+    #[derive(Clone)]
+    struct RangeCountingFetcher {
+      full_calls: Arc<AtomicUsize>,
+      range_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for RangeCountingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("unexpected fetch() call");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.full_calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(b"full-body".to_vec(), Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        self.range_calls.fetch_add(1, Ordering::SeqCst);
+        let mut res =
+          FetchedResource::new(b"range-body".to_vec(), Some("text/plain".to_string()));
+        if res.bytes.len() > max_bytes {
+          res.bytes.truncate(max_bytes);
+        }
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let full_calls = Arc::new(AtomicUsize::new(0));
+    let range_calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(RangeCountingFetcher {
+      full_calls: Arc::clone(&full_calls),
+      range_calls: Arc::clone(&range_calls),
+    });
+
+    let url = "http://example.com/range-cache";
+    let req = FetchRequest::new(url, FetchDestination::Image);
+
+    let range = cache
+      .fetch_range_with_request(req, 0..=3, 4)
+      .expect("range fetch");
+    assert_eq!(range.bytes, b"rang");
+    assert_eq!(range_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+      full_calls.load(Ordering::SeqCst),
+      0,
+      "range fetch should not call inner fetch_with_request"
+    );
+
+    let full = cache.fetch_with_request(req).expect("full fetch");
+    assert_eq!(full.bytes, b"full-body");
+    assert_eq!(
+      full_calls.load(Ordering::SeqCst),
+      1,
+      "full fetch should still hit inner fetcher after range fetch"
+    );
+  }
+
   #[derive(Clone, Debug)]
   struct RecordedFetchRequestCall {
     destination: FetchDestination,
@@ -23940,6 +24099,106 @@ mod tests {
         partial_calls.load(Ordering::SeqCst),
         1,
         "expected partial fetch from a different origin to call inner fetcher when CORS enforcement is enabled"
+      );
+    });
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_range_with_request_uses_origin_partitioned_cache_keys() {
+    #[derive(Clone)]
+    struct OriginEchoFetcher {
+      full_calls: Arc<AtomicUsize>,
+      range_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for OriginEchoFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request / fetch_range_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.full_calls.fetch_add(1, Ordering::SeqCst);
+        let origin = cors_origin_key_from_client_origin(req.client_origin).unwrap_or_default();
+        let mut res = FetchedResource::new(
+          format!("full:{origin}").into_bytes(),
+          Some("text/plain".to_string()),
+        );
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        self.range_calls.fetch_add(1, Ordering::SeqCst);
+        let origin = cors_origin_key_from_client_origin(req.client_origin).unwrap_or_default();
+        let mut bytes = format!("range:{origin}").into_bytes();
+        bytes.truncate(max_bytes);
+        let mut res = FetchedResource::new(bytes, Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let full_calls = Arc::new(AtomicUsize::new(0));
+      let range_calls = Arc::new(AtomicUsize::new(0));
+      let cache = CachingFetcher::new(OriginEchoFetcher {
+        full_calls: Arc::clone(&full_calls),
+        range_calls: Arc::clone(&range_calls),
+      });
+
+      let url = "http://example.com/image.png";
+      let origin_a = origin_from_url("http://a.test/page").expect("origin");
+      let origin_b = origin_from_url("http://b.test/page").expect("origin");
+      let req_a = FetchRequest::new(url, FetchDestination::ImageCors)
+        .with_client_origin(&origin_a)
+        .with_referrer_url("http://a.test/page");
+      let req_b = FetchRequest::new(url, FetchDestination::ImageCors)
+        .with_client_origin(&origin_b)
+        .with_referrer_url("http://b.test/page");
+
+      // Seed a full response for origin A.
+      let full_a = cache.fetch_with_request(req_a).expect("fetch A");
+      assert!(
+        String::from_utf8_lossy(&full_a.bytes).starts_with("full:http://a.test"),
+        "unexpected full response: {:?}",
+        String::from_utf8_lossy(&full_a.bytes)
+      );
+      assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+      assert_eq!(range_calls.load(Ordering::SeqCst), 0);
+
+      // A range fetch for the same origin should reuse the cached full response rather than
+      // calling through to the inner range fetcher.
+      let prefix_a = cache
+        .fetch_range_with_request(req_a, 0..=99, 8)
+        .expect("range A");
+      assert_eq!(prefix_a.bytes, b"full:htt");
+      assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+      assert_eq!(
+        range_calls.load(Ordering::SeqCst),
+        0,
+        "expected range fetch to reuse cached full response for same origin"
+      );
+
+      // A range fetch from origin B should *not* reuse A's cached response.
+      let prefix_b = cache
+        .fetch_range_with_request(req_b, 0..=99, 8)
+        .expect("range B");
+      assert_eq!(prefix_b.bytes, b"range:ht");
+      assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+      assert_eq!(
+        range_calls.load(Ordering::SeqCst),
+        1,
+        "expected range fetch from a different origin to call inner fetcher when CORS enforcement is enabled"
       );
     });
   }
