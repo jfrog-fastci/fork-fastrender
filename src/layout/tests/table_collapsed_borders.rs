@@ -951,10 +951,14 @@ fn collapsed_table_borders_keep_horizontal_edges_visible_with_repeated_footers()
 
 #[test]
 fn collapsed_table_outer_border_spills_into_margin() {
-  // CSS 2.2 §17.6.2: later rows/columns with thicker outer collapsed borders must not widen the
-  // table's layout box; the excess should spill outward into the margin area. This is especially
-  // important when shifting baseline half-borders into the table fragment coordinate space
-  // (e.g., to avoid clipping at the viewport origin).
+  // CSS 2.1 §17.6.2: later rows/columns with thicker *outer* collapsed border winners must not
+  // widen the table's layout box; the excess must spill outward into the margin area.
+  //
+  // Our collapsed-border coordinate convention uses the outer grid line center as the table
+  // fragment's `x=0`, so even the baseline outer border paints half outside the fragment bounds.
+  // Paint bounds must therefore include the baseline half-outside *plus* any additional spill,
+  // otherwise culling/tiling logic can clip thick outer-edge segments (WPT
+  // `border-collapse-basic-001`).
   const EPSILON: f32 = 0.1;
 
   let html = r#"
