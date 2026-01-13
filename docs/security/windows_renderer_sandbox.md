@@ -5,6 +5,8 @@ inside a strong OS sandbox boundary.
 
 Detailed Windows sandbox boundary doc (recommended reading): [`docs/windows_sandbox.md`](../windows_sandbox.md).
 
+Renderer sandbox entrypoint doc (links to all platforms): [`docs/renderer_sandbox.md`](../renderer_sandbox.md).
+
 Canonical sandboxing overview (all platforms): [`docs/sandboxing.md`](../sandboxing.md).
 
 Key Windows code entrypoints:

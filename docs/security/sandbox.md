@@ -1,7 +1,9 @@
 # Renderer sandboxing (Linux-focused)
 
-This doc is a **Linux deep-dive** companion to the cross-platform sandbox overview:
-[sandboxing.md](../sandboxing.md).
+This doc is a **Linux deep-dive** companion to:
+
+- the renderer sandbox entrypoint doc: [`docs/renderer_sandbox.md`](../renderer_sandbox.md)
+- the cross-platform sandbox overview: [`docs/sandboxing.md`](../sandboxing.md)
 
 It explains:
 

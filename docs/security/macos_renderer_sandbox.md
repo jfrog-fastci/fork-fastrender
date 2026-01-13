@@ -11,6 +11,8 @@ On macOS we rely on two related mechanisms:
 
 Canonical macOS sandbox guide (more detail + rationale): [`docs/macos_sandbox.md`](../macos_sandbox.md).
 
+Renderer sandbox entrypoint doc (links to all platforms): [`docs/renderer_sandbox.md`](../renderer_sandbox.md).
+
 Key code entrypoints:
 
 - Seatbelt profiles + `sandbox_init` wrappers: [`src/sandbox/macos.rs`](../../src/sandbox/macos.rs)
