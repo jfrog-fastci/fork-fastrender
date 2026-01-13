@@ -173,18 +173,18 @@ fn ui_worker_applies_a11y_actions_to_page_content() {
 
   // Set the input value and selection via accessibility actions, then verify via Copy.
   ui_tx
-    .send(UiToWorker::A11ySetValue {
+    .send(UiToWorker::A11ySetTextValue {
       tab_id,
       node_id: input_node_id,
       value: "hello world".to_string(),
     })
-    .expect("a11y set value");
+    .expect("a11y set text value");
   ui_tx
     .send(UiToWorker::A11ySetTextSelection {
       tab_id,
       node_id: input_node_id,
-      anchor: 0,
-      focus: 5,
+      start: 0,
+      end: 5,
     })
     .expect("a11y set selection");
   ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");

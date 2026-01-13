@@ -694,25 +694,6 @@ pub enum UiToWorker {
     tab_id: TabId,
     node_id: usize,
   },
-  /// Accessibility action: set the value for a node (typically an `<input>` or `<textarea>`).
-  ///
-  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`).
-  A11ySetValue {
-    tab_id: TabId,
-    node_id: usize,
-    value: String,
-  },
-  /// Accessibility action: update the text selection for a focused text control.
-  ///
-  /// `anchor` and `focus` are character indices (not bytes).
-  ///
-  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`).
-  A11ySetTextSelection {
-    tab_id: TabId,
-    node_id: usize,
-    anchor: usize,
-    focus: usize,
-  },
   /// Send a user action to a media element (play/pause, seek, volume, mute).
   MediaCommand {
     tab_id: TabId,
