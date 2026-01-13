@@ -4813,6 +4813,37 @@ mod tests {
   }
 
   #[test]
+  fn raw_pointer_text_mutation_uses_incremental_relayout() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+    assert_eq!(before.incremental_relayouts, 0);
+    assert_eq!(before.full_restyles, 1);
+    assert_eq!(before.full_relayouts, 1);
+
+    let text_id = first_text_node_id(doc.dom()).expect("text node");
+    let mut dom_ptr = doc.dom_non_null();
+    unsafe {
+      dom_ptr
+        .as_mut()
+        .set_text_data(text_id, "Updated")
+        .expect("set text via raw pointer");
+    }
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(after.full_restyles, before.full_restyles);
+    assert_eq!(after.full_relayouts, before.full_relayouts);
+    Ok(())
+  }
+
+  #[test]
   fn dom_query_and_hit_testing_layout_flushes_stay_in_sync() -> Result<()> {
     let renderer = renderer_for_tests();
     let html = "<!doctype html><html><body style=\"margin:0;padding:0;\"><div id=\"target\" style=\"width:10px;height:10px;background:black;\">Hello</div></body></html>";
