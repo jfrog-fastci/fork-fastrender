@@ -1204,43 +1204,61 @@ impl<'vm> HirEvaluator<'vm> {
   }
 
   fn collect_pat_idents(
-    &self,
+    &mut self,
     body: &hir_js::Body,
     pat_id: hir_js::PatId,
     out: &mut Vec<hir_js::NameId>,
   ) -> Result<(), VmError> {
-    let pat = self.get_pat(body, pat_id)?;
-    match &pat.kind {
-      hir_js::PatKind::Ident(name_id) => {
-        out.push(*name_id);
-        Ok(())
+    // This traversal can be O(n) in the number of pattern nodes. Budget it explicitly so huge
+    // destructuring patterns don't allow uninterruptible work within a single statement tick.
+    const TICK_EVERY: usize = 256;
+    fn visit(
+      evaluator: &mut HirEvaluator<'_>,
+      body: &hir_js::Body,
+      pat_id: hir_js::PatId,
+      out: &mut Vec<hir_js::NameId>,
+      visited: &mut usize,
+    ) -> Result<(), VmError> {
+      // Avoid ticking on the first node: callers usually already tick once per statement/parameter.
+      if *visited != 0 && *visited % TICK_EVERY == 0 {
+        evaluator.vm.tick()?;
       }
-      hir_js::PatKind::Array(arr) => {
-        for elem in &arr.elements {
-          if let Some(elem) = elem {
-            self.collect_pat_idents(body, elem.pat, out)?;
+      *visited = visited.saturating_add(1);
+      let pat = evaluator.get_pat(body, pat_id)?;
+      match &pat.kind {
+        hir_js::PatKind::Ident(name_id) => {
+          out.push(*name_id);
+          Ok(())
+        }
+        hir_js::PatKind::Array(arr) => {
+          for elem in &arr.elements {
+            if let Some(elem) = elem {
+              visit(evaluator, body, elem.pat, out, visited)?;
+            }
           }
+          if let Some(rest) = arr.rest {
+            visit(evaluator, body, rest, out, visited)?;
+          }
+          Ok(())
         }
-        if let Some(rest) = arr.rest {
-          self.collect_pat_idents(body, rest, out)?;
+        hir_js::PatKind::Object(obj) => {
+          for prop in &obj.props {
+            visit(evaluator, body, prop.value, out, visited)?;
+          }
+          if let Some(rest) = obj.rest {
+            visit(evaluator, body, rest, out, visited)?;
+          }
+          Ok(())
         }
-        Ok(())
+        hir_js::PatKind::Rest(inner) => visit(evaluator, body, **inner, out, visited),
+        hir_js::PatKind::Assign { target, .. } => visit(evaluator, body, *target, out, visited),
+        hir_js::PatKind::AssignTarget(_) => Err(VmError::Unimplemented(
+          "assignment target in declaration pattern (hir-js compiled path)",
+        )),
       }
-      hir_js::PatKind::Object(obj) => {
-        for prop in &obj.props {
-          self.collect_pat_idents(body, prop.value, out)?;
-        }
-        if let Some(rest) = obj.rest {
-          self.collect_pat_idents(body, rest, out)?;
-        }
-        Ok(())
-      }
-      hir_js::PatKind::Rest(inner) => self.collect_pat_idents(body, **inner, out),
-      hir_js::PatKind::Assign { target, .. } => self.collect_pat_idents(body, *target, out),
-      hir_js::PatKind::AssignTarget(_) => Err(VmError::Unimplemented(
-        "assignment target in declaration pattern (hir-js compiled path)",
-      )),
     }
+    let mut visited: usize = 0;
+    visit(self, body, pat_id, out, &mut visited)
   }
 
   fn instantiate_function_decls(

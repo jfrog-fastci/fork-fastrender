@@ -4979,6 +4979,43 @@ fn compiled_function_length_scan_consumes_fuel_budget() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_param_binding_scan_consumes_fuel_budget() -> Result<(), VmError> {
+  // Function calls pre-scan parameter patterns to create bindings (for TDZ/default semantics). That
+  // traversal must call `vm.tick()` periodically so huge destructuring patterns can't do
+  // uninterruptible work.
+  const ELEM_COUNT: usize = 8192;
+
+  let mut source = String::new();
+  source.reserve(ELEM_COUNT * 8);
+  source.push_str("function f([");
+  for i in 0..ELEM_COUNT {
+    if i > 0 {
+      source.push(',');
+    }
+    source.push('a');
+    source.push_str(&i.to_string());
+  }
+  source.push_str("]){}; f();");
+
+  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    fuel: Some(25),
+    deadline: None,
+    check_time_every: 1,
+  });
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", source)?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected OutOfFuel termination, got {other:?}"),
+  }
+  Ok(())
+}
+
+#[test]
 fn compiled_arguments_object_exists_and_has_length() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
