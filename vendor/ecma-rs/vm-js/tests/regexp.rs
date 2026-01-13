@@ -300,3 +300,38 @@ fn regexp_negated_class_with_literal_closing_bracket_is_not_empty() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn regexp_character_class_whitespace_escape_matches_ecma_whitespace_and_line_terminators() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ws = String.fromCharCode(
+          0x0009, 0x000A, 0x000B, 0x000C, 0x000D,
+          0x0020,
+          0x00A0,
+          0x1680,
+          0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A,
+          0x2028, 0x2029,
+          0x202F,
+          0x205F,
+          0x3000,
+          0xFEFF
+        );
+
+        (/^\s+$/).test(ws) && (/^\s+$/u).test(ws)
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_unicode_mode_rejects_character_class_escape_ranges() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("[\\s-a]", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}

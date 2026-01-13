@@ -316,6 +316,16 @@ impl RegExpFlags {
     }
     out
   }
+
+  /// True when either the Unicode (`u`) or Unicode sets (`v`) flags are enabled.
+  ///
+  /// The RegExp parser has a handful of early-error restrictions that apply in "UnicodeMode",
+  /// which is defined as either `u` or `v` being present. `vm-js` does not yet implement `v`, so
+  /// today this is equivalent to `self.unicode`.
+  #[inline]
+  pub(crate) fn has_either_unicode_flag(self) -> bool {
+    self.unicode
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -1024,23 +1034,17 @@ impl CharClassItem {
         // Keep this set in sync with `builtins::is_trim_whitespace_unit`.
         let is_space = matches!(
           u,
-          // WhiteSpace (ECMA-262)
-          0x0009
-            | 0x000B
-            | 0x000C
+          0x0009..=0x000D
             | 0x0020
             | 0x00A0
             | 0x1680
+            | 0x2000..=0x200A
+            | 0x2028..=0x2029
             | 0x202F
             | 0x205F
             | 0x3000
             | 0xFEFF
-            // LineTerminator (ECMA-262)
-            | 0x000A
-            | 0x000D
-            | 0x2028
-            | 0x2029
-        ) || matches!(u, 0x2000..=0x200A);
+        );
         if negated { !is_space } else { is_space }
       }
     }
@@ -1576,12 +1580,23 @@ impl<'a> Parser<'a> {
         if self.peek() == Some(b']' as u16) {
           // Literal '-' at end.
           self.idx = save;
-       } else {
+        } else {
           let atom2 = self.parse_class_atom(ctx)?;
           if let (CharClassItem::Char(a), CharClassItem::Char(b)) = (atom, atom2) {
             ctx.vec_try_push(&mut items, CharClassItem::Range(a, b))?;
             continue;
           } else {
+            // In UnicodeMode (`u`/`v`), Annex B forbids class ranges where either endpoint is a
+            // character class escape (e.g. `\s`, `\d`, `\w`) or any other multi-character atom.
+            //
+            // Non-Unicode mode keeps the web-compatible legacy behaviour of treating the `-` as a
+            // literal when the range is not well-formed.
+            if self.flags.has_either_unicode_flag() {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
+            }
             // Not a valid range; treat '-' literally and keep both atoms.
             self.idx = save;
           }
