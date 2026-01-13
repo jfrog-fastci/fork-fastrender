@@ -1412,3 +1412,45 @@ fn regexp_lookbehind_ignore_case_cross_lookaround_captures() {
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), r#"["b","b","B"]"#);
 }
+
+#[test]
+fn regexp_lookbehind_word_boundary_assertions() {
+  // From test262 `lookBehind/word-boundary.js`.
+  let mut rt = new_runtime();
+
+  let value = rt
+    .exec_script(r#""abc def".match(/(?<=\b)[d-f]{3}/)[0]"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "def");
+
+  let value = rt
+    .exec_script(r#""ab cdef".match(/(?<=\B)\w{3}/)[0]"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "def");
+
+  let value = rt.exec_script(r#""abcdef".match(/(?<=\b)[d-f]{3}/)"#).unwrap();
+  assert_eq!(value, Value::Null);
+}
+
+#[test]
+fn regexp_lookbehind_start_and_end_of_line_assertions_multiline_global() {
+  // From test262 `lookBehind/start-of-line.js`.
+  let mut rt = new_runtime();
+
+  let value = rt
+    .exec_script(r#""xyz\nabcdef".match(/(?<=^[a-c]{3})def/m)[0]"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "def");
+
+  let value = rt
+    .exec_script(r#""ab\ncd\nefg".match(/(?<=^)\w+/gm).join(",")"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "ab,cd,efg");
+
+  // End-of-line lookbehind already direction-independent, but this exercises `$` integration inside
+  // lookbehind with `m`/`g`.
+  let value = rt
+    .exec_script(r#""ab\ncd\nefg".match(/\w+(?<=$)/gm).join(",")"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "ab,cd,efg");
+}
