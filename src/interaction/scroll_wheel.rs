@@ -295,6 +295,7 @@ pub fn apply_wheel_scroll_at_point(
   let options = ScrollOptions {
     source: ScrollSource::User,
     simulate_overscroll: false,
+    apply_snap: false,
   };
 
   let mut scrolled_tree = fragment_tree.clone();

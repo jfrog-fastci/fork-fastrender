@@ -2,7 +2,7 @@
 
 use fastrender::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use fastrender::scroll::ScrollState;
-use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{RepaintReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::{Point, RenderOptions, Size};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -101,6 +101,83 @@ fn scroll_snap_updates_viewport_scroll_state() {
     (scroll.viewport.y - 100.0).abs() < 1.0,
     "expected scroll snap to land at 100px, got {:?}",
     scroll.viewport
+  );
+
+  drop(ui_tx);
+  handle.join().unwrap();
+}
+
+#[test]
+fn scroll_snap_accumulates_wheel_at_pointer_deltas() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          html { scroll-snap-type: y mandatory; }
+          .snap { height: 100px; scroll-snap-align: start; }
+        </style>
+      </head>
+      <body>
+        <div class="snap"></div>
+        <div class="snap"></div>
+        <div class="snap"></div>
+        <div class="snap"></div>
+      </body>
+    </html>
+  "#;
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
+
+  let (ui_tx, worker_rx, handle) = spawn_worker();
+  let tab_id = TabId(1);
+  ui_tx.send(create_tab_msg(tab_id, Some(url))).unwrap();
+  ui_tx.send(UiToWorker::SetActiveTab { tab_id }).unwrap();
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (100, 100), 1.0))
+    .unwrap();
+
+  let _ = wait_for_message(
+    &worker_rx,
+    DEFAULT_TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::FrameReady { tab_id: t, .. } if *t == tab_id),
+  );
+  drain_worker(&worker_rx);
+
+  // Two small smooth-scroll deltas should accumulate (80px total) and then snap to 100px when the
+  // next frame is painted.
+  ui_tx
+    .send(scroll_msg(tab_id, (0.0, 40.0), Some((10.0, 10.0))))
+    .unwrap();
+  ui_tx
+    .send(scroll_msg(tab_id, (0.0, 40.0), Some((10.0, 10.0))))
+    .unwrap();
+
+  // Force a repaint so we always observe a FrameReady even if the buggy behavior treated the wheel
+  // events as no-ops.
+  ui_tx
+    .send(UiToWorker::RequestRepaint {
+      tab_id,
+      reason: RepaintReason::Explicit,
+    })
+    .unwrap();
+
+  let msg = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { tab_id: t, .. } if *t == tab_id)
+  });
+  let WorkerToUi::FrameReady { frame, .. } = msg else {
+    unreachable!();
+  };
+
+  let y = frame.scroll_state.viewport.y;
+  assert!(
+    (y - 100.0).abs() < 1.0,
+    "expected accumulated wheel deltas to snap to 100px, got {y}"
   );
 
   drop(ui_tx);

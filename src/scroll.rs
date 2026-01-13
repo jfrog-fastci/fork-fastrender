@@ -1998,6 +1998,12 @@ pub enum ScrollSource {
 pub struct ScrollOptions {
   pub source: ScrollSource,
   pub simulate_overscroll: bool,
+  /// When true, scroll-snap is applied immediately while mutating scroll offsets.
+  ///
+  /// Most scroll interactions should leave this enabled, but wheel scrolling (especially smooth
+  /// trackpad scrolling) should typically accumulate deltas across multiple wheel events and only
+  /// apply scroll snapping at paint time (or an explicit "scroll end" step).
+  pub apply_snap: bool,
 }
 
 impl Default for ScrollOptions {
@@ -2005,6 +2011,7 @@ impl Default for ScrollOptions {
     Self {
       source: ScrollSource::User,
       simulate_overscroll: false,
+      apply_snap: true,
     }
   }
 }
@@ -2234,16 +2241,18 @@ pub fn apply_scroll_chain(
     let (leftover, over) = apply_scroll_to_state(state, remaining, options);
     remaining = leftover;
 
-    if let Some(snap) = state.snap.as_ref() {
-      if let Some(style) = snap.container.style.as_ref() {
-        state.scroll = apply_scroll_snap_for_container(
-          snap.container,
-          style,
-          state.viewport,
-          state.scroll,
-          snap.origin,
-          state.bounds,
-        );
+    if options.apply_snap {
+      if let Some(snap) = state.snap.as_ref() {
+        if let Some(style) = snap.container.style.as_ref() {
+          state.scroll = apply_scroll_snap_for_container(
+            snap.container,
+            style,
+            state.viewport,
+            state.scroll,
+            snap.origin,
+            state.bounds,
+          );
+        }
       }
     }
 
