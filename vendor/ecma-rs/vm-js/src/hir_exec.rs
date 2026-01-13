@@ -3237,8 +3237,11 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::ObjectKey::Number(s) => Ok(PropertyKey::from_string(scope.alloc_string(s)?)),
       hir_js::ObjectKey::Computed(expr_id) => {
         let v = self.eval_expr(scope, body, *expr_id)?;
-        let key = scope.heap_mut().to_property_key(v)?;
-        Ok(key)
+        // Computed property keys use full ECMAScript `ToPropertyKey`, which performs `ToPrimitive`
+        // (hint String) and can invoke user code. Root the computed value across the conversion.
+        let mut scope = scope.reborrow();
+        scope.push_root(v)?;
+        scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, v)
       }
     }
   }
