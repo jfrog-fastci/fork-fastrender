@@ -1080,14 +1080,15 @@ details and metric mapping.
 
 ## Known limitations (as of now)
 
-- **JavaScript execution is experimental (`browser --js`):** the windowed UI worker maintains a
+- **JavaScript execution is experimental:** the windowed UI worker maintains a
   JS-capable [`api::BrowserTab`](../src/api/browser_tab.rs) (vm-js executor) alongside the rendered
   `BrowserDocument`, runs bounded JS pumps (post-navigation, after DOM event dispatch, and on
   `Tick`), and best-effort syncs the JS tab’s `dom2` snapshot into the renderer DOM before painting.
   This is still incomplete (many Web APIs missing, lots of web-compat gaps). See
   [runtime_stacks.md](runtime_stacks.md) and [live_rendering_loop.md](live_rendering_loop.md).
-  - CLI note: `browser --js` enables JavaScript execution for the windowed UI; in `--headless-smoke`
-    mode, `browser --headless-smoke --js` selects a vm-js `BrowserTab` smoke test.
+  - CLI note: windowed mode currently runs author JS by default (no stable CLI toggle to disable it
+    yet). `browser --js` is currently only meaningful in `--headless-smoke` mode, where
+    `browser --headless-smoke --js` selects a vm-js `BrowserTab` smoke test.
   - Repaints are currently “whole frame” rerenders (no incremental damaged-rect compositor yet).
 - **Interaction gaps:** the windowed UI forwards pointer/keyboard input to the browser
   worker, which applies basic hit-testing + form interactions. Some interactions are still

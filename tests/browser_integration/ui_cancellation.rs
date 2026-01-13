@@ -415,7 +415,12 @@ fn cancellation_interrupts_js_event_loop_pumping() {
 
   // Trigger a tick that will hang in JS pumping until cancellation fires, then queue a repaint to
   // verify the worker remains responsive after the soft-stop.
-  ui_tx.send(UiToWorker::Tick { tab_id }).unwrap();
+  ui_tx
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
+    .unwrap();
   ui_tx
     .send(support::request_repaint(tab_id, RepaintReason::Explicit))
     .unwrap();
