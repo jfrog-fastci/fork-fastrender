@@ -1813,7 +1813,20 @@ mod tests {
       Value::Bool(true)
     );
     assert_eq!(
-      exec("(() => { const el = document.createElement('div'); return el.ownerDocument === document; })()")?,
+      exec(
+        "(() => {\n\
+          const el = document.createElement('div');\n\
+          // Exercise a legacy native Element helper (mirrors the function installed by\n\
+          // `define_method_if_missing`). This helper reads `__fastrender_wrapper_document`.\n\
+          const legacy = document.__fastrender_element_query_selector;\n\
+          if (typeof legacy !== 'function') return false;\n\
+          try {\n\
+            return legacy.call(el, 'span') === null;\n\
+          } catch (_e) {\n\
+            return false;\n\
+          }\n\
+        })()",
+      )?,
       Value::Bool(true)
     );
 
