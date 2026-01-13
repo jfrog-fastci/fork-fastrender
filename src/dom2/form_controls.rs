@@ -876,12 +876,9 @@ impl Document {
   fn textarea_default_value(&self, textarea: NodeId) -> Result<String, DomError> {
     let node = self.node_checked(textarea)?;
     match &node.kind {
-      NodeKind::Element {
-        tag_name,
-        namespace,
-        ..
-      } if self.is_html_case_insensitive_namespace(namespace)
-        && tag_name.eq_ignore_ascii_case("textarea") => {}
+      NodeKind::Element { tag_name, namespace, .. }
+        if self.is_html_case_insensitive_namespace(namespace)
+          && tag_name.eq_ignore_ascii_case("textarea") => {}
       _ => return Err(DomError::InvalidNodeTypeError),
     }
 
@@ -912,12 +909,9 @@ impl Document {
   pub fn form_reset(&mut self, form: NodeId) -> Result<(), DomError> {
     let node = self.node_checked(form)?;
     match &node.kind {
-      NodeKind::Element {
-        tag_name,
-        namespace,
-        ..
-      } if self.is_html_case_insensitive_namespace(namespace)
-        && tag_name.eq_ignore_ascii_case("form") => {}
+      NodeKind::Element { tag_name, namespace, .. }
+        if self.is_html_case_insensitive_namespace(namespace)
+          && tag_name.eq_ignore_ascii_case("form") => {}
       _ => return Err(DomError::InvalidNodeTypeError),
     }
 

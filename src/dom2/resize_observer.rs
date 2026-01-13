@@ -284,4 +284,3 @@ mod tests {
     assert_eq!(doc.resize_observers.registrations[div.index()][0].observer, 1);
   }
 }
-

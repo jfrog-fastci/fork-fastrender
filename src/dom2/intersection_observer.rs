@@ -313,4 +313,3 @@ mod tests {
     assert_eq!(doc.intersection_observers.registrations[div.index()], vec![1]);
   }
 }
-

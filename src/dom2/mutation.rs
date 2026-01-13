@@ -1005,7 +1005,7 @@ impl Document {
   pub fn set_character_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     match self.replace_data(node, 0, usize::MAX, data) {
       Ok(changed) => Ok(changed),
-      Err(DomError::InvalidNodeTypeError) => Ok(false),
+      Err(DomError::InvalidNodeType | DomError::InvalidNodeTypeError) => Ok(false),
       Err(err) => Err(err),
     }
   }
