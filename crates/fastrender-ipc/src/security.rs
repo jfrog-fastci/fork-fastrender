@@ -1,6 +1,12 @@
 use crate::{DiscoveredSubframe, FrameBuffer, FrameId, RendererId, RendererToBrowser, SubframeInfo, SubframeToken};
 use std::collections::{HashMap, HashSet};
 
+const SANDBOX_KNOWN_BITS: u32 = crate::SandboxFlags::ALLOW_SAME_ORIGIN.0
+  | crate::SandboxFlags::ALLOW_SCRIPTS.0
+  | crate::SandboxFlags::ALLOW_FORMS.0
+  | crate::SandboxFlags::ALLOW_POPUPS.0
+  | crate::SandboxFlags::ALLOW_TOP_NAVIGATION.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererToBrowserKind {
   FrameReady,
@@ -55,6 +61,34 @@ pub enum FrameOwnershipViolation {
     depth: usize,
     max: usize,
   },
+  InvalidClipItem {
+    parent_frame_id: FrameId,
+    child_frame_id: FrameId,
+    index: usize,
+    reason: InvalidClipItemReason,
+  },
+  InvalidSubframeSandboxFlags {
+    parent_frame_id: FrameId,
+    child_frame_id: FrameId,
+    flags: u32,
+    unknown_bits: u32,
+  },
+  InvalidDiscoveredSubframeSandboxFlags {
+    parent_frame_id: FrameId,
+    token: SubframeToken,
+    flags: u32,
+    unknown_bits: u32,
+  },
+  InconsistentSubframeOpaqueOrigin {
+    parent_frame_id: FrameId,
+    child_frame_id: FrameId,
+    flags: u32,
+  },
+  InconsistentDiscoveredSubframeOpaqueOrigin {
+    parent_frame_id: FrameId,
+    token: SubframeToken,
+    flags: u32,
+  },
   InvalidFrameBuffer {
     frame_id: FrameId,
     width: u32,
@@ -67,6 +101,18 @@ pub enum FrameOwnershipViolation {
     error: crate::CompositeError,
   },
   OversizedString {
+    frame_id: FrameId,
+    field: &'static str,
+    len: usize,
+    max: usize,
+  },
+  OversizedList {
+    frame_id: FrameId,
+    field: &'static str,
+    len: usize,
+    max: usize,
+  },
+  OversizedBytes {
     frame_id: FrameId,
     field: &'static str,
     len: usize,
@@ -85,6 +131,14 @@ pub enum InvalidSubframeTransformReason {
 pub enum InvalidSubframeRectReason {
   NonFinite,
   NegativeSize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidClipItemReason {
+  RectNonFinite,
+  RectNegativeSize,
+  RadiusNonFinite,
+  RadiusNegative,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,7 +293,7 @@ impl BrowserIpcSecurityState {
         frame_id,
         url,
         base_url,
-        csp: _csp,
+        csp,
       } => {
         if !self.check_frame(sender, frame_id, RendererToBrowserKind::NavigationCommitted) {
           return;
@@ -263,6 +317,42 @@ impl BrowserIpcSecurityState {
             base,
             crate::MAX_UNTRUSTED_URL_BYTES,
           );
+        }
+
+        if !self.check_list_len(
+          sender,
+          frame_id,
+          RendererToBrowserKind::NavigationCommitted,
+          "NavigationCommitted.csp",
+          csp.len(),
+          crate::csp::MAX_CSP_VALUES_PER_DOCUMENT,
+        ) {
+          return;
+        }
+
+        let mut total_bytes = 0usize;
+        for value in &csp {
+          if !self.check_string_len(
+            sender,
+            frame_id,
+            RendererToBrowserKind::NavigationCommitted,
+            "NavigationCommitted.csp",
+            value,
+            crate::csp::MAX_CSP_VALUE_BYTES,
+          ) {
+            return;
+          }
+          total_bytes = total_bytes.saturating_add(value.len());
+          if !self.check_bytes_len(
+            sender,
+            frame_id,
+            RendererToBrowserKind::NavigationCommitted,
+            "NavigationCommitted.csp_total_bytes",
+            total_bytes,
+            crate::csp::MAX_CSP_TOTAL_BYTES,
+          ) {
+            return;
+          }
         }
       }
       RendererToBrowser::NavigationFailed { frame_id, url, error } => {
@@ -357,6 +447,60 @@ impl BrowserIpcSecurityState {
     false
   }
 
+  fn check_list_len(
+    &mut self,
+    sender: RendererId,
+    frame_id: FrameId,
+    message: RendererToBrowserKind,
+    field: &'static str,
+    len: usize,
+    max: usize,
+  ) -> bool {
+    if len <= max {
+      return true;
+    }
+
+    self.protocol_violation(
+      sender,
+      frame_id,
+      message,
+      FrameOwnershipViolation::OversizedList {
+        frame_id,
+        field,
+        len,
+        max,
+      },
+    );
+    false
+  }
+
+  fn check_bytes_len(
+    &mut self,
+    sender: RendererId,
+    frame_id: FrameId,
+    message: RendererToBrowserKind,
+    field: &'static str,
+    len: usize,
+    max: usize,
+  ) -> bool {
+    if len <= max {
+      return true;
+    }
+
+    self.protocol_violation(
+      sender,
+      frame_id,
+      message,
+      FrameOwnershipViolation::OversizedBytes {
+        frame_id,
+        field,
+        len,
+        max,
+      },
+    );
+    false
+  }
+
   fn check_frame(
     &mut self,
     sender: RendererId,
@@ -441,6 +585,36 @@ impl BrowserIpcSecurityState {
           return false;
         }
       }
+
+      let flags = subframe.sandbox_flags.0;
+      let unknown_bits = flags & !SANDBOX_KNOWN_BITS;
+      if unknown_bits != 0 {
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::InvalidSubframeSandboxFlags {
+            parent_frame_id,
+            child_frame_id: child,
+            flags,
+            unknown_bits,
+          },
+        );
+        return false;
+      }
+      if subframe.opaque_origin && subframe.sandbox_flags.contains(crate::SandboxFlags::ALLOW_SAME_ORIGIN) {
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::InconsistentSubframeOpaqueOrigin {
+            parent_frame_id,
+            child_frame_id: child,
+            flags,
+          },
+        );
+        return false;
+      }
       if subframe.clip_stack.len() > crate::MAX_SUBFRAME_CLIP_STACK_DEPTH {
         self.protocol_violation(
           sender,
@@ -454,6 +628,80 @@ impl BrowserIpcSecurityState {
           },
         );
         return false;
+      }
+
+      for (idx, clip) in subframe.clip_stack.iter().enumerate() {
+        let rect = clip.rect;
+        let rect_finite = rect.x.is_finite()
+          && rect.y.is_finite()
+          && rect.width.is_finite()
+          && rect.height.is_finite();
+        if !rect_finite {
+          self.protocol_violation(
+            sender,
+            parent_frame_id,
+            message,
+            FrameOwnershipViolation::InvalidClipItem {
+              parent_frame_id,
+              child_frame_id: child,
+              index: idx,
+              reason: InvalidClipItemReason::RectNonFinite,
+            },
+          );
+          return false;
+        }
+        if rect.width < 0.0 || rect.height < 0.0 {
+          self.protocol_violation(
+            sender,
+            parent_frame_id,
+            message,
+            FrameOwnershipViolation::InvalidClipItem {
+              parent_frame_id,
+              child_frame_id: child,
+              index: idx,
+              reason: InvalidClipItemReason::RectNegativeSize,
+            },
+          );
+          return false;
+        }
+
+        let radius = clip.radius;
+        let radius_finite = radius.top_left.is_finite()
+          && radius.top_right.is_finite()
+          && radius.bottom_right.is_finite()
+          && radius.bottom_left.is_finite();
+        if !radius_finite {
+          self.protocol_violation(
+            sender,
+            parent_frame_id,
+            message,
+            FrameOwnershipViolation::InvalidClipItem {
+              parent_frame_id,
+              child_frame_id: child,
+              index: idx,
+              reason: InvalidClipItemReason::RadiusNonFinite,
+            },
+          );
+          return false;
+        }
+        if radius.top_left < 0.0
+          || radius.top_right < 0.0
+          || radius.bottom_right < 0.0
+          || radius.bottom_left < 0.0
+        {
+          self.protocol_violation(
+            sender,
+            parent_frame_id,
+            message,
+            FrameOwnershipViolation::InvalidClipItem {
+              parent_frame_id,
+              child_frame_id: child,
+              index: idx,
+              reason: InvalidClipItemReason::RadiusNegative,
+            },
+          );
+          return false;
+        }
       }
       let t = subframe.transform;
       let reason = if !t.is_axis_aligned() {
@@ -527,6 +775,36 @@ impl BrowserIpcSecurityState {
           FrameOwnershipViolation::DuplicateSubframeToken {
             parent_frame_id,
             token: subframe.token,
+          },
+        );
+        return false;
+      }
+
+      let flags = subframe.sandbox_flags.0;
+      let unknown_bits = flags & !SANDBOX_KNOWN_BITS;
+      if unknown_bits != 0 {
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::InvalidDiscoveredSubframeSandboxFlags {
+            parent_frame_id,
+            token: subframe.token,
+            flags,
+            unknown_bits,
+          },
+        );
+        return false;
+      }
+      if subframe.opaque_origin && subframe.sandbox_flags.contains(crate::SandboxFlags::ALLOW_SAME_ORIGIN) {
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::InconsistentDiscoveredSubframeOpaqueOrigin {
+            parent_frame_id,
+            token: subframe.token,
+            flags,
           },
         );
         return false;
@@ -1591,6 +1869,290 @@ mod tests {
         } if *process_id == renderer && *frame_id == frame
       )),
       "expected OversizedString protocol event for HoverChanged.hovered_url (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn frame_ready_with_unknown_sandbox_flags_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(1);
+    let child = FrameId(2);
+    browser.assign_frame(parent, renderer);
+    browser.set_frame_parent(child, parent);
+
+    let mut info = simple_slot(child);
+    info.sandbox_flags = crate::SandboxFlags(1u32 << 31);
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: solid_buffer([0, 0, 0, 255]),
+        subframes: vec![info],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::InvalidSubframeSandboxFlags { .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected InvalidSubframeSandboxFlags protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn frame_ready_with_inconsistent_opaque_origin_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(1);
+    let child = FrameId(2);
+    browser.assign_frame(parent, renderer);
+    browser.set_frame_parent(child, parent);
+
+    let mut info = simple_slot(child);
+    info.opaque_origin = true;
+    info.sandbox_flags = crate::SandboxFlags::ALLOW_SAME_ORIGIN;
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: solid_buffer([0, 0, 0, 255]),
+        subframes: vec![info],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::InconsistentSubframeOpaqueOrigin { .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected InconsistentSubframeOpaqueOrigin protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn frame_ready_with_invalid_clip_item_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(1);
+    let child = FrameId(2);
+    browser.assign_frame(parent, renderer);
+    browser.set_frame_parent(child, parent);
+
+    let mut info = simple_slot(child);
+    info.clip_stack = vec![crate::ClipItem {
+      rect: crate::Rect {
+        x: 0.0,
+        y: 0.0,
+        width: -1.0,
+        height: 1.0,
+      },
+      radius: crate::BorderRadius::ZERO,
+    }];
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: solid_buffer([0, 0, 0, 255]),
+        subframes: vec![info],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::InvalidClipItem { reason: InvalidClipItemReason::RectNegativeSize, .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected InvalidClipItem protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn subframes_discovered_with_unknown_sandbox_flags_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(10);
+    browser.assign_frame(parent, renderer);
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: parent,
+        subframes: vec![crate::DiscoveredSubframe {
+          token: crate::SubframeToken(1),
+          navigation: crate::IframeNavigation::AboutBlank,
+          rect: crate::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+          },
+          hit_testable: true,
+          referrer_policy: None,
+          sandbox_flags: crate::SandboxFlags(1u32 << 31),
+          opaque_origin: false,
+        }],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::SubframesDiscovered,
+          violation: FrameOwnershipViolation::InvalidDiscoveredSubframeSandboxFlags { .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected InvalidDiscoveredSubframeSandboxFlags protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn subframes_discovered_with_inconsistent_opaque_origin_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(10);
+    browser.assign_frame(parent, renderer);
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: parent,
+        subframes: vec![crate::DiscoveredSubframe {
+          token: crate::SubframeToken(1),
+          navigation: crate::IframeNavigation::AboutBlank,
+          rect: crate::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+          },
+          hit_testable: true,
+          referrer_policy: None,
+          sandbox_flags: crate::SandboxFlags::ALLOW_SAME_ORIGIN,
+          opaque_origin: true,
+        }],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::SubframesDiscovered,
+          violation: FrameOwnershipViolation::InconsistentDiscoveredSubframeOpaqueOrigin { .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected InconsistentDiscoveredSubframeOpaqueOrigin protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn navigation_committed_with_too_many_csp_values_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let frame = FrameId(1);
+    browser.assign_frame(frame, renderer);
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::NavigationCommitted {
+        frame_id: frame,
+        url: "https://example.test/".to_string(),
+        base_url: None,
+        csp: vec![
+          "default-src 'none'".to_string();
+          crate::csp::MAX_CSP_VALUES_PER_DOCUMENT + 1
+        ],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::NavigationCommitted,
+          violation: FrameOwnershipViolation::OversizedList { field: "NavigationCommitted.csp", .. },
+        } if *process_id == renderer && *frame_id == frame
+      )),
+      "expected OversizedList protocol event for NavigationCommitted.csp (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn navigation_committed_with_too_many_csp_bytes_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let frame = FrameId(1);
+    browser.assign_frame(frame, renderer);
+
+    // Keep each value within the per-value cap but exceed the total bytes cap.
+    let value = "a".repeat(crate::csp::MAX_CSP_VALUE_BYTES);
+    let mut csp = Vec::new();
+    while csp.iter().map(|s: &String| s.len()).sum::<usize>() <= crate::csp::MAX_CSP_TOTAL_BYTES {
+      csp.push(value.clone());
+    }
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::NavigationCommitted {
+        frame_id: frame,
+        url: "https://example.test/".to_string(),
+        base_url: None,
+        csp,
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::NavigationCommitted,
+          violation: FrameOwnershipViolation::OversizedBytes { field: "NavigationCommitted.csp_total_bytes", .. },
+        } if *process_id == renderer && *frame_id == frame
+      )),
+      "expected OversizedBytes protocol event for NavigationCommitted.csp_total_bytes (events={events:?})"
     );
   }
 }

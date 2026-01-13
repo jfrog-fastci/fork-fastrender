@@ -225,6 +225,9 @@ Additional (important) size limits that sit *on top* of framing:
 | Browser↔renderer control-message decode budget | 256 KiB | `RENDERER_IPC_DECODE_LIMIT_BYTES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) (`bincode_options().with_limit(...)`) |
 | Renderer IPC URL string max | 8 KiB | `MAX_URL_BYTES` / `UrlString` (`BoundedString`) in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | Untrusted URL string max (stdio prototype) | 8 KiB | `MAX_UNTRUSTED_URL_BYTES` (alias `MAX_SITE_KEY_URL_BYTES`) in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) |
+| CSP policy values per document (stdio prototype) | 32 | `csp::MAX_CSP_VALUES_PER_DOCUMENT` in [`crates/fastrender-ipc/src/csp.rs`](../crates/fastrender-ipc/src/csp.rs) |
+| CSP policy value bytes (stdio prototype) | 32 KiB | `csp::MAX_CSP_VALUE_BYTES` in [`crates/fastrender-ipc/src/csp.rs`](../crates/fastrender-ipc/src/csp.rs) |
+| CSP policy total bytes (stdio prototype) | 128 KiB | `csp::MAX_CSP_TOTAL_BYTES` in [`crates/fastrender-ipc/src/csp.rs`](../crates/fastrender-ipc/src/csp.rs) |
 | File input / drag-and-drop max files per message (browser→renderer) | 16 | `FILE_INPUT_MAX_FILES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | File input / drag-and-drop file name bytes (browser→renderer) | 256 bytes | `FILE_INPUT_MAX_NAME_BYTES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | File input / drag-and-drop total file size metadata (browser→renderer) | 512 MiB | `FILE_INPUT_MAX_TOTAL_BYTES_META` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |

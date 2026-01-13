@@ -12,9 +12,17 @@ use crate::{DocumentOrigin, FrameId};
 use std::collections::HashMap;
 use url::Url;
 
-const MAX_CSP_VALUES_PER_DOCUMENT: usize = 32;
-const MAX_CSP_VALUE_BYTES: usize = 32 * 1024;
-const MAX_CSP_TOTAL_BYTES: usize = 128 * 1024;
+/// Maximum number of CSP policy strings accepted per committed document.
+///
+/// This bounds browser-side parsing work when the renderer reports CSP metadata via
+/// `RendererToBrowser::NavigationCommitted`.
+pub const MAX_CSP_VALUES_PER_DOCUMENT: usize = 32;
+
+/// Maximum size (in bytes) for a single CSP policy string accepted from the renderer.
+pub const MAX_CSP_VALUE_BYTES: usize = 32 * 1024;
+
+/// Maximum total size (in bytes) across all CSP policy strings accepted from the renderer.
+pub const MAX_CSP_TOTAL_BYTES: usize = 128 * 1024;
 
 /// CSP directives supported by the multiprocess browser prototype.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
