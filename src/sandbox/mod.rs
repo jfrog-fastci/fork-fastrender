@@ -28,6 +28,9 @@
 use std::io;
 
 #[cfg(target_os = "linux")]
+mod linux_prelude;
+
+#[cfg(target_os = "linux")]
 pub mod linux_landlock;
 
 // macOS Seatbelt sandbox support lives in `macos.rs`. Keep it behind a cfg so the crate still
@@ -92,6 +95,13 @@ pub enum SandboxError {
   },
 
   #[cfg(target_os = "linux")]
+  #[error("failed to set parent-death signal via prctl(PR_SET_PDEATHSIG)")]
+  SetParentDeathSignalFailed {
+    #[source]
+    source: io::Error,
+  },
+
+  #[cfg(target_os = "linux")]
   #[error("failed to set PR_SET_DUMPABLE=0")]
   SetDumpableFailed {
     #[source]
@@ -139,6 +149,24 @@ pub enum SandboxError {
 #[cfg(target_os = "linux")]
 pub fn apply_renderer_sandbox_prelude() -> Result<(), SandboxError> {
   linux_seccomp::apply_renderer_sandbox_prelude_linux()
+}
+
+/// On Linux, set `PR_SET_PDEATHSIG` so the current process is killed if its parent dies.
+///
+/// - Uses `SIGKILL` for reliability.
+/// - Immediately checks `getppid()`: if it is `1`, the parent already died and the process exits.
+///
+/// On non-Linux platforms this is a no-op.
+pub fn linux_set_parent_death_signal() -> io::Result<()> {
+  #[cfg(target_os = "linux")]
+  {
+    return linux_prelude::linux_set_parent_death_signal();
+  }
+
+  #[cfg(not(target_os = "linux"))]
+  {
+    Ok(())
+  }
 }
 
 /// Apply the renderer sandbox for the current process.

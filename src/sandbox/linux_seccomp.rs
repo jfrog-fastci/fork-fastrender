@@ -323,6 +323,9 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
 }
 
 pub(super) fn apply_renderer_sandbox_prelude_linux() -> Result<(), SandboxError> {
+  super::linux_set_parent_death_signal().map_err(|source| SandboxError::SetParentDeathSignalFailed {
+    source,
+  })?;
   set_dumpable_0()?;
   disable_core_dumps()?;
   Ok(())
