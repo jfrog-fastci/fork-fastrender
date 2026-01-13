@@ -5189,7 +5189,7 @@ mod tests {
     ctx.enable_accesskit();
 
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output = ctx.end_frame();
 
     let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
@@ -5260,7 +5260,7 @@ mod tests {
     ctx.enable_accesskit();
 
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output = ctx.end_frame();
 
     let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
