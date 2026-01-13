@@ -1288,6 +1288,26 @@ fn convert_to_union_inner<R: WebIdlJsRuntime>(
       }
     }
 
+    // Distinguishability requirement (d):
+    // If the union includes a string type, then String objects must be treated as strings and must
+    // not be probed for iterator methods (e.g. via @@iterator for sequence conversions).
+    if rt.is_string_object(v) {
+      if let Some(str_ty) = flattened.iter().find(|t| is_string_type(t, ctx)) {
+        let converted = convert_to_idl_inner(
+          rt,
+          v,
+          str_ty,
+          ctx,
+          typedef_stack,
+          ConversionState::default(),
+        )?;
+        return Ok(ConvertedValue::Union {
+          member_ty: Box::new(str_ty.clone()),
+          value: Box::new(converted),
+        });
+      }
+    }
+
     // async sequence
     if let Some(async_seq_ty) = flattened.iter().find(|t| matches!(t, IdlType::AsyncSequence(_))) {
       // Distinguishability requirement (d):

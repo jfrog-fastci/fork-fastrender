@@ -353,21 +353,26 @@ fn convert_js_to_union<R: JsRuntime>(
       .iter()
       .find_map(|t| if let IdlType::Sequence(_) = t { Some(*t) } else { None })
     {
-      let Some(obj) = cx.as_object(v) else {
-        return Err(type_error(cx, "union: expected object"));
-      };
-      let iter_sym = cx
-        .well_known_symbol(WellKnownSymbol::Iterator)
-        .map_err(WebIdlError::js)?;
-      if let Some(method) = cx
-        .get_method(obj, PropertyKey::Symbol(iter_sym))
-        .map_err(WebIdlError::js)?
-      {
-        let value = convert_js_to_idl_with_hints(cx, seq_ty, v, Some(IteratorHint { method }), None)?;
-        return Ok(IdlValue::Union(UnionValue {
-          selected_type: seq_ty.clone(),
-          value: Box::new(value),
-        }));
+      // Distinguishability requirement (d): when a string type is also present, a string object is
+      // never converted to a sequence/FrozenArray, even though it might have @@iterator.
+      if !types_include_string || !cx.is_string_object(v) {
+        let Some(obj) = cx.as_object(v) else {
+          return Err(type_error(cx, "union: expected object"));
+        };
+        let iter_sym = cx
+          .well_known_symbol(WellKnownSymbol::Iterator)
+          .map_err(WebIdlError::js)?;
+        if let Some(method) = cx
+          .get_method(obj, PropertyKey::Symbol(iter_sym))
+          .map_err(WebIdlError::js)?
+        {
+          let value =
+            convert_js_to_idl_with_hints(cx, seq_ty, v, Some(IteratorHint { method }), None)?;
+          return Ok(IdlValue::Union(UnionValue {
+            selected_type: seq_ty.clone(),
+            value: Box::new(value),
+          }));
+        }
       }
     }
 
@@ -376,21 +381,26 @@ fn convert_js_to_union<R: JsRuntime>(
       .iter()
       .find_map(|t| if let IdlType::FrozenArray(_) = t { Some(*t) } else { None })
     {
-      let Some(obj) = cx.as_object(v) else {
-        return Err(type_error(cx, "union: expected object"));
-      };
-      let iter_sym = cx
-        .well_known_symbol(WellKnownSymbol::Iterator)
-        .map_err(WebIdlError::js)?;
-      if let Some(method) = cx
-        .get_method(obj, PropertyKey::Symbol(iter_sym))
-        .map_err(WebIdlError::js)?
-      {
-        let value = convert_js_to_idl_with_hints(cx, fa_ty, v, Some(IteratorHint { method }), None)?;
-        return Ok(IdlValue::Union(UnionValue {
-          selected_type: fa_ty.clone(),
-          value: Box::new(value),
-        }));
+      // Distinguishability requirement (d): when a string type is also present, a string object is
+      // never converted to a sequence/FrozenArray, even though it might have @@iterator.
+      if !types_include_string || !cx.is_string_object(v) {
+        let Some(obj) = cx.as_object(v) else {
+          return Err(type_error(cx, "union: expected object"));
+        };
+        let iter_sym = cx
+          .well_known_symbol(WellKnownSymbol::Iterator)
+          .map_err(WebIdlError::js)?;
+        if let Some(method) = cx
+          .get_method(obj, PropertyKey::Symbol(iter_sym))
+          .map_err(WebIdlError::js)?
+        {
+          let value =
+            convert_js_to_idl_with_hints(cx, fa_ty, v, Some(IteratorHint { method }), None)?;
+          return Ok(IdlValue::Union(UnionValue {
+            selected_type: fa_ty.clone(),
+            value: Box::new(value),
+          }));
+        }
       }
     }
   }

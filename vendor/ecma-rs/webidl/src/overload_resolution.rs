@@ -368,6 +368,16 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
       {
         entries.retain(|e| type_matches_callable(rt, &e.type_list[i], v));
       }
+      // Distinguishability requirement (d):
+      // If V is a String object and the overload set includes a string type at position i, then it
+      // must be treated as a string and must not be probed for iterator-based conversions (e.g.
+      // sequence/FrozenArray).
+      else if rt.is_object(v)
+        && rt.is_string_object(v)
+        && entries.iter().any(|e| type_matches_string(&e.type_list[i]))
+      {
+        entries.retain(|e| type_matches_string(&e.type_list[i]));
+      }
       // 12.9 async sequence special-case.
       else if rt.is_object(v)
         && entries
@@ -1424,6 +1434,26 @@ fn convert_union<R: WebIdlJsRuntime>(
         return Ok(WebIdlValue::Union {
           member_ty: Box::new(iface),
           value: Box::new(WebIdlValue::JsValue(value)),
+        });
+      }
+    }
+
+    // Distinguishability requirement (d):
+    // If the union includes a string type, then String objects must be treated as strings and must
+    // not be probed for iterator methods (e.g. @@iterator for sequence/FrozenArray).
+    if rt.is_string_object(value) {
+      if let Some(string_ty) = types.iter().find_map(|t| match t.innermost_type() {
+        IdlType::String(_)
+        | IdlType::Named(NamedType {
+          kind: NamedTypeKind::Enum,
+          ..
+        }) => Some(t.clone()),
+        _ => None,
+      }) {
+        let out = convert_js_to_idl(rt, &string_ty, value)?;
+        return Ok(WebIdlValue::Union {
+          member_ty: Box::new(string_ty),
+          value: Box::new(out),
         });
       }
     }

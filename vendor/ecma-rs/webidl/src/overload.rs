@@ -124,7 +124,11 @@ pub fn resolve_overload<R: JsRuntime>(
       let any_sequence = s.iter().any(|o| o.types[i].contains_sequence_type());
       let any_frozen_array = s.iter().any(|o| o.types[i].contains_frozen_array_type());
 
-      if any_sequence || any_frozen_array {
+      // Distinguishability requirement (d): if V is a String object and a string type is present
+      // at position i, do not attempt iterator-based sequence/FrozenArray matching.
+      let skip_iterator_based = s.iter().any(|o| o.types[i].contains_string_type()) && cx.is_string_object(v);
+
+      if (any_sequence || any_frozen_array) && !skip_iterator_based {
         let Some(obj) = cx.as_object(v) else {
           return Err(type_error(cx, "overload resolution: expected object"));
         };
