@@ -155,6 +155,13 @@ struct AtomicCandidate {
   /// This can differ from `range.end - range.start` when the atomic range is widened to cover
   /// adjacent gutters (e.g. grid track ranges that absorb a preceding row/column gap).
   required_fragmentainer_size: f32,
+  /// Whether this atomic range corresponds to a float's parallel fragmentation flow.
+  ///
+  /// Floats are treated as atomic *only when they fit* within the fragmentainer. When they do not
+  /// fit, we still want to fragment them to make progress, even if there are no explicit break
+  /// opportunities inside the float. Tracking float candidates lets the boundary selection logic
+  /// distinguish "no break opportunities" from "must slice through a float".
+  is_float: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1799,6 +1806,27 @@ impl FragmentationAnalyzer {
     ranges
   }
 
+  fn limit_inside_breakable_float(&self, limit: f32, fragmentainer_size: f32) -> bool {
+    if !(limit.is_finite()
+      && fragmentainer_size.is_finite()
+      && fragmentainer_size > 0.0
+      && !self.atomic_candidates.is_empty())
+    {
+      return false;
+    }
+
+    self.atomic_candidates.iter().any(|candidate| {
+      if !candidate.is_float {
+        return false;
+      }
+      let required = candidate.required_fragmentainer_size.max(0.0);
+      if !(required.is_finite() && required > fragmentainer_size + BREAK_EPSILON) {
+        return false;
+      }
+      limit > candidate.range.start + BREAK_EPSILON && limit < candidate.range.end - BREAK_EPSILON
+    })
+  }
+
   fn advance_line_starts(&mut self, boundary: f32) {
     for container in &self.line_containers {
       if let Some(slot) = self.line_starts.get_mut(container.id) {
@@ -1996,7 +2024,10 @@ impl FragmentationAnalyzer {
       return clamped;
     }
 
-    if matches!(self.context, FragmentationContext::Column) && !self.enforce_fragmentainer_size {
+    if matches!(self.context, FragmentationContext::Column)
+      && !self.enforce_fragmentainer_size
+      && !self.limit_inside_breakable_float(limit, fragmentainer)
+    {
       // Multi-column layout prefers moving content to the next available break opportunity rather
       // than slicing it at an arbitrary fragmentainer limit (e.g. splitting a block box when the
       // next legal break is just after the limit). Only do this when the caller did not request a
@@ -3517,7 +3548,20 @@ pub(crate) fn normalize_fragment_margins(
     for child in fragment
       .children
       .iter()
-      .filter(|c| c.block_metadata.is_some())
+      // Floats form a parallel fragmentation flow: they can continue at the start of the next
+      // fragmentainer and force clearance on following in-flow blocks. In that case the block's
+      // block-start offset is not an "adjoining margin after a break" and must not be normalized
+      // away (otherwise cleared content can overlap the continued float).
+      //
+      // Include floats when finding the earliest flow start so margin normalization only triggers
+      // when the fragment actually begins with an in-flow block.
+      .filter(|c| {
+        c.block_metadata.is_some()
+          || c
+            .style
+            .as_deref()
+            .is_some_and(|style| style.float.is_floating())
+      })
     {
       let start = axis.flow_offset(
         axis.block_start(&child.bounds),
@@ -4910,6 +4954,7 @@ fn collect_atomic_candidate_for_node(
     candidates.push(AtomicCandidate {
       range: AtomicRange { start, end },
       required_fragmentainer_size: required,
+      is_float: false,
     });
   }
 
@@ -4938,6 +4983,7 @@ fn collect_atomic_candidate_for_node(
     candidates.push(AtomicCandidate {
       range: AtomicRange { start, end },
       required_fragmentainer_size: required,
+      is_float: true,
     });
   }
 
@@ -4949,6 +4995,7 @@ fn collect_atomic_candidate_for_node(
     candidates.push(AtomicCandidate {
       range: AtomicRange { start, end },
       required_fragmentainer_size: required,
+      is_float: false,
     });
   }
 
@@ -4965,6 +5012,7 @@ fn collect_atomic_candidate_for_node(
     candidates.push(AtomicCandidate {
       range: AtomicRange { start, end },
       required_fragmentainer_size: required,
+      is_float: false,
     });
   }
 
@@ -5001,6 +5049,7 @@ fn collect_atomic_candidate_for_node(
           candidates.push(AtomicCandidate {
             range: AtomicRange { start, end },
             required_fragmentainer_size: track_size,
+            is_float: false,
           });
         }
       }
@@ -5044,6 +5093,7 @@ fn collect_atomic_candidate_for_node(
           candidates.push(AtomicCandidate {
             range: AtomicRange { start, end },
             required_fragmentainer_size: line_size,
+            is_float: false,
           });
         }
       }

@@ -6,7 +6,7 @@ use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::PaintParallelism;
 use crate::style::color::Rgba;
 use crate::style::display::FormattingContextType;
-use crate::style::float::Float;
+use crate::style::float::{Clear, Float};
 use crate::style::types::BorderStyle;
 use crate::style::types::BreakBetween;
 use crate::style::types::BreakInside;
@@ -1056,6 +1056,129 @@ fn float_that_fits_is_not_split_or_clipped_across_columns() {
     float_frag.bounds.max_y() <= 60.0 + 0.2,
     "float should fit wholly within a single column (bounds={:?})",
     float_frag.bounds
+  );
+}
+
+#[test]
+fn tall_float_fragments_across_columns_and_clear_respects_fragmented_extent() {
+  let container_height = 60.0;
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(200.0));
+  parent_style.height = Some(Length::px(container_height));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(0.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  let parent_style = Arc::new(parent_style);
+
+  let mut float_style = ComputedStyle::default();
+  float_style.float = Float::Left;
+  float_style.width = Some(Length::px(200.0));
+  float_style.height = Some(Length::px(140.0));
+  let mut float_node =
+    BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+  float_node.id = 200;
+
+  let mut after_style = ComputedStyle::default();
+  after_style.clear = Clear::Both;
+  after_style.margin_top = Some(Length::px(0.0));
+  after_style.margin_bottom = Some(Length::px(0.0));
+  let after_style = Arc::new(after_style);
+  let text_node = BoxNode::new_text(after_style.clone(), "After".to_string());
+  let mut after =
+    BoxNode::new_block(after_style, FormattingContextType::Block, vec![text_node]);
+  after.id = 201;
+
+  let mut parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![float_node.clone(), after.clone()],
+  );
+  parent.id = 202;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite_width(200.0))
+    .expect("layout");
+
+  let container = find_fragment(&fragment, parent.id).expect("multicol container fragment");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info for multicol container");
+  let stride = info.column_width + info.column_gap;
+  let flow_height = container_height;
+
+  let float_frags = fragments_with_id(&fragment, float_node.id);
+  assert!(
+    float_frags.len() >= 2,
+    "expected tall float to fragment across columns (got fragments={:?})",
+    float_frags
+      .iter()
+      .map(|f| (f.fragment_index, f.bounds))
+      .collect::<Vec<_>>()
+  );
+
+  let mut indices: Vec<usize> = float_frags.iter().map(|f| f.fragment_index).collect();
+  indices.sort_unstable();
+  indices.dedup();
+  assert!(
+    indices.len() >= 2,
+    "expected float fragments to have distinct fragment_index values (indices={indices:?}, frags={:?})",
+    float_frags
+      .iter()
+      .map(|f| (f.fragment_index, f.bounds))
+      .collect::<Vec<_>>()
+  );
+
+  let first = float_frags
+    .iter()
+    .find(|f| f.fragment_index == 0)
+    .expect("float fragment in first column");
+  let continuation = float_frags
+    .iter()
+    .find(|f| f.fragment_index >= 1)
+    .expect("float continuation fragment");
+
+  assert!(
+    continuation.bounds.x() >= first.bounds.x() + stride - 0.5,
+    "expected float continuation to be placed in a subsequent column (stride={stride}, first={:?}, cont={:?})",
+    (first.fragment_index, first.bounds),
+    (continuation.fragment_index, continuation.bounds)
+  );
+  assert!(
+    (continuation.bounds.y() - 0.0).abs() < 0.2,
+    "expected float continuation to start at the top of its column (got y={})",
+    continuation.bounds.y()
+  );
+
+  let after_frags = fragments_with_id(&fragment, after.id);
+  assert_eq!(
+    after_frags.len(),
+    1,
+    "expected cleared content to appear only once (got fragments={:?})",
+    after_frags
+      .iter()
+      .map(|f| (f.fragment_index, f.bounds))
+      .collect::<Vec<_>>()
+  );
+  let after_frag = after_frags[0];
+
+  let float_flow_bottom = float_frags
+    .iter()
+    .map(|f| (f.fragment_index as f32) * flow_height + f.bounds.max_y())
+    .fold(f32::NEG_INFINITY, f32::max);
+  let after_flow_top = (after_frag.fragment_index as f32) * flow_height + after_frag.bounds.y();
+
+  assert!(
+    after_flow_top + 0.2 >= float_flow_bottom,
+    "expected cleared content to be laid out after the final float fragment (after_flow_top={}, float_flow_bottom={}, after={:?}, float_frags={:?})",
+    after_flow_top,
+    float_flow_bottom,
+    (after_frag.fragment_index, after_frag.bounds),
+    float_frags
+      .iter()
+      .map(|f| (f.fragment_index, f.bounds))
+      .collect::<Vec<_>>()
   );
 }
 
