@@ -76,10 +76,12 @@ pub fn about_page_snapshot() -> AboutPageSnapshot {
   about_page_snapshot_lock().read().clone()
 }
 
+#[cfg(feature = "browser_ui")]
 pub fn set_about_page_snapshot(snapshot: AboutPageSnapshot) {
   *about_page_snapshot_lock().write() = snapshot;
 }
 
+#[cfg(feature = "browser_ui")]
 pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &GlobalHistoryStore) {
   // Preserve any separately-updated chrome settings (e.g. accent color) across snapshot refreshes.
   let chrome_accent = about_page_snapshot_lock().read().chrome_accent;
@@ -90,16 +92,19 @@ pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &Globa
   });
 }
 
+#[cfg(feature = "browser_ui")]
 pub fn sync_about_page_snapshot_history_from_global_history_store(store: &GlobalHistoryStore) {
   let history = history_snapshots_from_global_history_store(store);
   about_page_snapshot_lock().write().history = history;
 }
 
+#[cfg(feature = "browser_ui")]
 pub fn sync_about_page_snapshot_bookmarks_from_bookmark_store(store: &BookmarkStore) {
   let bookmarks = bookmark_snapshots_from_store(store);
   about_page_snapshot_lock().write().bookmarks = bookmarks;
 }
 
+#[cfg(feature = "browser_ui")]
 pub fn sync_about_page_snapshot_chrome_accent(accent: Option<RgbaColor>) {
   about_page_snapshot_lock().write().chrome_accent = accent;
 }
@@ -1503,12 +1508,83 @@ mod tests {
   use crate::ui::GlobalHistoryEntry;
   use std::time::{Duration, UNIX_EPOCH};
 
-  static SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
   fn extract_title(html: &str) -> Option<&str> {
     let start = html.find("<title>")? + "<title>".len();
     let end = html[start..].find("</title>")? + start;
     Some(&html[start..end])
+  }
+
+  #[cfg(feature = "browser_ui")]
+  static SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+  #[cfg(not(feature = "browser_ui"))]
+  #[test]
+  fn about_page_snapshot_getter_returns_empty_without_browser_ui() {
+    let snapshot = about_page_snapshot();
+    assert!(
+      snapshot.bookmarks.is_empty(),
+      "expected about-page snapshot bookmarks to be empty without browser_ui"
+    );
+    assert!(
+      snapshot.history.is_empty(),
+      "expected about-page snapshot history to be empty without browser_ui"
+    );
+    assert!(
+      snapshot.chrome_accent.is_none(),
+      "expected about-page snapshot chrome accent to be None without browser_ui"
+    );
+  }
+
+  #[cfg(not(feature = "browser_ui"))]
+  #[test]
+  fn about_pages_render_empty_state_without_browser_ui_snapshot_data() {
+    const SECRET_BOOKMARK_URL: &str = "https://secret-bookmark.example.invalid/";
+    const SECRET_HISTORY_URL: &str = "https://secret-history.example.invalid/";
+    const SECRET_TITLE: &str = "Super Secret Title";
+
+    let snapshot = about_page_snapshot();
+    assert!(snapshot.bookmarks.is_empty());
+    assert!(snapshot.history.is_empty());
+
+    let newtab = html_for_about_url(ABOUT_NEWTAB).unwrap();
+    assert!(
+      newtab.contains("No bookmarks yet."),
+      "expected about:newtab to render empty bookmarks state without browser_ui"
+    );
+    assert!(
+      newtab.contains("No history yet."),
+      "expected about:newtab to render empty history state without browser_ui"
+    );
+    for needle in [SECRET_BOOKMARK_URL, SECRET_HISTORY_URL, SECRET_TITLE] {
+      assert!(
+        !newtab.contains(needle),
+        "about:newtab unexpectedly contained snapshot needle {needle:?} without browser_ui"
+      );
+    }
+
+    let history = html_for_about_url(ABOUT_HISTORY).unwrap();
+    assert!(
+      history.contains("No history entries yet."),
+      "expected about:history to render empty state without browser_ui"
+    );
+    for needle in [SECRET_HISTORY_URL, SECRET_TITLE] {
+      assert!(
+        !history.contains(needle),
+        "about:history unexpectedly contained snapshot needle {needle:?} without browser_ui"
+      );
+    }
+
+    let bookmarks = html_for_about_url(ABOUT_BOOKMARKS).unwrap();
+    assert!(
+      bookmarks.contains("No bookmarks yet."),
+      "expected about:bookmarks to render empty state without browser_ui"
+    );
+    for needle in [SECRET_BOOKMARK_URL, SECRET_TITLE] {
+      assert!(
+        !bookmarks.contains(needle),
+        "about:bookmarks unexpectedly contained snapshot needle {needle:?} without browser_ui"
+      );
+    }
   }
 
   #[test]
@@ -1713,6 +1789,7 @@ mod tests {
     );
   }
 
+  #[cfg(feature = "browser_ui")]
   #[test]
   fn newtab_renders_snapshot_bookmarks_and_history() {
     use std::time::{Duration, UNIX_EPOCH};
@@ -1772,6 +1849,7 @@ mod tests {
     set_about_page_snapshot(before);
   }
 
+  #[cfg(feature = "browser_ui")]
   #[test]
   fn sync_history_from_global_history_store_updates_snapshot_and_newtab() {
     use std::time::{Duration, UNIX_EPOCH};
@@ -1837,6 +1915,7 @@ mod tests {
     set_about_page_snapshot(before);
   }
 
+  #[cfg(feature = "browser_ui")]
   #[test]
   fn sync_history_from_global_history_store_preserves_fragment_stripping() {
     let _lock = SNAPSHOT_TEST_LOCK
@@ -1864,6 +1943,7 @@ mod tests {
     set_about_page_snapshot(before);
   }
 
+  #[cfg(feature = "browser_ui")]
   #[test]
   fn newtab_contains_static_default_links_when_snapshot_empty() {
     let _lock = SNAPSHOT_TEST_LOCK
@@ -1909,6 +1989,7 @@ mod tests {
     assert!(html.contains(ABOUT_SHARED_CSS_MARKER));
   }
 
+  #[cfg(feature = "browser_ui")]
   #[test]
   fn about_pages_use_chrome_accent_in_css_variables() {
     let _lock = SNAPSHOT_TEST_LOCK
@@ -2025,6 +2106,7 @@ mod tests {
     );
   }
 
+  #[cfg(feature = "browser_ui")]
   #[test]
   fn about_history_html_escapes_urls_and_titles() {
     let _lock = SNAPSHOT_TEST_LOCK
@@ -2060,6 +2142,7 @@ mod tests {
     set_about_page_snapshot(before);
   }
 
+  #[cfg(feature = "browser_ui")]
   #[test]
   fn about_history_filters_by_query_param() {
     let _lock = SNAPSHOT_TEST_LOCK
@@ -2093,6 +2176,7 @@ mod tests {
     set_about_page_snapshot(before);
   }
 
+  #[cfg(feature = "browser_ui")]
   #[test]
   fn about_bookmarks_filters_and_includes_entries() {
     let _lock = SNAPSHOT_TEST_LOCK
@@ -2126,6 +2210,7 @@ mod tests {
     set_about_page_snapshot(before);
   }
 
+  #[cfg(feature = "browser_ui")]
   #[test]
   fn about_snapshot_from_stores_includes_nested_bookmarks() {
     let _lock = SNAPSHOT_TEST_LOCK
