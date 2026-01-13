@@ -5352,6 +5352,27 @@ mod tests {
   }
 
   #[test]
+  fn queue_microtask_rejects_string_callback_from_js() -> Result<(), VmError> {
+    let mut host = Host::new();
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap)?;
+    }
+
+    let err = host
+      .window
+      .exec_script("queueMicrotask('1+1')")
+      .expect_err("expected queueMicrotask(string) to throw TypeError");
+    assert_type_error_contains(
+      host.window.heap_mut(),
+      err,
+      QUEUE_MICROTASK_STRING_HANDLER_ERROR,
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn queue_microtask_invokes_callback_with_undefined_this() -> crate::error::Result<()> {
     fn cb_record_this_is_undefined(
       _vm: &mut Vm,
