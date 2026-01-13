@@ -558,6 +558,15 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
     *dom = dom_snapshot;
     true
   });
+  if let Some(committed_url) = tab.last_committed_url.as_deref() {
+    // After syncing dom2 → dom1, recompute the effective base URL so relative URL resolution (links
+    // and subresources) respects any JS-inserted/modified `<base href>`.
+    let new_base_url = crate::html::document_base_url(doc.dom(), Some(committed_url));
+    if new_base_url != tab.last_base_url {
+      tab.last_base_url = new_base_url.clone();
+      doc.set_navigation_urls(tab.last_committed_url.clone(), new_base_url.clone());
+    }
+  }
   tab.js_dom_mapping_generation = generation;
   tab.js_dom_mapping = Some(mapping);
   tab.js_dom_mapping_miss_log_last.clear();
@@ -7505,6 +7514,13 @@ impl BrowserRuntime {
       *dom = js_dom_snapshot;
       true
     });
+    if let Some(committed_url) = tab.last_committed_url.as_deref() {
+      let new_base_url = crate::html::document_base_url(doc.dom(), Some(committed_url));
+      if new_base_url != tab.last_base_url {
+        tab.last_base_url = new_base_url.clone();
+        doc.set_navigation_urls(tab.last_committed_url.clone(), new_base_url.clone());
+      }
+    }
 
     tab.cancel.bump_paint();
     tab.needs_repaint = true;
