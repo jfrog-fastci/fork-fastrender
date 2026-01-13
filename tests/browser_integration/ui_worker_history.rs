@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
-use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg};
+use super::support::{
+  create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg, wait_for_frame_and_scroll_state_updated,
+};
 
 // These tests run alongside other render-heavy integration tests; allow extra slack to avoid
 // flakes under CPU contention.
@@ -305,15 +307,11 @@ fn scroll_is_restored_across_back_and_forward() {
   ))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
-  let _ = next_frame_ready(&rx, tab_id);
-  // `FrameReady` is followed by `ScrollStateUpdated`; drain it so the subsequent scroll assertions
-  // do not accidentally observe the initial (0,0) state from navigation.
-  let _ = next_scroll_state_updated(&rx, tab_id);
+  let _ = wait_for_frame_and_scroll_state_updated(&rx, tab_id, TIMEOUT);
 
   // Scroll on A and ensure it is saved in history.
   tx.send(scroll_msg(tab_id, (0.0, 240.0), None)).unwrap();
-  let _frame_scrolled_a = next_frame_ready(&rx, tab_id);
-  let scrolled_a = next_scroll_state_updated(&rx, tab_id);
+  let (_frame_scrolled_a, scrolled_a) = wait_for_frame_and_scroll_state_updated(&rx, tab_id, TIMEOUT);
   assert!(
     scrolled_a.viewport.y > 0.0,
     "expected scroll on A to increase, got {:?}",
@@ -332,9 +330,7 @@ fn scroll_is_restored_across_back_and_forward() {
   let _ = next_scroll_state_updated(&rx, tab_id);
 
   tx.send(scroll_msg(tab_id, (0.0, 400.0), None)).unwrap();
-  // Scroll repaint emits `FrameReady` then `ScrollStateUpdated`.
-  let _frame_scrolled_b = next_frame_ready(&rx, tab_id);
-  let scrolled_b = next_scroll_state_updated(&rx, tab_id);
+  let (_frame_scrolled_b, scrolled_b) = wait_for_frame_and_scroll_state_updated(&rx, tab_id, TIMEOUT);
   assert!(
     scrolled_b.viewport.y > 0.0,
     "expected scroll on B to increase, got {:?}",

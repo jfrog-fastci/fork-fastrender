@@ -506,6 +506,92 @@ pub fn recv_for_tab(
   })
 }
 
+/// Wait for a `FrameReady` and `ScrollStateUpdated` pair for `tab_id`.
+///
+/// The worker may emit scroll updates either before or after the corresponding `FrameReady`
+/// (e.g. when scroll state is reported immediately on input). This helper pairs messages by
+/// matching `scroll.viewport` with `frame.scroll_state.viewport`, tolerating unrelated/stale scroll
+/// updates from earlier frames.
+#[cfg(feature = "browser_ui")]
+pub fn wait_for_frame_and_scroll_state_updated(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+) -> (
+  fastrender::ui::messages::RenderedFrame,
+  fastrender::scroll::ScrollState,
+) {
+  use std::collections::VecDeque;
+
+  const MAX_PENDING: usize = 8;
+
+  let start = Instant::now();
+  let mut pending_frames: VecDeque<fastrender::ui::messages::RenderedFrame> = VecDeque::new();
+  let mut pending_scrolls: VecDeque<fastrender::scroll::ScrollState> = VecDeque::new();
+
+  loop {
+    let remaining = timeout.saturating_sub(start.elapsed());
+    if remaining.is_zero() {
+      panic!("timed out waiting for FrameReady+ScrollStateUpdated for tab {tab_id:?}");
+    }
+
+    let slice = remaining.min(RECV_SLICE);
+    match rx.recv_timeout(slice) {
+      Ok(msg) => match msg {
+        WorkerToUi::FrameReady {
+          tab_id: got,
+          frame,
+        } if got == tab_id => {
+          if let Some(idx) = pending_scrolls
+            .iter()
+            .position(|scroll| scroll.viewport == frame.scroll_state.viewport)
+          {
+            let scroll = pending_scrolls
+              .remove(idx)
+              .expect("VecDeque::remove with valid idx");
+            return (frame, scroll);
+          }
+          pending_frames.push_back(frame);
+          if pending_frames.len() > MAX_PENDING {
+            pending_frames.pop_front();
+          }
+        }
+        WorkerToUi::ScrollStateUpdated {
+          tab_id: got,
+          scroll,
+        } if got == tab_id => {
+          if let Some(idx) = pending_frames
+            .iter()
+            .position(|frame| frame.scroll_state.viewport == scroll.viewport)
+          {
+            let frame = pending_frames
+              .remove(idx)
+              .expect("VecDeque::remove with valid idx");
+            return (frame, scroll);
+          }
+          pending_scrolls.push_back(scroll);
+          if pending_scrolls.len() > MAX_PENDING {
+            pending_scrolls.pop_front();
+          }
+        }
+        WorkerToUi::NavigationFailed {
+          tab_id: got,
+          url,
+          error,
+          ..
+        } if got == tab_id => {
+          panic!("navigation failed for {url}: {error}");
+        }
+        _ => {}
+      },
+      Err(RecvTimeoutError::Timeout) => {}
+      Err(RecvTimeoutError::Disconnected) => {
+        panic!("worker disconnected while waiting for frame/scroll update for tab {tab_id:?}");
+      }
+    }
+  }
+}
+
 /// Pretty-print a list of `WorkerToUi` messages for assertion failures.
 #[cfg(feature = "browser_ui")]
 pub fn format_messages(msgs: &[WorkerToUi]) -> String {

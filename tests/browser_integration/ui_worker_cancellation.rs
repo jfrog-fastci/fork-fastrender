@@ -407,11 +407,12 @@ fn rapid_scroll_cancels_stale_paint() {
   cancel_gens.bump_paint();
   ui_tx.send(scroll_msg(tab_id, (0.0, 80.0), None)).unwrap();
 
-  // `FrameReady` is emitted before `ScrollStateUpdated`. Some straggler scroll updates (e.g. from
-  // the initial navigation) can arrive after we start this test, so wait specifically for the
-  // scroll update that matches the latest painted frame.
-  let mut expected_scroll: Option<ScrollState> = None;
+  // `ScrollStateUpdated` may arrive either before or after the corresponding `FrameReady`. Some
+  // straggler scroll updates (e.g. from the initial navigation) can arrive after we start this
+  // test, so match by viewport to ensure we associate the scroll update with the latest painted
+  // frame.
   let mut matching_scroll_update: Option<ScrollState> = None;
+  let mut pending_scroll_updates: Vec<ScrollState> = Vec::new();
   let mut frames: Vec<ScrollState> = Vec::new();
 
   let start = Instant::now();
@@ -422,10 +423,12 @@ fn rapid_scroll_cancels_stale_paint() {
           tab_id: msg_tab,
           scroll,
         } if msg_tab == tab_id => {
-          if let Some(expected) = expected_scroll.as_ref() {
-            if scroll.viewport == expected.viewport {
+          if let Some(frame_scroll) = frames.first() {
+            if scroll.viewport == frame_scroll.viewport {
               matching_scroll_update = Some(scroll);
             }
+          } else {
+            pending_scroll_updates.push(scroll);
           }
         }
         WorkerToUi::FrameReady {
@@ -433,8 +436,14 @@ fn rapid_scroll_cancels_stale_paint() {
           frame,
         } if msg_tab == tab_id => {
           frames.push(frame.scroll_state.clone());
-          if frames.len() == 1 {
-            expected_scroll = Some(frame.scroll_state.clone());
+          if frames.len() == 1 && matching_scroll_update.is_none() {
+            let expected_viewport = frame.scroll_state.viewport;
+            if let Some(idx) = pending_scroll_updates
+              .iter()
+              .position(|scroll| scroll.viewport == expected_viewport)
+            {
+              matching_scroll_update = Some(pending_scroll_updates.remove(idx));
+            }
           }
         }
         _ => {}

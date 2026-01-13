@@ -3,7 +3,10 @@
 use fastrender::ui::messages::{TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 
-use super::support::{create_tab_msg, scroll_to_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{
+  create_tab_msg, scroll_to_msg, viewport_changed_msg, wait_for_frame_and_scroll_state_updated,
+  DEFAULT_TIMEOUT,
+};
 
 #[test]
 fn ui_worker_reports_scroll_metrics_and_scroll_to_updates_scroll_state() {
@@ -24,13 +27,7 @@ fn ui_worker_reports_scroll_metrics_and_scroll_to_updates_scroll_state() {
     .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
 
-  let msg = super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. })
-  })
-  .expect("FrameReady");
-  let WorkerToUi::FrameReady { frame, .. } = msg else {
-    unreachable!();
-  };
+  let (frame, _scroll) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   // About page template:
   //   .spacer { height: 4000px; }
@@ -58,12 +55,6 @@ fn ui_worker_reports_scroll_metrics_and_scroll_to_updates_scroll_state() {
     frame.scroll_metrics.bounds_css.max_y,
     expected_max_scroll_y
   );
-
-  // Drain the initial ScrollStateUpdated message sent after the first frame so our subsequent wait
-  // sees the scroll-to update.
-  let _ = super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
 
   let target_y = (frame.scroll_metrics.bounds_css.max_y * 0.5).round();
   ui_tx

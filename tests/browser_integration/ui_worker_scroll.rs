@@ -8,7 +8,7 @@ use tempfile::tempdir;
 
 use super::support::{
   create_tab_msg, navigate_msg, pointer_down, pointer_up, scroll_msg, viewport_changed_msg,
-  DEFAULT_TIMEOUT,
+  wait_for_frame_and_scroll_state_updated, DEFAULT_TIMEOUT,
 };
 
 fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8, u8, u8) {
@@ -44,29 +44,6 @@ fn recv_until<T>(
       return value;
     }
   }
-}
-
-fn wait_for_frame_ready(
-  rx: &Receiver<WorkerToUi>,
-  tab_id: TabId,
-) -> fastrender::ui::messages::RenderedFrame {
-  recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
-    WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => Some(frame),
-    _ => None,
-  })
-}
-
-fn wait_for_scroll_update(
-  rx: &Receiver<WorkerToUi>,
-  tab_id: TabId,
-) -> fastrender::scroll::ScrollState {
-  recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
-    WorkerToUi::ScrollStateUpdated {
-      tab_id: got,
-      scroll,
-    } if got == tab_id => Some(scroll),
-    _ => None,
-  })
 }
 
 fn wait_for_frame_with_pixel(
@@ -176,8 +153,7 @@ fn scroll_during_initial_navigation_is_applied_to_first_frame() {
     .send(scroll_msg(tab_id, (0.0, 120.0), None))
     .expect("Scroll before first frame");
 
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
-  let scroll = wait_for_scroll_update(&ui_rx, tab_id);
+  let (frame, scroll) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   assert!(
     (scroll.viewport.y - 120.0).abs() < 1e-3,
@@ -210,18 +186,14 @@ fn scroll_without_pointer_updates_viewport_scroll() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let (frame, _scroll) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
   let initial_scroll = frame.scroll_state.viewport;
-  // `spawn_ui_worker` emits ScrollStateUpdated after FrameReady, so drain the initial navigation
-  // update before we start asserting scroll behavior.
-  let _ = wait_for_scroll_update(&ui_rx, tab_id);
 
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 40.0), None))
     .expect("Scroll");
 
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
+  let (frame, updated) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   assert!(
     (updated.viewport.y - (initial_scroll.y + 40.0)).abs() < 1e-3,
@@ -255,16 +227,14 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let _ = wait_for_frame_ready(&ui_rx, tab_id);
-  let _ = wait_for_scroll_update(&ui_rx, tab_id);
+  let _ = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   // Inside the #scroller element (it starts at the top of the page with margin: 0).
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 60.0), Some((10.0, 10.0))))
     .expect("Scroll");
 
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
+  let (frame, updated) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   assert!(
     updated.elements.len() >= 1,
@@ -304,17 +274,15 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let _ = wait_for_frame_ready(&ui_rx, tab_id);
-  // Drain the initial navigation scroll update before asserting scroll behavior.
-  let _ = wait_for_scroll_update(&ui_rx, tab_id);
+  let _ = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   // Scroll the viewport so the #scroller element (positioned at y=500) is visible at the top of
   // the viewport.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 500.0), None))
     .expect("Scroll viewport");
-  let _ = wait_for_frame_ready(&ui_rx, tab_id);
-  let after_viewport_scroll = wait_for_scroll_update(&ui_rx, tab_id);
+  let (_frame, after_viewport_scroll) =
+    wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   assert!(
     (after_viewport_scroll.viewport.y - 500.0).abs() < 2.0,
@@ -329,8 +297,7 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
     .send(scroll_msg(tab_id, (0.0, 60.0), Some((10.0, 10.0))))
     .expect("Scroll scroller element");
 
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
+  let (frame, updated) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   assert!(
     (updated.viewport.y - after_viewport_scroll.viewport.y).abs() < 1e-3,
@@ -371,17 +338,15 @@ fn scroll_with_pointer_outside_scroller_scrolls_viewport() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let (frame, _scroll) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
   let initial_scroll = frame.scroll_state.viewport;
-  let _ = wait_for_scroll_update(&ui_rx, tab_id);
 
   // Outside the #scroller element (it is 120px wide; use x=150px).
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 40.0), Some((150.0, 10.0))))
     .expect("Scroll");
 
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
+  let (frame, updated) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   assert!(
     updated.elements.is_empty(),
@@ -420,21 +385,18 @@ fn scroll_clamps_to_zero() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let _ = wait_for_frame_ready(&ui_rx, tab_id);
-  let _ = wait_for_scroll_update(&ui_rx, tab_id);
+  let _ = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   // Ensure we're scrolled away from 0 so the clamp can be observed.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 120.0), None))
     .expect("Scroll down");
-  let _ = wait_for_frame_ready(&ui_rx, tab_id);
-  let _ = wait_for_scroll_update(&ui_rx, tab_id);
+  let _ = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   ui_tx
     .send(scroll_msg(tab_id, (0.0, -10_000.0), None))
     .expect("Scroll up");
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
+  let (frame, updated) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   assert!(
     updated.viewport.y.abs() < 1e-3,
@@ -501,18 +463,14 @@ fn pointer_hit_testing_uses_element_scroll_offsets() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let _ = wait_for_frame_ready(&ui_rx, tab_id);
-  // `spawn_ui_worker` emits ScrollStateUpdated after FrameReady, so drain the initial navigation
-  // scroll state update before asserting wheel scroll behavior.
-  let _ = wait_for_scroll_update(&ui_rx, tab_id);
+  let _ = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   // Scroll the nested scroll container so the red label box becomes visible at the top.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 120.0), Some((10.0, 10.0))))
     .expect("Scroll");
 
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
+  let (frame, updated) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
   assert!(
     !updated.elements.is_empty(),
     "expected element scroll offsets after pointer-based scroll, got {:?}",

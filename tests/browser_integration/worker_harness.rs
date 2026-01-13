@@ -995,6 +995,50 @@ impl WorkerHarness {
     }
   }
 
+  /// Wait for a `FrameReady` + matching `ScrollStateUpdated` pair for `tab_id`.
+  ///
+  /// The worker may emit `ScrollStateUpdated` either before or after the corresponding frame (for
+  /// example if scroll updates are forwarded immediately on input). This helper matches the scroll
+  /// update to the returned frame by comparing `scroll.viewport` with
+  /// `frame.scroll_state.viewport`.
+  pub fn wait_for_frame_and_scroll_state(
+    &self,
+    tab_id: TabId,
+    timeout: Duration,
+  ) -> (RenderedFrame, ScrollState, Vec<WorkerToUiEvent>) {
+    let start = Instant::now();
+    let (frame, mut events) = self.wait_for_frame(tab_id, timeout);
+    let expected_viewport = frame.scroll_state.viewport;
+
+    let find_matching_scroll = |events: &[WorkerToUiEvent]| {
+      events.iter().rev().find_map(|ev| match ev {
+        WorkerToUiEvent::ScrollStateUpdated {
+          tab_id: got,
+          scroll,
+        } if *got == tab_id && scroll.viewport == expected_viewport => Some(scroll.clone()),
+        _ => None,
+      })
+    };
+
+    if let Some(scroll) = find_matching_scroll(&events) {
+      return (frame, scroll, events);
+    }
+
+    let remaining = timeout.saturating_sub(start.elapsed());
+    let more = self.wait_for_event(remaining, |ev| match ev {
+      WorkerToUiEvent::ScrollStateUpdated {
+        tab_id: got,
+        scroll,
+      } if *got == tab_id && scroll.viewport == expected_viewport => true,
+      _ => false,
+    });
+    events.extend(more);
+
+    let scroll = find_matching_scroll(&events)
+      .expect("wait_for_event should yield a matching ScrollStateUpdated");
+    (frame, scroll, events)
+  }
+
   /// Wait until the worker channel disconnects (e.g. worker crash/panic) and return any events that
   /// were received before shutdown.
   pub fn wait_for_disconnect(&self, timeout: Duration) -> Vec<WorkerToUiEvent> {
