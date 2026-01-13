@@ -5,20 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use fastrender::ui::html_escape::escape_html;
 
 const SCHEMA_VERSION: u32 = 2;
 const METRIC_EPS: f64 = 1e-9;
 const TOP_N: usize = 20;
-
-/// Escape HTML entities for safe embedding.
-fn escape_html(input: &str) -> String {
-  input
-    .replace('&', "&amp;")
-    .replace('<', "&lt;")
-    .replace('>', "&gt;")
-    .replace('"', "&quot;")
-    .replace('\'', "&#39;")
-}
 
 /// Produce a path relative to the HTML/JSON output (falls back to absolute).
 fn path_for_report(base: &Path, target: &Path) -> String {
