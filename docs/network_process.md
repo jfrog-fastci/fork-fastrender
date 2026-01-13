@@ -28,11 +28,11 @@ and others are scaffolding. A few important “don’t get surprised” points:
   - Binary: [`src/bin/network.rs`](../src/bin/network.rs)
   - Spawn helper (library): [`src/network_process/client.rs`](../src/network_process/client.rs)
     (re-exported via [`src/network_process/mod.rs`](../src/network_process/mod.rs))
-  - Current protocol is intentionally tiny: `Fetch { url }` + `Shutdown` (see
+  - Current protocol is intentionally tiny: `Hello { token }` + `Fetch { url }` + `Shutdown` (see
     `fastrender::network_process::ipc` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs)).
-    - Security note: the `network_process::ipc` framing helpers are still a prototype and do not
-      currently enforce a maximum frame size. Do not reuse this framing for hardened untrusted IPC;
-      see [`docs/ipc.md`](ipc.md) for the normative framing/cap invariants.
+    - Security note: the `network_process::ipc` framing helpers are a prototype, but they *do*
+      enforce per-direction frame caps (`MAX_INBOUND_FRAME_BYTES`, `MAX_OUTBOUND_FRAME_BYTES`) and
+      deny unknown fields. Treat these limits as security-sensitive; do not remove them.
 - There are additional (more complete) IPC protocols already defined, even if not yet wired up
   end-to-end:
   - Browser ↔ network protocol schema (serde messages + validation + `expected_fds()` planning):
@@ -202,12 +202,16 @@ The response payload typically includes:
 There are currently multiple HTTP IPC shapes in-tree:
 
 - **Prototype (`network` binary):** [`src/bin/network.rs`](../src/bin/network.rs) implements a tiny
-  request set (`Fetch { url }` / `Shutdown`) defined in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs)
+  request set (`Hello { token }` / `Fetch { url }` / `Shutdown`) defined in
+  [`src/network_process/ipc.rs`](../src/network_process/ipc.rs)
   (`fastrender::network_process::ipc`).
-  - Transport: TCP on localhost, length-prefixed JSON (`u32_be` length; see `write_frame` /
-    `read_frame` in `network_process::ipc`).
-  - Limitation: the prototype constructs a new `HttpFetcher` per request, so cookie state is not yet
-    shared/persisted across requests.
+  - Transport: TCP on localhost, length-prefixed JSON (`u32_be` length).
+    - Framing helpers: `write_request_frame` / `read_request_frame` and
+      `write_response_frame` / `read_response_frame` (all enforce `MAX_{INBOUND,OUTBOUND}_FRAME_BYTES`
+      **before allocating**).
+    - The server rejects unknown JSON fields via `#[serde(deny_unknown_fields)]`.
+  - Limitation: the protocol is intentionally minimal; it does not yet represent the full
+    cookie/CORS/download semantics we eventually need in a network process.
 - **Full `ResourceFetcher` proxy protocol:** [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs)
   defines `IpcRequest`/`IpcResponse` messages that cover the broader `ResourceFetcher` surface
   (including cookies and cache artifacts).

@@ -95,9 +95,11 @@ transport/codec yet:
 - **Browser ↔ network (prototype `network` subprocess):**
   - The `network` binary ([`src/bin/network.rs`](../src/bin/network.rs)) uses JSON framing helpers in
     [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) (`u32_be length` + JSON).
-  - **Warning:** `src/network_process/ipc.rs::read_frame` currently allocates `Vec<u8>` based on the
-    peer-provided length **without a max length cap**. Do not copy this framing code for an
-    untrusted IPC boundary; migrate to `src/ipc/framing.rs`/`IpcConnection` or add an explicit cap.
+  - It begins with a `Hello { token }` handshake and enforces:
+    - per-direction frame caps (`MAX_INBOUND_FRAME_BYTES`, `MAX_OUTBOUND_FRAME_BYTES`) **before**
+      allocating, and
+    - per-field caps like `MAX_URL_BYTES` / `MAX_AUTH_TOKEN_BYTES`.
+  - Protocol structs are `#[serde(deny_unknown_fields)]` so unknown fields fail closed.
 - **Browser ↔ network (in-tree protocol schema, under development):**
   - The intended browser↔network message types live in
     [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) (with validation helpers and
@@ -202,13 +204,11 @@ These caps are **security limits**; do not increase casually. Keep the sender + 
 | Browser ↔ renderer (stdio + bincode, dev) | 64 MiB | `fastrender_ipc::MAX_IPC_MESSAGE_BYTES` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) (checked in [`crates/fastrender-renderer/src/main.rs`](../crates/fastrender-renderer/src/main.rs)) |
 | Generic framing helper (`read_frame`/`write_frame`) | 8 MiB | `crate::ipc::framing::MAX_IPC_MESSAGE_BYTES` in [`src/ipc/framing.rs`](../src/ipc/framing.rs) |
 | Renderer ↔ network (`IpcResourceFetcher`, JSON over TCP) | 8 MiB inbound / 80 MiB outbound | `IPC_MAX_INBOUND_FRAME_BYTES` / `IPC_MAX_OUTBOUND_FRAME_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
-| Browser ↔ network (`network` subprocess prototype, JSON over TCP) | **UNBOUNDED (unsafe)** | `src/network_process/ipc.rs` frames are length-prefixed but do not enforce a maximum (allocates based on declared length) |
+| Browser ↔ network (`network` subprocess prototype, JSON over TCP) | 8 MiB inbound / 80 MiB outbound | `MAX_INBOUND_FRAME_BYTES` / `MAX_OUTBOUND_FRAME_BYTES` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) |
 
-Repo reality warning: the prototype network subprocess framing helpers in
-[`src/network_process/ipc.rs`](../src/network_process/ipc.rs) do **not** currently enforce a maximum
-frame length (they allocate based on the declared `u32` length). Do not use them for an untrusted
-security boundary without first adding an explicit cap or migrating to the bounded framing helpers in
-`src/ipc/framing.rs`.
+Repo reality note: both `src/network_process/ipc.rs` and `src/resource/ipc_fetcher.rs` implement
+length-prefixed JSON transports and enforce their frame caps **before allocating**. Treat these caps
+as security limits; do not remove the pre-allocation checks.
 
 Important: the 64 MiB browser↔renderer cap is intentionally large enough to carry early-development
 pixel buffers inline (see the comment in `crates/fastrender-ipc`). **Long-term, frame transfers
