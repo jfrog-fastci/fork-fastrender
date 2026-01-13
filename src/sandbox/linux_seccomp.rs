@@ -105,25 +105,68 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
   filter.push(bpf_stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
 
   // Explicit denylist: return EPERM (tests assert this) rather than killing the process.
+  //
+  // Keep this list conservative and focused on high-level capability denial for the renderer:
+  // filesystem path operations, networking, process execution, and obvious kernel escape surfaces.
   let deny = [
-    // Filesystem access.
+    // Filesystem opens.
     libc::SYS_open,
     libc::SYS_openat,
     libc::SYS_openat2,
     libc::SYS_creat,
-    // Defense in depth: process execution.
+
+    // Filesystem mutation.
+    libc::SYS_unlink,
+    libc::SYS_unlinkat,
+    libc::SYS_rename,
+    libc::SYS_renameat,
+    libc::SYS_renameat2,
+    libc::SYS_mkdir,
+    libc::SYS_mkdirat,
+    libc::SYS_rmdir,
+    libc::SYS_link,
+    libc::SYS_linkat,
+    libc::SYS_symlink,
+    libc::SYS_symlinkat,
+    libc::SYS_chmod,
+    libc::SYS_fchmod,
+    libc::SYS_fchmodat,
+    libc::SYS_chown,
+    libc::SYS_fchown,
+    libc::SYS_fchownat,
+    libc::SYS_truncate,
+    libc::SYS_ftruncate,
+
+    // Mounting / namespace escape.
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_chroot,
+
+    // Process execution.
     libc::SYS_execve,
     libc::SYS_execveat,
+
     // Network / sockets.
     libc::SYS_connect,
     libc::SYS_bind,
     libc::SYS_listen,
     libc::SYS_accept,
     libc::SYS_accept4,
-    // High-risk kernel attack surface that should never be needed in a renderer process.
+    libc::SYS_sendto,
+    libc::SYS_sendmsg,
+    libc::SYS_recvfrom,
+    libc::SYS_recvmsg,
+    libc::SYS_setsockopt,
+    libc::SYS_getsockopt,
+
+    // Introspection / escape.
+    libc::SYS_ptrace,
     libc::SYS_bpf,
     libc::SYS_perf_event_open,
-    libc::SYS_ptrace,
+    libc::SYS_kexec_load,
+
+    // High-risk kernel attack surface that should never be needed in a renderer process.
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,
     libc::SYS_kcmp,
@@ -131,6 +174,7 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_keyctl,
     libc::SYS_add_key,
     libc::SYS_request_key,
+
     // Privilege/namespace syscalls (even if they'd fail, make it explicit).
     libc::SYS_unshare,
     libc::SYS_setns,

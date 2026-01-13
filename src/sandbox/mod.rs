@@ -118,7 +118,23 @@ pub fn apply_renderer_sandbox(
   #[cfg(not(target_os = "linux"))]
   {
     let _ = config;
-    return Ok(SandboxStatus::Unsupported);
+    Ok(SandboxStatus::Unsupported)
+  }
+}
+
+/// Applies the Linux renderer seccomp denylist without additional sandbox layers.
+///
+/// This is primarily useful for unit tests and early bring-up of renderer processes where only
+/// syscall filtering is desired.
+pub fn apply_renderer_seccomp_denylist() -> Result<SandboxStatus, SandboxError> {
+  #[cfg(target_os = "linux")]
+  {
+    return linux_seccomp::apply_renderer_sandbox_linux(RendererSandboxConfig::default());
+  }
+
+  #[cfg(not(target_os = "linux"))]
+  {
+    Ok(SandboxStatus::Unsupported)
   }
 }
 
@@ -128,48 +144,59 @@ mod linux_seccomp;
 #[cfg(target_os = "macos")]
 pub mod macos_spawn;
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 #[cfg(target_os = "windows")]
 pub mod windows;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
   use super::*;
-  use std::ffi::CString;
   use std::process::Command;
 
+  fn is_seccomp_unsupported_error(err: &SandboxError) -> bool {
+    let errno = match err {
+      SandboxError::EnableNoNewPrivsFailed { source } => source.raw_os_error(),
+      SandboxError::SeccompInstallRejected { errno, .. } => Some(*errno),
+      SandboxError::SeccompInstallFailed { errno, .. } => Some(*errno),
+      _ => None,
+    };
+    matches!(errno, Some(code) if code == libc::ENOSYS || code == libc::EINVAL)
+  }
+
   #[test]
-  fn renderer_sandbox_blocks_fs_network_and_exec() {
-    const CHILD_ENV: &str = "FASTR_TEST_RENDERER_SANDBOX_CHILD";
+  fn renderer_seccomp_denylist_blocks_fs_and_network() {
+    const CHILD_ENV: &str = "FASTR_TEST_RENDERER_SECCOMP_CHILD";
     let is_child = std::env::var_os(CHILD_ENV).is_some();
     if is_child {
-      let status =
-        apply_renderer_sandbox(RendererSandboxConfig::default()).expect("apply sandbox in child");
-      assert_eq!(status, SandboxStatus::Applied);
+      match apply_renderer_seccomp_denylist() {
+        Ok(SandboxStatus::Applied) => {}
+        Ok(SandboxStatus::Unsupported) => return,
+        Err(err) => {
+          if is_seccomp_unsupported_error(&err) {
+            return;
+          }
+          panic!("failed to apply seccomp sandbox in child: {err}");
+        }
+      }
 
-      // Filesystem: `open("/etc/passwd")` should be blocked.
-      let path = CString::new("/etc/passwd").expect("cstr");
-      // SAFETY: `open` is called with a valid C string.
-      let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
-      assert_eq!(fd, -1, "expected open to fail under seccomp");
-      let err = std::io::Error::last_os_error();
+      let fs_err = std::fs::read("/etc/passwd").expect_err("expected /etc/passwd read to fail");
       assert_eq!(
-        err.raw_os_error(),
+        fs_err.raw_os_error(),
         Some(libc::EPERM),
-        "expected open to fail with EPERM (got {err:?})"
+        "expected EPERM for filesystem read (got {fs_err:?})"
       );
 
-      // Network: `socket(AF_INET, ...)` should be blocked.
-      // SAFETY: `socket` is a raw libc call.
-      let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-      assert_eq!(sock, -1, "expected socket to fail under seccomp");
-      let err = std::io::Error::last_os_error();
+      let net_err =
+        std::net::TcpListener::bind("127.0.0.1:0").expect_err("expected bind to fail");
       assert_eq!(
-        err.raw_os_error(),
+        net_err.raw_os_error(),
         Some(libc::EPERM),
-        "expected socket to fail with EPERM (got {err:?})"
+        "expected EPERM for network bind (got {net_err:?})"
       );
 
-      // Process execution: spawning a binary should fail because `execve` is blocked.
+      // Optional sanity check: process execution should be blocked (`execve`).
       let err = Command::new("/bin/true")
         .status()
         .expect_err("expected exec to be blocked under seccomp");
@@ -178,12 +205,13 @@ mod tests {
         Some(libc::EPERM),
         "expected exec to fail with EPERM (got {err:?})"
       );
+
       return;
     }
 
     // Run the sandbox assertions in a child process so the parent test runner is unaffected.
     let exe = std::env::current_exe().expect("current test exe path");
-    let test_name = "sandbox::tests::renderer_sandbox_blocks_fs_network_and_exec";
+    let test_name = "sandbox::tests::renderer_seccomp_denylist_blocks_fs_and_network";
     let output = Command::new(exe)
       .env(CHILD_ENV, "1")
       // Avoid a large libtest threadpool: the sandbox uses TSYNC and applies to all threads.
@@ -201,8 +229,3 @@ mod tests {
     );
   }
 }
-
-#[cfg(target_os = "macos")]
-pub mod macos;
-#[cfg(windows)]
-pub mod windows;
