@@ -310,6 +310,30 @@ fn resize_burst_deadline(
   last_resize_event_at.and_then(|t| t.checked_add(RESIZE_BURST_TTL))
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+fn apply_global_value<T: Clone + PartialEq>(
+  global: &T,
+  proposed_global: Option<T>,
+  windows: &[T],
+) -> (T, Vec<bool>) {
+  let new_global = proposed_global.unwrap_or_else(|| global.clone());
+  let updates = windows
+    .iter()
+    .map(|value| value != &new_global)
+    .collect::<Vec<_>>();
+  (new_global, updates)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn apply_global_appearance(
+  global: &fastrender::ui::appearance::AppearanceSettings,
+  proposed_global: Option<fastrender::ui::appearance::AppearanceSettings>,
+  windows: &[fastrender::ui::appearance::AppearanceSettings],
+) -> (fastrender::ui::appearance::AppearanceSettings, Vec<bool>) {
+  let proposed_global = proposed_global.map(|appearance| appearance.sanitized());
+  apply_global_value(global, proposed_global, windows)
+}
+
 #[cfg(test)]
 mod input_focus_helpers_tests {
   use super::{should_forward_paste_events_to_page, should_open_page_context_menu_from_keyboard};
@@ -336,6 +360,39 @@ mod input_focus_helpers_tests {
     assert!(!should_forward_paste_events_to_page(true, true, false));
     assert!(!should_forward_paste_events_to_page(true, false, true));
     assert!(should_forward_paste_events_to_page(true, false, false));
+  }
+}
+
+#[cfg(test)]
+mod global_session_settings_tests {
+  use super::apply_global_appearance;
+  use fastrender::ui::appearance::AppearanceSettings;
+  use fastrender::ui::theme_parsing::BrowserTheme;
+
+  #[test]
+  fn appearance_change_updates_global_and_other_windows() {
+    let global = AppearanceSettings::default();
+    let mut changed = global.clone();
+    changed.theme = BrowserTheme::Dark;
+
+    let windows = vec![global.clone(), changed.clone()];
+    let (new_global, updates) = apply_global_appearance(&global, Some(changed.clone()), &windows);
+
+    assert_eq!(new_global, changed.sanitized());
+    assert_eq!(updates, vec![true, false]);
+  }
+
+  #[test]
+  fn appearance_is_applied_to_new_windows_without_overwriting_global() {
+    let mut global = AppearanceSettings::default();
+    global.ui_scale = 1.5;
+
+    let stale_new_window = AppearanceSettings::default();
+    let windows = vec![global.clone(), stale_new_window];
+    let (new_global, updates) = apply_global_appearance(&global, None, &windows);
+
+    assert_eq!(new_global, global.sanitized());
+    assert_eq!(updates, vec![false, true]);
   }
 }
 
@@ -4110,15 +4167,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   let appearance_env = fastrender::ui::appearance::AppearanceEnvOverrides::from_env();
   let startup_appearance = startup_session.appearance.clone();
-  let applied_appearance = startup_appearance
+  let startup_applied_appearance = startup_appearance
     .clone()
     .with_env_overrides(appearance_env);
-  let theme_accent = applied_appearance
+  let theme_accent = startup_applied_appearance
     .accent_color
     .as_deref()
     .and_then(fastrender::ui::theme_parsing::parse_hex_color)
     .map(|c| c.to_color32());
-  let window_theme_override = match applied_appearance.theme {
+  let startup_window_theme_override = match startup_applied_appearance.theme {
     fastrender::ui::theme_parsing::BrowserTheme::Light => Some(Theme::Light),
     fastrender::ui::theme_parsing::BrowserTheme::Dark => Some(Theme::Dark),
     _ => None,
@@ -4211,7 +4268,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let build_window = move |target: &winit::event_loop::EventLoopWindowTarget<UserEvent>,
                            window_state: Option<fastrender::ui::BrowserWindowState>,
                            inherit_size: Option<PhysicalSize<u32>>,
-                           inherit_pos: Option<PhysicalPosition<i32>>|
+                           inherit_pos: Option<PhysicalPosition<i32>>,
+                           theme_override: Option<winit::window::Theme>|
         -> Result<winit::window::Window, Box<dyn std::error::Error>> {
     let mut window_builder = WindowBuilder::new()
       .with_title("FastRender")
@@ -4220,7 +4278,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       .with_window_icon(window_icon.clone())
       // Match native window chrome to the browser theme override when one is set; otherwise follow
       // the system theme.
-      .with_theme(window_theme_override);
+      .with_theme(theme_override);
 
     if let Some(size) = inherit_size {
       window_builder = window_builder.with_inner_size(size);
@@ -4349,7 +4407,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let window_state = startup_windows
       .get(idx)
       .and_then(|w| w.window_state.clone());
-    winit_windows[idx] = Some(build_window(&event_loop, window_state, None, None)?);
+    winit_windows[idx] = Some(build_window(
+      &event_loop,
+      window_state,
+      None,
+      None,
+      startup_window_theme_override,
+    )?);
   }
 
   let first_window = winit_windows
@@ -4361,7 +4425,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // user-preference media queries so `@media (prefers-color-scheme: dark)` etc. match by default.
   //
   // Explicit renderer env overrides (`FASTR_PREFERS_*`) continue to win.
-  let resolved_theme = match applied_appearance.theme {
+  let resolved_theme = match startup_applied_appearance.theme {
     fastrender::ui::theme_parsing::BrowserTheme::Dark => {
       fastrender::ui::renderer_media_prefs::ResolvedTheme::Dark
     }
@@ -4375,8 +4439,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   };
   update_renderer_media_prefs_runtime_toggles(
     resolved_theme,
-    applied_appearance.high_contrast,
-    applied_appearance.reduced_motion,
+    startup_applied_appearance.high_contrast,
+    startup_applied_appearance.reduced_motion,
   );
 
   let gpu = pollster::block_on(GpuContext::new(first_window, wgpu_init))?;
@@ -4418,7 +4482,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       perf_log_start,
       perf_log_writer.clone(),
       appearance_env,
-      applied_appearance.clone(),
+      startup_applied_appearance.clone(),
       theme_accent,
       bookmarks_path.clone(),
       history_path.clone(),
@@ -4479,6 +4543,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   let mut active_window_id: Option<WindowId> = window_order.get(active_idx).copied();
   let mut next_window_index: usize = window_order.len();
+  // Session-global settings. `BrowserSession` stores these at the top level, but each window's `App`
+  // holds a local copy. Keep a single authoritative value here and propagate changes to all windows.
+  let mut global_appearance = startup_appearance.clone();
+  let mut global_home_url = home_url.clone();
 
   event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
@@ -4505,14 +4573,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
 
-      let mut appearance = startup_appearance.clone();
-      let mut home_url = home_url.clone();
-      if let Some(active_id) = active_window_id.and_then(|id| windows.get(&id).map(|_| id)) {
-        if let Some(active) = windows.get(&active_id) {
-          appearance = active.app.browser_state.appearance.clone();
-          home_url = active.app.home_url.clone();
-        }
-      }
+      let appearance = global_appearance.clone();
+      let home_url = global_home_url.clone();
 
       let mut session = fastrender::ui::BrowserSession::from_windows(
         session_windows,
@@ -4597,14 +4659,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
 
-      let mut appearance = startup_appearance.clone();
-      let mut home_url = home_url.clone();
-      if let Some(active_id) = active_window_id.and_then(|id| windows.get(&id).map(|_| id)) {
-        if let Some(active) = windows.get(&active_id) {
-          appearance = active.app.browser_state.appearance.clone();
-          home_url = active.app.home_url.clone();
-        }
-      }
+      let appearance = global_appearance.clone();
+      let home_url = global_home_url.clone();
 
       let mut session = fastrender::ui::BrowserSession::from_windows(
         session_windows,
@@ -4890,7 +4946,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .get(&from_id)
           .map(|win| win.app.browser_state.chrome.show_menu_bar);
 
-        let window = match build_window(event_loop_target, None, inherit_size, inherit_pos) {
+        let applied_appearance = global_appearance.clone().with_env_overrides(appearance_env);
+        let theme_accent = applied_appearance
+          .accent_color
+          .as_deref()
+          .and_then(fastrender::ui::theme_parsing::parse_hex_color)
+          .map(|c| c.to_color32());
+        let window_theme_override = match applied_appearance.theme {
+          fastrender::ui::theme_parsing::BrowserTheme::Light => Some(Theme::Light),
+          fastrender::ui::theme_parsing::BrowserTheme::Dark => Some(Theme::Dark),
+          _ => None,
+        };
+
+        let window = match build_window(
+          event_loop_target,
+          None,
+          inherit_size,
+          inherit_pos,
+          window_theme_override,
+        ) {
           Ok(window) => window,
           Err(err) => {
             eprintln!("failed to create new window: {err}");
@@ -4950,8 +5024,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         };
         app.profile_autosave_tx = profile_autosave_tx.clone();
-        app.home_url = home_url.clone();
-        app.browser_state.appearance = startup_appearance.clone();
+        app.home_url = global_home_url.clone();
+        app.browser_state.appearance = global_appearance.clone();
 
         app.startup(fastrender::ui::BrowserSessionWindow {
           tabs: vec![fastrender::ui::BrowserSessionTab {
@@ -5027,8 +5101,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
         let window_state = session_window.window_state.clone();
 
-        let window = match build_window(event_loop_target, window_state, inherit_size, inherit_pos)
-        {
+        let applied_appearance = global_appearance.clone().with_env_overrides(appearance_env);
+        let theme_accent = applied_appearance
+          .accent_color
+          .as_deref()
+          .and_then(fastrender::ui::theme_parsing::parse_hex_color)
+          .map(|c| c.to_color32());
+        let window_theme_override = match applied_appearance.theme {
+          fastrender::ui::theme_parsing::BrowserTheme::Light => Some(Theme::Light),
+          fastrender::ui::theme_parsing::BrowserTheme::Dark => Some(Theme::Dark),
+          _ => None,
+        };
+
+        let window = match build_window(
+          event_loop_target,
+          window_state,
+          inherit_size,
+          inherit_pos,
+          window_theme_override,
+        ) {
           Ok(window) => window,
           Err(err) => {
             eprintln!("failed to create new window: {err}");
@@ -5088,8 +5179,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         };
         app.profile_autosave_tx = profile_autosave_tx.clone();
-        app.home_url = home_url.clone();
-        app.browser_state.appearance = startup_appearance.clone();
+        app.home_url = global_home_url.clone();
+        app.browser_state.appearance = global_appearance.clone();
 
         app.startup(session_window);
         // For a detached-tab window, match typical browser UX by keeping keyboard focus in the page
@@ -5147,9 +5238,106 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
       Event::RedrawRequested(window_id) => {
         let mut session_dirty = false;
+        let mut proposed_appearance: Option<fastrender::ui::appearance::AppearanceSettings> = None;
+        let mut proposed_home_url: Option<String> = None;
         if let Some(win) = windows.get_mut(&window_id) {
           session_dirty = win.app.render_frame(control_flow);
+          // If this window diverged from the current global settings, treat it as a proposed update
+          // (this is how appearance changes made via egui settings propagate across all windows).
+          if win.app.browser_state.appearance != global_appearance {
+            proposed_appearance = Some(win.app.browser_state.appearance.clone());
+          }
+          if win.app.home_url != global_home_url {
+            proposed_home_url = Some(win.app.home_url.clone());
+          }
         }
+
+        // -------------------------------------------------------------------
+        // Sync top-level session settings across all windows.
+        // -------------------------------------------------------------------
+        let mut global_appearance_changed = false;
+        let mut global_home_url_changed = false;
+
+        // Appearance (theme/UI scale/accessibility).
+        {
+          let ordered_appearances = window_order
+            .iter()
+            .map(|id| {
+              windows
+                .get(id)
+                .map(|win| win.app.browser_state.appearance.clone())
+                .unwrap_or_else(|| global_appearance.clone())
+            })
+            .collect::<Vec<_>>();
+          let (new_global, updates) =
+            apply_global_appearance(&global_appearance, proposed_appearance, &ordered_appearances);
+          if new_global != global_appearance {
+            global_appearance = new_global;
+            global_appearance_changed = true;
+          }
+
+          for (idx, id) in window_order.iter().enumerate() {
+            if updates.get(idx).copied().unwrap_or(false) {
+              if let Some(win) = windows.get_mut(id) {
+                win.app.browser_state.appearance = global_appearance.clone();
+                win.app.window.request_redraw();
+              }
+            }
+          }
+        }
+
+        // Home URL.
+        {
+          let ordered_urls = window_order
+            .iter()
+            .map(|id| {
+              windows
+                .get(id)
+                .map(|win| win.app.home_url.clone())
+                .unwrap_or_else(|| global_home_url.clone())
+            })
+            .collect::<Vec<_>>();
+          let (new_global, updates) =
+            apply_global_value(&global_home_url, proposed_home_url, &ordered_urls);
+          if new_global != global_home_url {
+            global_home_url = new_global;
+            global_home_url_changed = true;
+          }
+
+          for (idx, id) in window_order.iter().enumerate() {
+            if updates.get(idx).copied().unwrap_or(false) {
+              if let Some(win) = windows.get_mut(id) {
+                win.app.home_url = global_home_url.clone();
+                win.app.window.request_redraw();
+              }
+            }
+          }
+        }
+
+        if global_appearance_changed {
+          let applied = global_appearance.clone().with_env_overrides(appearance_env);
+          let resolved_theme = match applied.theme {
+            fastrender::ui::theme_parsing::BrowserTheme::Dark => {
+              fastrender::ui::renderer_media_prefs::ResolvedTheme::Dark
+            }
+            fastrender::ui::theme_parsing::BrowserTheme::Light => {
+              fastrender::ui::renderer_media_prefs::ResolvedTheme::Light
+            }
+            fastrender::ui::theme_parsing::BrowserTheme::System => {
+              match windows.get(&window_id).and_then(|win| win.app.window.theme()) {
+                Some(Theme::Dark) => fastrender::ui::renderer_media_prefs::ResolvedTheme::Dark,
+                _ => fastrender::ui::renderer_media_prefs::ResolvedTheme::Light,
+              }
+            }
+          };
+          update_renderer_media_prefs_runtime_toggles(
+            resolved_theme,
+            applied.high_contrast,
+            applied.reduced_motion,
+          );
+        }
+
+        session_dirty |= global_appearance_changed || global_home_url_changed;
         if session_dirty {
           session_save_scheduler.mark_dirty(std::time::Instant::now());
         }
