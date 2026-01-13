@@ -3578,6 +3578,10 @@ impl BlockFormattingContext {
     let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
     let mut external_float_ctx = external_float_ctx;
     if gutter <= 0.0
+      // In the default overlay scrollbar model, scrollbars do not reserve layout space unless the
+      // author opts in via `scrollbar-gutter: stable`. Without a reserved gutter, there's no need
+      // to run the overflow:auto convergence loop (classic scrollbars cross-axis reflow).
+      || !base_style.scrollbar_gutter.stable
       || (!matches!(base_style.overflow_x, Overflow::Auto)
         && !matches!(base_style.overflow_y, Overflow::Auto))
     {
