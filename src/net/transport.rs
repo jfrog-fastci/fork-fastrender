@@ -1162,6 +1162,48 @@ mod tests {
   }
 
   #[test]
+  fn rejects_too_many_headers() {
+    let limits = NetworkMessageLimits {
+      max_header_count: 1,
+      ..NetworkMessageLimits::default()
+    };
+    let payload = build_request_payload(1, "GET", "a", &[("a", "b"), ("c", "d")], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn rejects_total_header_bytes_over_limit() {
+    let limits = NetworkMessageLimits {
+      // Name+value = 1+2=3 bytes.
+      max_total_header_bytes: 2,
+      ..NetworkMessageLimits::default()
+    };
+    let payload = build_request_payload(1, "GET", "a", &[("a", "bc")], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn rejects_header_value_over_limit() {
+    let limits = NetworkMessageLimits {
+      max_header_value_bytes: 1,
+      ..NetworkMessageLimits::default()
+    };
+    let payload = build_request_payload(1, "GET", "a", &[("x", "ab")], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn rejects_invalid_header_name() {
+    let limits = NetworkMessageLimits::default();
+    let payload = build_request_payload(1, "GET", "a", &[("bad name", "x")], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
   fn rejects_invalid_header_value() {
     let limits = NetworkMessageLimits::default();
     let payload = build_request_payload(1, "GET", "a", &[("x", "bad\n")], &[]);
@@ -1176,6 +1218,40 @@ mod tests {
       ..NetworkMessageLimits::default()
     };
     let payload = build_request_payload(1, "POST", "a", &[], &[1, 2]);
+    let outcome = std::panic::catch_unwind(|| recv_network_error(frame_payload(&payload), limits));
+    assert!(outcome.is_ok(), "expected InvalidRequest, got panic");
+    assert!(matches!(
+      outcome.unwrap(),
+      NetworkError::InvalidRequest { .. }
+    ));
+  }
+
+  #[test]
+  fn rejects_method_over_limit() {
+    let limits = NetworkMessageLimits {
+      max_method_bytes: 1,
+      ..NetworkMessageLimits::default()
+    };
+    let payload = build_request_payload(1, "GET", "a", &[], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn rejects_huge_header_count_without_panic() {
+    let limits = NetworkMessageLimits {
+      max_header_count: 1,
+      ..NetworkMessageLimits::default()
+    };
+    let mut payload = Vec::new();
+    payload.push(1);
+    encode_u64_be(&mut payload, 1);
+    encode_string(&mut payload, "GET").unwrap();
+    encode_string(&mut payload, "a").unwrap();
+    // Declare an absurd header count but omit any header bytes. The decoder should reject based on
+    // the count alone (before allocating or attempting to read header entries).
+    encode_u32_be(&mut payload, u32::MAX);
+
     let outcome = std::panic::catch_unwind(|| recv_network_error(frame_payload(&payload), limits));
     assert!(outcome.is_ok(), "expected InvalidRequest, got panic");
     assert!(matches!(
