@@ -6801,6 +6801,23 @@ impl BrowserTab {
     self.host.document.render_frame()
   }
 
+  /// Applies a scroll wheel delta at a point in viewport coordinates.
+  ///
+  /// This mirrors [`BrowserDocumentDom2::wheel_scroll_at_viewport_point`] while exposing the helper
+  /// on the higher-level tab API.
+  pub fn wheel_scroll_at_viewport_point(
+    &mut self,
+    viewport_point_css: crate::geometry::Point,
+    delta_css: (f32, f32),
+  ) -> Result<bool> {
+    // A scroll mutation invalidates any buffered frame.
+    self.pending_frame = None;
+    self
+      .host
+      .document
+      .wheel_scroll_at_viewport_point(viewport_point_css, delta_css)
+  }
+
   pub fn dom(&self) -> &Document {
     self.host.dom()
   }

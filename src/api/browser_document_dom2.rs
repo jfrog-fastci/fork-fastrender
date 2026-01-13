@@ -1170,6 +1170,40 @@ impl BrowserDocumentDom2 {
     )
   }
 
+  /// Applies a scroll wheel delta at a point in viewport coordinates.
+  ///
+  /// This updates both viewport scroll and element scroll container offsets (e.g. `<select size>`
+  /// listboxes) using the cached layout's fragment tree.
+  pub fn wheel_scroll_at_viewport_point(
+    &mut self,
+    viewport_point_css: Point,
+    delta_css: (f32, f32),
+  ) -> Result<bool> {
+    let prepared = self.prepared.as_ref().ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocumentDom2 has no cached layout; call render_frame() first".to_string(),
+      })
+    })?;
+
+    let current_scroll_state = self.scroll_state();
+    let page_point_css = viewport_point_css.translate(current_scroll_state.viewport);
+    let (delta_x, delta_y) = delta_css;
+    let next = crate::interaction::scroll_wheel::apply_wheel_scroll_at_point(
+      prepared.fragment_tree(),
+      &current_scroll_state,
+      prepared.layout_viewport(),
+      page_point_css,
+      crate::interaction::scroll_wheel::ScrollWheelInput { delta_x, delta_y },
+    );
+
+    if next != current_scroll_state {
+      self.set_scroll_state(next);
+      Ok(true)
+    } else {
+      Ok(false)
+    }
+  }
+
   /// Returns the current viewport scroll offset (in CSS px).
   pub fn viewport_scroll_offset(&self) -> Point {
     Point::new(self.options.scroll_x, self.options.scroll_y)
@@ -3509,6 +3543,81 @@ mod tests {
     let before = doc.options.scroll_delta;
     doc.set_scroll(10.0, 20.0);
     assert_eq!(doc.options.scroll_delta, before);
+  }
+
+  #[test]
+  fn wheel_scroll_at_viewport_point_updates_element_scroll_offsets() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #scroller { width: 100px; height: 100px; overflow-y: scroll; }
+            #content { height: 1000px; }
+          </style>
+        </head>
+        <body>
+          <div id="scroller"><div id="content"></div></div>
+        </body>
+      </html>
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(200, 200))?;
+    // Prime the cached layout (required by `wheel_scroll_at_viewport_point`).
+    doc.render_frame()?;
+
+    let scroller = doc.dom().get_element_by_id("scroller").expect("#scroller");
+    let scroller_box_id = doc
+      .principal_box_id_for_node(scroller)?
+      .expect("principal box id for #scroller");
+
+    assert!(
+      doc.scroll_state().elements.is_empty(),
+      "expected no element scroll offsets initially"
+    );
+
+    // Scrolling up when already at the top should not change state.
+    assert!(
+      !doc.wheel_scroll_at_viewport_point(Point::new(10.0, 10.0), (0.0, -10.0))?,
+      "expected scroll-up at top to be a no-op"
+    );
+
+    // Scrolling down inside the scroll container should update its element scroll offset.
+    assert!(
+      doc.wheel_scroll_at_viewport_point(Point::new(10.0, 10.0), (0.0, 10.0))?,
+      "expected wheel scroll to affect the scroll container"
+    );
+    let state = doc.scroll_state();
+    assert_eq!(
+      state.viewport,
+      Point::ZERO,
+      "expected viewport scroll to remain unchanged"
+    );
+    let offset = state.element_offset(scroller_box_id);
+    assert!(
+      offset.y > 0.0,
+      "expected element scroll y to be >0, got {}",
+      offset.y
+    );
+
+    // Zero delta should be a no-op and return false.
+    assert!(
+      !doc.wheel_scroll_at_viewport_point(Point::new(10.0, 10.0), (0.0, 0.0))?,
+      "expected zero wheel delta to return false"
+    );
+
+    // Scrolling back up should reset the element scroll state to zero (and remove the entry).
+    assert!(
+      doc.wheel_scroll_at_viewport_point(Point::new(10.0, 10.0), (0.0, -10.0))?,
+      "expected wheel scroll back up to change scroll state"
+    );
+    let state = doc.scroll_state();
+    assert!(
+      !state.elements.contains_key(&scroller_box_id),
+      "expected element scroll offset to clear back to zero"
+    );
+    Ok(())
   }
 
   #[test]
