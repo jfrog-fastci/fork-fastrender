@@ -5132,6 +5132,230 @@ mod window_document_tests {
     Ok(())
   }
 
+  fn make_webidl_window_dom_host_and_dispatch(
+  ) -> Result<
+    (
+      WindowRealm,
+      DocumentHostState,
+      VmJsWebIdlBindingsHostDispatch<WindowHostState>,
+    ),
+    VmError,
+  > {
+    let config = WindowRealmConfig::new("https://example.invalid/")
+      .with_dom_bindings_backend(DomBindingsBackend::WebIdl);
+    let mut window = WindowRealm::new(config)?;
+    let dom_host = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+    // Ensure WebIDL-generated DOM collection constructors/prototypes are present.
+    {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm)?;
+    }
+    let dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
+    Ok((window, dom_host, dispatch))
+  }
+
+  #[test]
+  fn webidl_node_child_nodes_returns_live_nodelist() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        try {
+          const node = document.createElement('div');
+          const list1 = node.childNodes;
+          const list2 = node.childNodes;
+          if (list1 !== list2) return false;
+          if (!(list1 instanceof NodeList)) return false;
+          if (Array.isArray(list1)) return false;
+          if (list1.length !== 0) return false;
+          if (list1.item(0) !== null) return false;
+
+          const a = document.createElement('span');
+          const b = document.createElement('span');
+          node.appendChild(a);
+          node.appendChild(b);
+          if (list1.length !== 2) return false;
+          if (list1.item(0) !== a) return false;
+          if (list1.item(1) !== b) return false;
+
+          node.removeChild(a);
+          if (list1.length !== 1) return false;
+          if (list1.item(0) !== b) return false;
+          if (node.childNodes !== list1) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_query_selector_all_returns_static_nodelist() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        try {
+          const root = document.createElement('div');
+          root.appendChild(document.createElement('span'));
+          root.appendChild(document.createElement('span'));
+          const snapshot = root.querySelectorAll('span');
+          if (!(snapshot instanceof NodeList)) return false;
+          if (snapshot.length !== 2) return false;
+
+          // `querySelectorAll` is static: mutations after the call should not affect the snapshot.
+          root.appendChild(document.createElement('span'));
+          if (snapshot.length !== 2) return false;
+
+          // A new call observes the mutation and returns a distinct NodeList object.
+          const fresh = root.querySelectorAll('span');
+          if (fresh === snapshot) return false;
+          if (fresh.length !== 3) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_element_children_returns_live_html_collection() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        try {
+          const node = document.createElement('div');
+          const coll1 = node.children;
+          const coll2 = node.children;
+          if (coll1 !== coll2) return false;
+          if (!(coll1 instanceof HTMLCollection)) return false;
+          if (Array.isArray(coll1)) return false;
+          if (coll1.length !== 0) return false;
+
+          const a = document.createElement('a');
+          const b = document.createElement('b');
+          node.appendChild(a);
+          node.appendChild(b);
+          if (coll1.length !== 2) return false;
+          if (coll1[0] !== a) return false;
+          if (coll1.item(1) !== b) return false;
+
+          node.removeChild(a);
+          if (coll1.length !== 1) return false;
+          if (coll1[0] !== b) return false;
+          if (node.children !== coll1) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_dom_token_list_class_list_methods_and_errors() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        try {
+          const el = document.createElement('div');
+          const cl = el.classList;
+          if (!(cl instanceof DOMTokenList)) return false;
+          if (cl.length !== 0) return false;
+          if (cl.contains('a')) return false;
+
+          cl.add('a');
+          if (!cl.contains('a')) return false;
+          if (cl.length !== 1) return false;
+          if (cl[0] !== 'a') return false;
+
+          cl.add('b');
+          if (cl.length !== 2) return false;
+          if (cl.item(1) !== 'b') return false;
+
+          if (cl.toggle('a') !== false) return false;
+          if (cl.contains('a')) return false;
+          if (cl.toggle('a') !== true) return false;
+          if (!cl.contains('a')) return false;
+          cl.remove('a');
+          if (cl.contains('a')) return false;
+
+          const emptyTokenThrows = (() => {
+            try {
+              cl.add('');
+              return false;
+            } catch (e) {
+              return e instanceof DOMException && e.name === 'SyntaxError';
+            }
+          })();
+          if (!emptyTokenThrows) return false;
+
+          const whitespaceTokenThrows = (() => {
+            try {
+              cl.add('a b');
+              return false;
+            } catch (e) {
+              return e instanceof DOMException && e.name === 'InvalidCharacterError';
+            }
+          })();
+          if (!whitespaceTokenThrows) return false;
+
+          return true;
+        } catch (e) {
+          return false;
+        }
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
   fn get_own_string_property(
     scope: &mut Scope<'_>,
     obj: GcObject,
