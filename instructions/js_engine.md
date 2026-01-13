@@ -195,12 +195,15 @@ ECMA-262 test262 is the authoritative conformance suite.
 # Initialize submodule
 git submodule update --init vendor/ecma-rs/test262-semantic/data
 
-# Run curated suite via FastRender xtask
-timeout -k 10 600 bash scripts/cargo_agent.sh xtask js test262
-
-# Or run directly
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --lib
-```
+ # Run curated suite via FastRender xtask
+ timeout -k 10 600 bash scripts/cargo_agent.sh xtask js test262
+ 
+ # Some environments may require a larger OS stack to run the full suite without crashing:
+ # LIMIT_STACK=64M timeout -k 10 600 bash scripts/cargo_agent.sh xtask js test262
+ 
+ # Or run directly
+ timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --lib
+ ```
 
 ### Tracking progress
 
