@@ -208,6 +208,7 @@ unsafe impl GlobalAlloc for FailingAllocator {
 static GLOBAL: FailingAllocator = FailingAllocator;
 
 mod about_url_placeholder_pixmap_allocation_failure_test;
+mod about_page_snapshot_allocation_free_test;
 mod cascade_dom_maps_allocation_failure_test;
 mod cascade_rule_index_allocation_failure_test;
 mod cascade_selector_key_cache_allocation_failure_test;
