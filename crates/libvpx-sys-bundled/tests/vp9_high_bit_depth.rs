@@ -1,5 +1,6 @@
 use libvpx_sys_bundled::{
-  vpx_image_t, MediaError, Vp9Decoder, VPX_CR_FULL_RANGE, VPX_IMG_FMT_I420, VPX_IMG_FMT_I42016,
+  vpx_image_t, MediaError, Vp9Decoder, VPX_CR_FULL_RANGE, VPX_IMG_FMT_444A, VPX_IMG_FMT_I420,
+  VPX_IMG_FMT_I42016,
 };
 
 #[test]
@@ -67,6 +68,44 @@ fn vp9_high_bit_depth_frames_are_downshifted_to_rgba8() {
       255, 255, 255, 255, // row0 col1
       255, 255, 255, 255, // row1 col0
       0, 0, 0, 255, // row1 col1
+    ]
+  );
+}
+
+#[test]
+fn vp9_alpha_frames_are_converted_to_rgba8() {
+  // Minimal 2x2 4:4:4+alpha frame (VPX_IMG_FMT_444A).
+  let mut y = vec![0u8, 255, 255, 0];
+  let mut u = vec![128u8; 4];
+  let mut v = vec![128u8; 4];
+  let mut a = vec![0u8, 128, 255, 64];
+
+  let mut img: vpx_image_t = unsafe { std::mem::zeroed() };
+  img.fmt = VPX_IMG_FMT_444A;
+  img.bit_depth = 8;
+  img.d_w = 2;
+  img.d_h = 2;
+  img.x_chroma_shift = 0;
+  img.y_chroma_shift = 0;
+  img.range = VPX_CR_FULL_RANGE;
+  img.planes[0] = y.as_mut_ptr();
+  img.planes[1] = u.as_mut_ptr();
+  img.planes[2] = v.as_mut_ptr();
+  img.planes[3] = a.as_mut_ptr();
+  img.stride[0] = 2;
+  img.stride[1] = 2;
+  img.stride[2] = 2;
+  img.stride[3] = 2;
+
+  let frame = Vp9Decoder::rgba_from_image(&img).expect("expected successful convert");
+  assert_eq!(frame.rgba8.len(), 2 * 2 * 4);
+  assert_eq!(
+    frame.rgba8,
+    vec![
+      0, 0, 0, 0, // row0 col0
+      255, 255, 255, 128, // row0 col1
+      255, 255, 255, 255, // row1 col0
+      0, 0, 0, 64, // row1 col1
     ]
   );
 }

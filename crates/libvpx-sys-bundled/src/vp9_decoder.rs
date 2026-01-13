@@ -45,6 +45,8 @@ pub struct Vp9Decoder {
 impl Vp9Decoder {
   /// `VPX_IMG_FMT_HIGHBITDEPTH` from `vpx/vpx_image.h`.
   const VPX_IMG_FMT_HIGHBITDEPTH: u32 = 0x800;
+  /// `VPX_IMG_FMT_HAS_ALPHA` from `vpx/vpx_image.h`.
+  const VPX_IMG_FMT_HAS_ALPHA: u32 = 0x400;
 
   /// Create a new VP9 decoder instance.
   pub fn new(threads: u32) -> Result<Self, MediaError> {
@@ -134,7 +136,9 @@ impl Vp9Decoder {
   pub fn rgba_from_image(img: &crate::vpx_image_t) -> Result<Vp9Frame, MediaError> {
     let fmt = img.fmt as u32;
     let high_bit_depth = (fmt & Self::VPX_IMG_FMT_HIGHBITDEPTH) != 0;
-    let fmt_base = fmt & !Self::VPX_IMG_FMT_HIGHBITDEPTH;
+    let has_alpha = (fmt & Self::VPX_IMG_FMT_HAS_ALPHA) != 0;
+    // Strip flags so we can match on the underlying subsampling format.
+    let fmt_base = fmt & !(Self::VPX_IMG_FMT_HIGHBITDEPTH | Self::VPX_IMG_FMT_HAS_ALPHA);
     let bit_depth = img.bit_depth;
 
     match fmt_base {
@@ -148,6 +152,14 @@ impl Vp9Decoder {
           "vp9 pixel format unsupported: fmt=0x{fmt:x}"
         )));
       }
+    }
+
+    // libvpx defines a 4:4:4+alpha format (VPX_IMG_FMT_444A). Support alpha only for 4:4:4 since
+    // other subsampling + alpha formats are not part of the public API.
+    if has_alpha && fmt_base != crate::VPX_IMG_FMT_I444 {
+      return Err(MediaError::Unsupported(format!(
+        "vp9 alpha format unsupported: fmt=0x{fmt:x}"
+      )));
     }
 
     // Reject inconsistent metadata early: if the frame claims a non-8-bit bit depth but does not
@@ -175,9 +187,15 @@ impl Vp9Decoder {
     let y_plane = img.planes[0];
     let u_plane = img.planes[1];
     let v_plane = img.planes[2];
+    let a_plane = img.planes[3];
     if y_plane.is_null() || u_plane.is_null() || v_plane.is_null() {
       return Err(MediaError::Decode(
         "vp9 frame has null Y/U/V plane pointers".to_string(),
+      ));
+    }
+    if has_alpha && a_plane.is_null() {
+      return Err(MediaError::Decode(
+        "vp9 frame has null alpha plane pointer".to_string(),
       ));
     }
 
@@ -190,6 +208,13 @@ impl Vp9Decoder {
     let v_stride: usize = img.stride[2]
       .try_into()
       .map_err(|_| MediaError::Decode("vp9 V stride negative".to_string()))?;
+    let a_stride: usize = if has_alpha {
+      img.stride[3]
+        .try_into()
+        .map_err(|_| MediaError::Decode("vp9 alpha stride negative".to_string()))?
+    } else {
+      0
+    };
 
     let x_shift: usize = img
       .x_chroma_shift
@@ -233,9 +258,19 @@ impl Vp9Decoder {
         "vp9 UV stride too small: u_stride={u_stride} v_stride={v_stride} min={min_uv_stride}"
       )));
     }
-    if high_bit_depth && (y_stride % 2 != 0 || u_stride % 2 != 0 || v_stride % 2 != 0) {
+    if has_alpha && a_stride < min_y_stride {
       return Err(MediaError::Decode(format!(
-        "vp9 high bit depth frame has odd stride: y_stride={y_stride} u_stride={u_stride} v_stride={v_stride}"
+        "vp9 alpha stride too small: stride={a_stride} min={min_y_stride}"
+      )));
+    }
+    if high_bit_depth
+      && (y_stride % 2 != 0
+        || u_stride % 2 != 0
+        || v_stride % 2 != 0
+        || (has_alpha && a_stride % 2 != 0))
+    {
+      return Err(MediaError::Decode(format!(
+        "vp9 high bit depth frame has odd stride: y_stride={y_stride} u_stride={u_stride} v_stride={v_stride} a_stride={a_stride}"
       )));
     }
     if high_bit_depth {
@@ -251,11 +286,22 @@ impl Vp9Decoder {
         let y_row = unsafe { y_plane.add(row * y_stride) };
         let u_row = unsafe { u_plane.add((row >> y_shift) * u_stride) };
         let v_row = unsafe { v_plane.add((row >> y_shift) * v_stride) };
+        let a_row = if has_alpha {
+          Some(unsafe { a_plane.add(row * a_stride) })
+        } else {
+          None
+        };
 
         for col in 0..width {
           let y16 = unsafe { ptr::read_unaligned(y_row.add(col * 2).cast::<u16>()) };
           let u16 = unsafe { ptr::read_unaligned(u_row.add((col >> x_shift) * 2).cast::<u16>()) };
           let v16 = unsafe { ptr::read_unaligned(v_row.add((col >> x_shift) * 2).cast::<u16>()) };
+          let a = if let Some(a_row) = a_row {
+            let a16 = unsafe { ptr::read_unaligned(a_row.add(col * 2).cast::<u16>()) };
+            downshift_to_u8(a16, shift)
+          } else {
+            0xFF
+          };
 
           let y = downshift_to_u8(y16, shift) as i32;
           let u = downshift_to_u8(u16, shift) as i32;
@@ -266,7 +312,7 @@ impl Vp9Decoder {
           rgba8[dst] = clamp_u8(r);
           rgba8[dst + 1] = clamp_u8(g);
           rgba8[dst + 2] = clamp_u8(b);
-          rgba8[dst + 3] = 0xFF;
+          rgba8[dst + 3] = a;
         }
       }
     } else {
@@ -274,18 +320,28 @@ impl Vp9Decoder {
         let y_row = unsafe { y_plane.add(row * y_stride) };
         let u_row = unsafe { u_plane.add((row >> y_shift) * u_stride) };
         let v_row = unsafe { v_plane.add((row >> y_shift) * v_stride) };
+        let a_row = if has_alpha {
+          Some(unsafe { a_plane.add(row * a_stride) })
+        } else {
+          None
+        };
 
         for col in 0..width {
           let y = unsafe { *y_row.add(col) } as i32;
           let u = unsafe { *u_row.add(col >> x_shift) } as i32;
           let v = unsafe { *v_row.add(col >> x_shift) } as i32;
+          let a = if let Some(a_row) = a_row {
+            unsafe { *a_row.add(col) }
+          } else {
+            0xFF
+          };
 
           let (r, g, b) = yuv_to_rgb(y, u, v, full_range, cs);
           let dst = (row * width + col) * 4;
           rgba8[dst] = clamp_u8(r);
           rgba8[dst + 1] = clamp_u8(g);
           rgba8[dst + 2] = clamp_u8(b);
-          rgba8[dst + 3] = 0xFF;
+          rgba8[dst + 3] = a;
         }
       }
     }
