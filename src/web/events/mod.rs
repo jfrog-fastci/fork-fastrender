@@ -1252,10 +1252,14 @@ pub fn dispatch_event(
 
       // EventHandler IDL attribute / handler property (e.g. `node.onclick = fn`).
       //
-      // This runs after the regular at-target bubble listeners so:
+      // This runs after the regular bubble listeners on the same target so:
       // - it participates in propagation control (`stopPropagation` / `stopImmediatePropagation`), and
       // - it can observe state changes made by `addEventListener` callbacks.
-      if entry.shadow_adjusted_target.is_some() && !event.immediate_propagation_stopped {
+      //
+      // Handler properties participate in the bubbling pass:
+      // - the at-target invocation always runs (even when `event.bubbles` is `false`), and
+      // - ancestor invocations run only when `event.bubbles` is `true` (enforced above).
+      if !event.immediate_propagation_stopped {
         invoker.invoke_event_handler_property(entry.invocation_target, event)?;
       }
     }

@@ -24488,35 +24488,12 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       return Ok(());
     }
 
-    // Expose `currentTarget`/`eventPhase` while the handler runs.
-    struct EventStateGuard<'a> {
-      event: &'a mut web_events::Event,
-      prev_target: Option<web_events::EventTargetId>,
-      prev_current_target: Option<web_events::EventTargetId>,
-      prev_phase: web_events::EventPhase,
-    }
-
-    impl Drop for EventStateGuard<'_> {
-      fn drop(&mut self) {
-        self.event.target = self.prev_target;
-        self.event.current_target = self.prev_current_target;
-        self.event.event_phase = self.prev_phase;
-      }
-    }
-
-    let mut state_guard = EventStateGuard {
-      prev_target: event.target,
-      prev_current_target: event.current_target,
-      prev_phase: event.event_phase,
-      event,
-    };
-    state_guard.event.target = Some(target);
-    state_guard.event.current_target = Some(target);
-    state_guard.event.event_phase = web_events::EventPhase::AtTarget;
-
+    // `web_events::dispatch_event` sets `event.target/currentTarget/eventPhase` for each invocation
+    // target in the capture/bubble loops. Handler properties behave like normal bubble listeners
+    // and can fire on ancestors (e.g. `document.onclick`), so do not override those fields here.
     let event_obj = match self.dispatch_event_object_stack.last() {
       Some(active) => active.event_obj,
-      None => Self::alloc_js_event_object(&mut scope, document_obj, state_guard.event)
+      None => Self::alloc_js_event_object(&mut scope, document_obj, event)
         .map_err(|e| web_events::DomError::new(e.to_string()))?,
     };
     scope
@@ -24529,12 +24506,12 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       document_obj,
       dom_for_wrappers,
       event_obj,
-      state_guard.event,
+      event,
     )
     .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
     let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
-    let _active_guard = push_active_event_for_host(host_ctx, event_id, state_guard.event);
+    let _active_guard = push_active_event_for_host(host_ctx, event_id, event);
     let event_id_key =
       alloc_key(&mut scope, EVENT_ID_KEY).map_err(|e| web_events::DomError::new(e.to_string()))?;
     scope
@@ -24559,7 +24536,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       Ok(ret) => {
         // HTML EventHandler semantics: returning `false` cancels the event.
         if matches!(ret, Value::Bool(false)) {
-          state_guard.event.prevent_default();
+          event.prevent_default();
         }
       }
       Err(err) => {
@@ -24573,7 +24550,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
 
     // Mirror JS-visible flags back onto the Rust event in case Event.prototype methods were invoked
     // with a host that does not support `ActiveEventStack`.
-    sync_rust_event_from_js_event_object(&mut scope, event_obj, state_guard.event)
+    sync_rust_event_from_js_event_object(&mut scope, event_obj, event)
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
     if let Some(err) = host_hooks.finish(scope.heap_mut()) {

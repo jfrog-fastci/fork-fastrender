@@ -1,4 +1,5 @@
 use fastrender::js::RunLimits;
+use fastrender::web::events::{EventInit, MouseEvent};
 use fastrender::{BrowserTab, RenderOptions, Result, VmJsBrowserTabExecutor};
 
 #[test]
@@ -9,6 +10,29 @@ fn click_prevent_default_blocks_link_navigation() -> Result<()> {
 <script>
   var link = document.getElementById("link");
   link.addEventListener("click", function (ev) { ev.preventDefault(); });
+</script>
+"#;
+
+  let executor = VmJsBrowserTabExecutor::new();
+  let mut tab = BrowserTab::from_html(html, RenderOptions::new().with_viewport(64, 64), executor)?;
+
+  let link = tab
+    .dom()
+    .get_element_by_id("link")
+    .expect("expected <a id=link> to be present");
+
+  let resolved = tab.resolve_navigation_for_click(link)?;
+  assert_eq!(resolved, None);
+  Ok(())
+}
+
+#[test]
+fn click_prevent_default_document_onclick_blocks_link_navigation() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let html = r#"<!doctype html>
+<a id="link" href="https://example.com/next">next</a>
+<script>
+  document.onclick = function (ev) { ev.preventDefault(); };
 </script>
 "#;
 
@@ -177,6 +201,49 @@ fn click_listener_receives_mouse_event_with_ui_event_detail() -> Result<()> {
   assert_eq!(
     tab.dom().get_attribute(target, "data-detail").unwrap(),
     Some("1")
+  );
+  Ok(())
+}
+
+#[test]
+fn mousemove_handler_property_on_body_fires_for_descendant_target() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let html = r#"<!doctype html>
+<div id="child"></div>
+<script>
+  document.body.onmousemove = function (ev) {
+    document.body.setAttribute("data-fired", "1");
+    document.body.setAttribute("data-target-id", String(ev.target && ev.target.id));
+  };
+</script>
+"#;
+
+  let executor = VmJsBrowserTabExecutor::new();
+  let mut tab = BrowserTab::from_html(html, RenderOptions::new().with_viewport(64, 64), executor)?;
+  let child = tab
+    .dom()
+    .get_element_by_id("child")
+    .expect("expected <div id=child> to be present");
+
+  tab.dispatch_mouse_event(
+    child,
+    "mousemove",
+    EventInit {
+      bubbles: true,
+      cancelable: false,
+      composed: false,
+    },
+    MouseEvent::default(),
+  )?;
+
+  let body = tab.dom().body().expect("expected <body> element");
+  assert_eq!(
+    tab.dom().get_attribute(body, "data-fired").unwrap(),
+    Some("1"),
+  );
+  assert_eq!(
+    tab.dom().get_attribute(body, "data-target-id").unwrap(),
+    Some("child"),
   );
   Ok(())
 }
