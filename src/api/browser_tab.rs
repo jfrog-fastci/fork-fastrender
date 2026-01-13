@@ -64,6 +64,18 @@ pub enum ModuleScriptExecutionStatus {
   Pending,
 }
 
+/// Selection actions used by accessibility integrations (e.g. AccessKit) for option/listbox widgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionAction {
+  /// Replace the current selection with the target item (clearing other selected items when the
+  /// widget supports multiple selection).
+  SetSelection,
+  /// Add the target item to the current selection (no-op when the widget is not multi-selectable).
+  AddToSelection,
+  /// Remove the target item from the current selection (no-op when it is already unselected).
+  RemoveFromSelection,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModuleScriptEvaluationOutcome {
   Fulfilled,
@@ -5623,6 +5635,272 @@ impl BrowserTab {
       event,
       event_loop,
     )
+  }
+
+  /// Dispatch a trusted bubbling `input` DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_input_event(&mut self, node_id: NodeId) -> Result<bool> {
+    let mut event = Event::new(
+      "input",
+      EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(node_id).normalize(),
+      event,
+      event_loop,
+    )
+  }
+
+  /// Dispatch a trusted bubbling `change` DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_change_event(&mut self, node_id: NodeId) -> Result<bool> {
+    let mut event = Event::new(
+      "change",
+      EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(node_id).normalize(),
+      event,
+      event_loop,
+    )
+  }
+
+  /// Handle a selection-related accessibility action targeting `target`.
+  ///
+  /// This supports:
+  /// - native HTML `<select>/<option>` controls (`<option>` targets), and
+  /// - ARIA listbox widgets (`role="listbox"` with `role="option"` descendants).
+  ///
+  /// For native `<select>` controls, selection changes dispatch trusted bubbling `input` and
+  /// `change` events on the owning `<select>` element (not the `<option>`).
+  ///
+  /// Returns `true` when `target` was recognized as a selectable item, even if the selection state
+  /// did not change.
+  pub fn perform_selection_action(&mut self, target: NodeId, action: SelectionAction) -> Result<bool> {
+    let outcome: std::result::Result<(bool, Option<NodeId>, bool), crate::dom2::DomError> =
+      self.host.mutate_dom(|dom| {
+        let out = (|| -> std::result::Result<(bool, Option<NodeId>, bool), crate::dom2::DomError> {
+          // --- Native HTML <option> -------------------------------------------------------------
+          if let NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          } = &dom.node(target).kind
+          {
+            if dom.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("option") {
+              let select = dom
+                .ancestors(target)
+                .skip(1)
+                .find(|&ancestor| match &dom.node(ancestor).kind {
+                  NodeKind::Element {
+                    tag_name,
+                    namespace,
+                    ..
+                  } => dom.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("select"),
+                  _ => false,
+                });
+
+              let desired_selected = !matches!(action, SelectionAction::RemoveFromSelection);
+
+              if let Some(select) = select {
+                let multiple = dom.has_attribute(select, "multiple")?;
+                let options = dom.select_options(select);
+                if let Some(target_idx) = options.iter().position(|&id| id == target) {
+                  let before: Vec<bool> = options
+                    .iter()
+                    .map(|&opt| dom.option_selected(opt))
+                    .collect::<std::result::Result<_, _>>()?;
+
+                  let mut after = before.clone();
+                  if multiple {
+                    match action {
+                      SelectionAction::SetSelection => {
+                        after.fill(false);
+                        after[target_idx] = true;
+                      }
+                      SelectionAction::AddToSelection => after[target_idx] = true,
+                      SelectionAction::RemoveFromSelection => after[target_idx] = false,
+                    }
+                  } else {
+                    match action {
+                      SelectionAction::SetSelection | SelectionAction::AddToSelection => {
+                        after.fill(false);
+                        after[target_idx] = true;
+                      }
+                      SelectionAction::RemoveFromSelection => {
+                        after[target_idx] = false;
+                        if after.iter().all(|&selected| !selected) && !after.is_empty() {
+                          after[0] = true;
+                        }
+                      }
+                    }
+                  }
+
+                  let selection_changed = before != after;
+                  if selection_changed {
+                    if multiple {
+                      match action {
+                        SelectionAction::SetSelection => {
+                          dom.set_option_selected(target, true)?;
+                          // Clear any other selected options.
+                          for (idx, &opt) in options.iter().enumerate() {
+                            if idx == target_idx {
+                              continue;
+                            }
+                            if before.get(idx).copied().unwrap_or(false) {
+                              dom.set_option_selected(opt, false)?;
+                            }
+                          }
+                        }
+                        SelectionAction::AddToSelection => dom.set_option_selected(target, true)?,
+                        SelectionAction::RemoveFromSelection => dom.set_option_selected(target, false)?,
+                      }
+                    } else {
+                      // Single-select: `set_option_selected` enforces exclusive selection and ensures
+                      // at least one option remains selected.
+                      dom.set_option_selected(target, desired_selected)?;
+                    }
+                  }
+
+                  return Ok((true, Some(select), selection_changed));
+                }
+              }
+
+              // Detached option (or a malformed tree): update selectedness without dispatching
+              // events.
+              let before = dom.option_selected(target)?;
+              let selection_changed = before != desired_selected;
+              if selection_changed {
+                dom.set_option_selected(target, desired_selected)?;
+              }
+              return Ok((true, None, selection_changed));
+            }
+          }
+
+          // --- ARIA listbox (role=listbox/option) ---------------------------------------------
+          let role_value = match &dom.node(target).kind {
+            NodeKind::Element { .. } | NodeKind::Slot { .. } => dom.get_attribute(target, "role")?.unwrap_or(""),
+            _ => return Ok((false, None, false)),
+          };
+          let is_aria_option = role_value
+            .split_ascii_whitespace()
+            .any(|token| token.eq_ignore_ascii_case("option"));
+          if !is_aria_option {
+            return Ok((false, None, false));
+          }
+
+          let listbox = dom.ancestors(target).find(|&ancestor| {
+            dom
+              .get_attribute(ancestor, "role")
+              .ok()
+              .flatten()
+              .is_some_and(|role| {
+                role
+                  .split_ascii_whitespace()
+                  .any(|token| token.eq_ignore_ascii_case("listbox"))
+              })
+          });
+
+          let multiselectable = listbox
+            .and_then(|listbox| dom.get_attribute(listbox, "aria-multiselectable").ok().flatten())
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+
+          let desired_selected = !matches!(action, SelectionAction::RemoveFromSelection);
+          let clear_others = desired_selected
+            && (matches!(action, SelectionAction::SetSelection) || !multiselectable);
+
+          let mut selection_changed = false;
+          let currently_selected = dom
+            .get_attribute(target, "aria-selected")?
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+          if desired_selected != currently_selected {
+            dom.set_attribute(target, "aria-selected", if desired_selected { "true" } else { "false" })?;
+            selection_changed = true;
+          }
+
+          if clear_others {
+            if let Some(listbox) = listbox {
+              // Collect first so we can mutate attributes while iterating.
+              let nodes: Vec<NodeId> = dom.subtree_preorder(listbox).collect();
+              for node in nodes {
+                if node == target {
+                  continue;
+                }
+                let Some(role) = dom.get_attribute(node, "role").ok().flatten() else {
+                  continue;
+                };
+                let is_option = role
+                  .split_ascii_whitespace()
+                  .any(|token| token.eq_ignore_ascii_case("option"));
+                if !is_option {
+                  continue;
+                }
+                let other_selected = dom
+                  .get_attribute(node, "aria-selected")
+                  .ok()
+                  .flatten()
+                  .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+                if other_selected {
+                  if dom.set_attribute(node, "aria-selected", "false")? {
+                    selection_changed = true;
+                  }
+                }
+              }
+            }
+          }
+
+          Ok((true, None, selection_changed))
+        })();
+
+        let dom_changed = out.as_ref().is_ok_and(|(_, _, selection_changed)| *selection_changed);
+        (out, dom_changed)
+      });
+
+    let (handled, select_for_events, selection_changed) = outcome
+      .map_err(|err| Error::Other(err.to_string()))?;
+
+    if selection_changed {
+      if let Some(select) = select_for_events {
+        // Mirror browser behavior: native select changes fire `input` then `change`.
+        let _ = self.dispatch_input_event(select)?;
+        let _ = self.dispatch_change_event(select)?;
+      }
+    }
+
+    Ok(handled)
+  }
+
+  /// Convenience wrapper for `perform_selection_action` that accepts an AccessKit [`accesskit::Action`].
+  ///
+  /// This is only available when the optional desktop browser UI stack is enabled.
+  #[cfg(feature = "browser_ui")]
+  pub fn perform_accesskit_selection_action(
+    &mut self,
+    target: NodeId,
+    action: accesskit::Action,
+  ) -> Result<bool> {
+    use accesskit::Action;
+    match action {
+      Action::SetSelection => self.perform_selection_action(target, SelectionAction::SetSelection),
+      Action::AddToSelection => self.perform_selection_action(target, SelectionAction::AddToSelection),
+      Action::RemoveFromSelection => self.perform_selection_action(target, SelectionAction::RemoveFromSelection),
+      Action::Click => self.perform_selection_action(target, SelectionAction::SetSelection),
+      _ => Ok(false),
+    }
   }
 
   /// Simulate a user click on `node_id` and return the resolved navigation target URL if the

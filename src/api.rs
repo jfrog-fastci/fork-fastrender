@@ -280,7 +280,7 @@ pub use dom2_geometry::Dom2GeometryContext;
 
 mod browser_tab;
 pub use browser_tab::{
-  BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus,
+  BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus, SelectionAction,
 };
 
 mod browser_tab_vm_js_executor;
