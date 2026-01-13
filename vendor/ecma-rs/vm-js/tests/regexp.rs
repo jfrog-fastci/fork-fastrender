@@ -58,6 +58,15 @@ fn regexp_flags_parsing_rejects_uv_combination() {
 }
 
 #[test]
+fn regexp_unicode_mode_rejects_standalone_right_bracket() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("]", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
 fn regexp_literal_with_uv_flags_is_early_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#"var r = /./uv;"#).unwrap_err();
@@ -344,6 +353,7 @@ fn regexp_unicode_sets_accessor() {
   assert_eq!(as_utf8_lossy(&rt, value), "v");
 }
 
+#[test]
 fn regexp_last_index_global_exec_updates_and_resets() {
   let mut rt = new_runtime();
   let value = rt
