@@ -112,15 +112,34 @@ impl HostDispatchCoverage {
 }
 
 fn extract_host_dispatch_coverage(src: &str) -> HostDispatchCoverage {
-  // Extract match arms from:
+  // Extract match arms from the `call_operation` implementation:
+  //
   //   match (interface, operation, overload) {
   //     ("Document", "getElementById", 0) => { ... }
+  //     ("URLSearchParams", "entries", 0)
+  //       | ("URLSearchParams", "keys", 0)
+  //       | ("URLSearchParams", "values", 0) => { ... }
   //     ("Window", "alert", _) => { ... }
+  //     ("Element", op @ ("append" | "prepend"), 0) => { ... }
   //   }
   //
   // We treat `("X", "y", _)` as covering all overloads.
+  //
+  // Note: We intentionally scope parsing to the `call_operation` method body to avoid false
+  // positives from other match statements in this file.
+  let call_operation_src = {
+    let start = src
+      .find("fn call_operation")
+      .expect("expected WebIdlBindingsHost::call_operation implementation in vmjs_host_dispatch.rs");
+    let end = src[start..]
+      .find("fn call_constructor")
+      .map(|rel| start + rel)
+      .expect("expected call_constructor after call_operation in vmjs_host_dispatch.rs");
+    &src[start..end]
+  };
+
   let literal_arm_re = Regex::new(
-    r#"(?m)^\s*(?:\|\s*)?\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*([0-9_]+|_)\s*\)\s*=>"#,
+    r#"(?m)^\s*(?:\|\s*)?\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*([0-9_]+|_)\s*\)"#,
   )
   .expect("valid regex");
 
@@ -130,14 +149,14 @@ fn extract_host_dispatch_coverage(src: &str) -> HostDispatchCoverage {
   //
   // Treat these as coverage for each string literal in the group.
   let op_group_arm_re = Regex::new(
-    r#"(?m)^\s*(?:\|\s*)?\(\s*"([^"]+)"\s*,\s*\w+\s*@\s*\(([^)]*)\)\s*,\s*([0-9_]+|_)\s*\)\s*=>"#,
+    r#"(?m)^\s*(?:\|\s*)?\(\s*"([^"]+)"\s*,\s*\w+\s*@\s*\(([^)]*)\)\s*,\s*([0-9_]+|_)\s*\)"#,
   )
   .expect("valid regex");
 
   let string_lit_re = Regex::new(r#""([^"]+)""#).expect("valid regex");
 
   let mut coverage = HostDispatchCoverage::default();
-  for caps in literal_arm_re.captures_iter(src) {
+  for caps in literal_arm_re.captures_iter(call_operation_src) {
     let interface = caps.get(1).unwrap().as_str();
     let operation = caps.get(2).unwrap().as_str();
     let overload = caps.get(3).unwrap().as_str();
@@ -154,7 +173,7 @@ fn extract_host_dispatch_coverage(src: &str) -> HostDispatchCoverage {
     }
   }
 
-  for caps in op_group_arm_re.captures_iter(src) {
+  for caps in op_group_arm_re.captures_iter(call_operation_src) {
     let interface = caps.get(1).unwrap().as_str();
     let group = caps.get(2).unwrap().as_str();
     let overload = caps.get(3).unwrap().as_str();
