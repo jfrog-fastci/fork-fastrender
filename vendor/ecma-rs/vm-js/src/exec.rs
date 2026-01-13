@@ -12841,6 +12841,8 @@ enum AsyncFrame {
 
   /// Continue evaluating a unary `await` after its operand expression completes (nested await).
   AwaitAfterOperand,
+  /// Continue evaluating a unary `yield` after its operand expression completes (nested yield).
+  YieldAfterOperand,
   /// Continue evaluating a delegated `yield*` after its operand expression completes.
   YieldStarAfterOperand,
   /// Continue delegated `yield*` iteration after yielding a value from the delegate iterator.
@@ -13128,7 +13130,20 @@ enum AsyncFrame {
 }
 
 #[derive(Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AsyncSuspendKind {
+  /// A suspension that should be resumed by awaiting `await_value` (Promise jobs / microtasks).
+  Await,
+  /// A suspension produced by `yield` / `yield*` in an async generator body.
+  ///
+  /// Async generator execution distinguishes these from internal `await` suspensions: the awaited
+  /// value is delivered to the consumer, and the generator resumes from the next request.
+  Yield,
+}
+
+#[derive(Debug)]
 struct AsyncSuspend {
+  kind: AsyncSuspendKind,
   await_value: Value,
   frames: VecDeque<AsyncFrame>,
 }
@@ -13760,7 +13775,11 @@ fn async_handle_body_result(
       async_teardown_continuation(&mut call_scope, cont);
       res.map(|_| Value::Undefined)
     }
-    Ok(AsyncBodyResult::Await { await_value, frames }) => {
+    Ok(AsyncBodyResult::Await {
+      kind: _,
+      await_value,
+      frames,
+    }) => {
       // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
       cont.frames = frames;
 
@@ -14071,7 +14090,11 @@ pub(crate) fn async_resume_call(
 enum AsyncBodyResult {
   CompleteOk(Value),
   CompleteThrow(Value),
-  Await { await_value: Value, frames: VecDeque<AsyncFrame> },
+  Await {
+    kind: AsyncSuspendKind,
+    await_value: Value,
+    frames: VecDeque<AsyncFrame>,
+  },
 }
 
 fn coerce_error_to_throw_for_async(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmError {
@@ -18549,6 +18572,7 @@ fn async_for_await_of_await_next(
   }
 
   Ok(AsyncEval::Suspend(AsyncSuspend {
+    kind: AsyncSuspendKind::Await,
     await_value: next_value,
     frames,
   }))
@@ -19010,6 +19034,7 @@ fn async_for_await_of_close(
   });
 
   Ok(AsyncEval::Suspend(AsyncSuspend {
+    kind: AsyncSuspendKind::Await,
     await_value: close_value,
     frames,
   }))
@@ -19787,6 +19812,7 @@ fn async_yield_star_begin(
   }
 
   let mut suspend = AsyncSuspend {
+    kind: AsyncSuspendKind::Yield,
     await_value: value,
     frames: VecDeque::new(),
   };
@@ -19881,6 +19907,7 @@ fn async_eval_expr_chain(
             );
           if is_synthetic_undefined {
             return Ok(AsyncEval::Suspend(AsyncSuspend {
+              kind: AsyncSuspendKind::Yield,
               await_value: Value::Undefined,
               frames: VecDeque::new(),
             }));
@@ -19888,17 +19915,19 @@ fn async_eval_expr_chain(
 
           match async_eval_expr(evaluator, scope, &unary.stx.argument)? {
             AsyncEval::Complete(v) => Ok(AsyncEval::Suspend(AsyncSuspend {
+              kind: AsyncSuspendKind::Yield,
               await_value: v,
               frames: VecDeque::new(),
             })),
             AsyncEval::Suspend(mut suspend) => {
-              async_frames_push(&mut suspend.frames, AsyncFrame::AwaitAfterOperand)?;
+              async_frames_push(&mut suspend.frames, AsyncFrame::YieldAfterOperand)?;
               Ok(AsyncEval::Suspend(suspend))
             }
           }
         }
         OperatorName::Await => match async_eval_expr(evaluator, scope, &unary.stx.argument)? {
           AsyncEval::Complete(v) => Ok(AsyncEval::Suspend(AsyncSuspend {
+            kind: AsyncSuspendKind::Await,
             await_value: v,
             frames: VecDeque::new(),
           })),
@@ -23369,6 +23398,7 @@ fn async_start_body(
       Ok(AsyncEval::Suspend(mut suspend)) => {
         async_frames_push(&mut suspend.frames, AsyncFrame::RootExprBody)?;
         Ok(AsyncBodyResult::Await {
+          kind: suspend.kind,
           await_value: suspend.await_value,
           frames: suspend.frames,
         })
@@ -23393,6 +23423,7 @@ fn async_start_body(
       Ok(AsyncEval::Suspend(mut suspend)) => {
         async_frames_push(&mut suspend.frames, AsyncFrame::RootBlockBody)?;
         Ok(AsyncBodyResult::Await {
+          kind: suspend.kind,
           await_value: suspend.await_value,
           frames: suspend.frames,
         })
@@ -23573,6 +23604,7 @@ fn async_resume_from_frames(
         AsyncState::Expr(Ok(v)) => {
           let frames = mem::take(&mut frames);
           return Ok(AsyncBodyResult::Await {
+            kind: AsyncSuspendKind::Await,
             await_value: v,
             frames,
           })
@@ -23585,12 +23617,30 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::YieldAfterOperand => match state {
+        AsyncState::Expr(Ok(v)) => {
+          let frames = mem::take(&mut frames);
+          return Ok(AsyncBodyResult::Await {
+            kind: AsyncSuspendKind::Yield,
+            await_value: v,
+            frames,
+          });
+        }
+        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "yield operand frame received completion state",
+          ))
+        }
+      },
+
       AsyncFrame::YieldStarAfterOperand => match state {
         AsyncState::Expr(Ok(iterable)) => match async_yield_star_begin(evaluator, scope, iterable) {
           Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
           Ok(AsyncEval::Suspend(mut suspend)) => {
             suspend.frames.append(&mut frames);
             return Ok(AsyncBodyResult::Await {
+              kind: suspend.kind,
               await_value: suspend.await_value,
               frames: suspend.frames,
             });
@@ -23822,6 +23872,7 @@ fn async_resume_from_frames(
           }
           out_frames.append(&mut frames);
           return Ok(AsyncBodyResult::Await {
+            kind: AsyncSuspendKind::Yield,
             await_value: value,
             frames: out_frames,
           });
@@ -23860,6 +23911,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -23921,6 +23973,7 @@ fn async_resume_from_frames(
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
@@ -23981,6 +24034,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -24084,6 +24138,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -24210,6 +24265,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -24294,6 +24350,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -24355,6 +24412,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -24381,6 +24439,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -24515,6 +24574,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -24542,6 +24602,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -24569,6 +24630,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -24616,6 +24678,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -24674,6 +24737,7 @@ fn async_resume_from_frames(
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
@@ -24763,6 +24827,7 @@ fn async_resume_from_frames(
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
@@ -24881,6 +24946,7 @@ fn async_resume_from_frames(
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
@@ -24986,6 +25052,7 @@ fn async_resume_from_frames(
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
@@ -25013,6 +25080,7 @@ fn async_resume_from_frames(
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
@@ -25120,6 +25188,7 @@ fn async_resume_from_frames(
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
@@ -25207,6 +25276,7 @@ fn async_resume_from_frames(
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
@@ -25270,6 +25340,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -25304,6 +25375,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -25343,6 +25415,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -25382,6 +25455,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -25432,6 +25506,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -25487,6 +25562,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -25518,6 +25594,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -25616,6 +25693,7 @@ fn async_resume_from_frames(
                   suspend.frames.push_back(AsyncFrame::AssignPatternAfterBind { result_root });
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
@@ -25695,6 +25773,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -25724,6 +25803,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -25772,6 +25852,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26047,6 +26128,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26244,6 +26326,7 @@ fn async_resume_from_frames(
                 });
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26260,6 +26343,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26291,6 +26375,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26438,6 +26523,7 @@ fn async_resume_from_frames(
                     });
                     suspend.frames.append(&mut frames);
                     return Ok(AsyncBodyResult::Await {
+                      kind: suspend.kind,
                       await_value: suspend.await_value,
                       frames: suspend.frames,
                     });
@@ -26475,6 +26561,7 @@ fn async_resume_from_frames(
                 });
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26500,6 +26587,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26562,6 +26650,7 @@ fn async_resume_from_frames(
                 });
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26587,6 +26676,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26631,6 +26721,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26694,6 +26785,7 @@ fn async_resume_from_frames(
                 });
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26719,6 +26811,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26764,6 +26857,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26804,6 +26898,7 @@ fn async_resume_from_frames(
               AsyncEval::Suspend(mut suspend) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26832,6 +26927,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -26897,6 +26993,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -26974,6 +27071,7 @@ fn async_resume_from_frames(
                 }
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27009,6 +27107,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27053,6 +27152,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -27090,6 +27190,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -27128,6 +27229,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27181,6 +27283,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27228,6 +27331,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -27270,6 +27374,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27323,6 +27428,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -27369,6 +27475,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27410,6 +27517,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27502,6 +27610,7 @@ fn async_resume_from_frames(
                   Ok(AsyncEval::Suspend(mut suspend)) => {
                     suspend.frames.append(&mut frames);
                     return Ok(AsyncBodyResult::Await {
+                      kind: suspend.kind,
                       await_value: suspend.await_value,
                       frames: suspend.frames,
                     });
@@ -27530,6 +27639,7 @@ fn async_resume_from_frames(
                 )?;
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27597,6 +27707,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -27623,6 +27734,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27764,6 +27876,7 @@ fn async_resume_from_frames(
                   Ok(AsyncEval::Suspend(mut suspend)) => {
                     suspend.frames.append(&mut frames);
                     return Ok(AsyncBodyResult::Await {
+                      kind: suspend.kind,
                       await_value: suspend.await_value,
                       frames: suspend.frames,
                     });
@@ -27793,6 +27906,7 @@ fn async_resume_from_frames(
                 )?;
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27897,6 +28011,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -27930,6 +28045,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -27984,6 +28100,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -28054,6 +28171,7 @@ fn async_resume_from_frames(
                       Ok(AsyncEval::Suspend(mut suspend)) => {
                         suspend.frames.append(&mut frames);
                         return Ok(AsyncBodyResult::Await {
+                          kind: suspend.kind,
                           await_value: suspend.await_value,
                           frames: suspend.frames,
                         });
@@ -28095,6 +28213,7 @@ fn async_resume_from_frames(
                   Ok(AsyncEval::Suspend(mut suspend)) => {
                     suspend.frames.append(&mut frames);
                     return Ok(AsyncBodyResult::Await {
+                      kind: suspend.kind,
                       await_value: suspend.await_value,
                       frames: suspend.frames,
                     });
@@ -28127,6 +28246,7 @@ fn async_resume_from_frames(
                 )?;
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -28155,6 +28275,7 @@ fn async_resume_from_frames(
                   Ok(AsyncEval::Suspend(mut suspend)) => {
                     suspend.frames.append(&mut frames);
                     return Ok(AsyncBodyResult::Await {
+                      kind: suspend.kind,
                       await_value: suspend.await_value,
                       frames: suspend.frames,
                     });
@@ -28206,6 +28327,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -28287,6 +28409,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -28357,6 +28480,7 @@ fn async_resume_from_frames(
               Ok(AsyncEval::Suspend(mut suspend)) => {
                 suspend.frames.append(&mut frames);
                 return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
                   await_value: suspend.await_value,
                   frames: suspend.frames,
                 });
@@ -28406,6 +28530,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -28450,6 +28575,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -28475,6 +28601,7 @@ fn async_resume_from_frames(
             Ok(AsyncEval::Suspend(mut suspend)) => {
               suspend.frames.append(&mut frames);
               return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
                 await_value: suspend.await_value,
                 frames: suspend.frames,
               });
@@ -31851,7 +31978,7 @@ pub(crate) fn run_ecma_function(
         evaluator.env.teardown(call_scope.heap_mut());
         res.map(|_| (promise, evaluator.this))
       }
-      Ok(AsyncBodyResult::Await { await_value, frames }) => {
+      Ok(AsyncBodyResult::Await { await_value, frames, .. }) => {
         // `this` / `new.target` can be temporarily overridden by nested constructs that can suspend
         // (e.g. class static blocks). Capture their current values at the suspension point so the
         // continuation resumes with the correct execution context.
@@ -32413,6 +32540,7 @@ pub(crate) fn start_module_tla_evaluation(
       AsyncEval::Suspend(mut suspend) => {
         async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody)?;
         AsyncBodyResult::Await {
+          kind: suspend.kind,
           await_value: suspend.await_value,
           frames: suspend.frames,
         }
@@ -32422,7 +32550,7 @@ pub(crate) fn start_module_tla_evaluation(
     // If `PromiseResolve(%Promise%, awaitValue)` throws, treat it as a rejection at the await site
     // (i.e. resume immediately with a throw completion so `try/catch` around `await` can observe it).
     loop {
-      let AsyncBodyResult::Await { await_value, frames } = next else {
+      let AsyncBodyResult::Await { await_value, frames, .. } = next else {
         env.teardown(scope.heap_mut());
         return match next {
           AsyncBodyResult::CompleteOk(_) => Ok(ModuleTlaStepResult::Completed),
@@ -32642,7 +32770,7 @@ pub(crate) fn resume_module_tla_evaluation(
           async_teardown_continuation(scope, cont);
           return Err(VmError::Throw(reason));
         }
-        Ok(AsyncBodyResult::Await { await_value, frames }) => {
+        Ok(AsyncBodyResult::Await { await_value, frames, .. }) => {
           // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
           match crate::promise_ops::promise_resolve_with_host_and_hooks(
             evaluator.vm,
@@ -33009,7 +33137,7 @@ pub(crate) fn run_module_async_resume(
       AsyncBodyResult::CompleteThrow(reason) => {
         Err(VmError::Throw(reason))
       }
-      AsyncBodyResult::Await { await_value, frames } => {
+      AsyncBodyResult::Await { await_value, frames, .. } => {
         cont
           .as_mut()
           .expect("module async continuation missing")
