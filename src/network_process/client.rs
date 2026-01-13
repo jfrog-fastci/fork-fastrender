@@ -13,9 +13,9 @@ use tungstenite::client::IntoClientRequest;
 #[cfg(feature = "direct_websocket")]
 use tungstenite::protocol::{CloseFrame, Message as TungsteniteMessage};
 #[cfg(feature = "direct_websocket")]
-use tungstenite::Error as TungsteniteError;
-#[cfg(feature = "direct_websocket")]
 use tungstenite::stream::MaybeTlsStream;
+#[cfg(feature = "direct_websocket")]
+use tungstenite::Error as TungsteniteError;
 
 use super::ipc;
 
@@ -30,7 +30,10 @@ fn env_flag_truthy(key: &str) -> bool {
   if raw.is_empty() {
     return false;
   }
-  !matches!(raw.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")
+  !matches!(
+    raw.to_ascii_lowercase().as_str(),
+    "0" | "false" | "no" | "off"
+  )
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -169,12 +172,26 @@ pub fn try_spawn_network_process(config: NetworkProcessConfig) -> Result<Network
     cmd.stderr(Stdio::null());
   }
 
+  // Defense-in-depth: prevent leaking unrelated file descriptors into the exec'd network process.
+  //
+  // On macOS, avoid `CommandExt::pre_exec` because it forces a fork/exec spawn path (bypassing
+  // `posix_spawn`) and is unsafe in multithreaded parents.
+  #[cfg(all(unix, target_os = "linux"))]
+  {
+    use std::os::unix::process::CommandExt as _;
+    let keep = [0, 1, 2];
+    unsafe {
+      cmd.pre_exec(move || crate::sandbox::set_cloexec_on_fds_except(&keep));
+    }
+  }
+
   let mut child = cmd.spawn().map_err(Error::Io)?;
   let pid = child.id();
 
-  let stdout = child.stdout.take().ok_or_else(|| {
-    Error::Other("network subprocess stdout was not captured".to_string())
-  })?;
+  let stdout = child
+    .stdout
+    .take()
+    .ok_or_else(|| Error::Other("network subprocess stdout was not captured".to_string()))?;
 
   let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<String>>();
   std::thread::spawn(move || {
@@ -254,10 +271,8 @@ impl Drop for NetworkProcessHandle {
 
     // Best-effort graceful shutdown first.
     let _ = TcpStream::connect_timeout(&self.addr, self.connect_timeout).and_then(|mut stream| {
-      stream
-        .set_nodelay(true)
-        .unwrap_or_else(|_| ()); // ignore
-      // Authenticate before issuing the shutdown command.
+      stream.set_nodelay(true).unwrap_or_else(|_| ()); // ignore
+                                                       // Authenticate before issuing the shutdown command.
       let _ = ipc::write_request_frame(
         &mut stream,
         &ipc::NetworkRequest::Hello {
@@ -331,12 +346,10 @@ impl IpcResourceFetcher {
     let mut conn = ipc::NetworkClient::new(stream);
 
     conn
-      .send_request(
-      &ipc::NetworkRequest::Hello {
+      .send_request(&ipc::NetworkRequest::Hello {
         token: self.auth_token.as_str().to_string(),
-      },
-    )
-    .map_err(Error::Io)?;
+      })
+      .map_err(Error::Io)?;
     let hello_ack: ipc::NetworkResponse = conn.recv_response().map_err(Error::Io)?;
     match hello_ack {
       ipc::NetworkResponse::HelloAck => {}
@@ -378,10 +391,7 @@ pub enum WebSocketMessage {
   Binary(Vec<u8>),
   Ping(Vec<u8>),
   Pong(Vec<u8>),
-  Close {
-    code: u16,
-    reason: Option<String>,
-  },
+  Close { code: u16, reason: Option<String> },
 }
 
 /// An abstract WebSocket connection.
@@ -465,10 +475,7 @@ fn validate_ws_subprotocol_handshake_response(
   }
 
   // The server's Sec-WebSocket-Protocol must be a single token (no commas/whitespace).
-  if value
-    .bytes()
-    .any(|b| b == b',' || b.is_ascii_whitespace())
-  {
+  if value.bytes().any(|b| b == b',' || b.is_ascii_whitespace()) {
     return Err(Error::Other("invalid websocket subprotocol".to_string()));
   }
 
@@ -487,8 +494,8 @@ fn validate_ws_subprotocol_handshake_response(
 #[cfg(feature = "direct_websocket")]
 impl WebSocketBackend for DirectWebSocketBackend {
   fn connect(&self, url: &str, protocols: &[String]) -> Result<Box<dyn WebSocketStream>> {
-    let parsed =
-      websocket_ipc::validate_and_normalize_url(url).map_err(|err| Error::Other(err.to_string()))?;
+    let parsed = websocket_ipc::validate_and_normalize_url(url)
+      .map_err(|err| Error::Other(err.to_string()))?;
     let mut req = parsed
       .clone()
       .into_client_request()
@@ -549,7 +556,10 @@ impl WebSocketStream for DirectWebSocketStream {
       }
     };
 
-    self.socket.write_message(msg).map_err(map_tungstenite_err)?;
+    self
+      .socket
+      .write_message(msg)
+      .map_err(map_tungstenite_err)?;
     Ok(())
   }
 
@@ -620,8 +630,9 @@ mod tests {
   #[cfg(feature = "direct_websocket")]
   fn websocket_rejects_unrequested_protocol_selected_by_server() -> Result<()> {
     let _lock = net_test_lock();
-    let Some(listener) = try_bind_localhost("network_process_websocket_rejects_unrequested_protocol_selected_by_server")
-    else {
+    let Some(listener) = try_bind_localhost(
+      "network_process_websocket_rejects_unrequested_protocol_selected_by_server",
+    ) else {
       return Ok(());
     };
     listener.set_nonblocking(true).expect("set_nonblocking");
@@ -661,7 +672,10 @@ mod tests {
     let backend = DirectWebSocketBackend;
     let url = format!("ws://{addr}/");
     let res = backend.connect(&url, &[String::from("chat")]);
-    assert!(res.is_err(), "expected invalid subprotocol negotiation to fail");
+    assert!(
+      res.is_err(),
+      "expected invalid subprotocol negotiation to fail"
+    );
 
     server.join().expect("server thread panicked");
     Ok(())
@@ -671,8 +685,9 @@ mod tests {
   #[cfg(feature = "direct_websocket")]
   fn websocket_protocol_is_set_from_server_handshake_response() -> Result<()> {
     let _lock = net_test_lock();
-    let Some(listener) = try_bind_localhost("network_process_websocket_protocol_is_set_from_server_handshake_response")
-    else {
+    let Some(listener) = try_bind_localhost(
+      "network_process_websocket_protocol_is_set_from_server_handshake_response",
+    ) else {
       return Ok(());
     };
     listener.set_nonblocking(true).expect("set_nonblocking");
@@ -722,7 +737,8 @@ mod tests {
   #[cfg(feature = "direct_websocket")]
   fn websocket_rejects_protocol_when_none_were_requested() -> Result<()> {
     let _lock = net_test_lock();
-    let Some(listener) = try_bind_localhost("network_process_websocket_rejects_protocol_when_none_were_requested")
+    let Some(listener) =
+      try_bind_localhost("network_process_websocket_rejects_protocol_when_none_were_requested")
     else {
       return Ok(());
     };
@@ -761,7 +777,10 @@ mod tests {
     let backend = DirectWebSocketBackend;
     let url = format!("ws://{addr}/");
     let res = backend.connect(&url, &[]);
-    assert!(res.is_err(), "expected unrequested protocol selection to fail");
+    assert!(
+      res.is_err(),
+      "expected unrequested protocol selection to fail"
+    );
 
     server.join().expect("server thread panicked");
     Ok(())
