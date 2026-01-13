@@ -161,6 +161,20 @@ fn render_iframe_out_of_process(
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
 
+  // Apply a minimal sandbox as early as possible in the child (after `fork`, before `exec`).
+  //
+  // This is defense-in-depth: the iframe renderer is a security boundary (see `src/bin/iframe_renderer.rs`).
+  crate::sandbox::spawn::configure_renderer_command(
+    &mut cmd,
+    crate::sandbox::RendererSandboxConfig::default(),
+  )
+  .map_err(|err| {
+    OopifError::SpawnFailed(io::Error::new(
+      io::ErrorKind::Other,
+      format!("failed to configure iframe renderer sandbox: {err}"),
+    ))
+  })?;
+
   let mut child = cmd.spawn().map_err(OopifError::SpawnFailed)?;
   {
     let Some(mut stdin) = child.stdin.take() else {
