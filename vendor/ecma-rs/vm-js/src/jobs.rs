@@ -26,17 +26,14 @@
 //! queue is **host-owned**; this crate only provides the job representation.
 
 use crate::heap::{Trace, Tracer};
-use crate::fallible_alloc::box_try_new_vm;
+use crate::fallible_alloc::{arc_try_new_vm, box_try_new_vm};
 use crate::{
   GcObject, ImportMetaProperty, ModuleGraph, ModuleId, PropertyKey, RootId, Scope, Value, Vm, VmError,
 };
 use crate::{HostDefined, ModuleLoadPayload, ModuleReferrer, ModuleRequest};
 use std::any::Any;
-use std::alloc::{alloc, Layout};
 use std::fmt;
-use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Mutex;
 
 /// Host-provided state passed to native call/construct handlers.
@@ -390,34 +387,6 @@ impl Drop for Job {
 #[derive(Clone)]
 pub struct JobCallback(Arc<JobCallbackInner>);
 
-// SAFETY: This mirrors the allocation layout used by `std::sync::Arc`: refcounts followed by the
-// payload. We use this only so we can allocate an `Arc<T>` fallibly (returning `VmError::OutOfMemory`
-// instead of aborting the process via the global allocator's OOM handler).
-#[repr(C)]
-struct ArcInner<T> {
-  strong: AtomicUsize,
-  weak: AtomicUsize,
-  data: T,
-}
-
-fn arc_try_new<T>(value: T) -> Result<Arc<T>, VmError> {
-  let layout = Layout::new::<ArcInner<T>>();
-  // SAFETY: We allocate enough space for `ArcInner<T>` and initialise all fields before converting
-  // it into an `Arc<T>` via `Arc::from_raw`.
-  unsafe {
-    let raw = alloc(layout) as *mut ArcInner<T>;
-    if raw.is_null() {
-      return Err(VmError::OutOfMemory);
-    }
-    // `Arc::new` initialises both counts to 1 (the implicit weak count).
-    ptr::addr_of_mut!((*raw).strong).write(AtomicUsize::new(1));
-    ptr::addr_of_mut!((*raw).weak).write(AtomicUsize::new(1));
-    ptr::addr_of_mut!((*raw).data).write(value);
-
-    Ok(Arc::from_raw(ptr::addr_of!((*raw).data)))
-  }
-}
-
 struct JobCallbackInner {
   callback: GcObject,
   realm: Option<RealmId>,
@@ -433,7 +402,7 @@ impl JobCallback {
 
   /// Fallible constructor for a `JobCallback` associated with an opaque realm identifier.
   pub fn try_new_in_realm(callback: GcObject, realm: Option<RealmId>) -> Result<Self, VmError> {
-    Ok(Self(arc_try_new(JobCallbackInner {
+    Ok(Self(arc_try_new_vm(JobCallbackInner {
       callback,
       realm,
       host_defined: None,
@@ -453,8 +422,8 @@ impl JobCallback {
     data: T,
     realm: Option<RealmId>,
   ) -> Result<Self, VmError> {
-    let host_defined: Arc<dyn Any + Send + Sync> = arc_try_new(data)?;
-    Ok(Self(arc_try_new(JobCallbackInner {
+    let host_defined: Arc<dyn Any + Send + Sync> = arc_try_new_vm(data)?;
+    Ok(Self(arc_try_new_vm(JobCallbackInner {
       callback,
       realm,
       host_defined: Some(host_defined),
@@ -1122,11 +1091,8 @@ pub trait VmHostHooks {
 #[cfg(test)]
 mod oom_tests {
   use super::*;
-  use crate::test_alloc::{FailAllocsGuard, FailNextMatchingAllocGuard};
+  use crate::test_alloc::FailAllocsGuard;
   use crate::{Heap, HeapLimits, VmOptions};
-
-  const JOB_CALLBACK_ARC_INNER_SIZE: usize = std::mem::size_of::<ArcInner<JobCallbackInner>>();
-  const JOB_CALLBACK_ARC_INNER_ALIGN: usize = std::mem::align_of::<ArcInner<JobCallbackInner>>();
 
   #[test]
   fn host_make_job_callback_returns_out_of_memory_on_arc_alloc_failure() {
@@ -1139,7 +1105,7 @@ mod oom_tests {
 
     let mut host = Host;
     let callback = GcObject(crate::HeapId(0));
-    let _guard = FailNextMatchingAllocGuard::new(JOB_CALLBACK_ARC_INNER_SIZE, JOB_CALLBACK_ARC_INNER_ALIGN);
+    let _guard = FailAllocsGuard::new();
 
     let err = host
       .host_make_job_callback(callback)

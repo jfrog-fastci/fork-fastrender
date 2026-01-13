@@ -3,6 +3,9 @@ use core::alloc::Layout;
 use core::mem;
 use core::ptr;
 use std::alloc::alloc;
+use std::alloc::dealloc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 /// Fallible `Box<T>` allocation that reports `VmError::OutOfMemory` instead of aborting.
 ///
@@ -26,5 +29,86 @@ pub(crate) fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
     }
     ptr::write(raw, value);
     Ok(Box::from_raw(raw))
+  }
+}
+
+// SAFETY: This mirrors the allocation layout used by `std::sync::Arc`: refcounts followed by the
+// payload. We use this only so we can allocate an `Arc<T>` fallibly (returning
+// `VmError::OutOfMemory` instead of aborting the process via the global allocator's OOM handler).
+#[repr(C)]
+struct ArcInner<T> {
+  strong: AtomicUsize,
+  weak: AtomicUsize,
+  data: T,
+}
+
+/// Fallible `Arc<T>` allocation that reports `VmError::OutOfMemory` instead of aborting.
+pub(crate) fn arc_try_new_vm<T>(value: T) -> Result<Arc<T>, VmError> {
+  let layout = Layout::new::<ArcInner<T>>();
+
+  // SAFETY: We allocate enough space for `ArcInner<T>` and initialise all fields before converting
+  // it into an `Arc<T>` via `Arc::from_raw`.
+  unsafe {
+    let raw = alloc(layout) as *mut ArcInner<T>;
+    if raw.is_null() {
+      return Err(VmError::OutOfMemory);
+    }
+
+    // Ensure we deallocate the raw allocation if something panics before we hand ownership to the
+    // returned `Arc<T>`. This is only for robustness (the initialisation code below should not
+    // panic in practice).
+    struct AllocationGuard<T> {
+      ptr: *mut ArcInner<T>,
+      layout: Layout,
+      data_init: bool,
+    }
+
+    impl<T> Drop for AllocationGuard<T> {
+      fn drop(&mut self) {
+        if self.ptr.is_null() {
+          return;
+        }
+        // SAFETY: `ptr` was allocated with `layout`, and `data` was only written when `data_init`
+        // is true.
+        unsafe {
+          if self.data_init {
+            ptr::drop_in_place(ptr::addr_of_mut!((*self.ptr).data));
+          }
+          dealloc(self.ptr as *mut u8, self.layout);
+        }
+      }
+    }
+
+    let mut guard = AllocationGuard {
+      ptr: raw,
+      layout,
+      data_init: false,
+    };
+
+    // `Arc::new` initialises both counts to 1 (the implicit weak count).
+    ptr::addr_of_mut!((*raw).strong).write(AtomicUsize::new(1));
+    ptr::addr_of_mut!((*raw).weak).write(AtomicUsize::new(1));
+    ptr::addr_of_mut!((*raw).data).write(value);
+    guard.data_init = true;
+
+    // Ownership transferred to the returned `Arc<T>`.
+    guard.ptr = ptr::null_mut();
+    Ok(Arc::from_raw(ptr::addr_of!((*raw).data)))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::test_alloc::FailNextMatchingAllocGuard;
+
+  #[test]
+  fn arc_try_new_vm_returns_out_of_memory_on_alloc_failure() {
+    const ARC_INNER_SIZE: usize = std::mem::size_of::<ArcInner<u64>>();
+    const ARC_INNER_ALIGN: usize = std::mem::align_of::<ArcInner<u64>>();
+    let _guard = FailNextMatchingAllocGuard::new(ARC_INNER_SIZE, ARC_INNER_ALIGN);
+
+    let err = arc_try_new_vm(123u64).expect_err("expected OOM error");
+    assert!(matches!(err, VmError::OutOfMemory));
   }
 }
