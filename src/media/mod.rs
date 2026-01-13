@@ -2,6 +2,7 @@
 //!
 //! This module currently provides:
 //! - timestamp/timebase helpers used by media playback work
+//! - media clock helpers
 //! - paint-facing plumbing for supplying decoded media frames (video; audio is currently a stub)
 //! - container demux primitives (track metadata + compressed packets)
 //! - codec backends for decoding compressed packets into PCM / frames
@@ -65,8 +66,8 @@ impl MediaFrameSizeHint {
 /// Returning `None` indicates that no decoded frame is currently available; the paint pipeline will
 /// fall back to other rendering (poster image, placeholders, etc).
 pub trait MediaFrameProvider: Send + Sync + 'static {
-  /// Returns the current decoded video frame for the `<video>` element identified by
-  /// (`box_id`, `src`), if available.
+  /// Returns the current decoded video frame for the `<video>` element identified by (`box_id`,
+  /// `src`), if available.
   fn video_frame(
     &self,
     box_id: Option<usize>,
@@ -74,8 +75,8 @@ pub trait MediaFrameProvider: Send + Sync + 'static {
     size_hint: Option<MediaFrameSizeHint>,
   ) -> Option<Arc<ImageData>>;
 
-  /// Returns the current decoded audio frame for the `<audio>` element identified by
-  /// (`box_id`, `src`), if available.
+  /// Returns the current decoded audio frame for the `<audio>` element identified by (`box_id`,
+  /// `src`), if available.
   ///
   /// Audio plumbing is not yet integrated into the paint pipeline; this exists as a forward-looking
   /// stub and currently defaults to `None`.

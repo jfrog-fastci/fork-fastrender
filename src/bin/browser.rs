@@ -11731,7 +11731,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
   fn render_downloads_panel(&mut self, ctx: &egui::Context) {
     use fastrender::ui::UiToWorker;
 
-    let request_initial_focus = self.downloads_panel_request_focus && !ctx.wants_keyboard_input();
+    let request_initial_focus = self.downloads_panel_request_focus && !self.chrome_has_text_focus;
     self.downloads_panel_request_focus = false;
 
     let output = fastrender::ui::panels::downloads_panel_ui(
@@ -13842,10 +13842,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           // Winit 0.28 does not expose a stable cross-platform cursor-position query API on
           // `Window`. Fall back to egui's tracked hover position; if it's not available we treat
           // the cursor position as unknown and conservatively avoid focusing the page.
-          let window_cursor_pos = None;
           let resolved = resolve_cursor_pos_points_for_mouse_input(
             egui_hover_pos,
-            window_cursor_pos,
+            None,
             self.pixels_per_point,
           );
           self.last_cursor_pos_points = resolved;
@@ -14514,7 +14513,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
         if self.open_media_controls.is_some()
           && self.page_has_focus
-          && !self.egui_ctx.wants_keyboard_input()
+          && !self.chrome_has_text_focus
         {
           // Media keyboard shortcuts should only trigger for the plain key (no command modifiers),
           // otherwise reserved browser shortcuts like Alt+Left/Right should keep working.
@@ -16135,6 +16134,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       &ctx,
       self.browser_state.appearance.reduced_motion,
     );
+    // Seed the cached focus model early in the frame so chrome UI (menu bar, panels, etc) can make
+    // routing decisions without calling `egui::Context::wants_keyboard_input()` directly.
+    self.refresh_chrome_text_focus_from_egui(&ctx);
 
     // Treat the clear browsing data dialog as a modal: while it's open, the rendered page should
     // never take keyboard focus (e.g. via `response.request_focus()` on the central page image).
@@ -16251,8 +16253,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               // Match our shortcut routing semantics:
               // - when egui has an active text field (address bar), prefer egui editing;
               // - otherwise, when the rendered page has focus, route to the worker.
-              let egui_target =
-                ctx.wants_keyboard_input() || self.browser_state.chrome.address_bar_has_focus;
+              let egui_target = self.chrome_has_text_focus;
               let should_route_to_egui_text_input = egui_target
                 || self.browser_state.chrome.tab_search.open
                 || self.bookmarks_panel_open
@@ -16427,7 +16428,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     if !self.clear_browsing_data_dialog_open
       && (self.bookmarks_panel_open || self.history_panel_open)
       && ctx.input(|i| i.key_pressed(egui::Key::Escape))
-      && (!ctx.wants_keyboard_input()
+      && (!self.chrome_has_text_focus
         || (!self.browser_state.chrome.address_bar_has_focus
           && !self.browser_state.chrome.tab_search.open
           && !self
@@ -16539,7 +16540,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     if !self.clear_browsing_data_dialog_open
       && self.downloads_panel_open
       && ctx.input(|i| i.key_pressed(egui::Key::Escape))
-      && !ctx.wants_keyboard_input()
+      && !self.chrome_has_text_focus
     {
       self.downloads_panel_open = false;
       self.downloads_panel_request_focus = false;
