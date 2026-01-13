@@ -770,6 +770,58 @@ mod tests {
   }
 
   #[test]
+  fn frame_src_scheme_source_allows_any_url_with_matching_scheme() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://parent.example/".to_string(),
+      vec!["frame-src https:".to_string()],
+    );
+
+    let ok = frame
+      .check_frame_src("https://evil.example/child")
+      .expect("expected https: scheme source to allow https URL");
+    assert_eq!(ok.as_str(), "https://evil.example/child");
+
+    let err = frame
+      .check_frame_src("http://evil.example/child")
+      .expect_err("expected https: scheme source to block http URL");
+    assert_eq!(
+      err,
+      "Blocked by Content-Security-Policy (frame-src) for requested URL: http://evil.example/child"
+    );
+  }
+
+  #[test]
+  fn frame_src_host_source_matches_wildcards_ports_and_paths() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://parent.example/".to_string(),
+      vec!["frame-src https://*.example.com:8443/path/".to_string()],
+    );
+
+    let ok = frame
+      .check_frame_src("https://a.example.com:8443/path/child")
+      .expect("expected host source to allow matching wildcard+port+path");
+    assert_eq!(ok.as_str(), "https://a.example.com:8443/path/child");
+
+    frame
+      .check_frame_src("https://example.com:8443/path/child")
+      .expect_err("wildcard host source should not match the base domain itself");
+
+    frame
+      .check_frame_src("https://a.example.com:8443/other")
+      .expect_err("host source with /path/ should require URL path prefix");
+
+    frame
+      .check_frame_src("http://a.example.com:8443/path/child")
+      .expect_err("host source scheme should be enforced when specified");
+
+    frame
+      .check_frame_src("https://a.example.com:443/path/child")
+      .expect_err("host source port should be enforced when specified");
+  }
+
+  #[test]
   fn mixed_content_blocks_final_url_after_redirect() {
     let mut frame = FrameNode::new(FrameId(1));
     frame.navigation_committed("https://secure.example/".to_string(), Vec::new());
