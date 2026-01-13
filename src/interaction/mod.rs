@@ -18,6 +18,9 @@ pub mod scroll_wheel;
 pub mod state;
 pub mod url;
 
+#[cfg(test)]
+mod state_dom2_tests;
+
 pub use anchor_scroll::scroll_offset_for_fragment_target;
 pub use engine::{
   DateTimeInputKind, DragDropKind, InputModality, InteractionAction, InteractionEngine, KeyAction,

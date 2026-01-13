@@ -1,0 +1,91 @@
+#![cfg(test)]
+
+use crate::interaction::state::InteractionStateDom2;
+
+#[test]
+fn interaction_state_dom2_projection_updates_preorder_ids_after_dom_mutation() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=a></div>",
+    "<div id=b></div>",
+    "</body></html>",
+  );
+
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let focused = doc.get_element_by_id("b").expect("missing #b element");
+
+  let snapshot1 = doc.to_renderer_dom_with_mapping();
+  let focused_preorder_1 = snapshot1
+    .mapping
+    .preorder_for_node_id(focused)
+    .expect("focused node should be connected");
+
+  let state_dom2 = InteractionStateDom2 {
+    focused: Some(focused),
+    focus_visible: true,
+    focus_chain: vec![focused],
+    ..Default::default()
+  };
+
+  let projected_1 = state_dom2.project_to_preorder(&snapshot1.mapping);
+  assert_eq!(projected_1.focused, Some(focused_preorder_1));
+  assert_eq!(projected_1.focus_chain, vec![focused_preorder_1]);
+
+  // Mutate the DOM by inserting a new sibling immediately before the focused element; this should
+  // shift renderer preorder ids while leaving the focused NodeId stable.
+  let parent = doc.parent(focused).unwrap().unwrap();
+  let inserted = doc.create_element("div", "");
+  assert!(doc
+    .insert_before(parent, inserted, Some(focused))
+    .unwrap());
+
+  let snapshot2 = doc.to_renderer_dom_with_mapping();
+  let focused_preorder_2 = snapshot2
+    .mapping
+    .preorder_for_node_id(focused)
+    .expect("focused node should still be connected");
+  assert_ne!(
+    focused_preorder_1, focused_preorder_2,
+    "expected DOM insertion to shift preorder ids"
+  );
+
+  assert_eq!(state_dom2.focused, Some(focused));
+  let projected_2 = state_dom2.project_to_preorder(&snapshot2.mapping);
+  assert_eq!(projected_2.focused, Some(focused_preorder_2));
+  assert_eq!(projected_2.focus_chain, vec![focused_preorder_2]);
+}
+
+#[test]
+fn interaction_state_dom2_projection_clears_unmappable_focus() {
+  let html = "<!doctype html><html><body><div id=a></div></body></html>";
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+
+  // Create a detached element and treat it as focused.
+  let detached = doc.create_element("div", "");
+  let state_dom2 = InteractionStateDom2 {
+    focused: Some(detached),
+    focus_visible: true,
+    focus_chain: vec![detached],
+    ..Default::default()
+  };
+
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  assert_eq!(
+    snapshot.mapping.preorder_for_node_id(detached),
+    None,
+    "detached nodes should not map to renderer preorder ids"
+  );
+
+  let projected = state_dom2.project_to_preorder(&snapshot.mapping);
+  assert_eq!(projected.focused, None);
+  assert!(
+    projected.focus_chain.is_empty(),
+    "focus_chain should be cleared when focused node is unmappable"
+  );
+  assert!(
+    !projected.focus_visible,
+    "focus_visible should be cleared when no focused element is projected"
+  );
+}
+

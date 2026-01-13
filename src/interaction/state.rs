@@ -1,5 +1,6 @@
 use crate::text::caret::CaretAffinity;
 use crate::interaction::selection_serialize::{DocumentSelectionPoint, DocumentSelectionRange};
+use crate::dom2::{NodeId, RendererDomMapping};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;
 use std::path::PathBuf;
@@ -304,4 +305,237 @@ pub struct TextEditPaintState {
   pub caret_affinity: CaretAffinity,
   /// Optional selection range in character indices (start, end), where `start < end`.
   pub selection: Option<(usize, usize)>,
+}
+
+/// Live (non-DOM) form control state keyed by stable [`dom2::NodeId`](crate::dom2::NodeId).
+///
+/// This is the stable counterpart to [`FormState`]. It is intended to be stored alongside a live
+/// `dom2` document where nodes can be inserted/removed without invalidating this state.
+#[derive(Debug, Clone, Default)]
+pub struct FormStateDom2 {
+  /// Current value for value-bearing controls (`<input>` / `<textarea>` / etc.), keyed by stable
+  /// `dom2` [`NodeId`].
+  pub values: FxHashMap<NodeId, String>,
+  /// Current checked state for checkbox/radio inputs, keyed by stable `dom2` [`NodeId`].
+  pub checked: FxHashMap<NodeId, bool>,
+  /// Current file selections for `<input type="file">`, keyed by stable `dom2` [`NodeId`].
+  pub file_inputs: FxHashMap<NodeId, Vec<FileSelection>>,
+  /// Current selected option ids for `<select>` elements, keyed by stable `dom2` [`NodeId`].
+  ///
+  /// When a select id is present in this map, the selection set is treated as authoritative for that
+  /// select (including the empty set for multi-selects).
+  pub select_selected: FxHashMap<NodeId, FxHashSet<NodeId>>,
+}
+
+impl FormStateDom2 {
+  #[inline]
+  pub fn has_overrides(&self) -> bool {
+    !(self.values.is_empty()
+      && self.checked.is_empty()
+      && self.file_inputs.is_empty()
+      && self.select_selected.is_empty())
+  }
+
+  /// Project this stable state into the renderer's preorder-id keyed [`FormState`].
+  ///
+  /// Any entries whose nodes are detached from the renderer snapshot (unmappable `NodeId`) are
+  /// dropped.
+  pub fn project_to_preorder(&self, mapping: &RendererDomMapping) -> FormState {
+    let mut projected = FormState::default();
+
+    projected.values = self
+      .values
+      .iter()
+      .filter_map(|(&node_id, value)| {
+        mapping
+          .preorder_for_node_id(node_id)
+          .map(|preorder| (preorder, value.clone()))
+      })
+      .collect();
+
+    projected.checked = self
+      .checked
+      .iter()
+      .filter_map(|(&node_id, &checked)| {
+        mapping
+          .preorder_for_node_id(node_id)
+          .map(|preorder| (preorder, checked))
+      })
+      .collect();
+
+    projected.file_inputs = self
+      .file_inputs
+      .iter()
+      .filter_map(|(&node_id, files)| {
+        mapping
+          .preorder_for_node_id(node_id)
+          .map(|preorder| (preorder, files.clone()))
+      })
+      .collect();
+
+    projected.select_selected = self
+      .select_selected
+      .iter()
+      .filter_map(|(&select_id, options)| {
+        let select_preorder = mapping.preorder_for_node_id(select_id)?;
+        let projected_options: FxHashSet<usize> = options
+          .iter()
+          .filter_map(|&id| mapping.preorder_for_node_id(id))
+          .collect();
+        Some((select_preorder, projected_options))
+      })
+      .collect();
+
+    projected
+  }
+}
+
+/// In-progress IME (Input Method Editor) composition state for a focused control, keyed by stable
+/// `dom2` node ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImePreeditStateDom2 {
+  pub node_id: NodeId,
+  pub text: String,
+  pub cursor: Option<(usize, usize)>,
+}
+
+/// Caret + selection state for a focused text control (`<input>` / `<textarea>`), keyed by stable
+/// `dom2` node ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextEditPaintStateDom2 {
+  pub node_id: NodeId,
+  /// Caret position in character indices.
+  pub caret: usize,
+  /// Visual affinity for the caret when the logical boundary maps to multiple x positions.
+  pub caret_affinity: CaretAffinity,
+  /// Optional selection range in character indices (start, end), where `start < end`.
+  pub selection: Option<(usize, usize)>,
+}
+
+/// Internal, non-DOM-visible interaction state keyed by stable [`dom2::NodeId`](crate::dom2::NodeId).
+///
+/// ## Stable vs renderer interaction state
+///
+/// The renderer's selector/layout/paint pipeline consumes [`InteractionState`], which is keyed by
+/// **renderer preorder ids** (the 1-based ids produced by [`crate::dom::enumerate_dom_ids`]).
+/// Preorder ids are specific to a particular immutable DOM snapshot; they can change whenever the
+/// underlying `dom2` document is mutated (insertion/removal/reordering).
+///
+/// `InteractionStateDom2` is the stable counterpart intended to be stored alongside the live `dom2`
+/// document. When the renderer needs interaction state for a particular snapshot, project this
+/// stable state to preorder ids using [`InteractionStateDom2::project_to_preorder`] with the
+/// snapshot's [`RendererDomMapping`].
+#[derive(Debug, Clone, Default)]
+pub struct InteractionStateDom2 {
+  /// Currently focused element `NodeId`.
+  pub focused: Option<NodeId>,
+  /// Whether the focused element should match `:focus-visible`.
+  pub focus_visible: bool,
+  /// The focused element and its element ancestors (used for `:focus-within` matching).
+  pub focus_chain: Vec<NodeId>,
+  /// The element under the pointer and its element ancestors (used for `:hover` matching).
+  pub hover_chain: Vec<NodeId>,
+  /// The active element (e.g. pointer down) and its element ancestors (used for `:active` matching).
+  pub active_chain: Vec<NodeId>,
+  /// Set of link node ids that have been visited in this document.
+  pub visited_links: FxHashSet<NodeId>,
+  /// Optional IME composition (preedit) state for the focused text control.
+  pub ime_preedit: Option<ImePreeditStateDom2>,
+  /// Optional caret/selection state for a focused text control (`<input>` / `<textarea>`).
+  pub text_edit: Option<TextEditPaintStateDom2>,
+  /// Live form state for value-bearing and toggleable controls.
+  pub form_state: FormStateDom2,
+  /// Node ids (controls/forms) that have flipped HTML "user validity" from false to true.
+  pub user_validity: FxHashSet<NodeId>,
+}
+
+impl InteractionStateDom2 {
+  /// Project this stable, `dom2::NodeId` keyed state into the renderer's preorder-id keyed
+  /// [`InteractionState`].
+  ///
+  /// Mapping semantics:
+  /// - Each `NodeId` is translated via [`RendererDomMapping::preorder_for_node_id`].
+  /// - Any nodes that are detached/unmappable in the target snapshot are dropped.
+  /// - For vec "chains", order is preserved while filtering out unmappable nodes.
+  /// - If the focused node is unmappable, the projected `focused` is set to `None` and the projected
+  ///   `focus_chain` is cleared (since it is derived from focus).
+  pub fn project_to_preorder(&self, mapping: &RendererDomMapping) -> InteractionState {
+    let focused_preorder = self
+      .focused
+      .and_then(|node_id| mapping.preorder_for_node_id(node_id));
+
+    let focus_chain = if focused_preorder.is_some() {
+      self
+        .focus_chain
+        .iter()
+        .copied()
+        .filter_map(|id| mapping.preorder_for_node_id(id))
+        .collect()
+    } else {
+      Vec::new()
+    };
+
+    let hover_chain = self
+      .hover_chain
+      .iter()
+      .copied()
+      .filter_map(|id| mapping.preorder_for_node_id(id))
+      .collect();
+
+    let active_chain = self
+      .active_chain
+      .iter()
+      .copied()
+      .filter_map(|id| mapping.preorder_for_node_id(id))
+      .collect();
+
+    let visited_links: FxHashSet<usize> = self
+      .visited_links
+      .iter()
+      .copied()
+      .filter_map(|id| mapping.preorder_for_node_id(id))
+      .collect();
+
+    let user_validity: FxHashSet<usize> = self
+      .user_validity
+      .iter()
+      .copied()
+      .filter_map(|id| mapping.preorder_for_node_id(id))
+      .collect();
+
+    let ime_preedit = self.ime_preedit.as_ref().and_then(|state| {
+      let node_id = mapping.preorder_for_node_id(state.node_id)?;
+      Some(ImePreeditState {
+        node_id,
+        text: state.text.clone(),
+        cursor: state.cursor,
+      })
+    });
+
+    let text_edit = self.text_edit.and_then(|state| {
+      let node_id = mapping.preorder_for_node_id(state.node_id)?;
+      Some(TextEditPaintState {
+        node_id,
+        caret: state.caret,
+        caret_affinity: state.caret_affinity,
+        selection: state.selection,
+      })
+    });
+
+    InteractionState {
+      focused: focused_preorder,
+      focus_visible: self.focus_visible && focused_preorder.is_some(),
+      focus_chain,
+      hover_chain,
+      active_chain,
+      visited_links,
+      ime_preedit,
+      text_edit,
+      form_state: self.form_state.project_to_preorder(mapping),
+      // Document selection state is currently tracked by the preorder-id based interaction engine.
+      // Porting it to stable node ids is out of scope for this initial projection layer.
+      document_selection: None,
+      user_validity,
+    }
+  }
 }
