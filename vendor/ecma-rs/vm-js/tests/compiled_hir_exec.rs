@@ -501,3 +501,24 @@ fn compiled_strict_equality_compares_bigints_by_value() -> Result<(), VmError> {
   assert_eq!(result, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn compiled_with_statement_executes() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let o = {x: 1};
+      with (o) { x = 2; }
+      o.x
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = vm_js::JsRuntime::new(vm, heap)?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}

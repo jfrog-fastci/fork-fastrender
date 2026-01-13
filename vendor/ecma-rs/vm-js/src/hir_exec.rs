@@ -571,12 +571,35 @@ impl<'vm> HirEvaluator<'vm> {
           other => Ok(other),
         }
       }
+      hir_js::StmtKind::With { object, body: inner } => {
+        // Minimal ECMA-262 `WithStatement` evaluation:
+        //
+        // - Evaluate the object expression, then `ToObject` it.
+        // - Create an ObjectEnvironmentRecord with `with_environment = true`.
+        // - Evaluate the body with that env record as the current lexical environment.
+        let mut with_scope = scope.reborrow();
+        let object_value = self.eval_expr(&mut with_scope, body, *object)?;
+        with_scope.push_root(object_value)?;
+        let binding_object =
+          with_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, object_value)?;
+        with_scope.push_root(Value::Object(binding_object))?;
+
+        let outer = self.env.lexical_env();
+        let with_env = with_scope.alloc_object_env_record(binding_object, Some(outer), true)?;
+        self.env.set_lexical_env(with_scope.heap_mut(), with_env);
+
+        let result = self.eval_stmt(&mut with_scope, body, *inner);
+
+        // Always restore the outer lexical environment so later statements run in the correct
+        // scope.
+        self.env.set_lexical_env(with_scope.heap_mut(), outer);
+        result
+      }
       hir_js::StmtKind::Empty | hir_js::StmtKind::Debugger => Ok(Flow::empty()),
       other => Err(match other {
         hir_js::StmtKind::ForIn { .. } => VmError::Unimplemented("for-in/of (hir-js compiled path)"),
         hir_js::StmtKind::Switch { .. } => VmError::Unimplemented("switch (hir-js compiled path)"),
         hir_js::StmtKind::Try { .. } => VmError::Unimplemented("try/catch/finally (hir-js compiled path)"),
-        hir_js::StmtKind::With { .. } => VmError::Unimplemented("with (hir-js compiled path)"),
         _ => VmError::Unimplemented("statement (hir-js compiled path)"),
       }),
     }
