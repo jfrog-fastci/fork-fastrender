@@ -64,6 +64,16 @@ impl AccessKitTestTree {
     }
   }
 
+  /// Merge the AccessKit update emitted by egui into this store.
+  pub fn apply_platform_output(&mut self, output: &egui::PlatformOutput) {
+    let update = accesskit_update_from_platform_output(output);
+    self.apply_update(update);
+  }
+
+  pub fn apply_full_output(&mut self, output: &egui::FullOutput) {
+    self.apply_platform_output(&output.platform_output);
+  }
+
   pub fn nodes_iter(&self) -> impl Iterator<Item = (accesskit::NodeId, &accesskit::Node)> + '_ {
     self.nodes.iter().map(|(id, node)| (*id, node))
   }
@@ -72,8 +82,38 @@ impl AccessKitTestTree {
     accesskit_reachable_node_ids_from_update(update, self.root_id, self.nodes_iter())
   }
 
+  pub fn reachable_node_ids_from_platform_output(
+    &self,
+    output: &egui::PlatformOutput,
+  ) -> Vec<accesskit::NodeId> {
+    let update = accesskit_update_from_platform_output(output);
+    self.reachable_node_ids(update)
+  }
+
+  pub fn reachable_node_ids_from_full_output(
+    &self,
+    output: &egui::FullOutput,
+  ) -> Vec<accesskit::NodeId> {
+    self.reachable_node_ids_from_platform_output(&output.platform_output)
+  }
+
   pub fn orphan_node_ids(&self, update: &accesskit::TreeUpdate) -> Vec<accesskit::NodeId> {
     accesskit_orphan_node_ids_from_update(update, self.root_id, self.nodes_iter())
+  }
+
+  pub fn orphan_node_ids_from_platform_output(
+    &self,
+    output: &egui::PlatformOutput,
+  ) -> Vec<accesskit::NodeId> {
+    let update = accesskit_update_from_platform_output(output);
+    self.orphan_node_ids(update)
+  }
+
+  pub fn orphan_node_ids_from_full_output(
+    &self,
+    output: &egui::FullOutput,
+  ) -> Vec<accesskit::NodeId> {
+    self.orphan_node_ids_from_platform_output(&output.platform_output)
   }
 
   pub fn reachable_nodes_snapshot(
@@ -81,6 +121,21 @@ impl AccessKitTestTree {
     update: &accesskit::TreeUpdate,
   ) -> Vec<AccessKitReachableNodeSnapshot> {
     accesskit_reachable_nodes_snapshot_from_update(update, self.root_id, self.nodes_iter())
+  }
+
+  pub fn reachable_nodes_snapshot_from_platform_output(
+    &self,
+    output: &egui::PlatformOutput,
+  ) -> Vec<AccessKitReachableNodeSnapshot> {
+    let update = accesskit_update_from_platform_output(output);
+    self.reachable_nodes_snapshot(update)
+  }
+
+  pub fn reachable_nodes_snapshot_from_full_output(
+    &self,
+    output: &egui::FullOutput,
+  ) -> Vec<AccessKitReachableNodeSnapshot> {
+    self.reachable_nodes_snapshot_from_platform_output(&output.platform_output)
   }
 }
 
