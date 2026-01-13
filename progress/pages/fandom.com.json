@@ -16,7 +16,7 @@
     "layout": 65.10097548672566,
     "paint": 106.16466771681417
   },
-  "notes": "",
+  "notes": "Visually good overall (JS off). Fixture page-loop (`tests/pages/fixtures/fandom.com`) shows correct global nav + feed layout; remaining ~39% pixel diffs vs Chrome (perceptual ≈0.12) appear dominated by text rasterization/hinting and small subpixel layout/rounding shifts (first mismatch is a Register button glyph coverage delta), plus minor gradient/mask/box-shadow blur differences. No missing layout primitives identified.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 376841,
