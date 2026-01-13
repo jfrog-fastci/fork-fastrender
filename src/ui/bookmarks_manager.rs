@@ -1421,25 +1421,25 @@ fn render_bookmark_row(
     let indent = depth as f32 * ui.spacing().indent;
     ui.horizontal(|ui| {
       ui.add_space(indent);
-      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let del = icon_button(ui, BrowserIcon::Trash, "Delete bookmark", true);
-        del.widget_info(move || {
-          let label =
-            a11y_labels::bookmark_delete_label(entry.title.as_deref(), entry.url.as_str());
-          egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
-        });
-        if del.clicked() {
-          delete_clicked = true;
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+          let del = icon_button(ui, BrowserIcon::Trash, "Delete bookmark", true);
+          del.widget_info(move || {
+            let label =
+              a11y_labels::bookmark_delete_label(entry.title.as_deref(), entry.url.as_str());
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+          });
+          if del.clicked() {
+            delete_clicked = true;
+          }
 
-        let edit_btn = icon_button(ui, BrowserIcon::Edit, "Edit bookmark", true);
-        edit_btn.widget_info(move || {
-          let label = a11y_labels::bookmark_edit_label(entry.title.as_deref(), entry.url.as_str());
-          egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
-        });
-        if edit_btn.clicked() {
-          edit_clicked = true;
-        }
+          let edit_btn = icon_button(ui, BrowserIcon::Edit, "Edit bookmark", true);
+          edit_btn.widget_info(move || {
+            let label = a11y_labels::bookmark_edit_label(entry.title.as_deref(), entry.url.as_str());
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+          });
+          if edit_btn.clicked() {
+            edit_clicked = true;
+          }
 
         let new_tab = icon_button(ui, BrowserIcon::OpenInNewTab, "Open in new tab", true);
         new_tab.widget_info(move || {

@@ -4820,7 +4820,7 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> ::accesskit::TreeUpdate
 }
 
 #[cfg(all(test, feature = "browser_ui"))]
-mod accesskit_lang_dir_tests {
+mod accesskit_lang_tests {
   use super::*;
 
   fn find_node_by_name<'a>(

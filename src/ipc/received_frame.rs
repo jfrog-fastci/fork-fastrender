@@ -200,7 +200,10 @@ mod tests {
     let frame = make_frame(3, 7, Arc::clone(&current_epoch), tx);
     drop(frame);
 
-    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 3 });
+    assert_eq!(
+      rx.try_recv().unwrap(),
+      BrowserToRenderer::FrameAck { frame_seq: 3 }
+    );
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
@@ -214,10 +217,16 @@ mod tests {
     // Overwrite the old frame for the same key; this should drop and ack the previous one.
     map.insert(123, make_frame(11, 1, Arc::clone(&current_epoch), tx));
 
-    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 10 });
+    assert_eq!(
+      rx.try_recv().unwrap(),
+      BrowserToRenderer::FrameAck { frame_seq: 10 }
+    );
 
     drop(map);
-    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 11 });
+    assert_eq!(
+      rx.try_recv().unwrap(),
+      BrowserToRenderer::FrameAck { frame_seq: 11 }
+    );
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
@@ -230,7 +239,10 @@ mod tests {
     frame.ack();
     drop(frame);
 
-    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 42 });
+    assert_eq!(
+      rx.try_recv().unwrap(),
+      BrowserToRenderer::FrameAck { frame_seq: 42 }
+    );
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 

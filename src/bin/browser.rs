@@ -12880,7 +12880,6 @@ struct PendingPerfNavigation {
 }
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug)]
 struct PerfWindowLog {
   start: std::time::Instant,
   window_id: String,
@@ -12929,7 +12928,7 @@ impl PerfWindowLog {
     t.saturating_duration_since(self.start).as_millis() as u64
   }
 
-  fn emit(&mut self, event: &perf_log::PerfEvent<'_>) {
+  fn emit(&self, event: &perf_log::PerfEvent<'_>) {
     self.writer.borrow_mut().emit(event);
   }
 
@@ -13069,35 +13068,60 @@ impl PerfWindowLog {
     };
     self.emit(&frame_event);
 
-    let mut emit_input = |kind: perf_log::InputKind, pending: &mut PendingPerfInput| {
-      let Some((first, count)) = pending.take() else {
-        return;
-      };
-      let input_ts_ms = self.ts_ms(first);
-      let latency = present_at.saturating_duration_since(first).as_secs_f64() * 1000.0;
+    let active_tab_id_u64 = active_tab_id.map(|t| t.0);
+
+    if let Some((first, count)) = self.pending_keyboard.take() {
       let event = perf_log::PerfEvent::Input {
         schema_version: perf_log::SCHEMA_VERSION,
         t_ms,
-        window_id: self.window_id.as_str().into(),
-        active_tab_id: active_tab_id.map(|t| t.0),
-        input_kind: kind,
-        input_ts_ms,
-        input_to_present_ms: latency,
+        window_id: self.window_id.as_str(),
+        active_tab_id: active_tab_id_u64,
+        input_kind: perf_log::InputKind::Keyboard,
+        input_ts_ms: self.ts_ms(first),
+        input_to_present_ms: present_at.saturating_duration_since(first).as_secs_f64() * 1000.0,
         count,
       };
       self.emit(&event);
-    };
-
-    emit_input(perf_log::InputKind::Keyboard, &mut self.pending_keyboard);
-    emit_input(
-      perf_log::InputKind::MouseWheel,
-      &mut self.pending_mouse_wheel,
-    );
-    emit_input(
-      perf_log::InputKind::PointerMove,
-      &mut self.pending_pointer_move,
-    );
-    emit_input(perf_log::InputKind::Button, &mut self.pending_button);
+    }
+    if let Some((first, count)) = self.pending_mouse_wheel.take() {
+      let event = perf_log::PerfEvent::Input {
+        schema_version: perf_log::SCHEMA_VERSION,
+        t_ms,
+        window_id: &self.window_id,
+        active_tab_id: active_tab_id_u64,
+        input_kind: perf_log::InputKind::MouseWheel,
+        input_ts_ms: self.ts_ms(first),
+        input_to_present_ms: present_at.saturating_duration_since(first).as_secs_f64() * 1000.0,
+        count,
+      };
+      self.emit(&event);
+    }
+    if let Some((first, count)) = self.pending_pointer_move.take() {
+      let event = perf_log::PerfEvent::Input {
+        schema_version: perf_log::SCHEMA_VERSION,
+        t_ms,
+        window_id: &self.window_id,
+        active_tab_id: active_tab_id_u64,
+        input_kind: perf_log::InputKind::PointerMove,
+        input_ts_ms: self.ts_ms(first),
+        input_to_present_ms: present_at.saturating_duration_since(first).as_secs_f64() * 1000.0,
+        count,
+      };
+      self.emit(&event);
+    }
+    if let Some((first, count)) = self.pending_button.take() {
+      let event = perf_log::PerfEvent::Input {
+        schema_version: perf_log::SCHEMA_VERSION,
+        t_ms,
+        window_id: &self.window_id,
+        active_tab_id: active_tab_id_u64,
+        input_kind: perf_log::InputKind::Button,
+        input_ts_ms: self.ts_ms(first),
+        input_to_present_ms: present_at.saturating_duration_since(first).as_secs_f64() * 1000.0,
+        count,
+      };
+      self.emit(&event);
+    }
 
     if let Some(resize) = self.pending_resize.take() {
       let resize_ts_ms = self.ts_ms(resize.at);
@@ -13386,6 +13410,9 @@ struct App {
   /// the rendered page has focus. On some platforms/egui versions, egui-winit may still emit a
   /// `Paste` event for the same keypress; this flag avoids double-pasting.
   suppress_paste_events: bool,
+  /// Clipboard text requested by the worker (`WorkerToUi::SetClipboardText`) to be applied on the
+  /// next egui frame via `PlatformOutput.copied_text`.
+  pending_clipboard_text: Option<String>,
   /// Scratch buffer for extracting `egui::Event::MouseWheel` payloads from `RawInput`.
   ///
   /// PERF: `RawInput::events` is scanned every frame; reusing this buffer avoids per-frame `Vec`
@@ -14431,6 +14458,7 @@ impl App {
       modifiers: winit::event::ModifiersState::default(),
       clipboard_write_gate: Default::default(),
       suppress_paste_events: false,
+      pending_clipboard_text: None,
       wheel_events_buf: Vec::with_capacity(8),
       paste_events_buf: Vec::with_capacity(2),
       perf_log_enabled,
@@ -15430,7 +15458,7 @@ impl App {
         pos_css,
         anchor_points: pos_points,
       });
-      self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
         tab_id,
         pos_css,
         modifiers: map_modifiers(self.modifiers),
@@ -28382,6 +28410,10 @@ impl App {
 
     // Update the cached focus model for use by the winit input handler after this frame.
     self.refresh_chrome_text_focus_from_egui(&ctx);
+
+    if let Some(text) = self.pending_clipboard_text.take() {
+      self.egui_ctx.output_mut(|o| o.copied_text = text);
+    }
 
     let mut full_output = {
       let _span = self.trace.span("egui.end_frame", "ui.frame");

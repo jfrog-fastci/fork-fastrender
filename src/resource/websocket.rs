@@ -182,14 +182,17 @@ pub(crate) fn connect_with_timeout(
           .map_err(tungstenite::Error::Io)?;
 
         let stream = if tls {
-          // `ClientConnection` stores the server name for the lifetime of the connection, so we must
-          // pass an owned (i.e. `'static`) value.
-          let server_name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|_| {
-            tungstenite::Error::Io(io::Error::new(
-              io::ErrorKind::InvalidInput,
-              "WebSocket host is not a valid TLS server name",
-            ))
-          })?;
+          // `ClientConnection` requires an owned `'static` server name; allocate because `host` is
+          // borrowed from the URL.
+          let server_name: rustls::pki_types::ServerName<'static> = host
+            .to_string()
+            .try_into()
+            .map_err(|_| {
+              tungstenite::Error::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WebSocket host is not a valid TLS server name",
+              ))
+            })?;
           let conn = rustls::ClientConnection::new(rustls_client_config(), server_name)
             .map_err(|err| tungstenite::Error::Io(io::Error::new(io::ErrorKind::Other, err)))?;
           let tls_stream = rustls::StreamOwned::new(conn, stream);
