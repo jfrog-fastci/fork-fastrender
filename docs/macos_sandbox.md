@@ -218,11 +218,17 @@ stable across hosts.
 The probe attempts a few IPC primitives **after** applying the sandbox. This is intended to inform
 the renderer↔browser IPC transport choice.
 
-| Capability | Primitive | Strict profile expectation | Recommendation |
+The output distinguishes between:
+
+- **create after sandbox**: what the sandboxed process can create on its own
+- **created before sandbox**: what remains usable if the browser creates IPC endpoints and passes
+  them into the renderer (typical multiprocess model)
+
+| Capability | Primitive | Probe output (mode=strict) | Recommendation |
 |---|---|---|---|
-| Anonymous pipe | `pipe()` | **ALLOWED** | Safe default. Prefer inherited pipes (created by the browser before sandboxing) if a future profile denies in-sandbox creation. |
-| Anonymous Unix domain socketpair | `UnixStream::pair()` (`socketpair`) | **ALLOWED** | Prefer for bidirectional framed IPC on Unix-y platforms. If denied under a future profile, create the socketpair in the parent before sandboxing the renderer. |
-| Filesystem-backed Unix domain socket | `UnixListener::bind($TMPDIR/…)` | **DENIED** (filesystem write denied) | Avoid named UDS paths inside the renderer sandbox. Use inherited FDs (pipes/socketpair), or a macOS-specific transport (Mach/XPC) if needed. |
+| Anonymous pipe | `pipe()` | See `ipc: pipe()` lines (both “create after sandbox” and “created before sandbox”) | Safe default. Prefer inherited pipes (created by the browser before sandboxing) if in-sandbox creation is denied. |
+| Anonymous Unix domain socketpair | `UnixStream::pair()` (`socketpair`) | See `ipc: unix socketpair` lines (both “create after sandbox” and “created before sandbox”) | Prefer for bidirectional framed IPC on Unix-y platforms. If in-sandbox creation is denied, create the socketpair in the parent before sandboxing the renderer (and rely on the inherited FD). |
+| Filesystem-backed Unix domain socket | `UnixListener::bind($TMPDIR/…)` | **DENIED** (requires filesystem write) | Avoid named UDS paths inside the renderer sandbox. Use inherited FDs (pipes/socketpair), or a macOS-specific transport (Mach/XPC) if needed. |
 
 #### POSIX shared memory (`shm_open`) + `mmap` (Seatbelt)
 

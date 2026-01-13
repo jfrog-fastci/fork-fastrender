@@ -61,6 +61,8 @@ mod macos {
 
     let temp_dir = std::env::temp_dir();
     let (listener, connect_port) = prepare_listener(args.port);
+    let preopened_socketpair = UnixStream::pair();
+    let preopened_pipe = create_pipe_files();
     let (preopened_shm_fd, post_sandbox_shm_name) = setup_posix_shm_inputs();
 
     let (profile, profile_flags) = build_profile(args.mode, &temp_dir);
@@ -103,22 +105,39 @@ mod macos {
     println!();
     println!("== IPC capability matrix (after sandbox) ==");
 
-    let socketpair_result = probe_unix_stream_pair();
-    unexpected_success |= report_action(
-      "ipc: unix socketpair (UnixStream::pair)",
-      socketpair_result,
-      false,
+    report_capability(
+      "ipc: unix socketpair (create after sandbox)",
+      probe_unix_stream_pair_create_after_sandbox(),
     );
 
-    let pipe_result = probe_pipe();
-    unexpected_success |= report_action("ipc: pipe() (anonymous)", pipe_result, false);
+    let socketpair_inherited_result = match preopened_socketpair {
+      Ok((a, b)) => probe_unix_stream_endpoints(a, b),
+      Err(err) => ActionResult::failure_with_context("pre-sandbox UnixStream::pair", err),
+    };
+    report_capability(
+      "ipc: unix socketpair (created before sandbox)",
+      socketpair_inherited_result,
+    );
+
+    report_capability(
+      "ipc: pipe() (create after sandbox)",
+      probe_pipe_create_after_sandbox(),
+    );
+
+    let pipe_inherited_result = match preopened_pipe {
+      Ok((read_end, write_end)) => probe_pipe_endpoints(read_end, write_end),
+      Err(err) => ActionResult::failure_with_context("pre-sandbox pipe()", err),
+    };
+    report_capability(
+      "ipc: pipe() (created before sandbox)",
+      pipe_inherited_result,
+    );
 
     let listener_result = probe_unix_listener_bind_temp(&temp_dir);
-    unexpected_success |= report_action(
-      &format!("ipc: unix listener bind under {}", temp_dir.display()),
-      listener_result,
-      expect_denied_unix_listener,
-    );
+    let listener_unexpected_success = listener_result.ok && expect_denied_unix_listener;
+    let listener_name = format!("ipc: unix listener bind under {}", temp_dir.display());
+    report_capability(&listener_name, listener_result);
+    unexpected_success |= listener_unexpected_success;
 
     println!();
     println!("== POSIX shared memory (after sandbox) ==");
@@ -129,20 +148,20 @@ mod macos {
     );
 
     let shm_mmap_result = match preopened_shm_fd {
-      Ok(fd) => probe_posix_shm_mmap_inherited_fd(fd),
+      Ok(fd) => {
+        let result = probe_posix_shm_mmap_inherited_fd(fd);
+        // SAFETY: `fd` is a live file descriptor owned by this process.
+        unsafe {
+          libc::close(fd);
+        }
+        result
+      }
       Err(err) => ActionResult::failure_with_context("pre-sandbox shm_open", err),
     };
     report_capability(
       "ipc: posix shmem mmap(inherited fd) (mmap)",
       shm_mmap_result,
     );
-
-    if let Ok(fd) = preopened_shm_fd {
-      // SAFETY: `fd` is a live file descriptor owned by this process.
-      unsafe {
-        libc::close(fd);
-      }
-    }
 
     let exit_code = if unexpected_success { 1 } else { 0 };
     println!("exit_code: {exit_code}");
@@ -285,12 +304,14 @@ mod macos {
     }
   }
 
-  fn probe_unix_stream_pair() -> ActionResult {
-    let (mut a, mut b) = match UnixStream::pair() {
-      Ok(pair) => pair,
-      Err(err) => return ActionResult::failure(err),
-    };
+  fn probe_unix_stream_pair_create_after_sandbox() -> ActionResult {
+    match UnixStream::pair() {
+      Ok((a, b)) => probe_unix_stream_endpoints(a, b),
+      Err(err) => ActionResult::failure(err),
+    }
+  }
 
+  fn probe_unix_stream_endpoints(mut a: UnixStream, mut b: UnixStream) -> ActionResult {
     let _ = a.set_write_timeout(Some(Duration::from_secs(2)));
     let _ = b.set_read_timeout(Some(Duration::from_secs(2)));
 
@@ -331,18 +352,31 @@ mod macos {
     }
   }
 
-  fn probe_pipe() -> ActionResult {
+  fn create_pipe_files() -> io::Result<(std::fs::File, std::fs::File)> {
     let mut fds = [0i32; 2];
     // SAFETY: `pipe` writes two file descriptors into the provided array on success.
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if rc != 0 {
-      return ActionResult::failure(io::Error::last_os_error());
+      return Err(io::Error::last_os_error());
     }
 
     // SAFETY: `pipe` returns owned file descriptors. We wrap them so they are closed on drop.
-    let mut read_end = unsafe { std::fs::File::from_raw_fd(fds[0]) };
-    let mut write_end = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+    let read_end = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+    let write_end = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+    Ok((read_end, write_end))
+  }
 
+  fn probe_pipe_create_after_sandbox() -> ActionResult {
+    match create_pipe_files() {
+      Ok((read_end, write_end)) => probe_pipe_endpoints(read_end, write_end),
+      Err(err) => ActionResult::failure(err),
+    }
+  }
+
+  fn probe_pipe_endpoints(
+    mut read_end: std::fs::File,
+    mut write_end: std::fs::File,
+  ) -> ActionResult {
     let payload = b"fastrender-pipe";
     if let Err(err) = write_end.write_all(payload).and_then(|_| write_end.flush()) {
       return ActionResult::failure(err);
@@ -639,4 +673,3 @@ mod macos {
     ActionResult::success("mapped".to_string())
   }
 }
-
