@@ -545,11 +545,43 @@ reason = "vm-js: directive prologue / strict mode semantics are still incomplete
 
 # --- Built-ins: newly-green areas ---
 [[expectations]]
+glob = "built-ins/String/fromCharCode/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/String/fromCodePoint/**"
 status = "pass"
 
 [[expectations]]
 glob = "built-ins/String/raw/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/charAt/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/charCodeAt/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/concat/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/includes/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/indexOf/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/slice/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/String/prototype/substring/**"
 status = "pass"
 
 [[expectations]]
@@ -1708,12 +1740,12 @@ status = "pass"
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-replacer-RegExp-call-fn.js"
 status = "xfail"
-reason = "vm-js does not yet implement class inheritance."
+reason = "vm-js does not yet implement class inheritance (`extends`)."
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-replacer-RegExp-call.js"
 status = "xfail"
-reason = "vm-js does not yet implement class inheritance."
+reason = "vm-js does not yet implement class inheritance (`extends`)."
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-replacer-before-tostring.js"
