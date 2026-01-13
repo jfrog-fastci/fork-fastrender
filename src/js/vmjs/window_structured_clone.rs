@@ -2104,9 +2104,17 @@ mod tests {
       "(() => {\
          try { structuredClone(1, { transfer: [1] }); return 'no'; }\
          catch (e) { return e.name; }\
-       })()",
+        })()",
     )?;
     assert_eq!(get_string(&realm, non_ab), "DataCloneError");
+
+    let non_ab_stream = realm.exec_script(
+      "(() => {\
+         try { structuredClone(1, { transfer: [new ReadableStream()] }); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, non_ab_stream), "DataCloneError");
 
     let iterable = realm.exec_script(
       "(() => {\
@@ -2399,9 +2407,44 @@ mod tests {
          new ReadableStream({ start(c) { controller = c; } });\
          try { structuredClone(controller); return 'no'; }\
          catch (e) { return e.name; }\
-       })()",
+        })()",
     )?;
     assert_eq!(get_string(&realm, controller), "DataCloneError");
+
+    let writable_stream = realm.exec_script(
+      "try { structuredClone(new WritableStream()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, writable_stream), "DataCloneError");
+
+    let writable_stream_writer = realm.exec_script(
+      "try { structuredClone(new WritableStream().getWriter()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, writable_stream_writer), "DataCloneError");
+
+    let transform_stream = realm.exec_script(
+      "try { structuredClone(new TransformStream()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, transform_stream), "DataCloneError");
+
+    let transform_stream_writer = realm.exec_script(
+      "try { structuredClone(new TransformStream().writable.getWriter()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, transform_stream_writer), "DataCloneError");
+
+    let transform_controller = realm.exec_script(
+      "(() => {\
+         let controller = null;\
+         const ts = new TransformStream({\
+           transform(chunk, c) { controller = c; }\
+         });\
+         const writer = ts.writable.getWriter();\
+         writer.write(new Uint8Array([1]));\
+         if (controller === null) return 'missing';\
+         try { structuredClone(controller); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, transform_controller), "DataCloneError");
 
     Ok(())
   }
