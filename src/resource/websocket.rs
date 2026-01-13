@@ -48,12 +48,20 @@ fn resolve_socket_addrs_with_timeout(
 
   let (tx, rx) = mpsc::channel::<io::Result<Vec<SocketAddr>>>();
   let host = host.to_string();
-  thread::spawn(move || {
-    let res = (host.as_str(), port)
-      .to_socket_addrs()
-      .map(|iter| iter.collect::<Vec<_>>());
-    let _ = tx.send(res);
-  });
+  thread::Builder::new()
+    .name("ws-dns-resolve".to_string())
+    .spawn(move || {
+      let res = (host.as_str(), port)
+        .to_socket_addrs()
+        .map(|iter| iter.collect::<Vec<_>>());
+      let _ = tx.send(res);
+    })
+    .map_err(|err| {
+      tungstenite::Error::Io(io::Error::new(
+        io::ErrorKind::Other,
+        format!("failed to spawn DNS resolver thread: {err}"),
+      ))
+    })?;
 
   match rx.recv_timeout(timeout) {
     Ok(Ok(addrs)) => {
