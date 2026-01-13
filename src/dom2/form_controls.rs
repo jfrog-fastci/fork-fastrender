@@ -916,6 +916,8 @@ impl Document {
       }
 
       if tag_name.eq_ignore_ascii_case("input") {
+        // Avoid holding a borrowed `&str` from the node's attribute map across mutations (calling
+        // `set_attribute`/`toggle_bool_attribute` can reallocate).
         let (is_file, is_checkable) = {
           let input_type = node
             .get_attribute_ref("type")
