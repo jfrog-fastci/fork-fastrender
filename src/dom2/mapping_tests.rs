@@ -2,6 +2,7 @@
 
 use crate::dom::{DomNode, DomNodeType};
 use selectors::context::QuirksMode;
+use std::cmp::Ordering;
 
 use super::{Document, NodeId, NodeKind, SlotAssignmentMode};
 
@@ -442,6 +443,7 @@ fn renderer_dom_mapping_round_trips_with_form_control_attribute_overlays() {
       Some(preorder_id),
       "reverse mapping mismatch for dom2 node {dom2_id:?}"
     );
+
     for child in node.children.iter().rev() {
       stack.push(child);
     }
@@ -459,4 +461,131 @@ fn renderer_dom_mapping_round_trips_with_form_control_attribute_overlays() {
       "mapping mismatch for node with id={id_attr}"
     );
   }
+}
+
+#[test]
+fn renderer_dom_mapping_cmp_node_ids_matches_enumerate_dom_ids_order() {
+  let root = crate::dom::parse_html(
+    r#"<!doctype html>
+    <html>
+      <body>
+        <div id=a>
+          <span id=b></span>
+          <p id=c></p>
+        </div>
+        <div id=d></div>
+      </body>
+    </html>"#,
+  )
+  .unwrap();
+  let doc = Document::from_renderer_dom(&root);
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  let renderer_ids = crate::dom::enumerate_dom_ids(&snapshot.dom);
+
+  // Build a stable expected-order mapping by inspecting the renderer snapshot DOM with
+  // `enumerate_dom_ids`.
+  let mut id_to_preorder: std::collections::HashMap<String, usize> =
+    std::collections::HashMap::new();
+  let mut stack: Vec<&DomNode> = vec![&snapshot.dom];
+  while let Some(node) = stack.pop() {
+    if let Some(id) = node.get_attribute_ref("id") {
+      let preorder_id = *renderer_ids
+        .get(&(node as *const DomNode))
+        .expect("missing renderer preorder id");
+      id_to_preorder.insert(id.to_string(), preorder_id);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  let a = doc.get_element_by_id("a").expect("missing #a");
+  let b = doc.get_element_by_id("b").expect("missing #b");
+  let c = doc.get_element_by_id("c").expect("missing #c");
+  let d = doc.get_element_by_id("d").expect("missing #d");
+
+  for (id, node_id) in [("a", a), ("b", b), ("c", c), ("d", d)] {
+    assert_eq!(
+      snapshot.mapping.preorder_for_node_id(node_id),
+      id_to_preorder.get(id).copied(),
+      "preorder mismatch for #{id}"
+    );
+  }
+
+  let expected_ab = id_to_preorder["a"].cmp(&id_to_preorder["b"]);
+  let expected_ac = id_to_preorder["a"].cmp(&id_to_preorder["c"]);
+  let expected_ad = id_to_preorder["a"].cmp(&id_to_preorder["d"]);
+  let expected_bd = id_to_preorder["b"].cmp(&id_to_preorder["d"]);
+
+  assert_eq!(snapshot.mapping.cmp_node_ids(a, b), Some(expected_ab));
+  assert_eq!(snapshot.mapping.cmp_node_ids(a, c), Some(expected_ac));
+  assert_eq!(snapshot.mapping.cmp_node_ids(a, d), Some(expected_ad));
+  assert_eq!(snapshot.mapping.cmp_node_ids(b, d), Some(expected_bd));
+
+  // Ensure comparison is anti-symmetric (including equality).
+  assert_eq!(
+    snapshot.mapping.cmp_node_ids(b, a),
+    Some(expected_ab.reverse())
+  );
+}
+
+#[test]
+fn renderer_dom_mapping_cmp_node_ids_returns_none_for_detached_nodes() {
+  let root = crate::dom::parse_html("<!doctype html><html><body><div id=a></div></body></html>")
+    .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let attached = doc.get_element_by_id("a").expect("missing #a");
+
+  let detached = doc.create_element("div", "");
+
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  assert_eq!(snapshot.mapping.cmp_node_ids(attached, detached), None);
+  assert_eq!(snapshot.mapping.cmp_node_ids(detached, attached), None);
+  assert_eq!(snapshot.mapping.cmp_node_ids(detached, detached), None);
+}
+
+#[test]
+fn renderer_dom_mapping_cmp_node_ids_reflects_sibling_insertion_order_changes() {
+  let root = crate::dom::parse_html(
+    "<!doctype html><html><body><div id=a></div><div id=b></div></body></html>",
+  )
+  .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let a = doc.get_element_by_id("a").expect("missing #a");
+  let b = doc.get_element_by_id("b").expect("missing #b");
+  let body = doc.body().expect("missing <body>");
+
+  let snapshot_before = doc.to_renderer_dom_with_mapping();
+  assert_eq!(
+    snapshot_before.mapping.cmp_node_ids(a, b),
+    Some(Ordering::Less),
+    "expected initial DOM order to be a < b"
+  );
+
+  // Create a new node after `b` in stable NodeId index space, then insert it between `a` and `b`.
+  // `cmp_node_ids` must reflect DOM order, not NodeId allocation order.
+  let c = doc.create_element("div", "");
+  doc.set_attribute(c, "id", "c").unwrap();
+  assert!(
+    c.index() > b.index(),
+    "expected newly created node to have a larger NodeId index than existing siblings"
+  );
+  doc.insert_before(body, c, Some(b)).unwrap();
+
+  let snapshot_after = doc.to_renderer_dom_with_mapping();
+  assert_eq!(
+    snapshot_after.mapping.cmp_node_ids(a, c),
+    Some(Ordering::Less),
+    "expected DOM order to be a < c after insertion"
+  );
+  assert_eq!(
+    snapshot_after.mapping.cmp_node_ids(c, b),
+    Some(Ordering::Less),
+    "expected DOM order to be c < b after insertion"
+  );
+  assert_eq!(
+    snapshot_after.mapping.cmp_node_ids(a, b),
+    Some(Ordering::Less),
+    "expected DOM order to remain a < b after insertion"
+  );
 }

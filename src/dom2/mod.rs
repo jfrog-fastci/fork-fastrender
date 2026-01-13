@@ -452,6 +452,14 @@ impl RendererDomMapping {
   pub(crate) fn preorder_to_node_id(&self) -> &[Option<NodeId>] {
     &self.preorder_to_node_id
   }
+
+  /// Compare two connected `dom2` [`NodeId`]s in renderer pre-order (document order).
+  ///
+  /// Returns `None` if either node is detached/unmappable (i.e. not reachable from the current
+  /// document root).
+  pub fn cmp_node_ids(&self, a: NodeId, b: NodeId) -> Option<std::cmp::Ordering> {
+    Some(self.preorder_for_node_id(a)?.cmp(&self.preorder_for_node_id(b)?))
+  }
 }
 
 #[derive(Debug, Clone)]
