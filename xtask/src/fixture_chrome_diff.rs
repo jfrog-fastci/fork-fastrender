@@ -791,7 +791,7 @@ or `bash scripts/cargo_agent.sh xtask sync-progress-accuracy --report <fixture_c
     } else {
       bail!(
         "missing offline fixture(s); run `bash scripts/cargo_agent.sh xtask pageset --capture-missing-failure-fixtures` \
-or `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle> <stem>` to create them (or pass --skip-missing-fixtures)"
+or `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle> <stem>` (add `--include-media` if you need playable media) to create them (or pass --skip-missing-fixtures)"
       );
     }
   }

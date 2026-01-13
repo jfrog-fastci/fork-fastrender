@@ -744,7 +744,7 @@ fn resolve_fixture_stem_from_progress(repo_root: &Path, args: &PageLoopArgs) -> 
   bail!(
     "selected page '{}' does not have an offline fixture.\n\
      Expected: {}\n\
-     Hint: run `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle.tar> {}` or `bash scripts/cargo_agent.sh xtask recapture-page-fixtures ...` to create it.",
+     Hint: run `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle.tar> {}` (add `--include-media` if you need playable media) or `bash scripts/cargo_agent.sh xtask recapture-page-fixtures ...` to create it.",
     selected.stem,
     selected.fixture_index_path.display(),
     selected.stem
