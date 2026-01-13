@@ -1499,6 +1499,31 @@ fn compiled_object_literal_object_spread_copies_properties() -> Result<(), VmErr
 }
 
 #[test]
+fn compiled_object_literal_object_spread_boxes_string_primitives() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Object spread should apply `ToObject` to non-nullish primitives (CopyDataProperties).
+  //
+  // Strings have enumerable index properties, so spreading a string should copy those indices.
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let o = { ...'ab' };
+      o[0] + o[1]
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "ab");
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_object_spread_respects_member_order() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
