@@ -2692,7 +2692,7 @@ pub fn chrome_ui_with_bookmarks(
           let resp = egui::color_picker::color_edit_button_srgba(
             ui,
             &mut custom,
-            egui::color_picker::Alpha::Blend,
+            egui::color_picker::Alpha::BlendOrAdditive,
           );
           if resp.changed() {
             app.appearance.accent = Some(format_hex_color(RgbaColor::from(custom)));
@@ -2727,7 +2727,7 @@ pub fn chrome_ui_with_bookmarks(
         ui.checkbox(&mut app.appearance.reduced_motion, "Reduced motion");
 
         // Clamp/sanitize any values that could come from hand-edited session state.
-        app.appearance = app.appearance.sanitized();
+        app.appearance = std::mem::take(&mut app.appearance).sanitized();
       })
     });
 
