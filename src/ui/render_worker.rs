@@ -740,14 +740,6 @@ fn dom_is_textarea(node: &crate::dom::DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
 }
 
-fn dom_is_editable_text_drop_target_candidate(node: &crate::dom::DomNode) -> bool {
-  // Fast pre-check for whether this element could accept a dragged text payload.
-  //
-  // Disabled/inert/hidden state can be inherited from ancestors (e.g. `<fieldset disabled>`), so the
-  // full "is this actually editable?" decision must consult `effective_disabled` via a DOM index.
-  (dom_is_text_input(node) || dom_is_textarea(node)) && node.get_attribute_ref("readonly").is_none()
-}
-
 fn dom_is_select(node: &crate::dom::DomNode) -> bool {
   node
     .tag_name()
@@ -1002,48 +994,6 @@ fn js_find_form_owner_for_submitter(
     current = dom.node(node_id).parent;
   }
   None
-}
-
-fn cursor_for_form_control(node: &crate::dom::DomNode) -> CursorKind {
-  let Some(tag) = node.tag_name() else {
-    return CursorKind::Default;
-  };
-
-  // Even when `cursor: auto` is in effect, disabled controls should not show an I-beam: they are
-  // not editable/interactive.
-  //
-  // Note: for the common case we now prefer the computed CSS cursor (including UA styles). This
-  // check keeps the legacy cursor heuristic robust when authors explicitly override the cursor back
-  // to `auto` on disabled controls.
-  if node.get_attribute_ref("disabled").is_some() {
-    return CursorKind::Default;
-  }
-
-  if tag.eq_ignore_ascii_case("textarea") {
-    return CursorKind::Text;
-  }
-  if tag.eq_ignore_ascii_case("input") {
-    let ty = trim_ascii_whitespace(node.get_attribute_ref("type").unwrap_or(""));
-    // Mirror the HTML spec: invalid/unknown `type` values fall back to `text`.
-    //
-    // Avoid showing the I-beam cursor for non-text-like controls (checkboxes, buttons, etc).
-    if ty.is_empty()
-      || !(ty.eq_ignore_ascii_case("hidden")
-        || ty.eq_ignore_ascii_case("button")
-        || ty.eq_ignore_ascii_case("submit")
-        || ty.eq_ignore_ascii_case("reset")
-        || ty.eq_ignore_ascii_case("checkbox")
-        || ty.eq_ignore_ascii_case("radio")
-        || ty.eq_ignore_ascii_case("range")
-        || ty.eq_ignore_ascii_case("file")
-        || ty.eq_ignore_ascii_case("image")
-        || ty.eq_ignore_ascii_case("color"))
-    {
-      return CursorKind::Text;
-    }
-  }
-
-  CursorKind::Default
 }
 
 fn cursor_kind_from_css_cursor(cursor: CursorKeyword) -> Option<CursorKind> {
@@ -4005,32 +3955,26 @@ impl BrowserRuntime {
         ) = if !pointer_in_page {
           (None, CursorKind::Default, None, None, false)
         } else {
-          match hit.as_ref() {
+          match hit {
             Some(hit) => {
-              let (element_id, drop_candidate, form_control_cursor) =
-                match crate::dom::find_node_mut_by_preorder_id(dom, hit.dom_node_id) {
-                  Some(node) => {
-                    let element_id = node.get_attribute_ref("id").map(|id| id.to_string());
-                    (
-                      element_id,
-                      dom_is_editable_text_drop_target_candidate(node),
-                      cursor_for_form_control(node),
-                    )
-                  }
-                  None => (None, false, CursorKind::Default),
-                };
-              let is_drop_target = if drag_drop_active && drop_candidate {
-                let node_id = hit.dom_node_id;
+              let crate::interaction::HitTestResult {
+                css_cursor,
+                is_selectable_text,
+                dom_element_id,
+                is_editable_text_drop_target_candidate,
+                form_control_cursor,
+                dom_node_id,
+                kind,
+                href,
+                ..
+              } = hit;
+
+              let is_drop_target = if drag_drop_active && is_editable_text_drop_target_candidate {
                 let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
-                let disabled = crate::interaction::effective_disabled::is_effectively_disabled(
-                  node_id,
-                  &dom_index,
-                );
+                let disabled =
+                  crate::interaction::effective_disabled::is_effectively_disabled(dom_node_id, &dom_index);
                 let inert_or_hidden =
-                  crate::interaction::effective_disabled::is_effectively_inert_or_hidden(
-                    node_id,
-                    &dom_index,
-                  );
+                  crate::interaction::effective_disabled::is_effectively_inert_or_hidden(dom_node_id, &dom_index);
                 !(disabled || inert_or_hidden)
               } else {
                 false
@@ -4039,12 +3983,11 @@ impl BrowserRuntime {
               // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
               // behaviour matches the platform. Only fall back to legacy heuristics when the computed
               // cursor is `auto`.
-              let css_cursor_kind = cursor_kind_from_css_cursor(hit.css_cursor);
+              let css_cursor_kind = cursor_kind_from_css_cursor(css_cursor);
 
               // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
-              let hovered_url = match hit.kind {
-                HitTestKind::Link => hit
-                  .href
+              let hovered_url = match kind {
+                HitTestKind::Link => href
                   .as_deref()
                   .and_then(|href| resolve_link_url(base_url, href)),
                 _ => None,
@@ -4052,7 +3995,7 @@ impl BrowserRuntime {
 
               let cursor = match css_cursor_kind {
                 Some(cursor) => cursor,
-                None => match hit.kind {
+                None => match kind {
                   HitTestKind::Link => {
                     // Keep showing the hand cursor over links even when we reject the URL scheme
                     // (e.g. `javascript:`).
@@ -4060,7 +4003,7 @@ impl BrowserRuntime {
                   }
                   HitTestKind::FormControl => form_control_cursor,
                   _ => {
-                    if hit.is_selectable_text {
+                    if is_selectable_text {
                       CursorKind::Text
                     } else {
                       CursorKind::Default
@@ -4072,8 +4015,8 @@ impl BrowserRuntime {
               (
                 hovered_url,
                 cursor,
-                Some(hit.dom_node_id),
-                element_id,
+                Some(dom_node_id),
+                dom_element_id,
                 is_drop_target,
               )
             }
@@ -4431,15 +4374,13 @@ impl BrowserRuntime {
            (false, hit_test_dom(dom, box_tree, fragment_tree, page_point))
          };
 
-         let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
-         let target_element_id = target_id.and_then(|target_id| {
-           crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-             .and_then(|node| node.get_attribute_ref("id"))
-             .map(|id| id.to_string())
-        });
+         let (target_id, target_element_id) = match hit {
+           Some(hit) => (Some(hit.dom_node_id), hit.dom_element_id),
+           None => (None, None),
+         };
 
-        (changed, (changed, target_id, target_element_id))
-      }) {
+         (changed, (changed, target_id, target_element_id))
+       }) {
         Ok(changed) => changed,
         Err(_) => return,
       };
@@ -4546,12 +4487,10 @@ impl BrowserRuntime {
 
           let page_point = viewport_point.translate(scroll.viewport);
           let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
-          let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
-          let target_element_id = target_id.and_then(|target_id| {
-            crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-              .and_then(|node| node.get_attribute_ref("id"))
-              .map(|id| id.to_string())
-          });
+          let (target_id, target_element_id) = match hit {
+            Some(hit) => (Some(hit.dom_node_id), hit.dom_element_id),
+            None => (None, None),
+          };
 
           (false, (target_id, target_element_id))
         }) {

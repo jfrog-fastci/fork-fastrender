@@ -65,6 +65,19 @@ pub struct HitTestResult {
   /// True when the hit corresponds to a selectable text fragment, meaning a document selection can
   /// start at this location and the UI should show an I-beam cursor.
   pub is_selectable_text: bool,
+  /// The hit element's `id` attribute (if any).
+  ///
+  /// This is the `id` attribute of the resolved semantic DOM target (`dom_node_id`), not the raw
+  /// styled node (`styled_node_id`).
+  pub dom_element_id: Option<String>,
+  /// True when the resolved hit target is a text control that could accept dropped text.
+  ///
+  /// This is a fast pre-check that ignores inherited disabled/inert/hidden state (e.g. `<fieldset
+  /// disabled>`). Callers that need the fully-effective "can accept drop" decision must still
+  /// consult `effective_disabled`.
+  pub is_editable_text_drop_target_candidate: bool,
+  /// The default cursor kind for a form-control hit when CSS `cursor` is `auto`.
+  pub form_control_cursor: CursorKind,
   pub styled_node_id: usize,
   pub dom_node_id: usize,
   pub kind: HitTestKind,
@@ -348,6 +361,29 @@ fn node_is_text_control(node: &DomNode) -> bool {
     || node_is_text_input(node)
 }
 
+fn cursor_for_form_control(node: &DomNode) -> CursorKind {
+  // Mirror the UI worker's cursor heuristic for form controls so hover cursor behaviour is
+  // consistent across embedding layers.
+  //
+  // Even when `cursor: auto` is in effect, disabled controls should not show an I-beam: they are
+  // not editable/interactive.
+  if node.get_attribute_ref("disabled").is_some() {
+    return CursorKind::Default;
+  }
+
+  node_is_text_control(node)
+    .then_some(CursorKind::Text)
+    .unwrap_or(CursorKind::Default)
+}
+
+fn is_editable_text_drop_target_candidate(node: &DomNode) -> bool {
+  // Fast pre-check for whether this element could accept a dragged text payload.
+  //
+  // Disabled/inert/hidden state can be inherited from ancestors (e.g. `<fieldset disabled>`), so the
+  // full "is this actually editable?" decision must consult `effective_disabled` via a DOM index.
+  node_is_text_control(node) && node.get_attribute_ref("readonly").is_none()
+}
+
 /// Determine the desired cursor kind for a hit-tested hover target.
 ///
 /// This is used by the windowed browser UI to set the OS cursor icon over page content.
@@ -535,10 +571,27 @@ pub(crate) fn hit_test_dom_with_indices<D: DomIdLookupExt + ?Sized>(
       }
     }
 
+    let dom_element_id = dom_index
+      .node(resolved_dom_node_id)
+      .and_then(|node| node.get_attribute_ref("id"))
+      .map(|id| id.to_string());
+    let (editable_text_drop_target_candidate, form_control_cursor) = dom_index
+      .node(resolved_dom_node_id)
+      .map(|node| {
+        (
+          is_editable_text_drop_target_candidate(node),
+          cursor_for_form_control(node),
+        )
+      })
+      .unwrap_or((false, CursorKind::Default));
+
     return Some(HitTestResult {
       box_id,
       css_cursor,
       is_selectable_text,
+      dom_element_id,
+      is_editable_text_drop_target_candidate: editable_text_drop_target_candidate,
+      form_control_cursor,
       styled_node_id,
       dom_node_id: resolved_dom_node_id,
       kind,
@@ -663,10 +716,27 @@ pub(crate) fn hit_test_dom_all_with_indices<D: DomIdLookupExt + ?Sized>(
       continue;
     }
 
+    let dom_element_id = dom_index
+      .node(resolved_dom_node_id)
+      .and_then(|node| node.get_attribute_ref("id"))
+      .map(|id| id.to_string());
+    let (editable_text_drop_target_candidate, form_control_cursor) = dom_index
+      .node(resolved_dom_node_id)
+      .map(|node| {
+        (
+          is_editable_text_drop_target_candidate(node),
+          cursor_for_form_control(node),
+        )
+      })
+      .unwrap_or((false, CursorKind::Default));
+
     results.push(HitTestResult {
       box_id,
       css_cursor,
       is_selectable_text,
+      dom_element_id,
+      is_editable_text_drop_target_candidate: editable_text_drop_target_candidate,
+      form_control_cursor,
       styled_node_id,
       dom_node_id: resolved_dom_node_id,
       kind,
@@ -780,6 +850,9 @@ mod tests {
       box_id: 1,
       css_cursor: CursorKeyword::Auto,
       is_selectable_text: false,
+      dom_element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
       styled_node_id: a_id,
       dom_node_id: a_id,
       kind: HitTestKind::Link,
@@ -796,6 +869,9 @@ mod tests {
       box_id: 1,
       css_cursor: CursorKeyword::Auto,
       is_selectable_text: false,
+      dom_element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
       styled_node_id: input_id,
       dom_node_id: input_id,
       kind: HitTestKind::FormControl,
@@ -813,6 +889,9 @@ mod tests {
       box_id: 1,
       css_cursor: CursorKeyword::Auto,
       is_selectable_text: false,
+      dom_element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
       styled_node_id: input_id,
       dom_node_id: input_id,
       kind: HitTestKind::FormControl,
@@ -830,6 +909,9 @@ mod tests {
       box_id: 1,
       css_cursor: CursorKeyword::Auto,
       is_selectable_text: false,
+      dom_element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
       styled_node_id: textarea_id,
       dom_node_id: textarea_id,
       kind: HitTestKind::FormControl,
@@ -929,7 +1011,7 @@ mod tests {
 mod dom_hit_testing_tests {
   use super::{
     hit_test_dom, hit_test_dom_with_indices, resolve_label_associated_control,
-    BoxIndex as HitTestBoxIndex, DomIndex, HitTestKind,
+    BoxIndex as HitTestBoxIndex, CursorKind, DomIndex, HitTestKind,
   };
   use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
   use crate::geometry::{Point, Rect};
@@ -1037,6 +1119,9 @@ mod dom_hit_testing_tests {
     assert_eq!(result.box_id, anonymous_box_id);
     assert_eq!(result.styled_node_id, 3);
     assert_eq!(result.dom_node_id, 2);
+    assert_eq!(result.dom_element_id.as_deref(), Some("link"));
+    assert!(!result.is_editable_text_drop_target_candidate);
+    assert_eq!(result.form_control_cursor, CursorKind::Default);
     assert_eq!(result.kind, HitTestKind::Link);
     assert_eq!(result.href.as_deref(), Some("/foo"));
   }
@@ -1136,6 +1221,9 @@ mod dom_hit_testing_tests {
     assert_eq!(result.box_id, img_box_id);
     assert_eq!(result.styled_node_id, img_id);
     assert_eq!(result.dom_node_id, area1_id);
+    assert_eq!(result.dom_element_id.as_deref(), Some("a1"));
+    assert!(!result.is_editable_text_drop_target_candidate);
+    assert_eq!(result.form_control_cursor, CursorKind::Default);
     assert_eq!(result.kind, HitTestKind::Link);
     assert_eq!(result.href.as_deref(), Some("/first"));
   }
@@ -1147,6 +1235,7 @@ mod dom_hit_testing_tests {
     let result =
       hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(85.0, 85.0)).expect("hit");
     assert_eq!(result.dom_node_id, dead_id);
+    assert_eq!(result.dom_element_id.as_deref(), Some("dead"));
     assert_eq!(result.kind, HitTestKind::Other);
     assert_eq!(result.href, None);
   }
@@ -1181,6 +1270,9 @@ mod dom_hit_testing_tests {
     assert_eq!(result.box_id, input_box_id);
     assert_eq!(result.styled_node_id, 2);
     assert_eq!(result.dom_node_id, 2);
+    assert_eq!(result.dom_element_id.as_deref(), Some("x"));
+    assert!(result.is_editable_text_drop_target_candidate);
+    assert_eq!(result.form_control_cursor, CursorKind::Text);
     assert_eq!(result.kind, HitTestKind::FormControl);
     assert_eq!(result.href, None);
   }
