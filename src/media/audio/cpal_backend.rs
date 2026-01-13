@@ -8,7 +8,8 @@ use parking_lot::{Mutex, RwLock};
 
 use super::{
   frames_to_duration, next_device_id_for_name, AudioBackend, AudioClock, AudioDeviceInfo,
-  AudioEngineConfig, AudioError, AudioOutputInfo, AudioSink, AudioStreamConfig, DeviceSelector,
+  AudioEngineConfig, AudioError, AudioOutputInfo, AudioSampleFormat, AudioSink, AudioStreamConfig,
+  DeviceSelector,
 };
 use super::convert::sanitize_sample;
 use crate::debug::trace::TraceHandle;
@@ -19,13 +20,22 @@ use super::mixer_decision::{decide_mixer_callback_action, MixerCallbackAction};
 use crate::media::audio_clock::InterpolatedAudioClock;
 use cpal::traits::{HostTrait, StreamTrait};
 
+fn device_name_best_effort(device: &cpal::Device) -> String {
+  use cpal::traits::DeviceTrait;
+  device
+    .name()
+    .unwrap_or_else(|_| "<unknown output device>".to_string())
+}
+
 pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
   use cpal::traits::DeviceTrait;
 
   let host = cpal::default_host();
   let devices = host
     .output_devices()
-    .map_err(|err| AudioError::OutputDeviceEnumerationFailed(err.to_string()))?;
+    .map_err(|err| AudioError::OutputDeviceEnumerationFailed {
+      source: Box::new(err),
+    })?;
 
   let mut seen = std::collections::HashMap::<String, u32>::new();
   let mut out = Vec::new();
@@ -49,7 +59,9 @@ fn select_output_device(host: &cpal::Host, selector: &DeviceSelector) -> Result<
     DeviceSelector::Device(target) => {
       let devices = host
         .output_devices()
-        .map_err(|err| AudioError::OutputDeviceEnumerationFailed(err.to_string()))?;
+        .map_err(|err| AudioError::OutputDeviceEnumerationFailed {
+          source: Box::new(err),
+        })?;
       let mut seen = std::collections::HashMap::<String, u32>::new();
       for device in devices {
         let Ok(name) = device.name() else {
@@ -134,9 +146,15 @@ impl AudioStreamFactory for CpalStreamFactory {
       }
       Err(err) => return Err(err),
     };
+    let device_name = device_name_best_effort(&device);
 
-    let (stream_config, sample_format, fixed_frames) =
-      select_output_stream_config_matching(&device, self.expected)?;
+    let (stream_config, cpal_sample_format, fixed_frames) = select_output_stream_config_matching(
+      &device,
+      &device_name,
+      self.expected,
+    )?;
+    let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
+    let sample_format = AudioSampleFormat::from(cpal_sample_format);
 
     self.last_callback_frames.store(0, Ordering::Relaxed);
 
@@ -150,7 +168,10 @@ impl AudioStreamFactory for CpalStreamFactory {
 
     let stream = build_stream(
       &device,
+      &device_name,
       &stream_config,
+      cpal_sample_format,
+      config,
       sample_format,
       self.mixer.clone(),
       self.clock.clone(),
@@ -163,7 +184,10 @@ impl AudioStreamFactory for CpalStreamFactory {
     )?;
     stream
       .play()
-      .map_err(|err| AudioError::StreamPlayFailed(err.to_string()))?;
+      .map_err(|err| AudioError::StreamPlayFailed {
+        device_name: device_name.clone(),
+        source: Box::new(err),
+      })?;
     Ok(stream)
   }
 }
@@ -269,13 +293,16 @@ impl CpalAudioBackend {
         (|| -> Result<(ReadyState, cpal::Stream, Arc<StreamErrorState>), AudioError> {
         let host = cpal::default_host();
         let device = select_output_device(&host, &selector)?;
+        let device_name = device_name_best_effort(&device);
 
-        let (stream_config, sample_format) = select_output_stream_config(&device)?;
-        let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
-        let fixed_callback_frames = match stream_config.buffer_size {
-          cpal::BufferSize::Fixed(frames) => Some(frames),
-          cpal::BufferSize::Default => None,
-        };
+         let (stream_config, cpal_sample_format) =
+           select_output_stream_config(&device, &device_name)?;
+         let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
+         let sample_format = AudioSampleFormat::from(cpal_sample_format);
+         let fixed_callback_frames = match stream_config.buffer_size {
+           cpal::BufferSize::Fixed(frames) => Some(frames),
+           cpal::BufferSize::Default => None,
+         };
         let last_callback_frames = Arc::new(AtomicU32::new(0));
 
         // Start with a conservative estimate; the callback will refine this using timestamps (when
@@ -292,7 +319,10 @@ impl CpalAudioBackend {
 
         let stream = build_stream(
           &device,
+          &device_name,
           &stream_config,
+          cpal_sample_format,
+          config,
           sample_format,
           mixer.clone(),
           clock.clone(),
@@ -305,7 +335,10 @@ impl CpalAudioBackend {
         )?;
         stream
           .play()
-          .map_err(|err| AudioError::StreamPlayFailed(err.to_string()))?;
+          .map_err(|err| AudioError::StreamPlayFailed {
+            device_name: device_name.clone(),
+            source: Box::new(err),
+          })?;
 
         Ok((
           (
@@ -475,13 +508,11 @@ impl CpalAudioBackend {
         let _ = thread.join();
         return Err(err);
       }
-      Err(_) => {
-        let _ = thread.join();
-        return Err(AudioError::StreamBuildFailed(
-          "cpal audio thread terminated unexpectedly".to_string(),
-        ));
-      }
-    };
+       Err(_) => {
+         let _ = thread.join();
+         return Err(AudioError::BackendThreadTerminated { backend: "cpal" });
+       }
+     };
 
     Ok(Self {
       config,
@@ -947,6 +978,7 @@ impl AudioSink for CpalAudioSink {
 
 fn select_output_stream_config(
   device: &cpal::Device,
+  device_name: &str,
 ) -> Result<(cpal::StreamConfig, cpal::SampleFormat), AudioError> {
   use cpal::traits::DeviceTrait;
 
@@ -1013,7 +1045,10 @@ fn select_output_stream_config(
   } else {
     device
       .default_output_config()
-      .map_err(|err| AudioError::DefaultOutputConfigFailed(err.to_string()))?
+      .map_err(|err| AudioError::DefaultOutputConfigFailed {
+        device_name: device_name.to_string(),
+        source: Box::new(err),
+      })?
   };
 
   let sample_format = supported.sample_format();
@@ -1035,6 +1070,7 @@ fn select_output_stream_config(
 
 fn select_output_stream_config_matching(
   device: &cpal::Device,
+  device_name: &str,
   expected: AudioStreamConfig,
 ) -> Result<(cpal::StreamConfig, cpal::SampleFormat, Option<u32>), AudioError> {
   use cpal::traits::DeviceTrait;
@@ -1076,7 +1112,10 @@ fn select_output_stream_config_matching(
   } else {
     let cfg = device
       .default_output_config()
-      .map_err(|err| AudioError::DefaultOutputConfigFailed(err.to_string()))?;
+      .map_err(|err| AudioError::DefaultOutputConfigFailed {
+        device_name: device_name.to_string(),
+        source: Box::new(err),
+      })?;
 
     if cfg.channels() != expected.channels || cfg.sample_rate().0 != expected.sample_rate_hz {
       return Err(AudioError::StreamConfigMismatch {
@@ -1113,8 +1152,11 @@ fn select_output_stream_config_matching(
 
 fn build_stream(
   device: &cpal::Device,
+  device_name: &str,
   config: &cpal::StreamConfig,
-  sample_format: cpal::SampleFormat,
+  cpal_sample_format: cpal::SampleFormat,
+  stream_config: AudioStreamConfig,
+  sample_format: AudioSampleFormat,
   mixer: Arc<MixerState>,
   clock: Arc<InterpolatedAudioClock>,
   fixed_callback_frames: Option<u32>,
@@ -1124,10 +1166,13 @@ fn build_stream(
   diagnostics: Arc<CpalStreamDiagnostics>,
   trace: TraceHandle,
 ) -> Result<cpal::Stream, AudioError> {
-  match sample_format {
+  match cpal_sample_format {
     cpal::SampleFormat::F32 => build_stream_typed::<f32>(
       device,
+      device_name,
       config,
+      stream_config,
+      sample_format,
       mixer,
       clock,
       fixed_callback_frames,
@@ -1139,7 +1184,10 @@ fn build_stream(
     ),
     cpal::SampleFormat::I16 => build_stream_typed::<i16>(
       device,
+      device_name,
       config,
+      stream_config,
+      sample_format,
       mixer,
       clock,
       fixed_callback_frames,
@@ -1151,7 +1199,10 @@ fn build_stream(
     ),
     cpal::SampleFormat::U16 => build_stream_typed::<u16>(
       device,
+      device_name,
       config,
+      stream_config,
+      sample_format,
       mixer,
       clock,
       fixed_callback_frames,
@@ -1161,13 +1212,19 @@ fn build_stream(
       diagnostics,
       trace,
     ),
-    other => Err(AudioError::UnsupportedSampleFormat(format!("{other:?}"))),
+    other => Err(AudioError::UnsupportedSampleFormat {
+      device_name: device_name.to_string(),
+      sample_format: AudioSampleFormat::from(other),
+    }),
   }
 }
 
 fn build_stream_typed<T>(
   device: &cpal::Device,
+  device_name: &str,
   config: &cpal::StreamConfig,
+  stream_config: AudioStreamConfig,
+  sample_format: AudioSampleFormat,
   mixer: Arc<MixerState>,
   clock: Arc<InterpolatedAudioClock>,
   fixed_callback_frames: Option<u32>,
@@ -1344,7 +1401,12 @@ where
       err_cb,
       None,
     )
-    .map_err(|err| AudioError::StreamBuildFailed(err.to_string()))?;
+    .map_err(|err| AudioError::StreamBuildFailed {
+      device_name: device_name.to_string(),
+      config: stream_config,
+      sample_format,
+      source: Box::new(err),
+    })?;
 
   Ok(stream)
 }

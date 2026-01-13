@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use super::clock::MediaClock;
 use super::DecodedAudioChunk;
@@ -31,6 +30,7 @@ use crate::media::audio_clock::InterpolatedAudioClock;
 mod config;
 #[cfg(feature = "audio_cpal")]
 mod cpal_backend;
+mod error;
 mod latency;
 pub mod engine;
 pub mod limits;
@@ -68,6 +68,7 @@ pub use config::{
 pub use cpal_backend::{list_output_devices, CpalAudioBackend};
 pub use convert::convert_to_f32_interleaved;
 pub use remix::{remix_interleaved_f32, RemixError};
+pub use error::{AudioError, AudioErrorKind, AudioSampleFormat, Result};
 pub use latency::{
   duration_to_frames_ceil, duration_to_frames_floor, frames_to_duration, latency_from_timestamps,
 };
@@ -94,7 +95,10 @@ impl From<DecodedAudioChunk> for TimedAudioSegment {
 
 impl TimedAudioQueue {
   /// Convenience helper for pushing a decoded PCM chunk with an explicit PTS.
-  pub fn push_decoded_chunk(&mut self, chunk: DecodedAudioChunk) -> Result<(), PushError> {
+  pub fn push_decoded_chunk(
+    &mut self,
+    chunk: DecodedAudioChunk,
+  ) -> std::result::Result<(), PushError> {
     self.push_segment(chunk.into())
   }
 }
@@ -140,7 +144,7 @@ impl std::fmt::Display for AudioDeviceId {
 impl std::str::FromStr for AudioDeviceId {
   type Err = String;
 
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
+  fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
     let (ordinal_str, encoded_name) = s
       .split_once(':')
       .ok_or_else(|| "missing ':' delimiter".to_string())?;
@@ -185,7 +189,7 @@ impl std::fmt::Display for DeviceSelector {
 impl std::str::FromStr for DeviceSelector {
   type Err = String;
 
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
+  fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
     if s == "default" {
       return Ok(Self::Default);
     }
@@ -221,6 +225,12 @@ impl AudioStreamConfig {
       sample_rate_hz,
       channels,
     }
+  }
+}
+
+impl std::fmt::Display for AudioStreamConfig {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}Hz {}ch", self.sample_rate_hz, self.channels)
   }
 }
 
@@ -447,94 +457,6 @@ mod tests {
         ordinal: 1
       }
     );
-  }
-}
-#[derive(Debug, Error)]
-pub enum AudioError {
-  // --------------------------------------------------------------------------
-  // Backend / device errors
-  // --------------------------------------------------------------------------
-  #[error("no default output audio device is available")]
-  NoOutputDevice,
-  #[error("failed to enumerate output audio devices: {0}")]
-  OutputDeviceEnumerationFailed(String),
-  #[error("output audio device not found ({selector})")]
-  OutputDeviceNotFound { selector: DeviceSelector },
-  #[error("failed to enumerate output audio configs: {0}")]
-  OutputConfigEnumerationFailed(String),
-  #[error("failed to load default output audio config: {0}")]
-  DefaultOutputConfigFailed(String),
-  #[error("failed to build audio output stream: {0}")]
-  StreamBuildFailed(String),
-  #[error("unsupported output audio sample format: {0}")]
-  UnsupportedSampleFormat(String),
-  #[error("failed to start output audio stream: {0}")]
-  StreamPlayFailed(String),
-
-  // --------------------------------------------------------------------------
-  // Decoder-facing buffer validation/conversion errors
-  // --------------------------------------------------------------------------
-  #[error("invalid audio spec: {reason}")]
-  InvalidSpec { reason: String },
-
-  #[error("invalid audio buffer: {reason}")]
-  InvalidBuffer { reason: String },
-
-  #[error("invalid channel count {channels}")]
-  InvalidChannels { channels: usize },
-
-  #[error("invalid sample rate {sample_rate}")]
-  InvalidSampleRate { sample_rate: u32 },
-
-  #[error(
-    "audio buffer format/layout mismatch with data: format={format:?} data_format={data_format:?} layout={layout:?} data_layout={data_layout:?}"
-  )]
-  BufferMetadataMismatch {
-    format: SampleFormat,
-    data_format: SampleFormat,
-    layout: ChannelLayout,
-    data_layout: ChannelLayout,
-  },
-
-  #[error(
-    "interleaved buffer has {len_samples} samples which is not divisible by channel count {channels}"
-  )]
-  InvalidInterleavedLength { len_samples: usize, channels: usize },
-
-  #[error("planar buffer expected {channels} planes but got {planes}")]
-  InvalidPlaneCount { channels: usize, planes: usize },
-
-  #[error(
-    "planar buffer plane {plane} has {len_samples} samples but expected {expected_samples}"
-  )]
-  InvalidPlaneLength {
-    plane: usize,
-    len_samples: usize,
-    expected_samples: usize,
-  },
-
-  #[error(
-    "audio buffer config mismatch: expected {expected_channels}ch@{expected_sample_rate_hz}Hz but got {channels}ch@{sample_rate_hz}Hz"
-  )]
-  StreamConfigMismatch {
-    expected_channels: usize,
-    expected_sample_rate_hz: u32,
-    channels: usize,
-    sample_rate_hz: u32,
-  },
-}
-
-impl AudioError {
-  pub fn invalid_spec(reason: impl Into<String>) -> Self {
-    Self::InvalidSpec {
-      reason: reason.into(),
-    }
-  }
-
-  pub fn invalid_buffer(reason: impl Into<String>) -> Self {
-    Self::InvalidBuffer {
-      reason: reason.into(),
-    }
   }
 }
 
@@ -767,7 +689,7 @@ impl PcmF32QueueProducer {
   ///
   /// Note: the current resampler is a linear-interpolation MVP; it is not band-limited and may
   /// introduce audible artifacts.
-  pub fn push_audio(&mut self, buffer: AudioBuffer<'_>) -> Result<(), AudioError> {
+  pub fn push_audio(&mut self, buffer: AudioBuffer<'_>) -> Result<()> {
     // Treat decoder-provided metadata as untrusted; reject absurd values early before any
     // conversion/normalization work.
     let max_channels = usize::from(limits::MAX_CHANNELS);
@@ -859,7 +781,7 @@ impl PcmF32QueueProducer {
   }
 
   /// Convenience helper for pushing interleaved `f32` PCM into the queue.
-  pub fn push_pcm_f32(&mut self, samples: &[f32], pts: Option<Duration>) -> Result<(), AudioError> {
+  pub fn push_pcm_f32(&mut self, samples: &[f32], pts: Option<Duration>) -> Result<()> {
     let channels = self.channels();
     if channels == 0 {
       return Err(AudioError::invalid_spec("queue channel count must be non-zero"));
@@ -887,7 +809,6 @@ impl PcmF32QueueProducer {
     Ok(())
   }
 }
-
 #[cfg(all(test, feature = "audio_cpal"))]
 mod audio_cpal_compile_tests {
   use super::CpalAudioBackend;
