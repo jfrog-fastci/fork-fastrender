@@ -59,11 +59,11 @@ fn assert_function_name_and_length(
 fn is_async_generator_syntax_unsupported(
   scope: &mut Scope<'_>,
   intr: &vm_js::Intrinsics,
-  err: VmError,
+  err: &VmError,
 ) -> Result<bool, VmError> {
   let thrown = match err {
-    VmError::Throw(v) => v,
-    VmError::ThrowWithStack { value, .. } => value,
+    VmError::Throw(v) => *v,
+    VmError::ThrowWithStack { value, .. } => *value,
     _ => return Ok(false),
   };
   let Value::Object(obj) = thrown else {
@@ -102,7 +102,7 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
     Ok(_) => {}
     Err(err) => {
       let mut scope = rt.heap.scope();
-      if is_async_generator_syntax_unsupported(&mut scope, &intr, err)? {
+      if is_async_generator_syntax_unsupported(&mut scope, &intr, &err)? {
         return Ok(());
       }
       return Err(err);
