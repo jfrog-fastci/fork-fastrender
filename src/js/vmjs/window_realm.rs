@@ -10905,35 +10905,8 @@ fn document_query_selector_all_native(
   // user data. Both outlive this native call.
   let dom = unsafe { dom_ptr.as_ref() };
 
-  let array = scope.alloc_array(0)?;
-  scope.push_root(Value::Object(array))?;
-  if let Some(intrinsics) = vm.intrinsics() {
-    scope
-      .heap_mut()
-      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
-  }
-
-  for (idx, node_id) in matches.iter().copied().enumerate() {
-    let key = alloc_key(scope, &idx.to_string())?;
-    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?;
-    scope.define_property(array, key, data_desc(wrapper))?;
-  }
-
-  let length_key = alloc_key(scope, "length")?;
-  scope.define_property(
-    array,
-    length_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Number(matches.len() as f64),
-        writable: true,
-      },
-    },
-  )?;
-
-  Ok(Value::Object(array))
+  let node_list = alloc_node_array(vm, scope, document_obj, Some(dom), &matches)?;
+  Ok(Value::Object(node_list))
 }
 
 fn document_element_from_point_native(
@@ -11266,35 +11239,8 @@ fn element_query_selector_all_native(
     "Element.querySelectorAll requires a DOM-backed element",
   ))?;
 
-  let array = scope.alloc_array(0)?;
-  scope.push_root(Value::Object(array))?;
-  if let Some(intrinsics) = vm.intrinsics() {
-    scope
-      .heap_mut()
-      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
-  }
-
-  for (idx, node_id) in matches.iter().copied().enumerate() {
-    let key = alloc_key(scope, &idx.to_string())?;
-    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?;
-    scope.define_property(array, key, data_desc(wrapper))?;
-  }
-
-  let length_key = alloc_key(scope, "length")?;
-  scope.define_property(
-    array,
-    length_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Number(matches.len() as f64),
-        writable: true,
-      },
-    },
-  )?;
-
-  Ok(Value::Object(array))
+  let node_list = alloc_node_array(vm, scope, document_obj, Some(dom), &matches)?;
+  Ok(Value::Object(node_list))
 }
 
 fn element_matches_native(
