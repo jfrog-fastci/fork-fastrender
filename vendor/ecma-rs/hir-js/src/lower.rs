@@ -1002,12 +1002,13 @@ fn lower_root_body(
     match &*stmt.stx {
       AstStmt::Import(_)
       | AstStmt::ExportList(_)
-      | AstStmt::ExportDefaultExpr(_)
       | AstStmt::ImportTypeDecl(_)
       | AstStmt::ExportTypeDecl(_)
       | AstStmt::ExportAsNamespaceDecl(_)
-      | AstStmt::ImportEqualsDecl(_)
-      | AstStmt::ExportAssignmentDecl(_) => continue,
+      | AstStmt::ImportEqualsDecl(_) => continue,
+      // Note: `export default <expr>` and TS `export = <expr>` have runtime semantics, so they are
+      // still lowered into the executable statement list (as synthetic declarations) to preserve
+      // evaluation order.
       _ => {}
     }
     let stmt_id = lower_stmt(stmt, &mut builder, ctx);
@@ -1877,6 +1878,25 @@ fn lower_stmt(
     }
     AstStmt::ClassDecl(class_decl) => {
       if let Some(def_id) = builder.def_lookup.def_for_node(class_decl) {
+        StmtKind::Decl(def_id)
+      } else {
+        StmtKind::Empty
+      }
+    }
+    AstStmt::ExportDefaultExpr(expr) => {
+      // `export default <expr>` has runtime semantics (it evaluates the expression and initializes
+      // the module's `*default*` binding). Lower it as a synthetic "declaration" so the VM can
+      // evaluate it in statement order.
+      if let Some(def_id) = builder.def_lookup.def_for_node(expr) {
+        StmtKind::Decl(def_id)
+      } else {
+        StmtKind::Empty
+      }
+    }
+    AstStmt::ExportAssignmentDecl(assign) => {
+      // TypeScript `export = <expr>` (not standard ESM). Preserve execution order by lowering it as
+      // a synthetic declaration.
+      if let Some(def_id) = builder.def_lookup.def_for_node(assign) {
         StmtKind::Decl(def_id)
       } else {
         StmtKind::Empty

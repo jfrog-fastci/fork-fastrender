@@ -2909,6 +2909,49 @@ impl<'vm> HirEvaluator<'vm> {
             .env_initialize_binding(outer, binding_name, Value::Object(func_obj))?;
 
           Ok(Flow::empty())
+        } else if decl_body.kind == hir_js::BodyKind::TopLevel && def.is_default_export {
+          // `hir-js` lowers `export default <expr>;` as a synthetic "declaration" whose body contains
+          // the export expression as a statement list. At runtime, module evaluation must:
+          // - evaluate the expression in source order,
+          // - and initialize the module's `*default*` binding with the resulting value.
+          //
+          // Module linking pre-creates the immutable `*default*` binding (see `ModuleGraph::link`).
+          let result = self.eval_stmt_list(scope, decl_body, decl_body.root_stmts.as_slice())?;
+          let value = match result {
+            Flow::Normal(v) => v.unwrap_or(Value::Undefined),
+            Flow::Return(_) => {
+              return Err(VmError::InvariantViolation(
+                "export default expression produced Return completion (early errors should prevent this)",
+              ))
+            }
+            Flow::Break(..) => {
+              return Err(VmError::InvariantViolation(
+                "export default expression produced Break completion (early errors should prevent this)",
+              ))
+            }
+            Flow::Continue(..) => {
+              return Err(VmError::InvariantViolation(
+                "export default expression produced Continue completion (early errors should prevent this)",
+              ))
+            }
+          };
+
+          // Root the value across environment initialization: env records are heap allocations and
+          // may allocate/trigger GC when updating bindings.
+          let mut init_scope = scope.reborrow();
+          init_scope.push_root(value)?;
+          let binding_env = self.env.lexical_env();
+          if !init_scope.heap().env_has_binding(binding_env, "*default*")? {
+            return Err(VmError::InvariantViolation(
+              "export default expression missing *default* binding",
+            ));
+          }
+          init_scope
+            .heap_mut()
+            .env_initialize_binding(binding_env, "*default*", value)?;
+
+          // `export default <expr>` is a statement that produces an empty completion.
+          Ok(Flow::empty())
         } else {
           Err(VmError::Unimplemented("non-function declaration (hir-js compiled path)"))
         }
