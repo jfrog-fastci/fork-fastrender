@@ -4,8 +4,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::paint::display_list::Transform3D;
 use crate::style::position::Position;
 use crate::style::types::{
-  Direction, Overflow, OverscrollBehavior, ScrollBehavior, ScrollSnapAlign, ScrollSnapAxis,
-  ScrollSnapStop, ScrollSnapStrictness, VisualBox, WritingMode,
+  BackgroundAttachment, Direction, Overflow, OverscrollBehavior, ScrollBehavior, ScrollSnapAlign,
+  ScrollSnapAxis, ScrollSnapStop, ScrollSnapStrictness, VisualBox, WritingMode,
 };
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
@@ -1510,6 +1510,7 @@ pub fn apply_scroll_offsets(tree: &mut FragmentTree, scroll: &ScrollState) {
   }
 }
 
+<<<<<<< HEAD
 fn apply_viewport_scroll_cancel_to_fixed(
   node: &mut FragmentNode,
   viewport_scroll: Point,
@@ -1565,6 +1566,66 @@ pub fn apply_viewport_scroll_cancel(tree: &mut FragmentTree, scroll: &ScrollStat
   for fragment in tree.additional_fragments.iter_mut() {
     apply_viewport_scroll_cancel_to_fixed(fragment, viewport_scroll, false);
   }
+=======
+/// Returns `true` if a fragment tree can safely use the "scroll blit" fast-path.
+///
+/// Scroll blitting (reusing the previously rendered frame by shifting pixels) is only valid when
+/// the entire rendered output is translated uniformly by viewport scroll.
+///
+/// This scan is intentionally conservative: it disables scroll blitting for known scroll-breaking
+/// features that can keep parts of the page anchored to the viewport or otherwise depend on scroll
+/// position.
+pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
+  fn scan(node: &FragmentNode, has_fixed_cb_ancestor: bool) -> bool {
+    let Some(style) = node.style.as_deref() else {
+      for child in node.children.iter() {
+        if !scan(child, has_fixed_cb_ancestor) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    // Sticky positioning is scroll-dependent; treat any sticky as unsupported for now.
+    if matches!(style.position, Position::Sticky) {
+      return false;
+    }
+
+    // A `position: fixed` element is only viewport-fixed when it has no fixed-containing-block
+    // ancestor. This mirrors the logic in `apply_element_scroll_offsets`.
+    if matches!(style.position, Position::Fixed) && !has_fixed_cb_ancestor {
+      return false;
+    }
+
+    // `background-attachment: fixed` keeps the background anchored to the viewport.
+    if style
+      .background_layers
+      .iter()
+      .any(|layer| matches!(layer.attachment, BackgroundAttachment::Fixed))
+    {
+      return false;
+    }
+
+    let establishes_fixed_cb = style.establishes_fixed_containing_block();
+    let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
+    for child in node.children.iter() {
+      if !scan(child, has_fixed_cb_ancestor_for_children) {
+        return false;
+      }
+    }
+    true
+  }
+
+  if !scan(&tree.root, false) {
+    return false;
+  }
+  for fragment in tree.additional_fragments.iter() {
+    if !scan(fragment, false) {
+      return false;
+    }
+  }
+  true
+>>>>>>> c6779416 (feat: add fragment-tree scan for scroll blit safety)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2510,6 +2571,7 @@ mod tests {
   mod effective_scroll_state_test;
   mod offset_translates_promoted_fragments_test;
   mod overflow_clipping_test;
+  mod scroll_blit_supported_test;
 
   fn container_style(axis: ScrollSnapAxis, strictness: ScrollSnapStrictness) -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();

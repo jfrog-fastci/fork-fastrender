@@ -7852,8 +7852,8 @@ impl<'vm> HirEvaluator<'vm> {
       // do not partially pollute the static block environments.
       self.early_error_missing_initializers_in_stmt_list(block_body, block_body.root_stmts.as_slice())?;
       self.instantiate_var_decls(&mut block_scope, block_body, block_body.root_stmts.as_slice())?;
-      // Class bodies (including static blocks) are always strict mode code, so Annex B block-scoped
-      // function hoisting does not apply here.
+      // Class bodies (including static blocks) are always strict mode code, so Annex B block-function
+      // hoisting does not apply here.
       self.instantiate_function_decls(
         &mut block_scope,
         block_body,
