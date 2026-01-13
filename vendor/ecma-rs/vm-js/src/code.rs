@@ -339,6 +339,47 @@ impl CompiledScript {
       external_memory,
     })?)
   }
+
+  /// Lowers an already-parsed module to HIR, reusing the provided [`SourceText`].
+  ///
+  /// This is used by module compilation APIs that need both:
+  /// - module-record metadata (requested modules, import/export entries), and
+  /// - compiled HIR for execution.
+  ///
+  /// Callers are expected to have already run module early-error validation on `parsed`.
+  pub(crate) fn compile_module_from_parsed(
+    heap: &mut Heap,
+    source: Arc<SourceText>,
+    parsed: &parse_js::ast::node::Node<parse_js::ast::stx::TopLevel>,
+  ) -> Result<Arc<CompiledScript>, VmError> {
+    let feature_flags = ast_feature_flags(parsed);
+    let contains_async_generators = feature_flags.contains_async_generators;
+    let contains_generators = feature_flags.contains_generators;
+    let contains_async_functions = feature_flags.contains_async_functions;
+    let requires_ast_fallback = contains_generators || contains_async_functions;
+    let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
+    let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      hir_js::lower_file(FileId(0), hir_js::FileKind::Js, parsed)
+    }))
+    .map_err(|_| VmError::InvariantViolation("hir-js panicked while lowering a module"))?;
+
+    // HIR can be significantly larger than the source text; use a conservative estimate to ensure
+    // heap limits apply to compiled code.
+    let estimated_hir_bytes = source.text.len().saturating_mul(8);
+    let external_memory = heap.charge_external(estimated_hir_bytes)?;
+    let hir = arc_try_new_vm(hir)?;
+    Ok(arc_try_new_vm(Self {
+      source,
+      contains_async_generators,
+      contains_generators,
+      contains_async_functions,
+      requires_ast_fallback,
+      contains_top_level_await,
+      source_type: SourceType::Module,
+      external_memory,
+      hir,
+    })?)
+  }
 }
 
 /// A reference to a user-defined function body within a [`CompiledScript`].

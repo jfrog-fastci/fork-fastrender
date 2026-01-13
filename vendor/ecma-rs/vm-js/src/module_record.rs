@@ -432,6 +432,23 @@ impl SourceTextModuleRecord {
     Ok(record)
   }
 
+  /// Parse, validate, and compile a source text module.
+  ///
+  /// This is a convenience API for embeddings and unit tests that want to execute modules through
+  /// the compiled HIR engine. The returned [`SourceTextModuleRecord`] is identical to
+  /// [`SourceTextModuleRecord::parse_source`], but has `compiled` populated so
+  /// [`crate::ModuleGraph`] can execute it via `hir_exec`.
+  pub fn compile_source(heap: &mut Heap, source: Arc<SourceText>) -> Result<Self, VmError> {
+    let mut record = Self::parse_source(source.clone())?;
+    let ast = record
+      .ast
+      .as_deref()
+      .ok_or(VmError::InvariantViolation("module AST missing after successful parse"))?;
+    let compiled = crate::CompiledScript::compile_module_from_parsed(heap, source, ast)?;
+    record.compiled = Some(compiled);
+    Ok(record)
+  }
+
   /// Parses a source text module using VM budget/interrupt state.
   pub fn parse_with_vm(heap: &mut Heap, vm: &mut Vm, source: &str) -> Result<Self, VmError> {
     let source = arc_try_new_vm(SourceText::new_charged(heap, "<inline>", source)?)?;
@@ -469,6 +486,22 @@ impl SourceTextModuleRecord {
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
     record.ast = Some(arc_try_new_vm(top)?);
+    Ok(record)
+  }
+
+  /// Budget-aware variant of [`SourceTextModuleRecord::compile_source`].
+  pub fn compile_source_with_vm(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    source: Arc<SourceText>,
+  ) -> Result<Self, VmError> {
+    let mut record = Self::parse_source_with_vm(vm, source.clone())?;
+    let ast = record
+      .ast
+      .as_deref()
+      .ok_or(VmError::InvariantViolation("module AST missing after successful parse"))?;
+    let compiled = crate::CompiledScript::compile_module_from_parsed(heap, source, ast)?;
+    record.compiled = Some(compiled);
     Ok(record)
   }
 

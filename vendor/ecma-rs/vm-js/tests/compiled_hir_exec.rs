@@ -12773,75 +12773,79 @@ fn compiled_import_meta_in_module_returns_cached_object() -> Result<(), VmError>
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
 
-  // `import.meta` is defined only in modules. We don't currently have a compiled-module entry point,
-  // so simulate module execution by pushing an `ExecutionContext` whose active ScriptOrModule is a
-  // module id.
-  let module = rt
-    .modules_mut()
-    .add_module(vm_js::SourceTextModuleRecord::default())?;
-
-  let script = CompiledScript::compile_module(
-    rt.heap_mut(),
-    "test.js",
-    r#"
-      function f() { return import.meta; }
-    "#,
-  )?;
-  let f_body = find_function_body(&script, "f");
-
-  let mut hooks = vm_js::MicrotaskQueue::new();
-  let mut host = ();
+  // `import.meta` is defined only in modules. Compile and execute a module through `ModuleGraph`
+  // so the VM has an active module id and can consult per-graph `import.meta` caches.
   let realm_id = rt.realm().id();
+  let global_object = rt.realm().global_object();
+  let mut host = ();
+  let mut hooks = vm_js::MicrotaskQueue::new();
+  {
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
 
-  let mut scope = rt.heap.scope();
-  let name = scope.alloc_string("f")?;
-  let f = scope.alloc_user_function(
-    CompiledFunctionRef {
-      script: script.clone(),
-      body: f_body,
-    },
-    name,
-    0,
-  )?;
-  // Keep the callee alive across allocations and multiple calls.
-  scope.push_root(Value::Object(f))?;
+    let source = Arc::new(vm_js::SourceText::new_charged(
+      heap,
+      "test.js",
+      r#"
+        export const m1 = import.meta;
+        export const m2 = import.meta;
+      "#,
+    )?);
+    let record = vm_js::SourceTextModuleRecord::compile_source(heap, source)?;
+    let module = modules.add_module(record)?;
 
-  let exec_ctx = vm_js::ExecutionContext {
-    realm: realm_id,
-    script_or_module: Some(vm_js::ScriptOrModule::Module(module)),
-  };
-  let mut vm_ctx = rt.vm.execution_context_guard(exec_ctx)?;
+    let mut scope = heap.scope();
+    modules.evaluate_sync_with_scope(
+      vm,
+      &mut scope,
+      global_object,
+      realm_id,
+      module,
+      &mut host,
+      &mut hooks,
+    )?;
 
-  let v1 = vm_ctx.call_with_host_and_hooks(
-    &mut host,
-    &mut scope,
-    &mut hooks,
-    Value::Object(f),
-    Value::Undefined,
-    &[],
-  )?;
-  let v2 = vm_ctx.call_with_host_and_hooks(
-    &mut host,
-    &mut scope,
-    &mut hooks,
-    Value::Object(f),
-    Value::Undefined,
-    &[],
-  )?;
+    // Read the two exported bindings from the module namespace.
+    let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+    scope.push_root(Value::Object(ns))?;
 
-  let Value::Object(meta1) = v1 else {
-    panic!("expected import.meta to be an object, got {v1:?}");
-  };
-  let Value::Object(meta2) = v2 else {
-    panic!("expected import.meta to be an object, got {v2:?}");
-  };
+    let key1_s = scope.alloc_string("m1")?;
+    let key2_s = scope.alloc_string("m2")?;
+    scope.push_roots(&[Value::String(key1_s), Value::String(key2_s)])?;
 
-  // `import.meta` should be cached per module; repeated evaluations return the same object.
-  assert_eq!(meta1, meta2);
+    let v1 = scope.get_with_host_and_hooks(
+      vm,
+      &mut host,
+      &mut hooks,
+      ns,
+      vm_js::PropertyKey::from_string(key1_s),
+      Value::Object(ns),
+    )?;
+    let v2 = scope.get_with_host_and_hooks(
+      vm,
+      &mut host,
+      &mut hooks,
+      ns,
+      vm_js::PropertyKey::from_string(key2_s),
+      Value::Object(ns),
+    )?;
 
-  // Spec: `OrdinaryObjectCreate(null)` -> null-prototype object.
-  assert_eq!(scope.object_get_prototype(meta1)?, None);
+    let Value::Object(meta1) = v1 else {
+      panic!("expected import.meta to be an object, got {v1:?}");
+    };
+    let Value::Object(meta2) = v2 else {
+      panic!("expected import.meta to be an object, got {v2:?}");
+    };
 
+    // `import.meta` should be cached per module; repeated evaluations return the same object.
+    assert_eq!(meta1, meta2);
+
+    // Spec: `OrdinaryObjectCreate(null)` -> null-prototype object.
+    assert_eq!(scope.object_get_prototype(meta1)?, None);
+  }
+
+  // Discard any jobs enqueued by Promise resolution/rejection so `Job` persistent roots are cleaned
+  // up before the test ends.
+  hooks.teardown(&mut rt);
   Ok(())
 }
 
