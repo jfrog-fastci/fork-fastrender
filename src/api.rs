@@ -13891,6 +13891,7 @@ impl FastRender {
             );
           }
           let style_map = styled_style_map(&styled_tree);
+          refresh_box_tree_styles(&mut box_tree.root, &style_map);
           let mut box_map = HashMap::new();
           collect_box_nodes(&box_tree.root, &mut box_map);
           refresh_fragment_tree_styles(&mut fragment_tree, &box_map, &style_map);
@@ -20342,6 +20343,36 @@ fn refresh_fragment_tree_styles(
   }
 }
 
+fn refresh_box_tree_styles(root: &mut BoxNode, styles: &HashMap<usize, Arc<ComputedStyle>>) {
+  let mut stack: Vec<*mut BoxNode> = vec![root as *mut _];
+  while let Some(node_ptr) = stack.pop() {
+    // SAFETY: We only push pointers to nodes owned by `root`, and we never move the underlying
+    // `BoxNode`s while this traversal runs. Each pointer is popped, mutated, then its descendants
+    // are pushed for later processing.
+    unsafe {
+      let node = &mut *node_ptr;
+      if let Some(key) = box_style_key(node) {
+        if let Some(style) = styles.get(&key) {
+          node.style = Arc::clone(style);
+        }
+      }
+
+      if let Some(styled_id) = node.styled_node_id {
+        let base = styled_id << STYLE_KEY_SHIFT;
+        node.first_line_style = styles.get(&(base | STYLE_KEY_FIRST_LINE)).cloned();
+        node.first_letter_style = styles.get(&(base | STYLE_KEY_FIRST_LETTER)).cloned();
+      }
+
+      if let Some(body) = node.footnote_body.as_deref_mut() {
+        stack.push(body as *mut _);
+      }
+      for child in node.children.iter_mut().rev() {
+        stack.push(child as *mut _);
+      }
+    }
+  }
+}
+
 fn build_pre_layout_container_query_context(
   styled_tree: &StyledNode,
   media_ctx: &MediaContext,
@@ -23574,6 +23605,116 @@ mod tests {
         .as_ref()
         .is_some_and(|style| Arc::ptr_eq(style, &new_placeholder)),
       "expected top-level form control placeholder style to refresh"
+    );
+  }
+
+  #[test]
+  fn refresh_box_tree_styles_updates_styles_including_pseudos_and_footnotes() {
+    let old_style = Arc::new(ComputedStyle::default());
+
+    let mut new_root = ComputedStyle::default();
+    new_root.font_size = 11.0;
+    let new_root = Arc::new(new_root);
+
+    let mut new_before = ComputedStyle::default();
+    new_before.font_size = 12.0;
+    let new_before = Arc::new(new_before);
+
+    let mut new_marker = ComputedStyle::default();
+    new_marker.font_size = 13.0;
+    let new_marker = Arc::new(new_marker);
+
+    let mut new_call = ComputedStyle::default();
+    new_call.font_size = 14.0;
+    let new_call = Arc::new(new_call);
+
+    let mut new_body = ComputedStyle::default();
+    new_body.font_size = 15.0;
+    let new_body = Arc::new(new_body);
+
+    let mut new_first_line = ComputedStyle::default();
+    new_first_line.color = Rgba::RED;
+    let new_first_line = Arc::new(new_first_line);
+
+    let mut new_first_letter = ComputedStyle::default();
+    new_first_letter.color = Rgba::BLUE;
+    let new_first_letter = Arc::new(new_first_letter);
+
+    let mut before = BoxNode::new_inline(old_style.clone(), vec![]);
+    before.styled_node_id = Some(1);
+    before.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::Before);
+
+    let mut marker = BoxNode::new_marker(old_style.clone(), MarkerContent::Text("*".to_string()));
+    marker.styled_node_id = Some(1);
+
+    let mut body = BoxNode::new_block(old_style.clone(), FormattingContextType::Block, vec![]);
+    body.styled_node_id = Some(2);
+
+    let mut call = BoxNode::new_inline(old_style.clone(), vec![]);
+    call.styled_node_id = Some(2);
+    call.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::FootnoteCall);
+    call.footnote_body = Some(Box::new(body));
+
+    let mut root = BoxNode::new_block(
+      old_style,
+      FormattingContextType::Block,
+      vec![before, marker, call],
+    );
+    root.styled_node_id = Some(1);
+    let mut box_tree = BoxTree::new(root);
+
+    let mut style_map = HashMap::new();
+    let base1 = 1 << super::STYLE_KEY_SHIFT;
+    let base2 = 2 << super::STYLE_KEY_SHIFT;
+    style_map.insert(base1, new_root.clone());
+    style_map.insert(base1 | super::STYLE_KEY_BEFORE, new_before.clone());
+    style_map.insert(base1 | super::STYLE_KEY_MARKER, new_marker.clone());
+    style_map.insert(base1 | super::STYLE_KEY_FIRST_LINE, new_first_line.clone());
+    style_map.insert(base1 | super::STYLE_KEY_FIRST_LETTER, new_first_letter.clone());
+    style_map.insert(base2, new_body.clone());
+    style_map.insert(base2 | super::STYLE_KEY_FOOTNOTE_CALL, new_call.clone());
+
+    super::refresh_box_tree_styles(&mut box_tree.root, &style_map);
+
+    assert!(
+      Arc::ptr_eq(&box_tree.root.style, &new_root),
+      "expected root style to refresh"
+    );
+    assert!(
+      box_tree
+        .root
+        .first_line_style
+        .as_ref()
+        .is_some_and(|style| Arc::ptr_eq(style, &new_first_line)),
+      "expected ::first-line style to refresh"
+    );
+    assert!(
+      box_tree
+        .root
+        .first_letter_style
+        .as_ref()
+        .is_some_and(|style| Arc::ptr_eq(style, &new_first_letter)),
+      "expected ::first-letter style to refresh"
+    );
+
+    assert!(
+      Arc::ptr_eq(&box_tree.root.children[0].style, &new_before),
+      "expected ::before box style to refresh"
+    );
+    assert!(
+      Arc::ptr_eq(&box_tree.root.children[1].style, &new_marker),
+      "expected marker box style to refresh"
+    );
+    assert!(
+      Arc::ptr_eq(&box_tree.root.children[2].style, &new_call),
+      "expected ::footnote-call box style to refresh"
+    );
+    assert!(
+      box_tree.root.children[2]
+        .footnote_body
+        .as_deref()
+        .is_some_and(|node| Arc::ptr_eq(&node.style, &new_body)),
+      "expected footnote body styles to refresh"
     );
   }
 
