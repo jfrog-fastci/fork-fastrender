@@ -46263,6 +46263,9 @@ fn init_window_globals(
     // `HTMLMediaElement.prototype.readyState`). FastRender does not yet implement media playback, but
     // we provide a minimal, spec-shaped stub to avoid runtime errors when scripts inspect media
     // readiness state.
+    //
+    // Use the `DomPlatform` prototypes so host-created `<video>/<audio>` wrappers inherit these
+    // members and `instanceof HTMLMediaElement` works.
     let html_media_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLMediaElement", html_media_element_proto)?;
     let html_video_element_ctor =
@@ -46462,6 +46465,8 @@ fn init_window_globals(
     scope
       .heap_mut()
       .object_set_prototype(html_element_ctor, Some(element_ctor))?;
+    // Media elements: HTMLMediaElement inherits from HTMLElement, and video/audio inherit from
+    // HTMLMediaElement.
     scope
       .heap_mut()
       .object_set_prototype(html_media_element_ctor, Some(html_element_ctor))?;
@@ -46472,7 +46477,6 @@ fn init_window_globals(
       .heap_mut()
       .object_set_prototype(html_audio_element_ctor, Some(html_media_element_ctor))?;
     for ctor in [
-      html_media_element_ctor,
       html_input_element_ctor,
       html_select_element_ctor,
       html_text_area_element_ctor,
@@ -62251,6 +62255,9 @@ mod tests {
         if (Object.getPrototypeOf(Text) !== Node) return 'Text';\n\
 \n\
         if (Object.getPrototypeOf(HTMLElement) !== Element) return 'HTMLElement';\n\
+        if (Object.getPrototypeOf(HTMLMediaElement) !== HTMLElement) return 'HTMLMediaElement';\n\
+        if (Object.getPrototypeOf(HTMLVideoElement) !== HTMLMediaElement) return 'HTMLVideoElement';\n\
+        if (Object.getPrototypeOf(HTMLAudioElement) !== HTMLMediaElement) return 'HTMLAudioElement';\n\
         if (Object.getPrototypeOf(HTMLInputElement) !== HTMLElement) return 'HTMLInputElement';\n\
         if (Object.getPrototypeOf(HTMLSelectElement) !== HTMLElement) return 'HTMLSelectElement';\n\
         if (Object.getPrototypeOf(HTMLTextAreaElement) !== HTMLElement) return 'HTMLTextAreaElement';\n\
@@ -62273,6 +62280,12 @@ mod tests {
     let ok = realm.exec_script(
       "(() => {\n\
         if (typeof HTMLMediaElement !== 'function') return 'HTMLMediaElement:typeof:' + (typeof HTMLMediaElement);\n\
+        if (typeof HTMLVideoElement !== 'function') return 'HTMLVideoElement:typeof:' + (typeof HTMLVideoElement);\n\
+        if (typeof HTMLAudioElement !== 'function') return 'HTMLAudioElement:typeof:' + (typeof HTMLAudioElement);\n\
+        if (Object.getPrototypeOf(HTMLVideoElement) !== HTMLMediaElement) return 'HTMLVideoElement:proto';\n\
+        if (Object.getPrototypeOf(HTMLAudioElement) !== HTMLMediaElement) return 'HTMLAudioElement:proto';\n\
+        if (Object.getPrototypeOf(HTMLVideoElement.prototype) !== HTMLMediaElement.prototype) return 'HTMLVideoElement.prototype';\n\
+        if (Object.getPrototypeOf(HTMLAudioElement.prototype) !== HTMLMediaElement.prototype) return 'HTMLAudioElement.prototype';\n\
         if (HTMLMediaElement.NETWORK_EMPTY !== 0) return 'NETWORK_EMPTY';\n\
         if (HTMLMediaElement.NETWORK_IDLE !== 1) return 'NETWORK_IDLE';\n\
         if (HTMLMediaElement.NETWORK_LOADING !== 2) return 'NETWORK_LOADING';\n\
@@ -62282,6 +62295,8 @@ mod tests {
         if (HTMLMediaElement.HAVE_CURRENT_DATA !== 2) return 'HAVE_CURRENT_DATA';\n\
         if (HTMLMediaElement.HAVE_FUTURE_DATA !== 3) return 'HAVE_FUTURE_DATA';\n\
         if (HTMLMediaElement.HAVE_ENOUGH_DATA !== 4) return 'HAVE_ENOUGH_DATA';\n\
+        if (HTMLVideoElement.HAVE_ENOUGH_DATA !== 4) return 'HTMLVideoElement.HAVE_ENOUGH_DATA';\n\
+        if (HTMLAudioElement.NETWORK_EMPTY !== 0) return 'HTMLAudioElement.NETWORK_EMPTY';\n\
 \n\
         // WebIDL constants should be readonly/enumerable/non-configurable.\n\
         const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement, 'NETWORK_EMPTY');\n\
@@ -62290,6 +62305,33 @@ mod tests {
         if (!protoDesc || protoDesc.writable !== false || protoDesc.enumerable !== true || protoDesc.configurable !== false) return 'protoDesc';\n\
         if (HTMLMediaElement.prototype.NETWORK_EMPTY !== 0) return 'prototype.NETWORK_EMPTY';\n\
         if (HTMLMediaElement.prototype.HAVE_ENOUGH_DATA !== 4) return 'prototype.HAVE_ENOUGH_DATA';\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_constants_are_visible_on_media_instances() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const video = document.createElement('video');\n\
+        if (!(video instanceof HTMLVideoElement)) return 'video instanceof HTMLVideoElement';\n\
+        if (!(video instanceof HTMLMediaElement)) return 'video instanceof HTMLMediaElement';\n\
+        if (video.HAVE_ENOUGH_DATA !== 4) return 'video.HAVE_ENOUGH_DATA';\n\
+        if (video.NETWORK_NO_SOURCE !== 3) return 'video.NETWORK_NO_SOURCE';\n\
+\n\
+        const audio = document.createElement('audio');\n\
+        if (!(audio instanceof HTMLAudioElement)) return 'audio instanceof HTMLAudioElement';\n\
+        if (!(audio instanceof HTMLMediaElement)) return 'audio instanceof HTMLMediaElement';\n\
+        if (audio.HAVE_METADATA !== 1) return 'audio.HAVE_METADATA';\n\
         return true;\n\
       })()",
     )?;
