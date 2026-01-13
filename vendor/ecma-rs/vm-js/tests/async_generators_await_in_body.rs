@@ -145,3 +145,47 @@ fn next_requests_are_queued_across_internal_await() -> Result<(), VmError> {
   rt.teardown_microtasks();
   result
 }
+
+#[test]
+fn next_requests_queue_across_internal_await_after_first_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let result: Result<(), VmError> = (|| {
+    let value = match rt.exec_script(
+      r#"
+        var results = [];
+
+        async function* g(){
+          yield 1;
+          await Promise.resolve();
+          yield 2;
+        }
+
+        var it = g();
+        it.next().then(r=>results.push(r.value));
+        it.next().then(r=>results.push(r.value));
+        it.next().then(r=>results.push(r.done ? 'done' : 'notdone'));
+
+        results.join(',')
+      "#,
+    ) {
+      Ok(v) => v,
+      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) => return Err(err),
+    };
+    assert_eq!(value_to_string(&rt, value), "");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    assert!(
+      rt.vm.microtask_queue().is_empty(),
+      "expected microtask queue to be empty after checkpoint"
+    );
+
+    let value = rt.exec_script("results.join(',')")?;
+    assert_eq!(value_to_string(&rt, value), "1,2,done");
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
