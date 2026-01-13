@@ -4342,17 +4342,29 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
   pub fn regexp_program(&self, obj: GcObject) -> Result<&RegExpProgram, VmError> {
     Ok(&self.require_regexp(obj)?.program)
   }
+  #[track_caller]
   fn get_env(&self, env: GcEnv) -> Result<&EnvRecord, VmError> {
-    match self.get_heap_object(env.0)? {
-      HeapObject::Env(e) => Ok(e),
-      _ => Err(VmError::invalid_handle()),
+    let invalid = VmError::InvalidHandle {
+      location: std::panic::Location::caller(),
+    };
+    match self.get_heap_object(env.0) {
+      Ok(HeapObject::Env(e)) => Ok(e),
+      Ok(_) => Err(invalid),
+      Err(VmError::InvalidHandle { .. }) => Err(invalid),
+      Err(other) => Err(other),
     }
   }
 
+  #[track_caller]
   fn get_env_mut(&mut self, env: GcEnv) -> Result<&mut EnvRecord, VmError> {
-    match self.get_heap_object_mut(env.0)? {
-      HeapObject::Env(e) => Ok(e),
-      _ => Err(VmError::invalid_handle()),
+    let invalid = VmError::InvalidHandle {
+      location: std::panic::Location::caller(),
+    };
+    match self.get_heap_object_mut(env.0) {
+      Ok(HeapObject::Env(e)) => Ok(e),
+      Ok(_) => Err(invalid),
+      Err(VmError::InvalidHandle { .. }) => Err(invalid),
+      Err(other) => Err(other),
     }
   }
 
@@ -4373,17 +4385,29 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     self.get_env_mut(env)
   }
 
+  #[track_caller]
   fn get_declarative_env(&self, env: GcEnv) -> Result<&DeclarativeEnvRecord, VmError> {
-    match self.get_env(env)? {
-      EnvRecord::Declarative(env) => Ok(env),
-      EnvRecord::Object(_) => Err(VmError::Unimplemented("object environment record")),
+    let invalid = VmError::InvalidHandle {
+      location: std::panic::Location::caller(),
+    };
+    match self.get_env(env) {
+      Ok(EnvRecord::Declarative(env)) => Ok(env),
+      Ok(EnvRecord::Object(_)) => Err(VmError::Unimplemented("object environment record")),
+      Err(VmError::InvalidHandle { .. }) => Err(invalid),
+      Err(other) => Err(other),
     }
   }
 
+  #[track_caller]
   fn get_declarative_env_mut(&mut self, env: GcEnv) -> Result<&mut DeclarativeEnvRecord, VmError> {
-    match self.get_env_mut(env)? {
-      EnvRecord::Declarative(env) => Ok(env),
-      EnvRecord::Object(_) => Err(VmError::Unimplemented("object environment record")),
+    let invalid = VmError::InvalidHandle {
+      location: std::panic::Location::caller(),
+    };
+    match self.get_env_mut(env) {
+      Ok(EnvRecord::Declarative(env)) => Ok(env),
+      Ok(EnvRecord::Object(_)) => Err(VmError::Unimplemented("object environment record")),
+      Err(VmError::InvalidHandle { .. }) => Err(invalid),
+      Err(other) => Err(other),
     }
   }
   /// Gets an object's `[[Prototype]]`.
@@ -8048,22 +8072,30 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     Ok(())
   }
 
+  #[track_caller]
   fn get_heap_object(&self, id: HeapId) -> Result<&HeapObject, VmError> {
-    let idx = self.validate(id).ok_or_else(|| VmError::invalid_handle())?;
+    let invalid = VmError::InvalidHandle {
+      location: std::panic::Location::caller(),
+    };
+    let idx = self.validate(id).ok_or(invalid.clone())?;
     self
       .slots[idx]
       .value
       .as_ref()
-      .ok_or_else(|| VmError::invalid_handle())
+      .ok_or(invalid)
   }
 
+  #[track_caller]
   fn get_heap_object_mut(&mut self, id: HeapId) -> Result<&mut HeapObject, VmError> {
-    let idx = self.validate(id).ok_or_else(|| VmError::invalid_handle())?;
+    let invalid = VmError::InvalidHandle {
+      location: std::panic::Location::caller(),
+    };
+    let idx = self.validate(id).ok_or(invalid.clone())?;
     self
       .slots[idx]
       .value
       .as_mut()
-      .ok_or_else(|| VmError::invalid_handle())
+      .ok_or(invalid)
   }
   fn validate(&self, id: HeapId) -> Option<usize> {
     let idx = id.index() as usize;
@@ -13463,6 +13495,65 @@ mod generator_object_gc_tests {
     // Stack roots were removed when the scope was dropped.
     heap.collect_garbage();
     assert!(!heap.is_valid_object(gen));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod runtime_env_rooting_tests {
+  use super::*;
+
+  #[test]
+  fn runtime_env_roots_fresh_env_across_root_stack_growth_gc() -> Result<(), VmError> {
+    let max_bytes = 8 * 1024 * 1024;
+    let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
+
+    let global_obj;
+    let env;
+    let global_root;
+    {
+      // Allocate a global object and a fresh environment record. Once this scope is dropped the
+      // `env` allocation becomes unreachable (and therefore eligible for collection).
+      let mut scope = heap.scope();
+      global_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(global_obj))?;
+      env = scope.env_create(None)?;
+      scope.push_env_root(env)?;
+
+      // Keep the global object alive via a persistent root so GC inside `RuntimeEnv` setup cannot
+      // collect it.
+      global_root = scope.heap_mut().add_root(Value::Object(global_obj))?;
+    }
+
+    // Force the next root-stack growth to trigger a GC cycle, and ensure the root stacks have
+    // minimal capacity so growth is required.
+    //
+    // Historically, `RuntimeEnv::new_with_var_env` pushed the global-object root *before* rooting
+    // the `lexical_env` argument. If growing `root_stack` triggered a GC, the fresh env record could
+    // be collected and a stale `GcEnv` handle stored in `persistent_env_roots`, eventually causing
+    // `VmError::InvalidHandle` during identifier resolution.
+    heap.root_stack = Vec::new();
+    heap.env_root_stack = Vec::new();
+    heap.limits.gc_threshold = 0;
+
+    let gc_before = heap.gc_runs();
+    let mut runtime_env = RuntimeEnv::new_with_var_env(&mut heap, global_obj, env, env)?;
+    assert!(
+      heap.gc_runs() > gc_before,
+      "expected GC to run during RuntimeEnv root registration"
+    );
+
+    // The newly-created environment record must still be valid and accessible.
+    assert!(heap.is_valid_env(env));
+    let _ = heap.get_env_record(env)?;
+
+    // And it must remain live across explicit collections while the runtime env root is installed.
+    heap.collect_garbage();
+    assert!(heap.is_valid_env(env));
+
+    runtime_env.teardown(&mut heap);
+    heap.remove_root(global_root);
+
     Ok(())
   }
 }
