@@ -9256,6 +9256,25 @@ fn compiled_while_completion_value_is_undefined() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_try_completion_value_is_undefined() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      1;
+      try {} finally {}
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
 fn compiled_while_break_preserves_last_value() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -9295,6 +9314,27 @@ fn compiled_labeled_break_preserves_last_value() -> Result<(), VmError> {
   )?;
   let result = rt.exec_compiled_script(script)?;
   assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_try_resets_labeled_break_completion_value_to_undefined() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      label: {
+        1;
+        try { break label; } finally {}
+      }
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
   Ok(())
 }
 
