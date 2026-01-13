@@ -2363,48 +2363,52 @@ impl JsRuntime {
 
             // Async classic script execution: evaluate the statement list using the async evaluator and
             // return a Promise representing completion.
-          let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
-            &mut *vm_frame,
-            &mut scope,
-            host,
-            &mut hooks,
-          )?;
-          let promise = cap.promise;
+            let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+              &mut *vm_frame,
+              &mut scope,
+              host,
+              &mut hooks,
+            )?;
+            let promise = cap.promise;
 
-      // Use a distinct `RuntimeEnv` for async script evaluation. Async continuations tear down their
-      // env roots on completion; classic scripts must not tear down the runtime's global env.
-      let mut env =
-        RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, self.env.lexical_env())?;
-      env.set_source_info(source.clone(), 0, 0);
+            // Use a distinct `RuntimeEnv` for async script evaluation. Async continuations tear down
+            // their env roots on completion; classic scripts must not tear down the runtime's global
+            // env.
+            let mut env = RuntimeEnv::new_with_lexical_env(
+              scope.heap_mut(),
+              global_object,
+              self.env.lexical_env(),
+            )?;
+            env.set_source_info(source.clone(), 0, 0);
 
-      // Capture the evaluator state after the async evaluation attempt.
-      //
-      // Some nested constructs can temporarily override runtime semantics (e.g. class definition
-      // evaluation forces strict mode; class static blocks override `this` / `new.target`) and may
-      // suspend. This state must be preserved in the async continuation so resumed execution uses
-      // the correct semantics.
-      let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value), VmError> = (|| {
-        let mut evaluator = Evaluator {
-          vm: &mut *vm_frame,
-          host,
-          hooks: &mut hooks,
-          env: &mut env,
-          strict,
-          this: global_this,
-          new_target: Value::Undefined,
-          home_object: None,
-          class_constructor: None,
-          derived_constructor: false,
-          this_initialized: true,
-          this_root_idx: None,
-        };
+            // Capture the evaluator state after the async evaluation attempt.
+            //
+            // Some nested constructs can temporarily override runtime semantics (e.g. class
+            // definition evaluation forces strict mode; class static blocks override `this` /
+            // `new.target`) and may suspend. This state must be preserved in the async continuation
+            // so resumed execution uses the correct semantics.
+            let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value), VmError> = (|| {
+              let mut evaluator = Evaluator {
+                vm: &mut *vm_frame,
+                host,
+                hooks: &mut hooks,
+                env: &mut env,
+                strict,
+                this: global_this,
+                new_target: Value::Undefined,
+                home_object: None,
+                class_constructor: None,
+                derived_constructor: false,
+                this_initialized: true,
+                this_root_idx: None,
+              };
 
-        evaluator.instantiate_script(&mut scope, &top.stx.body)?;
-        let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
-        Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target))
-      })();
+              evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+              let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
+              Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target))
+            })();
 
-      match body_eval {
+            match body_eval {
         Ok((
           AsyncEval::Complete(completion),
           _strict_at_suspend,
@@ -2494,14 +2498,14 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
-            &mut *vm_frame,
-            &mut root_scope,
-            host,
-            &mut hooks,
-            await_value,
-          )
-          .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+            let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+              &mut *vm_frame,
+              &mut root_scope,
+              host,
+              &mut hooks,
+              await_value,
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
