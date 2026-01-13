@@ -57,6 +57,8 @@
 
 use std::ffi::OsStr;
 use std::io;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 
 /// Environment variable that disables renderer sandboxing entirely.
 ///
@@ -91,6 +93,17 @@ pub fn disable_renderer_sandbox_from_env_value(value: Option<&OsStr>) -> bool {
 pub fn disable_renderer_sandbox_from_env() -> bool {
   let value = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
   disable_renderer_sandbox_from_env_value(value.as_deref())
+}
+
+#[cfg(target_os = "linux")]
+fn log_linux_renderer_sandbox_disabled_once() {
+  static LOGGED: OnceLock<()> = OnceLock::new();
+  LOGGED.get_or_init(|| {
+    eprintln!(
+      "warning: Linux renderer sandbox is DISABLED (debug escape hatch; INSECURE). \
+Set {ENV_DISABLE_RENDERER_SANDBOX}=0/1 to control this."
+    );
+  });
 }
 
 pub mod config;
@@ -516,6 +529,8 @@ pub enum SandboxError {
 
 fn preflight_status(config: &RendererSandboxConfig, disable_env: Option<&OsStr>) -> Option<SandboxStatus> {
   if disable_renderer_sandbox_from_env_value(disable_env) {
+    #[cfg(target_os = "linux")]
+    log_linux_renderer_sandbox_disabled_once();
     return Some(SandboxStatus::DisabledByEnv);
   }
 
@@ -557,6 +572,8 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
   #[cfg(not(target_os = "macos"))]
   {
     if disable_renderer_sandbox_from_env() {
+      #[cfg(target_os = "linux")]
+      log_linux_renderer_sandbox_disabled_once();
       return Ok(SandboxStatus::DisabledByEnv);
     }
   }
