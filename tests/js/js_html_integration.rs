@@ -1199,6 +1199,38 @@ fn p2_import_meta_resolve_resolves_with_import_maps_and_base_url() -> Result<()>
 }
 
 #[test]
+fn p2_inline_module_import_meta_url_uses_document_base_url_at_discovery_time() -> Result<()> {
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut h = Harness::new("https://example.invalid/dir/page.html", js_options)?;
+
+  h.register_html_source(
+    r#"<!doctype html><html><head>
+      <script type="module">
+        console.log('url:' + import.meta.url);
+        console.log('rel:' + import.meta.resolve('./a.js'));
+      </script>
+      <base href="https://example.invalid/base/">
+    </head><body></body></html>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  let logs = console_logs(&h.tab);
+  assert_eq!(logs.len(), 2, "expected 2 console logs, got: {logs:?}");
+  let url = logs[0]
+    .strip_prefix("url:")
+    .expect("expected first log to be prefixed with url:");
+  assert!(
+    url.starts_with("https://example.invalid/dir/page.html#"),
+    "expected inline module import.meta.url to be a stable synthetic URL based on the document URL at discovery time, got: {url:?} (logs: {logs:?})"
+  );
+  assert_eq!(logs[1], "rel:https://example.invalid/dir/a.js".to_string());
+  Ok(())
+}
+
+#[test]
 fn p2_import_maps_support_scoped_mappings() -> Result<()> {
   let mut js_options = JsExecutionOptions::default();
   js_options.supports_module_scripts = true;
