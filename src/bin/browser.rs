@@ -3297,7 +3297,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Enable/disable debug-log message traffic up-front so production browsing sessions that do not
     // show the debug log UI do not pay for high-volume `DebugLog` delivery.
-    ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDebugLogEnabled {
+    renderer_backend.send(fastrender::ui::UiToWorker::SetDebugLogEnabled {
       enabled: debug_log_ui_enabled(),
     })?;
 

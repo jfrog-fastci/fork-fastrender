@@ -604,6 +604,7 @@ fn js_dom_node_for_preorder_id(
 fn js_dom_node_for_preorder_id_with_log(
   ui_tx: &Sender<WorkerToUi>,
   tab_id: TabId,
+  debug_log_enabled: bool,
   js_tab: &BrowserTab,
   preorder_id: usize,
   element_id: Option<&str>,
@@ -619,7 +620,7 @@ fn js_dom_node_for_preorder_id_with_log(
     js_dom_mapping_generation,
     js_dom_mapping,
   );
-  if node_id.is_none() && !*js_dom_mapping_miss_logged {
+  if debug_log_enabled && node_id.is_none() && !*js_dom_mapping_miss_logged {
     let _ = ui_tx.send(WorkerToUi::DebugLog {
       tab_id,
       line: format!(
@@ -2925,10 +2926,12 @@ impl BrowserRuntime {
       let generation_before = js_tab.dom().mutation_generation();
       let prev_generation = tab.js_dom_mutation_generation;
       if let Err(err) = js_tab.run_until_stable(/* max_frames */ 1) {
-        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-          tab_id,
-          line: format!("js tick failed: {err}"),
-        });
+        if self.debug_log_enabled {
+          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("js tick failed: {err}"),
+          });
+        }
       }
       let generation_after = js_tab.dom().mutation_generation();
       if generation_before != prev_generation || generation_after != generation_before {
@@ -4154,6 +4157,7 @@ impl BrowserRuntime {
         let target = js_dom_node_for_preorder_id_with_log(
           &self.ui_tx,
           tab_id,
+          self.debug_log_enabled,
           js_tab,
           target_id,
           click_target_element_id.as_deref(),
@@ -4258,6 +4262,7 @@ impl BrowserRuntime {
             js_dom_node_for_preorder_id_with_log(
               &self.ui_tx,
               tab_id,
+              self.debug_log_enabled,
               js_tab,
               submitter_id,
               form_submitter_element_id.as_deref(),
@@ -4705,6 +4710,7 @@ impl BrowserRuntime {
           js_dom_node_for_preorder_id_with_log(
             &self.ui_tx,
             tab_id,
+            self.debug_log_enabled,
             js_tab,
             target_id,
             hit_info.dispatch_target_element_id.as_deref(),
@@ -5307,6 +5313,7 @@ impl BrowserRuntime {
           let target = js_dom_node_for_preorder_id_with_log(
             &self.ui_tx,
             tab_id,
+            self.debug_log_enabled,
             js_tab,
             target_id,
             click_target_element_id,
@@ -5359,6 +5366,7 @@ impl BrowserRuntime {
               js_dom_node_for_preorder_id_with_log(
                 &self.ui_tx,
                 tab_id,
+                self.debug_log_enabled,
                 js_tab,
                 source_id,
                 submit_source_element_id,
