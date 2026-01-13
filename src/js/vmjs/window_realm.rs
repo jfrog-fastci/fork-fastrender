@@ -44783,10 +44783,6 @@ fn init_window_globals(
       readonly_attr_desc(Value::Bool(false)),
     )?;
 
-    let html_video_element_ctor =
-      install_illegal_dom_ctor(&mut scope, "HTMLVideoElement", html_video_element_proto)?;
-    let html_audio_element_ctor =
-      install_illegal_dom_ctor(&mut scope, "HTMLAudioElement", html_audio_element_proto)?;
     let html_input_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLInputElement", html_input_element_proto)?;
     let html_text_area_element_ctor =
