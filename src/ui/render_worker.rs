@@ -2362,6 +2362,13 @@ impl BrowserRuntime {
                   scroll_changed = true;
                   emit_scroll_state_updated = true;
                   changed = true;
+                } else {
+                  // Preserve the historical "overscroll repaint" behaviour: even if the requested
+                  // delta clamps back to the current scroll offset, still schedule a repaint so
+                  // callers that expect a frame-per-scroll (e.g. for texture translation/latency
+                  // hiding) continue to receive one.
+                  tab.force_repaint = true;
+                  changed = true;
                 }
               } else {
                 // No cached layout yet; record the raw scroll offset for the first render.
