@@ -1066,15 +1066,6 @@ impl ModuleGraph {
       .map(|loaded| loaded.module)
   }
 
-  /// Marks cached SCC (cycle) structure as dirty.
-  ///
-  /// SCC membership and dependency edges are computed over the `[[LoadedModules]]` graph. Any time a
-  /// host updates a module's `[[LoadedModules]]` list (e.g. during `FinishLoadingImportedModule`),
-  /// the SCC cache must be recomputed before module evaluation so dependency ordering is correct.
-  pub(crate) fn mark_scc_dirty(&mut self) {
-    self.scc_dirty = true;
-  }
-
   fn resolve_host_module(&self, request: &ModuleRequest) -> Option<ModuleId> {
     self
       .host_resolve
