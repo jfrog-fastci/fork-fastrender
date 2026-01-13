@@ -14,31 +14,32 @@
     "layout": 5.359728242208649,
     "paint": 59.06754282692259
   },
-  "notes": "Etsy is behind DataDome bot protection (403 in CI); fixture is the interstitial page. Chrome diff is limited to minor text antialiasing. Fixture also vendors the DataDome c.js script so validate-page-fixtures --include-scripts passes.",
+  "notes": "Live etsy.com is behind DataDome bot protection (often 403/challenge in CI), so the pageset uses an offline archived homepage fixture (JS disabled) that still includes Etsy’s DataDome tags.js loader for fixture validation. Although Chrome and FastRender render the same page content, it is extremely text/icon heavy, so small font raster/antialiasing and subtle background shade differences accumulate across thousands of pixels, producing a large diff_percent and a non-trivial SSIM perceptual score.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 302126,
-    "diff_percent": 31.4715,
-    "perceptual": 0.116,
+    "diff_pixels": 331696,
+    "diff_percent": 34.5517,
+    "perceptual": 0.2105,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 264,
+      "x": 268,
       "y": 12,
       "baseline_rgba": [
-        255,
-        255,
-        255,
+        248,
+        248,
+        248,
         255
       ],
       "rendered_rgba": [
-        241,
-        241,
-        241,
+        255,
+        255,
+        255,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,
