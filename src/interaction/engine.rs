@@ -6940,8 +6940,6 @@ impl InteractionEngine {
   ) -> bool {
     let prev_focused = self.state.focused;
     let prev_focus_visible = self.state.focus_visible;
-    let prev_preedit = self.state.ime_preedit.is_some();
-    let prev_document_selection = self.state.document_selection.is_some();
     let mut changed = false;
 
     // Any focus change cancels an in-progress IME composition and resets text-editing state.
@@ -6949,7 +6947,7 @@ impl InteractionEngine {
       if self.state.ime_preedit.is_some() {
         changed = true;
       }
-      self.state.ime_preedit = None;
+      self.state.set_ime_preedit(None);
       self.text_edit = None;
       self.text_drag = None;
       self.text_drag_drop = None;
@@ -6958,14 +6956,13 @@ impl InteractionEngine {
       self.link_drag = None;
       self.pending_text_drop_move = None;
       // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
-      self.state.document_selection = None;
-      if prev_document_selection {
-        self.state.mark_paint_hash_dirty();
-      }
+      self.state.set_document_selection(None);
     }
 
-    self.state.focused = new_focused;
-    self.state.focus_visible = new_focused.is_some() && focus_visible;
+    self.state.set_focused(new_focused);
+    self
+      .state
+      .set_focus_visible(new_focused.is_some() && focus_visible);
     let new_focus_chain = new_focused
       .map(|id| collect_element_chain(index, id))
       .unwrap_or_default();
@@ -7008,19 +7005,6 @@ impl InteractionEngine {
 
     // Keep caret/selection paint state in sync with the internal text editing state.
     changed |= self.sync_text_edit_paint_state();
-
-    // Focus state participates in selector matching.
-    let css_changed = prev_focused != self.state.focused
-      || prev_focus_visible != self.state.focus_visible
-      || focus_chain_changed;
-    if css_changed {
-      self.state.mark_css_hash_dirty();
-    }
-
-    // IME preedit cancellation is paint-only.
-    if prev_preedit && self.state.ime_preedit.is_none() {
-      self.state.mark_paint_hash_dirty();
-    }
 
     changed
       || prev_focused != self.state.focused
