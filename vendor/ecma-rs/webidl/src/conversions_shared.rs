@@ -6,6 +6,12 @@ const STRING_EXCEEDS_MAXIMUM_LENGTH: &str = "string exceeds maximum length";
 const SEQUENCE_EXCEEDS_MAXIMUM_LENGTH: &str = "sequence exceeds maximum length";
 const RECORD_EXCEEDS_MAXIMUM_ENTRY_COUNT: &str = "record exceeds maximum entry count";
 
+/// Stable TypeError message used when a conversion requires an Object input per WebIDL.
+///
+/// WebIDL algorithms such as `js-to-sequence` and `js-to-async-iterable` explicitly say to throw a
+/// TypeError if the input is not an Object, rather than applying ECMAScript `ToObject` boxing.
+pub(crate) const VALUE_IS_NOT_OBJECT: &str = "Value is not an object";
+
 /// Ensure `string` is within [`WebIdlLimits::max_string_code_units`].
 #[inline]
 pub(crate) fn enforce_string_code_units_limit<R: WebIdlJsRuntime>(

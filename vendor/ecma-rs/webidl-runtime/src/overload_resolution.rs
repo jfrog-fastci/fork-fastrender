@@ -417,6 +417,57 @@ mod tests {
   }
 
   #[test]
+  fn primitive_string_prefers_domstring_over_sequence_overload() {
+    let mut rt = VmJsRuntime::new();
+
+    // Overloads: f(sequence<DOMString>) vs f(DOMString)
+    let overloads = vec![
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::Sequence(Box::new(IdlType::String(StringType::DomString))),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 0,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::String(StringType::DomString),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 1,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+    ];
+
+    // Primitive strings are not objects; `sequence<T>` conversion must fail, so overload resolution
+    // should prefer the DOMString overload.
+    let s = rt.alloc_string_value("abc").unwrap();
+    let out = resolve_overload(&mut rt, &overloads, &[s]).unwrap();
+    assert_eq!(out.overload_index, 1);
+  }
+
+  #[test]
+  fn sequence_conversion_rejects_non_object_primitives_in_overload_resolution() {
+    let mut rt = VmJsRuntime::new();
+
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: IdlType::Sequence(Box::new(IdlType::Any)),
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    let err = resolve_overload(&mut rt, &overloads, &[Value::Number(1.0)]).unwrap_err();
+    assert_eq!(thrown_message(&mut rt, err), "Value is not an object");
+  }
+
+  #[test]
   fn record_conversion_collects_enumerable_string_keys() -> Result<(), VmError> {
     let mut rt = VmJsRuntime::new();
 

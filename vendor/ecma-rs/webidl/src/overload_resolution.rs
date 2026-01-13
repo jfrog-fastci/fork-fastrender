@@ -1271,33 +1271,42 @@ fn convert_js_to_idl_inner<R: WebIdlJsRuntime>(
     }
     IdlType::Union(_) => convert_union(rt, ty, value),
     IdlType::Sequence(elem_ty) | IdlType::FrozenArray(elem_ty) => {
-      // `GetMethod(V, @@iterator)` uses `ToObject(V)` under the hood, so accept primitives here.
-      let obj = rt.to_object(value)?;
-      rt.with_stack_roots(&[obj], |rt| {
+      // Spec: <https://webidl.spec.whatwg.org/#js-to-sequence>
+      //
+      // 1. If V is not an Object, throw a TypeError.
+      if !rt.is_object(value) {
+        return Err(rt.throw_type_error(conversions_shared::VALUE_IS_NOT_OBJECT));
+      }
+      rt.with_stack_roots(&[value], |rt| {
         let iter_key = rt.symbol_iterator()?;
-        let method = rt.get_method(obj, iter_key)?;
+        let method = rt.get_method(value, iter_key)?;
         let Some(method_value) = method else {
           return Err(rt.throw_type_error("value is not iterable"));
         };
-        create_sequence_from_iterable(rt, elem_ty, obj, method_value)
+        create_sequence_from_iterable(rt, elem_ty, value, method_value)
       })
     }
     IdlType::Record(key_ty, value_ty) => convert_record(rt, value, key_ty, value_ty),
     IdlType::AsyncSequence(_elem_ty) => {
       // MVP: validate the value is async-iterable (or at least iterable) and preserve the object
       // reference so bindings can consume it.
-      let obj = rt.to_object(value)?;
-      rt.with_stack_roots(&[obj], |rt| {
+      // Spec: <https://webidl.spec.whatwg.org/#js-to-async-iterable>
+      //
+      // 1. If V is not an Object, throw a TypeError.
+      if !rt.is_object(value) {
+        return Err(rt.throw_type_error(conversions_shared::VALUE_IS_NOT_OBJECT));
+      }
+      rt.with_stack_roots(&[value], |rt| {
         let async_iter_key = rt.symbol_async_iterator()?;
         let iter_key = rt.symbol_iterator()?;
-        let mut method = rt.get_method(obj, async_iter_key)?;
+        let mut method = rt.get_method(value, async_iter_key)?;
         if method.is_none() {
-          method = rt.get_method(obj, iter_key)?;
+          method = rt.get_method(value, iter_key)?;
         }
         if method.is_none() {
           return Err(rt.throw_type_error("value is not async iterable"));
         }
-        Ok(WebIdlValue::JsValue(obj))
+        Ok(WebIdlValue::JsValue(value))
       })
     }
     IdlType::Promise(_) => Err(rt.throw_type_error(

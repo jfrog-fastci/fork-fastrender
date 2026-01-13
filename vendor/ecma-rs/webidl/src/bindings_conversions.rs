@@ -75,7 +75,7 @@ pub enum ConvertedValue<V> {
   AsyncSequence {
     /// The element type `T` in `async sequence<T>` (metadata; elements are not converted eagerly).
     elem_ty: Box<IdlType>,
-    /// The object returned by `ToObject(value)` (or the input value if it was already an object).
+    /// The input object (WebIDL `async sequence<T>` conversion requires an Object value).
     object: V,
     kind: AsyncSequenceKind,
   },
@@ -960,8 +960,12 @@ fn convert_to_sequence<R: WebIdlJsRuntime>(
   ctx: &TypeContext,
   typedef_stack: &mut Vec<String>,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
-  // `GetMethod(V, @@iterator)` uses `ToObject(V)` under the hood, so accept primitives here.
-  let v = rt.to_object(v)?;
+  // Spec: <https://webidl.spec.whatwg.org/#js-to-sequence>
+  //
+  // 1. If V is not an Object, throw a TypeError.
+  if !rt.is_object(v) {
+    return Err(rt.throw_type_error(conversions_shared::VALUE_IS_NOT_OBJECT));
+  }
   rt.with_stack_roots(&[v], |rt| {
     let iterator_key = rt.symbol_iterator()?;
     let Some(method) = rt.get_method(v, iterator_key)? else {
@@ -976,26 +980,27 @@ fn convert_to_async_sequence<R: WebIdlJsRuntime>(
   v: R::JsValue,
   elem_ty: &IdlType,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
-  // WebIDL async sequence conversion is specified in terms of the async iterable protocol, which
-  // uses `GetMethod` and therefore performs `ToObject(V)` internally. Accept primitives here.
-  //
   // Spec: <https://webidl.spec.whatwg.org/#js-to-async-iterable>
-  let obj = rt.to_object(v)?;
-  rt.with_stack_roots(&[obj], |rt| {
+  //
+  // 1. If V is not an Object, throw a TypeError.
+  if !rt.is_object(v) {
+    return Err(rt.throw_type_error(conversions_shared::VALUE_IS_NOT_OBJECT));
+  }
+  rt.with_stack_roots(&[v], |rt| {
     let async_iter_key = rt.symbol_async_iterator()?;
-    if rt.get_method(obj, async_iter_key)?.is_some() {
+    if rt.get_method(v, async_iter_key)?.is_some() {
       return Ok(ConvertedValue::AsyncSequence {
         elem_ty: Box::new(elem_ty.clone()),
-        object: obj,
+        object: v,
         kind: AsyncSequenceKind::Async,
       });
     }
 
     let iter_key = rt.symbol_iterator()?;
-    if rt.get_method(obj, iter_key)?.is_some() {
+    if rt.get_method(v, iter_key)?.is_some() {
       return Ok(ConvertedValue::AsyncSequence {
         elem_ty: Box::new(elem_ty.clone()),
-        object: obj,
+        object: v,
         kind: AsyncSequenceKind::Sync,
       });
     }

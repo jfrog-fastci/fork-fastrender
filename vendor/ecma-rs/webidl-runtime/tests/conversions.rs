@@ -127,6 +127,40 @@ fn sequence_conversion_from_custom_iterable() {
 }
 
 #[test]
+fn sequence_conversion_rejects_primitive_string_without_to_object_boxing() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  // WebIDL `sequence<T>` conversion requires an Object input; primitives must be rejected even if
+  // they are iterable when boxed (e.g. strings).
+  let v = rt.alloc_string_value("abc").unwrap();
+  let ty = IdlType::Sequence(Box::new(IdlType::Any));
+
+  let err = convert_to_idl(&mut rt, v, &ty, &ctx).unwrap_err();
+  assert_eq!(
+    error_to_string(&mut rt, err),
+    "TypeError: Value is not an object"
+  );
+}
+
+#[test]
+fn async_sequence_conversion_rejects_primitive_string_without_to_object_boxing() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  // WebIDL `async sequence<T>` conversion requires an Object input; primitives must be rejected
+  // rather than boxed and treated as sync iterables.
+  let v = rt.alloc_string_value("abc").unwrap();
+  let ty = IdlType::AsyncSequence(Box::new(IdlType::Any));
+
+  let err = convert_to_idl(&mut rt, v, &ty, &ctx).unwrap_err();
+  assert_eq!(
+    error_to_string(&mut rt, err),
+    "TypeError: Value is not an object"
+  );
+}
+
+#[test]
 fn dictionary_defaults_and_required_members() {
   let mut rt = VmJsRuntime::new();
 
