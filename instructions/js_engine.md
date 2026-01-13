@@ -33,7 +33,7 @@ Before pushing changes that touch vendored JS engine crates, run:
 bash scripts/check_no_conflict_markers.sh
 ```
 
-This check is enforced in CI and scans the Rust sources under `vendor/ecma-rs/{vm-js,parse-js,semantic-js,test262-semantic}/src`.
+This check is enforced in CI and scans the repo’s tracked Rust sources (including `vendor/ecma-rs/{vm-js,parse-js,semantic-js,test262-semantic}/src`).
 Known upstream fixtures under `vendor/ecma-rs/parse-js/tests/TypeScript/**` are allowed to contain conflict-marker strings.
 
 ---
