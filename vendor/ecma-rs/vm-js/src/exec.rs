@@ -4692,7 +4692,18 @@ impl<'a> Evaluator<'a> {
       }
     }
 
-    self.instantiate_var_decls(scope, stmts)?;
+    // Instantiate var bindings (undefined-initialized).
+    //
+    // In non-strict mode, `var_names` also includes Annex B block-level function declaration names,
+    // which require a corresponding var-environment binding.
+    if self.strict {
+      self.instantiate_var_decls(scope, stmts)?;
+    } else {
+      for name in &var_names {
+        self.tick()?;
+        self.env.declare_var(self.vm, scope, name)?;
+      }
+    }
     let lex = self.env.lexical_env;
     self.instantiate_lexical_decls_in_stmt_list(scope, lex, stmts)?;
     self.instantiate_var_scoped_function_decls_in_stmt_list(scope, stmts)?;
@@ -5145,7 +5156,7 @@ impl<'a> Evaluator<'a> {
     }
 
     for stmt in stmts {
-      self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, true)?;
+      self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, true, false)?;
     }
     Ok(())
   }
@@ -5169,14 +5180,24 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     stmt: &Stmt,
     in_stmt_list: bool,
+    in_block_stmt_list: bool,
   ) -> Result<(), VmError> {
     self.tick()?;
     match stmt {
       Stmt::FunctionDecl(decl) => {
         // In non-strict mode, Annex B allows certain block-level *ordinary* function declarations to
-        // be instantiated in the var environment. Non-Annex-B hoistables (generator/async) must not
-        // be treated as var-scoped when they appear in nested statement lists.
-        if in_stmt_list || Self::is_annex_b_eligible_sloppy_function_decl(decl) {
+        // be instantiated in the var environment.
+        //
+        // For function declarations that appear *directly* in a nested block statement list (e.g.
+        // `{ function f() {} }`), instantiating the function object here would capture the *outer*
+        // lexical environment instead of the block's lexical environment. Those declarations are
+        // instantiated at block entry by `instantiate_block_decls_in_stmt_list`.
+        //
+        // We still treat function declarations in "statement position" (e.g. `if (cond)
+        // function f() {}`) as var-scoped here, since they are not evaluated within an explicit
+        // block lexical environment in the current AST representation.
+        if in_stmt_list || (Self::is_annex_b_eligible_sloppy_function_decl(decl) && !in_block_stmt_list)
+        {
           self.instantiate_function_decl(scope, decl)
         } else {
           Ok(())
@@ -5184,7 +5205,7 @@ impl<'a> Evaluator<'a> {
       }
       Stmt::Block(block) => {
         for stmt in &block.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, false)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, false, true)?;
         }
         Ok(())
       }
@@ -5193,57 +5214,58 @@ impl<'a> Evaluator<'a> {
           scope,
           &stmt.stx.consequent.stx,
           false,
+          false,
         )?;
         if let Some(alt) = &stmt.stx.alternate {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &alt.stx, false)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &alt.stx, false, false)?;
         }
         Ok(())
       }
       Stmt::Try(stmt) => {
         for s in &stmt.stx.wrapped.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
         }
         if let Some(catch) = &stmt.stx.catch {
           for s in &catch.stx.body {
-            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
           }
         }
         if let Some(finally) = &stmt.stx.finally {
           for s in &finally.stx.body {
-            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
           }
         }
         Ok(())
       }
       Stmt::With(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false, false)
       }
       Stmt::While(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false, false)
       }
       Stmt::DoWhile(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false, false)
       }
       Stmt::ForTriple(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
         }
         Ok(())
       }
       Stmt::ForIn(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
         }
         Ok(())
       }
       Stmt::ForOf(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
         }
         Ok(())
       }
       Stmt::Label(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx, false)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx, false, false)
       }
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
@@ -5252,7 +5274,7 @@ impl<'a> Evaluator<'a> {
             self.tick()?;
           }
           for s in &branch.stx.body {
-            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
           }
         }
         Ok(())
@@ -5732,9 +5754,7 @@ impl<'a> Evaluator<'a> {
       let Stmt::FunctionDecl(decl) = &*stmt.stx else {
         continue;
       };
-      if self.strict || Self::is_non_annex_b_hoistable_decl(decl) {
-        self.instantiate_block_scoped_function_decl(scope, env, decl)?;
-      }
+      self.instantiate_block_scoped_function_decl(scope, env, decl)?;
     }
     Ok(())
   }
@@ -5749,23 +5769,43 @@ impl<'a> Evaluator<'a> {
       return Err(VmError::Unimplemented("anonymous function declaration"));
     };
 
-    // Block-scoped functions are lexically scoped in strict mode.
-    if scope.heap().env_has_binding(env, &name.stx.name)? {
-      return Err(syntax_error(
-        decl.loc,
-        "Identifier has already been declared",
-      ));
-    }
+    let has_binding = scope.heap().env_has_binding(env, &name.stx.name)?;
+    if has_binding {
+      // In non-strict mode, duplicate block-level *ordinary* function declarations are permitted
+      // (Annex B). Later declarations update the existing binding.
+      if self.strict || !Self::is_annex_b_eligible_sloppy_function_decl(decl) {
+        return Err(syntax_error(decl.loc, "Identifier has already been declared"));
+      }
 
-    scope.env_create_mutable_binding(env, &name.stx.name)?;
+      // If the binding exists but is uninitialized, it must have come from a conflicting lexical
+      // declaration (`let`/`const`/`class`), which is an early error.
+      match scope
+        .heap()
+        .env_get_binding_value(env, &name.stx.name, /* strict */ false)
+      {
+        Ok(_) => {}
+        Err(VmError::Throw(Value::Null)) => {
+          return Err(syntax_error(decl.loc, "Identifier has already been declared"))
+        }
+        Err(err) => return Err(err),
+      }
+    } else {
+      scope.env_create_mutable_binding(env, &name.stx.name)?;
+    }
 
     let func_obj = self.create_function_object_for_decl(scope, decl, &name.stx.name)?;
 
     let mut init_scope = scope.reborrow();
     init_scope.push_root(Value::Object(func_obj))?;
-    init_scope
-      .heap_mut()
-      .env_initialize_binding(env, &name.stx.name, Value::Object(func_obj))?;
+    if has_binding {
+      init_scope
+        .heap_mut()
+        .env_set_mutable_binding(env, &name.stx.name, Value::Object(func_obj), /* strict */ false)?;
+    } else {
+      init_scope
+        .heap_mut()
+        .env_initialize_binding(env, &name.stx.name, Value::Object(func_obj))?;
+    }
     Ok(())
   }
 
@@ -6462,7 +6502,9 @@ impl<'a> Evaluator<'a> {
     let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
       Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
       Stmt::ClassDecl(_) => true,
-      Stmt::FunctionDecl(decl) => self.strict || Self::is_non_annex_b_hoistable_decl(decl),
+      // Block-level function declarations are block-scoped (and must capture the block environment)
+      // in both strict mode and non-strict (Annex B) mode.
+      Stmt::FunctionDecl(_) => true,
       _ => false,
     });
     if !needs_lexical_env {
@@ -6479,6 +6521,57 @@ impl<'a> Evaluator<'a> {
 
     self.env.set_lexical_env(scope.heap_mut(), outer);
     result
+  }
+
+  fn eval_function_decl_stmt(
+    &mut self,
+    scope: &mut Scope<'_>,
+    decl: &Node<FuncDecl>,
+  ) -> Result<Completion, VmError> {
+    // Most function declarations are hoisted/instantiated during statement-list instantiation and
+    // have no runtime evaluation effect.
+    //
+    // Annex B block-level *ordinary* function declarations are special: they are instantiated in
+    // the current block's lexical environment (so they capture it), and when the declaration is
+    // evaluated it updates the corresponding var-environment binding.
+    if self.strict || !Self::is_annex_b_eligible_sloppy_function_decl(decl) {
+      return Ok(Completion::empty());
+    }
+
+    let Some(name) = &decl.stx.name else {
+      // `export default function() {}` has no binding name and is handled during module
+      // instantiation instead.
+      if decl.stx.export_default {
+        return Ok(Completion::empty());
+      }
+      return Err(VmError::Unimplemented("anonymous function declaration"));
+    };
+
+    // Only perform the Annex B var-environment update when a lexical binding for this function
+    // exists in the current lexical environment (i.e. we're evaluating a block-scoped function
+    // declaration).
+    if !scope
+      .heap()
+      .env_has_binding(self.env.lexical_env, &name.stx.name)?
+    {
+      return Ok(Completion::empty());
+    }
+
+    let f_obj = scope
+      .heap()
+      .env_get_binding_value(self.env.lexical_env, &name.stx.name, /* strict */ false)?;
+
+    let mut assign_scope = scope.reborrow();
+    assign_scope.push_root(f_obj)?;
+    self.env.set_var(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      &mut assign_scope,
+      &name.stx.name,
+      f_obj,
+    )?;
+    Ok(Completion::empty())
   }
 
   fn eval_stmt(&mut self, scope: &mut Scope<'_>, stmt: &Node<Stmt>) -> Result<Completion, VmError> {
@@ -6542,7 +6635,7 @@ impl<'a> Evaluator<'a> {
       }
       Stmt::Label(stmt) => self.eval_label(scope, &stmt.stx, label_set),
       // Function declarations are instantiated during hoisting.
-      Stmt::FunctionDecl(_) => Ok(Completion::empty()),
+      Stmt::FunctionDecl(decl) => self.eval_function_decl_stmt(scope, decl),
       Stmt::Break(stmt) => Ok(Completion::Break(stmt.stx.label.clone(), None)),
       Stmt::Continue(stmt) => Ok(Completion::Continue(stmt.stx.label.clone(), None)),
 
@@ -8234,7 +8327,7 @@ impl<'a> Evaluator<'a> {
             true
           }
           Stmt::ClassDecl(_) => true,
-          Stmt::FunctionDecl(_) => self.strict,
+          Stmt::FunctionDecl(_) => true,
           _ => false,
         });
         if !needs_lexical_env {
@@ -8974,7 +9067,7 @@ impl<'a> Evaluator<'a> {
     let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
       Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
       Stmt::ClassDecl(_) => true,
-      Stmt::FunctionDecl(decl) => self.strict || Self::is_non_annex_b_hoistable_decl(decl),
+      Stmt::FunctionDecl(_) => true,
       _ => false,
     });
     if !needs_lexical_env {
@@ -15806,7 +15899,7 @@ fn async_eval_block_stmt(
   let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
+    Stmt::FunctionDecl(_) => true,
     _ => false,
   });
   if !needs_lexical_env {
@@ -15909,7 +16002,7 @@ fn async_eval_catch(
       let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
         Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
         Stmt::ClassDecl(_) => true,
-        Stmt::FunctionDecl(_) => evaluator.strict,
+        Stmt::FunctionDecl(_) => true,
         _ => false,
       });
       if needs_lexical_env {
@@ -18929,7 +19022,7 @@ fn async_eval_for_body(
   let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
+    Stmt::FunctionDecl(_) => true,
     _ => false,
   });
   if !needs_lexical_env {
@@ -30754,7 +30847,7 @@ fn gen_eval_block_stmt(
   let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
+    Stmt::FunctionDecl(_) => true,
     _ => false,
   });
   if !needs_lexical_env {
@@ -30825,7 +30918,7 @@ fn gen_eval_catch(
       let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
         Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
         Stmt::ClassDecl(_) => true,
-        Stmt::FunctionDecl(_) => evaluator.strict,
+        Stmt::FunctionDecl(_) => true,
         _ => false,
       });
       if needs_lexical_env {
@@ -31418,7 +31511,7 @@ fn gen_eval_for_body(
   let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(_) => evaluator.strict,
+    Stmt::FunctionDecl(_) => true,
     _ => false,
   });
   if !needs_lexical_env {
