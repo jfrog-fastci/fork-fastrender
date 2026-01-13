@@ -1015,6 +1015,53 @@ mod tests {
   }
 
   #[test]
+  fn prepare_script_element_dom2_does_not_bump_mutation_generation_for_internal_slots() {
+    let mut doc =
+      crate::dom2::parse_html("<!doctype html><html><head><script></script></head></html>")
+        .expect("parse_html");
+    let script = doc
+      .query_selector("script", None)
+      .expect("query_selector")
+      .expect("expected <script>");
+    assert!(
+      doc.node(script).script_parser_document && !doc.node(script).script_force_async,
+      "expected parser-inserted script defaults"
+    );
+
+    let generation_before = doc.mutation_generation();
+    let spec = ScriptElementSpec {
+      base_url: None,
+      src: None,
+      src_attr_present: false,
+      inline_text: String::new(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      fetch_priority: None,
+      parser_inserted: true,
+      node_id: Some(script),
+      script_type: ScriptType::Classic,
+    };
+
+    let should_run = prepare_script_element_dom2(&mut doc, script, &spec);
+    assert!(!should_run, "expected empty inline script to early-out");
+    assert!(
+      !doc.node(script).script_parser_document && doc.node(script).script_force_async,
+      "expected prepare_script_element_dom2 to clear parser_document and set force_async for parser-inserted scripts"
+    );
+    assert_eq!(
+      doc.mutation_generation(),
+      generation_before,
+      "prepare_script_element_dom2 must not bump mutation_generation for internal-slot updates"
+    );
+  }
+
+  #[test]
   fn defaults_to_classic_without_type_or_language() {
     let node = script(&[]);
     assert_eq!(determine_script_type(&node), ScriptType::Classic);

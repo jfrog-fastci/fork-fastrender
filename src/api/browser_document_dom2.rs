@@ -4096,6 +4096,32 @@ mod tests {
     None
   }
 
+  fn find_first_html_script_by_id(
+    doc: &crate::dom2::Document,
+    id_value: &str,
+  ) -> Option<crate::dom2::NodeId> {
+    doc
+      .nodes()
+      .iter()
+      .enumerate()
+      .find_map(|(idx, node)| match &node.kind {
+        crate::dom2::NodeKind::Element {
+          tag_name,
+          namespace,
+          attributes,
+          ..
+        } if tag_name.eq_ignore_ascii_case("script")
+          && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
+          && attributes
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id_value) =>
+        {
+          Some(crate::dom2::NodeId::from_index(idx))
+        }
+        _ => None,
+      })
+  }
+
   fn find_renderer_element_by_id<'a>(
     root: &'a crate::dom::DomNode,
     id_value: &str,
@@ -6408,6 +6434,48 @@ mod tests {
     assert!(
       doc.render_if_needed().unwrap().is_none(),
       "Detached node/attribute creation should not invalidate style/layout/paint"
+    );
+  }
+
+  #[test]
+  fn script_internal_slot_updates_do_not_invalidate_renderer() {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><head><script id=s></script></head><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+    doc.render_frame().expect("render");
+
+    let script = find_first_html_script_by_id(doc.dom(), "s").expect("expected <script id=s>");
+    assert!(
+      doc.dom().node(script).script_parser_document && !doc.dom().node(script).script_force_async,
+      "expected parser-inserted script defaults"
+    );
+
+    let generation_before = doc.dom_mutation_generation();
+    let changed = doc.mutate_dom(|dom| {
+      let base = crate::html::base_url_tracker::BaseUrlTracker::new(None);
+      let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+        &*dom, script, &base,
+      );
+      let _should_run = crate::js::prepare_script_element_dom2(dom, script, &spec);
+      false
+    });
+    assert!(!changed, "script internal-slot updates are not render-affecting");
+    assert!(
+      !doc.dom().node(script).script_parser_document && doc.dom().node(script).script_force_async,
+      "expected prepare_script_element_dom2 to clear parser_document and set force_async"
+    );
+    assert_eq!(
+      doc.dom_mutation_generation(),
+      generation_before,
+      "script internal-slot updates must not bump dom mutation generation"
+    );
+    assert!(
+      doc.render_if_needed().unwrap().is_none(),
+      "script internal-slot updates must not invalidate style/layout/paint"
     );
   }
 
