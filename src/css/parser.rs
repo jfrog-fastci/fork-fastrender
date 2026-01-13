@@ -4359,36 +4359,71 @@ fn parse_override_colors(value: &str) -> Vec<FontPaletteOverride> {
     TopLevelCommaSplit::new(value)
   }
 
-  split_top_level_commas(value)
-    .filter_map(|entry| {
-      let mut parts = entry
-        .split(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
-        .filter(|part| !part.is_empty());
-      let idx_str = trim_ascii_whitespace(parts.next()?);
-      let Ok(idx) = idx_str.parse::<i32>() else {
-        return None;
-      };
-      if idx < 0 {
-        return None;
-      }
-      let color_str = parts.collect::<Vec<_>>().join(" ");
-      if color_str.is_empty() {
-        return None;
-      }
-      let parsed_color = super::properties::parse_property_value("color", color_str.as_str())?;
-      match parsed_color {
-        PropertyValue::Color(color) => Some(FontPaletteOverride {
-          index: idx as u16,
-          color,
-        }),
-        PropertyValue::Keyword(kw) => Color::parse(&kw).ok().map(|c| FontPaletteOverride {
-          index: idx as u16,
-          color: c,
-        }),
-        _ => None,
-      }
-    })
-    .collect()
+  // OOM-safe parsing: avoid `collect::<Vec<_>>()` / `join()` (both allocate infallibly) and build
+  // the output vector using fallible reservations. On allocator OOM, we return the partial output
+  // accumulated so far.
+  #[inline]
+  fn is_ws(b: u8) -> bool {
+    matches!(b, b'\t' | b'\n' | 0x0C | b'\r' | b' ')
+  }
+
+  let mut out: Vec<FontPaletteOverride> = Vec::new();
+  for entry in split_top_level_commas(value) {
+    let entry = trim_ascii_whitespace(entry);
+    if entry.is_empty() {
+      continue;
+    }
+
+    // Split into `<index> <color>` without allocating intermediate vectors.
+    let bytes = entry.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && !is_ws(bytes[i]) {
+      i += 1;
+    }
+    if i == 0 {
+      continue;
+    }
+    let idx_str = &entry[..i];
+    let Ok(idx) = idx_str.parse::<i32>() else {
+      continue;
+    };
+    if idx < 0 {
+      continue;
+    }
+
+    while i < bytes.len() && is_ws(bytes[i]) {
+      i += 1;
+    }
+    if i >= bytes.len() {
+      continue;
+    }
+    let color_str = &entry[i..];
+
+    let Some(parsed_color) = super::properties::parse_property_value("color", color_str) else {
+      continue;
+    };
+    let override_color = match parsed_color {
+      PropertyValue::Color(color) => Some(FontPaletteOverride {
+        index: idx as u16,
+        color,
+      }),
+      PropertyValue::Keyword(kw) => Color::parse(&kw).ok().map(|c| FontPaletteOverride {
+        index: idx as u16,
+        color: c,
+      }),
+      _ => None,
+    };
+    let Some(override_color) = override_color else {
+      continue;
+    };
+
+    if out.try_reserve(1).is_err() {
+      break;
+    }
+    out.push(override_color);
+  }
+
+  out
 }
 
 fn parse_counter_style_system<'i, 't>(

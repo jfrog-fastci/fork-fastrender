@@ -705,7 +705,15 @@ fn log_node_profile() {
     if let Some(map) = HISTOGRAM.get() {
       if let Ok(guard) = map.lock() {
         if !guard.is_empty() {
-          let mut entries: Vec<_> = guard.iter().collect();
+          // Avoid infallible iterator collection: `collect::<Vec<_>>()` can abort the process on
+          // allocator OOM.
+          let mut entries: Vec<_> = Vec::new();
+          if entries.try_reserve(guard.len()).is_err() {
+            return;
+          }
+          for entry in guard.iter() {
+            entries.push(entry);
+          }
           entries.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
           let top = entries.iter().take(10).map(|((bucket, key), count)| {
             const USED_BORDER_BOX_OVERRIDE_FLAG: u64 = 1u64 << 32;
@@ -734,10 +742,22 @@ fn log_node_profile() {
               count
             )
           });
-          eprintln!(
-            "flex profile histogram top10: {}",
-            top.collect::<Vec<_>>().join(" | ")
-          );
+          // Avoid `collect::<Vec<_>>().join(..)`, which allocates infallibly (and can abort on
+          // allocator OOM). This is best-effort: on OOM we print a partial string.
+          let mut rendered = String::new();
+          for (i, s) in top.enumerate() {
+            if i != 0 {
+              if rendered.try_reserve(3).is_err() {
+                break;
+              }
+              rendered.push_str(" | ");
+            }
+            if rendered.try_reserve(s.len()).is_err() {
+              break;
+            }
+            rendered.push_str(&s);
+          }
+          eprintln!("flex profile histogram top10: {}", rendered);
         }
       }
     }

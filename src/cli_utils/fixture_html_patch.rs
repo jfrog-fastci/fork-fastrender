@@ -554,7 +554,8 @@ fn rewrite_srcset_gif_urls_to_data_urls(
   }
 
   let mut rewritten_any = false;
-  let mut out = Vec::<String>::new();
+  let mut out = String::new();
+  let mut first_out = true;
   for candidate in srcset.split(',') {
     let candidate = candidate.trim();
     if candidate.is_empty() {
@@ -565,33 +566,52 @@ fn rewrite_srcset_gif_urls_to_data_urls(
     if url.is_empty() {
       continue;
     }
-    let descriptor = parts.collect::<Vec<_>>().join(" ");
+    // Preserve the original descriptor substring without allocating an intermediate Vec/join string.
+    // (The srcset grammar treats runs of ASCII whitespace equivalently.)
+    let descriptor = candidate.get(url.len()..).unwrap_or("").trim();
 
     let url_bytes = url.as_bytes();
     let replacement_url = if src_is_gif(url_bytes) {
+      // Avoid an extra allocation when converting the generated data URL bytes into a `String`.
+      // (`String::from_utf8` reuses the underlying `Vec<u8>` allocation on success.)
       gif_url_to_png_data_url_cached(url_bytes, base, cache)
-        .map(|data_url| String::from_utf8_lossy(&data_url).into_owned())
+        .and_then(|data_url| String::from_utf8(data_url).ok())
     } else {
       None
     };
 
-    let (final_url, did_rewrite) = match replacement_url {
-      Some(url) => (url, true),
-      None => (url.to_string(), false),
+    use std::borrow::Cow;
+    let (final_url, did_rewrite): (Cow<'_, str>, bool) = match replacement_url {
+      Some(url) => (Cow::Owned(url), true),
+      None => (Cow::Borrowed(url), false),
     };
     rewritten_any |= did_rewrite;
 
-    if descriptor.is_empty() {
-      out.push(final_url);
-    } else {
-      out.push(format!("{final_url} {descriptor}"));
+    if !first_out {
+      out.try_reserve(2).ok()?;
+      out.push_str(", ");
+    }
+    first_out = false;
+
+    let extra = final_url
+      .len()
+      .checked_add(if descriptor.is_empty() {
+        0
+      } else {
+        descriptor.len().checked_add(1)?
+      })?;
+    out.try_reserve(extra).ok()?;
+    out.push_str(&final_url);
+    if !descriptor.is_empty() {
+      out.push(' ');
+      out.push_str(descriptor);
     }
   }
 
   if !rewritten_any {
     return None;
   }
-  Some(out.join(", ").into_bytes())
+  Some(out.into_bytes())
 }
 
 fn is_attr_name_start(b: u8) -> bool {
@@ -603,15 +623,19 @@ fn is_attr_name_char(b: u8) -> bool {
 }
 
 fn src_is_gif(raw_value: &[u8]) -> bool {
-  let lower = raw_value
-    .iter()
-    .map(|b| b.to_ascii_lowercase())
-    .collect::<Vec<_>>();
-  let end = lower
+  let end = raw_value
     .iter()
     .position(|&b| b == b'?' || b == b'#')
-    .unwrap_or(lower.len());
-  lower[..end].ends_with(b".gif")
+    .unwrap_or(raw_value.len());
+  let slice = &raw_value[..end];
+  if slice.len() < 4 {
+    return false;
+  }
+  let suffix = &slice[slice.len() - 4..];
+  suffix
+    .iter()
+    .zip(b".gif")
+    .all(|(a, b)| a.to_ascii_lowercase() == *b)
 }
 
 fn gif_src_to_png_data_url(raw_value: &[u8], base: &Url) -> Option<Vec<u8>> {
