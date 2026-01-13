@@ -731,6 +731,7 @@ impl BrowserTabState {
     self.crashed = true;
     self.crash_reason = sanitized.clone();
     self.loading = false;
+    self.watchdog_armed = false;
     self.unresponsive = false;
     self.warning = None;
     self.error = Some(match sanitized.as_deref() {
@@ -955,6 +956,8 @@ mod tab_tests {
   fn mark_crashed_sets_flags_and_clears_load_state() {
     let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
     tab.loading = true;
+    tab.watchdog_armed = true;
+    tab.unresponsive = true;
     tab.stage = Some(StageHeartbeat::DomParse);
     tab.load_stage = Some(StageHeartbeat::DomParse);
     tab.load_progress = Some(0.5);
@@ -967,6 +970,8 @@ mod tab_tests {
 
     assert!(tab.crashed);
     assert!(!tab.loading);
+    assert!(!tab.watchdog_armed);
+    assert!(!tab.unresponsive);
     assert_eq!(tab.stage, None);
     assert_eq!(tab.load_stage, None);
     assert_eq!(tab.load_progress, None);
