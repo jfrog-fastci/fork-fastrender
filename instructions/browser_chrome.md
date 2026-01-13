@@ -19,6 +19,11 @@
 
 This workstream owns the **browser application shell**: the chrome surrounding the rendered page content.
 
+Note: this workstream currently targets the **egui**-rendered chrome used by the in-tree `browser`
+binary. The longer-term *renderer chrome* workstream aims to render the chrome UI using FastRender
+itself; trusted chrome pages in that world would use the privileged JS bridge documented in
+[`docs/chrome_js_bridge.md`](../docs/chrome_js_bridge.md).
+
 ## The job
 
 Build a **production-quality browser shell** that users would actually use daily. Not a POC. Not ugly. Not flaky. A real browser.
