@@ -488,9 +488,14 @@ impl<'vm> HirEvaluator<'vm> {
       let hir_js::ExprKind::Literal(hir_js::Literal::String(s)) = &expr.kind else {
         break;
       };
+      // Parenthesized string literals are not directive prologues.
+      //
+      // HIR does not preserve parse-js's `ParenthesizedExpr` metadata, so detect this by scanning
+      // the original source for a `)` immediately following the expression span.
+      if self.next_non_trivia_byte_from_source(expr.span.end)? == Some(b')') {
+        break;
+      }
       if s.lossy == "use strict" {
-        // Treat as strict; HIR does not currently preserve parenthesization metadata for directive
-        // prologues (unlike the parse-js AST), so this is best-effort.
         return Ok(true);
       }
     }
