@@ -44,6 +44,105 @@ use vm_js::{
 const WORKER_MAX_QUEUED_MESSAGES: usize = 1_000;
 const WORKER_MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
 
+// IndexedDB is currently not implemented by FastRender. Many libraries (including in-worker caches)
+// still feature-detect `indexedDB` and expect `indexedDB.open(..)` to return a request-like object
+// that asynchronously errors.
+//
+// The worker runtime does not install window timers, so we schedule async delivery using Promise
+// microtasks (`Promise.resolve().then(..)`), which are available in workers.
+const INDEXEDDB_SHIM_JS: &str = r#"
+  (function () {
+    var g = typeof globalThis !== "undefined" ? globalThis : this;
+    // Idempotency: avoid clobbering a future native implementation.
+    if ("indexedDB" in g) return;
+
+    function makeNotSupportedError(message) {
+      try {
+        if (typeof g.DOMException === "function") {
+          return new g.DOMException(message, "NotSupportedError");
+        }
+      } catch (_e) {}
+      return { name: "NotSupportedError", message: message };
+    }
+
+    function queueMicrotask(cb) {
+      Promise.resolve().then(cb);
+    }
+
+    function createRequest() {
+      var listeners = Object.create(null);
+      var req = {
+        result: undefined,
+        error: null,
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        onblocked: null,
+        addEventListener: function (type, listener) {
+          if (typeof type !== "string") return;
+          if (typeof listener !== "function") return;
+          (listeners[type] || (listeners[type] = [])).push(listener);
+        },
+        removeEventListener: function (type, listener) {
+          if (typeof type !== "string") return;
+          var list = listeners[type];
+          if (!list) return;
+          for (var i = list.length - 1; i >= 0; i--) {
+            if (list[i] === listener) list.splice(i, 1);
+          }
+        },
+      };
+
+      function dispatch(type) {
+        var evt = { type: type, target: req, currentTarget: req };
+        if (type === "error") evt.error = req.error;
+        var list = listeners[type];
+        if (list) {
+          for (var i = 0; i < list.length; i++) {
+            try {
+              list[i].call(req, evt);
+            } catch (_e) {}
+          }
+        }
+        var h = req["on" + type];
+        if (typeof h === "function") {
+          try {
+            h.call(req, evt);
+          } catch (_e) {}
+        }
+      }
+
+      Object.defineProperty(req, "__fastrender_dispatch", {
+        value: dispatch,
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+      return req;
+    }
+
+    function failRequest(req, message) {
+      queueMicrotask(function () {
+        req.error = makeNotSupportedError(message);
+        req.__fastrender_dispatch("error");
+      });
+    }
+
+    g.indexedDB = {
+      open: function (_name, _version) {
+        var req = createRequest();
+        failRequest(req, "IndexedDB is not supported");
+        return req;
+      },
+      deleteDatabase: function (_name) {
+        var req = createRequest();
+        failRequest(req, "IndexedDB is not supported");
+        return req;
+      },
+    };
+  })();
+"#;
+
 #[derive(Debug, Clone)]
 struct WorkerQueueError(String);
 
@@ -597,10 +696,7 @@ fn ensure_worker_runtime_started(
     .vm
     .set_user_data(WorkerVmUserData { inner: weak });
 
-  {
-    let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
-    install_worker_global_scope(vm, realm, heap).map_err(|err| Error::Other(err.to_string()))?;
-  }
+  install_worker_global_scope(&mut runtime).map_err(|err| Error::Other(err.to_string()))?;
 
   // Evaluate the worker's classic script.
   {
@@ -1109,55 +1205,71 @@ fn worker_global_close_native(
   Ok(Value::Undefined)
 }
 
-fn install_worker_global_scope(
-  vm: &mut Vm,
-  realm: &Realm,
-  heap: &mut Heap,
-) -> std::result::Result<(), VmError> {
-  let global = realm.global_object();
-  let intr = realm.intrinsics();
-  let func_proto = intr.function_prototype();
-
-  let mut scope = heap.scope();
-  scope.push_root(Value::Object(global))?;
-
-  // self === globalThis
+fn install_worker_global_scope(runtime: &mut VmJsRuntime) -> std::result::Result<(), VmError> {
+  let mut install_indexeddb = false;
   {
-    let self_key = alloc_key(&mut scope, "self")?;
-    scope.define_property(global, self_key, data_desc(Value::Object(global)))?;
+    let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
+    let global = realm.global_object();
+    let intr = realm.intrinsics();
+    let func_proto = intr.function_prototype();
+
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global))?;
+
+    // self === globalThis
+    {
+      let self_key = alloc_key(&mut scope, "self")?;
+      scope.define_property(global, self_key, data_desc(Value::Object(global)))?;
+    }
+
+    // structuredClone(value[, options])
+    crate::js::window_structured_clone::install_window_structured_clone(vm, &mut scope, realm, global)?;
+
+    // onmessage / onerror placeholders
+    for name in ["onmessage", "onerror"] {
+      let key = alloc_key(&mut scope, name)?;
+      scope.define_property(global, key, data_desc(Value::Null))?;
+    }
+
+    // postMessage
+    {
+      let id = vm.register_native_call(worker_global_post_message_native)?;
+      let name = scope.alloc_string("postMessage")?;
+      scope.push_root(Value::String(name))?;
+      let func = scope.alloc_native_function(id, None, name, 1)?;
+      scope.heap_mut().object_set_prototype(func, Some(func_proto))?;
+      scope.push_root(Value::Object(func))?;
+      let key = alloc_key(&mut scope, "postMessage")?;
+      scope.define_property(global, key, data_desc(Value::Object(func)))?;
+    }
+
+    // close
+    {
+      let id = vm.register_native_call(worker_global_close_native)?;
+      let name = scope.alloc_string("close")?;
+      scope.push_root(Value::String(name))?;
+      let func = scope.alloc_native_function(id, None, name, 0)?;
+      scope.heap_mut().object_set_prototype(func, Some(func_proto))?;
+      scope.push_root(Value::Object(func))?;
+      let key = alloc_key(&mut scope, "close")?;
+      scope.define_property(global, key, data_desc(Value::Object(func)))?;
+    }
+
+    // indexedDB shim (idempotent: don't overwrite if installed by a future worker runtime).
+    let indexeddb_key = alloc_key(&mut scope, "indexedDB")?;
+    install_indexeddb = scope
+      .heap()
+      .object_get_own_property(global, &indexeddb_key)?
+      .is_none();
   }
 
-  // structuredClone(value[, options])
-  crate::js::window_structured_clone::install_window_structured_clone(vm, &mut scope, realm, global)?;
-
-  // onmessage / onerror placeholders
-  for name in ["onmessage", "onerror"] {
-    let key = alloc_key(&mut scope, name)?;
-    scope.define_property(global, key, data_desc(Value::Null))?;
-  }
-
-  // postMessage
-  {
-    let id = vm.register_native_call(worker_global_post_message_native)?;
-    let name = scope.alloc_string("postMessage")?;
-    scope.push_root(Value::String(name))?;
-    let func = scope.alloc_native_function(id, None, name, 1)?;
-    scope.heap_mut().object_set_prototype(func, Some(func_proto))?;
-    scope.push_root(Value::Object(func))?;
-    let key = alloc_key(&mut scope, "postMessage")?;
-    scope.define_property(global, key, data_desc(Value::Object(func)))?;
-  }
-
-  // close
-  {
-    let id = vm.register_native_call(worker_global_close_native)?;
-    let name = scope.alloc_string("close")?;
-    scope.push_root(Value::String(name))?;
-    let func = scope.alloc_native_function(id, None, name, 0)?;
-    scope.heap_mut().object_set_prototype(func, Some(func_proto))?;
-    scope.push_root(Value::Object(func))?;
-    let key = alloc_key(&mut scope, "close")?;
-    scope.define_property(global, key, data_desc(Value::Object(func)))?;
+  if install_indexeddb {
+    let source = Arc::new(SourceText::new_charged(
+      &mut runtime.heap,
+      "fastrender_indexeddb_shim.js",
+      INDEXEDDB_SHIM_JS,
+    )?);
+    runtime.exec_script_source(source)?;
   }
 
   Ok(())
@@ -1484,6 +1596,32 @@ mod tests {
     })?;
 
     assert_eq!(get_global_number(&mut host, "__count"), Some(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn worker_can_access_indexeddb_shim() -> FastResult<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__result = null;
+      const w = new Worker("data:text/javascript,(()=>{if(typeof indexedDB!=='object'||!indexedDB)throw Error('noindexeddb');const req=indexedDB.open('x');if(typeof req!=='object'||!req)throw Error('noreq');req.onerror=()=>postMessage(req.error&&req.error.name||null);})()");
+      w.onmessage = e => { globalThis.__result = e.data; };
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 50,
+      max_microtasks: 100,
+      max_wall_time: None,
+    })?;
+
+    assert_eq!(
+      get_global_string(&mut host, "__result").as_deref(),
+      Some("NotSupportedError")
+    );
     Ok(())
   }
 }
