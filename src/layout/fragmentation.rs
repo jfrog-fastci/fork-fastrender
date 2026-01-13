@@ -3124,6 +3124,13 @@ fn innermost_footer_table_at<'a>(
     })
 }
 
+/// Computes grid line center positions for a collapsed-border table fragment.
+///
+/// This mirrors `layout::table::collapsed_line_positions`, but only returns the line centers
+/// (fragmentation does not need the per-row/column start offsets).
+///
+/// Line widths are centered on the grid lines; outer lines contribute half their width to the
+/// measured extent so the remaining half may spill into the table's margin area (CSS 2.1 §17.6.2).
 fn collapsed_line_positions(
   sizes: &[f32],
   line_widths: &[f32],
@@ -3439,34 +3446,55 @@ fn inject_table_headers_and_footers(
             .iter()
             .map(|c| c.width * 0.5)
             .fold(0.0f32, f32::max);
+
+          // Collapsed-border paint bounds may extend outside the table fragment rect.
+          //
+          // In particular, outer-edge segments can be thicker than the baseline widths used for
+          // layout (§17.6.2). That extra thickness must spill outward into the margin instead of
+          // widening the table (WPT `border-collapse-basic-001`), so we must recompute paint bounds
+          // from the actual outer-edge segment widths for this fragment slice.
+          let mut outer_left_half = 0.0f32;
+          let mut outer_right_half = 0.0f32;
+          if new_row_count > 0 {
+            // `vertical_borders` is column-major: `[col0 rows..., col1 rows..., ...]`.
+            for row in 0..new_row_count {
+              outer_left_half = outer_left_half.max(vertical_borders[row].width * 0.5);
+            }
+            let right_start = orig_borders.column_count * new_row_count;
+            for idx in right_start..right_start + new_row_count {
+              outer_right_half = outer_right_half.max(vertical_borders[idx].width * 0.5);
+            }
+          }
+
+          let mut outer_top_half = 0.0f32;
+          let mut outer_bottom_half = 0.0f32;
+          if orig_borders.column_count > 0 {
+            // `horizontal_borders` is boundary-major: `[boundary0 cols..., boundary1 cols..., ...]`.
+            for col in 0..orig_borders.column_count {
+              outer_top_half = outer_top_half.max(horizontal_borders[col].width * 0.5);
+            }
+            let bottom_start = new_row_count * orig_borders.column_count;
+            for idx in bottom_start..bottom_start + orig_borders.column_count {
+              outer_bottom_half = outer_bottom_half.max(horizontal_borders[idx].width * 0.5);
+            }
+          }
+
           let min_x = orig_borders
             .column_line_positions
             .first()
             .copied()
             .unwrap_or(0.0)
-            - (orig_borders
-              .vertical_line_base
-              .first()
-              .copied()
-              .unwrap_or(0.0)
-              * 0.5)
-              .max(max_corner_half);
+            - outer_left_half.max(max_corner_half);
           let max_x = orig_borders
             .column_line_positions
             .last()
             .copied()
             .unwrap_or(0.0)
-            + (orig_borders
-              .vertical_line_base
-              .last()
-              .copied()
-              .unwrap_or(0.0)
-              * 0.5)
-              .max(max_corner_half);
+            + outer_right_half.max(max_corner_half);
           let min_y = row_line_positions.first().copied().unwrap_or(0.0)
-            - (horizontal_line_base.first().copied().unwrap_or(0.0) * 0.5).max(max_corner_half);
+            - outer_top_half.max(max_corner_half);
           let max_y = row_line_positions.last().copied().unwrap_or(0.0)
-            + (horizontal_line_base.last().copied().unwrap_or(0.0) * 0.5).max(max_corner_half);
+            + outer_bottom_half.max(max_corner_half);
 
           clipped.table_borders = Some(Arc::new(TableCollapsedBorders {
             column_count: orig_borders.column_count,
