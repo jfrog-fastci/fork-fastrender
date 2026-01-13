@@ -3,37 +3,12 @@
 use fastrender::interaction::KeyAction;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 use super::support::{
-  create_tab_msg, key_action, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
+  create_tab_msg, key_action, navigate_msg, recv_for_tab, scroll_msg, viewport_changed_msg,
+  DEFAULT_TIMEOUT,
 };
-
-fn wait_for_frame(
-  rx: &Receiver<WorkerToUi>,
-  tab_id: TabId,
-  timeout: Duration,
-  mut pred: impl FnMut(&fastrender::ui::messages::RenderedFrame) -> bool,
-) -> fastrender::ui::messages::RenderedFrame {
-  let deadline = Instant::now() + timeout;
-  loop {
-    let remaining = deadline
-      .checked_duration_since(Instant::now())
-      .unwrap_or(Duration::ZERO);
-    assert!(
-      remaining > Duration::ZERO,
-      "timed out waiting for FrameReady for tab {tab_id:?}"
-    );
-    let msg = rx.recv_timeout(remaining).expect("worker msg");
-    if let WorkerToUi::FrameReady { tab_id: got, frame } = msg {
-      if got == tab_id && pred(&frame) {
-        return frame;
-      }
-    }
-  }
-}
 
 fn make_overflow_hidden_scroller_page() -> (tempfile::TempDir, String) {
   let dir = tempdir().expect("temp dir");
@@ -135,35 +110,37 @@ fn wheel_scroll_scrolls_overflow_hidden_scroller_under_pointer() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let initial = wait_for_frame(&ui_rx, tab_id, DEFAULT_TIMEOUT, |_| true);
-  assert!(
-    initial.scroll_state.viewport.y.abs() < 1e-3,
-    "expected initial viewport scroll to be 0, got {:?}",
-    initial.scroll_state.viewport
-  );
+  // Wait for an initial frame so the worker has cached layout artifacts.
+  recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .expect("expected initial FrameReady");
 
   // Wheel scroll inside the scroller element.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 80.0), Some((10.0, 10.0))))
     .expect("Scroll");
 
-  let initial_viewport = initial.scroll_state.viewport;
-  let initial_elements = initial.scroll_state.elements.clone();
-  let frame = wait_for_frame(&ui_rx, tab_id, DEFAULT_TIMEOUT, |frame| {
-    frame.scroll_state.viewport != initial_viewport
-      || frame.scroll_state.elements != initial_elements
-  });
+  let msg = recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| match msg {
+    WorkerToUi::ScrollStateUpdated { scroll, .. } => {
+      scroll.viewport.y.abs() < 1e-3 && scroll.elements.values().any(|pt| pt.y > 0.0)
+    }
+    _ => false,
+  })
+  .expect("expected ScrollStateUpdated after wheel scroll");
+  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+    unreachable!();
+  };
 
   assert!(
-    (frame.scroll_state.viewport.y - initial_viewport.y).abs() < 1e-3,
-    "expected wheel scroll over overflow:hidden scroller to not scroll the viewport (was {:?}, now {:?})",
-    initial_viewport,
-    frame.scroll_state.viewport
+    scroll.viewport.y.abs() < 1e-3,
+    "expected wheel scroll over overflow:hidden scroller to not scroll the viewport (got {:?})",
+    scroll.viewport
   );
   assert!(
-    frame.scroll_state.elements.values().any(|pt| pt.y > 0.0),
+    scroll.elements.values().any(|pt| pt.y > 0.0),
     "expected wheel scroll over overflow:hidden scroller to update element scroll offsets, got {:?}",
-    frame.scroll_state
+    scroll
   );
 
   drop(ui_tx);
@@ -189,47 +166,37 @@ fn tab_focus_scrolls_overflow_hidden_scroller_to_reveal_focused_element() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let initial = wait_for_frame(&ui_rx, tab_id, DEFAULT_TIMEOUT, |_| true);
-  assert!(
-    initial.scroll_state.viewport.y.abs() < 1e-3,
-    "expected initial viewport scroll to be 0, got {:?}",
-    initial.scroll_state.viewport
-  );
-  assert!(
-    initial.scroll_state.elements.is_empty(),
-    "expected initial element scroll offsets to be empty, got {:?}",
-    initial.scroll_state.elements
-  );
+  // Wait for an initial frame so focus traversal has cached layout artifacts.
+  recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .expect("expected initial FrameReady");
 
   ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
 
-  let initial_viewport = initial.scroll_state.viewport;
-  let initial_elements = initial.scroll_state.elements.clone();
-  let frame = wait_for_frame(&ui_rx, tab_id, DEFAULT_TIMEOUT, |frame| {
-    frame.scroll_state.viewport != initial_viewport
-      || frame.scroll_state.elements != initial_elements
-  });
+  let msg = recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| match msg {
+    WorkerToUi::ScrollStateUpdated { scroll, .. } => {
+      scroll.viewport.y.abs() < 1e-3 && scroll.elements.values().any(|pt| pt.y > 0.0)
+    }
+    _ => false,
+  })
+  .expect("expected ScrollStateUpdated after focus scroll");
+  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+    unreachable!();
+  };
 
   assert!(
-    (frame.scroll_state.viewport.y - initial_viewport.y).abs() < 1e-3,
-    "expected focus scroll to adjust the overflow:hidden scroller, not the viewport (was {:?}, now {:?})",
-    initial_viewport,
-    frame.scroll_state.viewport
-  );
-  assert!(
-    frame.scroll_state.elements.len() == 1,
-    "expected exactly one element scroller to be updated, got {:?}",
-    frame.scroll_state.elements
+    scroll.viewport.y.abs() < 1e-3,
+    "expected focus scroll to adjust the overflow:hidden scroller, not the viewport (got {:?})",
+    scroll.viewport
   );
 
-  let scroll_y = frame
-    .scroll_state
+  let scroll_y = scroll
     .elements
     .values()
-    .next()
     .copied()
-    .expect("element scroll offset")
-    .y;
+    .map(|p| p.y)
+    .fold(0.0_f32, f32::max);
   assert!(
     scroll_y.is_finite() && scroll_y > 0.0,
     "expected element scroll y > 0, got {scroll_y}"

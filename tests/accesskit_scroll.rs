@@ -105,7 +105,10 @@ fn accesskit_scroll_properties_and_actions_for_viewport() {
   let req = ActionRequest {
     action: Action::SetScrollOffset,
     target: root_id,
-    data: Some(ActionData::SetScrollOffset(accesskit::Point { x: 0.0, y: 50.0 })),
+    data: Some(ActionData::SetScrollOffset(accesskit::Point {
+      x: 0.0,
+      y: 50.0,
+    })),
   };
 
   let next_scroll = fastrender::accessibility_accesskit::apply_scroll_action_to_scroll_state(
@@ -181,7 +184,10 @@ fn accesskit_scroll_properties_and_actions_for_element_scroll_container() {
   let req = ActionRequest {
     action: Action::SetScrollOffset,
     target: container_id,
-    data: Some(ActionData::SetScrollOffset(accesskit::Point { x: 0.0, y: 50.0 })),
+    data: Some(ActionData::SetScrollOffset(accesskit::Point {
+      x: 0.0,
+      y: 50.0,
+    })),
   };
 
   let next_scroll = fastrender::accessibility_accesskit::apply_scroll_action_to_scroll_state(
@@ -219,3 +225,74 @@ fn accesskit_scroll_properties_and_actions_for_element_scroll_container() {
   assert_eq!(rgba_at(&pixmap, 10, 10), [0, 0, 255, 255]);
 }
 
+#[test]
+fn accesskit_scroll_properties_and_actions_for_overflow_hidden_element_scroll_container() {
+  let html = r#"<!doctype html><html><head><style>
+    body { margin: 0; }
+    #scroller { width: 50px; height: 50px; overflow: hidden; }
+    .item { width: 50px; height: 50px; }
+    #red { background: rgb(255, 0, 0); }
+    #blue { background: rgb(0, 0, 255); }
+  </style></head><body><div id="scroller"><div id="red" class="item"></div><div id="blue" class="item"></div></div></body></html>"#;
+
+  let (doc, viewport) = prepare_doc(html, (50, 50));
+  let initial_scroll = ScrollState::default();
+
+  let update = fastrender::accessibility_accesskit::build_scroll_container_tree_update(
+    doc.fragment_tree(),
+    viewport,
+    &initial_scroll,
+  );
+
+  // Find the element scroll container node by excluding the root and looking for a non-zero max.
+  let (container_id, container_node) = update
+    .nodes
+    .iter()
+    .find_map(|(id, node)| {
+      if *id == fastrender::accessibility_accesskit::ROOT_SCROLL_CONTAINER_ID {
+        return None;
+      }
+      node
+        .scroll_y_max()
+        .and_then(|max| (max > 0.0).then_some((*id, node)))
+    })
+    .expect("expected one element scroll container node");
+
+  assert_eq!(container_node.scroll_y().unwrap_or(0.0), 0.0);
+  assert!(
+    (container_node.scroll_y_max().unwrap_or(0.0) - 50.0).abs() < 0.5,
+    "expected scroll_y_max≈50, got {:?}",
+    container_node.scroll_y_max()
+  );
+
+  // Scroll the element container down to reveal the second (blue) child.
+  let req = ActionRequest {
+    action: Action::SetScrollOffset,
+    target: container_id,
+    data: Some(ActionData::SetScrollOffset(accesskit::Point {
+      x: 0.0,
+      y: 50.0,
+    })),
+  };
+
+  let next_scroll = fastrender::accessibility_accesskit::apply_scroll_action_to_scroll_state(
+    doc.fragment_tree(),
+    viewport,
+    &initial_scroll,
+    &req,
+  )
+  .expect("scroll action should apply");
+
+  assert!(
+    next_scroll
+      .elements
+      .values()
+      .any(|p| (p.y - 50.0).abs() < 0.5),
+    "expected element scroll to be updated: {next_scroll:?}"
+  );
+
+  let pixmap = doc
+    .paint_with_scroll_state(next_scroll, None, None, None)
+    .expect("paint");
+  assert_eq!(rgba_at(&pixmap, 10, 10), [0, 0, 255, 255]);
+}
