@@ -335,3 +335,61 @@ html.chrome-frame .content-frame {
 .chrome-modal-button-primary:hover {
   background: var(--chrome-accent-bg, rgba(37, 99, 235, 0.18));
 }
+
+/* ----------------------------------------------------------------------------
+ * Context menu (renderer chrome)
+ * -------------------------------------------------------------------------- */
+
+.chrome-context-menu {
+  display: inline-block;
+  min-width: 200px;
+  padding: 4px 0;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.20);
+}
+
+.chrome-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  color: inherit;
+  text-decoration: none;
+  cursor: default;
+}
+
+.chrome-context-menu-item:hover {
+  background: var(--chrome-accent-bg, #e8f0fe);
+}
+
+.chrome-context-menu-item.disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.chrome-context-menu-item.disabled:hover {
+  background: transparent;
+}
+
+.chrome-context-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: #e3e5e8;
+}
+
+.chrome-context-menu-icon,
+.chrome-context-menu-icon-spacer {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.chrome-context-menu-icon {
+  object-fit: contain;
+}
+
+.chrome-context-menu-icon-spacer {
+  display: inline-block;
+}

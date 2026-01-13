@@ -1,3 +1,4 @@
+pub mod context_menu;
 pub mod document;
 pub mod modal_dialog;
 pub mod state_to_html;
