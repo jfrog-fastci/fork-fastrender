@@ -258,6 +258,7 @@ fn about_header_html(current: &str) -> String {
     (ABOUT_HELP, "Help"),
     (ABOUT_VERSION, "Version"),
     (ABOUT_GPU, "GPU"),
+    (ABOUT_PROCESSES, "Processes"),
   ];
   let mut links = String::with_capacity(256);
   for (url, label) in items {
@@ -675,6 +676,10 @@ fn newtab_html() -> String {
           <div class="label">GPU</div>
           <div class="url">about:gpu</div>
         </a>
+        <a class="about-tile" href="about:processes">
+          <div class="label">Processes</div>
+          <div class="url">about:processes</div>
+        </a>
       </div>
 
       <h2>Bookmarks</h2>
@@ -998,10 +1003,19 @@ fn processes_html() -> String {
     sites: std::collections::BTreeSet<String>,
   }
 
+  #[derive(Default)]
+  struct SiteGroup {
+    tabs: Vec<(Option<String>, u64)>,
+    renderer_processes: std::collections::BTreeSet<u64>,
+    has_unassigned: bool,
+  }
+
   let mut windows = std::collections::BTreeSet::<String>::new();
   let mut unknown_windows = 0usize;
   let mut renderer_processes = std::collections::BTreeMap::<u64, RendererProcessGroup>::new();
   let mut unassigned_tabs = 0usize;
+  let mut site_groups = std::collections::BTreeMap::<String, SiteGroup>::new();
+  let mut unknown_sites = 0usize;
   let mut loading_tabs = 0usize;
   let mut crashed_tabs = 0usize;
   let mut unresponsive_tabs = 0usize;
@@ -1124,17 +1138,37 @@ fn processes_html() -> String {
           unassigned_tabs += 1;
         }
       }
+
+      {
+        let group = site_groups.entry(site.clone()).or_default();
+        group.tabs.push((tab.window_id.clone(), tab.tab_id));
+        match tab.renderer_process {
+          Some(process) => {
+            group.renderer_processes.insert(process);
+          }
+          None => {
+            group.has_unassigned = true;
+          }
+        }
+      }
+      if site == "unknown" {
+        unknown_sites += 1;
+      }
     }
   }
 
   let renderer_process_count = renderer_processes.len();
+  let multi_site_renderers = renderer_processes
+    .values()
+    .filter(|group| group.sites.len() > 1)
+    .count();
   let mut process_rows = String::new();
   if renderer_processes.is_empty() {
     process_rows.push_str(
       "<tr><td colspan=\"3\" class=\"empty\">No renderer processes are assigned yet.</td></tr>",
     );
   } else {
-    for (process_id, group) in renderer_processes {
+    for (process_id, group) in renderer_processes.iter() {
       let mut tabs_cell = String::new();
       for (idx, (window_id, tab_id)) in group.tabs.iter().enumerate() {
         if idx > 0 {
@@ -1148,6 +1182,9 @@ fn processes_html() -> String {
         "<span class=\"muted\">(unknown)</span>".to_string()
       } else {
         let mut sites_cell = String::new();
+        if group.sites.len() > 1 {
+          sites_cell.push_str("<span class=\"muted\">(multiple)</span><br>");
+        }
         for (idx, site) in group.sites.iter().enumerate() {
           if idx > 0 {
             sites_cell.push_str("<br>");
@@ -1162,6 +1199,65 @@ fn processes_html() -> String {
           <td><code>{process_id}</code></td>
           <td>{tabs_cell}</td>
           <td>{sites_cell}</td>
+        </tr>"
+      ));
+    }
+  }
+
+  let site_count = site_groups
+    .keys()
+    .filter(|site| site.as_str() != "unknown")
+    .count();
+  let multi_renderer_sites = site_groups
+    .values()
+    .filter(|group| group.renderer_processes.len() + usize::from(group.has_unassigned) > 1)
+    .count();
+  let mut site_rows = String::new();
+  if site_groups.is_empty() {
+    site_rows.push_str("<tr><td colspan=\"3\" class=\"empty\">No site snapshot is available.</td></tr>");
+  } else {
+    for (site, group) in site_groups.iter() {
+      let site_cell = if site == "unknown" {
+        "<span class=\"muted\">unknown</span>".to_string()
+      } else {
+        format!("<code>{}</code>", escape_html(site))
+      };
+
+      let mut renderer_cell = String::new();
+      if group.renderer_processes.is_empty() && !group.has_unassigned {
+        renderer_cell.push_str("<span class=\"muted\">(unknown)</span>");
+      } else {
+        if group.renderer_processes.len() + usize::from(group.has_unassigned) > 1 {
+          renderer_cell.push_str("<span class=\"muted\">(multiple)</span><br>");
+        }
+        for (idx, process) in group.renderer_processes.iter().enumerate() {
+          if idx > 0 {
+            renderer_cell.push_str("<br>");
+          }
+          renderer_cell.push_str(&format!("<code>{process}</code>"));
+        }
+        if group.has_unassigned {
+          if !group.renderer_processes.is_empty() {
+            renderer_cell.push_str("<br>");
+          }
+          renderer_cell.push_str("<span class=\"muted\">(unassigned)</span>");
+        }
+      }
+
+      let mut tabs_cell = String::new();
+      for (idx, (window_id, tab_id)) in group.tabs.iter().enumerate() {
+        if idx > 0 {
+          tabs_cell.push_str("<br>");
+        }
+        let safe_window = escape_html(window_id.as_deref().unwrap_or("-"));
+        tabs_cell.push_str(&format!("<code>{safe_window}:{tab_id}</code>"));
+      }
+
+      site_rows.push_str(&format!(
+        "<tr>
+          <td>{site_cell}</td>
+          <td>{renderer_cell}</td>
+          <td>{tabs_cell}</td>
         </tr>"
       ));
     }
@@ -1186,11 +1282,15 @@ fn processes_html() -> String {
         · Windows: <code>{window_count}</code>
         · Renderer processes: <code>{renderer_process_count}</code>
         · Unassigned tabs: <code>{unassigned_tabs}</code>
+        · Sites: <code>{site_count}</code>
+        · Multi-site renderers: <code>{multi_site_renderers}</code>
+        · Sites on multiple renderers: <code>{multi_renderer_sites}</code>
         · Loading: <code>{loading_tabs}</code>
         · Crashed: <code>{crashed_tabs}</code>
         · Unresponsive: <code>{unresponsive_tabs}</code>
         · Renderer crashed: <code>{renderer_crashed_tabs}</code>
         · Tabs missing window id: <code>{unknown_windows}</code>
+        · Tabs missing site key: <code>{unknown_sites}</code>
         {registry_stats_html}
       </p>
 
@@ -1205,6 +1305,20 @@ fn processes_html() -> String {
         </thead>
         <tbody>
           {process_rows}
+        </tbody>
+      </table>
+
+      <h2>Sites</h2>
+      <table class=\"proc-table\">
+        <thead>
+          <tr>
+            <th>Site</th>
+            <th>Renderers</th>
+            <th>Tabs</th>
+          </tr>
+        </thead>
+        <tbody>
+          {site_rows}
         </tbody>
       </table>
 
