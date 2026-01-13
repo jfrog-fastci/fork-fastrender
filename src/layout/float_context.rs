@@ -470,8 +470,7 @@ impl FloatSweepState {
     }
   }
 
-  fn reset(&mut self, float_count: usize, events: &[FloatEvent]) {
-    let _ = float_count;
+  fn reset(&mut self, _float_count: usize, events: &[FloatEvent]) {
     self.current_y = f32::NEG_INFINITY;
 
     self.pending_events.clear();
