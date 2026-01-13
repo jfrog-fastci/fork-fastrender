@@ -618,11 +618,6 @@ glob = "built-ins/String/prototype/codePointAt/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/String/prototype/codePointAt/return-code-unit-coerced-position.js"
-status = "xfail"
-reason = "vm-js: String.prototype.codePointAt does not correctly apply ToInteger(pos) for some non-number arguments."
-
-[[expectations]]
 glob = "built-ins/String/prototype/padStart/**"
 status = "pass"
 
@@ -637,13 +632,6 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/Array/length/**"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/Array/S15.4.1_A1.1_T3.js"
-status = "xfail"
-reason = "vm-js: Array.prototype does not correctly inherit Object.prototype.isPrototypeOf yet (prototype chain incomplete)."
-
-[[expectations]]
 glob = "built-ins/Array/prototype/sort/**"
 status = "pass"
 
@@ -779,11 +767,6 @@ status = "skip"
 reason = "vm-js: test262 case triggers a timeout (large TypedArray concat)."
 
 [[expectations]]
-id = "built-ins/Array/prototype/sort/call-with-primitive.js"
-status = "xfail"
-reason = "vm-js: BigInt constructor is not implemented (test uses `instanceof BigInt`)."
-
-[[expectations]]
 id = "built-ins/Array/prototype/sort/comparefn-grow.js"
 status = "xfail"
 reason = "vm-js does not yet implement TypedArray/resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
@@ -829,11 +812,6 @@ reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm
 [[expectations]]
 glob = "built-ins/Symbol/prototype/description/**"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/Symbol/prototype/description/this-val-non-symbol.js"
-status = "xfail"
-reason = "vm-js bug: Symbol.prototype.description should throw a TypeError for non-Symbol receivers (currently crashes)."
 
 [[expectations]]
 glob = "built-ins/Object/getOwnPropertyNames/**"
@@ -1320,34 +1298,19 @@ status = "xfail"
 reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
 
 [[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-69.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-70.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-78.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-79.js"
 status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
+reason = "vm-js does not yet implement String.prototype.toLocaleLowerCase (descriptor is undefined)."
 
 [[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-80.js"
 status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
+reason = "vm-js does not yet implement String.prototype.toLocaleUpperCase (descriptor is undefined)."
 
 [[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-81.js"
 status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
+reason = "vm-js does not yet implement String.prototype.localeCompare (descriptor is undefined)."
 
 [[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptor/primitive-string.js"
@@ -1749,7 +1712,7 @@ status = "pass"
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-bigint-primitive.js"
 status = "xfail"
-reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
+reason = "vm-js: String.prototype.replaceAll incorrectly consults @@replace on BigInt primitives (should not access BigInt.prototype[Symbol.replace])."
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/getSubstitution-0x0024-0x003C.js"
@@ -1845,11 +1808,6 @@ reason = "vm-js: String.prototype.split does not yet implement RegExp separators
 id = "built-ins/String/prototype/split/cstm-split-invocation.js"
 status = "xfail"
 reason = "vm-js: String.prototype.split does not yet implement @@split hooks on separator objects."
-
-[[expectations]]
-id = "built-ins/String/prototype/split/cstm-split-on-bigint-primitive.js"
-status = "xfail"
-reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
 
 [[expectations]]
 id = "built-ins/String/prototype/split/separator-regexp.js"
