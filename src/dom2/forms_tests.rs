@@ -254,10 +254,10 @@ fn renderer_dom_snapshot_projects_runtime_form_control_state() {
 fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_aligned() {
   let html = concat!(
     "<!doctype html><html><body>",
-    "<input id=i>",
+    "<input id=i checked>",
     "<input id=c type=checkbox>",
     "<textarea id=t>hello</textarea>",
-    "<select><option id=o>One</option></select>",
+    "<select multiple><option id=o selected>One</option></select>",
     "</body></html>",
   );
   let mut doc = crate::dom2::parse_html(html).unwrap();
@@ -268,9 +268,10 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
 
   // Mutate internal (IDL) state without touching content attributes.
   doc.set_input_value(input, "bar").unwrap();
+  doc.set_input_checked(input, true).unwrap();
   doc.set_input_checked(checkbox, true).unwrap();
   doc.set_textarea_value(textarea, "dirty").unwrap();
-  doc.set_option_selected(option, true).unwrap();
+  doc.set_option_selected(option, false).unwrap();
 
   assert_eq!(
     doc.get_attribute(input, "value").unwrap(),
@@ -278,11 +279,15 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
     "set_input_value must not mutate content attributes"
   );
   assert!(
+    doc.has_attribute(input, "checked").unwrap(),
+    "set_input_checked must not mutate content attributes"
+  );
+  assert!(
     !doc.has_attribute(checkbox, "checked").unwrap(),
     "set_input_checked must not mutate content attributes"
   );
   assert!(
-    !doc.has_attribute(option, "selected").unwrap(),
+    doc.has_attribute(option, "selected").unwrap(),
     "set_option_selected must not mutate content attributes"
   );
 
@@ -311,6 +316,11 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
   {
     let input_node = get_snapshot_node(input, "i");
     assert_eq!(input_node.get_attribute_ref("value"), Some("bar"));
+    assert_eq!(
+      input_node.get_attribute_ref("checked"),
+      None,
+      "expected `checked` to be absent for non-checkable inputs"
+    );
   }
 
   // <input type=checkbox>: checkedness must be reflected into the snapshot.
@@ -335,8 +345,8 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
   {
     let option_node = get_snapshot_node(option, "o");
     assert!(
-      option_node.get_attribute_ref("selected").is_some(),
-      "expected selected attribute on snapshot option"
+      option_node.get_attribute_ref("selected").is_none(),
+      "expected no `selected` attribute on snapshot option when selectedness=false"
     );
   }
 }

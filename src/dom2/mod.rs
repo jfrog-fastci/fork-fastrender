@@ -1253,6 +1253,14 @@ impl Document {
       return attrs;
     }
 
+    // NOTE: For HTML form controls, we intentionally project *runtime state* (e.g. `.value`,
+    // `.checked`, `.selected`) into the snapshot attributes so style/layout/paint and selector
+    // matching can observe JS-driven state updates without mutating author-visible DOM attributes.
+    //
+    // Semantic caveat: because we project current state into content attributes (e.g. `checked`,
+    // `selected`, `value`), attribute selectors like `[checked]` and pseudo-classes like `:default`
+    // currently behave as if they match the *current* state rather than the authored markup.
+
     if tag_name.eq_ignore_ascii_case("input") {
       let Some(state) = self
         .input_states
@@ -1262,22 +1270,23 @@ impl Document {
         return attrs;
       };
 
-      let type_attr = attr_value_ci(&attrs, "type");
-      let is_file_input =
-        type_attr.is_some_and(|t| trim_ascii_whitespace_html(t).eq_ignore_ascii_case("file"));
-      if !is_file_input {
-        // Mirror the *current value* for rendering/selector semantics. Avoid injecting `value=""`
-        // when the input has no value attribute and the current value is the empty string: the
-        // renderer treats missing `value` as `""` anyway, and preserving authored presence avoids
-        // breaking selectors like `[value]`.
-        let has_value_attr = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("value"));
-        if has_value_attr || !state.value.is_empty() || state.dirty_value {
-          upsert_attr_ci(&mut attrs, "value", state.value.clone());
-        }
+      let input_type = attr_value_ci(&attrs, "type")
+        .map(trim_ascii_whitespace_html)
+        .unwrap_or("text");
+      let is_file_input = input_type.eq_ignore_ascii_case("file");
+      if is_file_input {
+        // File inputs never expose pre-filled value strings from markup.
+        remove_attr_ci(&mut attrs, "value");
+      } else {
+        // Mirror the input's *current value* into the snapshot attribute.
+        upsert_attr_ci(&mut attrs, "value", state.value.clone());
       }
 
-      if is_input_checkable(type_attr) {
+      if is_input_checkable(Some(input_type)) {
         ensure_bool_attr_ci(&mut attrs, "checked", state.checkedness);
+      } else {
+        // Ensure any stale authored `checked` doesn't leak into snapshots for non-checkable inputs.
+        remove_attr_ci(&mut attrs, "checked");
       }
     } else if tag_name.eq_ignore_ascii_case("textarea") {
       let Some(state) = self

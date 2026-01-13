@@ -15,7 +15,7 @@ pub(super) fn strip_authored_file_input_state(doc: &mut Document) {
   // Keep this list in sync with `crate::dom::strip_authored_file_input_state`.
   const INTERNAL_FILE_SELECTION_ATTRS: [&str; 2] = ["data-fastr-files", "data-fastr-file-value"];
 
-  for node in doc.nodes.iter_mut() {
+  for (node_idx, node) in doc.nodes.iter_mut().enumerate() {
     let NodeKind::Element {
       tag_name,
       attributes,
@@ -49,6 +49,19 @@ pub(super) fn strip_authored_file_input_state(doc: &mut Document) {
       }
       true
     });
+
+    // `dom2` tracks input `.value` as internal state (with dirty flag), so stripping the unsafe
+    // authored `value` attribute must also clear the corresponding state to avoid leaking markup
+    // through `Document::input_value()` or `to_renderer_dom()` overlays.
+    if let Some(state) = doc
+      .input_states
+      .get_mut(node_idx)
+      .and_then(|state| state.as_mut())
+    {
+      state.value.clear();
+      state.dirty_value = false;
+      state.checkedness = false;
+      state.dirty_checkedness = false;
+    }
   }
 }
-

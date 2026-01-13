@@ -33,6 +33,18 @@ fn find_first_node_matching(doc: &Document, predicate: impl Fn(&NodeKind) -> boo
   None
 }
 
+fn find_node_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+  if node.get_attribute_ref("id") == Some(id) {
+    return Some(node);
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_node_by_id(child, id) {
+      return Some(found);
+    }
+  }
+  None
+}
+
 fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
   match node_type {
     DomNodeType::Document { quirks_mode, .. } => NodeKind::Document {
@@ -388,5 +400,63 @@ fn renderer_dom_mapping_ignores_stale_child_entries_when_parent_pointer_mismatch
     for child in node.children.iter().rev() {
       stack.push(child);
     }
+  }
+}
+
+#[test]
+fn renderer_dom_mapping_round_trips_with_form_control_attribute_overlays() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<input id=i type=checkbox value=foo checked>",
+    "<textarea id=t>hello</textarea>",
+    "<select multiple><option id=o selected>One</option></select>",
+    "</body></html>",
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let input = doc.get_element_by_id("i").expect("input element");
+  let textarea = doc.get_element_by_id("t").expect("textarea element");
+  let option = doc.get_element_by_id("o").expect("option element");
+
+  // Mutate internal form state so snapshots must overlay state back into attributes.
+  doc.set_input_value(input, "bar").unwrap();
+  doc.set_input_checked(input, false).unwrap();
+  doc.set_textarea_value(textarea, "dirty").unwrap();
+  doc.set_option_selected(option, false).unwrap();
+
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  let renderer_ids = crate::dom::enumerate_dom_ids(&snapshot.dom);
+
+  // Every renderer preorder id should map back to a `dom2` `NodeId` and round-trip.
+  let mut stack: Vec<&DomNode> = vec![&snapshot.dom];
+  while let Some(node) = stack.pop() {
+    let preorder_id = *renderer_ids
+      .get(&(node as *const DomNode))
+      .expect("missing renderer preorder id");
+    let dom2_id = snapshot
+      .mapping
+      .node_id_for_preorder(preorder_id)
+      .expect("missing dom2 node mapping for renderer preorder id");
+    assert_eq!(
+      snapshot.mapping.preorder_for_node_id(dom2_id),
+      Some(preorder_id),
+      "reverse mapping mismatch for dom2 node {dom2_id:?}"
+    );
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  // Spot-check mapping for nodes whose attributes were overlaid.
+  for (id_attr, expected) in [("i", input), ("t", textarea), ("o", option)] {
+    let node = find_node_by_id(&snapshot.dom, id_attr).expect("missing node in snapshot");
+    let preorder_id = *renderer_ids
+      .get(&(node as *const DomNode))
+      .expect("missing preorder id for node");
+    assert_eq!(
+      snapshot.mapping.node_id_for_preorder(preorder_id),
+      Some(expected),
+      "mapping mismatch for node with id={id_attr}"
+    );
   }
 }
