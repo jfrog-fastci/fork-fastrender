@@ -377,12 +377,6 @@ pub enum BrowserToRenderer {
   /// navigation or repaint request) so in-flight renderer work can cancel cooperatively.
   CancelUpdate { tab_id: u64, gens: CancelGensSnapshot },
 
-  /// Release a shared frame buffer slot back to the renderer's pool.
-  ///
-  /// The browser sends this when it has finished consuming a frame buffer that was previously
-  /// published by the renderer.
-  ReleaseFrameBuffer { generation: u64, buffer_index: u32 },
-
   ViewportChanged {
     tab_id: u64,
     viewport_css: (u32, u32),

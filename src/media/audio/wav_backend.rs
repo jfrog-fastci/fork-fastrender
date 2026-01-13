@@ -8,7 +8,7 @@ use parking_lot::{Mutex, RwLock};
 
 use super::{frames_to_duration, AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
 use crate::media::audio_clock::InterpolatedAudioClock;
-use crate::media::audio::ring_buffer::AudioRingBuffer;
+use super::ring_buffer::AudioRingBuffer;
 
 /// Offline audio backend that mixes to a fixed output format and writes into a `.wav` file.
 ///
