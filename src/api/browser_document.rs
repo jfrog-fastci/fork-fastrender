@@ -76,6 +76,28 @@ fn interaction_state_fingerprint(state: Option<&InteractionState>) -> u64 {
       state.hover_chain.hash(&mut hasher);
       state.active_chain.hash(&mut hasher);
       hash_usize_set(&mut hasher, &state.visited_links);
+      // File input state is stored out-of-DOM, so include it in the interaction fingerprint so file
+      // drops trigger a rerender (label updates and form submission semantics).
+      if !state.form_state.file_inputs.is_empty() {
+        let mut keys: Vec<usize> = state.form_state.file_inputs.keys().copied().collect();
+        keys.sort_unstable();
+        for node_id in keys {
+          node_id.hash(&mut hasher);
+          if let Some(files) = state.form_state.file_inputs.get(&node_id) {
+            files.len().hash(&mut hasher);
+            for file in files {
+              file
+                .path
+                .to_string_lossy()
+                .as_ref()
+                .hash(&mut hasher);
+              file.filename.hash(&mut hasher);
+              file.bytes.len().hash(&mut hasher);
+              file.content_type.hash(&mut hasher);
+            }
+          }
+        }
+      }
       if let Some(preedit) = &state.ime_preedit {
         1u8.hash(&mut hasher);
         preedit.node_id.hash(&mut hasher);

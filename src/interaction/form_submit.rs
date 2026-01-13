@@ -4,6 +4,7 @@ use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
 use url::Url;
 
 use super::resolve_url;
+use super::InteractionState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormSubmissionMethod {
@@ -388,8 +389,7 @@ fn entry_value_for_urlencoded(entry: &FormDataEntry) -> &str {
   match entry {
     FormDataEntry::Text { value, .. } => value,
     // For urlencoded submissions file controls submit the filename (or empty string when no file is
-    // selected). We don't model file selection yet, so treat it as the deterministic "no file
-    // selected" case.
+    // selected).
     FormDataEntry::File { filename, .. } => filename,
   }
 }
@@ -399,6 +399,7 @@ fn collect_form_entries(
   form_node_id: usize,
   submitter_node_id: Option<usize>,
   submitter_image_coords: Option<(i32, i32)>,
+  interaction_state: Option<&InteractionState>,
   out: &mut Vec<FormDataEntry>,
 ) -> Option<()> {
   // Spec-ish: successful controls are collected in tree order (document order), including form-
@@ -461,13 +462,29 @@ fn collect_form_entries(
       }
 
       if ty.eq_ignore_ascii_case("file") {
-        // File input support is currently stubbed. Treat as "no files selected".
-        out.push(FormDataEntry::File {
-          name: name.to_string(),
-          filename: String::new(),
-          content_type: "application/octet-stream".to_string(),
-          bytes: Vec::new(),
-        });
+        let files = interaction_state
+          .and_then(|state| state.form_state.files_for(node_id))
+          .map(|files| files.as_slice())
+          .unwrap_or(&[]);
+
+        if files.is_empty() {
+          // When no files are selected, submit an empty file entry.
+          out.push(FormDataEntry::File {
+            name: name.to_string(),
+            filename: String::new(),
+            content_type: "application/octet-stream".to_string(),
+            bytes: Vec::new(),
+          });
+        } else {
+          for file in files {
+            out.push(FormDataEntry::File {
+              name: name.to_string(),
+              filename: file.filename.clone(),
+              content_type: file.content_type.clone(),
+              bytes: file.bytes.clone(),
+            });
+          }
+        }
         continue;
       }
 
@@ -764,6 +781,7 @@ pub fn form_submission(
   submitter_image_coords: Option<(i32, i32)>,
   document_url: &str,
   base_url: &str,
+  interaction_state: Option<&InteractionState>,
 ) -> Option<FormSubmission> {
   let index = DomIndex::new(dom);
 
@@ -792,6 +810,7 @@ pub fn form_submission(
     form_id,
     Some(submitter_node_id),
     submitter_image_coords,
+    interaction_state,
     &mut entries,
   )?;
 
@@ -850,6 +869,7 @@ pub fn form_submission_without_submitter(
   form_node_id: usize,
   document_url: &str,
   base_url: &str,
+  interaction_state: Option<&InteractionState>,
 ) -> Option<FormSubmission> {
   let index = DomIndex::new(dom);
   let form = index.node(form_node_id)?;
@@ -868,7 +888,7 @@ pub fn form_submission_without_submitter(
   url.set_fragment(None);
 
   let mut entries: Vec<FormDataEntry> = Vec::new();
-  collect_form_entries(&index, form_node_id, None, None, &mut entries)?;
+  collect_form_entries(&index, form_node_id, None, None, interaction_state, &mut entries)?;
 
   match method {
     FormSubmissionMethod::Get => {
@@ -923,7 +943,15 @@ pub fn form_submission_get_url(
   submitter_node_id: usize,
   document_url: &str,
   base_url: &str,
+  interaction_state: Option<&InteractionState>,
 ) -> Option<String> {
-  let submission = form_submission(dom, submitter_node_id, None, document_url, base_url)?;
+  let submission = form_submission(
+    dom,
+    submitter_node_id,
+    None,
+    document_url,
+    base_url,
+    interaction_state,
+  )?;
   (submission.method == FormSubmissionMethod::Get).then_some(submission.url)
 }

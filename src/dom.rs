@@ -5654,7 +5654,17 @@ pub(crate) fn input_file_value_string(node: &DomNode) -> Option<String> {
 
   // File inputs never expose pre-filled values from markup: browsers treat their value as the empty
   // string until the user selects a file.
-  Some(String::new())
+  //
+  // We store user-selected file state out-of-markup via an internal `data-fastr-file-value`
+  // attribute. This attribute is set only by user interaction (e.g. file drop) so we can:
+  // - keep the markup `value=` ignored (browser-like), and
+  // - surface a non-empty string for required/validation/accessibility.
+  Some(
+    node
+      .get_attribute_ref("data-fastr-file-value")
+      .unwrap_or("")
+      .to_string(),
+  )
 }
 
 fn strip_ascii_line_breaks(value: &str) -> Cow<'_, str> {

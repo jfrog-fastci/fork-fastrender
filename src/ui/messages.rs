@@ -400,6 +400,20 @@ pub enum UiToWorker {
     button: PointerButton,
     modifiers: PointerModifiers,
   },
+  /// Drop one or more local files onto the page at `pos_css`.
+  ///
+  /// This is primarily used to support native OS drag-and-drop for `<input type="file">` controls.
+  /// The worker is responsible for hit-testing and applying HTML `multiple` semantics.
+  DropFiles {
+    tab_id: TabId,
+    /// Drop position in **viewport-local CSS pixels** (0,0 at the top-left of the rendered
+    /// viewport).
+    ///
+    /// This coordinate does **not** include the current scroll offset (`ScrollState.viewport`).
+    pos_css: (f32, f32),
+    /// File paths provided by the OS/UI layer.
+    paths: Vec<PathBuf>,
+  },
   /// Request a page hit-test for context menu purposes.
   ///
   /// The worker responds with [`WorkerToUi::ContextMenu`] containing a resolved link URL (if the

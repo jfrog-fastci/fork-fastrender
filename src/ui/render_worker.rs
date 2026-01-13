@@ -1599,6 +1599,9 @@ impl BrowserRuntime {
       } => {
         self.handle_pointer_up(tab_id, pos_css, button, modifiers);
       }
+      UiToWorker::DropFiles { tab_id, pos_css, paths } => {
+        self.handle_drop_files(tab_id, pos_css, paths);
+      }
       UiToWorker::ContextMenuRequest { tab_id, pos_css } => {
         self.handle_context_menu_request(tab_id, pos_css);
       }
@@ -3728,6 +3731,37 @@ impl BrowserRuntime {
       self.schedule_navigation(tab_id, url, NavigationReason::LinkClick);
     } else if let Some(request) = navigate_request {
       self.schedule_navigation_request(tab_id, request, NavigationReason::LinkClick);
+    }
+  }
+
+  fn handle_drop_files(&mut self, tab_id: TabId, pos_css: (f32, f32), paths: Vec<PathBuf>) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let scroll = &tab.scroll_state;
+    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+    let engine = &mut tab.interaction;
+
+    let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scrolled =
+        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+      let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+
+      let changed =
+        engine.drop_files_with_scroll(dom, box_tree, fragment_tree, scroll, viewport_point, &paths);
+      (changed, changed)
+    }) {
+      Ok(changed) => changed,
+      Err(_) => false,
+    };
+
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
     }
   }
 

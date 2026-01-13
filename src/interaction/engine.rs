@@ -22,6 +22,7 @@ use crate::interaction::selection_serialize::{
   serialize_document_selection, DocumentSelection, DocumentSelectionPoint, DocumentSelectionRange,
 };
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -34,7 +35,7 @@ use super::hit_test::{hit_test_dom, HitTestKind};
 use super::image_maps;
 use super::resolve_url;
 use super::state::{
-  DocumentSelectionRanges, DocumentSelectionState, ImePreeditState, InteractionState,
+  DocumentSelectionRanges, DocumentSelectionState, FileSelection, ImePreeditState, InteractionState,
   TextEditPaintState,
 };
 
@@ -1538,6 +1539,7 @@ mod tests {
       form_id,
       "https://example.com/page",
       "https://example.com/page",
+      None,
     )
     .expect("submission");
     assert_eq!(
@@ -1839,6 +1841,10 @@ fn is_radio_input(node: &DomNode) -> bool {
 
 fn is_range_input(node: &DomNode) -> bool {
   is_input(node) && input_type(node).eq_ignore_ascii_case("range")
+}
+
+fn is_file_input(node: &DomNode) -> bool {
+  is_input(node) && input_type(node).eq_ignore_ascii_case("file")
 }
 
 fn date_time_input_kind(node: &DomNode) -> Option<DateTimeInputKind> {
@@ -3922,6 +3928,9 @@ impl InteractionEngine {
     for &id in &self.state.active_chain {
       check_node_id("active_chain", id);
     }
+    for (&id, _) in &self.state.form_state.file_inputs {
+      check_node_id("file_inputs", id);
+    }
 
     if let Some(id) = self.pointer_down_target {
       check_node_id("pointer_down_target", id);
@@ -5787,7 +5796,7 @@ impl InteractionEngine {
                 };
 
                 if let Some(submission) =
-                  form_submission(dom, target_id, image_coords, document_url, base_url)
+                  form_submission(dom, target_id, image_coords, document_url, base_url, Some(&self.state))
                 {
                   self.last_form_submitter = Some(target_id);
                   let target_blank = resolve_form_owner(&index, target_id)
@@ -5869,6 +5878,145 @@ impl InteractionEngine {
       document_url,
       base_url,
     )
+  }
+
+  /// Drop one or more local files onto the page.
+  ///
+  /// When the drop target resolves to an `<input type="file">` control, this updates its selected
+  /// file list:
+  /// - For single-file inputs (no `multiple` attribute), only the first provided file is selected.
+  /// - For `multiple` file inputs, all provided files are selected.
+  ///
+  /// This updates both:
+  /// - internal per-control file selection state (used for form submission), and
+  /// - `data-fastr-file-value` on the input element for browser-like value/validation semantics
+  ///   (ignored from markup `value=`).
+  ///
+  /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
+  /// translating it by `scroll.viewport`.
+  ///
+  /// The provided `fragment_tree` must already have element scroll offsets applied (e.g. via
+  /// [`crate::interaction::fragment_tree_with_scroll`]).
+  pub fn drop_files_with_scroll(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    viewport_point: Point,
+    paths: &[PathBuf],
+  ) -> bool {
+    self.modality = InputModality::Pointer;
+    let page_point = viewport_point.translate(scroll.viewport);
+    let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
+
+    let mut index = DomIndexMut::new(dom);
+
+    let mut target_id = hit.as_ref().map(|hit| hit.dom_node_id);
+    if let Some(hit) = hit.as_ref() {
+      if hit.kind == HitTestKind::Label {
+        if let Some(control_id) = find_label_associated_control(&index, hit.dom_node_id) {
+          target_id = Some(control_id);
+        }
+      }
+    }
+
+    let Some(target_id) = target_id else {
+      return false;
+    };
+
+    // Only file inputs accept file drops.
+    if !index.node(target_id).is_some_and(is_file_input) {
+      return false;
+    }
+
+    // Respect inert/disabled semantics.
+    if is_disabled_or_inert(&index, target_id) {
+      return false;
+    }
+
+    // Focus the input (browser-like).
+    let mut changed = if is_focusable_interactive_element(&index, target_id) {
+      self.set_focus(&mut index, Some(target_id), false)
+    } else {
+      false
+    };
+
+    let multiple = index
+      .node(target_id)
+      .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
+
+    let mut selected: Vec<FileSelection> = Vec::new();
+    for path in paths {
+      if path.as_os_str().is_empty() {
+        continue;
+      }
+      if !multiple && !selected.is_empty() {
+        break;
+      }
+
+      let filename = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.is_empty());
+      let Some(filename) = filename else {
+        continue;
+      };
+
+      let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => continue,
+      };
+
+      selected.push(FileSelection {
+        path: path.clone(),
+        filename,
+        content_type: "application/octet-stream".to_string(),
+        bytes,
+      });
+    }
+
+    let prev_paths: Vec<PathBuf> = self
+      .state
+      .form_state
+      .file_inputs
+      .get(&target_id)
+      .map(|prev| prev.iter().map(|f| f.path.clone()).collect())
+      .unwrap_or_default();
+    let next_paths: Vec<PathBuf> = selected.iter().map(|f| f.path.clone()).collect();
+
+    if prev_paths != next_paths {
+      changed = true;
+      if selected.is_empty() {
+        self.state.form_state.file_inputs.remove(&target_id);
+      } else {
+        self.state.form_state.file_inputs.insert(target_id, selected);
+      }
+
+      // Selecting files flips HTML user validity so `:user-invalid` can match after interaction.
+      changed |= self.mark_user_validity(target_id);
+      changed |= self.mark_form_user_validity(&index, target_id);
+    }
+
+    // Mirror browser value semantics: the value string reflects the first filename only.
+    let value_string = self
+      .state
+      .form_state
+      .file_inputs
+      .get(&target_id)
+      .and_then(|files| files.first())
+      .map(|file| format!("C:\\fakepath\\{}", file.filename))
+      .unwrap_or_default();
+    if let Some(node_mut) = index.node_mut(target_id) {
+      let attr_changed = if value_string.is_empty() {
+        remove_node_attr(node_mut, "data-fastr-file-value")
+      } else {
+        set_node_attr(node_mut, "data-fastr-file-value", &value_string)
+      };
+      changed |= attr_changed;
+    }
+
+    changed
   }
 
   /// Insert typed text into focused text control (input/textarea) and set focus-visible.
@@ -7474,7 +7622,14 @@ impl InteractionEngine {
               .node(focused)
               .is_some_and(is_image_submit_input)
               .then_some((0, 0));
-            if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
+            if let Some(submission) = form_submission(
+              dom,
+              focused,
+              image_coords,
+              document_url,
+              base_url,
+              Some(&self.state),
+            ) {
               self.last_form_submitter = Some(focused);
               let target_blank = resolve_form_owner(&index, focused)
                 .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
@@ -7512,9 +7667,22 @@ impl InteractionEngine {
                     .node(submitter_id)
                     .is_some_and(is_image_submit_input)
                     .then_some((0, 0));
-                  form_submission(dom, submitter_id, image_coords, document_url, base_url)
+                  form_submission(
+                    dom,
+                    submitter_id,
+                    image_coords,
+                    document_url,
+                    base_url,
+                    Some(&self.state),
+                  )
                 }
-                None => form_submission_without_submitter(dom, form_id, document_url, base_url),
+                None => form_submission_without_submitter(
+                  dom,
+                  form_id,
+                  document_url,
+                  base_url,
+                  Some(&self.state),
+                ),
               };
               if let Some(submission) = submission {
                 if let Some(submitter_id) = submitter_id {
@@ -7615,7 +7783,14 @@ impl InteractionEngine {
               .node(focused)
               .is_some_and(is_image_submit_input)
               .then_some((0, 0));
-            if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
+            if let Some(submission) = form_submission(
+              dom,
+              focused,
+              image_coords,
+              document_url,
+              base_url,
+              Some(&self.state),
+            ) {
               self.last_form_submitter = Some(focused);
               let target_blank = resolve_form_owner(&index, focused)
                 .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
@@ -7830,7 +8005,14 @@ impl InteractionEngine {
               .node(focused)
               .is_some_and(is_image_submit_input)
               .then_some((0, 0));
-            if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
+            if let Some(submission) = form_submission(
+              dom,
+              focused,
+              image_coords,
+              document_url,
+              base_url,
+              Some(&self.state),
+            ) {
               self.last_form_submitter = Some(focused);
               let target_blank = resolve_form_owner(&index, focused)
                 .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
@@ -7868,9 +8050,22 @@ impl InteractionEngine {
                     .node(submitter_id)
                     .is_some_and(is_image_submit_input)
                     .then_some((0, 0));
-                  form_submission(dom, submitter_id, image_coords, document_url, base_url)
+                  form_submission(
+                    dom,
+                    submitter_id,
+                    image_coords,
+                    document_url,
+                    base_url,
+                    Some(&self.state),
+                  )
                 }
-                None => form_submission_without_submitter(dom, form_id, document_url, base_url),
+                None => form_submission_without_submitter(
+                  dom,
+                  form_id,
+                  document_url,
+                  base_url,
+                  Some(&self.state),
+                ),
               };
               if let Some(submission) = submission {
                 if let Some(submitter_id) = submitter_id {
@@ -7961,7 +8156,14 @@ impl InteractionEngine {
               .node(focused)
               .is_some_and(is_image_submit_input)
               .then_some((0, 0));
-            if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
+            if let Some(submission) = form_submission(
+              dom,
+              focused,
+              image_coords,
+              document_url,
+              base_url,
+              Some(&self.state),
+            ) {
               self.last_form_submitter = Some(focused);
               let target_blank = resolve_form_owner(&index, focused)
                 .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));

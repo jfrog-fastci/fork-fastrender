@@ -7098,7 +7098,18 @@ fn create_form_control_replaced(
         raw: raw_value.map(|v| v.to_string()),
       }
     } else if input_type.eq_ignore_ascii_case("file") {
-      FormControlKind::File { value: None }
+      let value = interaction_state
+        .and_then(|state| state.form_state.files_for(styled.node_id))
+        .and_then(|files| {
+          if files.is_empty() {
+            None
+          } else if files.len() == 1 {
+            Some(files[0].path.to_string_lossy().to_string())
+          } else {
+            Some(format!("{} files", files.len()))
+          }
+        });
+      FormControlKind::File { value }
     } else {
       let size_attr = styled
         .node

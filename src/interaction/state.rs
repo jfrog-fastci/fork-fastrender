@@ -2,6 +2,7 @@ use crate::text::caret::CaretAffinity;
 use crate::interaction::selection_serialize::{DocumentSelectionPoint, DocumentSelectionRange};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;
+use std::path::PathBuf;
 
 /// Live (non-DOM) form control state.
 ///
@@ -15,6 +16,8 @@ pub struct FormState {
   pub values: FxHashMap<usize, String>,
   /// Current checked state for checkbox/radio inputs, keyed by DOM pre-order node id.
   pub checked: FxHashMap<usize, bool>,
+  /// Current file selections for `<input type="file">`, keyed by DOM pre-order node id.
+  pub file_inputs: FxHashMap<usize, Vec<FileSelection>>,
   /// Current selected option ids for `<select>` elements, keyed by the select element's DOM pre-order
   /// node id.
   ///
@@ -23,10 +26,22 @@ pub struct FormState {
   pub select_selected: FxHashMap<usize, FxHashSet<usize>>,
 }
 
+/// A selected file for an `<input type="file">` control.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSelection {
+  pub path: PathBuf,
+  pub filename: String,
+  pub content_type: String,
+  pub bytes: Vec<u8>,
+}
+
 impl FormState {
   #[inline]
   pub fn has_overrides(&self) -> bool {
-    !(self.values.is_empty() && self.checked.is_empty() && self.select_selected.is_empty())
+    !(self.values.is_empty()
+      && self.checked.is_empty()
+      && self.file_inputs.is_empty()
+      && self.select_selected.is_empty())
   }
 
   #[inline]
@@ -37,6 +52,11 @@ impl FormState {
   #[inline]
   pub fn checked_for(&self, node_id: usize) -> Option<bool> {
     self.checked.get(&node_id).copied()
+  }
+
+  #[inline]
+  pub fn files_for(&self, node_id: usize) -> Option<&Vec<FileSelection>> {
+    self.file_inputs.get(&node_id)
   }
 
   #[inline]
