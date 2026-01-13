@@ -19,7 +19,7 @@ typeof chrome === "undefined"
 ```
 
 Repo reality (today): the in-tree `browser` binary still renders its chrome via **egui**, so it does
-not load a chrome HTML/JS document and does not install this bridge yet (see
+not load a chrome HTML/JS document and therefore does not install this bridge yet (see
 [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)).
 
 For the privileged internal URL schemes used by renderer-chrome (`chrome://` assets and
@@ -78,15 +78,24 @@ The `chrome` bridge is the trust boundary: it is effectively “native code capa
 `globalThis.chrome` is **not** present by default.
 
 An embedder must explicitly install the bridge into a specific JS realm (the chrome/UI realm)
-by calling:
+by calling the `vm-js` installer:
 
 ```rust
-install_chrome_api_bindings_vm_js(/* realm + host state */);
+use std::sync::Arc;
+use fastrender::js::chrome_api::{install_chrome_api_bindings_vm_js, ChromeApiHandler};
+
+let handler: Arc<dyn ChromeApiHandler> = /* host-provided implementation */;
+let _bindings = install_chrome_api_bindings_vm_js(vm, heap, realm, handler)?;
+// Keep `_bindings` alive for as long as the realm should be privileged.
 ```
 
-Repo reality (today): this installer is not wired up in-tree yet because the `browser` binary still
-uses an egui-rendered chrome UI. Treat the function name above as the **intended** embedder API for
-the renderer-chrome workstream.
+The returned `ChromeApiBindings` is an RAII guard: dropping it unregisters the backing Rust env
+state for that realm.
+
+Repo reality (today): the installer is implemented in-tree (see
+[`src/js/vmjs/chrome_api.rs`](../src/js/vmjs/chrome_api.rs)) and covered by
+[`tests/misc/chrome_api_tests.rs`](../tests/misc/chrome_api_tests.rs), but it is not currently
+wired into the egui-based `browser` UI.
 
 Default “content page” realms must **not** call this function, so that:
 
@@ -168,6 +177,7 @@ Tab management within the current window (MVP).
   - Opens a new foreground tab.
   - If `url` is provided, the new tab navigates to it; otherwise the embedder chooses a default
     (commonly `about:newtab`).
+  - Returns the new tab id as a **Number safe integer**.
   - Like `chrome.navigation.navigate(url)`, the argument should be treated as omnibox-style input
     and normalized/validated by the host (do not assume it is already a safe/absolute URL).
 - `chrome.tabs.closeTab(id)`
@@ -181,23 +191,26 @@ Tab management within the current window (MVP).
   - In the in-tree browser protocol, `TabId(0)` is reserved as an “invalid” value; real ids start at
     1 (see `TabId::new` in [`src/ui/messages.rs`](../src/ui/messages.rs)).
 
-### State snapshot (optional)
+### State snapshot
 
-Chrome UIs typically need an initial snapshot of tab state. Depending on the embedder build, one of
-these may exist:
+Chrome UIs typically need an initial snapshot of tab state.
 
-- `chrome.getState(): object`
-  - Returns a best-effort snapshot of the browser state needed for chrome UI (tabs, active tab id,
-    active tab URL/title/loading, back/forward availability, etc).
-
-or:
+Implemented by the in-tree `vm-js` chrome bridge:
 
 - `chrome.tabs.getAll(): Array<object>`
-  - Returns a snapshot of open tabs (including which one is active).
+  - Returns a snapshot of open tabs.
+  - Current shape: `{ id, url, title, active }` (see `ChromeTabInfo` in
+    [`src/js/vmjs/chrome_api.rs`](../src/js/vmjs/chrome_api.rs)).
+
+Some embeddings may additionally expose a higher-level snapshot API:
+
+- `chrome.getState(): object` (optional / embedder-defined)
+  - If present, returns a snapshot of the browser state needed for chrome UI (tabs, active tab id,
+    active tab URL/title/loading, back/forward availability, etc).
 
 Chrome pages should feature-detect which is available.
 
-Recommended minimal shape (embedder-defined, but should be stable within an embedding):
+Example shape (illustrative):
 
 ```js
 // chrome.getState() (example)
@@ -256,8 +269,9 @@ The chrome bridge is privileged, but it still validates inputs:
   - Example: `chrome.tabs.closeTab("not-a-number")` → throws.
 - Tab ids must be finite safe integers. Non-integers / `NaN` / out-of-range values throw a
   **TypeError**.
-- Unknown tab ids (well-typed but not present) should throw a **RangeError** to help surface bugs in
-  chrome UI logic.
+- Unknown tab ids (well-typed but not present) are embedder-defined:
+  - the bridge validates types/ranges, but the host may treat unknown ids as a no-op, close the
+    active tab, or log/ignore depending on UI policy.
 - Invalid/blocked URLs passed to `chrome.navigation.navigate(...)` should throw an exception rather
   than silently doing nothing. The embedder is expected to apply its scheme allowlist (e.g.
   reject `javascript:`).
@@ -268,9 +282,12 @@ The chrome bridge is privileged, but it still validates inputs:
   etc) should generally **not** throw. They should be surfaced via state/events (for example via an
   `error` field in `chrome.getState()` or via a `chrome-navigation`/`chrome-state` event).
 
-The chrome bridge is primarily **command-oriented**. Chrome pages should not rely on return values;
-instead, treat calls as “fire-and-forget” and reflect resulting state changes via events/state
-snapshot APIs.
+The chrome bridge is primarily **command-oriented**.
+
+- Most methods return `undefined` and should be treated as “fire-and-forget”.
+- Snapshot APIs (like `chrome.tabs.getAll()` and optional `chrome.getState()`) return plain
+  objects/arrays.
+- `chrome.tabs.newTab()` returns the allocated tab id.
 
 ---
 
