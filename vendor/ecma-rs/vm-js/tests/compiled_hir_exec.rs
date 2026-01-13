@@ -2865,6 +2865,34 @@ fn compiled_arrow_function_inherits_arguments_from_outer_function() -> Result<()
 }
 
 #[test]
+fn compiled_default_param_ref_to_later_param_throws_tdz_error() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(a = b, b = 1) { return a; }
+      let out = 'no';
+      try { f(); } catch (e) { out = e.message; }
+      out
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(
+    rt.heap().get_string(s)?.to_utf8_lossy(),
+    "Cannot access 'b' before initialization"
+  );
+  Ok(())
+}
+
+#[test]
 fn compiled_for_of_assigns_to_member_target() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
