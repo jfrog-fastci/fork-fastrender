@@ -502,6 +502,33 @@ impl FrameNode {
     Ok(())
   }
 
+  /// Check whether an out-of-process iframe navigation is allowed by the embedding document's
+  /// policy and CSP.
+  ///
+  /// This is a convenience wrapper for browser-side enforcement that mirrors the in-process
+  /// `ResourceContext::check_allowed(ResourceKind::Document, ...)` behavior:
+  /// - document policy (mixed content / `file://` from HTTP(S)) is evaluated first
+  /// - then CSP `frame-src` is evaluated
+  pub fn check_iframe_navigation(&self, candidate: &str) -> Result<Url, String> {
+    self.check_document_policy(candidate)?;
+    self.check_frame_src(candidate)
+  }
+
+  /// Check whether an out-of-process iframe navigation is allowed by the embedding document's
+  /// policy and CSP, taking redirects into account.
+  ///
+  /// This mirrors the in-process `ResourceContext::check_allowed_with_final` behavior for iframe
+  /// loads: callers should run a pre-navigation check for the requested URL, and then a second
+  /// check after the child process reports its committed/final URL.
+  pub fn check_iframe_navigation_with_final(
+    &self,
+    requested_url: &str,
+    final_url: Option<&str>,
+  ) -> Result<Url, String> {
+    self.check_document_policy_with_final(requested_url, final_url)?;
+    self.check_frame_src_with_final(requested_url, final_url)
+  }
+
   /// Check whether a child-frame navigation is allowed by the parent CSP (`frame-src`).
   ///
   /// Returns the resolved child URL on success. On failure, returns a diagnostic string matching the
@@ -850,5 +877,20 @@ mod tests {
       )
       .expect_err("expected file:// policy to reject final redirected URL");
     assert_eq!(err, "Blocked file:// resource from HTTP(S) document");
+  }
+
+  #[test]
+  fn iframe_navigation_combines_policy_and_csp() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://example.com/".to_string(),
+      vec!["frame-src *".to_string()],
+    );
+    frame.set_resource_policy(false, true);
+
+    let err = frame
+      .check_iframe_navigation("http://example.com/insecure")
+      .expect_err("expected mixed-content policy to win over CSP allowlist");
+    assert_eq!(err, "Blocked mixed HTTP content from HTTPS document");
   }
 }
