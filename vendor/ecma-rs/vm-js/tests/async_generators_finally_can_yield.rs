@@ -8,6 +8,13 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn value_to_string(rt: &JsRuntime, value: Value) -> String {
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  rt.heap.get_string(s).unwrap().to_utf8_lossy()
+}
+
 fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
   match err {
     VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
@@ -46,7 +53,7 @@ fn async_generator_return_triggers_finally_and_finally_can_yield() -> Result<(),
 
   // Ensure we don't leak queued microtasks even if this test fails.
   let result: Result<(), VmError> = (|| {
-    match rt.exec_script(
+    let value = match rt.exec_script(
       r#"
         var ok = "pending";
 
@@ -75,10 +82,11 @@ fn async_generator_return_triggers_finally_and_finally_can_yield() -> Result<(),
         ok
       "#,
     ) {
-      Ok(_) => {}
+      Ok(v) => v,
       Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
       Err(err) => return Err(err),
-    }
+    };
+    assert_eq!(value_to_string(&rt, value), "pending");
 
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
@@ -97,7 +105,7 @@ fn async_generator_throw_triggers_finally_and_finally_can_yield() -> Result<(), 
   let mut rt = new_runtime();
 
   let result: Result<(), VmError> = (|| {
-    match rt.exec_script(
+    let value = match rt.exec_script(
       r#"
         var ok = "pending";
 
@@ -136,10 +144,11 @@ fn async_generator_throw_triggers_finally_and_finally_can_yield() -> Result<(), 
         ok
       "#,
     ) {
-      Ok(_) => {}
+      Ok(v) => v,
       Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
       Err(err) => return Err(err),
-    }
+    };
+    assert_eq!(value_to_string(&rt, value), "pending");
 
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
