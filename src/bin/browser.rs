@@ -145,6 +145,67 @@ mod input_focus_helpers_tests {
   }
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy)]
+struct DrainBudget {
+  max_messages: usize,
+  max_duration: std::time::Duration,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrainStopReason {
+  Empty,
+  Disconnected,
+  Budget,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy)]
+struct DrainOutcome {
+  drained: usize,
+  stop_reason: DrainStopReason,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn drain_mpsc_receiver_with_budget<T>(
+  rx: &std::sync::mpsc::Receiver<T>,
+  budget: DrainBudget,
+  mut handle: impl FnMut(T),
+) -> DrainOutcome {
+  use std::sync::mpsc::TryRecvError;
+  let start = std::time::Instant::now();
+  let mut drained = 0usize;
+
+  loop {
+    if drained >= budget.max_messages || start.elapsed() >= budget.max_duration {
+      return DrainOutcome {
+        drained,
+        stop_reason: DrainStopReason::Budget,
+      };
+    }
+
+    match rx.try_recv() {
+      Ok(msg) => {
+        drained = drained.saturating_add(1);
+        handle(msg);
+      }
+      Err(TryRecvError::Empty) => {
+        return DrainOutcome {
+          drained,
+          stop_reason: DrainStopReason::Empty,
+        };
+      }
+      Err(TryRecvError::Disconnected) => {
+        return DrainOutcome {
+          drained,
+          stop_reason: DrainStopReason::Disconnected,
+        };
+      }
+    }
+  }
+}
+
 // Keep URL resolution helpers available to both the windowed browser (feature = `browser_ui`) and
 // unit tests (which often run without the full winit/wgpu/egui stack).
 #[cfg(any(test, feature = "browser_ui"))]
@@ -562,6 +623,138 @@ mod browser_accesskit_adapter_compile_tests {
   #[test]
   fn browser_links_accesskit_winit_adapter_when_browser_ui_enabled() {
     let _ = std::any::TypeId::of::<accesskit_winit::Adapter>();
+  }
+}
+
+#[cfg(test)]
+mod drain_mpsc_receiver_with_budget_tests {
+  use super::*;
+
+  #[test]
+  fn stops_after_max_messages_and_allows_resuming() {
+    let (tx, rx) = std::sync::mpsc::channel::<usize>();
+    for value in 0..10usize {
+      tx.send(value).unwrap();
+    }
+
+    let mut seen = Vec::new();
+    let budget = DrainBudget {
+      max_messages: 4,
+      max_duration: std::time::Duration::from_secs(10),
+    };
+
+    let outcome1 = drain_mpsc_receiver_with_budget(&rx, budget, |v| seen.push(v));
+    assert_eq!(outcome1.drained, 4);
+    assert_eq!(outcome1.stop_reason, DrainStopReason::Budget);
+
+    let outcome2 = drain_mpsc_receiver_with_budget(&rx, budget, |v| seen.push(v));
+    assert_eq!(outcome2.drained, 4);
+    assert_eq!(outcome2.stop_reason, DrainStopReason::Budget);
+
+    let outcome3 = drain_mpsc_receiver_with_budget(&rx, budget, |v| seen.push(v));
+    assert_eq!(outcome3.drained, 2);
+    assert_eq!(outcome3.stop_reason, DrainStopReason::Empty);
+
+    assert_eq!(seen, (0..10).collect::<Vec<_>>());
+  }
+
+  #[test]
+  fn returns_empty_when_queue_drained_but_channel_still_open() {
+    let (tx, rx) = std::sync::mpsc::channel::<usize>();
+    tx.send(1).unwrap();
+    tx.send(2).unwrap();
+
+    let mut count = 0usize;
+    let outcome = drain_mpsc_receiver_with_budget(
+      &rx,
+      DrainBudget {
+        max_messages: 10,
+        max_duration: std::time::Duration::from_secs(10),
+      },
+      |_| count += 1,
+    );
+
+    assert_eq!(count, 2);
+    assert_eq!(outcome.drained, 2);
+    assert_eq!(outcome.stop_reason, DrainStopReason::Empty);
+
+    // Keep `tx` alive; receiver should still report empty.
+    let outcome = drain_mpsc_receiver_with_budget(
+      &rx,
+      DrainBudget {
+        max_messages: 10,
+        max_duration: std::time::Duration::from_secs(10),
+      },
+      |_| unreachable!(),
+    );
+    assert_eq!(outcome.drained, 0);
+    assert_eq!(outcome.stop_reason, DrainStopReason::Empty);
+  }
+
+  #[test]
+  fn returns_disconnected_when_sender_dropped_and_queue_drained() {
+    let (tx, rx) = std::sync::mpsc::channel::<usize>();
+    tx.send(1).unwrap();
+    tx.send(2).unwrap();
+    drop(tx);
+
+    let mut collected = Vec::new();
+    let outcome = drain_mpsc_receiver_with_budget(
+      &rx,
+      DrainBudget {
+        max_messages: 10,
+        max_duration: std::time::Duration::from_secs(10),
+      },
+      |v| collected.push(v),
+    );
+
+    assert_eq!(collected, vec![1, 2]);
+    assert_eq!(outcome.drained, 2);
+    assert_eq!(outcome.stop_reason, DrainStopReason::Disconnected);
+  }
+
+  #[test]
+  fn respects_zero_budgets() {
+    let (tx, rx) = std::sync::mpsc::channel::<usize>();
+    for value in 0..3usize {
+      tx.send(value).unwrap();
+    }
+
+    let mut drained = Vec::new();
+    let outcome = drain_mpsc_receiver_with_budget(
+      &rx,
+      DrainBudget {
+        max_messages: 0,
+        max_duration: std::time::Duration::from_secs(10),
+      },
+      |v| drained.push(v),
+    );
+    assert_eq!(drained, Vec::<usize>::new());
+    assert_eq!(outcome.drained, 0);
+    assert_eq!(outcome.stop_reason, DrainStopReason::Budget);
+
+    let outcome = drain_mpsc_receiver_with_budget(
+      &rx,
+      DrainBudget {
+        max_messages: 10,
+        max_duration: std::time::Duration::from_nanos(0),
+      },
+      |v| drained.push(v),
+    );
+    assert_eq!(outcome.drained, 0);
+    assert_eq!(outcome.stop_reason, DrainStopReason::Budget);
+
+    let outcome = drain_mpsc_receiver_with_budget(
+      &rx,
+      DrainBudget {
+        max_messages: 10,
+        max_duration: std::time::Duration::from_secs(10),
+      },
+      |v| drained.push(v),
+    );
+    assert_eq!(outcome.drained, 3);
+    assert_eq!(outcome.stop_reason, DrainStopReason::Empty);
+    assert_eq!(drained, vec![0, 1, 2]);
   }
 }
 
@@ -1592,6 +1785,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   fastrender::ui::about_pages::set_about_snapshot_from_stores(&bookmarks, &history);
 
   use std::collections::HashMap;
+  use std::sync::atomic::{AtomicBool, Ordering};
+  use std::sync::Arc;
   use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
   let mut session_autosave =
     fastrender::ui::session_autosave::SessionAutosave::new(session_path.clone());
@@ -1607,6 +1802,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   struct BrowserWindow {
     app: App,
     ui_rx: std::sync::mpsc::Receiver<fastrender::ui::WorkerToUi>,
+    worker_wake_pending: Arc<AtomicBool>,
     bridge_join: Option<std::thread::JoinHandle<()>>,
   }
 
@@ -1862,6 +2058,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     window_ids_by_index[idx] = Some(window_id);
 
     let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+    let worker_wake_pending = Arc::new(AtomicBool::new(false));
 
     // Worker → UI messages are forwarded through a small bridge thread so that we can keep the winit
     // event loop in `ControlFlow::Wait` (no busy polling), while still waking immediately when a new
@@ -1870,13 +2067,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       .name(format!("browser_worker_bridge_{window_id:?}"))
       .spawn({
         let event_loop_proxy = event_loop_proxy.clone();
+        let worker_wake_pending = Arc::clone(&worker_wake_pending);
         move || {
           while let Ok(msg) = worker_to_ui_rx.recv() {
             if ui_tx.send(msg).is_err() {
               break;
             }
-            // Ignore failures during shutdown (event loop already dropped).
-            let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+            // Coalesce wakes: the UI thread drains messages in batches so we only need one pending
+            // wake event per window.
+            if !worker_wake_pending.swap(true, Ordering::AcqRel) {
+              // Ignore failures during shutdown (event loop already dropped).
+              let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+            }
           }
         }
       })?;
@@ -1889,6 +2091,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       BrowserWindow {
         app,
         ui_rx,
+        worker_wake_pending,
         bridge_join: Some(bridge_join),
       },
     );
@@ -2089,27 +2292,54 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
       Event::UserEvent(UserEvent::WorkerWake(window_id)) => {
-        // Drain all pending worker messages. The bridge thread emits one wake event per message but
-        // draining here ensures we coalesce renders if multiple arrive in quick succession.
+        // Drain pending worker messages. This is time/message-budgeted so that under pathological
+        // message floods (e.g. debug-log spam) we don't monopolize the UI thread and starve input /
+        // resize / OS events.
         let mut request_redraw = false;
         let mut history_changed = false;
         let mut session_dirty = false;
+        let mut needs_follow_up_wake = false;
         if let Some(win) = windows.get_mut(&window_id) {
-          while let Ok(msg) = win.ui_rx.try_recv() {
-            session_dirty |= matches!(
-              &msg,
-              fastrender::ui::WorkerToUi::NavigationCommitted { .. }
-                | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
-                | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
-            );
+          // Clear the pending wake flag up-front so any messages that arrive while we're draining
+          // can schedule another wake (avoids getting stuck with messages in the queue but no wake
+          // event queued).
+          win.worker_wake_pending.store(false, Ordering::Release);
 
-            let result = win.app.handle_worker_message(msg);
-            request_redraw |= result.request_redraw;
-            history_changed |= result.history_changed;
-          }
+          let outcome = {
+            let ui_rx = &win.ui_rx;
+            let app = &mut win.app;
+            drain_mpsc_receiver_with_budget(
+              ui_rx,
+              DrainBudget {
+                max_messages: 512,
+                max_duration: std::time::Duration::from_millis(2),
+              },
+              |msg| {
+                session_dirty |= matches!(
+                  &msg,
+                  fastrender::ui::WorkerToUi::NavigationCommitted { .. }
+                    | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
+                    | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
+                );
+
+                let result = app.handle_worker_message(msg);
+                request_redraw |= result.request_redraw;
+                history_changed |= result.history_changed;
+              },
+            )
+          };
+          needs_follow_up_wake = outcome.stop_reason == DrainStopReason::Budget;
 
           if request_redraw {
             win.app.window.request_redraw();
+          }
+
+          if needs_follow_up_wake {
+            // We ran out of budget; queue another wake event so the remaining messages are drained
+            // soon, but only after returning control to the event loop.
+            if !win.worker_wake_pending.swap(true, Ordering::AcqRel) {
+              let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+            }
           }
         }
 
@@ -2224,16 +2454,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         let window_id = app.window.id();
         let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+        let worker_wake_pending = Arc::new(AtomicBool::new(false));
         let bridge_join = match std::thread::Builder::new()
           .name(format!("browser_worker_bridge_{window_id:?}"))
           .spawn({
             let event_loop_proxy = event_loop_proxy.clone();
+            let worker_wake_pending = Arc::clone(&worker_wake_pending);
             move || {
               while let Ok(msg) = worker_to_ui_rx.recv() {
                 if ui_tx.send(msg).is_err() {
                   break;
                 }
-                let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+                if !worker_wake_pending.swap(true, Ordering::AcqRel) {
+                  let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+                }
               }
             }
           }) {
@@ -2250,6 +2484,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           BrowserWindow {
             app,
             ui_rx,
+            worker_wake_pending,
             bridge_join: Some(bridge_join),
           },
         );
@@ -2335,16 +2570,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         let window_id = app.window.id();
         let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+        let worker_wake_pending = Arc::new(AtomicBool::new(false));
         let bridge_join = match std::thread::Builder::new()
           .name(format!("browser_worker_bridge_{window_id:?}"))
           .spawn({
             let event_loop_proxy = event_loop_proxy.clone();
+            let worker_wake_pending = Arc::clone(&worker_wake_pending);
             move || {
               while let Ok(msg) = worker_to_ui_rx.recv() {
                 if ui_tx.send(msg).is_err() {
                   break;
                 }
-                let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+                if !worker_wake_pending.swap(true, Ordering::AcqRel) {
+                  let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+                }
               }
             }
           }) {
@@ -2361,6 +2600,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           BrowserWindow {
             app,
             ui_rx,
+            worker_wake_pending,
             bridge_join: Some(bridge_join),
           },
         );
