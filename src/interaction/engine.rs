@@ -3075,6 +3075,206 @@ fn select_control_snapshot_from_box_tree(
   None
 }
 
+fn select_control_snapshot_from_dom(index: &DomIndexMut, select_node_id: usize) -> Option<SelectControl> {
+  let select_node = index.node(select_node_id)?;
+  if !select_node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
+  {
+    return None;
+  }
+
+  fn collect_descendant_text_content(node: &DomNode) -> String {
+    let mut text = String::new();
+    let mut stack: Vec<&DomNode> = vec![node];
+    while let Some(node) = stack.pop() {
+      match &node.node_type {
+        DomNodeType::Text { content } => text.push_str(content),
+        DomNodeType::Element { tag_name, namespace, .. } => {
+          if tag_name.eq_ignore_ascii_case("script")
+            && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE || namespace == crate::dom::SVG_NAMESPACE)
+          {
+            continue;
+          }
+        }
+        _ => {}
+      }
+      for child in node.children.iter().rev() {
+        if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
+          continue;
+        }
+        stack.push(child);
+      }
+    }
+    text
+  }
+
+  fn option_text(node: &DomNode) -> String {
+    crate::dom::strip_and_collapse_ascii_whitespace(&collect_descendant_text_content(node))
+  }
+
+  fn option_label(node: &DomNode) -> String {
+    if let Some(label) = node
+      .get_attribute_ref("label")
+      .filter(|label| !label.is_empty())
+    {
+      return label.to_string();
+    }
+    option_text(node)
+  }
+
+  fn option_value(node: &DomNode) -> String {
+    if let Some(value) = node.get_attribute_ref("value") {
+      return value.to_string();
+    }
+    option_text(node)
+  }
+
+  let multiple = select_node.get_attribute_ref("multiple").is_some();
+  let size = crate::dom::select_effective_size(select_node);
+
+  // Pre-order traversal ids form contiguous ranges, so the select subtree is `[select_id, end]`.
+  let mut end = select_node_id;
+  for id in (select_node_id + 1)..index.id_to_node.len() {
+    if is_ancestor_or_self(index, select_node_id, id) {
+      end = id;
+    } else {
+      break;
+    }
+  }
+
+  let mut items: Vec<SelectItem> = Vec::new();
+  let mut option_item_indices: Vec<usize> = Vec::new();
+
+  for id in (select_node_id + 1)..=end {
+    let Some(node) = index.node(id) else {
+      continue;
+    };
+    let Some(tag) = node.tag_name() else {
+      continue;
+    };
+
+    if tag.eq_ignore_ascii_case("option") {
+      let mut in_optgroup = false;
+      let mut optgroup_disabled = false;
+      let mut ancestor = *index.parent.get(id).unwrap_or(&0);
+      while ancestor != 0 && ancestor != select_node_id {
+        if index.node(ancestor).is_some_and(|node| {
+          node
+            .tag_name()
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("optgroup"))
+        }) {
+          in_optgroup = true;
+          if index
+            .node(ancestor)
+            .and_then(|node| node.get_attribute_ref("disabled"))
+            .is_some()
+          {
+            optgroup_disabled = true;
+          }
+        }
+        ancestor = *index.parent.get(ancestor).unwrap_or(&0);
+      }
+
+      let disabled = optgroup_disabled || node.get_attribute_ref("disabled").is_some();
+      let idx = items.len();
+      items.push(SelectItem::Option {
+        node_id: id,
+        label: option_label(node),
+        value: option_value(node),
+        selected: node.get_attribute_ref("selected").is_some(),
+        disabled,
+        in_optgroup,
+      });
+      option_item_indices.push(idx);
+      continue;
+    }
+
+    if tag.eq_ignore_ascii_case("optgroup") {
+      let mut disabled = node.get_attribute_ref("disabled").is_some();
+      let mut ancestor = *index.parent.get(id).unwrap_or(&0);
+      while !disabled && ancestor != 0 && ancestor != select_node_id {
+        if index.node(ancestor).is_some_and(|node| {
+          node
+            .tag_name()
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("optgroup"))
+            && node.get_attribute_ref("disabled").is_some()
+        }) {
+          disabled = true;
+          break;
+        }
+        ancestor = *index.parent.get(ancestor).unwrap_or(&0);
+      }
+
+      let label = node
+        .get_attribute_ref("label")
+        .map(|label| label.to_string())
+        .unwrap_or_default();
+      items.push(SelectItem::OptGroupLabel { label, disabled });
+    }
+  }
+
+  let mut selected: Vec<usize> = Vec::new();
+  if multiple {
+    for &idx in option_item_indices.iter() {
+      if let SelectItem::Option {
+        selected: is_selected,
+        ..
+      } = &items[idx]
+      {
+        if *is_selected {
+          selected.push(idx);
+        }
+      }
+    }
+  } else {
+    let mut chosen: Option<usize> = None;
+    for &idx in option_item_indices.iter() {
+      if let SelectItem::Option {
+        selected: is_selected,
+        ..
+      } = &items[idx]
+      {
+        if *is_selected {
+          chosen = Some(idx);
+        }
+      }
+    }
+
+    if chosen.is_none() {
+      for &idx in option_item_indices.iter() {
+        if let SelectItem::Option { disabled, .. } = &items[idx] {
+          if !*disabled {
+            chosen = Some(idx);
+            break;
+          }
+        }
+      }
+    }
+
+    if chosen.is_none() {
+      chosen = option_item_indices.first().copied();
+    }
+
+    for &idx in option_item_indices.iter() {
+      if let Some(SelectItem::Option { selected, .. }) = items.get_mut(idx) {
+        *selected = Some(idx) == chosen;
+      }
+    }
+
+    if let Some(chosen) = chosen {
+      selected.push(chosen);
+    }
+  }
+
+  Some(SelectControl {
+    multiple,
+    size,
+    items: Arc::new(items),
+    selected,
+  })
+}
+
 fn textarea_control_snapshot_from_box_tree(
   box_tree: &BoxTree,
   textarea_node_id: usize,
@@ -6456,6 +6656,29 @@ impl InteractionEngine {
               kind,
             };
           }
+        } else if index.node(focused).is_some_and(is_select) {
+          let mut computed_disabled = false;
+          let control = match box_tree
+            .and_then(|box_tree| select_control_snapshot_from_box_tree(box_tree, focused))
+          {
+            Some((_, control, disabled, _)) => {
+              computed_disabled = disabled;
+              Some(control)
+            }
+            None => select_control_snapshot_from_dom(&index, focused),
+          };
+          if let Some(control) = control {
+            let disabled = is_disabled_or_inert(&index, focused) || computed_disabled;
+            if !disabled {
+              let is_dropdown = !control.multiple && control.size == 1;
+              if is_dropdown {
+                action = InteractionAction::OpenSelectDropdown {
+                  select_node_id: focused,
+                  control,
+                };
+              }
+            }
+          }
         } else if let Some(href) = index
           .node(focused)
           .filter(|node| is_anchor_with_href(node))
@@ -6573,6 +6796,29 @@ impl InteractionEngine {
               input_node_id: focused,
               kind,
             };
+          }
+        } else if index.node(focused).is_some_and(is_select) {
+          let mut computed_disabled = false;
+          let control = match box_tree
+            .and_then(|box_tree| select_control_snapshot_from_box_tree(box_tree, focused))
+          {
+            Some((_, control, disabled, _)) => {
+              computed_disabled = disabled;
+              Some(control)
+            }
+            None => select_control_snapshot_from_dom(&index, focused),
+          };
+          if let Some(control) = control {
+            let disabled = is_disabled_or_inert(&index, focused) || computed_disabled;
+            if !disabled {
+              let is_dropdown = !control.multiple && control.size == 1;
+              if is_dropdown {
+                action = InteractionAction::OpenSelectDropdown {
+                  select_node_id: focused,
+                  control,
+                };
+              }
+            }
           }
         } else if index.node(focused).is_some_and(is_checkbox_input) {
           if !node_is_disabled(&index, focused) {
@@ -6721,15 +6967,38 @@ impl InteractionEngine {
 
     let mut action = InteractionAction::None;
 
-    match key {
-      KeyAction::Enter => {
-        if node_or_ancestor_is_inert(&index, focused) {
-          // Inert subtrees are not interactive.
-        } else if let Some(href) = index
-          .node(focused)
-          .filter(|node| is_anchor_with_href(node))
-          .and_then(|node| node.get_attribute_ref("href"))
-        {
+      match key {
+        KeyAction::Enter => {
+          if node_or_ancestor_is_inert(&index, focused) {
+            // Inert subtrees are not interactive.
+          } else if index.node(focused).is_some_and(is_select) {
+            let mut computed_disabled = false;
+            let control = match box_tree
+              .and_then(|box_tree| select_control_snapshot_from_box_tree(box_tree, focused))
+            {
+              Some((_, control, disabled, _)) => {
+                computed_disabled = disabled;
+                Some(control)
+              }
+              None => select_control_snapshot_from_dom(&index, focused),
+            };
+            if let Some(control) = control {
+              let disabled = is_disabled_or_inert(&index, focused) || computed_disabled;
+              if !disabled {
+                let is_dropdown = !control.multiple && control.size == 1;
+                if is_dropdown {
+                  action = InteractionAction::OpenSelectDropdown {
+                    select_node_id: focused,
+                    control,
+                  };
+                }
+              }
+            }
+          } else if let Some(href) = index
+            .node(focused)
+            .filter(|node| is_anchor_with_href(node))
+            .and_then(|node| node.get_attribute_ref("href"))
+          {
           if let Some(resolved) = resolve_url(base_url, href) {
             if self.state.visited_links.insert(focused) {
               changed = true;
@@ -6814,15 +7083,38 @@ impl InteractionEngine {
             }
           }
         }
-      }
-      KeyAction::Space | KeyAction::ShiftSpace => {
-        if node_or_ancestor_is_inert(&index, focused) {
-          // Inert subtrees are not interactive.
-        } else if index.node(focused).is_some_and(is_checkbox_input) {
-          if !node_is_disabled(&index, focused) {
-            if let Some(node_mut) = index.node_mut(focused) {
-              let dom_changed = dom_mutation::toggle_checkbox(node_mut);
-              changed |= dom_changed;
+        }
+        KeyAction::Space | KeyAction::ShiftSpace => {
+          if node_or_ancestor_is_inert(&index, focused) {
+            // Inert subtrees are not interactive.
+          } else if index.node(focused).is_some_and(is_select) {
+            let mut computed_disabled = false;
+            let control = match box_tree
+              .and_then(|box_tree| select_control_snapshot_from_box_tree(box_tree, focused))
+            {
+              Some((_, control, disabled, _)) => {
+                computed_disabled = disabled;
+                Some(control)
+              }
+              None => select_control_snapshot_from_dom(&index, focused),
+            };
+            if let Some(control) = control {
+              let disabled = is_disabled_or_inert(&index, focused) || computed_disabled;
+              if !disabled {
+                let is_dropdown = !control.multiple && control.size == 1;
+                if is_dropdown {
+                  action = InteractionAction::OpenSelectDropdown {
+                    select_node_id: focused,
+                    control,
+                  };
+                }
+              }
+            }
+          } else if index.node(focused).is_some_and(is_checkbox_input) {
+            if !node_is_disabled(&index, focused) {
+              if let Some(node_mut) = index.node_mut(focused) {
+                let dom_changed = dom_mutation::toggle_checkbox(node_mut);
+                changed |= dom_changed;
               if dom_changed {
                 changed |= self.mark_user_validity(focused);
               }
