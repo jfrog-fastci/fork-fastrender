@@ -689,6 +689,13 @@ pub enum MacosSandboxError {
 /// This is a macOS-focused wrapper that:
 /// - selects sane defaults (strict by default on macOS),
 /// - returns a structured status that callers can treat as best-effort in dev or fail-closed in prod.
+///
+/// It also respects the cross-cutting debug escape hatches:
+/// - `FASTR_DISABLE_RENDERER_SANDBOX=1`
+/// - `FASTR_MACOS_RENDERER_SANDBOX=off`
+///
+/// And the profile override (while still keeping sandboxing enabled):
+/// - `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts` (and aliases)
 pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandboxError> {
   // Ensure the common debug escape hatches (used by tests and local debugging) also affect this
   // higher-level macOS-only API. The underlying Seatbelt wrapper in `macos.rs` will skip sandboxing
@@ -1177,6 +1184,43 @@ mod tests {
         .env(CHILD_ENV, "1")
         // Force the relaxed system-fonts profile via the developer override.
         .env(super::super::macos::ENV_MACOS_RENDERER_SANDBOX, "system-fonts")
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .output()
+        .expect("spawn sandbox override child process");
+
+      assert!(
+        output.status.success(),
+        "sandbox override child should exit successfully (stdout={}, stderr={})",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+      );
+    }
+
+    #[test]
+    fn apply_macos_sandbox_from_env_reports_fonts_alias_override() {
+      const CHILD_ENV: &str = "FASTR_TEST_APPLY_MACOS_SANDBOX_OVERRIDE_FONTS_CHILD";
+
+      if std::env::var_os(CHILD_ENV).is_some() {
+        let status =
+          apply_macos_sandbox_from_env().expect("apply_macos_sandbox_from_env should not error");
+        match status {
+          MacosSandboxStatus::Applied { mode, .. } => {
+            assert_eq!(mode, MacosSandboxMode::Relaxed);
+          }
+          other => panic!("expected Applied status, got {other:?}"),
+        }
+        std::process::exit(0);
+      }
+
+      let exe = std::env::current_exe().expect("current test exe path");
+      let test_name =
+        "sandbox::tests::macos::apply_macos_sandbox_from_env_reports_fonts_alias_override";
+      let output = Command::new(exe)
+        .env(CHILD_ENV, "1")
+        // `fonts` is accepted as an alias for `system-fonts`.
+        .env(super::super::macos::ENV_MACOS_RENDERER_SANDBOX, "fonts")
         .arg("--exact")
         .arg(test_name)
         .arg("--nocapture")
