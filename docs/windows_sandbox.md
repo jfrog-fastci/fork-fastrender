@@ -417,3 +417,47 @@ Windows-only tests that encode the intended boundary:
 - Job object invariants (kill-on-close, process count): `crates/win-sandbox/tests/job_limits.rs`
 - Mitigation policy verification: `crates/win-sandbox/src/lib.rs` tests +
   `crates/win-sandbox/src/mitigations.rs::verify_renderer_mitigations_current_process`
+
+## Checklist for Windows sandbox changes (use in reviews)
+
+The Windows renderer sandbox is security-critical. When changing any of the spawn/sandbox code, be
+explicit about which layer you are modifying and why.
+
+- **Are you using the right spawner?**
+  - The full sandbox is `fastrender::sandbox::windows::spawn_sandboxed(...)`.
+  - Do not spawn the renderer with raw `std::process::Command` unless you are intentionally running
+    unsandboxed (debugging), and even then prefer routing through the existing escape hatches so the
+    run is obviously insecure.
+
+- **AppContainer (preferred mode)**
+  - Must remain **zero capabilities** (`CapabilityCount = 0`, `Capabilities = NULL`) unless there is
+    a strong security justification.
+  - If you add a capability, treat it as a security boundary change:
+    - update this doc
+    - add/adjust tests
+    - document what new host access it grants (network, device access, etc.)
+
+- **Job object**
+  - Must keep `KILL_ON_JOB_CLOSE` and `ACTIVE_PROCESS_LIMIT=1`.
+  - Must not enable breakaway (`JOB_OBJECT_LIMIT_BREAKAWAY_OK` / `SILENT_BREAKAWAY_OK`).
+  - If the child cannot be assigned to the Job (nested-job restrictions), treat it as a sandbox
+    degradation (today it’s a warning); consider whether the caller should fail-closed in the future.
+
+- **Handle inheritance**
+  - Must use `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` for an explicit allowlist.
+  - Any new inherited handle should be reviewed as a capability:
+    - can it be used to reach the filesystem/network/other processes?
+    - does it allow duplicating privileged handles from the broker?
+  - If you need to pass a handle, add it to the allowlist and extend the handle inheritance tests.
+
+- **Mitigations**
+  - If you change the mitigation policy bitmask, update:
+    - `crates/win-sandbox/src/mitigations.rs` (bitmask + verifier)
+    - this doc (tradeoffs + exact flags)
+  - If mitigations are wired into the main renderer spawn path (`src/sandbox/windows.rs`), ensure
+    the “repo reality” section stays accurate and add a regression test verifying mitigations are
+    active in the spawned child.
+
+- **Fallback mode**
+  - Never assume fallback blocks network. Design the architecture so the renderer is safe even if
+    fallback mode still has outbound network access.
