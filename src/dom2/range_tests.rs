@@ -196,7 +196,8 @@ fn range_endpoints_update_after_replace_data_deletion_processing_instruction() {
 
 #[test]
 fn range_clone_extract_does_not_leak_persistent_subranges() {
-  let html = "<!doctype html><div id=root><b id=b>hello</b><span id=mid>mid</span><i id=i>world</i></div>";
+  let html =
+    "<!doctype html><div id=root><b id=b>hello</b><span id=mid>mid</span><i id=i>world</i></div>";
 
   // cloneContents should not allocate persistent subranges.
   {

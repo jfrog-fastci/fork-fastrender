@@ -33631,20 +33631,9 @@ fn text_split_text_native(
   let node_key = platform.require_text_handle(scope.heap(), Value::Object(text_obj))?;
   let document_obj = node_wrapper_document_obj(scope, text_obj, node_key.node_id)?;
 
-  // WebIDL `unsigned long` conversion.
-  // https://webidl.spec.whatwg.org/#es-unsigned-long
+  // WebIDL `unsigned long` argument.
   let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let mut n = scope.heap_mut().to_number(offset_value)?;
-  if !n.is_finite() || n.is_nan() {
-    n = 0.0;
-  }
-  let n = n.trunc();
-  let two32 = 4_294_967_296.0_f64;
-  let mut n_mod = n % two32;
-  if n_mod < 0.0 {
-    n_mod += two32;
-  }
-  let offset = n_mod as u32 as usize;
+  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
 
   let mut dom_ptr = if is_host_document_id(vm, node_key.document_id) {
     dom_ptr_for_event_registry(host).ok_or(VmError::TypeError("Illegal invocation"))?

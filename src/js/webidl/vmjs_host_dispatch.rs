@@ -3515,7 +3515,6 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
         }
       }
-
       ("CharacterData", "data", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
         let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
@@ -3762,6 +3761,57 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
         match result {
           Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Text", "splitText", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let offset = to_uint32_f64(scope.heap_mut().to_number(offset_value)?) as usize;
+
+        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let parent_id = match dom.parent(node_id) {
+              Ok(v) => v,
+              Err(err) => return (Err(err), false),
+            };
+            match dom.split_text(node_id, offset) {
+              Ok(new_id) => (Ok((new_id, parent_id)), parent_id.is_some()),
+              Err(err) => (Err(err), false),
+            }
+          }))
+        })?;
+
+        match result {
+          Ok((new_id, parent_id)) => {
+            if let Some(parent_id) = parent_id {
+              if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+                .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+              {
+                self.sync_cached_child_nodes_for_wrapper(
+                  vm,
+                  scope,
+                  parent_wrapper,
+                  parent_id,
+                  document_id,
+                )?;
+              }
+            }
+
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+              scope,
+              document_id,
+              new_id,
+              DomInterface::Text,
+            )?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
       }

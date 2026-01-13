@@ -1431,6 +1431,7 @@ impl Document {
     parent: NodeId,
     index: usize,
   ) {
+    // 7.2: Move start boundary points that were inside the split tail.
     for range in self.ranges.values_mut() {
       if range.start.node == node && range.start.offset > offset {
         range.start.node = new_node;
@@ -1438,6 +1439,7 @@ impl Document {
       }
     }
 
+    // 7.3: Move end boundary points that were inside the split tail.
     for range in self.ranges.values_mut() {
       if range.end.node == node && range.end.offset > offset {
         range.end.node = new_node;
@@ -1451,12 +1453,14 @@ impl Document {
     // matches Range boundary-point offset semantics.
     let insertion_offset = index.saturating_add(1);
 
+    // 7.4: Shift parent start boundary points that were immediately after the split node.
     for range in self.ranges.values_mut() {
       if range.start.node == parent && range.start.offset == insertion_offset {
         range.start.offset = range.start.offset.saturating_add(1);
       }
     }
 
+    // 7.5: Shift parent end boundary points that were immediately after the split node.
     for range in self.ranges.values_mut() {
       if range.end.node == parent && range.end.offset == insertion_offset {
         range.end.offset = range.end.offset.saturating_add(1);
