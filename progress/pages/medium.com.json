@@ -14,31 +14,32 @@
     "layout": 8.769792835868717,
     "paint": 105.5244302602172
   },
-  "notes": "Medium is behind Cloudflare bot protection (\"Just a moment...\" / `__cf_chl_*` challenge). Cached HTML snapshots can end up being the Cloudflare interstitial (tiny DOM + display list) rather than the real homepage, and the content can vary depending on whether the challenge was passed at capture time. That makes the stored Chrome accuracy diff unreliable (baseline/render may correspond to different captured content). Treat this page as \"good\" for now; remaining diffs are expected from the interstitial/baseline mismatch rather than a specific renderer bug.",
+  "notes": "Medium is behind Cloudflare bot protection (the committed fixture is the Cloudflare interstitial rather than the real homepage). Live captures can vary (homepage vs bot-check content), so the progress accuracy is intentionally computed from the committed offline fixture (`tests/pages/fixtures/medium.com/index.html`) and a Chrome baseline render of that fixture (JS disabled) to keep the metrics stable. Remaining diffs vs Chrome are primarily due to non-critical rendering gaps: text rasterization parity with Chrome/Skia (hinting/AA/metrics) and rounded-corner anti-aliasing (e.g. the \"Get started\" button edge).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 96804,
-    "diff_percent": 10.0838,
-    "perceptual": 0.3316,
+    "diff_pixels": 66376,
+    "diff_percent": 6.9142,
+    "perceptual": 0.119,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 1047,
-      "y": 18,
+      "x": 1045,
+      "y": 19,
       "baseline_rgba": [
-        247,
-        244,
-        237,
+        229,
+        226,
+        220,
         255
       ],
       "rendered_rgba": [
-        205,
-        203,
-        197,
+        195,
+        193,
+        187,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "910bb27fb383468a77d8b7f118d6ffa72f60cbcb"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,
