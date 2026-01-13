@@ -88,6 +88,32 @@ fn regexp_valid_character_class_range_still_matches() {
 }
 
 #[test]
+fn regexp_prototype_unicode_accessor_basics() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var desc = Object.getOwnPropertyDescriptor(RegExp.prototype, "unicode");
+        var ok =
+          desc !== undefined &&
+          desc.enumerable === false &&
+          desc.configurable === true &&
+          typeof desc.get === "function" &&
+          desc.set === undefined &&
+          desc.get.name === "get unicode" &&
+          desc.get.length === 0 &&
+          /a/u.unicode === true &&
+          /a/.unicode === false &&
+          (function () { try { desc.get.call(1); return false; } catch (e) { return e.name === "TypeError"; } })() &&
+          (function () { try { return desc.get.call(RegExp.prototype) === undefined; } catch (e) { return false; } })();
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn regexp_legacy_octal_escape_without_captures() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"new RegExp("\\1").exec("\u0001")[0]"#).unwrap();

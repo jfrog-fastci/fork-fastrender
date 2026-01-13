@@ -13523,7 +13523,7 @@ pub fn regexp_prototype_dot_all_get(
   regexp_prototype_flag_get(vm, scope, this, b's' as u16)
 }
 
-/// `get RegExp.prototype.unicode` (ECMA-262).
+/// `get RegExp.prototype.unicode` (ECMA-262 21.2.5.15).
 pub fn regexp_prototype_unicode_get(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
