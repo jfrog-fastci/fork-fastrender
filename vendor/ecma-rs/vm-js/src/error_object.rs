@@ -50,10 +50,16 @@ pub fn new_error(
   let message_value = scope.alloc_string(message)?;
   scope.push_root(Value::String(message_value))?;
 
-  let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
+  // Root property keys: `define_property` can allocate and trigger GC, and GC does not see Rust
+  // stack locals unless they are in the root set.
+  let name_key_s = scope.alloc_string("name")?;
+  scope.push_root(Value::String(name_key_s))?;
+  let name_key = PropertyKey::from_string(name_key_s);
   scope.define_property(err, name_key, data_desc(Value::String(name_value)))?;
 
-  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+  let message_key_s = scope.alloc_string("message")?;
+  scope.push_root(Value::String(message_key_s))?;
+  let message_key = PropertyKey::from_string(message_key_s);
   scope.define_property(err, message_key, data_desc(Value::String(message_value)))?;
 
   Ok(Value::Object(err))
