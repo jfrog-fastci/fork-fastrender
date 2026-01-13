@@ -34,7 +34,7 @@ use crate::style::defaults::parse_color_attribute;
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
 use crate::style::float::Float;
-use crate::style::media::MediaQuery;
+use crate::style::media::{MediaContext, MediaQuery, MediaType, Scripting};
 use crate::style::position::Position;
 use crate::style::types::Direction;
 use crate::style::types::FontStyle;
@@ -133,7 +133,7 @@ fn srcset_from_override_resolution(
 use crate::style::cascade::StyledNode;
 
 /// Options that control how the box tree is generated from styled DOM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BoxGenerationOptions {
   /// Compatibility profile controlling whether site-specific heuristics are enabled.
   pub compat_profile: CompatProfile,
@@ -150,6 +150,20 @@ pub struct BoxGenerationOptions {
   /// `<noscript>`) are suppressed from box generation so fallback markup does not appear in the
   /// rendered output.
   pub dom_scripting_enabled: bool,
+
+  /// Viewport size in CSS pixels used to evaluate media queries in box generation.
+  ///
+  /// This is currently used for `<video>/<audio>` `<source media="...">` selection.
+  ///
+  /// When `None`, media conditions are treated as matching so callers that do not provide viewport
+  /// information (e.g. unit tests) retain backwards-compatible behavior.
+  pub viewport: Option<Size>,
+
+  /// Device pixel ratio used when evaluating media queries.
+  pub device_pixel_ratio: f32,
+
+  /// Media type used when evaluating media queries (e.g. screen vs print).
+  pub media_type: MediaType,
 }
 
 impl Default for BoxGenerationOptions {
@@ -158,6 +172,9 @@ impl Default for BoxGenerationOptions {
       compat_profile: CompatProfile::Standards,
       enable_footnote_floats: false,
       dom_scripting_enabled: false,
+      viewport: None,
+      device_pixel_ratio: 1.0,
+      media_type: MediaType::Screen,
     }
   }
 }
@@ -186,8 +203,48 @@ impl BoxGenerationOptions {
     self
   }
 
+  /// Sets the viewport size used for media query evaluation in box generation.
+  pub fn with_viewport(mut self, viewport: Size) -> Self {
+    self.viewport = Some(viewport);
+    self
+  }
+
+  /// Sets the device pixel ratio used for media query evaluation in box generation.
+  pub fn with_device_pixel_ratio(mut self, dpr: f32) -> Self {
+    self.device_pixel_ratio = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
+    self
+  }
+
+  /// Sets the media type used for media query evaluation in box generation.
+  pub fn with_media_type(mut self, media_type: MediaType) -> Self {
+    self.media_type = media_type;
+    self
+  }
+
   fn site_compat_hacks_enabled(&self) -> bool {
     self.compat_profile.site_compat_hacks_enabled()
+  }
+
+  fn media_context(&self) -> Option<MediaContext> {
+    let viewport = self.viewport?;
+    let scripting = if self.dom_scripting_enabled {
+      Scripting::Enabled
+    } else {
+      Scripting::None
+    };
+
+    let base = if self.media_type == MediaType::Print {
+      MediaContext::print(viewport.width, viewport.height)
+    } else {
+      MediaContext::screen(viewport.width, viewport.height).with_media_type(self.media_type)
+    };
+
+    Some(
+      base
+        .with_device_pixel_ratio(self.device_pixel_ratio)
+        .with_scripting(scripting)
+        .with_env_overrides(),
+    )
   }
 }
 
@@ -4952,6 +5009,7 @@ fn generate_boxes_for_styled_into(
               document_css,
               svg_document_css_style_element,
               picture_sources_for_img,
+              options,
               site_compat,
             ) {
               let popped = stack.pop();
@@ -7602,7 +7660,11 @@ fn media_src_is_unusable(src: &str) -> bool {
   false
 }
 
-fn media_src_from_source_children(styled: &StyledNode, kind: MediaElementKind) -> Option<String> {
+fn media_src_from_source_children(
+  styled: &StyledNode,
+  kind: MediaElementKind,
+  media_ctx: Option<&MediaContext>,
+) -> Option<String> {
   let preferred_prefix = match kind {
     MediaElementKind::Video => "video/",
     MediaElementKind::Audio => "audio/",
@@ -7625,6 +7687,19 @@ fn media_src_from_source_children(styled: &StyledNode, kind: MediaElementKind) -
       continue;
     }
 
+    if let Some(media_attr) = child.node.get_attribute_ref("media") {
+      let media_trimmed = trim_ascii_whitespace(media_attr);
+      if !media_trimmed.is_empty() {
+        if let Ok(queries) = MediaQuery::parse_list(media_trimmed) {
+          if let Some(media_ctx) = media_ctx {
+            if !media_ctx.evaluate_list(&queries) {
+              continue;
+            }
+          }
+        }
+      }
+    }
+
     if first_any.is_none() {
       first_any = Some(src_trimmed.to_string());
     }
@@ -7645,7 +7720,11 @@ fn media_src_from_source_children(styled: &StyledNode, kind: MediaElementKind) -
   first_any
 }
 
-fn effective_media_src(styled: &StyledNode, kind: MediaElementKind) -> String {
+fn effective_media_src(
+  styled: &StyledNode,
+  kind: MediaElementKind,
+  media_ctx: Option<&MediaContext>,
+) -> String {
   let src = styled
     .node
     .get_attribute_ref("src")
@@ -7655,7 +7734,7 @@ fn effective_media_src(styled: &StyledNode, kind: MediaElementKind) -> String {
     return src.to_string();
   }
 
-  media_src_from_source_children(styled, kind).unwrap_or_default()
+  media_src_from_source_children(styled, kind, media_ctx).unwrap_or_default()
 }
 
 fn parse_html_dimension_attr(raw: Option<&str>) -> Option<f32> {
@@ -7700,6 +7779,7 @@ fn create_replaced_box_from_styled(
   document_css: &str,
   svg_document_css_style_element: Option<&Arc<str>>,
   mut picture_sources: Vec<PictureSource>,
+  options: &BoxGenerationOptions,
   site_compat: bool,
 ) -> Option<BoxNode> {
   let tag = styled.node.tag_name().unwrap_or("img");
@@ -7774,7 +7854,8 @@ fn create_replaced_box_from_styled(
       picture_sources,
     }
   } else if tag.eq_ignore_ascii_case("video") {
-    let src = effective_media_src(styled, MediaElementKind::Video);
+    let media_ctx = options.media_context();
+    let src = effective_media_src(styled, MediaElementKind::Video, media_ctx.as_ref());
     let mut poster = styled
       .node
       .get_attribute_ref("poster")
@@ -7796,7 +7877,8 @@ fn create_replaced_box_from_styled(
       controls,
     }
   } else if tag.eq_ignore_ascii_case("audio") {
-    let src = effective_media_src(styled, MediaElementKind::Audio);
+    let media_ctx = options.media_context();
+    let src = effective_media_src(styled, MediaElementKind::Audio, media_ctx.as_ref());
     ReplacedType::Audio { src }
   } else if tag.eq_ignore_ascii_case("canvas") {
     ReplacedType::Canvas

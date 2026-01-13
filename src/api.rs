@@ -13380,7 +13380,10 @@ impl FastRender {
     let box_gen_options = self
       .box_generation_options()
       .with_dom_scripting_enabled(dom_scripting_enabled)
-      .with_footnote_floats(!page_rules.is_empty());
+      .with_footnote_floats(!page_rules.is_empty())
+      .with_viewport(viewport_size)
+      .with_device_pixel_ratio(self.device_pixel_ratio)
+      .with_media_type(media_type);
     let box_gen_start = timings_enabled.then(Instant::now);
     record_stage(StageHeartbeat::BoxTree);
     let mut box_tree = {

@@ -3107,7 +3107,15 @@ fn replaced_media_defaults_to_300_by_150() {
       }
     }
     let box_node =
-      create_replaced_box_from_styled(&styled, style.clone(), "", None, Vec::new(), false)
+      create_replaced_box_from_styled(
+        &styled,
+        style.clone(),
+        "",
+        None,
+        Vec::new(),
+        &BoxGenerationOptions::default(),
+        false,
+      )
         .expect("expected replaced box");
     match &box_node.box_type {
       BoxType::Replaced(replaced) => {
@@ -3156,7 +3164,15 @@ fn video_poster_falls_back_to_gnt_gl_ps_when_site_compat_enabled() {
   }
 
   let box_node =
-    create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), true)
+    create_replaced_box_from_styled(
+      &styled,
+      default_style(),
+      "",
+      None,
+      Vec::new(),
+      &BoxGenerationOptions::default(),
+      true,
+    )
       .expect("expected replaced box");
   match &box_node.box_type {
     BoxType::Replaced(replaced) => match &replaced.replaced_type {
@@ -3180,7 +3196,15 @@ fn video_poster_does_not_fall_back_to_gnt_gl_ps_when_site_compat_disabled() {
   }
 
   let box_node =
-    create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), false)
+    create_replaced_box_from_styled(
+      &styled,
+      default_style(),
+      "",
+      None,
+      Vec::new(),
+      &BoxGenerationOptions::default(),
+      false,
+    )
       .expect("expected replaced box");
   match &box_node.box_type {
     BoxType::Replaced(replaced) => match &replaced.replaced_type {
@@ -3356,6 +3380,75 @@ fn audio_src_prefers_source_type_prefix() {
   }
 
   assert_eq!(find_audio_src(&box_tree.root).as_deref(), Some("right.ogg"));
+}
+
+#[test]
+fn video_src_respects_source_media_queries_with_viewport_option() {
+  use crate::css::types::StyleSheet;
+
+  let html = "<html><body><video>
+    <source src=\"wide.mp4\" media=\"(min-width: 600px)\">
+    <source src=\"fallback.mp4\">
+  </video></body></html>";
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let stylesheet = StyleSheet::new();
+
+  let styled_narrow =
+    apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(500.0, 600.0));
+  let options_narrow = BoxGenerationOptions::default().with_viewport(Size::new(500.0, 600.0));
+  let tree_narrow =
+    super::generate_box_tree_with_anonymous_fixup_with_options(&styled_narrow, &options_narrow)
+      .expect("box tree");
+  assert_eq!(
+    first_video_src_and_poster(&tree_narrow.root).map(|(src, _)| src).as_deref(),
+    Some("fallback.mp4")
+  );
+
+  let styled_wide = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let options_wide = BoxGenerationOptions::default().with_viewport(Size::new(800.0, 600.0));
+  let tree_wide =
+    super::generate_box_tree_with_anonymous_fixup_with_options(&styled_wide, &options_wide)
+      .expect("box tree");
+  assert_eq!(
+    first_video_src_and_poster(&tree_wide.root).map(|(src, _)| src).as_deref(),
+    Some("wide.mp4")
+  );
+}
+
+#[test]
+fn audio_src_respects_source_media_queries_with_viewport_option() {
+  use crate::css::types::StyleSheet;
+
+  let html = "<html><body><audio controls>
+    <source src=\"wide.mp3\" media=\"(min-width: 600px)\">
+    <source src=\"fallback.mp3\">
+  </audio></body></html>";
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let stylesheet = StyleSheet::new();
+
+  fn find_audio_src(node: &BoxNode) -> Option<String> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::Audio { src } = &repl.replaced_type {
+        return Some(src.clone());
+      }
+    }
+    node.children.iter().find_map(find_audio_src)
+  }
+
+  let styled_narrow =
+    apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(500.0, 600.0));
+  let options_narrow = BoxGenerationOptions::default().with_viewport(Size::new(500.0, 600.0));
+  let tree_narrow =
+    super::generate_box_tree_with_anonymous_fixup_with_options(&styled_narrow, &options_narrow)
+      .expect("box tree");
+  assert_eq!(find_audio_src(&tree_narrow.root).as_deref(), Some("fallback.mp3"));
+
+  let styled_wide = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let options_wide = BoxGenerationOptions::default().with_viewport(Size::new(800.0, 600.0));
+  let tree_wide =
+    super::generate_box_tree_with_anonymous_fixup_with_options(&styled_wide, &options_wide)
+      .expect("box tree");
+  assert_eq!(find_audio_src(&tree_wide.root).as_deref(), Some("wide.mp3"));
 }
 
 #[test]
