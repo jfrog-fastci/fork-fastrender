@@ -1661,8 +1661,7 @@ impl<'vm> HirEvaluator<'vm> {
         )?;
 
         let old_value = self.get_value_from_resolved_binding(scope, reference)?;
-        let mut tick = || self.vm.tick();
-        let old_num = crate::ops::to_number_with_tick(scope.heap_mut(), old_value, &mut tick)?;
+        let old_num = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, old_value)?;
         let new_num = old_num + delta;
         let new_value = Value::Number(new_num);
 
@@ -1707,9 +1706,7 @@ impl<'vm> HirEvaluator<'vm> {
           receiver,
         )?;
 
-        // `ToNumber` does not allocate for supported primitive types.
-        let mut tick = || self.vm.tick();
-        let old_num = crate::ops::to_number_with_tick(update_scope.heap_mut(), old_value, &mut tick)?;
+        let old_num = update_scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, old_value)?;
         let new_num = old_num + delta;
         let new_value = Value::Number(new_num);
 
@@ -2112,19 +2109,15 @@ impl<'vm> HirEvaluator<'vm> {
 
         let mut scope = scope.reborrow();
 
-        let left = match self.env.get(
+        let reference = self.env.resolve_binding_reference(
           self.vm,
           &mut *self.host,
           &mut *self.hooks,
           &mut scope,
           name.as_str(),
-        )? {
-          Some(v) => v,
-          None => {
-            let msg = format!("{} is not defined", name);
-            return Err(throw_reference_error(self.vm, &mut scope, &msg)?);
-          }
-        };
+        )?;
+
+        let left = self.get_value_from_resolved_binding(&mut scope, reference)?;
 
         // Root LHS across RHS evaluation and operator application.
         scope.push_root(left)?;
@@ -2136,12 +2129,12 @@ impl<'vm> HirEvaluator<'vm> {
 
         // Root the result across binding resolution/assignment.
         scope.push_root(out)?;
-        self.env.set(
+        self.env.set_resolved_binding(
           self.vm,
           &mut *self.host,
           &mut *self.hooks,
           &mut scope,
-          name.as_str(),
+          reference,
           out,
           self.strict,
         )?;
@@ -2155,19 +2148,15 @@ impl<'vm> HirEvaluator<'vm> {
 
             let mut scope = scope.reborrow();
 
-            let left = match self.env.get(
+            let reference = self.env.resolve_binding_reference(
               self.vm,
               &mut *self.host,
               &mut *self.hooks,
               &mut scope,
               name.as_str(),
-            )? {
-              Some(v) => v,
-              None => {
-                let msg = format!("{} is not defined", name);
-                return Err(throw_reference_error(self.vm, &mut scope, &msg)?);
-              }
-            };
+            )?;
+
+            let left = self.get_value_from_resolved_binding(&mut scope, reference)?;
 
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
@@ -2175,12 +2164,12 @@ impl<'vm> HirEvaluator<'vm> {
 
             let out = self.apply_compound_assignment_op(&mut scope, op, left, right)?;
             scope.push_root(out)?;
-            self.env.set(
+            self.env.set_resolved_binding(
               self.vm,
               &mut *self.host,
               &mut *self.hooks,
               &mut scope,
-              name.as_str(),
+              reference,
               out,
               self.strict,
             )?;
@@ -2251,37 +2240,43 @@ impl<'vm> HirEvaluator<'vm> {
     match op {
       hir_js::AssignOp::AddAssign => self.addition_operator(scope, left, right),
       hir_js::AssignOp::SubAssign => {
-        let mut tick = || self.vm.tick();
+        // Root operands while performing `ToNumber`, which can invoke user code.
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
         Ok(Value::Number(
-          crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?
-            - crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?,
+          scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?
+            - scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?,
         ))
       }
       hir_js::AssignOp::MulAssign => {
-        let mut tick = || self.vm.tick();
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
         Ok(Value::Number(
-          crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?
-            * crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?,
+          scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?
+            * scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?,
         ))
       }
       hir_js::AssignOp::DivAssign => {
-        let mut tick = || self.vm.tick();
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
         Ok(Value::Number(
-          crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?
-            / crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?,
+          scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?
+            / scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?,
         ))
       }
       hir_js::AssignOp::RemAssign => {
-        let mut tick = || self.vm.tick();
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
         Ok(Value::Number(
-          crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?
-            % crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?,
+          scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?
+            % scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?,
         ))
       }
       hir_js::AssignOp::ExponentAssign => {
-        let mut tick = || self.vm.tick();
-        let base = crate::ops::to_number_with_tick(scope.heap_mut(), left, &mut tick)?;
-        let exp = crate::ops::to_number_with_tick(scope.heap_mut(), right, &mut tick)?;
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
+        let base = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let exp = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
         Ok(Value::Number(base.powf(exp)))
       }
       _ => Err(VmError::Unimplemented(
