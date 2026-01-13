@@ -7,7 +7,7 @@ use std::process::Command;
 
 use fastrender::sandbox::windows::spawn_sandboxed;
 use windows_sys::Win32::Foundation::{
-  SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+  GetHandleInformation, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
@@ -92,7 +92,43 @@ fn std_handle(kind: u32) -> Option<HANDLE> {
   }
 }
 
-fn collect_inheritable_std_handles() -> Vec<std::os::windows::io::RawHandle> {
+struct HandleInheritGuard {
+  saved: Vec<(HANDLE, u32)>,
+}
+
+impl HandleInheritGuard {
+  fn new(handles: &[HANDLE]) -> Self {
+    let mut saved = Vec::with_capacity(handles.len());
+    for handle in handles {
+      let mut flags: u32 = 0;
+      // SAFETY: Win32 call; `flags` points to a valid output location.
+      let ok = unsafe { GetHandleInformation(*handle, &mut flags) };
+      if ok == 0 {
+        continue;
+      }
+      saved.push((*handle, flags));
+      // SAFETY: Win32 call; valid handle value.
+      let _ = unsafe { SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+    }
+    Self { saved }
+  }
+}
+
+impl Drop for HandleInheritGuard {
+  fn drop(&mut self) {
+    for (handle, flags) in self.saved.drain(..) {
+      let inherit = if (flags & HANDLE_FLAG_INHERIT) != 0 {
+        HANDLE_FLAG_INHERIT
+      } else {
+        0
+      };
+      // SAFETY: Win32 call; valid handle value.
+      let _ = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, inherit) };
+    }
+  }
+}
+
+fn collect_std_handles() -> Vec<HANDLE> {
   let mut handles: Vec<HANDLE> = Vec::new();
   for h in [
     std_handle(STD_INPUT_HANDLE),
@@ -103,16 +139,11 @@ fn collect_inheritable_std_handles() -> Vec<std::os::windows::io::RawHandle> {
   .flatten()
   {
     if !handles.contains(&h) {
-      // Ensure the handle is inheritable so it can be included in the restricted handle list.
-      //
-      // Best-effort: some environments may not allow changing inherit flags on std handles.
-      // SAFETY: Win32 call; valid handle value.
-      let _ = unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
       handles.push(h);
     }
   }
 
-  handles.into_iter().map(|h| h as _).collect()
+  handles
 }
 
 #[test]
@@ -152,7 +183,9 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
   let exe = std::env::current_exe().expect("current test exe path");
   let test_name = "sandbox::windows_no_child_process::sandboxed_renderer_cannot_spawn_child_process";
 
-  let inherit_handles = collect_inheritable_std_handles();
+  let std_handles = collect_std_handles();
+  let inherit_handles: Vec<std::os::windows::io::RawHandle> =
+    std_handles.iter().copied().map(|h| h as _).collect();
   let args = vec![
     OsString::from("--exact"),
     OsString::from(test_name),
@@ -161,6 +194,7 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
 
   let cmd_exe_env = cmd_exe.to_string_lossy();
   let child = crate::common::with_env_vars(&[(CHILD_ENV, "1"), (CMD_ENV, &cmd_exe_env)], || {
+    let _inherit_guard = HandleInheritGuard::new(&std_handles);
     // The Windows sandbox may not have access to the repository working directory; use System32 as a
     // conservative working directory during process creation.
     let prev_dir = std::env::current_dir().ok();
