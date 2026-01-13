@@ -278,8 +278,6 @@ pub use chrome_frame::chrome_frame_html_from_state;
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, chrome_ui_with_bookmarks};
 #[cfg(feature = "browser_ui")]
-pub use renderer_chrome::ChromeFrameDocument;
-#[cfg(feature = "browser_ui")]
 pub use menu_bar::{dispatch_menu_command, menu_bar_ui, MenuBarState, MenuCommand};
 #[cfg(feature = "browser_ui")]
 pub use session::{
