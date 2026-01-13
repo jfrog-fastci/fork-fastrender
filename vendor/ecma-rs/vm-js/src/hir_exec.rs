@@ -6431,7 +6431,27 @@ impl<'vm> HirEvaluator<'vm> {
         Ok(PropertyKey::from_string(scope.alloc_string(name.as_str())?))
       }
       hir_js::ClassMemberKey::String(s) => Ok(PropertyKey::from_string(scope.alloc_string(s)?)),
-      hir_js::ClassMemberKey::Number(s) => Ok(PropertyKey::from_string(scope.alloc_string(s)?)),
+      hir_js::ClassMemberKey::Number(raw) => {
+        // Numeric literal property names are canonicalized in ECMAScript:
+        // `ToPropertyKey(NumericLiteral)` uses `ToString(ToNumber(literal))`.
+        //
+        // HIR stores the source text of numeric literal property names (e.g. `0x10`, `1_0`) so the
+        // compiled path must perform this canonicalization at runtime.
+        //
+        // Note: `parse_js::num::JsNumber::from_literal` is not tick-aware, so charge fuel based on
+        // input length before parsing to avoid long uninterruptible work for pathological literals.
+        if raw.len() > crate::tick::DEFAULT_TICK_EVERY {
+          let mut i = crate::tick::DEFAULT_TICK_EVERY;
+          while i < raw.len() {
+            self.vm.tick()?;
+            i = i.saturating_add(crate::tick::DEFAULT_TICK_EVERY);
+          }
+        }
+
+        let n = JsNumber::from_literal(raw).map(|n| n.0).unwrap_or(f64::NAN);
+        let key_s = scope.heap_mut().to_string(Value::Number(n))?;
+        Ok(PropertyKey::from_string(key_s))
+      }
       hir_js::ClassMemberKey::Computed(expr_id) => {
         let v = self.eval_expr(scope, class_body, *expr_id)?;
         let key = scope.heap_mut().to_property_key(v)?;

@@ -3763,6 +3763,32 @@ fn compiled_class_methods_and_accessors_are_not_constructors() -> Result<(), VmE
 }
 
 #[test]
+fn compiled_class_numeric_literal_keys_are_canonicalized() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      class C {
+        0x10() { return 1; }
+        1_0() { return 2; }
+        static 0b11() { return 3; }
+      }
+
+      let c = new C();
+      c["16"]() === 1 && c["10"]() === 2 && C["3"]() === 3
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_class_constructor_and_method() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
