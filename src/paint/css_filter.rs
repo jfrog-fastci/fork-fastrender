@@ -902,6 +902,53 @@ mod tests {
   }
 
   #[test]
+  fn drop_shadow_negative_spread_respects_cancel_callback() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_cb = Arc::clone(&calls);
+    // Cancel on the 4th deadline check so we exercise the erosion pass as well.
+    let cancel = Arc::new(move || calls_cb.fetch_add(1, Ordering::SeqCst) >= 3);
+    let deadline = RenderDeadline::new(None, Some(cancel));
+
+    let stride = (DROP_SHADOW_DEADLINE_STRIDE as f32).max(1.0);
+    let mut size = stride.sqrt().ceil() as u32;
+    if size < 3 {
+      size = 3;
+    }
+    if size % 2 == 0 {
+      size += 1;
+    }
+    let pad = (size - 1) / 2;
+
+    let mut pixmap = new_pixmap(10, 10).expect("pixmap");
+    pixmap.data_mut().fill(0);
+    pixmap.pixels_mut()[0] = PremultipliedColorU8::from_rgba(0, 0, 0, 255).expect("pixel");
+
+    let spread = -(pad as f32);
+    let result = with_deadline(Some(&deadline), || {
+      apply_drop_shadow(
+        &mut pixmap,
+        0.0,
+        0.0,
+        0.0,
+        spread,
+        Rgba::from_rgba8(0, 0, 0, 255),
+      )
+    });
+
+    assert!(
+      matches!(
+        result,
+        Err(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          ..
+        })
+      ),
+      "expected timeout, got {result:?}"
+    );
+    assert!(calls.load(Ordering::SeqCst) >= 4);
+  }
+
+  #[test]
   fn drop_shadow_huge_spread_does_not_panic() {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
