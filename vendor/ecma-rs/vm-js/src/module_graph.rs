@@ -1399,10 +1399,13 @@ impl ModuleGraph {
             let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
               "module linking requires intrinsics to create SyntaxError objects",
             ))?;
-            let message = format!(
-              "Indirect export '{}' could not be resolved (re-export from '{}')",
-              entry.export_name, entry.module_request.specifier
-            );
+            let message = crate::fallible_format::try_format_error_message2(
+              "Indirect export '",
+              &entry.export_name,
+              "' could not be resolved (re-export from '",
+              &entry.module_request.specifier,
+              "')",
+            )?;
             let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
             return Err(VmError::Throw(err_obj));
           }
@@ -1410,10 +1413,13 @@ impl ModuleGraph {
             let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
               "module linking requires intrinsics to create SyntaxError objects",
             ))?;
-            let message = format!(
-              "Indirect export '{}' is ambiguous (re-export from '{}')",
-              entry.export_name, entry.module_request.specifier
-            );
+            let message = crate::fallible_format::try_format_error_message2(
+              "Indirect export '",
+              &entry.export_name,
+              "' is ambiguous (re-export from '",
+              &entry.module_request.specifier,
+              "')",
+            )?;
             let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
             return Err(VmError::Throw(err_obj));
           }
@@ -1456,10 +1462,13 @@ impl ModuleGraph {
                 let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
                   "module linking requires intrinsics to create SyntaxError objects",
                 ))?;
-                let message = format!(
-                  "The requested module '{}' does not provide an export named '{}'",
-                  entry.module_request.specifier, import_name
-                );
+                let message = crate::fallible_format::try_format_error_message2(
+                  "The requested module '",
+                  &entry.module_request.specifier,
+                  "' does not provide an export named '",
+                  &import_name,
+                  "'",
+                )?;
                 let err_obj =
                   crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
                 return Err(VmError::Throw(err_obj));
@@ -1468,10 +1477,13 @@ impl ModuleGraph {
                 let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
                   "module linking requires intrinsics to create SyntaxError objects",
                 ))?;
-                let message = format!(
-                  "The requested module '{}' provides an ambiguous export named '{}'",
-                  entry.module_request.specifier, import_name
-                );
+                let message = crate::fallible_format::try_format_error_message2(
+                  "The requested module '",
+                  &entry.module_request.specifier,
+                  "' provides an ambiguous export named '",
+                  &import_name,
+                  "'",
+                )?;
                 let err_obj =
                   crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
                 return Err(VmError::Throw(err_obj));

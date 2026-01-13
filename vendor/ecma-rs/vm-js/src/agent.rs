@@ -108,6 +108,16 @@ impl Agent {
     self.runtime.realm()
   }
 
+  /// Borrow-split the agent into its core components: the VM, the current realm, and the heap.
+  ///
+  /// This mirrors [`JsRuntime::vm_realm_and_heap_mut`] and exists so embeddings (including internal
+  /// test harnesses) can access `&mut Vm` + `&mut Heap` while also needing immutable access to
+  /// realm metadata (global object, intrinsics, realm id) without an embedder-side raw-pointer
+  /// workaround.
+  pub fn vm_realm_and_heap_mut(&mut self) -> (&mut Vm, &Realm, &mut Heap) {
+    self.runtime.vm_realm_and_heap_mut()
+  }
+
   /// Perform a microtask checkpoint, draining the VM-owned microtask queue.
   ///
   /// This is a convenience wrapper around [`Vm::perform_microtask_checkpoint`] for lightweight

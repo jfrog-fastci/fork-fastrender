@@ -112,3 +112,11 @@ fn set_prototype_of_cycle_check_does_not_abort_on_oom() {
   // handled as `VmError::OutOfMemory` rather than aborting.
   run_oom_harness("setPrototypeOf_cycle_check", 0);
 }
+
+#[test]
+fn module_linking_error_strings_do_not_abort_on_oom() {
+  // Module linking errors may embed attacker-controlled module specifiers / export names in the
+  // thrown SyntaxError message. Ensure those error strings are constructed using bounded, fallible
+  // formatting so allocator OOM does not abort the process.
+  run_oom_harness("moduleLink", 18_000_000);
+}

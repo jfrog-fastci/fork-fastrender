@@ -1,13 +1,14 @@
 use std::process;
 use vm_js::{
-  Agent, Budget, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Value, VmError, VmOptions,
+  Agent, Budget, HeapLimits, LoadedModuleRequest, ModuleGraph, ModuleRequest, ModuleStatus,
+  PropertyDescriptor, PropertyKey, PropertyKind, SourceTextModuleRecord, Value, VmError, VmOptions,
   MAX_PROTOTYPE_CHAIN,
 };
 
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink"
   );
   process::exit(2);
 }
@@ -80,6 +81,99 @@ fn main() {
       process::exit(1);
     }
   };
+
+  if scenario == "moduleLink" {
+    // Allocate a very large module specifier in host memory. Previously `ModuleGraph::link_inner`
+    // used `format!(...)` to build error messages containing attacker-controlled strings like
+    // module specifiers; that infallibly allocates and can abort the process under allocator OOM.
+    //
+    // This scenario triggers an indirect-export resolution failure during module linking while the
+    // process is under a tight RLIMIT_AS, and asserts we exit cleanly (either `VmError::OutOfMemory`
+    // or a thrown `SyntaxError`).
+    let alloc_ascii_string = |len: usize| -> Option<String> {
+      let mut bytes: Vec<u8> = Vec::new();
+      bytes.try_reserve_exact(len).ok()?;
+      bytes.resize(len, b'a');
+      // Safety: bytes are ASCII.
+      Some(unsafe { String::from_utf8_unchecked(bytes) })
+    };
+
+    let Some(spec1) = alloc_ascii_string(len_code_units) else {
+      eprintln!("oom_harness: failed to allocate large module specifier (entry)");
+      process::exit(1);
+    };
+    let Some(spec2) = alloc_ascii_string(len_code_units) else {
+      eprintln!("oom_harness: failed to allocate large module specifier (loaded_modules)");
+      process::exit(1);
+    };
+
+    let mut graph = ModuleGraph::new();
+
+    let imported = match SourceTextModuleRecord::parse(
+      agent.heap_mut(),
+      // Provide at least one export so `ResolveExport` has work to do, but not the name we re-export.
+      "export const other = 1;",
+    ) {
+      Ok(mut rec) => {
+        rec.status = ModuleStatus::Unlinked;
+        rec
+      }
+      Err(err) => {
+        eprintln!("oom_harness: failed to parse imported module: {err:?}");
+        process::exit(1);
+      }
+    };
+    let imported_id = graph.add_module(imported);
+
+    let mut root = match SourceTextModuleRecord::parse(
+      agent.heap_mut(),
+      // Re-export a missing name so linking throws a SyntaxError with a message containing the
+      // (attacker-controlled) module specifier.
+      "export { missing as x } from 'm';",
+    ) {
+      Ok(mut rec) => {
+        rec.status = ModuleStatus::Unlinked;
+        rec
+      }
+      Err(err) => {
+        eprintln!("oom_harness: failed to parse root module: {err:?}");
+        process::exit(1);
+      }
+    };
+
+    // Avoid linking dependency edges from the original parsed specifier (`'m'`). We explicitly
+    // supply `[[LoadedModules]]` below for the mutated specifier value.
+    root.requested_modules.clear();
+
+    let Some(entry) = root.indirect_export_entries.get_mut(0) else {
+      eprintln!("oom_harness: parsed root module did not produce an indirect export entry");
+      process::exit(1);
+    };
+    entry.module_request.specifier = spec1;
+
+    root.loaded_modules = vec![LoadedModuleRequest::new(
+      ModuleRequest::new(spec2, Vec::new()),
+      imported_id,
+    )];
+
+    let root_id = graph.add_module(root);
+
+    let (vm, realm, heap) = agent.vm_realm_and_heap_mut();
+    let global = realm.global_object();
+    let result = graph.link(vm, heap, global, root_id);
+    match result {
+      Ok(()) => {
+        eprintln!("oom_harness: unexpected success in moduleLink scenario");
+        process::exit(1);
+      }
+      Err(VmError::OutOfMemory) => process::exit(0),
+      Err(VmError::Throw(_) | VmError::ThrowWithStack { .. }) => process::exit(0),
+      Err(err) => {
+        eprintln!("oom_harness: unexpected error in moduleLink scenario: {err:?}");
+        process::exit(1);
+      }
+    }
+  }
 
   // Create a large heap string and install it as `globalThis.S` so the script itself can be tiny.
   let fill_unit = match scenario.as_str() {
