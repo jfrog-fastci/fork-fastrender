@@ -8,8 +8,7 @@ use fastrender::ui::messages::{
   CursorKind, DateTimeInputKind, DownloadId, DownloadOutcome, FormSubmission, RenderedFrame, TabId,
   UiToWorker, WorkerToUi,
 };
-use fastrender::ui::spawn_ui_worker;
-use fastrender::ui::spawn_ui_worker_with_factory;
+use fastrender::ui::{spawn_ui_worker, spawn_ui_worker_for_test, spawn_ui_worker_with_factory};
 use std::collections::VecDeque;
 use std::fmt;
 use std::path::PathBuf;
@@ -788,6 +787,24 @@ impl WorkerHarness {
 
     let worker = spawn_ui_worker_with_factory("fastr-browser-worker-runtime-test", factory)
       .expect("spawn ui worker for runtime harness");
+
+    Self {
+      _stage_lock: stage_lock,
+      ui_tx: Some(worker.ui_tx),
+      ui_rx: worker.ui_rx,
+      handle: Some(worker.join),
+      buffered_events: parking_lot::Mutex::new(VecDeque::new()),
+    }
+  }
+
+  pub fn spawn_with_test_render_delay(test_render_delay_ms: Option<u64>) -> Self {
+    let stage_lock = super::stage_listener_test_lock();
+
+    let worker = spawn_ui_worker_for_test(
+      "fastr-browser-worker-runtime-test",
+      test_render_delay_ms,
+    )
+    .expect("spawn ui worker for runtime harness with test render delay");
 
     Self {
       _stage_lock: stage_lock,

@@ -1564,6 +1564,11 @@ impl BrowserRuntime {
       TabId,
       ((f32, f32), PointerButton, crate::ui::PointerModifiers),
     > = HashMap::new();
+    // Find-in-page query updates can arrive on every keystroke. If the render worker is busy (heavy
+    // page / slow paint), many `FindQuery` messages can backlog in the unbounded channel. Rebuilding
+    // the find index for each intermediate query is wasted work, so coalesce to the latest query per
+    // tab.
+    let mut pending_find_queries: HashMap<TabId, (String, bool)> = HashMap::new();
 
     // Coalesce back-to-back `ViewportChanged` messages so resize/zoom bursts only apply the latest
     // viewport state per tab.
@@ -1599,6 +1604,17 @@ impl BrowserRuntime {
       }
     };
 
+    let mut flush_find_queries =
+      |this: &mut Self, pending: &mut HashMap<TabId, (String, bool)>| {
+        for (tab_id, (query, case_sensitive)) in pending.drain() {
+          this.handle_message(UiToWorker::FindQuery {
+            tab_id,
+            query,
+            case_sensitive,
+          });
+        }
+      };
+
     while let Some(msg) = self.try_recv_message() {
       match msg {
         UiToWorker::PointerMove {
@@ -1621,7 +1637,29 @@ impl BrowserRuntime {
           // following viewport change (pointer events preceding a resize should hit-test against the
           // old viewport).
           flush_pointer_moves(self, &mut pending_pointer_moves);
+          flush_find_queries(self, &mut pending_find_queries);
           pending_viewport_changes.insert(tab_id, (viewport_css, dpr));
+        }
+        UiToWorker::FindQuery {
+          tab_id,
+          query,
+          case_sensitive,
+        } => {
+          // Find-in-page scroll-to-match depends on the viewport size; apply any queued viewport
+          // changes so the query runs against the latest viewport in the same input burst.
+          flush_viewport_changes(self, &mut pending_viewport_changes);
+          // Preserve ordering semantics: pointer-moves preceding this find update should still
+          // hit-test against the pre-find state.
+          flush_pointer_moves(self, &mut pending_pointer_moves);
+          pending_find_queries.insert(tab_id, (query, case_sensitive));
+        }
+        UiToWorker::FindNext { .. } | UiToWorker::FindPrev { .. } | UiToWorker::FindStop { .. } => {
+          // Find navigation/stop messages are barriers: ensure any queued find query updates are
+          // applied first so next/prev/stop operate on the latest query state.
+          flush_viewport_changes(self, &mut pending_viewport_changes);
+          flush_pointer_moves(self, &mut pending_pointer_moves);
+          flush_find_queries(self, &mut pending_find_queries);
+          self.handle_message(msg);
         }
         other => {
           // Non-viewport messages are barriers: flush any queued viewport changes before handling
@@ -1629,6 +1667,7 @@ impl BrowserRuntime {
           // scheduling, etc).
           flush_viewport_changes(self, &mut pending_viewport_changes);
           flush_pointer_moves(self, &mut pending_pointer_moves);
+          flush_find_queries(self, &mut pending_find_queries);
           self.handle_message(other);
         }
       }
@@ -1636,6 +1675,7 @@ impl BrowserRuntime {
 
     flush_viewport_changes(self, &mut pending_viewport_changes);
     flush_pointer_moves(self, &mut pending_pointer_moves);
+    flush_find_queries(self, &mut pending_find_queries);
   }
 
   fn drain_scroll_burst(&mut self) {
