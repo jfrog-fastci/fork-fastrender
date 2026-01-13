@@ -2,7 +2,7 @@
 
 use crate::ui::about_pages;
 use crate::ui::browser_app::BrowserAppState;
-use crate::ui::chrome::ChromeAction;
+use crate::ui::ChromeAction;
 use crate::ui::zoom;
 
 #[cfg(target_os = "macos")]

@@ -6,6 +6,8 @@ pub mod bookmarks;
 pub mod browser_app;
 pub mod browser_limits;
 pub mod browser_tab_controller;
+pub mod chrome_action;
+pub mod chrome_action_url;
 pub mod chrome_loading_progress;
 pub mod theme_parsing;
 pub mod high_contrast;
@@ -211,11 +213,13 @@ pub use notifications::{
 
 pub use frame_upload::FrameUploadCoalescer;
 pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};
+pub use chrome_action::ChromeAction;
+pub use chrome_action_url::ChromeActionUrl;
 
 pub use crate::select_dropdown;
 pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
 #[cfg(feature = "browser_ui")]
-pub use chrome::{chrome_ui, chrome_ui_with_bookmarks, ChromeAction};
+pub use chrome::{chrome_ui, chrome_ui_with_bookmarks};
 #[cfg(feature = "browser_ui")]
 pub use menu_bar::{dispatch_menu_command, menu_bar_ui, MenuBarState, MenuCommand};
 #[cfg(feature = "browser_ui")]
