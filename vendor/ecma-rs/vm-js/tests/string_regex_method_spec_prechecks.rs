@@ -198,3 +198,55 @@ fn string_replace_and_replace_all_dispatch_before_tostring_receiver_and_use_orig
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn string_search_string_methods_do_not_box_primitives_for_is_regexp() -> Result<(), VmError> {
+  let mut agent = new_agent();
+
+  let value = agent.run_script(
+    "string_search_string_methods_do_not_box_primitives_for_is_regexp.js",
+    r#"
+      function thrower() { throw 123; }
+
+      // IsRegExp(argument) must return false for primitives *without* boxing them and consulting
+      // `@@match` on their prototypes.
+      Object.defineProperty(Boolean.prototype, Symbol.match, { configurable: true, get: thrower });
+      Object.defineProperty(Number.prototype,  Symbol.match, { configurable: true, get: thrower });
+      Object.defineProperty(String.prototype,  Symbol.match, { configurable: true, get: thrower });
+      Object.defineProperty(BigInt.prototype,  Symbol.match, { configurable: true, get: thrower });
+
+      // These must not throw.
+      "abc".includes(true);
+      "abc".includes(1);
+      "abc".includes("a");
+      "a1b".includes(1n);
+
+      "abc".startsWith(true);
+      "abc".startsWith(1);
+      "abc".startsWith("a");
+      "a1b".startsWith(1n);
+
+      "abc".endsWith(true);
+      "abc".endsWith(1);
+      "abc".endsWith("c");
+      "a1b".endsWith(1n);
+
+      // Symbol primitives still throw (ToString(Symbol) => TypeError), but must not consult
+      // `Symbol.prototype[Symbol.match]` during IsRegExp checks.
+      Object.defineProperty(Symbol.prototype, Symbol.match, { configurable: true, get: thrower });
+
+      function isTypeError(thunk) {
+        try { thunk(); } catch (e) { return e instanceof TypeError; }
+        return false;
+      }
+
+      isTypeError(() => "abc".includes(Symbol("a"))) &&
+        isTypeError(() => "abc".startsWith(Symbol("a"))) &&
+        isTypeError(() => "abc".endsWith(Symbol("a")));
+    "#,
+    Budget::unlimited(1),
+    None,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
