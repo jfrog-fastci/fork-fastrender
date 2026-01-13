@@ -4304,6 +4304,14 @@ impl App {
                 .inner
                 .on_hover_text(&toast_text);
 
+              // AccessKit may request explicit expand/collapse actions when the node exposes an
+              // expanded state.
+              let expand_requested = ui
+                .input(|i| i.has_accesskit_action_request(title_resp.id, accesskit::Action::Expand));
+              let collapse_requested = ui.input(|i| {
+                i.has_accesskit_action_request(title_resp.id, accesskit::Action::Collapse)
+              });
+
               let mut toggle_requested = title_resp.clicked();
               if title_resp.has_focus() {
                 toggle_requested |= ui.input_mut(|i| {
@@ -4311,7 +4319,13 @@ impl App {
                     || i.consume_key(Default::default(), egui::Key::Space)
                 });
               }
-              if toggle_requested {
+              if expand_requested || collapse_requested {
+                let desired = expand_requested && !collapse_requested;
+                if expanded != desired {
+                  expanded = desired;
+                  title_resp.request_focus();
+                }
+              } else if toggle_requested {
                 expanded = !expanded;
                 title_resp.request_focus();
               }
@@ -4323,9 +4337,16 @@ impl App {
                 let label = title_a11y_label.clone();
                 move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
               });
-              let _ = title_resp
-                .ctx
-                .accesskit_node_builder(title_resp.id, |builder| builder.set_expanded(expanded));
+              let _ = title_resp.ctx.accesskit_node_builder(title_resp.id, |builder| {
+                builder.set_expanded(expanded);
+                if expanded {
+                  builder.add_action(accesskit::Action::Collapse);
+                  builder.remove_action(accesskit::Action::Expand);
+                } else {
+                  builder.add_action(accesskit::Action::Expand);
+                  builder.remove_action(accesskit::Action::Collapse);
+                }
+              });
 
               if title_resp.has_focus() {
                 let focus_stroke = ui.visuals().selection.stroke;
