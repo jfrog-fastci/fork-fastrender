@@ -85,12 +85,6 @@ pub struct BookmarkStore {
   pub version: u32,
   #[serde(default = "default_next_id")]
   pub next_id: BookmarkId,
-  /// Ordered list of root node IDs (bookmarks bar ordering).
-  #[serde(default)]
-  pub roots: Vec<BookmarkId>,
-  /// All nodes keyed by stable ID.
-  #[serde(default)]
-  pub nodes: BTreeMap<BookmarkId, BookmarkNode>,
   /// Monotonically increasing revision counter for UI caching.
   ///
   /// This is *not* part of the persisted bookmark schema (it exists so immediate-mode UIs can
@@ -105,6 +99,12 @@ pub struct BookmarkStore {
   /// This field is derived from `nodes` and thus not serialized.
   #[serde(skip)]
   url_index: FxHashMap<String, usize>,
+  /// Ordered list of root node IDs (bookmarks bar ordering).
+  #[serde(default)]
+  pub roots: Vec<BookmarkId>,
+  /// All nodes keyed by stable ID.
+  #[serde(default)]
+  pub nodes: BTreeMap<BookmarkId, BookmarkNode>,
 }
 
 fn default_next_id() -> BookmarkId {
@@ -116,16 +116,18 @@ impl Default for BookmarkStore {
     Self {
       version: BOOKMARK_STORE_VERSION,
       next_id: default_next_id(),
-      roots: Vec::new(),
-      nodes: BTreeMap::new(),
       revision: 0,
       url_index: FxHashMap::default(),
+      roots: Vec::new(),
+      nodes: BTreeMap::new(),
     }
   }
 }
 
 impl PartialEq for BookmarkStore {
   fn eq(&self, other: &Self) -> bool {
+    // `revision`/`url_index` are intentionally excluded: they are derived in-memory metadata, not
+    // persisted data.
     self.version == other.version
       && self.next_id == other.next_id
       && self.roots == other.roots
@@ -242,7 +244,8 @@ impl BookmarkStore {
   /// update the revision automatically. This exists for situations where the store is replaced via
   /// assignment (e.g. import flows) and the caller wants to invalidate UI caches.
   pub fn touch(&mut self) {
-    self.revision = self.revision.wrapping_add(1);
+    // Saturating keeps the revision monotonic even under extreme mutation counts.
+    self.revision = self.revision.saturating_add(1);
   }
 
   /// Apply an incremental update to the store.
@@ -304,8 +307,9 @@ impl BookmarkStore {
         }
       }
       BookmarkDelta::ReplaceAll(store) => {
+        let next_revision = self.revision.saturating_add(1);
         *self = store.clone();
-        self.touch();
+        self.revision = next_revision;
         Ok(())
       }
     }
@@ -861,6 +865,9 @@ impl BookmarkStore {
     let got: HashSet<BookmarkId> = ids_in_new_order.iter().copied().collect();
     if expected != got || got.len() != ids_in_new_order.len() {
       return Err(BookmarkError::InvalidReorder);
+    }
+    if self.roots.as_slice() == ids_in_new_order {
+      return Ok(());
     }
     self.roots = ids_in_new_order.to_vec();
     self.touch();
@@ -1917,6 +1924,97 @@ pub use bookmarks_bar_ui::{bookmarks_bar_ui, BookmarksBarOutput};
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn revision_bumps_on_structural_changes() {
+    let mut store = BookmarkStore::default();
+    assert_eq!(store.revision, 0);
+
+    // Adding a bookmark should bump.
+    let a = store
+      .add(
+        "https://a.example/".to_string(),
+        Some("A".to_string()),
+        None,
+      )
+      .unwrap();
+    let rev_after_add = store.revision;
+    assert!(rev_after_add > 0, "expected revision to bump after add");
+
+    // Creating a folder should bump.
+    let folder = store.create_folder("Folder".to_string(), None).unwrap();
+    let rev_after_folder = store.revision;
+    assert!(
+      rev_after_folder > rev_after_add,
+      "expected revision to bump after create_folder"
+    );
+
+    // Moving a node should bump.
+    store.move_node(a, Some(folder)).unwrap();
+    let rev_after_move = store.revision;
+    assert!(
+      rev_after_move > rev_after_folder,
+      "expected revision to bump after move_node"
+    );
+
+    // No-op move should not bump.
+    store.move_node(a, Some(folder)).unwrap();
+    assert_eq!(
+      store.revision, rev_after_move,
+      "expected no-op move to not bump revision"
+    );
+
+    // Removing a node should bump.
+    assert!(store.remove_by_id(a));
+    let rev_after_remove = store.revision;
+    assert!(
+      rev_after_remove > rev_after_move,
+      "expected revision to bump after remove_by_id"
+    );
+
+    // Removing a missing node should not bump.
+    assert!(!store.remove_by_id(BookmarkId(999_999)));
+    assert_eq!(
+      store.revision, rev_after_remove,
+      "expected remove_by_id on missing id to not bump revision"
+    );
+
+    // Toggle add should bump.
+    let rev_before_toggle_add = store.revision;
+    assert!(store.toggle("https://toggle.example/", Some("Toggle")));
+    assert!(
+      store.revision > rev_before_toggle_add,
+      "expected revision to bump after toggle add"
+    );
+
+    // Toggle remove should bump (removes all duplicates).
+    let rev_before_toggle_remove = store.revision;
+    assert!(!store.toggle("https://toggle.example/", Some("Ignored")));
+    assert!(
+      store.revision > rev_before_toggle_remove,
+      "expected revision to bump after toggle remove"
+    );
+
+    // Reorder bumps only when it actually changes the order.
+    let x = store
+      .add("https://x.example/".to_string(), Some("X".to_string()), None)
+      .unwrap();
+    let y = store
+      .add("https://y.example/".to_string(), Some("Y".to_string()), None)
+      .unwrap();
+    let rev_before_reorder = store.revision;
+    store.reorder_root(&[y, x, folder]).unwrap();
+    assert!(
+      store.revision > rev_before_reorder,
+      "expected revision to bump after reorder"
+    );
+    let rev_after_reorder = store.revision;
+    store.reorder_root(&[y, x, folder]).unwrap();
+    assert_eq!(
+      store.revision, rev_after_reorder,
+      "expected reorder_root to not bump revision when order is unchanged"
+    );
+  }
 
   #[test]
   fn toggle_adds_and_removes() {

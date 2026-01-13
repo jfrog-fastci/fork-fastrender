@@ -360,18 +360,22 @@ pub fn bookmarks_manager_side_panel(
                 match std::fs::read_to_string(raw) {
                   Ok(json) => match BookmarkStore::from_json_str_migrating(&json) {
                     Ok((imported, migration)) => {
-                      out
-                        .bookmark_deltas
-                        .push(BookmarkDelta::ReplaceAll(imported.clone()));
-                      *store = imported;
-                      store.touch();
-                      out.changed = true;
-                      out.request_flush = true;
-                      state.error = None;
-                      state.message =
-                        Some(format!("Imported bookmarks from file ({migration:?})."));
-                      state.import_json.clear();
-                      state.clear_transient();
+                      let delta = BookmarkDelta::ReplaceAll(imported);
+                      match store.apply_delta(&delta) {
+                        Ok(()) => {
+                          out.bookmark_deltas.push(delta);
+                          out.changed = true;
+                          out.request_flush = true;
+                          state.error = None;
+                          state.message =
+                            Some(format!("Imported bookmarks from file ({migration:?})."));
+                          state.import_json.clear();
+                          state.clear_transient();
+                        }
+                        Err(err) => {
+                          state.error = Some(format!("Failed to import bookmarks: {err:?}"));
+                        }
+                      }
                     }
                     Err(err) => {
                       state.error = Some(format!("Failed to import bookmarks: {err:?}"));
@@ -405,17 +409,21 @@ pub fn bookmarks_manager_side_panel(
             if ui.button("Import").clicked() {
               match BookmarkStore::from_json_str_migrating(&state.import_json) {
                 Ok((imported, migration)) => {
-                  out
-                    .bookmark_deltas
-                    .push(BookmarkDelta::ReplaceAll(imported.clone()));
-                  *store = imported;
-                  store.touch();
-                  out.changed = true;
-                  out.request_flush = true;
-                  state.error = None;
-                  state.message = Some(format!("Imported bookmarks ({migration:?})."));
-                  state.import_json.clear();
-                  state.clear_transient();
+                  let delta = BookmarkDelta::ReplaceAll(imported);
+                  match store.apply_delta(&delta) {
+                    Ok(()) => {
+                      out.bookmark_deltas.push(delta);
+                      out.changed = true;
+                      out.request_flush = true;
+                      state.error = None;
+                      state.message = Some(format!("Imported bookmarks ({migration:?})."));
+                      state.import_json.clear();
+                      state.clear_transient();
+                    }
+                    Err(err) => {
+                      state.error = Some(format!("Failed to import bookmarks: {err:?}"));
+                    }
+                  }
                 }
                 Err(err) => {
                   state.error = Some(format!("Failed to import bookmarks: {err:?}"));
