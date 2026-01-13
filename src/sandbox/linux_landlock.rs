@@ -244,6 +244,13 @@ pub fn apply(config: &LandlockConfig) -> Result<LandlockStatus, LandlockError> {
         reason: LandlockUnsupportedReason::KernelUnsupported,
       });
     }
+    // Landlock syscalls may exist but the Landlock LSM can be disabled at runtime (e.g. missing
+    // from the kernel's `lsm=` list). In that case the kernel returns EOPNOTSUPP.
+    Err(err) if err.raw_os_error() == Some(libc::EOPNOTSUPP) => {
+      return Ok(LandlockStatus::Unsupported {
+        reason: LandlockUnsupportedReason::KernelUnsupported,
+      });
+    }
     Err(err) => return Err(LandlockError::ProbeFailed { source: err }),
   };
   if abi_version == 0 {
@@ -254,11 +261,19 @@ pub fn apply(config: &LandlockConfig) -> Result<LandlockStatus, LandlockError> {
 
   let handled_access_fs = handled_access_fs_for_abi(abi_version);
   let ruleset_attr = LandlockRulesetAttr { handled_access_fs };
-  let ruleset_fd = landlock_create_ruleset(&ruleset_attr).map_err(|source| {
-    LandlockError::CreateRulesetFailed {
-      source,
+  let ruleset_fd = match landlock_create_ruleset(&ruleset_attr) {
+    Ok(fd) => fd,
+    Err(err) if err.raw_os_error() == Some(libc::ENOSYS) || err.raw_os_error() == Some(libc::EOPNOTSUPP) => {
+      return Ok(LandlockStatus::Unsupported {
+        reason: LandlockUnsupportedReason::KernelUnsupported,
+      });
     }
-  })?;
+    Err(source) => {
+      return Err(LandlockError::CreateRulesetFailed {
+        source,
+      });
+    }
+  };
 
   for (path, access) in &config.allowed_paths {
     add_path_rule(ruleset_fd.as_raw_fd(), path, *access, handled_access_fs)?;
@@ -273,11 +288,14 @@ pub fn apply(config: &LandlockConfig) -> Result<LandlockStatus, LandlockError> {
     });
   }
 
-  landlock_restrict_self(ruleset_fd.as_raw_fd()).map_err(|source| {
-    LandlockError::RestrictSelfFailed {
-      source,
+  if let Err(err) = landlock_restrict_self(ruleset_fd.as_raw_fd()) {
+    if err.raw_os_error() == Some(libc::ENOSYS) || err.raw_os_error() == Some(libc::EOPNOTSUPP) {
+      return Ok(LandlockStatus::Unsupported {
+        reason: LandlockUnsupportedReason::KernelUnsupported,
+      });
     }
-  })?;
+    return Err(LandlockError::RestrictSelfFailed { source: err });
+  }
 
   Ok(LandlockStatus::Applied { abi: abi_version })
 }
