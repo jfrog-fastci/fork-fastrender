@@ -828,6 +828,20 @@ glob = "built-ins/Object/getOwnPropertyDescriptor/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/Object/getOwnPropertyDescriptors/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Object/getOwnPropertyDescriptors/primitive-strings.js"
+status = "xfail"
+reason = "vm-js: String exotic object property descriptors (length + index properties) are not fully implemented for Object.getOwnPropertyDescriptors."
+
+[[expectations]]
+id = "built-ins/Object/getOwnPropertyDescriptors/tamper-with-global-object.js"
+status = "xfail"
+reason = "vm-js: String exotic object property descriptors (length + index properties) are not fully implemented for Object.getOwnPropertyDescriptors."
+
+[[expectations]]
 glob = "built-ins/Object/fromEntries/**"
 status = "pass"
 reason = "Object.fromEntries passes the curated test262 corpus; keep failures actionable to catch iterator-close regressions."
