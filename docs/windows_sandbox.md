@@ -418,6 +418,16 @@ When this opt-in is enabled, we fall back to a “best-effort” sandbox:
 Then we spawn the child using `CreateProcessAsUserW` with the restricted primary token (see
 `src/sandbox/windows.rs::spawn_restricted_token`).
 
+Important pitfall (restricted-token spawns that disable broad groups, like `crates/win-sandbox`):
+
+- If `lpCurrentDirectory` is left as `NULL`, Windows inherits the parent’s CWD. When `BUILTIN\\Users`
+  (or similar broad groups) are disabled in the restricted token, that inherited directory may no
+  longer be accessible, causing `CreateProcessAsUserW` to fail with `ERROR_ACCESS_DENIED` (or leaving
+  the child in a “weird” working directory).
+- `crates/win-sandbox::restricted_token::spawn_with_token` avoids this by setting an explicit current
+  directory: `SpawnConfig.current_dir` if provided, otherwise `SpawnConfig.exe.parent()` (best-effort
+  “if the image is loadable, the directory is usually traversable too”).
+
 This is meaningfully weaker than AppContainer:
 
 - **Network is not reliably blocked.** A restricted/low-IL process can usually still open outbound
@@ -557,6 +567,7 @@ Windows-only tests that encode the intended boundary:
 - AppContainer blocks outbound network (no capabilities): `crates/win-sandbox/tests/network_denied.rs`
 - Job object invariants (kill-on-close, process count): `crates/win-sandbox/tests/job_limits.rs`
 - Restricted-token fallback invariants (low integrity, reduced filesystem access): `crates/win-sandbox/tests/restricted_token_mode.rs`
+- Restricted-token spawn does not inherit an inaccessible parent CWD: `crates/win-sandbox/tests/restricted_token_cwd.rs`
 - Mitigation policy verification: `crates/win-sandbox/src/lib.rs` tests +
   `crates/win-sandbox/src/mitigations.rs::verify_renderer_mitigations_current_process`
 
