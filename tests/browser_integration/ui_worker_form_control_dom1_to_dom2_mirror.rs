@@ -111,6 +111,113 @@ fn ui_worker_checkbox_click_mirrors_checked_state_to_js() {
 }
 
 #[test]
+fn ui_worker_checkbox_click_clears_indeterminate_and_aria_checked_mixed_in_js_dom() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let next_url = site.write(
+    "next.html",
+    r#"<!doctype html>
+      <html><body>next</body></html>"#,
+  );
+  let index_url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #cb { position: absolute; left: 0; top: 0; width: 40px; height: 40px; }
+            #go { position: absolute; left: 0; top: 60px; width: 120px; height: 40px; display: block; }
+          </style>
+        </head>
+        <body>
+          <input id="cb" type="checkbox" indeterminate aria-checked="mixed">
+          <a id="go" href="next.html">next</a>
+          <script>
+            document.getElementById("cb").addEventListener("click", function () {
+              document.body.setAttribute("data-indeterminate", String(this.hasAttribute("indeterminate")));
+              document.body.setAttribute("data-aria", String(this.getAttribute("aria-checked")));
+            });
+            document.getElementById("go").addEventListener("click", function (ev) {
+              // Allow navigation only if the click handler observed that the checkbox default action
+              // cleared `indeterminate` + `aria-checked="mixed"` in the JS DOM.
+              if (document.body.getAttribute("data-indeterminate") !== "false") {
+                ev.preventDefault();
+              }
+              if (document.body.getAttribute("data-aria") !== "null") {
+                ev.preventDefault();
+              }
+            });
+          </script>
+        </body>
+      </html>"#,
+  );
+
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-form-control-mirror-checkbox-indeterminate",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId::new();
+
+  ui_tx
+    .send(support::create_tab_msg(tab_id, Some(index_url.clone())))
+    .expect("create tab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (200, 140), 1.0))
+    .expect("viewport");
+
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {index_url}"));
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
+
+  // Click the checkbox to toggle it and clear auxiliary state. The JS click handler should observe
+  // that `indeterminate` and `aria-checked` were removed.
+  ui_tx
+    .send(support::pointer_down(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
+    .expect("pointer down checkbox");
+  ui_tx
+    .send(support::pointer_up(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
+    .expect("pointer up checkbox");
+
+  // Click the link; its click handler allows navigation only if it observed the attribute removals.
+  ui_tx
+    .send(support::pointer_down(
+      tab_id,
+      (10.0, 70.0),
+      PointerButton::Primary,
+    ))
+    .expect("pointer down link");
+  ui_tx
+    .send(support::pointer_up(
+      tab_id,
+      (10.0, 70.0),
+      PointerButton::Primary,
+    ))
+    .expect("pointer up link");
+
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &next_url)
+  })
+  .unwrap_or_else(|| panic!("expected navigation to commit to {next_url}"));
+
+  drop(ui_tx);
+  join.join().expect("worker join");
+}
+
+#[test]
 fn ui_worker_text_input_mirrors_value_to_js() {
   let _lock = super::stage_listener_test_lock();
 

@@ -1160,6 +1160,23 @@ fn mirror_dom1_form_control_state_into_dom2(
       if should_set {
         let _ = js_tab.dom_mut().set_input_checked(dom2_node, checked);
       }
+
+      // `InteractionEngine` default checkbox activation also clears a small set of auxiliary
+      // checkbox-related attributes in the renderer snapshot. Mirror those mutations into dom2 so JS
+      // sees a consistent attribute surface (`hasAttribute`, `getAttribute`) and future dom2→dom1
+      // snapshots don't resurrect stale state (notably `:indeterminate` selectors and ARIA mixed).
+      let indeterminate = dom_node.get_attribute_ref("indeterminate").is_some();
+      let _ = js_tab
+        .dom_mut()
+        .set_bool_attribute(dom2_node, "indeterminate", indeterminate);
+      match dom_node.get_attribute_ref("aria-checked") {
+        Some(value) => {
+          let _ = js_tab.dom_mut().set_attribute(dom2_node, "aria-checked", value);
+        }
+        None => {
+          let _ = js_tab.dom_mut().remove_attribute(dom2_node, "aria-checked");
+        }
+      }
       return;
     }
     if ty.eq_ignore_ascii_case("radio") {
