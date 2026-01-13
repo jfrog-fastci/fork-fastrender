@@ -1,4 +1,4 @@
-use crate::dom::{is_valid_shadow_host_name, ShadowRootMode, HTML_NAMESPACE};
+use crate::dom::{is_valid_shadow_host_name, ShadowRootMode};
 
 use super::{Document, DomError, NodeId, NodeKind, SlotAssignmentMode};
 
