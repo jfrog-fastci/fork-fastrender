@@ -280,6 +280,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | F6 | Focus address bar (select all) |
 | Alt+D (Win/Linux) | Focus address bar (select all) |
 | Ctrl/Cmd+N | New window |
+| F11 (Win/Linux); Ctrl+Cmd+F (macOS) | Toggle full screen |
 | Ctrl/Cmd+F | Find in page |
 | Ctrl/Cmd+T | New tab |
 | Ctrl/Cmd+Shift+T | Reopen last closed tab |
@@ -349,7 +350,8 @@ if those menu items are currently disabled:
 - **New Window**: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>N</kbd>.
 - **Show Downloads…**: use the downloads button in the toolbar.
 - **Bookmark manager…**: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>.
-- **Toggle Full Screen**: not implemented yet.
+- **Toggle Full Screen**: use <kbd>F11</kbd> (Win/Linux) or <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd>
+  (macOS).
 
 Help/About items open `about:help` / `about:version` in a new tab.
 
