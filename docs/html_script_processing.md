@@ -5,7 +5,7 @@ FastRender’s JavaScript support needs to follow the WHATWG HTML **script proce
 
 1. Scripts can run **during parsing** (observing a partially-built DOM).
 2. `async` / `defer` ordering matches browser behavior.
-3. Script execution is integrated with an HTML-shaped **event loop** (tasks + microtasks + timers + `requestAnimationFrame`).
+3. Script execution is integrated with an HTML-shaped **event loop** (tasks + microtasks + timers + `requestAnimationFrame` + `requestIdleCallback`).
 4. Relative `src` URLs resolve against the **base URL in effect at script preparation time**.
 
 This document is a spec-mapped design for that integration. It is written to prevent future
