@@ -74,6 +74,7 @@ pub enum DomInterface {
   HTMLScriptElement,
   Document,
   DocumentFragment,
+  ShadowRoot,
 }
 
 impl DomInterface {
@@ -81,6 +82,7 @@ impl DomInterface {
     match kind {
       NodeKind::Document { .. } => Self::Document,
       NodeKind::DocumentFragment => Self::DocumentFragment,
+      NodeKind::ShadowRoot { .. } => Self::ShadowRoot,
       NodeKind::Text { .. } => Self::Text,
       NodeKind::Comment { .. } => Self::Comment,
       NodeKind::ProcessingInstruction { .. } => Self::ProcessingInstruction,
@@ -149,6 +151,7 @@ impl DomInterface {
       | Self::Document
       | Self::DocumentFragment
       | Self::DocumentType => Some(Self::Node),
+      Self::ShadowRoot => Some(Self::DocumentFragment),
       Self::HTMLElement => Some(Self::Element),
       Self::HTMLInputElement
       | Self::HTMLSelectElement
@@ -209,6 +212,7 @@ pub struct DomPlatformPrototypes {
   pub html_script_element: GcObject,
   pub document: GcObject,
   pub document_fragment: GcObject,
+  pub shadow_root: GcObject,
 }
 
 /// Per-realm platform-object registry for `dom2` node wrappers inside a `vm-js` realm.
@@ -291,7 +295,7 @@ impl DomPlatform {
     // Root each object immediately after acquiring it. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(22);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(23);
     for proto in [
       prototypes.event_target,
       prototypes.node,
@@ -315,6 +319,7 @@ impl DomPlatform {
       prototypes.html_script_element,
       prototypes.document,
       prototypes.document_fragment,
+      prototypes.shadow_root,
     ] {
       prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto))?);
     }
@@ -341,7 +346,7 @@ impl DomPlatform {
     // Root each object immediately after lookup. Under a tight heap limit, subsequent allocations
     // can trigger GC, and unrooted prototypes would be collected (turning their handles into stale
     // values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(22);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(23);
 
     macro_rules! lookup_proto {
       ($name:literal) => {{
@@ -382,6 +387,7 @@ impl DomPlatform {
     let proto_html_script_element = lookup_proto!("HTMLScriptElement");
     let proto_document = lookup_proto!("Document");
     let proto_document_fragment = lookup_proto!("DocumentFragment");
+    let proto_shadow_root = lookup_proto!("ShadowRoot");
 
     Ok(Self {
       realm_id,
@@ -408,6 +414,7 @@ impl DomPlatform {
         html_script_element: proto_html_script_element,
         document: proto_document,
         document_fragment: proto_document_fragment,
+        shadow_root: proto_shadow_root,
       },
       prototype_roots,
       wrappers_by_node: HashMap::new(),
@@ -424,7 +431,7 @@ impl DomPlatform {
     // Root each object immediately after allocation. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(22);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(23);
 
     // Prototype objects.
     let proto_event_target = scope.alloc_object()?;
@@ -479,6 +486,8 @@ impl DomPlatform {
         .heap_mut()
         .add_root(Value::Object(proto_document_fragment))?,
     );
+    let proto_shadow_root = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_shadow_root))?);
 
     // WebIDL / WHATWG DOM inheritance chain:
     //   EventTarget -> Object
@@ -492,6 +501,7 @@ impl DomPlatform {
     //   HTML*Element -> HTMLElement
     //   Document -> Node
     //   DocumentFragment -> Node
+    //   ShadowRoot -> DocumentFragment
     scope.heap_mut().object_set_prototype(
       proto_event_target,
       Some(realm.intrinsics().object_prototype()),
@@ -541,6 +551,9 @@ impl DomPlatform {
     scope
       .heap_mut()
       .object_set_prototype(proto_document_fragment, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_shadow_root, Some(proto_document_fragment))?;
 
     Ok(Self {
       realm_id,
@@ -567,6 +580,7 @@ impl DomPlatform {
         html_script_element: proto_html_script_element,
         document: proto_document,
         document_fragment: proto_document_fragment,
+        shadow_root: proto_shadow_root,
       },
       prototype_roots,
       wrappers_by_node: HashMap::new(),
@@ -623,6 +637,12 @@ impl DomPlatform {
       "DocumentFragment",
       "DomPlatform::new_from_global_prototypes expected globalThis.DocumentFragment.prototype",
     )?;
+    let proto_shadow_root = Self::lookup_global_interface_prototype(
+      scope,
+      global,
+      "ShadowRoot",
+      "DomPlatform::new_from_global_prototypes expected globalThis.ShadowRoot.prototype",
+    )?;
 
     // Root adopted prototypes while we allocate the remaining ones (tight heap limits can trigger
     // GC during allocation).
@@ -633,6 +653,7 @@ impl DomPlatform {
       proto_element,
       proto_document,
       proto_document_fragment,
+      proto_shadow_root,
     ] {
       scope.push_root(Value::Object(proto))?;
     }
@@ -720,6 +741,9 @@ impl DomPlatform {
     scope
       .heap_mut()
       .object_set_prototype(proto_document_fragment, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_shadow_root, Some(proto_document_fragment))?;
 
     let result = Self::new_with_prototypes(
       scope,
@@ -747,6 +771,7 @@ impl DomPlatform {
         html_script_element: proto_html_script_element,
         document: proto_document,
         document_fragment: proto_document_fragment,
+        shadow_root: proto_shadow_root,
       },
     );
     scope.heap_mut().truncate_stack_roots(base);
@@ -786,6 +811,7 @@ impl DomPlatform {
       DomInterface::HTMLScriptElement => self.prototypes.html_script_element,
       DomInterface::Document => self.prototypes.document,
       DomInterface::DocumentFragment => self.prototypes.document_fragment,
+      DomInterface::ShadowRoot => self.prototypes.shadow_root,
     }
   }
 
@@ -1496,6 +1522,10 @@ mod tests {
     ] {
       let _ = install_stub_interface(scope, global, name, node_proto)?;
     }
+
+    // ShadowRoot inherits from DocumentFragment.
+    let document_fragment_proto = get_global_interface_prototype(scope, global, "DocumentFragment")?;
+    let _ = install_stub_interface(scope, global, "ShadowRoot", document_fragment_proto)?;
 
     // Element + HTMLElement + HTML*Element chain.
     let element_proto = install_stub_interface(scope, global, "Element", node_proto)?;

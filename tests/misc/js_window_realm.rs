@@ -1254,6 +1254,49 @@ fn html_element_instanceof_uses_dom_platform_prototypes() -> Result<()> {
 }
 
 #[test]
+fn shadow_root_is_distinct_interface_with_core_attributes() -> Result<()> {
+  let dom = fastrender::dom2::parse_html(
+    "<!doctype html><html><body>\n\
+      <div id=\"open\"></div>\n\
+      <div id=\"closed\"></div>\n\
+    </body></html>",
+  )?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let ok = host.exec_script(
+    "(() => {\n\
+      if (typeof ShadowRoot !== 'function') return false;\n\
+\n\
+      const openHost = document.getElementById('open');\n\
+      const closedHost = document.getElementById('closed');\n\
+\n\
+      const openSr = openHost.attachShadow({ mode: 'open', delegatesFocus: true, slotAssignment: 'manual' });\n\
+      const closedSr = closedHost.attachShadow({ mode: 'closed' });\n\
+\n\
+      if (!(openSr instanceof ShadowRoot)) return false;\n\
+      if (!(openSr instanceof DocumentFragment)) return false;\n\
+\n\
+      if (Object.getPrototypeOf(ShadowRoot) !== DocumentFragment) return false;\n\
+      if (Object.getPrototypeOf(ShadowRoot.prototype) !== DocumentFragment.prototype) return false;\n\
+\n\
+      if (openSr.host !== openHost) return false;\n\
+      if (openSr.mode !== 'open') return false;\n\
+      if (openSr.delegatesFocus !== true) return false;\n\
+      if (openSr.slotAssignment !== 'manual') return false;\n\
+\n\
+      if (closedSr.host !== closedHost) return false;\n\
+      if (closedSr.mode !== 'closed') return false;\n\
+      if (closedSr.delegatesFocus !== false) return false;\n\
+      if (closedSr.slotAssignment !== 'named') return false;\n\
+      if (closedHost.shadowRoot !== null) return false;\n\
+\n\
+      return true;\n\
+    })()",
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn strict_script_top_level_this_is_window() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;

@@ -27153,6 +27153,134 @@ fn element_shadow_root_get_native(
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), shadow_root)
 }
 
+fn shadow_root_host_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_interface_node_handle(scope.heap(), Value::Object(wrapper_obj), DomInterface::ShadowRoot)?;
+  let document_obj =
+    node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id).map_err(|_| VmError::TypeError("Illegal invocation"))?;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+    .or_else(|| dom_from_vm_host(host).map(NonNull::from))
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let Some(host_id) = dom.shadow_root_host(node_key.node_id) else {
+    return Ok(Value::Null);
+  };
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), host_id)
+}
+
+fn shadow_root_mode_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_interface_node_handle(scope.heap(), Value::Object(wrapper_obj), DomInterface::ShadowRoot)?;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+    .or_else(|| dom_from_vm_host(host).map(NonNull::from))
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let NodeKind::ShadowRoot { mode, .. } = &dom.node(node_key.node_id).kind else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let s = match mode {
+    crate::dom::ShadowRootMode::Open => "open",
+    crate::dom::ShadowRootMode::Closed => "closed",
+  };
+  Ok(Value::String(scope.alloc_string(s)?))
+}
+
+fn shadow_root_delegates_focus_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_interface_node_handle(scope.heap(), Value::Object(wrapper_obj), DomInterface::ShadowRoot)?;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+    .or_else(|| dom_from_vm_host(host).map(NonNull::from))
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let NodeKind::ShadowRoot {
+    delegates_focus, ..
+  } = &dom.node(node_key.node_id).kind
+  else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  Ok(Value::Bool(*delegates_focus))
+}
+
+fn shadow_root_slot_assignment_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_interface_node_handle(scope.heap(), Value::Object(wrapper_obj), DomInterface::ShadowRoot)?;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+    .or_else(|| dom_from_vm_host(host).map(NonNull::from))
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let NodeKind::ShadowRoot {
+    slot_assignment, ..
+  } = &dom.node(node_key.node_id).kind
+  else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  Ok(Value::String(scope.alloc_string(slot_assignment.as_str())?))
+}
+
 fn slottable_assigned_slot_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -35478,7 +35606,7 @@ fn init_window_globals(
     }
   }
 
-  // --- Core DOM constructors + prototypes (Node/DocumentType/Element/Document/DocumentFragment/Text) ----------
+  // --- Core DOM constructors + prototypes (Node/DocumentType/Element/Document/DocumentFragment/ShadowRoot/Text) ----------
   //
   // These are needed for `instanceof` checks in the curated WPT DOM tests.
   if let Some(platform) = dom_platform.as_ref() {
@@ -35505,6 +35633,7 @@ fn init_window_globals(
     let document_proto = platform.prototype_for(DomInterface::Document);
     let document_type_proto = platform.prototype_for(DomInterface::DocumentType);
     let document_fragment_proto = platform.prototype_for(DomInterface::DocumentFragment);
+    let shadow_root_proto = platform.prototype_for(DomInterface::ShadowRoot);
     let text_proto = platform.prototype_for(DomInterface::Text);
     let comment_proto = platform.prototype_for(DomInterface::Comment);
     let processing_instruction_proto = platform.prototype_for(DomInterface::ProcessingInstruction);
@@ -35711,6 +35840,41 @@ fn init_window_globals(
       document_fragment_ctor
     };
 
+    let _shadow_root_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      let shadow_root_ctor = make_illegal_ctor(&mut scope, "ShadowRoot")?;
+      scope.push_root(Value::Object(shadow_root_ctor))?;
+      scope.define_property(
+        shadow_root_ctor,
+        prototype_key,
+        ctor_link_desc(Value::Object(shadow_root_proto)),
+      )?;
+      scope.define_property(
+        shadow_root_proto,
+        constructor_key,
+        ctor_link_desc(Value::Object(shadow_root_ctor)),
+      )?;
+      let shadow_root_key = alloc_key(&mut scope, "ShadowRoot")?;
+      scope.define_property(global, shadow_root_key, data_desc(Value::Object(shadow_root_ctor)))?;
+      shadow_root_ctor
+    } else {
+      let shadow_root_key = alloc_key(&mut scope, "ShadowRoot")?;
+      let Some(shadow_root_val) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &shadow_root_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.ShadowRoot to be installed by WebIDL bindings",
+        ));
+      };
+      let Value::Object(shadow_root_ctor) = shadow_root_val else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.ShadowRoot to be an object",
+        ));
+      };
+      scope.push_root(Value::Object(shadow_root_ctor))?;
+      shadow_root_ctor
+    };
+
     let _text_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
       let text_ctor = make_illegal_ctor(&mut scope, "Text")?;
       scope.push_root(Value::Object(text_ctor))?;
@@ -35897,6 +36061,7 @@ fn init_window_globals(
     let element_ctor = require_global_ctor(&mut scope, "Element")?;
     let document_ctor = require_global_ctor(&mut scope, "Document")?;
     let document_fragment_ctor = require_global_ctor(&mut scope, "DocumentFragment")?;
+    let shadow_root_ctor = require_global_ctor(&mut scope, "ShadowRoot")?;
     let text_ctor = require_global_ctor(&mut scope, "Text")?;
 
     scope
@@ -35910,6 +36075,9 @@ fn init_window_globals(
     scope
       .heap_mut()
       .object_set_prototype(document_fragment_ctor, Some(node_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(shadow_root_ctor, Some(document_fragment_ctor))?;
     scope.heap_mut().object_set_prototype(text_ctor, Some(node_ctor))?;
     scope.heap_mut().object_set_prototype(comment_ctor, Some(node_ctor))?;
     scope
@@ -36990,6 +37158,107 @@ fn init_window_globals(
         },
       },
     )?;
+
+    // ShadowRoot core attributes.
+    //
+    // In the WebIDL backend, these are expected to be installed by generated bindings.
+    if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      // ShadowRoot.host
+      let shadow_root_host_get_call_id = vm.register_native_call(shadow_root_host_get_native)?;
+      let shadow_root_host_get_name = scope.alloc_string("get host")?;
+      scope.push_root(Value::String(shadow_root_host_get_name))?;
+      let shadow_root_host_get_func = scope.alloc_native_function(
+        shadow_root_host_get_call_id,
+        None,
+        shadow_root_host_get_name,
+        0,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        shadow_root_host_get_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(shadow_root_host_get_func))?;
+      let host_key = alloc_key(&mut scope, "host")?;
+      scope.define_property(
+        shadow_root_proto,
+        host_key,
+        idl_attribute_desc(Value::Object(shadow_root_host_get_func), Value::Undefined),
+      )?;
+
+      // ShadowRoot.mode
+      let shadow_root_mode_get_call_id = vm.register_native_call(shadow_root_mode_get_native)?;
+      let shadow_root_mode_get_name = scope.alloc_string("get mode")?;
+      scope.push_root(Value::String(shadow_root_mode_get_name))?;
+      let shadow_root_mode_get_func = scope.alloc_native_function(
+        shadow_root_mode_get_call_id,
+        None,
+        shadow_root_mode_get_name,
+        0,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        shadow_root_mode_get_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(shadow_root_mode_get_func))?;
+      let mode_key = alloc_key(&mut scope, "mode")?;
+      scope.define_property(
+        shadow_root_proto,
+        mode_key,
+        idl_attribute_desc(Value::Object(shadow_root_mode_get_func), Value::Undefined),
+      )?;
+
+      // ShadowRoot.delegatesFocus
+      let shadow_root_delegates_focus_get_call_id =
+        vm.register_native_call(shadow_root_delegates_focus_get_native)?;
+      let shadow_root_delegates_focus_get_name = scope.alloc_string("get delegatesFocus")?;
+      scope.push_root(Value::String(shadow_root_delegates_focus_get_name))?;
+      let shadow_root_delegates_focus_get_func = scope.alloc_native_function(
+        shadow_root_delegates_focus_get_call_id,
+        None,
+        shadow_root_delegates_focus_get_name,
+        0,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        shadow_root_delegates_focus_get_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(shadow_root_delegates_focus_get_func))?;
+      let delegates_focus_key = alloc_key(&mut scope, "delegatesFocus")?;
+      scope.define_property(
+        shadow_root_proto,
+        delegates_focus_key,
+        idl_attribute_desc(
+          Value::Object(shadow_root_delegates_focus_get_func),
+          Value::Undefined,
+        ),
+      )?;
+
+      // ShadowRoot.slotAssignment
+      let shadow_root_slot_assignment_get_call_id =
+        vm.register_native_call(shadow_root_slot_assignment_get_native)?;
+      let shadow_root_slot_assignment_get_name = scope.alloc_string("get slotAssignment")?;
+      scope.push_root(Value::String(shadow_root_slot_assignment_get_name))?;
+      let shadow_root_slot_assignment_get_func = scope.alloc_native_function(
+        shadow_root_slot_assignment_get_call_id,
+        None,
+        shadow_root_slot_assignment_get_name,
+        0,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        shadow_root_slot_assignment_get_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(shadow_root_slot_assignment_get_func))?;
+      let slot_assignment_key = alloc_key(&mut scope, "slotAssignment")?;
+      scope.define_property(
+        shadow_root_proto,
+        slot_assignment_key,
+        idl_attribute_desc(
+          Value::Object(shadow_root_slot_assignment_get_func),
+          Value::Undefined,
+        ),
+      )?;
+    }
 
     // Slottable.assignedSlot (Element + Text).
     let assigned_slot_get_call_id = vm.register_native_call(slottable_assigned_slot_get_native)?;
