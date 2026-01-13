@@ -10686,7 +10686,7 @@ fn compiled_arrow_function_does_not_have_prototype() -> Result<(), VmError> {
 }
 
 #[test]
-fn compiled_arrow_function_is_not_constructable() -> Result<(), VmError> {
+fn compiled_arrow_function_is_not_constructable_throws_type_error() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
@@ -10838,6 +10838,50 @@ fn compiled_object_destructuring_rest_executes() -> Result<(), VmError> {
 
   let result = rt.exec_compiled_script(script)?;
   assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_destructuring_rest_excludes_named_properties() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let src = { x: 1, y: 2 };
+      let { x, ...rest } = src;
+      !("x" in rest) && ("y" in rest) && rest.y === 2 && x === 1
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_destructuring_rest_excludes_symbol_properties() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let sym = Symbol("s");
+      let src = { a: 2 };
+      src[sym] = 1;
+      let { [sym]: x, ...rest } = src;
+      x === 1 && rest.a === 2 && Object.getOwnPropertySymbols(rest).length === 0
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
   Ok(())
 }
 
