@@ -13661,6 +13661,10 @@ enum AsyncFrame {
     expr: *const BinaryExpr,
     left_root: RootId,
   },
+  /// Continue a private `#x in <expr>` brand check after evaluating the RHS.
+  PrivateInAfterRight {
+    expr: *const BinaryExpr,
+  },
 
   /// Continue an assignment expression after evaluating the RHS (binding target).
   AssignAfterRhsBinding {
@@ -20764,6 +20768,37 @@ fn async_eval_expr_chain(
       }
     },
     Expr::Binary(binary)
+      if binary.stx.operator == OperatorName::In
+        && (matches!(&*binary.stx.left.stx, Expr::Id(id) if id.stx.name.starts_with('#'))
+          || matches!(&*binary.stx.left.stx, Expr::IdPat(id) if id.stx.name.starts_with('#'))) =>
+    {
+      // `#x in <expr>` is a private brand check, not an identifier reference expression.
+      let private_name = match &*binary.stx.left.stx {
+        Expr::Id(id) if id.stx.name.starts_with('#') => id.stx.name.as_str(),
+        Expr::IdPat(id) if id.stx.name.starts_with('#') => id.stx.name.as_str(),
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "private in-expression left operand is not a private identifier",
+          ))
+        }
+      };
+
+      match async_eval_expr(evaluator, scope, &binary.stx.right)? {
+        AsyncEval::Complete(right) => Ok(AsyncEval::Complete(
+          async_apply_private_in_operator(evaluator, scope, private_name, right)?,
+        )),
+        AsyncEval::Suspend(mut suspend) => {
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::PrivateInAfterRight {
+              expr: &*binary.stx as *const BinaryExpr,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
+      }
+    }
+    Expr::Binary(binary)
       if matches!(
         binary.stx.operator,
         OperatorName::Assignment
@@ -23748,6 +23783,40 @@ fn async_apply_binary_operator(
   }
 }
 
+fn async_apply_private_in_operator(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  private_name: &str,
+  right: Value,
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = right else {
+    return Err(throw_type_error(
+      evaluator.vm,
+      scope,
+      "Right-hand side of 'in' should be an object",
+    )?);
+  };
+
+  // Root the RHS object across private-name resolution and own-property lookup.
+  let mut rhs_scope = scope.reborrow();
+  rhs_scope.push_root(Value::Object(obj))?;
+
+  let sym = rhs_scope
+    .heap()
+    .resolve_private_name_symbol(evaluator.env.lexical_env, private_name)?
+    .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+
+  // Private brand checks are not observable through Proxy objects.
+  if rhs_scope.heap().is_proxy_object(obj) {
+    return Ok(Value::Bool(false));
+  }
+
+  rhs_scope.push_root(Value::Symbol(sym))?;
+  let key = PropertyKey::from_symbol(sym);
+  let has = rhs_scope.heap().get_own_property(obj, key)?.is_some();
+  Ok(Value::Bool(has))
+}
+
 fn async_eval_call(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -25371,6 +25440,37 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "binary right frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::PrivateInAfterRight { expr } => match state {
+        AsyncState::Expr(right_res) => {
+          let expr = unsafe { &*expr };
+          let private_name = match &*expr.left.stx {
+            Expr::Id(id) if id.stx.name.starts_with('#') => id.stx.name.as_str(),
+            Expr::IdPat(id) if id.stx.name.starts_with('#') => id.stx.name.as_str(),
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "private-in frame missing private identifier left operand",
+              ))
+            }
+          };
+
+          match right_res {
+            Ok(right) => match async_apply_private_in_operator(evaluator, scope, private_name, right) {
+              Ok(v) => state = AsyncState::Expr(Ok(v)),
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Expr(Err(err))
+              }
+              Err(err) => return Err(err),
+            },
+            Err(err) => state = AsyncState::Expr(Err(err)),
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "private-in frame received completion state",
           ))
         }
       },
