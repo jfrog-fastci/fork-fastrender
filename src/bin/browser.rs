@@ -48,6 +48,25 @@ fn date_picker_day_a11y_label(year: i32, month: u32, day: u32, selected: bool) -
   }
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+fn should_restore_page_focus_for_state(
+  address_bar_has_focus: bool,
+  bookmarks_panel_open: bool,
+  history_panel_open: bool,
+  downloads_panel_open: bool,
+  clear_browsing_data_dialog_open: bool,
+  tab_search_open: bool,
+  find_in_page_open: bool,
+) -> bool {
+  !address_bar_has_focus
+    && !bookmarks_panel_open
+    && !history_panel_open
+    && !downloads_panel_open
+    && !clear_browsing_data_dialog_open
+    && !tab_search_open
+    && !find_in_page_open
+}
+
 #[cfg(feature = "browser_ui")]
 fn main() {
   if let Err(err) = run() {
@@ -6650,16 +6669,18 @@ impl App {
   }
 
   fn should_restore_page_focus(&self) -> bool {
-    !self.browser_state.chrome.address_bar_has_focus
-      && !self.bookmarks_panel_open
-      && !self.history_panel_open
-      && !self.downloads_panel_open
-      && !self.clear_browsing_data_dialog_open
-      && !self.browser_state.chrome.tab_search.open
-      && !self
+    should_restore_page_focus_for_state(
+      self.browser_state.chrome.address_bar_has_focus,
+      self.bookmarks_panel_open,
+      self.history_panel_open,
+      self.downloads_panel_open,
+      self.clear_browsing_data_dialog_open,
+      self.browser_state.chrome.tab_search.open,
+      self
         .browser_state
         .active_tab()
-        .is_some_and(|tab| tab.find.open)
+        .is_some_and(|tab| tab.find.open),
+    )
   }
 
   fn handle_profile_shortcuts(&mut self, key: winit::event::VirtualKeyCode) -> bool {
@@ -10013,6 +10034,39 @@ mod debug_log_env_tests {
     assert!(!should_show_debug_log_ui(false, Some("0")));
     assert!(should_show_debug_log_ui(false, Some("1")));
     assert!(should_show_debug_log_ui(true, None));
+  }
+}
+
+#[cfg(test)]
+mod page_focus_restore_tests {
+  use super::should_restore_page_focus_for_state;
+
+  #[test]
+  fn restore_focus_requires_no_other_focus_surfaces() {
+    assert!(should_restore_page_focus_for_state(
+      false, false, false, false, false, false, false
+    ));
+    assert!(!should_restore_page_focus_for_state(
+      true, false, false, false, false, false, false
+    ));
+    assert!(!should_restore_page_focus_for_state(
+      false, true, false, false, false, false, false
+    ));
+    assert!(!should_restore_page_focus_for_state(
+      false, false, true, false, false, false, false
+    ));
+    assert!(!should_restore_page_focus_for_state(
+      false, false, false, true, false, false, false
+    ));
+    assert!(!should_restore_page_focus_for_state(
+      false, false, false, false, true, false, false
+    ));
+    assert!(!should_restore_page_focus_for_state(
+      false, false, false, false, false, true, false
+    ));
+    assert!(!should_restore_page_focus_for_state(
+      false, false, false, false, false, false, true
+    ));
   }
 }
 
