@@ -46,7 +46,7 @@ use base64::engine::general_purpose;
 use base64::Engine as _;
 use parking_lot::Mutex;
 use selectors::context::QuirksMode;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -5290,6 +5290,107 @@ fn make_dom_exception_for_global(
     return dom_exception.new_instance(scope, name, message);
   }
   make_dom_exception_fallback_object(scope, name, message)
+}
+
+fn to_uint16_from_f64(mut n: f64) -> u16 {
+  // WebIDL `ToUint16`:
+  // - NaN, infinities, and ±0 all map to 0
+  // - otherwise, truncate toward zero and take modulo 2^16.
+  if !n.is_finite() || n.is_nan() {
+    n = 0.0;
+  }
+  let n = n.trunc();
+  // NOTE: `%` on floats matches JavaScript's remainder operator; we normalize to a positive modulo.
+  let n = n % 65536.0;
+  let n = if n < 0.0 { n + 65536.0 } else { n };
+  n as u16
+}
+
+/// DOM Traversal: <https://dom.spec.whatwg.org/#concept-node-filter>.
+///
+/// This implements the shared "filter a node within a NodeIterator or TreeWalker" algorithm,
+/// including:
+/// - `is_active` re-entrancy guard (`InvalidStateError`)
+/// - WebIDL "call a user object's operation" semantics for callback interfaces
+/// - return value conversion to `unsigned short` (`ToUint16`)
+pub(crate) fn traversal_filter_node(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  traverser_is_active: &Cell<bool>,
+  what_to_show: u32,
+  filter: Value,
+  node: Value,
+  node_type: u16,
+) -> Result<u16, VmError> {
+  // Spec step 1: prevent recursive invocations.
+  if traverser_is_active.get() {
+    return Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      "InvalidStateError",
+      "",
+    )?));
+  }
+
+  // Spec step 2/3: apply the whatToShow bitmask before invoking the callback.
+  let n = node_type.saturating_sub(1) as u32;
+  if n >= 32 || (what_to_show & (1u32 << n)) == 0 {
+    return Ok(3); // NodeFilter.FILTER_SKIP
+  }
+
+  // Spec step 4: null filter short-circuit.
+  if matches!(filter, Value::Null | Value::Undefined) {
+    return Ok(1); // NodeFilter.FILTER_ACCEPT
+  }
+
+  // Root callback + node while we allocate property keys and invoke user code.
+  let mut scope = scope.reborrow();
+  scope.push_root(filter)?;
+  scope.push_root(node)?;
+
+  // Spec step 5+: mark active for the duration of the callback conversion/invocation.
+  traverser_is_active.set(true);
+  struct TraversalActiveGuard<'a> {
+    flag: &'a Cell<bool>,
+  }
+  impl Drop for TraversalActiveGuard<'_> {
+    fn drop(&mut self) {
+      self.flag.set(false);
+    }
+  }
+  let _active_guard = TraversalActiveGuard {
+    flag: traverser_is_active,
+  };
+
+  // Spec step 6: call a user object's operation.
+  //
+  // WebIDL callback interface rules:
+  // - If `filter` is callable, call it directly with `this = undefined`.
+  // - Otherwise, call `filter.acceptNode(node)` with `this = filter`.
+  let return_value = if scope.heap().is_callable(filter)? {
+    vm.call_with_host_and_hooks(host, &mut scope, hooks, filter, Value::Undefined, &[node])?
+  } else if let Value::Object(filter_obj) = filter {
+    let accept_node_key = alloc_key(&mut scope, "acceptNode")?;
+    let accept_node =
+      vm.get_with_host_and_hooks(host, &mut scope, hooks, filter_obj, accept_node_key)?;
+    if !scope.heap().is_callable(accept_node)? {
+      return Err(VmError::TypeError(
+        "NodeFilter callback has no callable acceptNode",
+      ));
+    }
+    vm.call_with_host_and_hooks(host, &mut scope, hooks, accept_node, filter, &[node])?
+  } else {
+    return Err(VmError::TypeError(
+      "NodeFilter callback is not callable and not an object",
+    ));
+  };
+
+  // WebIDL return type conversion: `unsigned short`.
+  scope.push_root(return_value)?;
+  let n = scope.to_number(vm, host, hooks, return_value)?;
+  Ok(to_uint16_from_f64(n))
 }
 
 fn sanitize_scroll_coord(n: f64) -> f32 {

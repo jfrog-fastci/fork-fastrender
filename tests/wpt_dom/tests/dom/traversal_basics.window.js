@@ -126,6 +126,43 @@ test(() => {
 
   const root = document.createElement("div");
   const a = document.createElement("span");
+  const b = document.createElement("span");
+  root.appendChild(a);
+  root.appendChild(b);
+  body.appendChild(root);
+
+  const calls = [];
+  const filter = {
+    acceptNode(node) {
+      calls.push(this);
+      calls.push(node);
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  };
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, filter);
+  assert_equals(it.filter, filter);
+
+  assert_equals(it.nextNode(), root);
+  assert_equals(it.nextNode(), a);
+  assert_equals(it.nextNode(), b);
+  assert_equals(it.nextNode(), null);
+
+  assert_equals(calls.length, 6, "acceptNode should be invoked for each visited node");
+  assert_equals(calls[0], filter, "acceptNode should be called with this=filter");
+  assert_equals(calls[1], root);
+  assert_equals(calls[2], filter, "acceptNode should be called with this=filter");
+  assert_equals(calls[3], a);
+  assert_equals(calls[4], filter, "acceptNode should be called with this=filter");
+  assert_equals(calls[5], b);
+}, "NodeIterator invokes object-form NodeFilter.acceptNode during traversal");
+
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const root = document.createElement("div");
+  const a = document.createElement("span");
   root.appendChild(a);
   body.appendChild(root);
 
