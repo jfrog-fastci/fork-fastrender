@@ -668,16 +668,8 @@ fn generate_anonymous_flex_items(
             tree.calc(val, basis)
           }),
         margin_is_auto: child_style.margin().map(LengthPercentageAuto::is_auto),
-        padding: child_style
-          .padding()
-          .resolve_or_zero(constants.node_inner_size.width, |val, basis| {
-            tree.calc(val, basis)
-          }),
-        border: child_style
-          .border()
-          .resolve_or_zero(constants.node_inner_size.width, |val, basis| {
-            tree.calc(val, basis)
-          }),
+        padding,
+        border,
         align_self: child_style.align_self().unwrap_or(constants.align_items),
         overflow: child_style.overflow(),
         scrollbar_width: child_style.scrollbar_width(),
@@ -829,18 +821,9 @@ fn determine_flex_base_size(
     };
 
     let container_width = constants.node_inner_size.main(dir);
-    let box_sizing_adjustment = if child_style.box_sizing() == BoxSizing::ContentBox {
-      let padding = child_style
-        .padding()
-        .resolve_or_zero(container_width, |val, basis| tree.calc(val, basis));
-      let border = child_style
-        .border()
-        .resolve_or_zero(container_width, |val, basis| tree.calc(val, basis));
-      (padding + border).sum_axes()
-    } else {
-      Size::ZERO
-    }
-    .main(dir);
+    let pb_sum = (child.padding + child.border).sum_axes();
+    let box_sizing_adjustment =
+      if child_style.box_sizing() == BoxSizing::ContentBox { pb_sum.main(dir) } else { 0.0 };
     let flex_basis = child_style
       .flex_basis()
       .maybe_resolve(container_width, |val, basis| tree.calc(val, basis))
@@ -1941,17 +1924,7 @@ fn determine_used_cross_size(
           // For some reason this particular usage of max_width is an exception to the rule that max_width's transfer
           // using the aspect_ratio (if set). Both Chrome and Firefox agree on this. And reading the spec, it seems like
           // a reasonable interpretation. Although it seems to me that the spec *should* apply aspect_ratio here.
-          let padding = child_style
-            .padding()
-            .resolve_or_zero(constants.node_inner_size, |val, basis| {
-              tree.calc(val, basis)
-            });
-          let border = child_style
-            .border()
-            .resolve_or_zero(constants.node_inner_size, |val, basis| {
-              tree.calc(val, basis)
-            });
-          let pb_sum = (padding + border).sum_axes();
+          let pb_sum = (child.padding + child.border).sum_axes();
           let box_sizing_adjustment = if child_style.box_sizing() == BoxSizing::ContentBox {
             pb_sum
           } else {
@@ -3264,5 +3237,140 @@ mod tests {
       assert_eq!(child1_y, expected_child1_y);
       assert_eq!(child2_y, expected_child2_y);
     }
+  }
+
+  #[test]
+  fn flexbox_content_box_padding_border_cached_values_layout_unchanged() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child = taffy
+      .new_leaf(Style {
+        box_sizing: BoxSizing::ContentBox,
+        flex_basis: length(50.0),
+        align_self: Some(AlignSelf::Stretch),
+        max_size: Size {
+          width: auto(),
+          height: length(20.0),
+        },
+        padding: Rect {
+          left: length(10.0),
+          right: length(10.0),
+          top: length(5.0),
+          bottom: length(5.0),
+        },
+        border: Rect {
+          left: length(2.0),
+          right: length(2.0),
+          top: length(3.0),
+          bottom: length(3.0),
+        },
+        flex_grow: 0.0,
+        flex_shrink: 0.0,
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          size: Size::from_lengths(200.0, 50.0),
+          flex_direction: FlexDirection::Row,
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    let layout = taffy.layout(child).unwrap();
+    assert_eq!(layout.size.width, 74.0);
+    assert_eq!(layout.size.height, 36.0);
+  }
+
+  #[test]
+  fn flexbox_stretch_percentage_padding_resolves_against_container_width() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child = taffy
+      .new_leaf(Style {
+        box_sizing: BoxSizing::ContentBox,
+        flex_basis: length(0.0),
+        align_self: Some(AlignSelf::Stretch),
+        max_size: Size {
+          width: auto(),
+          height: length(30.0),
+        },
+        padding: Rect {
+          left: length(0.0),
+          right: length(0.0),
+          top: percent(0.1),
+          bottom: percent(0.1),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          size: Size::from_lengths(200.0, 100.0),
+          flex_direction: FlexDirection::Row,
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    // max-height is 30 (content-box) + 10% + 10% padding.
+    // Percentage padding should resolve against the container width: 0.1 * 200 = 20.
+    // Therefore max-height (border-box) = 30 + 20 + 20 = 70.
+    let layout = taffy.layout(child).unwrap();
+    assert_eq!(layout.size.height, 70.0);
+  }
+
+  #[test]
+  fn flexbox_column_flex_basis_percentage_padding_resolves_against_container_width() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child = taffy
+      .new_leaf(Style {
+        box_sizing: BoxSizing::ContentBox,
+        flex_basis: length(10.0),
+        padding: Rect {
+          left: length(0.0),
+          right: length(0.0),
+          top: percent(0.1),
+          bottom: percent(0.1),
+        },
+        flex_grow: 0.0,
+        flex_shrink: 0.0,
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          size: Size::from_lengths(200.0, 100.0),
+          flex_direction: FlexDirection::Column,
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    // flex-basis is 10 (content-box) + 10% + 10% padding.
+    // Percentage padding should resolve against the container width: 0.1 * 200 = 20.
+    // Therefore main-size (border-box) = 10 + 20 + 20 = 50.
+    let layout = taffy.layout(child).unwrap();
+    assert_eq!(layout.size.height, 50.0);
   }
 }
