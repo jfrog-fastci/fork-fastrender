@@ -14,9 +14,9 @@ const HOME_FILE_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_HOME_FILE_PATH";
 
 #[test]
 fn renderer_sandbox_profiles_enforce_policy() {
-  const TEST_NAME: &str = concat!(
+  let test_name = crate::common::libtest::exact_test_name(
     module_path!(),
-    "::renderer_sandbox_profiles_enforce_policy"
+    stringify!(renderer_sandbox_profiles_enforce_policy),
   );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
@@ -36,7 +36,7 @@ fn renderer_sandbox_profiles_enforce_policy() {
       .env(MODE_ENV, mode)
       .env(HOME_FILE_ENV, &home_file_path)
       .arg("--exact")
-      .arg(TEST_NAME)
+      .arg(&test_name)
       .arg("--nocapture")
       .output()
       .unwrap_or_else(|err| panic!("spawn child process: {err}"));
@@ -90,11 +90,15 @@ fn sandbox_env_disable_skips_seatbelt() {
   }
 
   let exe = std::env::current_exe().expect("test exe path");
+  let test_name = crate::common::libtest::exact_test_name(
+    module_path!(),
+    stringify!(sandbox_env_disable_skips_seatbelt),
+  );
   let output = Command::new(&exe)
     .env(CHILD_ENV, "1")
     .env("FASTR_DISABLE_RENDERER_SANDBOX", "1")
     .arg("--exact")
-    .arg(stringify!(sandbox_env_disable_skips_seatbelt))
+    .arg(&test_name)
     .arg("--nocapture")
     .output()
     .expect("spawn sandbox env override child");
@@ -144,11 +148,15 @@ fn sandbox_env_profile_overrides_strict_to_system_fonts() {
   }
 
   let exe = std::env::current_exe().expect("test exe path");
+  let test_name = crate::common::libtest::exact_test_name(
+    module_path!(),
+    stringify!(sandbox_env_profile_overrides_strict_to_system_fonts),
+  );
   let output = Command::new(&exe)
     .env(CHILD_ENV, "1")
     .env("FASTR_MACOS_RENDERER_SANDBOX", "system-fonts")
     .arg("--exact")
-    .arg(stringify!(sandbox_env_profile_overrides_strict_to_system_fonts))
+    .arg(&test_name)
     .arg("--nocapture")
     .output()
     .expect("spawn sandbox env profile override child");

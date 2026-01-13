@@ -5,9 +5,9 @@ use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode};
 #[test]
 fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
   const CHILD_ENV: &str = "FASTR_TEST_MACOS_RELAXED_SANDBOX_FONTDB_CHILD";
-  const TEST_NAME: &str = concat!(
+  let test_name = crate::common::libtest::exact_test_name(
     module_path!(),
-    "::relaxed_sandbox_allows_fontdb_system_font_discovery"
+    stringify!(relaxed_sandbox_allows_fontdb_system_font_discovery),
   );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
@@ -43,7 +43,7 @@ fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
     .arg("--exact")
-    .arg(TEST_NAME)
+    .arg(&test_name)
     .arg("--nocapture")
     .output()
     .expect("spawn child test process");

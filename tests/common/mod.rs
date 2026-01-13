@@ -3,6 +3,7 @@
 pub(crate) mod accessibility;
 pub(crate) mod env;
 pub(crate) mod global_state;
+pub(crate) mod libtest;
 pub(crate) mod locks;
 pub(crate) mod media_assets;
 pub(crate) mod net;

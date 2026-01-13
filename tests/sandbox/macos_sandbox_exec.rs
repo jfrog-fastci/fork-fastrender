@@ -15,8 +15,6 @@ const PORT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_LOCALHOST_PORT";
 const READ_PATH_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_READ_PATH";
 const WRITE_PATH_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_WRITE_PATH";
 
-const TEST_NAME: &str = stringify!(sandbox_exec_wrapper_enforces_sandbox);
-
 fn sandbox_exec_path() -> &'static Path {
   Path::new("/usr/bin/sandbox-exec")
 }
@@ -121,6 +119,8 @@ fn sandbox_exec_wrapper_enforces_sandbox() {
 
   let profile = sandbox_profile(&read_probe_path, &write_probe_path);
   let exe = std::env::current_exe().expect("current test exe path");
+  let test_name =
+    crate::common::libtest::exact_test_name(module_path!(), stringify!(sandbox_exec_wrapper_enforces_sandbox));
 
   let output = sandbox_exec_command(&exe, &profile)
     .env(CHILD_ENV, "1")
@@ -128,7 +128,7 @@ fn sandbox_exec_wrapper_enforces_sandbox() {
     .env(READ_PATH_ENV, &read_probe_path)
     .env(WRITE_PATH_ENV, &write_probe_path)
     .arg("--exact")
-    .arg(TEST_NAME)
+    .arg(&test_name)
     .arg("--nocapture")
     .output()
     .expect("spawn sandbox-exec child test process");
