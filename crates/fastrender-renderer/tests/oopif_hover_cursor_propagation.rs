@@ -2,8 +2,8 @@ mod common;
 
 use common::{net_test_lock, RendererProc, TestServer};
 use fastrender_ipc::{
-  BrowserToRenderer, CursorKind, FrameHitTester, FrameId, HoverRouter, NavigationContext,
-  ReferrerPolicy, SiteKeyFactory, IframeNavigation,
+  BrowserToRenderer, CursorKind, FrameHitTester, FrameId, HoverRouter, IframeNavigation,
+  NavigationContext, ReferrerPolicy, SiteKeyFactory,
 };
 use std::time::{Duration, Instant};
 
