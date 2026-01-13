@@ -86,8 +86,8 @@ backend:
 For CI environments without a display/GPU, the `browser` entrypoint provides **test-only** headless
 hooks to exercise startup and UI↔worker wiring without creating a window:
 
-- `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1`
-- `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` (prints `HEADLESS_SMOKE_OK` on success)
+- `browser --exit-immediately` / `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1`
+- `browser --headless-smoke` / `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` (prints `HEADLESS_SMOKE_OK` on success)
 
 See [env-vars.md](env-vars.md) for details.
 
