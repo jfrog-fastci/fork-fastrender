@@ -11,12 +11,265 @@
 
 use crate::ui::about_pages;
 use crate::ui::session::{load_session, save_session_atomic, BrowserSession};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(500);
+
+type SaveSessionFn =
+  Arc<dyn Fn(&Path, &BrowserSession) -> Result<(), String> + Send + Sync + 'static>;
+
+/// Snapshot of the autosave worker's most recent write outcomes.
+#[derive(Debug, Clone, Default)]
+pub struct SessionAutosaveStatusSnapshot {
+  /// Number of consecutive write failures since the last successful write.
+  pub consecutive_failures: usize,
+  /// Most recent write error (set on the first failure; updated with later failures).
+  pub last_error: Option<String>,
+  /// Timestamp of the first failure in the current failure streak.
+  pub failed_since: Option<Instant>,
+  /// Timestamp of the most recent write attempt (success or failure).
+  pub last_attempt_at: Option<Instant>,
+  /// Timestamp of the most recent successful write.
+  pub last_success_at: Option<Instant>,
+}
+
+#[derive(Debug, Default)]
+struct SessionAutosaveStatusInner {
+  consecutive_failures: usize,
+  last_error: Option<String>,
+  failed_since: Option<Instant>,
+  last_attempt_at: Option<Instant>,
+  last_success_at: Option<Instant>,
+}
+
+#[derive(Debug, Default)]
+struct SessionAutosaveStatusShared {
+  revision: AtomicUsize,
+  inner: Mutex<SessionAutosaveStatusInner>,
+}
+
+impl SessionAutosaveStatusShared {
+  fn record_attempt(&self, result: &Result<(), String>, at: Instant) {
+    let mut inner = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    inner.last_attempt_at = Some(at);
+    match result {
+      Ok(()) => {
+        inner.consecutive_failures = 0;
+        inner.last_error = None;
+        inner.failed_since = None;
+        inner.last_success_at = Some(at);
+      }
+      Err(err) => {
+        if inner.consecutive_failures == 0 {
+          inner.failed_since = Some(at);
+        }
+        inner.consecutive_failures = inner.consecutive_failures.saturating_add(1);
+        inner.last_error = Some(err.clone());
+      }
+    }
+    drop(inner);
+    self.revision.fetch_add(1, Ordering::Release);
+  }
+
+  fn snapshot(&self) -> SessionAutosaveStatusSnapshot {
+    let inner = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    SessionAutosaveStatusSnapshot {
+      consecutive_failures: inner.consecutive_failures,
+      last_error: inner.last_error.clone(),
+      failed_since: inner.failed_since,
+      last_attempt_at: inner.last_attempt_at,
+      last_success_at: inner.last_success_at,
+    }
+  }
+
+  fn revision(&self) -> usize {
+    self.revision.load(Ordering::Acquire)
+  }
+}
+
+/// Non-blocking view of the session autosave writer health.
+///
+/// This handle is cheap to clone and intended to be held by UI components that want to surface
+/// autosave failures to the user without blocking on disk I/O.
+#[derive(Debug, Clone)]
+pub struct SessionAutosaveStatusHandle {
+  shared: Arc<SessionAutosaveStatusShared>,
+}
+
+impl SessionAutosaveStatusHandle {
+  /// Read the latest autosave status (may block briefly on a mutex).
+  pub fn snapshot(&self) -> SessionAutosaveStatusSnapshot {
+    self.shared.snapshot()
+  }
+
+  /// Attempt to read the latest autosave status only when it has changed since `last_seen_revision`.
+  ///
+  /// This is non-blocking for the UI thread: if the writer thread is currently updating the status,
+  /// `None` is returned and the caller can retry later.
+  pub fn try_snapshot(
+    &self,
+    last_seen_revision: &mut usize,
+  ) -> Option<SessionAutosaveStatusSnapshot> {
+    let current_rev = self.shared.revision();
+    if current_rev == *last_seen_revision {
+      return None;
+    }
+
+    let inner = match self.shared.inner.try_lock() {
+      Ok(guard) => guard,
+      Err(_) => return None,
+    };
+    let snapshot = SessionAutosaveStatusSnapshot {
+      consecutive_failures: inner.consecutive_failures,
+      last_error: inner.last_error.clone(),
+      failed_since: inner.failed_since,
+      last_attempt_at: inner.last_attempt_at,
+      last_success_at: inner.last_success_at,
+    };
+    drop(inner);
+
+    *last_seen_revision = self.shared.revision();
+    Some(snapshot)
+  }
+}
+
+/// UI-facing policy/state for deciding when to surface session-autosave failures.
+///
+/// This is kept UI-framework-agnostic (no egui types) so it can be unit tested and reused by other
+/// frontends.
+#[derive(Debug, Default)]
+pub struct SessionAutosaveWarningUiState {
+  warning_visible: bool,
+  warning_dismissed: bool,
+  warning_text: Option<String>,
+  last_error: Option<String>,
+  last_warning_shown_at: Option<Instant>,
+  last_resumed_toast_at: Option<Instant>,
+  warned_for_current_failure_streak: bool,
+  was_failing: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionAutosaveWarningUiUpdate {
+  /// A warning just became visible (transitioned from hidden to visible).
+  pub show_warning: bool,
+  /// The warning just cleared (failure → success).
+  pub cleared_warning: bool,
+  /// Session writes recovered after a warning was shown; an optional "resumed" toast can be shown.
+  pub show_resumed_toast: bool,
+}
+
+impl SessionAutosaveWarningUiState {
+  const WARN_AFTER_CONSECUTIVE_FAILURES: usize = 2;
+  const WARN_AFTER_DURATION: Duration = Duration::from_secs(5);
+  const WARNING_COOLDOWN: Duration = Duration::from_secs(30);
+  const RESUMED_TOAST_COOLDOWN: Duration = Duration::from_secs(15);
+  const MAX_ERROR_CHARS: usize = 500;
+
+  pub fn warning_text(&self) -> Option<&str> {
+    if self.warning_visible {
+      self.warning_text.as_deref()
+    } else {
+      None
+    }
+  }
+
+  pub fn warning_visible(&self) -> bool {
+    self.warning_visible
+  }
+
+  pub fn dismiss(&mut self) {
+    self.warning_visible = false;
+    self.warning_dismissed = true;
+  }
+
+  /// Advance the state machine using the latest autosave status.
+  pub fn update(
+    &mut self,
+    status: &SessionAutosaveStatusSnapshot,
+    now: Instant,
+  ) -> SessionAutosaveWarningUiUpdate {
+    let is_failing = status.consecutive_failures > 0;
+    let mut out = SessionAutosaveWarningUiUpdate::default();
+
+    if is_failing {
+      self.was_failing = true;
+
+      let error = status
+        .last_error
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown error");
+      let mut error_short = error
+        .chars()
+        .take(Self::MAX_ERROR_CHARS)
+        .collect::<String>();
+      if error.chars().count() > Self::MAX_ERROR_CHARS {
+        error_short.push('…');
+      }
+
+      if Some(error) != self.last_error.as_deref() {
+        self.last_error = Some(error.to_string());
+        self.warning_text = Some(format!("Failed to save session: {error_short}"));
+      }
+
+      let failures_threshold_met =
+        status.consecutive_failures >= Self::WARN_AFTER_CONSECUTIVE_FAILURES;
+      let duration_threshold_met = status
+        .failed_since
+        .is_some_and(|t| now.saturating_duration_since(t) >= Self::WARN_AFTER_DURATION);
+      let should_warn =
+        (failures_threshold_met || duration_threshold_met) && !self.warning_dismissed;
+
+      if should_warn && !self.warning_visible {
+        let cooled_down = self
+          .last_warning_shown_at
+          .is_none_or(|t| now.saturating_duration_since(t) >= Self::WARNING_COOLDOWN);
+        if cooled_down {
+          self.warning_visible = true;
+          self.last_warning_shown_at = Some(now);
+          self.warned_for_current_failure_streak = true;
+          out.show_warning = true;
+        }
+      }
+
+      return out;
+    }
+
+    // Not failing: clear any existing warning/dismissal state.
+    if self.was_failing {
+      out.cleared_warning = self.warning_visible || self.warning_dismissed;
+      if self.warned_for_current_failure_streak {
+        let cooled_down = self
+          .last_resumed_toast_at
+          .is_none_or(|t| now.saturating_duration_since(t) >= Self::RESUMED_TOAST_COOLDOWN);
+        if cooled_down {
+          out.show_resumed_toast = true;
+          self.last_resumed_toast_at = Some(now);
+        }
+      }
+    }
+
+    self.warning_visible = false;
+    self.warning_dismissed = false;
+    self.warning_text = None;
+    self.last_error = None;
+    self.warned_for_current_failure_streak = false;
+    self.was_failing = false;
+    out
+  }
+}
 
 enum Command {
   Save(BrowserSession),
@@ -32,6 +285,7 @@ pub struct SessionAutosave {
   tx: Option<mpsc::Sender<Command>>,
   join: Option<std::thread::JoinHandle<()>>,
   write_count: Arc<AtomicUsize>,
+  status: SessionAutosaveStatusHandle,
 }
 
 impl SessionAutosave {
@@ -55,19 +309,22 @@ impl SessionAutosave {
     Self::new_with_debounce_and_initial(path, debounce, None)
   }
 
-  fn new_with_debounce_and_initial(
-    path: PathBuf,
-    debounce: Duration,
-    initial_session: Option<BrowserSession>,
-  ) -> Self {
+  #[cfg(test)]
+  fn new_with_debounce_and_saver(path: PathBuf, debounce: Duration, save_fn: SaveSessionFn) -> Self {
     let (tx, rx) = mpsc::channel::<Command>();
     let write_count = Arc::new(AtomicUsize::new(0));
+    let status = Arc::new(SessionAutosaveStatusShared::default());
+    let status_handle = SessionAutosaveStatusHandle {
+      shared: Arc::clone(&status),
+    };
 
     let join = std::thread::Builder::new()
       .name("browser_session_autosave".to_string())
       .spawn({
         let write_count = Arc::clone(&write_count);
-        move || session_writer_thread(path, debounce, initial_session, rx, write_count)
+        let status = Arc::clone(&status);
+        let save_fn = Arc::clone(&save_fn);
+        move || session_writer_thread(path, debounce, None, rx, write_count, status, save_fn)
       })
       .ok();
 
@@ -75,6 +332,38 @@ impl SessionAutosave {
       tx: Some(tx),
       join,
       write_count,
+      status: status_handle,
+    }
+  }
+
+  fn new_with_debounce_and_initial(
+    path: PathBuf,
+    debounce: Duration,
+    initial_session: Option<BrowserSession>,
+  ) -> Self {
+    let (tx, rx) = mpsc::channel::<Command>();
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let status = Arc::new(SessionAutosaveStatusShared::default());
+    let status_handle = SessionAutosaveStatusHandle {
+      shared: Arc::clone(&status),
+    };
+    let save_fn: SaveSessionFn = Arc::new(|path, session| save_session_atomic(path, session));
+
+    let join = std::thread::Builder::new()
+      .name("browser_session_autosave".to_string())
+      .spawn({
+        let write_count = Arc::clone(&write_count);
+        let status = Arc::clone(&status);
+        let save_fn = Arc::clone(&save_fn);
+        move || session_writer_thread(path, debounce, initial_session, rx, write_count, status, save_fn)
+      })
+      .ok();
+
+    Self {
+      tx: Some(tx),
+      join,
+      write_count,
+      status: status_handle,
     }
   }
 
@@ -164,6 +453,10 @@ impl SessionAutosave {
   fn successful_write_count(&self) -> usize {
     self.write_count.load(Ordering::Relaxed)
   }
+
+  pub fn status_handle(&self) -> SessionAutosaveStatusHandle {
+    self.status.clone()
+  }
 }
 
 impl Drop for SessionAutosave {
@@ -187,6 +480,8 @@ fn session_writer_thread(
   initial_session: Option<BrowserSession>,
   rx: mpsc::Receiver<Command>,
   write_count: Arc<AtomicUsize>,
+  status: Arc<SessionAutosaveStatusShared>,
+  save_fn: SaveSessionFn,
 ) {
   // On startup: best-effort mark the on-disk session as "unclean" so crash recovery can detect
   // abnormal exits.
@@ -216,7 +511,8 @@ fn session_writer_thread(
       };
 
       session.did_exit_cleanly = false;
-      let result = save_session_atomic(&path, &session);
+      let result = save_fn(path.as_path(), &session);
+      status.record_attempt(&result, Instant::now());
       if result.is_ok() {
         write_count.fetch_add(1, Ordering::Relaxed);
       }
@@ -230,8 +526,8 @@ fn session_writer_thread(
           session.unclean_exit_streak.saturating_add(1)
         };
         session.did_exit_cleanly = false;
-
-        let result = save_session_atomic(&path, &session);
+        let result = save_fn(path.as_path(), &session);
+        status.record_attempt(&result, Instant::now());
         if result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -241,7 +537,8 @@ fn session_writer_thread(
         let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
         session.did_exit_cleanly = false;
         session.unclean_exit_streak = 1;
-        let result = save_session_atomic(&path, &session);
+        let result = save_fn(path.as_path(), &session);
+        status.record_attempt(&result, Instant::now());
         if result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -269,7 +566,8 @@ fn session_writer_thread(
         // Preserve the crash-loop streak managed by this thread. Session snapshots produced by the
         // UI do not track it.
         to_write.unclean_exit_streak = current_session.unclean_exit_streak;
-        last_write_result = save_session_atomic(&path, &to_write);
+        last_write_result = save_fn(path.as_path(), &to_write);
+        status.record_attempt(&last_write_result, Instant::now());
         if last_write_result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
           current_session = to_write;
@@ -299,7 +597,8 @@ fn session_writer_thread(
           let mut to_write = session;
           to_write.did_exit_cleanly = false;
           to_write.unclean_exit_streak = current_session.unclean_exit_streak;
-          last_write_result = save_session_atomic(&path, &to_write);
+          last_write_result = save_fn(path.as_path(), &to_write);
+          status.record_attempt(&last_write_result, Instant::now());
           if last_write_result.is_ok() {
             write_count.fetch_add(1, Ordering::Relaxed);
             current_session = to_write;
@@ -312,7 +611,8 @@ fn session_writer_thread(
           // retry persisting the current session even when there is no pending update.
           if last_write_result.is_err() {
             current_session.did_exit_cleanly = false;
-            last_write_result = save_session_atomic(&path, &current_session);
+            last_write_result = save_fn(path.as_path(), &current_session);
+            status.record_attempt(&last_write_result, Instant::now());
             if last_write_result.is_ok() {
               write_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -325,7 +625,8 @@ fn session_writer_thread(
         let mut to_write = pending.take().map(|(session, _)| session).unwrap_or(current_session);
         to_write.did_exit_cleanly = true;
         to_write.unclean_exit_streak = 0;
-        last_write_result = save_session_atomic(&path, &to_write);
+        last_write_result = save_fn(path.as_path(), &to_write);
+        status.record_attempt(&last_write_result, Instant::now());
         if last_write_result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -341,7 +642,9 @@ fn session_writer_thread(
           let mut to_write = session;
           to_write.did_exit_cleanly = false;
           to_write.unclean_exit_streak = current_session.unclean_exit_streak;
-          if save_session_atomic(&path, &to_write).is_ok() {
+          let result = save_fn(path.as_path(), &to_write);
+          status.record_attempt(&result, Instant::now());
+          if result.is_ok() {
             write_count.fetch_add(1, Ordering::Relaxed);
           }
         }
@@ -527,5 +830,115 @@ mod tests {
     // The corrupted file should be preserved until a real Save request is made.
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert_eq!(on_disk, corrupted);
+  }
+
+  #[test]
+  fn records_error_state_on_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    // Corrupt the on-disk session so the writer thread doesn't attempt a startup write; we want the
+    // test-controlled save attempt below to be the first write.
+    std::fs::write(&path, "not valid json\n").unwrap();
+
+    let save_fn: SaveSessionFn = Arc::new(|_path, _session| Err("disk full".to_string()));
+    let autosave = SessionAutosave::new_with_debounce_and_saver(path, Duration::from_millis(10), save_fn);
+
+    autosave.request_save(BrowserSession::single("about:blank".to_string()));
+    assert!(autosave.flush(Duration::from_secs(2)).is_err());
+
+    let status = autosave.status_handle().snapshot();
+    assert_eq!(status.consecutive_failures, 1);
+    assert_eq!(status.last_error.as_deref(), Some("disk full"));
+    assert!(status.failed_since.is_some());
+    assert!(status.last_attempt_at.is_some());
+    assert!(status.last_success_at.is_none());
+  }
+
+  #[test]
+  fn successful_write_clears_error_state() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    std::fs::write(&path, "not valid json\n").unwrap();
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let save_fn: SaveSessionFn = Arc::new({
+      let attempts = Arc::clone(&attempts);
+      move |_path, _session| {
+        let n = attempts.fetch_add(1, Ordering::Relaxed);
+        if n < 2 {
+          Err(format!("fail {n}"))
+        } else {
+          Ok(())
+        }
+      }
+    });
+    let autosave = SessionAutosave::new_with_debounce_and_saver(path, Duration::from_millis(10), save_fn);
+
+    autosave.request_save(BrowserSession::single("about:blank".to_string()));
+    assert!(autosave.flush(Duration::from_secs(2)).is_err());
+    let status = autosave.status_handle().snapshot();
+    assert_eq!(status.consecutive_failures, 1);
+    assert!(status.last_error.as_deref().unwrap_or_default().contains("fail"));
+
+    autosave.request_save(BrowserSession::single("about:newtab".to_string()));
+    assert!(autosave.flush(Duration::from_secs(2)).is_err());
+    let status = autosave.status_handle().snapshot();
+    assert_eq!(status.consecutive_failures, 2);
+    assert!(status.last_error.as_deref().unwrap_or_default().contains("fail"));
+
+    autosave.request_save(BrowserSession::single("about:error".to_string()));
+    autosave.flush(Duration::from_secs(2)).unwrap();
+    let status = autosave.status_handle().snapshot();
+    assert_eq!(status.consecutive_failures, 0);
+    assert!(status.last_error.is_none());
+    assert!(status.failed_since.is_none());
+    assert!(status.last_success_at.is_some());
+  }
+
+  #[test]
+  fn autosave_warning_ui_state_threshold_and_dismissal() {
+    let mut ui = SessionAutosaveWarningUiState::default();
+    let start = Instant::now();
+
+    let mut failing = SessionAutosaveStatusSnapshot::default();
+    failing.consecutive_failures = 1;
+    failing.last_error = Some("disk full".to_string());
+    failing.failed_since = Some(start);
+    failing.last_attempt_at = Some(start);
+
+    let update = ui.update(&failing, start);
+    assert!(!update.show_warning);
+    assert!(!ui.warning_visible());
+
+    failing.consecutive_failures = 2;
+    failing.last_attempt_at = Some(start + Duration::from_secs(1));
+    let update = ui.update(&failing, start + Duration::from_secs(1));
+    assert!(update.show_warning, "expected warning after repeated failures");
+    assert!(ui.warning_visible());
+
+    ui.dismiss();
+    assert!(!ui.warning_visible());
+
+    // Further failures in the same streak should not re-open the warning once dismissed.
+    let update = ui.update(&failing, start + Duration::from_secs(2));
+    assert!(!update.show_warning);
+    assert!(!ui.warning_visible());
+
+    let recovered = SessionAutosaveStatusSnapshot::default();
+    let update = ui.update(&recovered, start + Duration::from_secs(3));
+    assert!(update.cleared_warning);
+    assert!(update.show_resumed_toast);
+
+    // Rate limiting: a new failure streak shortly after the prior warning should not immediately
+    // re-warn.
+    let mut failing_again = SessionAutosaveStatusSnapshot::default();
+    failing_again.consecutive_failures = 2;
+    failing_again.last_error = Some("disk full".to_string());
+    failing_again.failed_since = Some(start + Duration::from_secs(4));
+    let update = ui.update(&failing_again, start + Duration::from_secs(4));
+    assert!(!update.show_warning, "expected warning cooldown to suppress spam");
   }
 }

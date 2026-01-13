@@ -6001,6 +6001,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   };
   let mut shutdown_join_tracker = fastrender::ui::ShutdownJoinTracker::new();
 
+  let session_autosave_status = session_autosave.status_handle();
+  for win in windows.values_mut() {
+    win
+      .app
+      .set_session_autosave_status(session_autosave_status.clone());
+    win.app.window.request_redraw();
+  }
+
   event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
     let _ = &session_lock;
@@ -6725,6 +6733,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.profile_autosave_tx = profile_autosave_tx.clone();
         app.home_url = global_home_url.clone();
         app.browser_state.appearance = global_appearance.clone();
+        app.set_session_autosave_status(session_autosave_status.clone());
 
         app.startup(fastrender::ui::BrowserSessionWindow {
           tabs: vec![fastrender::ui::BrowserSessionTab {
@@ -6909,6 +6918,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.profile_autosave_tx = profile_autosave_tx.clone();
         app.home_url = global_home_url.clone();
         app.browser_state.appearance = global_appearance.clone();
+        app.set_session_autosave_status(session_autosave_status.clone());
 
         app.startup(session_window);
         // For a detached-tab window, match typical browser UX by keeping keyboard focus in the page
@@ -10598,6 +10608,11 @@ struct App {
   crash_recovery_infobar_rect: Option<egui::Rect>,
   chrome_toast: fastrender::ui::ToastState,
   chrome_toast_rect: Option<egui::Rect>,
+  session_autosave_status: Option<fastrender::ui::session_autosave::SessionAutosaveStatusHandle>,
+  session_autosave_status_seen_revision: usize,
+  session_autosave_status_cache: fastrender::ui::session_autosave::SessionAutosaveStatusSnapshot,
+  session_autosave_warning: fastrender::ui::session_autosave::SessionAutosaveWarningUiState,
+  session_autosave_warning_rect: Option<egui::Rect>,
 
   pending_page_export: Option<PendingPageExport>,
 
@@ -11021,6 +11036,9 @@ impl App {
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .chrome_toast_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .session_autosave_warning_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self.media_controls_overlay_pointer_capture
       || self.debug_log_overlay_pointer_capture
@@ -11483,6 +11501,13 @@ impl App {
       chrome_toast: fastrender::ui::ToastState::default(),
       chrome_toast_rect: None,
       pending_page_export: None,
+      session_autosave_status: None,
+      session_autosave_status_seen_revision: 0,
+      session_autosave_status_cache:
+        fastrender::ui::session_autosave::SessionAutosaveStatusSnapshot::default(),
+      session_autosave_warning:
+        fastrender::ui::session_autosave::SessionAutosaveWarningUiState::default(),
+      session_autosave_warning_rect: None,
       next_egui_repaint: None,
       last_egui_redraw_request: None,
       last_resize_redraw_request: None,
@@ -11497,6 +11522,19 @@ impl App {
       last_media_wakeup_tick: std::collections::HashMap::new(),
       suppress_next_received_character: None,
     })
+  }
+
+  fn set_session_autosave_status(
+    &mut self,
+    status: fastrender::ui::session_autosave::SessionAutosaveStatusHandle,
+  ) {
+    self.session_autosave_status = Some(status);
+    self.session_autosave_status_seen_revision = 0;
+    self.session_autosave_status_cache =
+      fastrender::ui::session_autosave::SessionAutosaveStatusSnapshot::default();
+    self.session_autosave_warning =
+      fastrender::ui::session_autosave::SessionAutosaveWarningUiState::default();
+    self.session_autosave_warning_rect = None;
   }
 
   fn startup(&mut self, window: fastrender::ui::BrowserSessionWindow) {
@@ -15447,6 +15485,107 @@ impl App {
     self.chrome_toast_rect = Some(popup.response.rect);
     if popup.inner {
       self.chrome_toast.dismiss();
+      self.window.request_redraw();
+    }
+  }
+
+  fn render_session_autosave_warning(&mut self, ctx: &egui::Context) {
+    let Some(text) = self.session_autosave_warning.warning_text() else {
+      self.session_autosave_warning_rect = None;
+      return;
+    };
+    let toast_text = text.to_string();
+
+    let theme_colors = self.theme.colors.clone();
+    let theme_sizing = self.theme.sizing.clone();
+
+    // Position relative to the central content area so the toast doesn't cover the status bar.
+    let screen_rect = ctx.screen_rect();
+    let content_rect = self.content_rect_points.unwrap_or(screen_rect);
+    let bottom_inset = (screen_rect.max.y - content_rect.max.y).max(0.0);
+    let right_inset = (screen_rect.max.x - content_rect.max.x).max(0.0);
+    let margin = theme_sizing.padding.max(8.0) + 4.0;
+
+    // Stack above any existing toasts so we don't occlude more transient notifications.
+    let mut bottom_y = screen_rect.max.y - margin - bottom_inset;
+    if let Some(rect) = self.warning_toast_rect {
+      bottom_y = bottom_y.min(rect.min.y - margin);
+    }
+    if let Some(rect) = self.chrome_toast_rect {
+      bottom_y = bottom_y.min(rect.min.y - margin);
+    }
+
+    let anchor_offset = egui::vec2(-margin - right_inset, bottom_y - screen_rect.max.y);
+
+    let toast_id = egui::Id::new("fastr_session_autosave_warning");
+    let popup = egui::Area::new(toast_id)
+      .order(egui::Order::Foreground)
+      .anchor(egui::Align2::RIGHT_BOTTOM, anchor_offset)
+      .interactable(true)
+      .show(ctx, |ui| {
+        let mut dismiss = false;
+        let fill = egui::Color32::from_rgba_unmultiplied(
+          theme_colors.raised.r(),
+          theme_colors.raised.g(),
+          theme_colors.raised.b(),
+          240,
+        );
+        let stroke = egui::Stroke::new(theme_sizing.stroke_width, theme_colors.danger);
+        let frame = egui::Frame::none()
+          .fill(fill)
+          .stroke(stroke)
+          .rounding(egui::Rounding::same(theme_sizing.corner_radius))
+          .inner_margin(egui::Margin::symmetric(
+            theme_sizing.padding * 1.25,
+            theme_sizing.padding,
+          ));
+        frame.show(ui, |ui| {
+          ui.set_min_width(360.0);
+          ui.horizontal(|ui| {
+            let icon_side = ui.spacing().icon_width;
+            let icon_resp = fastrender::ui::icon_tinted(
+              ui,
+              fastrender::ui::BrowserIcon::Error,
+              icon_side,
+              theme_colors.danger,
+            );
+            icon_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Label, "Session autosave failed")
+            });
+
+            let msg = ui.add(
+              egui::Label::new(
+                egui::RichText::new(toast_text.clone()).color(theme_colors.text_primary),
+              )
+              .wrap(true)
+              .sense(egui::Sense::hover()),
+            );
+            msg.widget_info({
+              let label = toast_text.clone();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+              let close_resp = fastrender::ui::icon_button(
+                ui,
+                fastrender::ui::BrowserIcon::Close,
+                "Dismiss",
+                true,
+              );
+              close_resp
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss"));
+              if close_resp.clicked() {
+                dismiss = true;
+              }
+            });
+          });
+        });
+        dismiss
+      });
+
+    self.session_autosave_warning_rect = Some(popup.response.rect);
+    if popup.inner {
+      self.session_autosave_warning.dismiss();
       self.window.request_redraw();
     }
   }
@@ -23932,10 +24071,27 @@ impl App {
     let now = std::time::Instant::now();
     self.sync_tab_notifications(now);
     self.chrome_toast.expire(now);
+    if let Some(handle) = self.session_autosave_status.as_ref() {
+      if let Some(snapshot) =
+        handle.try_snapshot(&mut self.session_autosave_status_seen_revision)
+      {
+        self.session_autosave_status_cache = snapshot;
+      }
+      let ui_update = self
+        .session_autosave_warning
+        .update(&self.session_autosave_status_cache, now);
+      if ui_update.show_resumed_toast && self.chrome_toast.toast().is_none() {
+        self.show_chrome_toast("Session saving resumed");
+      }
+      if ui_update.show_warning || ui_update.cleared_warning {
+        self.window.request_redraw();
+      }
+    }
     self.render_error_infobar(&ctx);
     self.render_crash_recovery_infobar(&ctx);
     self.render_warning_toast(&ctx);
     self.render_chrome_toast(&ctx);
+    self.render_session_autosave_warning(&ctx);
 
     self.render_hud(&ctx);
     self.render_debug_log_overlay(&ctx);
