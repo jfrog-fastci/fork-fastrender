@@ -978,9 +978,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     // non-strict mode; this is independent of Annex B runtime scoping.
     if let Some(param) = &catch.parameter {
       // Collect BoundNames(CatchParameter) and report duplicates.
-      let mut param_names = HashSet::<String>::new();
+      let mut param_names = HashMap::<String, LexicalNameKind>::new();
       let empty = HashSet::<String>::new();
-      self.collect_lexical_decl_names_from_pat(&param.stx.pat, param.loc, &mut param_names, &empty)?;
+      self.collect_lexical_decl_names_from_pat(ctx, &param.stx.pat, param.loc, &mut param_names, &empty)?;
 
       // Collect LexicallyDeclaredNames(CatchBlock) from the top-level statement list.
       let mut lexical_names = HashSet::<String>::new();
@@ -1015,7 +1015,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       }
 
       // Report collisions between the catch parameter bindings and catch block lexical names.
-      for name in param_names.iter() {
+      for name in param_names.keys() {
         if lexical_names.contains(name) {
           self.push_error(param.loc, "Identifier has already been declared")?;
         }
