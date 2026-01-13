@@ -508,3 +508,57 @@ fn compiled_function_dynamic_import_works() -> Result<(), VmError> {
   hooks.teardown_jobs(&mut rt);
   Ok(())
 }
+
+#[test]
+fn compiled_dynamic_import_evaluates_specifier_then_options() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let m_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 1;")?;
+  let m = rt.modules_mut().add_module(m_record);
+
+  let mut hooks = SyncImportHooks::new();
+  hooks.register_module("m.js", m);
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      var log = "";
+      function s() { log = log + "s"; return "m.js"; }
+      function o() { log = log + "o"; return undefined; }
+      var p = import(s(), o());
+    "#,
+  )?;
+
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  // The engine should evaluate the specifier expression first, then the options expression.
+  let log_val = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("log")?);
+    scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?
+  };
+  let Value::String(log_s) = log_val else {
+    return Err(VmError::InvariantViolation(
+      "expected global `log` to be a string",
+    ));
+  };
+  assert_eq!(
+    rt.heap.get_string(log_s)?.to_utf8_lossy(),
+    "so",
+    "expected import(s(), o()) to evaluate specifier then options"
+  );
+
+  hooks.perform_microtask_checkpoint(&mut rt)?;
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
