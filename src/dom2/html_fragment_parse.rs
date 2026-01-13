@@ -211,6 +211,8 @@ pub(super) fn parse_html_fragment_to_dom2_document(
   // fragment parsing stays consistent if the sink implementation changes.
   document.attach_shadow_roots();
 
+  super::file_input_safety::strip_authored_file_input_state(&mut document);
+
   let roots = fragment_roots_from_document(&document);
   Ok(ParsedFragment { document, roots })
 }

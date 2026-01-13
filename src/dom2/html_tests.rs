@@ -89,3 +89,21 @@ fn outer_html_includes_script_text_unescaped() {
     "<div><script>if (a < b) c();</script></div>"
   );
 }
+
+#[test]
+fn inner_html_strips_authored_file_input_selection_state() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let div = doc.create_element("div", "");
+
+  doc
+    .set_inner_html(
+      div,
+      r#"<input type="file" data-fastr-files='["/etc/passwd"]' data-fastr-file-value="C:\\fakepath\\passwd" value="/etc/passwd">"#,
+    )
+    .expect("set_inner_html");
+
+  let input = doc.children(div).unwrap()[0];
+  assert_eq!(doc.get_attribute(input, "data-fastr-files").unwrap(), None);
+  assert_eq!(doc.get_attribute(input, "data-fastr-file-value").unwrap(), None);
+  assert_eq!(doc.get_attribute(input, "value").unwrap(), None);
+}

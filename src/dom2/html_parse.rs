@@ -52,6 +52,8 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
     document = Document::from_renderer_dom(&snapshot);
   }
 
+  super::file_input_safety::strip_authored_file_input_state(&mut document);
+
   Ok(document)
 }
 
@@ -135,5 +137,15 @@ mod tests {
       ),
       other => panic!("expected document root, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn parse_html_dom2_strips_authored_file_input_selection_state() {
+    let html = r#"<input id="f" type="file" data-fastr-files='["/etc/passwd"]' data-fastr-file-value="C:\\fakepath\\passwd" value="/etc/passwd">"#;
+    let doc = parse_html(html).expect("parse dom2");
+    let input = doc.get_element_by_id("f").expect("file input");
+    assert_eq!(doc.get_attribute(input, "data-fastr-files").unwrap(), None);
+    assert_eq!(doc.get_attribute(input, "data-fastr-file-value").unwrap(), None);
+    assert_eq!(doc.get_attribute(input, "value").unwrap(), None);
   }
 }

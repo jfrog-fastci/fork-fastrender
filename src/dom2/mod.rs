@@ -28,6 +28,7 @@ pub(crate) use qualified_name::{
 pub use cross_document::NodeIdMapping;
 
 mod dom_parsing;
+mod file_input_safety;
 mod form_controls;
 mod html;
 mod html5ever_tree_sink;
