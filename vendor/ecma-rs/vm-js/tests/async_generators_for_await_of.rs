@@ -603,3 +603,138 @@ fn for_await_of_throw_close_error_overrides_body_throw() -> Result<(), VmError> 
   rt.teardown_microtasks();
   result
 }
+
+#[test]
+fn for_await_of_async_generator_return_rejects_if_iterator_return_rejects() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  if !async_generators_supported(&mut rt)? {
+    return Ok(());
+  }
+
+  let result: Result<(), VmError> = (|| {
+    let value = rt.exec_script(
+      r#"
+        var out = "";
+
+        async function f() {
+          var closed = false;
+          const iterable = {};
+          iterable[Symbol.asyncIterator] = function () {
+            return {
+              next() {
+                return Promise.resolve({ value: 1, done: false });
+              },
+              return() {
+                return Promise.resolve().then(function () {
+                  closed = true;
+                  throw "close";
+                });
+              },
+            };
+          };
+
+          async function* g() {
+            for await (const x of iterable) {
+              yield x;
+            }
+          }
+
+          const it = g();
+          const r1 = await it.next();
+          try {
+            await it.return("stop");
+            return "no-error";
+          } catch (e) {
+            return String(r1.value) + "," + String(e) + "," + String(closed);
+          }
+        }
+
+        f().then(
+          function (v) { out = v; },
+          function (e) { out = "err:" + ((e && e.name) || e); }
+        );
+
+        out
+      "#,
+    )?;
+    assert_eq!(value_to_string(&rt, value), "");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let out = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out), "1,close,true");
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
+
+#[test]
+fn for_await_of_async_generator_throw_rejects_with_close_error_if_iterator_return_rejects(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  if !async_generators_supported(&mut rt)? {
+    return Ok(());
+  }
+
+  let result: Result<(), VmError> = (|| {
+    let value = rt.exec_script(
+      r#"
+        var out = "";
+
+        async function f() {
+          var closed = false;
+          const iterable = {};
+          iterable[Symbol.asyncIterator] = function () {
+            return {
+              next() {
+                return Promise.resolve({ value: 1, done: false });
+              },
+              return() {
+                return Promise.resolve().then(function () {
+                  closed = true;
+                  throw "close";
+                });
+              },
+            };
+          };
+
+          async function* g() {
+            for await (const x of iterable) {
+              yield x;
+            }
+          }
+
+          const it = g();
+          const r1 = await it.next();
+          try {
+            await it.throw("boom");
+            return "no-error";
+          } catch (e) {
+            return String(r1.value) + "," + String(e) + "," + String(closed);
+          }
+        }
+
+        f().then(
+          function (v) { out = v; },
+          function (e) { out = "err:" + ((e && e.name) || e); }
+        );
+
+        out
+      "#,
+    )?;
+    assert_eq!(value_to_string(&rt, value), "");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let out = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out), "1,close,true");
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
