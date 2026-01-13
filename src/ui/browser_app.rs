@@ -511,7 +511,7 @@ pub struct BrowserTabState {
   /// This is set when the watchdog is armed (either because `loading == true` or because
   /// [`Self::watchdog_armed`] is true) but the UI has not observed any `WorkerToUi` messages for the
   /// tab within a configured timeout. It is cleared when new worker messages arrive or when the
-  /// user dismisses the watchdog UI (e.g. "Wait" / "Kill").
+  /// user dismisses the watchdog UI (e.g. "Wait" / "Reload").
   pub unresponsive: bool,
   /// Last time the UI observed activity from the renderer for this tab.
   ///

@@ -12943,10 +12943,6 @@ impl App {
     }
   }
 
-  fn request_worker_restart(&mut self) {
-    self.worker_restart_requested = true;
-  }
-
   fn take_worker_restart_request(&mut self) -> bool {
     std::mem::take(&mut self.worker_restart_requested)
   }
@@ -13030,7 +13026,10 @@ impl App {
       tab.warning = None;
       tab.stage = None;
       tab.load_stage = None;
-      tab.reset_load_progress();
+      // `BrowserTabState::reset_load_progress` is an internal helper on the shared UI model; this
+      // windowed browser binary runs as a separate crate target, so reset the public fields
+      // directly.
+      tab.load_progress = Some(0.0);
       tab.can_go_back = false;
       tab.can_go_forward = false;
       tab.hovered_url = None;
@@ -20707,12 +20706,15 @@ impl App {
             tab.crashed = false;
             tab.crash_reason = None;
             tab.loading = true;
+            tab.watchdog_armed = false;
             tab.unresponsive = false;
             tab.last_worker_msg_at = std::time::SystemTime::now();
             tab.renderer_crashed = false;
             tab.renderer_protocol_violation = None;
             tab.error = None;
             tab.stage = None;
+            tab.load_stage = None;
+            tab.load_progress = Some(0.0);
             tab.title = None;
           }
           if was_crashed {
@@ -20864,12 +20866,15 @@ impl App {
             tab.crashed = false;
             tab.crash_reason = None;
             tab.loading = true;
+            tab.watchdog_armed = false;
             tab.unresponsive = false;
             tab.last_worker_msg_at = std::time::SystemTime::now();
             tab.renderer_crashed = false;
             tab.renderer_protocol_violation = None;
             tab.error = None;
             tab.stage = None;
+            tab.load_stage = None;
+            tab.load_progress = Some(0.0);
             tab.title = None;
           }
           if was_crashed {
@@ -20888,8 +20893,11 @@ impl App {
           };
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = false;
+            tab.watchdog_armed = false;
             tab.unresponsive = false;
             tab.stage = None;
+            tab.load_stage = None;
+            tab.load_progress = None;
             // Restore optimistic URL/title back to the last committed state.
             if let Some(committed_url) = tab.committed_url.clone() {
               tab.current_url = Some(committed_url);
@@ -20959,10 +20967,13 @@ impl App {
           tab.renderer_crashed = false;
           tab.renderer_protocol_violation = None;
           tab.loading = true;
+          tab.watchdog_armed = false;
           tab.unresponsive = false;
           tab.last_worker_msg_at = std::time::SystemTime::now();
           tab.error = None;
           tab.stage = None;
+          tab.load_stage = None;
+          tab.load_progress = Some(0.0);
           tab.title = None;
           self.browser_state.bump_tabs_revision();
           let _ = self.send_worker_msg(UiToWorker::GoBack { tab_id });
@@ -20983,10 +20994,13 @@ impl App {
           tab.renderer_crashed = false;
           tab.renderer_protocol_violation = None;
           tab.loading = true;
+          tab.watchdog_armed = false;
           tab.unresponsive = false;
           tab.last_worker_msg_at = std::time::SystemTime::now();
           tab.error = None;
           tab.stage = None;
+          tab.load_stage = None;
+          tab.load_progress = Some(0.0);
           tab.title = None;
           self.browser_state.bump_tabs_revision();
           let _ = self.send_worker_msg(UiToWorker::GoForward { tab_id });
@@ -21777,6 +21791,7 @@ impl App {
     }
 
     let mut crash_reload_requested = false;
+    let mut unresponsive_reload_requested = false;
     let central_response = egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();
 
@@ -22480,18 +22495,15 @@ impl App {
                     ui.label(egui::RichText::new("Page unresponsive").strong().size(16.0));
                     ui.horizontal(|ui| {
                       let wait = ui.button("Wait");
-                      let kill = ui.button("Kill");
+                      let reload = ui.button("Reload");
                       if wait.clicked() {
                         let _ = self
                           .browser_state
                           .dismiss_tab_unresponsive(active_tab, std::time::SystemTime::now());
                         ctx.request_repaint();
                       }
-                      if kill.clicked() {
-                        let now = std::time::SystemTime::now();
-                        let _ = self.browser_state.dismiss_tab_unresponsive(active_tab, now);
-                        self.request_worker_restart();
-                        ctx.request_repaint();
+                      if reload.clicked() {
+                        unresponsive_reload_requested = true;
                       }
                     });
                   });
@@ -22598,18 +22610,15 @@ impl App {
                     ui.label(egui::RichText::new("Page unresponsive").strong().size(16.0));
                     ui.horizontal(|ui| {
                       let wait = ui.button("Wait");
-                      let kill = ui.button("Kill");
+                      let reload = ui.button("Reload");
                       if wait.clicked() {
                         let _ = self
                           .browser_state
                           .dismiss_tab_unresponsive(active_tab, std::time::SystemTime::now());
                         ctx.request_repaint();
                       }
-                      if kill.clicked() {
-                        let now = std::time::SystemTime::now();
-                        let _ = self.browser_state.dismiss_tab_unresponsive(active_tab, now);
-                        self.request_worker_restart();
-                        ctx.request_repaint();
+                      if reload.clicked() {
+                        unresponsive_reload_requested = true;
                       }
                     });
                   });
@@ -22621,7 +22630,7 @@ impl App {
     });
 
     self.content_rect_points = Some(central_response.response.rect);
-    if crash_reload_requested {
+    if crash_reload_requested || unresponsive_reload_requested {
       session_dirty |= self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::Reload]);
       // Chrome UI was already drawn this frame; request another redraw so the toolbar reflects the
       // updated loading state immediately.
