@@ -19,7 +19,7 @@ All types below are exported as `fastrender::api::*` and also re-exported at the
 | `api::BrowserDocumentDom2` | `crate::dom2::Document` (authoritative) + snapshots to `DomNode` for layout | Yes (`render_if_needed`) | No (host must embed) | No | No | URL fetch+replace (`navigate_url`) |
 | `api::BrowserDocument2` | `crate::dom2::Document` + snapshots to `DomNode` for layout | Yes (`render_if_needed`) | No | No | No | URL fetch+replace (`navigate_url`) |
 | `api::BrowserTab` | `BrowserDocumentDom2` + tab state | Yes (driven by event loop + rendering) | Yes (via `BrowserTabJsExecutor`) | Yes (`EventLoop<BrowserTabHost>`) | Yes (streaming parser + scheduler) | Yes (history + script-driven navigations) |
-| `api::BrowserDocumentJs` | `BrowserDocumentDom2` | Yes (driven by its event loop + rendering) | Yes (`js::webidl::legacy::VmJsRuntime`) | Yes (`EventLoop<BrowserDocumentJs>`) | **No** (manual script execution) | No |
+| `api::BrowserDocumentJs` | `BrowserDocumentDom2` | Yes (driven by its event loop + rendering) | Yes (`js::webidl::legacy::VmJsRuntime`) | Yes (`EventLoop<BrowserDocumentJs>`) | **No** (manual script execution) | Manual fetch+replace via `document_mut().navigate_url(...)` (no history) |
 
 Notes:
 
@@ -172,4 +172,7 @@ Current status and guidance:
 - It is **independent** of `BrowserTab` (i.e. `BrowserTab` does not use `BrowserDocumentJs`).
 - It does **not** implement the HTML `<script>` processing/scheduling model; scripts are executed via
   explicit host calls (e.g. `execute_script_element(...)`).
+- Navigation is possible by reaching into the underlying `BrowserDocumentDom2` and calling
+  `runtime.document_mut().navigate_url(...)`, but `BrowserDocumentJs` does not provide `BrowserTab`'s
+  navigation/history semantics (and does not automatically reset per-document JS state).
 - For JS-enabled HTML loading/navigation/rendering, prefer `BrowserTab`.
