@@ -55,11 +55,18 @@ fn regexp_incomplete_hex_and_unicode_escapes_follow_annex_b_in_non_unicode_mode(
           /\xa/.test("xa"),
           /\u/.test("u"),
           /\ua/.test("ua"),
+          /[\x]/.test("x"),
+          /[\xa]/.test("a"),
+          /[\u]/.test("u"),
+          /[\ua]/.test("a"),
         ].join(",")
       "#,
     )
     .unwrap();
-  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true,true");
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "true,true,true,true,true,true,true,true"
+  );
 }
 
 #[test]
@@ -72,11 +79,16 @@ fn regexp_incomplete_hex_and_unicode_escapes_are_syntax_errors_in_unicode_mode()
         [
           (() => { try { new RegExp("\\x", "u"); return "no"; } catch (e) { return e.name; } })(),
           (() => { try { new RegExp("\\u", "u"); return "no"; } catch (e) { return e.name; } })(),
+          (() => { try { new RegExp("[\\x]", "u"); return "no"; } catch (e) { return e.name; } })(),
+          (() => { try { new RegExp("[\\u]", "u"); return "no"; } catch (e) { return e.name; } })(),
         ].join(",")
       "#,
     )
     .unwrap();
-  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError,SyntaxError");
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "SyntaxError,SyntaxError,SyntaxError,SyntaxError"
+  );
 }
 
 #[test]
