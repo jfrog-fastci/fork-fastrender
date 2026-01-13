@@ -1239,6 +1239,12 @@ impl FloatContext {
   ///
   /// This is intended for debugging performance regressions involving float boundary stepping and
   /// `FloatRangeCache` segment scans. When disabled, this method is a no-op.
+  ///
+  /// Related toggles:
+  /// - `FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS` (usize, default 16): cap how many range-cache segments are
+  ///   printed (`0` suppresses segment printing entirely).
+  /// - `FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER` (usize): if set, range queries will automatically
+  ///   dump when a scan touches more than this many range-cache segments.
   pub fn debug_dump(&self, label: &str) {
     self.debug_dump_internal(label, None);
   }
