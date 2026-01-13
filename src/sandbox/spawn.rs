@@ -179,10 +179,49 @@ struct LandlockRulesetAttrV1 {
   handled_access_fs: u64,
 }
 
+// Syscall numbers for Landlock (see `linux/landlock.h` + per-arch syscall tables).
+//
+// We intentionally define these ourselves instead of relying on `libc::SYS_*` because some libc
+// versions/targets do not expose the Landlock syscall constants.
+//
+// When the architecture is unknown, we treat Landlock as unsupported (best-effort no-op).
+#[cfg(all(
+  unix,
+  target_os = "linux",
+  any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+))]
+const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
+#[cfg(all(
+  unix,
+  target_os = "linux",
+  not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))
+))]
+const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 0;
+
+#[cfg(all(
+  unix,
+  target_os = "linux",
+  any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+))]
+const SYS_LANDLOCK_RESTRICT_SELF: libc::c_long = 446;
+#[cfg(all(
+  unix,
+  target_os = "linux",
+  not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))
+))]
+const SYS_LANDLOCK_RESTRICT_SELF: libc::c_long = 0;
+
+#[cfg(all(unix, target_os = "linux"))]
+const LANDLOCK_ARCH_SUPPORTED: bool =
+  cfg!(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"));
+
 #[cfg(all(unix, target_os = "linux"))]
 fn apply_landlock_restrict_writes_best_effort() -> std::io::Result<()> {
   // Landlock is optional; if the kernel doesn't support it (ENOSYS / EOPNOTSUPP),
   // we treat it as a no-op.
+  if !LANDLOCK_ARCH_SUPPORTED {
+    return Ok(());
+  }
 
   // These constants come from `linux/landlock.h`.
   const LANDLOCK_ACCESS_FS_WRITE_FILE: u64 = 1 << 1;
@@ -216,7 +255,7 @@ fn apply_landlock_restrict_writes_best_effort() -> std::io::Result<()> {
   // in additional dependencies. We pass valid pointers and sizes.
   let fd = unsafe {
     libc::syscall(
-      libc::SYS_landlock_create_ruleset,
+      SYS_LANDLOCK_CREATE_RULESET,
       &attr as *const LandlockRulesetAttrV1,
       std::mem::size_of::<LandlockRulesetAttrV1>(),
       0,
@@ -231,7 +270,7 @@ fn apply_landlock_restrict_writes_best_effort() -> std::io::Result<()> {
     }
   }
 
-  let rc = unsafe { libc::syscall(libc::SYS_landlock_restrict_self, fd, 0) };
+  let rc = unsafe { libc::syscall(SYS_LANDLOCK_RESTRICT_SELF, fd, 0) };
   if rc != 0 {
     let err = std::io::Error::last_os_error();
     unsafe {
