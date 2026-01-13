@@ -289,12 +289,16 @@ impl DriftResampler {
     self.last_input_frames = 0;
 
     if !self.initialized {
-      if !self.pop_frame(queue, &mut self.frame0) {
+      if queue.pop_into(&mut self.frame0) != channels {
         return out_samples;
       }
-      if !self.pop_frame(queue, &mut self.frame1) {
+      self.last_input_frames += 1;
+
+      if queue.pop_into(&mut self.frame1) != channels {
         // Not enough data for interpolation yet: hold the first frame until more audio arrives.
         self.frame1.copy_from_slice(&self.frame0);
+      } else {
+        self.last_input_frames += 1;
       }
       self.initialized = true;
     }
@@ -313,28 +317,17 @@ impl DriftResampler {
       while self.phase >= 1.0 {
         self.phase -= 1.0;
         std::mem::swap(&mut self.frame0, &mut self.frame1);
-        if !self.pop_frame(queue, &mut self.frame1) {
+        if queue.pop_into(&mut self.frame1) != channels {
           // Underflow mid-block: hold the last frame rather than discarding already-consumed audio.
           self.frame1.copy_from_slice(&self.frame0);
           self.phase = 0.0;
           break;
         }
+        self.last_input_frames += 1;
       }
     }
 
     out_samples
-  }
-
-  #[inline]
-  fn pop_frame(&mut self, queue: &mut PcmF32QueueConsumer, dst: &mut [f32]) -> bool {
-    debug_assert_eq!(dst.len(), self.channels);
-    let n = queue.pop_into(dst);
-    if n == self.channels {
-      self.last_input_frames += 1;
-      true
-    } else {
-      false
-    }
   }
 }
 
