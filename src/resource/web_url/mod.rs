@@ -25,6 +25,18 @@ mod tests {
   }
 
   #[test]
+  fn ipv6_host_and_hostname_are_bracketed() {
+    let limits = WebUrlLimits::default();
+    let url = WebUrl::parse("http://[::1]:8080/path", None, &limits).unwrap();
+    assert_eq!(url.hostname().unwrap(), "[::1]");
+    assert_eq!(url.host().unwrap(), "[::1]:8080");
+    assert!(
+      url.href().unwrap().starts_with("http://[::1]:8080/"),
+      "href must preserve IPv6 bracket syntax"
+    );
+  }
+
+  #[test]
   fn errors_on_invalid_base_url() {
     let limits = WebUrlLimits::default();
     let err = WebUrl::parse("foo", Some("not a url"), &limits).unwrap_err();

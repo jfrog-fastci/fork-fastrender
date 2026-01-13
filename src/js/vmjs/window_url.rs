@@ -3054,6 +3054,20 @@ mod tests {
   }
 
   #[test]
+  fn url_ipv6_host_and_hostname_are_bracketed() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let hostname = realm.exec_script("new URL('http://[::1]:8080/path').hostname")?;
+    assert_eq!(get_string(realm.heap(), hostname), "[::1]");
+
+    let host = realm.exec_script("new URL('http://[::1]:8080/path').host")?;
+    assert_eq!(get_string(realm.heap(), host), "[::1]:8080");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
   fn url_setters_are_noop_on_failure() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 

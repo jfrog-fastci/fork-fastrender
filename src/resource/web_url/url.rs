@@ -255,12 +255,22 @@ impl WebUrl {
     let Some(host) = inner.url.host_str() else {
       return Ok(String::new());
     };
+    // WHATWG host serialization requires IPv6 addresses to be enclosed in square brackets. The
+    // `url` crate's `host_str()` intentionally omits these brackets, so we need to re-add them to
+    // match browser / spec behavior.
+    let bracket_ipv6 = matches!(inner.url.host(), Some(::url::Host::Ipv6(_)));
 
     let port = inner.url.port();
     let mut out = String::new();
-    // Reserve enough for `host`, plus `:`, plus a 5-digit port.
-    out.try_reserve_exact(host.len().saturating_add(6))?;
+    // Reserve enough for `host`, optional IPv6 brackets, `:`, and a 5-digit port.
+    out.try_reserve_exact(host.len().saturating_add(if bracket_ipv6 { 8 } else { 6 }))?;
+    if bracket_ipv6 {
+      out.push('[');
+    }
     out.push_str(host);
+    if bracket_ipv6 {
+      out.push(']');
+    }
     if let Some(port) = port {
       use std::fmt::Write as _;
       out.push(':');
@@ -325,8 +335,19 @@ impl WebUrl {
   /// Equivalent to the WHATWG `URL.hostname` getter.
   pub fn hostname(&self) -> Result<String, WebUrlError> {
     let inner = self.inner.lock();
-    let host = inner.url.host_str().unwrap_or("");
-    try_clone_str(host)
+    let Some(host) = inner.url.host_str() else {
+      return Ok(String::new());
+    };
+    if matches!(inner.url.host(), Some(::url::Host::Ipv6(_))) {
+      let mut out = String::new();
+      out.try_reserve_exact(host.len().saturating_add(2))?;
+      out.push('[');
+      out.push_str(host);
+      out.push(']');
+      Ok(out)
+    } else {
+      try_clone_str(host)
+    }
   }
 
   /// Equivalent to the WHATWG `URL.hostname` setter.
