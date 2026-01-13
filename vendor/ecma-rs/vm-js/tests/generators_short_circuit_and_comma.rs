@@ -385,3 +385,63 @@ fn generator_comma_operator_with_yield_on_both_sides() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_comma_operator_with_yield_star_on_lhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield* [1, 2], 3); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next();
+      var r3 = it.next();
+      r1.done === false && r1.value === 1 &&
+      r2.done === false && r2.value === 2 &&
+      r3.done === true && r3.value === 3
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_comma_operator_with_yield_star_on_rhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (0, yield* [1, 2]); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next();
+      var r3 = it.next();
+      r1.done === false && r1.value === 1 &&
+      r2.done === false && r2.value === 2 &&
+      r3.done === true && r3.value === undefined
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_comma_operator_with_yield_star_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield* [1], yield* [2]); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next();
+      var r3 = it.next();
+      r1.done === false && r1.value === 1 &&
+      r2.done === false && r2.value === 2 &&
+      r3.done === true && r3.value === undefined
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
