@@ -4282,20 +4282,20 @@ impl<'vm> HirEvaluator<'vm> {
 
             let v = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(v)?;
-             self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
-             self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
-             Ok(v)
-           }
-           _ => {
-             // Root the RHS across pattern assignment evaluation in case it allocates and triggers GC.
-             let mut scope = scope.reborrow();
-             let v = self.eval_expr(&mut scope, body, value)?;
-             scope.push_root(v)?;
-             self.assign_to_pat(&mut scope, body, target, v)?;
-             Ok(v)
-           }
-         }
-       }
+            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
+            self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
+            Ok(v)
+          }
+          _ => {
+            // Root the RHS across pattern assignment evaluation in case it allocates and triggers GC.
+            let mut scope = scope.reborrow();
+            let v = self.eval_expr(&mut scope, body, value)?;
+            scope.push_root(v)?;
+            self.assign_to_pat(&mut scope, body, target, v)?;
+            Ok(v)
+          }
+        }
+      }
       hir_js::AssignOp::AddAssign
       | hir_js::AssignOp::SubAssign
       | hir_js::AssignOp::MulAssign
@@ -5723,6 +5723,7 @@ impl<'vm> HirEvaluator<'vm> {
             let expr = self.get_expr(body, *value)?;
             match &expr.kind {
               hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
+              hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
               _ => false,
             }
           };
