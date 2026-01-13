@@ -1440,9 +1440,12 @@ pub fn composite_subframes<'a>(
   mut parent: FrameBuffer,
   subframes: impl IntoIterator<Item = (&'a SubframeInfo, &'a FrameBuffer)>,
 ) -> Result<FrameBuffer, CompositeError> {
-  let mut list: Vec<_> = subframes.into_iter().collect();
-  if list.len() > MAX_SUBFRAMES_PER_FRAME {
-    return Err(CompositeError::TooManySubframes);
+  let mut list: Vec<_> = Vec::new();
+  for item in subframes {
+    if list.len() == MAX_SUBFRAMES_PER_FRAME {
+      return Err(CompositeError::TooManySubframes);
+    }
+    list.push(item);
   }
   list.sort_by_key(|(info, _)| (info.z_index, info.child.0));
   for (info, buffer) in list {
@@ -1496,7 +1499,12 @@ pub fn composite_paint_plan<'a>(
   }
 
   let mut by_child: HashMap<FrameId, &'a FrameBuffer> = HashMap::new();
+  let mut seen = 0usize;
   for (info, buffer) in subframes {
+    seen += 1;
+    if seen > MAX_SUBFRAMES_PER_FRAME {
+      return Err(CompositeError::TooManySubframes);
+    }
     by_child.insert(info.child, buffer);
   }
 
@@ -2183,6 +2191,28 @@ mod compositor_tests {
   }
 
   #[test]
+  fn composite_subframes_rejects_infinite_iterator() {
+    let parent = solid_buffer(1, 1, [0, 0, 0, 255]);
+    let child = solid_buffer(1, 1, [255, 0, 0, 255]);
+    let info = SubframeInfo {
+      child: FrameId(1),
+      src: None,
+      transform: AffineTransform::IDENTITY,
+      clip_stack: Vec::new(),
+      z_index: 0,
+      hit_testable: true,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
+      effects: SubframeEffects::default(),
+    };
+
+    let err = composite_subframes(parent, std::iter::repeat((&info, &child)))
+      .expect_err("expected infinite iterator to be bounded and rejected");
+    assert_eq!(err, CompositeError::TooManySubframes);
+  }
+
+  #[test]
   fn composite_subframe_rejects_clip_stack_too_deep() {
     let parent = solid_buffer(1, 1, [0, 0, 0, 255]);
     let child = solid_buffer(1, 1, [255, 0, 0, 255]);
@@ -2236,6 +2266,33 @@ mod compositor_tests {
 
     let err = composite_paint_plan(plan, std::iter::empty::<(&SubframeInfo, &FrameBuffer)>())
       .expect_err("expected too many slots to be rejected");
+    assert_eq!(err, CompositeError::TooManySubframes);
+  }
+
+  #[test]
+  fn composite_paint_plan_rejects_infinite_subframe_iterator() {
+    let plan = FramePaintPlan {
+      frame_id: FrameId(1),
+      layers: vec![solid_buffer(1, 1, [0, 0, 0, 0])],
+      slots: Vec::new(),
+    };
+
+    let child = solid_buffer(1, 1, [255, 0, 0, 255]);
+    let slot = SubframeInfo {
+      child: FrameId(1),
+      src: None,
+      transform: AffineTransform::IDENTITY,
+      clip_stack: Vec::new(),
+      z_index: 0,
+      hit_testable: true,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
+      effects: SubframeEffects::default(),
+    };
+
+    let err = composite_paint_plan(plan, std::iter::repeat((&slot, &child)))
+      .expect_err("expected infinite iterator to be bounded and rejected");
     assert_eq!(err, CompositeError::TooManySubframes);
   }
 
