@@ -2873,6 +2873,49 @@ fn compiled_assignment_sets_anonymous_function_name_for_property() -> Result<(),
   Ok(())
 }
 
+#[test]
+fn compiled_destructuring_name_inference_matches_interpreter() -> Result<(), VmError> {
+  let source = r#"
+    var o = {};
+    var h, a, c;
+
+    ({ x: o.f } = { x: function(){} });
+    ([o.g] = [function(){}]);
+
+    ({ h } = { h: function(){} });
+    ({ a } = { a: () => {} });
+    ({ c } = { c: class {} });
+
+    // Names for binding targets should be inferred; member targets in destructuring currently rely
+    // on `PutValue` semantics (no extra inference). Compare compiled vs interpreter.
+    o.f.name + "|" + o.g.name + "|" + h.name + "|" + a.name + "|" + c.name
+  "#;
+
+  // Interpreter result (baseline).
+  let mut rt_interp = JsRuntime::new(
+    Vm::new(VmOptions::default()),
+    Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024)),
+  )?;
+  let expected = rt_interp.exec_script(source)?;
+  let Value::String(expected_s) = expected else {
+    panic!("expected string, got {expected:?}");
+  };
+  let expected_text = rt_interp.heap.get_string(expected_s)?.to_utf8_lossy().to_string();
+
+  // Compiled HIR execution should match.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(&mut heap, "test.js", source)?;
+  let mut rt_compiled = JsRuntime::new(Vm::new(VmOptions::default()), heap)?;
+  let actual = rt_compiled.exec_compiled_script(script)?;
+  let Value::String(actual_s) = actual else {
+    panic!("expected string, got {actual:?}");
+  };
+  let actual_text = rt_compiled.heap.get_string(actual_s)?.to_utf8_lossy().to_string();
+
+  assert_eq!(actual_text, expected_text);
+  Ok(())
+}
+
 fn proxy_get_trap(
   _vm: &mut Vm,
   _scope: &mut vm_js::Scope<'_>,

@@ -9556,6 +9556,19 @@ impl<'a> Evaluator<'a> {
 
             match val {
               ClassOrObjVal::Prop(Some(value_expr)) => {
+                // Spec-ish `SetFunctionName` behaviour: for anonymous function/class definitions used
+                // as property values, infer `name` from the property key.
+                //
+                // This is intentionally syntactic (based on the expression kind), not dynamic (based
+                // on the runtime value), so e.g. `{ x: someFunc }` does not rename `someFunc` even
+                // if its current `.name` is empty.
+                let is_anonymous_function_def = match &*value_expr.stx {
+                  Expr::Func(func) => func.stx.name.is_none(),
+                  Expr::ArrowFunc(_) => true,
+                  Expr::Class(class) => class.stx.name.is_none(),
+                  _ => false,
+                };
+
                 let value = self.eval_expr(&mut member_scope, value_expr)?;
                 member_scope.push_root(value)?;
                 if is_proto_setter {
@@ -9571,6 +9584,33 @@ impl<'a> Evaluator<'a> {
                     _ => {}
                   }
                 } else {
+                  if is_anonymous_function_def {
+                    if let Value::Object(func_obj) = value {
+                      // `SetFunctionName` only applies to actual Function objects (not callable
+                      // Proxies).
+                      let func_name = match member_scope.heap().get_function(func_obj) {
+                        Ok(f) => Some(f.name),
+                        Err(VmError::NotCallable) => None,
+                        Err(err) => return Err(err),
+                      };
+                      if let Some(current_name) = func_name {
+                        // Only infer a name for empty-name functions.
+                        if member_scope
+                          .heap()
+                          .get_string(current_name)?
+                          .as_code_units()
+                          .is_empty()
+                        {
+                          crate::function_properties::set_function_name(
+                            &mut member_scope,
+                            func_obj,
+                            key,
+                            None,
+                          )?;
+                        }
+                      }
+                    }
+                  }
                   member_scope.create_data_property_or_throw(obj, key, value)?;
                 }
               }
