@@ -331,6 +331,37 @@ mod tests {
   }
 
   #[test]
+  fn wheel_page_delta_converts_to_viewport_css_units() {
+    let image_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    // Negative y is scroll down; 1 page corresponds to the viewport height.
+    let delta_css = mapping
+      .wheel_delta_to_delta_css(WheelDelta::Pages(Vec2::new(0.0, -1.0)))
+      .unwrap();
+    assert_approx2(delta_css, (0.0, 600.0));
+  }
+
+  #[test]
+  fn wheel_delta_from_winit_pixel_delta_divides_by_pixels_per_point() {
+    use winit::dpi::PhysicalPosition;
+    use winit::event::MouseScrollDelta;
+
+    let image_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    // winit PixelDelta is in physical pixels. With pixels_per_point=2, -20px becomes -10 points.
+    let wheel = WheelDelta::from_winit(
+      MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -20.0)),
+      2.0,
+    );
+    assert_eq!(wheel, WheelDelta::Points(Vec2::new(0.0, -10.0)));
+
+    let delta_css = mapping.wheel_delta_to_delta_css(wheel).unwrap();
+    assert_approx2(delta_css, (0.0, 10.0));
+  }
+
+  #[test]
   fn css_to_points_inverts_points_to_css_at_identity_scale() {
     let image_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
     let mapping = InputMapping::new(image_rect, (800, 600));

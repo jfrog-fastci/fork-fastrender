@@ -9312,6 +9312,119 @@ impl App {
         self.window.request_redraw();
         self.cursor_in_page = now_in_page;
       }
+      WindowEvent::MouseWheel { delta, .. } => {
+        // Handle page scrolling from native wheel/trackpad events.
+        //
+        // Historically the egui backend forwarded wheel deltas by inspecting egui input events
+        // inside `render_frame`. The compositor/non-egui backend does not have access to that path,
+        // so we forward directly from the winit event stream here.
+
+        // Ctrl/Cmd+wheel is treated as a zoom gesture (handled elsewhere), so do not forward it as
+        // scroll input.
+        if map_modifiers(self.modifiers).command() {
+          return;
+        }
+
+        // Treat the clear browsing data dialog as a modal: do not scroll the page beneath it.
+        if self.clear_browsing_data_dialog_open {
+          return;
+        }
+
+        let Some(pos_points) = self.last_cursor_pos_points else {
+          return;
+        };
+
+        // Best-effort popup UX: if a wheel scroll happens outside an open picker/dropdown, close
+        // it; if it happens inside the popup, treat the wheel as UI-only (handled by egui) and do
+        // not forward it to the page worker.
+        let mut wheel_blocked_by_popup = false;
+        if self.open_select_dropdown.is_some() {
+          if self
+            .open_select_dropdown_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            wheel_blocked_by_popup = true;
+          } else {
+            self.cancel_select_dropdown();
+            self.window.request_redraw();
+          }
+        }
+        if self.open_date_time_picker.is_some() {
+          if self
+            .open_date_time_picker_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            wheel_blocked_by_popup = true;
+          } else {
+            self.cancel_date_time_picker();
+            self.window.request_redraw();
+          }
+        }
+        if self.open_file_picker.is_some() {
+          if self
+            .open_file_picker_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            wheel_blocked_by_popup = true;
+          } else {
+            self.cancel_file_picker();
+            self.window.request_redraw();
+          }
+        }
+        if wheel_blocked_by_popup {
+          return;
+        }
+
+        // Do not forward wheel scrolls when the page is showing a stale frame under a loading
+        // overlay. This matches the pointer-input blocking logic used for other event types.
+        if self.page_loading_overlay_blocks_input {
+          return;
+        }
+
+        // Treat egui overlay UI surfaces (context menus, debug log, etc.) as true overlays: wheel
+        // scrolling over them should not scroll the underlying page.
+        if self.cursor_over_egui_overlay(pos_points) {
+          return;
+        }
+
+        // Only forward wheel events when the cursor is inside the drawn page region.
+        if !self
+          .page_rect_points
+          .is_some_and(|rect| rect.contains(pos_points))
+        {
+          return;
+        }
+
+        let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) else {
+          return;
+        };
+        let Some(mapping) = self.page_input_mapping else {
+          return;
+        };
+
+        let wheel_delta = fastrender::ui::WheelDelta::from_winit(*delta, self.pixels_per_point);
+        let Some(delta_css) = mapping.wheel_delta_to_delta_css(wheel_delta) else {
+          return;
+        };
+        if delta_css.0 == 0.0 && delta_css.1 == 0.0 {
+          return;
+        }
+
+        // Treat wheel scrolling over overlay scrollbars as viewport scrolling (like browsers): do
+        // not route the delta to nested element scrollers via hit-testing.
+        let pointer_css = if self.cursor_over_overlay_scrollbars(pos_points) {
+          None
+        } else {
+          mapping.pos_points_to_pos_css_clamped(pos_points)
+        };
+
+        self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+          tab_id,
+          delta_css,
+          pointer_css,
+        });
+        self.window.request_redraw();
+      }
       WindowEvent::DroppedFile(path) => {
         // OS-level file drop.
         //
@@ -12360,43 +12473,9 @@ impl App {
           }
         }
 
-        if !wheel_events.is_empty()
-          && !wheel_blocked_by_popup
-          && response.hovered()
-          && !self.page_loading_overlay_blocks_input
-          && !self.clear_browsing_data_dialog_open
-        {
-          let Some(hover_pos) = response.hover_pos() else {
-            return;
-          };
-
-          if !self.cursor_over_egui_overlay(hover_pos) {
-            let mut delta_css = (0.0, 0.0);
-            for (unit, delta) in &wheel_events {
-              let Some((dx, dy)) = mapping
-                .wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
-              else {
-                continue;
-              };
-              delta_css.0 += dx;
-              delta_css.1 += dy;
-            }
-            if delta_css.0 != 0.0 || delta_css.1 != 0.0 {
-              // Treat wheel scrolling over overlay scrollbars as viewport scrolling (like browsers):
-              // do not route the scroll delta to underlying element scrollers via hit-testing.
-              let pointer_css = if self.cursor_over_overlay_scrollbars(hover_pos) {
-                None
-              } else {
-                mapping.pos_points_to_pos_css_clamped(hover_pos)
-              };
-              self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-                tab_id: active_tab,
-                delta_css,
-                pointer_css,
-              });
-            }
-          }
-        }
+        // Note: page scrolling from wheel/trackpad input is forwarded from the winit event stream
+        // inside `handle_winit_input_event(WindowEvent::MouseWheel { .. })` so both the egui and
+        // compositor backends share the same behaviour.
       } else {
         let loading_ui =
           fastrender::ui::loading_overlay::decide_page_loading_ui(false, tab_loading, tab_stage);
