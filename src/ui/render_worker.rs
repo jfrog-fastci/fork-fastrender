@@ -1205,6 +1205,17 @@ fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUiMsg>) -> Sta
   push_stage_listener(Some(listener))
 }
 
+fn pointer_pos_css_in_viewport(pos_css: (f32, f32), viewport_css: (u32, u32)) -> bool {
+  let (x, y) = pos_css;
+  if !(x.is_finite() && y.is_finite()) {
+    return false;
+  }
+  if x < 0.0 || y < 0.0 {
+    return false;
+  }
+  x < viewport_css.0 as f32 && y < viewport_css.1 as f32
+}
+
 pub(crate) fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Point {
   // The UI uses a sentinel `(-1, -1)` position to indicate that the pointer left the page image.
   //
@@ -6276,14 +6287,7 @@ impl BrowserRuntime {
     // If a real pointer move arrives, it supersedes any pending scroll-induced hover sync. The
     // pointer move will do a fresh hit-test using the latest scroll offset.
     tab.pending_hover_sync_pos_css = None;
-    let viewport_w = tab.viewport_css.0 as f32;
-    let viewport_h = tab.viewport_css.1 as f32;
-    let pointer_in_page = pos_css.0.is_finite()
-      && pos_css.1.is_finite()
-      && pos_css.0 >= 0.0
-      && pos_css.1 >= 0.0
-      && pos_css.0 < viewport_w
-      && pos_css.1 < viewport_h;
+    let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
     tab.last_pointer_pos_css = pointer_in_page.then_some(pos_css);
     let scroll_snapshot = tab.scroll_state.clone();
     // Note: treat out-of-bounds coordinates like the (-1,-1) sentinel and feed them through
@@ -6985,7 +6989,9 @@ impl BrowserRuntime {
       return;
     };
     let scroll = &tab.scroll_state;
-    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+    let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
+    let viewport_point =
+      viewport_point_for_pos_css(scroll, if pointer_in_page { pos_css } else { (-1.0, -1.0) });
     let hit_tree = hit_test_fragment_tree_for_scroll_cached(
       &mut tab.hit_test_fragment_tree_cache,
       doc,
@@ -7145,7 +7151,11 @@ impl BrowserRuntime {
         return;
       };
       let scroll_snapshot = tab.scroll_state.clone();
-      let viewport_point = viewport_point_for_pos_css(&scroll_snapshot, pos_css);
+      let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
+      let viewport_point = viewport_point_for_pos_css(
+        &scroll_snapshot,
+        if pointer_in_page { pos_css } else { (-1.0, -1.0) },
+      );
       let pointer_buttons = tab.pointer_buttons;
       let js_mutation_generation_before_dispatch =
         tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
@@ -7254,7 +7264,11 @@ impl BrowserRuntime {
       .as_deref()
       .unwrap_or(about_pages::ABOUT_BASE_URL);
     let scroll_snapshot = tab.scroll_state.clone();
-    let viewport_point = viewport_point_for_pos_css(&scroll_snapshot, pos_css);
+    let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
+    let viewport_point = viewport_point_for_pos_css(
+      &scroll_snapshot,
+      if pointer_in_page { pos_css } else { (-1.0, -1.0) },
+    );
     let (
       dom_changed,
       action,
@@ -8140,7 +8154,9 @@ impl BrowserRuntime {
     };
 
     let scroll = &tab.scroll_state;
-    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+    let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
+    let viewport_point =
+      viewport_point_for_pos_css(scroll, if pointer_in_page { pos_css } else { (-1.0, -1.0) });
     let hit_tree = hit_test_fragment_tree_for_scroll_cached(
       &mut tab.hit_test_fragment_tree_cache,
       doc,
@@ -8291,7 +8307,9 @@ impl BrowserRuntime {
     let dpr = tab.dpr;
     let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
     let scroll = &tab.scroll_state;
-    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+    let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
+    let viewport_point =
+      viewport_point_for_pos_css(scroll, if pointer_in_page { pos_css } else { (-1.0, -1.0) });
     let page_point = viewport_point.translate(scroll.viewport);
 
     let Some(doc) = tab.document.as_mut() else {

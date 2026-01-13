@@ -227,6 +227,7 @@ mod ui_worker_open_in_new_tab;
 mod ui_worker_open_in_new_tab_privileged_schemes;
 mod ui_worker_page_accessibility;
 mod ui_worker_open_in_new_tab_prevent_default;
+mod ui_worker_pointer_bounds;
 mod ui_worker_prioritization_preemption;
 mod ui_worker_protocol_smoke;
 mod ui_worker_renderer_reuse;
