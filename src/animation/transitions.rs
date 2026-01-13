@@ -365,6 +365,14 @@ fn can_interpolate_custom_property(from: &ComputedStyle, to: &ComputedStyle, nam
 }
 
 impl TransitionState {
+  /// Returns true when there are in-flight transitions that require advancing time.
+  pub fn has_running_transitions(&self) -> bool {
+    self
+      .elements
+      .values()
+      .any(|element| !element.running.is_empty())
+  }
+
   /// Captures viewport + per-element sizes from the supplied fragment tree.
   ///
   /// This is used by [`TransitionState::update_for_style_change`] to sample in-flight transitions
