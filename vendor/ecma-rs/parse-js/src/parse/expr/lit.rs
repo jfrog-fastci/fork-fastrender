@@ -711,6 +711,16 @@ fn validate_regex_flags(raw: &str, start: usize) -> Result<(), RegexError> {
         })
       }
     };
+    // ES: it is a SyntaxError if both `u` and `v` flags are present.
+    // Treat this as an invalid flag combination so regex literals like `/./uv` are rejected during
+    // parsing (early error).
+    if (ch == 'u' && seen_flags & (1 << 6) != 0) || (ch == 'v' && seen_flags & (1 << 5) != 0) {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidFlag,
+        offset: start + offset,
+        len: ch.len_utf8(),
+      });
+    }
     if seen_flags & bit != 0 {
       return Err(RegexError {
         kind: RegexErrorKind::DuplicateFlag,

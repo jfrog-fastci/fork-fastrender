@@ -42,6 +42,29 @@ fn regexp_flags_parsing_rejects_duplicates() {
 }
 
 #[test]
+fn regexp_flags_parsing_accepts_v() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"new RegExp(".", "v").flags"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "v");
+}
+
+#[test]
+fn regexp_flags_parsing_rejects_uv_combination() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp(".", "uv"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
+fn regexp_literal_with_uv_flags_is_early_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#"var r = /./uv;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn regexp_last_index_global_exec_updates_and_resets() {
   let mut rt = new_runtime();
   let value = rt

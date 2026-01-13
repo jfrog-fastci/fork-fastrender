@@ -205,10 +205,16 @@ pub struct RegExpFlags {
   pub(crate) multiline: bool,
   pub(crate) dot_all: bool,
   pub(crate) unicode: bool,
+  pub(crate) unicode_sets: bool,
   pub(crate) sticky: bool,
 }
 
 impl RegExpFlags {
+  #[inline]
+  pub(crate) fn has_either_unicode_flag(&self) -> bool {
+    self.unicode || self.unicode_sets
+  }
+
   pub(crate) fn parse(
     units: &[u16],
     tick: &mut dyn FnMut() -> Result<(), VmError>,
@@ -265,13 +271,22 @@ impl RegExpFlags {
           flags.dot_all = true;
         }
         b'u' => {
-          if flags.unicode {
+          if flags.unicode || flags.unicode_sets {
             return Err(RegExpSyntaxError {
               message: "Invalid flags supplied to RegExp constructor",
             }
             .into());
           }
           flags.unicode = true;
+        }
+        b'v' => {
+          if flags.unicode_sets || flags.unicode {
+            return Err(RegExpSyntaxError {
+              message: "Invalid flags supplied to RegExp constructor",
+            }
+            .into());
+          }
+          flags.unicode_sets = true;
         }
         b'y' => {
           if flags.sticky {
@@ -295,6 +310,10 @@ impl RegExpFlags {
 
   /// Returns the canonical flags string order used by `RegExp.prototype.flags`.
   pub(crate) fn to_canonical_string(self) -> String {
+    debug_assert!(
+      !(self.unicode && self.unicode_sets),
+      "RegExpFlags cannot contain both `u` and `v`"
+    );
     let mut out = String::new();
     if self.global {
       out.push('g');
@@ -310,6 +329,8 @@ impl RegExpFlags {
     }
     if self.unicode {
       out.push('u');
+    } else if self.unicode_sets {
+      out.push('v');
     }
     if self.sticky {
       out.push('y');
@@ -1405,7 +1426,7 @@ impl<'a> Parser<'a> {
         // `{` is only a quantifier delimiter when it follows an atom; here it's an atom itself.
         Ok(Atom::Literal(x))
       }
-      x if x == (b'}' as u16) && self.flags.unicode => Err(RegExpSyntaxError {
+      x if x == (b'}' as u16) && self.flags.has_either_unicode_flag() => Err(RegExpSyntaxError {
         message: "Invalid regular expression",
       }
       .into()),
@@ -1728,7 +1749,7 @@ impl<'a> Parser<'a> {
   }
 
   fn parse_unicode_escape(&mut self, ctx: &mut CompileCtx<'_>) -> Result<u16, RegExpCompileError> {
-    if self.flags.unicode && self.peek() == Some(b'{' as u16) {
+    if self.flags.has_either_unicode_flag() && self.peek() == Some(b'{' as u16) {
       // \u{...}
       self.next();
       let mut value: u32 = 0;
@@ -1833,7 +1854,7 @@ impl<'a> Parser<'a> {
         }
         (m, n)
       }
-      x if x == (b'}' as u16) && self.flags.unicode => {
+      x if x == (b'}' as u16) && self.flags.has_either_unicode_flag() => {
         return Err(RegExpSyntaxError {
           message: "Invalid regular expression",
         }

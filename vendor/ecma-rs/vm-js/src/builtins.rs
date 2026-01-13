@@ -7920,7 +7920,7 @@ fn regexp_exec_raw(
     }
     k = {
       let js = scope.heap().get_string(input)?;
-      advance_string_index(js.as_code_units(), k, flags.unicode)
+      advance_string_index(js.as_code_units(), k, flags.has_either_unicode_flag())
     };
     if k > s_len {
       break;
@@ -13051,7 +13051,7 @@ pub fn regexp_prototype_symbol_match(
       let li = regexp_get_last_index(vm, &mut scope, host, hooks, rx)?;
       let new_li = {
         let js = scope.heap().get_string(s)?;
-        advance_string_index(js.as_code_units(), li, flags.unicode)
+        advance_string_index(js.as_code_units(), li, flags.has_either_unicode_flag())
       };
       regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(new_li as f64))?;
     }
@@ -13368,7 +13368,7 @@ pub fn regexp_prototype_symbol_replace(
       let li = regexp_get_last_index(vm, &mut scope, host, hooks, rx)?;
       let new_li = {
         let js = scope.heap().get_string(input)?;
-        advance_string_index(js.as_code_units(), li, flags.unicode)
+        advance_string_index(js.as_code_units(), li, flags.has_either_unicode_flag())
       };
       regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(new_li as f64))?;
     }
@@ -13475,7 +13475,7 @@ pub fn regexp_prototype_symbol_split(
         found = Some((k, m));
         break;
       }
-      let next = advance_string_index(&input_units, k, flags.unicode);
+      let next = advance_string_index(&input_units, k, flags.has_either_unicode_flag());
       if next == k {
         break;
       }
@@ -13487,7 +13487,7 @@ pub fn regexp_prototype_symbol_split(
 
     // Avoid infinite loops on empty matches at the same position.
     if match_start == match_end && match_start == p {
-      q = advance_string_index(&input_units, q, flags.unicode);
+      q = advance_string_index(&input_units, q, flags.has_either_unicode_flag());
       continue;
     }
 
