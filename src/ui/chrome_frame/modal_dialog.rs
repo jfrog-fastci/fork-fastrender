@@ -144,7 +144,7 @@ pub fn modal_dialog_html(model: &Model) -> String {
 
       format!(
         r#"<div class="chrome-modal-input-row">
-          <input class="chrome-modal-input" type="text" name="{safe_name}" value="{safe_value}"{placeholder_attr}>
+          <input class="chrome-modal-input" type="text" name="{safe_name}" value="{safe_value}"{placeholder_attr} autofocus>
         </div>"#,
         placeholder_attr = placeholder_attr.unwrap_or_default()
       )

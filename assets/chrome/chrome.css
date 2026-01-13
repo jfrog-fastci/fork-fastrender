@@ -226,6 +226,7 @@ body {
 .chrome-modal-backdrop {
   position: fixed;
   inset: 0;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -241,4 +242,60 @@ body {
   border: 1px solid rgba(0, 0, 0, 0.15);
   border-radius: 12px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+}
+
+.chrome-modal-header {
+  margin-bottom: 10px;
+}
+
+.chrome-modal-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.chrome-modal-body {
+  white-space: pre-wrap;
+}
+
+.chrome-modal-input-row {
+  margin-top: 12px;
+}
+
+.chrome-modal-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: #ffffff;
+  font: inherit;
+}
+
+.chrome-modal-buttons {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.chrome-modal-button {
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: #f8fafc;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chrome-modal-button:hover {
+  background: #eef2f7;
+}
+
+.chrome-modal-button-primary {
+  background: #e8f0fe;
+  border-color: rgba(37, 99, 235, 0.55);
+}
+
+.chrome-modal-button-primary:hover {
+  background: rgba(37, 99, 235, 0.18);
 }
