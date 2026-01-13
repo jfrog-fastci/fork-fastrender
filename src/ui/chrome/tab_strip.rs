@@ -3260,6 +3260,42 @@ pub(super) fn tab_strip_ui(
     d.insert_temp(anim_key, pin_anim_render.cloned());
   });
 
+  // Keep the drag-lift animation state "armed" across drag sessions.
+  //
+  // The tab drag ghost only exists while `dragging_tab_id` is `Some`, so we have to "prime" the
+  // animation state on drag start (set `t=0`) and also drive it back toward rest on drag end.
+  let drag_lift_state_id = ui.make_persistent_id("tab_strip_drag_lift_state");
+  let last_dragged_id_key = drag_lift_state_id.with("last_dragged_tab_id");
+  let last_dragged_id = ctx
+    .data(|d| d.get_temp::<Option<TabId>>(last_dragged_id_key))
+    .unwrap_or(None);
+  let dragging_tab_id = app.chrome.dragging_tab_id;
+  if last_dragged_id != dragging_tab_id {
+    // Drag start: prime the new tab's animation state at `t=0` so the lift-in animates even the
+    // first time a tab is dragged (egui otherwise initializes animations at their target value).
+    if let Some(new_id) = dragging_tab_id {
+      let _ = motion.animate_bool(
+        ctx,
+        egui::Id::new(("tab_drag_lift", new_id)),
+        false,
+        motion.durations.tab_drag_lift,
+      );
+    }
+
+    // Drag end (or drag-switch): drive the previous tab back toward rest so subsequent drags lift
+    // in again.
+    if let Some(prev_id) = last_dragged_id {
+      let _ = motion.animate_bool(
+        ctx,
+        egui::Id::new(("tab_drag_lift", prev_id)),
+        false,
+        motion.durations.tab_drag_lift,
+      );
+    }
+
+    ctx.data_mut(|d| d.insert_temp(last_dragged_id_key, dragging_tab_id));
+  }
+
   // Drag-to-reorder: apply the reorder while dragging, but render the dragged tab as a floating
   // preview so it feels "picked up".
   if let (Some(dragging_tab_id), Some(pos)) = (
@@ -3461,9 +3497,8 @@ pub(super) fn tab_strip_ui(
 
     // Animate the lift/scale-in so the dragged tab feels like it's being "picked up". When reduced
     // motion is enabled this snaps to the final state.
-    let lift_id = egui::Id::new("tab_strip_drag_lift").with(drag_anim_key);
-    let lift_id = egui::Id::new("tab_strip_drag_lift").with(drag_anim_key);
-    let lift_t = motion.animate_bool(ui.ctx(), lift_id, true, motion.durations.tab_drag_lift);
+    let lift_id = egui::Id::new(("tab_drag_lift", dragging_tab_id));
+    let lift_t = motion.animate_bool(ctx, lift_id, true, motion.durations.tab_drag_lift);
     let lift = Vec2::new(0.0, -DRAG_PREVIEW_LIFT_Y * lift_t);
     preview_rect = preview_rect.translate(lift);
     let scale = 1.0 + (DRAG_PREVIEW_SCALE - 1.0) * lift_t;
