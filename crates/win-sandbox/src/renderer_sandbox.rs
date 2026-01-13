@@ -61,6 +61,9 @@ impl RendererSandbox {
   }
 
   /// Spawns `exe` with `args` under the configured sandbox.
+  ///
+  /// Note: this helper inherits the parent process environment by default; it does **not** perform
+  /// environment sanitization.
   pub fn spawn(&self, exe: &Path, args: &[OsString]) -> Result<SandboxedChild> {
     spawn_appcontainer_no_capabilities(self.appcontainer_name, exe, args)
   }
