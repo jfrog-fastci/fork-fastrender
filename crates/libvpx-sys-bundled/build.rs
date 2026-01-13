@@ -71,8 +71,21 @@ Got env={other:?}. musl targets are not supported by the bundled libvpx build ye
             let darwin = detect_darwin_major().unwrap_or(22).max(20);
             format!("arm64-darwin{darwin}-gcc")
         }
+        ("windows", "x86", "gnu") => "x86-win32-gcc".to_string(),
         ("windows", "x86_64", "gnu") => "x86_64-win64-gcc".to_string(),
         ("windows", "aarch64", "gnu") => "arm64-win64-gcc".to_string(),
+        ("windows", "x86", "msvc") => {
+            if !host.contains("windows") {
+                unsupported(
+                    &target,
+                    &host,
+                    "Windows MSVC target requested but build host is not Windows. \
+Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows or link against a system libvpx.",
+                );
+            }
+            let vs_ver = detect_visual_studio_major().unwrap_or(16);
+            format!("x86-win32-vs{vs_ver}")
+        }
         ("windows", "x86_64", "msvc") => {
             if !host.contains("windows") {
                 unsupported(
@@ -107,7 +120,7 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         _ => unsupported(
             &target,
             &host,
-            "unsupported target for bundled libvpx build. Supported targets: linux x86_64-gnu, macOS x86_64/aarch64, Windows x86_64-gnu (MinGW), Windows aarch64-gnu (MinGW), Windows x86_64-msvc (best-effort), Windows aarch64-msvc (best-effort).",
+            "unsupported target for bundled libvpx build. Supported targets: linux x86_64-gnu, macOS x86_64/aarch64, Windows x86-gnu (MinGW), Windows x86_64-gnu (MinGW), Windows aarch64-gnu (MinGW), Windows x86-msvc (best-effort), Windows x86_64-msvc (best-effort), Windows aarch64-msvc (best-effort).",
         ),
     };
 
@@ -337,6 +350,7 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
 
             // Now build only the desired Release|<Platform> configuration.
             let msvc_cfg = match target_arch.as_str() {
+                "x86" => "Release_Win32",
                 "x86_64" => "Release_x64",
                 "aarch64" => "Release_ARM64",
                 other => unsupported(
@@ -507,6 +521,7 @@ fn disable_yasm_nasm_by_default(target_arch: &str) -> Vec<&'static str> {
 fn default_mingw_cross_prefix(target: &str, host: &str, target_arch: &str) -> String {
     // The canonical MinGW-w64 toolchain prefixes used by many Linux distributions.
     match target_arch {
+        "x86" => "i686-w64-mingw32-".to_string(),
         "x86_64" => "x86_64-w64-mingw32-".to_string(),
         "aarch64" => "aarch64-w64-mingw32-".to_string(),
         other => unsupported(

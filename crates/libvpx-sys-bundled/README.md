@@ -35,8 +35,10 @@ Target selection:
 - macOS x86_64: `--target=x86_64-darwinXX-gcc` (XX is detected from the host and clamped to the
   libvpx release's known Darwin toolchains)
 - macOS aarch64 (Apple Silicon): `--target=arm64-darwinXX-gcc`
+- Windows x86-gnu (MinGW): `--target=x86-win32-gcc`
 - Windows x86_64-gnu (MinGW): `--target=x86_64-win64-gcc`
 - Windows aarch64-gnu (MinGW): `--target=arm64-win64-gcc`
+- Windows x86-msvc: `--target=x86-win32-vsNN` (NN is detected from the host, defaulting to 16)
 - Windows x86_64-msvc: `--target=x86_64-win64-vsNN` (NN is detected from the host, defaulting to 16)
 - Windows aarch64-msvc: `--target=arm64-win64-vsNN` (NN is detected from the host; VS2017+ / vs15+ required)
 
@@ -62,8 +64,10 @@ Supported (best-effort; CI coverage may vary):
 - `x86_64-unknown-linux-gnu`
 - `x86_64-apple-darwin` (native builds only; cross-compiling the bundled libvpx is not supported)
 - `aarch64-apple-darwin` (native builds only; cross-compiling the bundled libvpx is not supported)
+- `i686-pc-windows-gnu` (MinGW; may require `CROSS` / a MinGW-w64 toolchain when cross-compiling)
 - `x86_64-pc-windows-gnu` (MinGW; may require `CROSS` / a MinGW-w64 toolchain when cross-compiling)
 - `aarch64-pc-windows-gnu` (MinGW; may require `CROSS` / a MinGW-w64 toolchain when cross-compiling)
+- `i686-pc-windows-msvc` (MSVC; requires MSYS2/Cygwin + `msbuild.exe` in PATH)
 - `x86_64-pc-windows-msvc` (MSVC; requires MSYS2/Cygwin + `msbuild.exe` in PATH)
 - `aarch64-pc-windows-msvc` (MSVC; requires MSYS2/Cygwin + `msbuild.exe` in PATH; VS2017+ / vs15+ required)
 
