@@ -233,12 +233,12 @@ fn compiled_dynamic_import_resolves_to_module_namespace() -> Result<(), VmError>
   // - ./m.js re-exports `y` from ./dep.js and exports `x`.
   // - ./dep.js exports `y`.
   let dep_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const y = 1;")?;
-  let dep = rt.modules_mut().add_module(dep_record);
+  let dep = rt.modules_mut().add_module(dep_record)?;
   let m_record = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "export { y } from './dep.js'; export const x = 1;",
   )?;
-  let m = rt.modules_mut().add_module(m_record);
+  let m = rt.modules_mut().add_module(m_record)?;
 
   let mut hooks = TestHostHooks::new();
   hooks.register_module("./m.js", m);
@@ -371,7 +371,7 @@ fn compiled_script_dynamic_import_works() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let m_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 1;")?;
-  let m = rt.modules_mut().add_module(m_record);
+  let m = rt.modules_mut().add_module(m_record)?;
 
   let mut hooks = SyncImportHooks::new();
   hooks.register_module("m.js", m);
@@ -441,7 +441,7 @@ fn compiled_function_dynamic_import_works() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let m_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 1;")?;
-  let m = rt.modules_mut().add_module(m_record);
+  let m = rt.modules_mut().add_module(m_record)?;
 
   let mut hooks = SyncImportHooks::new();
   hooks.register_module("m.js", m);
@@ -514,7 +514,7 @@ fn compiled_dynamic_import_evaluates_specifier_then_options() -> Result<(), VmEr
   let mut rt = new_runtime()?;
 
   let m_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 1;")?;
-  let m = rt.modules_mut().add_module(m_record);
+  let m = rt.modules_mut().add_module(m_record)?;
 
   let mut hooks = SyncImportHooks::new();
   hooks.register_module("m.js", m);
