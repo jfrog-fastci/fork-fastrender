@@ -1073,6 +1073,7 @@ where
   let mut mix_buf: Vec<f32> =
     vec![0.0; preallocate_mix_buffer_len(config, channels, fixed_callback_frames)];
   let mut playback_origin = None;
+  let mut playback_origin_offset = Duration::ZERO;
   let sample_rate_hz = mixer.config.sample_rate_hz;
 
   let err_cb = {
@@ -1144,22 +1145,29 @@ where
             // pure frame counter when unavailable.
             let device_time_at_end = {
               let playback = ts.playback;
+              let frame_counter_time = frames_to_duration(sample_rate_hz, clock.frames_written());
               let buffer_duration = frames_to_duration(sample_rate_hz, frames);
 
               match playback_origin.as_ref() {
                 Some(origin) => match playback.duration_since(origin) {
-                  Some(since_origin) => Some(since_origin.saturating_add(buffer_duration)),
+                  Some(since_origin) => Some(
+                    playback_origin_offset
+                      .saturating_add(since_origin)
+                      .saturating_add(buffer_duration),
+                  ),
                   None => {
-                    // Playback timestamps went backwards (device restart/glitch). Re-anchor so we
-                    // can resume timestamp-based clocking instead of permanently falling back to
-                    // the frame counter.
+                    // Playback timestamps went backwards (device restart/glitch). Re-anchor and
+                    // align to the frame counter so timestamp-based clocking can resume without a
+                    // discontinuity.
                     playback_origin = Some(playback);
-                    Some(buffer_duration)
+                    playback_origin_offset = frame_counter_time;
+                    Some(frame_counter_time.saturating_add(buffer_duration))
                   }
                 },
                 None => {
                   playback_origin = Some(playback);
-                  Some(buffer_duration)
+                  playback_origin_offset = frame_counter_time;
+                  Some(frame_counter_time.saturating_add(buffer_duration))
                 }
               }
             };
