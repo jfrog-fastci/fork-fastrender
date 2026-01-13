@@ -135,6 +135,27 @@ and setting:
 
 This is implemented in `src/sandbox/windows.rs::spawn_appcontainer`.
 
+### AppContainer identity (profile + SID)
+
+An AppContainer process runs under an **AppContainer SID**.
+
+Repo reality:
+
+- `src/sandbox/windows.rs` uses a fixed AppContainer name (`"FastRender.Renderer"`) and derives the
+  SID at spawn time.
+- `crates/win-sandbox` provides higher-level helpers:
+  - `AppContainerProfile::ensure(name, display_name, description)` (idempotent; treats
+    `ERROR_ALREADY_EXISTS` as success)
+  - `derive_appcontainer_sid(name)`
+
+Notes:
+
+- AppContainer APIs are in `userenv.dll` and are resolved at runtime (see code map above). If the
+  APIs are missing, AppContainer is treated as unsupported and we fall back to restricted-token
+  mode.
+- Creating the profile is a one-time system registration; the profile persists on the machine. We
+  intentionally use a stable name so we do not create many profiles over time.
+
 ### Filesystem expectations
 
 With no capabilities, the renderer should assume:
