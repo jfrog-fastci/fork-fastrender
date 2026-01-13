@@ -420,6 +420,97 @@ mod tests {
     realm.teardown(&mut ctx.heap);
     Ok(())
   }
+
+  #[test]
+  fn queued_job_persistent_root_keeps_uint8array_and_buffer_alive_across_gc() -> Result<(), VmError> {
+    let mut ctx = TestContext::new();
+    let mut queue = MicrotaskQueue::new();
+
+    let (weak_view, weak_buffer) = {
+      let (buffer, view) = {
+        let mut scope = ctx.heap.scope();
+        let buffer = scope.alloc_array_buffer(8)?;
+        let view = scope.alloc_uint8_array(buffer, 0, 8)?;
+        (buffer, view)
+      };
+
+      let weak_view = WeakGcObject::from(view);
+      let weak_buffer = WeakGcObject::from(buffer);
+
+      assert_eq!(ctx.heap.stack_root_len(), 0);
+      assert_eq!(ctx.heap.persistent_root_count(), 0);
+
+      let mut job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()))?;
+      // Root only the view. The GC must trace the view -> ArrayBuffer edge to keep `buffer` alive.
+      job.add_root(&mut ctx, Value::Object(view))?;
+      queue.enqueue_promise_job(job, None);
+
+      assert_eq!(ctx.heap.persistent_root_count(), 1);
+      (weak_view, weak_buffer)
+    };
+
+    // While the job remains queued, its persistent root must keep both the view and its backing
+    // buffer alive across GC.
+    ctx.heap.collect_garbage();
+    assert!(weak_view.upgrade(&ctx.heap).is_some(), "Uint8Array view should be kept alive by job root");
+    assert!(
+      weak_buffer.upgrade(&ctx.heap).is_some(),
+      "ArrayBuffer should be kept alive via the rooted view"
+    );
+
+    // After teardown, the job's roots must be dropped, making both objects collectible.
+    queue.teardown(&mut ctx);
+    assert!(queue.is_empty());
+    assert_eq!(ctx.heap.persistent_root_count(), 0);
+    ctx.heap.collect_garbage();
+    assert_eq!(weak_view.upgrade(&ctx.heap), None);
+    assert_eq!(weak_buffer.upgrade(&ctx.heap), None);
+    Ok(())
+  }
+
+  #[test]
+  fn queued_job_persistent_root_keeps_data_view_and_buffer_alive_across_gc() -> Result<(), VmError> {
+    let mut ctx = TestContext::new();
+    let mut queue = MicrotaskQueue::new();
+
+    let (weak_view, weak_buffer) = {
+      let (buffer, view) = {
+        let mut scope = ctx.heap.scope();
+        let buffer = scope.alloc_array_buffer(16)?;
+        let view = scope.alloc_data_view(buffer, 0, 16)?;
+        (buffer, view)
+      };
+
+      let weak_view = WeakGcObject::from(view);
+      let weak_buffer = WeakGcObject::from(buffer);
+
+      assert_eq!(ctx.heap.stack_root_len(), 0);
+      assert_eq!(ctx.heap.persistent_root_count(), 0);
+
+      let mut job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()))?;
+      // Root only the view. The GC must trace the view -> ArrayBuffer edge to keep `buffer` alive.
+      job.add_root(&mut ctx, Value::Object(view))?;
+      queue.enqueue_promise_job(job, None);
+
+      assert_eq!(ctx.heap.persistent_root_count(), 1);
+      (weak_view, weak_buffer)
+    };
+
+    ctx.heap.collect_garbage();
+    assert!(weak_view.upgrade(&ctx.heap).is_some(), "DataView should be kept alive by job root");
+    assert!(
+      weak_buffer.upgrade(&ctx.heap).is_some(),
+      "ArrayBuffer should be kept alive via the rooted DataView"
+    );
+
+    queue.teardown(&mut ctx);
+    assert!(queue.is_empty());
+    assert_eq!(ctx.heap.persistent_root_count(), 0);
+    ctx.heap.collect_garbage();
+    assert_eq!(weak_view.upgrade(&ctx.heap), None);
+    assert_eq!(weak_buffer.upgrade(&ctx.heap), None);
+    Ok(())
+  }
 }
 
 impl VmHostHooks for MicrotaskQueue {
