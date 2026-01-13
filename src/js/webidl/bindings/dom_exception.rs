@@ -200,7 +200,7 @@ const LEGACY_CODE_CONSTANTS: &[(&str, u16)] = &[
   ("DATA_CLONE_ERR", 25),
 ];
 
-fn legacy_code_for_name(name: &str) -> u16 {
+pub(crate) fn legacy_code_for_name(name: &str) -> u16 {
   match name {
     "IndexSizeError" => 1,
     "DOMStringSizeError" => 2,

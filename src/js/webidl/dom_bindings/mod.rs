@@ -11,6 +11,7 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{self, NodeId, NodeKind};
 use crate::js::bindings::DomExceptionClass;
+use crate::js::bindings::dom_exception::legacy_code_for_name;
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::orchestrator::CurrentScriptState;
 use crate::resource::ResourceFetcher;
@@ -717,6 +718,8 @@ fn create_dom_exception_object(
   if let Ok(message_value) = rt.alloc_string_value(message) {
     let _ = define_data_property_str(rt, obj, "message", message_value, false);
   }
+  let code = legacy_code_for_name(name);
+  let _ = define_data_property_str(rt, obj, "code", Value::Number(code as f64), false);
 
   obj
 }
@@ -4876,6 +4879,10 @@ mod tests {
     let name = realm.rt.get(thrown, name_key).unwrap();
     assert_eq!(as_str(&realm.rt, name), "HierarchyRequestError");
 
+    let code_key = pk(&mut realm.rt, "code");
+    let code = realm.rt.get(thrown, code_key).unwrap();
+    assert_eq!(code, Value::Number(3.0));
+
     let ctor_key = pk(&mut realm.rt, "constructor");
     let ctor = realm.rt.get(thrown, ctor_key).unwrap();
     assert_eq!(ctor, dom_exception_ctor);
@@ -5134,6 +5141,10 @@ mod tests {
     let name = realm.rt.get(thrown, name_key).unwrap();
     let name = realm.rt.to_string(name).unwrap();
     assert_eq!(as_str(&realm.rt, name), "SyntaxError");
+
+    let code_key = pk(&mut realm.rt, "code");
+    let code = realm.rt.get(thrown, code_key).unwrap();
+    assert_eq!(code, Value::Number(12.0));
 
     let ctor_key = pk(&mut realm.rt, "constructor");
     let ctor = realm.rt.get(thrown, ctor_key).unwrap();
