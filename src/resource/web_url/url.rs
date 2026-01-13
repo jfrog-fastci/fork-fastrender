@@ -307,8 +307,9 @@ impl WebUrl {
     // Parse `value` as the authority component by constructing a temporary URL. This delegates
     // host/IPv6/port parsing to `url` without requiring a custom parser here.
     let tmp = {
-      let scheme = self.inner.lock().url.scheme().to_string();
-      parse_authority_with_scheme(&scheme, value, &self.limits, WebUrlSetter::Host)?
+      let inner = self.inner.lock();
+      let scheme = inner.url.scheme();
+      parse_authority_with_scheme(scheme, value, &self.limits, WebUrlSetter::Host)?
     };
     let host = tmp.host_str();
     let port = tmp.port();

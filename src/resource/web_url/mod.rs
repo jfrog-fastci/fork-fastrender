@@ -89,6 +89,14 @@ mod tests {
   }
 
   #[test]
+  fn url_host_setter_updates_host_and_port() {
+    let limits = WebUrlLimits::default();
+    let url = WebUrl::parse("https://example.com/", None, &limits).unwrap();
+    url.set_host("example.org:8080").unwrap();
+    assert_eq!(url.href().unwrap(), "https://example.org:8080/");
+  }
+
+  #[test]
   fn urlsearchparams_preserves_duplicates_and_ordering() {
     let limits = WebUrlLimits::default();
     let params = WebUrlSearchParams::parse("a=1&a=2&b=3", &limits).unwrap();
