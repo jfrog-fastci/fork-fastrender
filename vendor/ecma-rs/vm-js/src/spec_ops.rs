@@ -275,30 +275,47 @@ pub fn get_prototype_from_constructor_with_host_and_hooks(
   // `Get(constructor, "prototype")` (Proxy-aware).
   let proto =
     scope.get_with_host_and_hooks(vm, host, hooks, constructor_obj, key, Value::Object(constructor_obj))?;
-  match proto {
-    Value::Object(o) => Ok(o),
-    _ => {
-      // Spec: https://tc39.es/ecma262/#sec-getprototypefromconstructor
-      //
-      // If `constructor.prototype` is not an object, the spec requires using the
-      // constructor's *function realm* and the corresponding intrinsic default prototype.
-      //
-      // `vm-js` currently models a function's `[[Realm]]` as its realm global object
-      // (`JsFunction::realm`). Full multi-realm intrinsics lookup is not yet available here,
-      // but we can correctly handle the most common (and test262-visible) case:
-      // `intrinsicDefaultProto` is `%Object.prototype%`.
-      if let Some(intr) = vm.intrinsics() {
-        if intrinsic_default_proto == intr.object_prototype() {
-          if let Ok(Some(realm_global)) = scope.heap().get_function_realm(constructor_obj) {
-            if let Ok(Some(obj_proto)) = scope.heap().object_prototype(realm_global) {
-              return Ok(obj_proto);
-            }
-          }
-        }
-      }
-      Ok(intrinsic_default_proto)
-    }
+  if let Value::Object(o) = proto {
+    return Ok(o);
   }
+
+  // If `constructor.prototype` is not an object, fall back to the intrinsic default prototype from
+  // the constructor's Realm (ECMA-262 `GetFunctionRealm` + `intrinsicDefaultProto` resolution).
+  //
+  // Note: `vm-js` stores a function's realm id in `[[JobRealm]]` (see `Heap::get_function_job_realm`)
+  // and keeps per-realm intrinsics snapshots in `Vm`.
+  let Some(realm_c) = scope.heap().get_function_job_realm(constructor_obj) else {
+    return Ok(intrinsic_default_proto);
+  };
+  let Some(intr_c) = vm.intrinsics_for_realm(realm_c) else {
+    return Ok(intrinsic_default_proto);
+  };
+
+  // Map the current-realm `intrinsicDefaultProto` to the corresponding intrinsic object from
+  // `realm_c`.
+  let Some(intr_this) = vm.intrinsics() else {
+    return Ok(intrinsic_default_proto);
+  };
+
+  Ok(if intrinsic_default_proto == intr_this.object_prototype() {
+    intr_c.object_prototype()
+  } else if intrinsic_default_proto == intr_this.array_prototype() {
+    intr_c.array_prototype()
+  } else if intrinsic_default_proto == intr_this.promise_prototype() {
+    intr_c.promise_prototype()
+  } else if intrinsic_default_proto == intr_this.string_prototype() {
+    intr_c.string_prototype()
+  } else if intrinsic_default_proto == intr_this.number_prototype() {
+    intr_c.number_prototype()
+  } else if intrinsic_default_proto == intr_this.boolean_prototype() {
+    intr_c.boolean_prototype()
+  } else if intrinsic_default_proto == intr_this.map_prototype() {
+    intr_c.map_prototype()
+  } else if intrinsic_default_proto == intr_this.set_prototype() {
+    intr_c.set_prototype()
+  } else {
+    intrinsic_default_proto
+  })
 }
 
 /// Convenience wrapper around [`get_prototype_from_constructor_with_host_and_hooks`] that passes a
