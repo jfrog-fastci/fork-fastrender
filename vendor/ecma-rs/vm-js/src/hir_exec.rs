@@ -891,10 +891,33 @@ impl<'vm> HirEvaluator<'vm> {
     for stmt_id in stmts {
       self.vm.tick()?;
       let stmt = self.get_stmt(body, *stmt_id)?;
-      let hir_js::StmtKind::Var(decl) = &stmt.kind else {
-        continue;
-      };
-      self.instantiate_lexical_decl(scope, body, decl, env)?;
+      match &stmt.kind {
+        hir_js::StmtKind::Var(decl) => {
+          self.instantiate_lexical_decl(scope, body, decl, env)?;
+        }
+        hir_js::StmtKind::Decl(def_id) => {
+          let def = self
+            .hir()
+            .def(*def_id)
+            .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+          let Some(body_id) = def.body else {
+            continue;
+          };
+          let decl_body = self.get_body(body_id)?;
+          if decl_body.kind != hir_js::BodyKind::Class {
+            continue;
+          }
+
+          let name = self.resolve_name(def.name)?;
+          // Keep the engine robust against malformed HIR (e.g. a binding already exists).
+          if scope.heap().env_has_binding(env, name.as_str())? {
+            continue;
+          }
+          // Class declarations create mutable lexical bindings (like `let`).
+          scope.env_create_mutable_binding(env, name.as_str())?;
+        }
+        _ => {}
+      }
     }
     Ok(())
   }
