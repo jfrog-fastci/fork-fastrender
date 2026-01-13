@@ -6,7 +6,7 @@
 //! capture user intent. Side effects (actually clearing history, persistence) are performed by the
 //! caller (typically `src/bin/browser.rs`).
 
-use super::{icon_button, icon_tinted, BrowserIcon, ClearBrowsingDataRange};
+use super::{danger_button, icon_button, icon_tinted, BrowserIcon, ClearBrowsingDataRange};
 
 #[derive(Debug, Default)]
 pub struct ClearBrowsingDataDialogOutput {
@@ -32,6 +32,21 @@ pub fn clear_browsing_data_dialog_ui(
 
   let mut close_dialog = false;
 
+  // Backdrop (modal scrim). Draw behind the window to dim the underlying UI and intercept pointer
+  // events so the dialog feels modal.
+  let screen_rect = ctx.screen_rect();
+  egui::Area::new("clear_browsing_data_backdrop")
+    .order(egui::Order::Middle)
+    .fixed_pos(screen_rect.min)
+    .show(ctx, |ui| {
+      ui.set_min_size(screen_rect.size());
+      let (rect, _resp) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
+      let alpha = if ui.visuals().dark_mode { 140 } else { 96 };
+      ui
+        .painter()
+        .rect_filled(rect, egui::Rounding::none(), egui::Color32::from_black_alpha(alpha));
+    });
+
   egui::Window::new("Clear browsing data")
     .collapsible(false)
     .resizable(false)
@@ -39,11 +54,6 @@ pub fn clear_browsing_data_dialog_ui(
     .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
     .open(open)
     .show(ctx, |ui| {
-      fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
-        let [r, g, b, _] = color.to_array();
-        egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
-      }
-
       ui.set_min_width(420.0);
 
       // Header (custom title bar)
@@ -129,12 +139,7 @@ pub fn clear_browsing_data_dialog_ui(
 
       ui.add_space(14.0);
       ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let danger = ui.visuals().error_fg_color;
-        let clear_button = egui::Button::new(egui::RichText::new("Clear").strong().color(danger))
-          .fill(with_alpha(danger, 36))
-          .stroke(egui::Stroke::new(ui.visuals().widgets.inactive.bg_stroke.width, danger));
-
-        let clear_resp = ui.add(clear_button);
+        let clear_resp = danger_button(ui, "Clear");
         clear_resp.widget_info(|| {
           egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear browsing data")
         });

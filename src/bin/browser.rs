@@ -5641,8 +5641,9 @@ impl App {
           } else {
             format!("Open debug log ({} lines)", self.debug_log.len())
           };
-          resp
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone()));
+          resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
+          });
           if resp.clicked() {
             self.debug_log_ui_open = true;
           }
@@ -8367,12 +8368,6 @@ impl App {
                 return;
               }
 
-              // Chrome-level shortcuts are evaluated inside the egui frame (`ui::chrome_ui`) so we
-              // can respect its editing focus rules. Ensure they never reach page input.
-              action if fastrender::ui::shortcuts::shortcut_is_chrome_reserved(action) => {
-                return;
-              }
-
               // Page-level shortcuts only apply when the rendered page has focus and egui isn't
               // actively editing text (e.g. address bar).
               ShortcutAction::Copy
@@ -8968,7 +8963,7 @@ impl App {
           //
           // Note: Session persistence supports pinned tabs + tab groups, so we keep that state when
           // detaching into a new window.
-          let (url, zoom, scroll_css, pinned, group) = {
+          let (url, zoom, scroll_css, pinned, group_id) = {
             let tab = self
               .browser_state
               .tab(tab_id)
@@ -8981,7 +8976,7 @@ impl App {
               .unwrap_or_else(|| fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
             let zoom = tab.zoom;
             let pinned = tab.pinned;
-            let group = tab.group.and_then(|group_id| self.browser_state.tab_groups.get(&group_id).cloned());
+            let group_id = tab.group;
             let scroll_css = {
               let viewport = tab.scroll_state.viewport;
               let x = viewport.x;
@@ -8994,29 +8989,31 @@ impl App {
                 ((x, y) != (0.0, 0.0)).then_some((x, y))
               }
             };
-            (url, zoom, scroll_css, pinned, group)
+            (url, zoom, scroll_css, pinned, group_id)
           };
 
-          // Spawn the new window on the winit event loop thread.
-          let (tab_groups, group_idx) = if let Some(group) = group {
-            (
-              vec![fastrender::ui::BrowserSessionTabGroup {
-                title: group.title,
-                color: group.color,
-                collapsed: group.collapsed,
-              }],
-              Some(0),
-            )
-          } else {
-            (Vec::new(), None)
-          };
+          let (tab_groups, group) = group_id
+            .filter(|_| !pinned)
+            .and_then(|group_id| self.browser_state.tab_groups.get(&group_id))
+            .map(|group_state| {
+              (
+                vec![fastrender::ui::BrowserSessionTabGroup {
+                  title: group_state.title.clone(),
+                  color: group_state.color,
+                  collapsed: group_state.collapsed,
+                }],
+                Some(0),
+              )
+            })
+            .unwrap_or_else(|| (Vec::new(), None));
+
           let session_window = fastrender::ui::BrowserSessionWindow {
             tabs: vec![fastrender::ui::BrowserSessionTab {
               url,
               zoom: Some(zoom),
               scroll_css,
               pinned,
-              group: group_idx,
+              group,
             }],
             tab_groups,
             active_tab_index: 0,

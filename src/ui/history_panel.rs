@@ -61,7 +61,12 @@ pub fn history_panel_ui(
       // -------------------------------------------------------------------
       ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        icon_tinted(ui, BrowserIcon::History, 18.0, ui.visuals().text_color());
+        icon_tinted(
+          ui,
+          BrowserIcon::History,
+          ui.spacing().icon_width,
+          ui.visuals().text_color(),
+        );
         ui.heading("History");
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -75,7 +80,7 @@ pub fn history_panel_ui(
 
           let clear_resp = ui.add(
             egui::Button::new(
-              egui::RichText::new("Clear browsing data")
+              egui::RichText::new("Clear browsing data…")
                 .small()
                 .color(ui.visuals().hyperlink_color),
             )
