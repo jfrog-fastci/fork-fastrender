@@ -102,13 +102,16 @@ Advanced override:
 
 Set:
 
-- `FASTR_RENDERER_SANDBOX=off` (preferred for multiprocess renderer processes), or
-- `FASTR_DISABLE_RENDERER_SANDBOX=1`, or
-- `FASTR_MACOS_RENDERER_SANDBOX=off` (legacy alias).
+- For multiprocess renderer sandbox entrypoints in `src/sandbox/mod.rs`:
+  - `FASTR_RENDERER_SANDBOX=off` (preferred)
+- For the low-level macOS Seatbelt wrappers in `src/sandbox/macos.rs` (and the `sandbox-exec` spawn
+  helpers in `src/sandbox/macos_spawn.rs`):
+  - `FASTR_DISABLE_RENDERER_SANDBOX=1`, or
+  - `FASTR_MACOS_RENDERER_SANDBOX=off` (legacy alias).
 
 On macOS this makes the in-process Seatbelt entrypoints in `src/sandbox/macos.rs`
-(`apply_strict_sandbox`, `apply_pure_computation_sandbox`, `apply_renderer_sandbox`) return `Ok(())`
-without calling `sandbox_init`.
+(`apply_strict_sandbox`, `apply_pure_computation_sandbox`, `apply_renderer_sandbox`) return
+`Ok(MacosSandboxStatus::Disabled)` without calling `sandbox_init`.
 
 It also disables the spawn-time `sandbox-exec` helpers in `src/sandbox/macos_spawn.rs`
 (`maybe_wrap_command_with_sandbox_exec`, `wrap_command_with_sandbox_exec`, `sandbox_exec_command`),
