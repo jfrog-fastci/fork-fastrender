@@ -9892,7 +9892,7 @@ fn worker_on_large_stack(args: WorkerArgs) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod progress_tests {
   use super::*;
   use std::collections::{HashSet, VecDeque};
   use std::ffi::OsStr;
