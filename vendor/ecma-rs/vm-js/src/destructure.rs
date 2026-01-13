@@ -64,6 +64,12 @@ fn iterator_close_on_err(
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum BindingKind {
   Var,
+  /// Function parameter binding (formal parameters).
+  ///
+  /// This is like a mutable lexical binding, but it must tolerate duplicate parameter names in
+  /// sloppy-mode functions with a simple parameter list (e.g. `function f(a, a) {}`), where later
+  /// parameters update the same binding.
+  Param,
   Let,
   Const,
   Assignment,
@@ -251,20 +257,14 @@ fn bind_identifier(
 
   match kind {
     BindingKind::Var => env.set_var(vm, host, hooks, scope, name, value),
-    BindingKind::Let => {
+    BindingKind::Param => {
       let env_rec = env.lexical_env();
       if !scope.heap().env_has_binding(env_rec, name)? {
-        // Non-block statement contexts may not have performed lexical hoisting yet.
         scope.env_create_mutable_binding(env_rec, name)?;
       }
-      // In most binding contexts (e.g. `let` declarations), bindings should be uninitialized at
-      // this point, and `InitializeBinding` is the correct operation.
-      //
-      // However, sloppy-mode functions with a simple parameter list may legally contain duplicate
-      // parameter names (`function f(a, a) { ... }`). In that case, the parameter binding is
-      // initialized by the first parameter and then updated by the later parameter(s).
-      //
-      // Best-effort: if the binding is already initialized, fall back to `SetMutableBinding`.
+      // Sloppy-mode functions with a simple parameter list may contain duplicate parameter names.
+      // When a duplicate is encountered, the binding has already been initialized by the earlier
+      // parameter and should be updated instead.
       match scope.heap().env_get_binding_value(env_rec, name, /* strict */ false) {
         Ok(_) => scope
           .heap_mut()
@@ -273,6 +273,14 @@ fn bind_identifier(
         Err(VmError::Throw(Value::Null)) => scope.heap_mut().env_initialize_binding(env_rec, name, value),
         Err(err) => Err(err),
       }
+    }
+    BindingKind::Let => {
+      let env_rec = env.lexical_env();
+      if !scope.heap().env_has_binding(env_rec, name)? {
+        // Non-block statement contexts may not have performed lexical hoisting yet.
+        scope.env_create_mutable_binding(env_rec, name)?;
+      }
+      scope.heap_mut().env_initialize_binding(env_rec, name, value)
     }
     BindingKind::Const => {
       let env_rec = env.lexical_env();

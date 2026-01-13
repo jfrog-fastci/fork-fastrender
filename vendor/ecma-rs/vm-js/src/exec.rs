@@ -3532,7 +3532,7 @@ impl<'a> Evaluator<'a> {
           self.env,
           &param.stx.pattern.stx.pat.stx,
           Value::Object(arr),
-          BindingKind::Let,
+          BindingKind::Param,
           self.strict,
           self.this,
         )?;
@@ -3558,7 +3558,7 @@ impl<'a> Evaluator<'a> {
         self.env,
         &param.stx.pattern.stx.pat.stx,
         value,
-        BindingKind::Let,
+        BindingKind::Param,
         self.strict,
         self.this,
       )?;
