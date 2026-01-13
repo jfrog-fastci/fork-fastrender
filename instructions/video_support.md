@@ -201,8 +201,11 @@ with crawl mode so HTML discovery picks up media URLs:
 
 ```bash
 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
-  fetch --no-render <url> --out /tmp/capture.tar
+  fetch --no-render --prefetch-media <url> --out /tmp/capture.tar
 ```
+
+If media is skipped due to size, relax `bundle_page`'s caps with `--prefetch-media-max-bytes` and/or
+`--prefetch-media-max-total-bytes` (set either to `0` to disable).
 
 ### Test pages
 

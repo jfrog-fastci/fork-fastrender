@@ -595,15 +595,19 @@ bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --releas
   - Fetch: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out <bundle_dir|.tar>`
     - HTTP fetch tuning: `bundle_page fetch` honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
     - For pages that crash or time out during capture, add `--no-render` (alias `--crawl`) to discover subresources by parsing HTML + CSS instead of rendering.
-      - Crawl discovery includes media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`), in addition to the existing CSS/images/fonts/document discovery.
+      - Crawl discovery includes media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`), in addition to the existing CSS/images/fonts/document discovery. Media URLs are only downloaded into the bundle when `--prefetch-media` is enabled.
       - Current limitation: `<link rel="preload" as="video|audio|track">` is not discovered as a media source yet.
+    - `--prefetch-media` (alias `--include-media`): prefetch playable media sources into the bundle during crawl-based capture.
+      - This is opt-in because media files can be large.
+      - Budgets: `--prefetch-media-max-bytes` (per asset, default **2,000,000 bytes**) and `--prefetch-media-max-total-bytes` (total, default **10,000,000 bytes**). Set either to `0` to disable the cap.
+      - When caps are enabled, `bundle_page` uses a partial fetch and **skips** media URLs that exceed the budgets (warns and leaves the URL uncached).
     - Use `--fetch-timeout-secs <secs>` to bound per-request network time when crawling large pages.
-    - Note: in render capture mode (default), FastRender may not fetch media sources yet. If you need media bytes inside the bundle, use `--no-render/--crawl` (or pass `--bundle-scripts`, which runs an additional crawl pass after the render and will also pick up media URLs).
+    - Note: in render capture mode (default), FastRender may not fetch media sources yet. Use `--prefetch-media` (or `--no-render/--crawl --prefetch-media`) when you need media bytes inside the bundle.
     - For JS-enabled offline replay, add `--bundle-scripts` to include `<script src>` plus related `preload`/`modulepreload` script resources (can significantly increase bundle size).
-    - Size: `bundle_page` does not cap media bytes; crawls can download large files. Use `--fetch-timeout-secs` as a best-effort guardrail and rely on `import-page-fixture`'s `--media-max-*` budgets to keep committed fixtures small.
   - Cache (offline, from pageset caches): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- cache <stem> --out <bundle_dir|.tar>`
     - Reads HTML from `fetches/html/<stem>.html` (+ `.html.meta`) and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` (alias `--cache-dir`); this should match the `--cache-dir` used when warming/running the pageset).
-    - Fails if a discovered subresource (including media) is missing from the cache; pass `--allow-missing` to insert empty placeholders.
+    - Add `--prefetch-media` (alias `--include-media`) to include cached media sources in the bundle (subject to the same `--prefetch-media-max-*` budgets as above).
+    - Fails if a discovered subresource is missing from the cache; pass `--allow-missing` to insert empty placeholders.
     - Add `--bundle-scripts` to include scripts for JS-enabled offline replay (requires those scripts to be present in the disk cache; increases bundle size).
     - The disk cache key namespace depends on request headers. If you warmed `fetches/assets/` with non-default values (e.g. `pageset_progress --user-agent ... --accept-language ...`, or `FASTR_HTTP_BROWSER_HEADERS=0`), pass matching `bundle_page cache --user-agent ... --accept-language ...` (and the same env var) so cache capture hits the correct entries.
   - Render: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render <bundle> --out <png>`
@@ -615,11 +619,11 @@ bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --releas
   - All HTML/CSS references are rewritten to hashed files under `assets/`, and the importer fails if any network URLs would remain.
   - Media asset provenance/licensing + regeneration guidance: [`tests/pages/fixtures/assets/media/README.md`](../tests/pages/fixtures/assets/media/README.md).
 
-Example (capture a bundle with crawl mode so media sources are included):
+Example (capture a bundle with crawl mode and prefetch media sources into the bundle):
 
 ```bash
 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
-  fetch --no-render https://example.com --out target/bundles/example.com.tar
+  fetch --no-render --prefetch-media https://example.com --out target/bundles/example.com.tar
 ```
 
 Example (import that bundle as an offline fixture and vendor playable media within the default budgets):

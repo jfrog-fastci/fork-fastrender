@@ -77,13 +77,13 @@ Cache layout:
   crawling HTML + CSS for subresources (no layout/paint):  
   `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir --no-render`
   - Optional: bound per-request fetch time with `--fetch-timeout-secs <secs>`.
-  - Note: crawl discovery is also what picks up media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`). Render-mode capture may not fetch media sources yet.
+  - Note: crawl discovery is also what finds media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`). Add `--prefetch-media` (alias `--include-media`) to download media bytes into the bundle (subject to `--prefetch-media-max-bytes` / `--prefetch-media-max-total-bytes`).
 - Render strictly from the bundle without touching the network:  
   `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render capture_dir --out output.png`
 
 Bundles are deterministic directories or `.tar` archives containing:
 - Raw document bytes with content-type and final URL
-- All fetched CSS/image/font resources with bytes and HTTP metadata (plus crawl-discovered assets like media, and scripts when `--bundle-scripts` is used)
+- All fetched CSS/image/font resources with bytes and HTTP metadata (plus crawl-prefetched assets like media when `--prefetch-media` is used, and scripts when `--bundle-scripts` is used)
 - A manifest mapping the original URLs to bundle paths plus the render settings (viewport/dpr/scroll/full-page) used during capture
 
 ## Responsive captures and `<meta name="viewport">`

@@ -100,8 +100,9 @@ timeout -k 10 300 bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/cap
 # --media-max-file-bytes default 2 MiB per file; set either to 0 to disable).
 #
 # Note: if you need media bytes inside the bundle (not just placeholder filenames), capture with
-# `bundle_page fetch --no-render/--crawl` so crawl discovery picks up `<video>/<audio>/<source>/<track>`
-# URLs.
+# `bundle_page fetch --no-render/--crawl --prefetch-media` so crawl discovery picks up
+# `<video>/<audio>/<source>/<track>` URLs and downloads them into the bundle (subject to
+# `--prefetch-media-max-bytes` / `--prefetch-media-max-total-bytes`).
 ```
 
 Fixtures should be:

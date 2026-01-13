@@ -365,7 +365,7 @@ Use `bundle_page` to capture a page once, then convert that bundle into a determ
 1. Capture a bundle:
    - Online (network): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out /tmp/capture.tar` (or a directory path)
         - If a page crashes or times out during capture, add `--no-render` to crawl HTML + CSS for subresources without doing a full render.
-        - Note: crawl mode also discovers media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`). Render-mode capture may not fetch media sources yet, so use `--no-render/--crawl` if you need media bytes in the bundle.
+        - Note: crawl mode also discovers media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`). Add `--prefetch-media` (alias `--include-media`) if you need media bytes in the bundle; render-mode capture may not fetch media sources yet.
    - Offline (from warmed pageset caches): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features disk_cache --bin bundle_page -- cache <stem> --out /tmp/capture.tar`
         - Reads HTML from `fetches/html/<stem>.html` and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` / `--cache-dir`).
 2. Import: `bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/capture.tar <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run --include-media]`
