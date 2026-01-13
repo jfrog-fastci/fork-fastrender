@@ -761,7 +761,7 @@ impl RegExpFlags {
 }
 
 #[cfg(test)]
-mod tests {
+mod flags_d_tests {
   use super::RegExpFlags;
 
   #[test]
