@@ -160,7 +160,10 @@ fn tick_does_not_schedule_for_unused_keyframes() {
 
   handle
     .ui_tx
-    .send(UiToWorker::Tick { tab_id })
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
     .expect("tick");
 
   let msgs = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
