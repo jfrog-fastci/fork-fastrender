@@ -152,6 +152,24 @@ fn yield_in_generator_function_params_is_syntax_error() {
 }
 
 #[test]
+fn await_in_class_field_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"async function f(){ class C { x = await 0; } }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn yield_in_class_field_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"function* g(){ class C { x = yield 0; } }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn escaped_await_as_binding_identifier_in_async_generator_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt

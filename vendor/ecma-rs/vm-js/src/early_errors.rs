@@ -1651,7 +1651,22 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           /* super_call_allowed */ derived && is_constructor,
         )
       }
-      ClassOrObjVal::Prop(Some(expr)) => self.visit_expr(ctx, expr),
+      ClassOrObjVal::Prop(Some(expr)) => {
+        // `await` and `yield` expressions are always early errors in class field initializers,
+        // regardless of whether the class is nested within an async/generator function.
+        //
+        // Example:
+        // - `async function f(){ class C { x = await 0; } }` is a Syntax Error.
+        // - `function* g(){ class C { x = yield 0; } }` is a Syntax Error.
+        let saved_await_allowed = ctx.await_allowed;
+        let saved_yield_allowed = ctx.yield_allowed;
+        ctx.await_allowed = false;
+        ctx.yield_allowed = false;
+        let res = self.visit_expr(ctx, expr);
+        ctx.await_allowed = saved_await_allowed;
+        ctx.yield_allowed = saved_yield_allowed;
+        res
+      }
       ClassOrObjVal::Prop(None) => Ok(()),
       ClassOrObjVal::StaticBlock(block) => self.visit_class_static_block(ctx, &block.stx.body),
       // TypeScript-only members ignored here.
