@@ -5,6 +5,7 @@ use vm_js::{
 };
 use webidl_vm_js::{
   host_from_hooks, WebIdlBindingsHost, WebIdlBindingsHostSlot, WEBIDL_BINDINGS_HOST_NOT_AVAILABLE,
+  VmJsHostHooksPayload,
 };
 
 struct TestBindingsHost {
@@ -71,6 +72,46 @@ struct HostHooksWithoutBindingsHost;
 
 impl VmHostHooks for HostHooksWithoutBindingsHost {
   fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
+}
+
+struct HostHooksWithPayload {
+  payload: VmJsHostHooksPayload,
+}
+
+impl HostHooksWithPayload {
+  fn new(host: &mut dyn WebIdlBindingsHost) -> Self {
+    let mut payload = VmJsHostHooksPayload::default();
+    payload.webidl_bindings_host_slot_mut().set(host);
+    Self { payload }
+  }
+}
+
+impl VmHostHooks for HostHooksWithPayload {
+  fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
+
+  fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+    Some(&mut self.payload)
+  }
+}
+
+struct HostHooksWithPayloadWithoutBindingsHost {
+  payload: VmJsHostHooksPayload,
+}
+
+impl HostHooksWithPayloadWithoutBindingsHost {
+  fn new() -> Self {
+    Self {
+      payload: VmJsHostHooksPayload::default(),
+    }
+  }
+}
+
+impl VmHostHooks for HostHooksWithPayloadWithoutBindingsHost {
+  fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
+
+  fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+    Some(&mut self.payload)
+  }
 }
 
 fn native_generated_binding(
@@ -157,6 +198,121 @@ fn vmjs_webidl_bindings_missing_host_slot_throws_type_error() -> Result<(), VmEr
   let _func_root = heap.add_root(Value::Object(func))?;
 
   let mut hooks = HostHooksWithoutBindingsHost;
+  let mut dummy_vm_host = ();
+
+  let err = {
+    let mut scope = heap.scope();
+    vm.call_with_host_and_hooks(
+      &mut dummy_vm_host,
+      &mut scope,
+      &mut hooks,
+      Value::Object(func),
+      Value::Undefined,
+      &[],
+    )
+    .expect_err("expected missing host to fail")
+  };
+
+  match err {
+    VmError::TypeError(msg) => assert_eq!(msg, WEBIDL_BINDINGS_HOST_NOT_AVAILABLE),
+    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+      let Value::Object(obj) = value else {
+        panic!("expected thrown error object, got {value:?}");
+      };
+      let mut scope = heap.scope();
+      scope.push_root(value)?;
+
+      // TypeError objects created by vm-js store `name`/`message` as own data properties.
+      let name_key_s = scope.alloc_string("name")?;
+      scope.push_root(Value::String(name_key_s))?;
+      let msg_key_s = scope.alloc_string("message")?;
+      scope.push_root(Value::String(msg_key_s))?;
+
+      let name_key = vm_js::PropertyKey::from_string(name_key_s);
+      let msg_key = vm_js::PropertyKey::from_string(msg_key_s);
+
+      let name = scope.heap().get(obj, &name_key)?;
+      let message = scope.heap().get(obj, &msg_key)?;
+
+      let Value::String(name_s) = name else {
+        panic!("expected error.name to be a string, got {name:?}");
+      };
+      let Value::String(message_s) = message else {
+        panic!("expected error.message to be a string, got {message:?}");
+      };
+      assert_eq!(
+        scope.heap().get_string(name_s)?.to_utf8_lossy(),
+        "TypeError"
+      );
+      assert_eq!(
+        scope.heap().get_string(message_s)?.to_utf8_lossy(),
+        WEBIDL_BINDINGS_HOST_NOT_AVAILABLE
+      );
+    }
+    other => panic!("expected TypeError, got {other:?}"),
+  }
+
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn vmjs_webidl_bindings_dispatch_via_hooks_payload() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let func = alloc_native_function(&mut vm, &mut heap, native_generated_binding)?;
+  let _func_root = heap.add_root(Value::Object(func))?;
+
+  let mut host = TestBindingsHost::new();
+  let mut hooks = HostHooksWithPayload::new(&mut host);
+  let mut dummy_vm_host = ();
+
+  // Direct host call path: explicit `VmHost` + hooks.
+  {
+    let mut scope = heap.scope();
+    let out = vm.call_with_host_and_hooks(
+      &mut dummy_vm_host,
+      &mut scope,
+      &mut hooks,
+      Value::Object(func),
+      Value::Undefined,
+      &[Value::Number(1.0), Value::Number(2.0)],
+    )?;
+    assert_eq!(out, Value::Number(2.0));
+  }
+  assert_eq!(host.calls, 1);
+
+  // Script-ish call path: `Vm::call_with_host` supplies a dummy `VmHost` internally; bindings must
+  // still be able to reach the host via `hooks`.
+  {
+    let mut scope = heap.scope();
+    let out = vm.call_with_host(
+      &mut scope,
+      &mut hooks,
+      Value::Object(func),
+      Value::Undefined,
+      &[Value::Number(123.0)],
+    )?;
+    assert_eq!(out, Value::Number(1.0));
+  }
+  assert_eq!(host.calls, 2);
+
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn vmjs_webidl_bindings_missing_host_payload_slot_throws_type_error() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let func = alloc_native_function(&mut vm, &mut heap, native_generated_binding)?;
+  let _func_root = heap.add_root(Value::Object(func))?;
+
+  let mut hooks = HostHooksWithPayloadWithoutBindingsHost::new();
   let mut dummy_vm_host = ();
 
   let err = {
