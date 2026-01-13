@@ -8,6 +8,7 @@
 pub(crate) fn global_test_lock() -> crate::common::GlobalTestLockGuard {
   crate::common::global_test_lock()
 }
+mod chrome_api_tests;
 mod data_url_svg;
 mod error_format_snapshot;
 mod font_db_generic_fallbacks;
