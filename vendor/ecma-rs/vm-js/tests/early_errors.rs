@@ -204,6 +204,20 @@ fn escaped_eval_assignment_target_in_strict_mode_is_syntax_error() {
 }
 
 #[test]
+fn await_as_binding_identifier_in_module_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, "let await = 1;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_as_binding_identifier_in_nested_function_in_module_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, "function f(){ let await = 1; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn escaped_await_as_import_binding_identifier_is_syntax_error() {
   let mut rt = new_runtime();
   let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"import { \u0061wait } from "m";"#).unwrap_err();
