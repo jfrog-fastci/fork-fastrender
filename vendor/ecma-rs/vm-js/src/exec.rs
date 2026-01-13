@@ -6979,76 +6979,74 @@ impl<'a> Evaluator<'a> {
 
     let mut ctor_length: u32 = 0;
     let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
-        if func_node.stx.generator {
-          return Err(syntax_error(
-            loc,
-            "Class constructor may not be a generator",
-          ));
-        }
+      if func_node.stx.generator {
+        return Err(syntax_error(
+          loc,
+          "Class constructor may not be a generator",
+        ));
+      }
 
-        ctor_length = self.function_length(&func_node.stx)?;
+      ctor_length = self.function_length(&func_node.stx)?;
 
-        let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
-        let rel_end = func_node
-          .loc
-          .end_u32()
-          .saturating_sub(self.env.prefix_len());
-        let span_start = self.env.base_offset().saturating_add(rel_start);
-        let span_end = self.env.base_offset().saturating_add(rel_end);
+      let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
+      let rel_end = func_node
+        .loc
+        .end_u32()
+        .saturating_sub(self.env.prefix_len());
+      let span_start = self.env.base_offset().saturating_add(rel_start);
+      let span_end = self.env.base_offset().saturating_add(rel_end);
 
-        let code = self.vm.register_ecma_function(
-          self.env.source(),
-          span_start,
-          span_end,
-          EcmaFunctionKind::ClassMember,
-        )?;
+      let code = self.vm.register_ecma_function(
+        self.env.source(),
+        span_start,
+        span_end,
+        EcmaFunctionKind::ClassMember,
+      )?;
 
-        // Class constructor bodies are always strict mode.
-        let is_strict = true;
-        let this_mode = if func_node.stx.arrow {
-          ThisMode::Lexical
-        } else {
-          ThisMode::Strict
-        };
-        let closure_env = Some(self.env.lexical_env);
-
-        let mut ctor_scope = scope.reborrow();
-        let name_string = ctor_scope.alloc_string("constructor")?;
-        let func_obj = ctor_scope.alloc_ecma_function(
-          code,
-          /* is_constructable */ true,
-          name_string,
-          ctor_length,
-          this_mode,
-          is_strict,
-          closure_env,
-        )?;
-
-        let intr = self
-          .vm
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-        ctor_scope
-          .heap_mut()
-          .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
-        ctor_scope
-          .heap_mut()
-          .set_function_realm(func_obj, self.env.global_object())?;
-        if let Some(realm) = self.vm.current_realm() {
-          ctor_scope
-            .heap_mut()
-            .set_function_job_realm(func_obj, realm)?;
-        }
-        if let Some(script_or_module) = self.vm.get_active_script_or_module() {
-          let token = self.vm.intern_script_or_module(script_or_module)?;
-          ctor_scope
-            .heap_mut()
-            .set_function_script_or_module_token(func_obj, Some(token))?;
-        }
-        Some(func_obj)
+      // Class constructor bodies are always strict mode.
+      let is_strict = true;
+      let this_mode = if func_node.stx.arrow {
+        ThisMode::Lexical
       } else {
-        None
+        ThisMode::Strict
       };
+      let closure_env = Some(self.env.lexical_env);
+
+      let mut ctor_scope = scope.reborrow();
+      let name_string = ctor_scope.alloc_string("constructor")?;
+      let func_obj = ctor_scope.alloc_ecma_function(
+        code,
+        /* is_constructable */ true,
+        name_string,
+        ctor_length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?;
+
+      let intr = self
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      ctor_scope
+        .heap_mut()
+        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      ctor_scope
+        .heap_mut()
+        .set_function_realm(func_obj, self.env.global_object())?;
+      if let Some(realm) = self.vm.current_realm() {
+        ctor_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+      }
+      if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+        let token = self.vm.intern_script_or_module(script_or_module)?;
+        ctor_scope
+          .heap_mut()
+          .set_function_script_or_module_token(func_obj, Some(token))?;
+      }
+      Some(func_obj)
+    } else {
+      None
+    };
 
       let func_obj = self.create_class_constructor_object(
         scope,
@@ -12771,11 +12769,11 @@ impl<'a> Evaluator<'a> {
             "Cannot mix BigInt and other types",
           )?),
         }
-      }
-      OperatorName::LessThan
-      | OperatorName::LessThanOrEqual
-      | OperatorName::GreaterThan
-      | OperatorName::GreaterThanOrEqual => {
+    }
+    OperatorName::LessThan
+    | OperatorName::LessThanOrEqual
+    | OperatorName::GreaterThan
+    | OperatorName::GreaterThanOrEqual => {
         let left = self.eval_expr(scope, &expr.left)?;
         // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
         let mut rhs_scope = scope.reborrow();
@@ -14770,9 +14768,9 @@ fn async_handle_body_result(
       res.map(|_| Value::Undefined)
     }
     Ok(AsyncBodyResult::Await {
-      kind: _,
       await_value,
       frames,
+      ..
     }) => {
       // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
       cont.frames = frames;
@@ -36213,7 +36211,9 @@ pub(crate) fn run_module_async_resume(
         module_async_teardown_continuation(scope, cont);
         Ok(ModuleAsyncStep::Completed)
       }
-      AsyncBodyResult::CompleteThrow(reason) => Err(VmError::Throw(reason)),
+      AsyncBodyResult::CompleteThrow(reason) => {
+        Err(VmError::Throw(reason))
+      }
       AsyncBodyResult::Await { await_value, frames, .. } => {
         {
           let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
