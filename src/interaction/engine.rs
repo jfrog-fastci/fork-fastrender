@@ -5972,7 +5972,9 @@ impl InteractionEngine {
       .map(|id| collect_element_chain(index, id))
       .unwrap_or_default();
     let focus_chain_changed = self.state.focus_chain() != new_focus_chain.as_slice();
-    self.state.set_focus_chain(new_focus_chain);
+    if focus_chain_changed {
+      self.state.set_focus_chain(new_focus_chain);
+    }
 
     if prev_focused != new_focused {
       if let Some(new_id) = new_focused {
@@ -6564,7 +6566,9 @@ impl InteractionEngine {
       .unwrap_or_default();
 
     let changed = self.state.hover_chain() != new_chain.as_slice();
-    self.state.set_hover_chain(new_chain);
+    if changed {
+      self.state.set_hover_chain(new_chain);
+    }
     (dom_changed | changed, hit)
   }
 
@@ -6691,7 +6695,9 @@ impl InteractionEngine {
       .unwrap_or_default();
 
     let changed = self.state.active_chain() != new_chain.as_slice();
-    self.state.set_active_chain(new_chain);
+    if changed {
+      self.state.set_active_chain(new_chain);
+    }
     self.pointer_down_target = down_target;
 
     let mut dom_changed = changed;
