@@ -25424,19 +25424,23 @@ fn async_resume_from_frames(
       },
 
       AsyncFrame::YieldStarAfterOperand => match state {
-        AsyncState::Expr(Ok(iterable)) => match async_yield_star_begin(evaluator, scope, iterable) {
-          Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
-          Ok(AsyncEval::Suspend(mut suspend)) => {
-            suspend.frames.append(&mut frames);
-            return Ok(AsyncBodyResult::Await {
-              kind: suspend.kind,
-              await_value: suspend.await_value,
-              frames: suspend.frames,
-            });
+        AsyncState::Expr(Ok(iterable)) => {
+          match async_yield_star_begin(evaluator, scope, iterable) {
+            Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              state = AsyncState::Expr(Err(err))
+            }
+            Err(err) => return Err(err),
           }
-          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
-          Err(err) => return Err(err),
-        },
+        }
         AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
