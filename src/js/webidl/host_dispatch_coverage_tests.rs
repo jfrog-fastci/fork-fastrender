@@ -119,12 +119,25 @@ fn extract_host_dispatch_coverage(src: &str) -> HostDispatchCoverage {
   //   }
   //
   // We treat `("X", "y", _)` as covering all overloads.
-  let arm_re =
-    Regex::new(r#"(?m)^\s*\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*([0-9_]+|_)\s*\)\s*=>"#)
-      .expect("valid regex");
+  let literal_arm_re = Regex::new(
+    r#"(?m)^\s*(?:\|\s*)?\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*([0-9_]+|_)\s*\)\s*=>"#,
+  )
+  .expect("valid regex");
+
+  // Some operations are dispatched via a single match arm that binds `operation` and matches
+  // multiple string literals, e.g.:
+  //   ("Element", op @ ("append" | "prepend"), 0) => { ... }
+  //
+  // Treat these as coverage for each string literal in the group.
+  let op_group_arm_re = Regex::new(
+    r#"(?m)^\s*(?:\|\s*)?\(\s*"([^"]+)"\s*,\s*\w+\s*@\s*\(([^)]*)\)\s*,\s*([0-9_]+|_)\s*\)\s*=>"#,
+  )
+  .expect("valid regex");
+
+  let string_lit_re = Regex::new(r#""([^"]+)""#).expect("valid regex");
 
   let mut coverage = HostDispatchCoverage::default();
-  for caps in arm_re.captures_iter(src) {
+  for caps in literal_arm_re.captures_iter(src) {
     let interface = caps.get(1).unwrap().as_str();
     let operation = caps.get(2).unwrap().as_str();
     let overload = caps.get(3).unwrap().as_str();
@@ -138,6 +151,37 @@ fn extract_host_dispatch_coverage(src: &str) -> HostDispatchCoverage {
         operation,
         parse_usize_literal(overload),
       ));
+    }
+  }
+
+  for caps in op_group_arm_re.captures_iter(src) {
+    let interface = caps.get(1).unwrap().as_str();
+    let group = caps.get(2).unwrap().as_str();
+    let overload = caps.get(3).unwrap().as_str();
+
+    let operations: Vec<&str> = string_lit_re
+      .captures_iter(group)
+      .map(|cap| cap.get(1).unwrap().as_str())
+      .collect();
+
+    assert!(
+      !operations.is_empty(),
+      "failed to extract operation string literals from grouped match arm: {group:?}"
+    );
+
+    if overload == "_" {
+      for op in operations {
+        coverage
+          .wildcard_overload
+          .insert((interface.to_string(), op.to_string()));
+      }
+    } else {
+      let overload = parse_usize_literal(overload);
+      for op in operations {
+        coverage
+          .exact
+          .insert(CallOperationSite::new(interface, op, overload));
+      }
     }
   }
 
@@ -161,9 +205,6 @@ fn allowlisted_missing_sites() -> BTreeSet<CallOperationSite> {
   // When a missing operation is implemented in `VmJsWebIdlBindingsHostDispatch`, remove it from
   // this allowlist.
   [
-    // TODO(js_dom): DOM tree walks / selector impl needed.
-    CallOperationSite::new("Document", "querySelectorAll", 0),
-    CallOperationSite::new("Element", "querySelectorAll", 0),
     // TODO(js_dom): DOM traversal helpers.
     CallOperationSite::new("Document", "getElementsByClassName", 0),
     CallOperationSite::new("Document", "getElementsByName", 0),
@@ -172,15 +213,22 @@ fn allowlisted_missing_sites() -> BTreeSet<CallOperationSite> {
     CallOperationSite::new("Element", "getElementsByClassName", 0),
     CallOperationSite::new("Element", "getElementsByTagName", 0),
     CallOperationSite::new("Element", "getElementsByTagNameNS", 0),
-    // TODO(js_dom): NodeList/HTMLCollection support.
-    CallOperationSite::new("NodeList", "item", 0),
-    CallOperationSite::new("NodeList", "length", 0),
+    // TODO(js_dom): HTMLCollection support.
     CallOperationSite::new("HTMLCollection", "item", 0),
     CallOperationSite::new("HTMLCollection", "length", 0),
     CallOperationSite::new("HTMLCollection", "namedItem", 0),
-    // TODO(js_dom): DOM insertion algorithms.
-    CallOperationSite::new("Element", "append", 0),
-    CallOperationSite::new("Element", "prepend", 0),
+    // TODO(browser_ui): JS API for controlling the native browser chrome is generated but not yet
+    // supported by the default vm-js host dispatch.
+    CallOperationSite::new("FastRenderChrome", "navigation", 0),
+    CallOperationSite::new("FastRenderChrome", "tabs", 0),
+    CallOperationSite::new("FastRenderNavigation", "back", 0),
+    CallOperationSite::new("FastRenderNavigation", "forward", 0),
+    CallOperationSite::new("FastRenderNavigation", "navigate", 0),
+    CallOperationSite::new("FastRenderNavigation", "reload", 0),
+    CallOperationSite::new("FastRenderTabs", "activateTab", 0),
+    CallOperationSite::new("FastRenderTabs", "closeTab", 0),
+    CallOperationSite::new("FastRenderTabs", "list", 0),
+    CallOperationSite::new("FastRenderTabs", "newTab", 0),
   ]
   .into_iter()
   .collect()
