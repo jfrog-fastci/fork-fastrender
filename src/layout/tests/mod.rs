@@ -371,6 +371,7 @@ mod shadow_dom;
 mod shape_outside;
 mod shape_outside_perf;
 mod sideways_lr_regressions;
+mod sideways_writing_mode_layout;
 mod sticky_margin;
 mod sticky_nested;
 mod sticky_padding;
