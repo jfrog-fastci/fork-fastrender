@@ -61,7 +61,7 @@ A change counts if it lands at least one of:
 
 ### 1. JavaScript may not execute
 
-When rendering a page to an image:
+When rendering a page to an image via the one-shot render pipeline (without `BrowserTab`):
 - `<script>` tags may be parsed but not executed
 - Inline scripts may be skipped
 - External scripts may not be fetched/run
