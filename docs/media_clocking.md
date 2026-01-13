@@ -260,15 +260,20 @@ The UI / event loop “tick” (e.g. a per-frame update, a timer firing, a winit
 
 In FastRender’s windowed browser, “tick” is concretely a UI→worker protocol message:
 
-* `UiToWorker::Tick { tab_id }` in `src/ui/messages.rs`
+* `UiToWorker::Tick { tab_id, delta }` in `src/ui/messages.rs`
 
-Importantly, this message does **not** carry a timestamp. That’s intentional: the worker is expected
-to query whatever clock is appropriate (for JS timers, for media playback, etc.) rather than trusting
-the UI thread’s scheduling jitter.
+Importantly, this message is a **wake-up mechanism**, not a master time source:
+
+* It carries a best-effort `delta` (elapsed time since the previous tick for that tab) so the worker
+  can advance deterministic time-based effects like CSS animations and JS timers.
+* It does **not** carry an authoritative “media time” timestamp. Audio/video playback must still
+  query its own clocks (audio device time when available) rather than inferring time from tick
+  frequency/jitter.
 
 Where it comes from: the windowed `browser` app schedules these ticks using winit timers
-(`ControlFlow::WaitUntil`) around `ANIMATION_TICK_INTERVAL` in `src/bin/browser.rs`. That interval is
-best-effort (it can jitter, coalesce, or pause), so it must never be treated as a timeline clock.
+(`ControlFlow::WaitUntil`) based on per-tab `RenderedFrame.next_tick` schedule hints from the worker
+(see `App::drive_animation_tick` in `src/bin/browser.rs`). That cadence is best-effort (it can jitter,
+coalesce, or pause), so it must never be treated as the master media timeline clock.
 
 What the tick does:
 
@@ -286,10 +291,11 @@ What the tick must **not** do:
   * Ticks can jitter, coalesce, or pause entirely (window moved, system under load, backgrounded).
   * Accumulating `dt` from ticks is a classic way to create drift.
 * **Do not** advance media time by a fixed amount per tick (e.g. “+16ms each tick”).
-  * This is a tempting pattern because it is deterministic, and FastRender currently uses a fixed
-    tick step for **CSS animation sampling** (see `TICK_ANIMATION_STEP` in `src/ui/render_worker.rs`),
-    but that approach is not suitable for audio/video because the audio
-    device continues advancing in real time regardless of UI tick delivery.
+  * This is a tempting pattern because ticks carry a `delta` and can be driven deterministically in
+    tests, and the worker does use the tick delta for **CSS animation sampling**.
+  * But that approach is not suitable for audio/video: the audio device continues advancing in real
+    time regardless of UI tick delivery, and the UI may also deliver `delta=0` “wake-up” ticks for
+    media scheduling.
 
 Correct model:
 
