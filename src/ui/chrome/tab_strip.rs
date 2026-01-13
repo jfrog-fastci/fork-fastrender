@@ -4142,6 +4142,27 @@ mod tests {
   }
 
   #[test]
+  fn pinned_viewport_sanitizes_invalid_inputs() {
+    let total = 250.0;
+
+    // Non-finite / negative pinned content should behave like "no pinned tabs".
+    for pinned_content in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -10.0] {
+      let (pinned, unpinned) = compute_pinned_viewport_width(total, pinned_content, true);
+      assert!(pinned.is_finite() && unpinned.is_finite());
+      assert!((pinned - 0.0).abs() < f32::EPSILON);
+      assert!((unpinned - total).abs() < f32::EPSILON);
+    }
+
+    // Non-finite / negative total widths should clamp to zero so we never return NaNs.
+    for total_width in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -10.0] {
+      let (pinned, unpinned) = compute_pinned_viewport_width(total_width, PINNED_TAB_WIDTH, true);
+      assert!(pinned.is_finite() && unpinned.is_finite());
+      assert!((pinned - 0.0).abs() < f32::EPSILON);
+      assert!((unpinned - 0.0).abs() < f32::EPSILON);
+    }
+  }
+
+  #[test]
   fn group_chip_a11y_label_uses_expand_collapse_semantics() {
     assert_eq!(
       group_chip_a11y_label("Reading list", true),
