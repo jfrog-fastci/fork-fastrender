@@ -2459,7 +2459,8 @@ impl Intrinsics {
     scope.define_property(
       string_constructor,
       common.prototype,
-      data_desc(Value::Object(string_prototype), false, false, false),
+      // Per ECMA-262, constructor `.prototype` properties are writable but non-configurable.
+      data_desc(Value::Object(string_prototype), true, false, false),
     )?;
     scope.define_property(
       string_constructor,

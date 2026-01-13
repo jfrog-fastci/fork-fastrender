@@ -18,11 +18,13 @@ pub enum CloseCompletionKind {
   /// Closing on a *throw* completion.
   ///
   /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, `GetMethod(iterator, "return")` and
-  /// `Call(return, iterator)` are still performed. However, if either of those operations throws
-  /// a JavaScript exception, the *incoming* throw completion is preserved (the closing error is
-  /// ignored).
+  /// `Call(return, iterator)` are still performed, and any *abrupt completion* produced while
+  /// getting/calling `iterator.return` overrides the incoming completion (even when the incoming
+  /// completion is itself a throw completion).
   ///
-  /// Additionally, the non-object return-result TypeError check is skipped for throw completions.
+  /// The only behaviour difference for throw completions is that the non-object return-result
+  /// TypeError check is skipped (because for throw completions the original throw is returned
+  /// before the return-result type check is performed).
   Throw,
   /// Closing on a *non-throw* completion.
   ///
