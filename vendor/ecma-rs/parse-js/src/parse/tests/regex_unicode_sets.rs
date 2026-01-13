@@ -314,10 +314,50 @@ fn parses_test262_unicode_property_escape_files() {
   collect_js_files(&root, &mut files);
   files.sort();
 
+  fn is_test262_parse_negative(src: &str) -> bool {
+    let Some(frontmatter_start) = src.find("/*---") else {
+      return false;
+    };
+    let Some(frontmatter_end_rel) = src[frontmatter_start..].find("---*/") else {
+      return false;
+    };
+    let frontmatter_end = frontmatter_start + frontmatter_end_rel;
+    let frontmatter = &src[frontmatter_start + "/*---".len()..frontmatter_end];
+
+    let mut in_negative = false;
+    let mut negative_indent: usize = 0;
+    for line in frontmatter.lines() {
+      let line = line.strip_suffix('\r').unwrap_or(line);
+      let trimmed = line.trim_start();
+      let indent = line.len() - trimmed.len();
+      if !in_negative {
+        if trimmed == "negative:" {
+          in_negative = true;
+          negative_indent = indent;
+        }
+        continue;
+      }
+
+      // Leave the `negative:` block when indentation decreases.
+      if indent <= negative_indent && !trimmed.is_empty() {
+        in_negative = false;
+        continue;
+      }
+
+      if let Some(rest) = trimmed.strip_prefix("phase:") {
+        if rest.trim() == "parse" {
+          return true;
+        }
+      }
+    }
+
+    false
+  }
+
   let opts = ecma_script_opts();
   for path in files {
     let src = std::fs::read_to_string(&path).expect("read test file");
-    let is_parse_negative = src.contains("negative:") && src.contains("phase: parse");
+    let is_parse_negative = is_test262_parse_negative(&src);
     match (is_parse_negative, parse_with_options(&src, opts)) {
       (true, Ok(_)) => panic!("expected {} to fail parsing", path.display()),
       (false, Err(err)) => panic!("failed to parse {}: {err}", path.display()),
