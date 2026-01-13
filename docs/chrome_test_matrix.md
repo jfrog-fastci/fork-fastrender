@@ -64,6 +64,7 @@ cycling should be tested with <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<
 | Cancel + retry | Click Cancel / Retry | Same | Cancel stops; Retry restarts. |
 | Open completed | Click Open | Same | Opens with OS default application. |
 | Reveal completed | Click Show in Folder | Same | Reveals in OS file manager (Explorer/Finder/xdg-open). |
+| Open downloads folder | Click “Show downloads folder” (panel header) | Same | Opens the current download directory in the OS file manager. |
 | Change downloads folder | CLI/env | CLI/env | Use `browser --download-dir <path>` or `FASTR_BROWSER_DOWNLOAD_DIR=<path>` and verify downloads land there. |
 | Clear completed downloads | (If implemented) | (If implemented) | Removes completed entries without affecting in-progress downloads. |
 
