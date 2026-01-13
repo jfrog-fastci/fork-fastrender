@@ -1142,27 +1142,35 @@ mod bookmarks_bar_ui {
             drag_released = Some(id);
           }
 
-          // Keyboard-accessible reorder.
-          response.context_menu(|ui| {
-            ui.set_min_width(140.0);
-            if let Some(idx) = visible_ids.iter().position(|x| *x == id) {
-              ui.add_enabled_ui(idx > 0, |ui| {
-                if ui.button("Move left").clicked() {
-                  if let Some(new_order) =
-                    move_before_id(&bookmarks.roots, id, visible_ids[idx - 1])
-                  {
-                    out.reorder_roots = Some(new_order);
+            // Keyboard-accessible reorder.
+            response.context_menu(|ui| {
+              ui.set_min_width(140.0);
+              if let Some(idx) = visible_ids.iter().position(|x| *x == id) {
+                ui.add_enabled_ui(idx > 0, |ui| {
+                  let move_left = ui.button("Move left");
+                  move_left.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark left")
+                  });
+                  if move_left.clicked() {
+                    if let Some(new_order) =
+                      move_before_id(&bookmarks.roots, id, visible_ids[idx - 1])
+                    {
+                      out.reorder_roots = Some(new_order);
+                    }
+                    ui.close_menu();
                   }
-                  ui.close_menu();
-                }
-              });
-              ui.add_enabled_ui(idx + 1 < visible_ids.len(), |ui| {
-                if ui.button("Move right").clicked() {
-                  if let Some(new_order) =
-                    move_after_id(&bookmarks.roots, id, visible_ids[idx + 1])
-                  {
-                    out.reorder_roots = Some(new_order);
-                  }
+                });
+                ui.add_enabled_ui(idx + 1 < visible_ids.len(), |ui| {
+                  let move_right = ui.button("Move right");
+                  move_right.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark right")
+                  });
+                  if move_right.clicked() {
+                    if let Some(new_order) =
+                      move_after_id(&bookmarks.roots, id, visible_ids[idx + 1])
+                    {
+                      out.reorder_roots = Some(new_order);
+                    }
                   ui.close_menu();
                 }
               });
