@@ -87,8 +87,11 @@ Parsing happens in `parse_fe_turbulence()`:
   - Note: the internal noise tables then normalize the seed to a positive range (see
     `TurbulenceTables::new()` / `normalize_seed()` in `turbulence.rs`).
 - `numOctaves`:
-  - Parsed as `u32`, default `1`.
-  - Clamped to `[1, MAX_TURBULENCE_OCTAVES]` (`MAX_TURBULENCE_OCTAVES = 8`).
+  - Parsed as `i32`, default `1` when missing/unparseable.
+  - Clamped to `0..=MAX_TURBULENCE_OCTAVES` (`MAX_TURBULENCE_OCTAVES = 32`).
+    - Negative values clamp to `0`.
+    - This bounds worst-case work and avoids overflow/panic behavior in the resvg-derived noise code
+      for extreme octave counts.
 - `stitchTiles`:
   - True if the attribute is `"stitch"`, `"true"`, or `"1"` (case-insensitive).
   - Otherwise false (default).
