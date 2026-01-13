@@ -161,6 +161,86 @@ impl Mp4Demuxer {
   }
 }
 
+/// A lightweight, seek-only MP4 index that maps `(track_id, pts_ns)` → sample index.
+///
+/// This is intended for container demuxers that already know how to read sample bytes (e.g. via the
+/// external `mp4` crate) but want efficient timestamp-based seeking without scanning packets.
+#[derive(Debug, Clone)]
+pub struct Mp4SeekIndex {
+  tracks: Vec<Mp4SeekTrack>,
+}
+
+impl Mp4SeekIndex {
+  pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    let moov = find_top_level_box(bytes, fourcc(b"moov"))?.ok_or(Mp4Error::MissingBox("moov"))?;
+
+    let tracks = parse_moov_seek(bytes, moov)?
+      .into_iter()
+      .map(build_seek_track)
+      .collect::<Result<Vec<_>>>()?;
+
+    if tracks.is_empty() {
+      return Err(Mp4Error::MissingBox("trak"));
+    }
+
+    Ok(Self { tracks })
+  }
+
+  #[must_use]
+  pub fn tracks(&self) -> &[Mp4SeekTrack] {
+    &self.tracks
+  }
+
+  #[must_use]
+  pub fn track(&self, track_id: u32) -> Option<&Mp4SeekTrack> {
+    self.tracks.iter().find(|t| t.id == track_id)
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct Mp4SeekTrack {
+  id: u32,
+  timescale: u32,
+  pts_ns_by_sample: Vec<u64>,
+  pts_index: PtsIndex,
+}
+
+impl Mp4SeekTrack {
+  #[must_use]
+  pub fn id(&self) -> u32 {
+    self.id
+  }
+
+  #[must_use]
+  pub fn timescale(&self) -> u32 {
+    self.timescale
+  }
+
+  #[must_use]
+  pub fn sample_count(&self) -> usize {
+    self.pts_ns_by_sample.len()
+  }
+
+  /// Returns the first sample index in decode order with `pts_ns >= time_ns`.
+  #[must_use]
+  pub fn sample_index_at_or_after(&self, time_ns: u64) -> usize {
+    match &self.pts_index {
+      PtsIndex::Monotonic => self.pts_ns_by_sample.partition_point(|&pts| pts < time_ns),
+      PtsIndex::Sorted {
+        sample_indices_by_pts,
+        min_sample_index_from_pos,
+      } => {
+        let pos = sample_indices_by_pts
+          .partition_point(|&i| self.pts_ns_by_sample[i as usize] < time_ns);
+        min_sample_index_from_pos
+          .get(pos)
+          .map(|&idx| idx as usize)
+          .unwrap_or_else(|| self.pts_ns_by_sample.len())
+      }
+    }
+  }
+}
+
 #[derive(Debug, Clone)]
 enum PtsIndex {
   /// PTS values are monotonic in sample order (common for audio and baseline-profile H.264).
@@ -217,6 +297,14 @@ struct TrackBoxes {
   stsz: Option<StszBox>,
   chunk_offsets: Option<Vec<u64>>,
   stss: Option<Vec<u32>>,
+}
+
+#[derive(Debug, Default)]
+struct SeekTrackBoxes {
+  id: Option<u32>,
+  timescale: Option<u32>,
+  stts: Option<Vec<SttsEntry>>,
+  ctts: Option<Vec<CttsEntry>>,
 }
 
 fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
@@ -382,6 +470,84 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
     pts_index,
     next_sample: 0,
     last_seek_method: None,
+  })
+}
+
+fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
+  let id = t.id.ok_or(Mp4Error::MissingBox("tkhd"))?;
+  let timescale = t.timescale.ok_or(Mp4Error::MissingBox("mdhd"))?;
+  if timescale == 0 {
+    return Err(Mp4Error::Invalid("mdhd timescale must be > 0"));
+  }
+
+  let stts = t.stts.ok_or(Mp4Error::MissingBox("stts"))?;
+  let ctts = t.ctts.unwrap_or_default();
+  let has_ctts = !ctts.is_empty();
+
+  let stts_total: u64 = stts.iter().map(|e| u64::from(e.sample_count)).sum();
+  if stts_total == 0 {
+    return Ok(Mp4SeekTrack {
+      id,
+      timescale,
+      pts_ns_by_sample: Vec::new(),
+      pts_index: PtsIndex::Monotonic,
+    });
+  }
+
+  if has_ctts {
+    let ctts_total: u64 = ctts.iter().map(|e| u64::from(e.sample_count)).sum();
+    if ctts_total != stts_total {
+      return Err(Mp4Error::Invalid("ctts sample_count sum mismatch"));
+    }
+  }
+
+  let sample_count = usize::try_from(stts_total).map_err(|_| Mp4Error::Invalid("sample_count overflow"))?;
+
+  let mut stts_iter = TableRunIter::new_stts(&stts);
+  let mut ctts_iter = TableRunIter::new_ctts(&ctts);
+
+  let mut dts_ticks: i64 = 0;
+  let mut pts_ns_by_sample = Vec::with_capacity(sample_count);
+  let mut pts_is_monotonic = true;
+  let mut prev_pts_ns = 0_u64;
+  let mut saw_prev_pts = false;
+
+  for _ in 0..sample_count {
+    let dur = stts_iter
+      .next_u32()
+      .ok_or(Mp4Error::Invalid("stts shorter than sample_count"))?;
+
+    let ctts_off = if has_ctts {
+      ctts_iter
+        .next_i64()
+        .ok_or(Mp4Error::Invalid("ctts shorter than sample_count"))?
+    } else {
+      0
+    };
+
+    let pts_ticks = dts_ticks.saturating_add(ctts_off);
+    let pts_ns = ticks_to_ns(pts_ticks, timescale);
+    if saw_prev_pts && pts_ns < prev_pts_ns {
+      pts_is_monotonic = false;
+    }
+    prev_pts_ns = pts_ns;
+    saw_prev_pts = true;
+    pts_ns_by_sample.push(pts_ns);
+
+    dts_ticks = dts_ticks.saturating_add(i64::from(dur));
+  }
+
+  let pts_index = if pts_is_monotonic {
+    PtsIndex::Monotonic
+  } else {
+    build_sorted_pts_index(&pts_ns_by_sample)
+  };
+
+  Ok(Mp4SeekTrack {
+    id,
+    timescale,
+    pts_ns_by_sample,
+    pts_index,
   })
 }
 
@@ -594,6 +760,23 @@ fn parse_moov(bytes: &[u8], moov: Range<usize>) -> Result<Vec<TrackBoxes>> {
   Ok(tracks)
 }
 
+fn parse_moov_seek(bytes: &[u8], moov: Range<usize>) -> Result<Vec<SeekTrackBoxes>> {
+  let mut cur = Cursor::new(bytes, moov.start);
+  let mut tracks = Vec::new();
+
+  while cur.pos < moov.end {
+    let Some(b) = next_box(&mut cur, moov.end)? else {
+      break;
+    };
+    if b.typ == fourcc(b"trak") {
+      tracks.push(parse_trak_seek(bytes, b.content)?);
+    }
+    cur.pos = b.end;
+  }
+
+  Ok(tracks)
+}
+
 fn parse_trak(bytes: &[u8], trak: Range<usize>) -> Result<TrackBoxes> {
   let mut cur = Cursor::new(bytes, trak.start);
   let mut t = TrackBoxes::default();
@@ -608,6 +791,29 @@ fn parse_trak(bytes: &[u8], trak: Range<usize>) -> Result<TrackBoxes> {
       }
       typ if typ == fourcc(b"mdia") => {
         parse_mdia(bytes, b.content, &mut t)?;
+      }
+      _ => {}
+    }
+    cur.pos = b.end;
+  }
+
+  Ok(t)
+}
+
+fn parse_trak_seek(bytes: &[u8], trak: Range<usize>) -> Result<SeekTrackBoxes> {
+  let mut cur = Cursor::new(bytes, trak.start);
+  let mut t = SeekTrackBoxes::default();
+
+  while cur.pos < trak.end {
+    let Some(b) = next_box(&mut cur, trak.end)? else {
+      break;
+    };
+    match b.typ {
+      typ if typ == fourcc(b"tkhd") => {
+        t.id = Some(parse_tkhd(bytes, b.content)?);
+      }
+      typ if typ == fourcc(b"mdia") => {
+        parse_mdia_seek(bytes, b.content, &mut t)?;
       }
       _ => {}
     }
@@ -637,6 +843,26 @@ fn parse_mdia(bytes: &[u8], mdia: Range<usize>, t: &mut TrackBoxes) -> Result<()
   Ok(())
 }
 
+fn parse_mdia_seek(bytes: &[u8], mdia: Range<usize>, t: &mut SeekTrackBoxes) -> Result<()> {
+  let mut cur = Cursor::new(bytes, mdia.start);
+  while cur.pos < mdia.end {
+    let Some(b) = next_box(&mut cur, mdia.end)? else {
+      break;
+    };
+    match b.typ {
+      typ if typ == fourcc(b"mdhd") => {
+        t.timescale = Some(parse_mdhd(bytes, b.content)?);
+      }
+      typ if typ == fourcc(b"minf") => {
+        parse_minf_seek(bytes, b.content, t)?;
+      }
+      _ => {}
+    }
+    cur.pos = b.end;
+  }
+  Ok(())
+}
+
 fn parse_minf(bytes: &[u8], minf: Range<usize>, t: &mut TrackBoxes) -> Result<()> {
   let mut cur = Cursor::new(bytes, minf.start);
   while cur.pos < minf.end {
@@ -645,6 +871,20 @@ fn parse_minf(bytes: &[u8], minf: Range<usize>, t: &mut TrackBoxes) -> Result<()
     };
     if b.typ == fourcc(b"stbl") {
       parse_stbl(bytes, b.content, t)?;
+    }
+    cur.pos = b.end;
+  }
+  Ok(())
+}
+
+fn parse_minf_seek(bytes: &[u8], minf: Range<usize>, t: &mut SeekTrackBoxes) -> Result<()> {
+  let mut cur = Cursor::new(bytes, minf.start);
+  while cur.pos < minf.end {
+    let Some(b) = next_box(&mut cur, minf.end)? else {
+      break;
+    };
+    if b.typ == fourcc(b"stbl") {
+      parse_stbl_seek(bytes, b.content, t)?;
     }
     cur.pos = b.end;
   }
@@ -681,6 +921,26 @@ fn parse_stbl(bytes: &[u8], stbl: Range<usize>, t: &mut TrackBoxes) -> Result<()
       }
       typ if typ == fourcc(b"stss") => {
         t.stss = Some(parse_stss(bytes, b.content)?);
+      }
+      _ => {}
+    }
+    cur.pos = b.end;
+  }
+  Ok(())
+}
+
+fn parse_stbl_seek(bytes: &[u8], stbl: Range<usize>, t: &mut SeekTrackBoxes) -> Result<()> {
+  let mut cur = Cursor::new(bytes, stbl.start);
+  while cur.pos < stbl.end {
+    let Some(b) = next_box(&mut cur, stbl.end)? else {
+      break;
+    };
+    match b.typ {
+      typ if typ == fourcc(b"stts") => {
+        t.stts = Some(parse_stts(bytes, b.content)?);
+      }
+      typ if typ == fourcc(b"ctts") => {
+        t.ctts = Some(parse_ctts(bytes, b.content)?);
       }
       _ => {}
     }

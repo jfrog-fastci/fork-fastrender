@@ -2,6 +2,7 @@ use super::{
   MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
   MediaVideoInfo,
 };
+use super::mp4 as mp4_index;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::Path;
@@ -47,16 +48,29 @@ pub struct Mp4PacketDemuxer<R: Read + Seek + Send> {
   mp4: mp4::Mp4Reader<R>,
   tracks: Vec<MediaTrackInfo>,
   cursors: Vec<Mp4TrackCursor>,
+  seek_index: Option<mp4_index::Mp4SeekIndex>,
 }
 
 impl Mp4PacketDemuxer<BufReader<File>> {
   pub fn open(path: impl AsRef<Path>) -> MediaResult<Self> {
-    let file = File::open(path.as_ref())?;
+    let mut file = File::open(path.as_ref())?;
     let len = file.metadata()?.len();
+
+    // Best-effort: read the `moov` box so we can build an efficient timestamp→sample index for
+    // seeking without scanning packets.
+    let seek_index = match read_top_level_box_bytes(&mut file, len, *b"moov") {
+      Ok(Some(moov_bytes)) => mp4_index::Mp4SeekIndex::from_bytes(&moov_bytes).ok(),
+      _ => None,
+    };
+
+    file.rewind()?;
     let reader = BufReader::new(file);
     let mp4 = mp4::Mp4Reader::read_header(reader, len)
       .map_err(|e| MediaError::Demux(format!("mp4: failed to read header: {e}")))?;
-    Self::from_reader(mp4)
+
+    let mut demuxer = Self::from_reader(mp4)?;
+    demuxer.seek_index = seek_index;
+    Ok(demuxer)
   }
 }
 
@@ -178,7 +192,12 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
     tracks.sort_by_key(|t| t.id);
     cursors.sort_by_key(|c| c.id);
 
-    Ok(Self { mp4, tracks, cursors })
+    Ok(Self {
+      mp4,
+      tracks,
+      cursors,
+      seek_index: None,
+    })
   }
 }
 
@@ -206,6 +225,30 @@ impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
   }
 
   fn seek(&mut self, time_ns: u64) -> MediaResult<()> {
+    if let Some(seek_index) = self.seek_index.as_ref() {
+      for cursor in &mut self.cursors {
+        cursor.peeked = None;
+
+        if time_ns == 0 {
+          cursor.next_sample = 1;
+          continue;
+        }
+
+        let sample_idx0 = seek_index
+          .track(cursor.id)
+          .map(|t| t.sample_index_at_or_after(time_ns))
+          .unwrap_or(0);
+
+        if sample_idx0 >= cursor.sample_count as usize {
+          cursor.next_sample = cursor.sample_count.saturating_add(1);
+        } else {
+          cursor.next_sample = (sample_idx0 as u32).saturating_add(1);
+        }
+      }
+      return Ok(());
+    }
+
+    // Fallback for demuxers that weren't constructed from a file path (no prebuilt index).
     for cursor in &mut self.cursors {
       cursor.next_sample = 1;
       cursor.peeked = None;
@@ -228,6 +271,49 @@ impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
     }
     Ok(())
   }
+}
+
+fn read_top_level_box_bytes(
+  reader: &mut File,
+  file_len: u64,
+  typ: [u8; 4],
+) -> std::io::Result<Option<Vec<u8>>> {
+  use std::io::{Read, SeekFrom};
+
+  reader.seek(SeekFrom::Start(0))?;
+  let mut pos = 0_u64;
+  while pos + 8 <= file_len {
+    reader.seek(SeekFrom::Start(pos))?;
+    let mut header = [0_u8; 8];
+    reader.read_exact(&mut header)?;
+    let size32 = u32::from_be_bytes(header[0..4].try_into().unwrap());
+    let name: [u8; 4] = header[4..8].try_into().unwrap();
+
+    let (size, header_len) = match size32 {
+      0 => (file_len.saturating_sub(pos), 8_u64),
+      1 => {
+        let mut ext = [0_u8; 8];
+        reader.read_exact(&mut ext)?;
+        (u64::from_be_bytes(ext), 16_u64)
+      }
+      n => (u64::from(n), 8_u64),
+    };
+
+    if size < header_len || pos.saturating_add(size) > file_len {
+      return Ok(None);
+    }
+
+    if name == typ {
+      let mut buf = vec![0_u8; size as usize];
+      reader.seek(SeekFrom::Start(pos))?;
+      reader.read_exact(&mut buf)?;
+      return Ok(Some(buf));
+    }
+
+    pos = pos.saturating_add(size);
+  }
+
+  Ok(None)
 }
 
 fn mp4_fill_peeked<R: Read + Seek>(
