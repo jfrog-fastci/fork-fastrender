@@ -37,6 +37,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Site isolation process model (per-origin, OOPIF): [site_isolation.md](site_isolation.md)
 - Linux IPC (shared memory + FD passing checklist): [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md)
 - Renderer chrome (future): [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)
+- Renderer-chrome internal schemes (`chrome://` assets, `chrome-action:` actions): [renderer_chrome_schemes.md](renderer_chrome_schemes.md)
 - Chrome JS bridge (trusted UI API surface): [chrome_js_bridge.md](chrome_js_bridge.md)
 
 ## JavaScript workstreams

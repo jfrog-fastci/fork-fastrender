@@ -191,6 +191,10 @@ Complete the transition.
 </html>
 ```
 
+Note: `chrome://` (assets) and `chrome-action:` (browser actions) are privileged internal schemes
+reserved for the trusted browser-process chrome renderer. See
+[`docs/renderer_chrome_schemes.md`](../docs/renderer_chrome_schemes.md).
+
 ### Chrome JS
 
 For the canonical JS API surface and trust boundary, see
