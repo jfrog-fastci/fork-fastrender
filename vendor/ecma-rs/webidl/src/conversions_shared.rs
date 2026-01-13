@@ -14,12 +14,17 @@ pub(crate) fn enforce_string_code_units_limit<R: WebIdlJsRuntime>(
 ) -> Result<(), R::Error> {
   // Use `with_string_code_units` so runtimes can validate/borrow their internal UTF-16 storage
   // without allocating a Rust string.
-  let max_units = rt.limits().max_string_code_units;
-  let len = rt.with_string_code_units(string, |units| units.len())?;
-  if len > max_units {
-    return Err(rt.throw_range_error(STRING_EXCEEDS_MAXIMUM_LENGTH));
-  }
-  Ok(())
+  //
+  // Root `string` for the duration of the callback in case the runtime performs internal
+  // allocations (and therefore GC) while exposing the code units.
+  rt.with_stack_roots(&[string], |rt| {
+    let max_units = rt.limits().max_string_code_units;
+    let len = rt.with_string_code_units(string, |units| units.len())?;
+    if len > max_units {
+      return Err(rt.throw_range_error(STRING_EXCEEDS_MAXIMUM_LENGTH));
+    }
+    Ok(())
+  })
 }
 
 /// Materialize an ECMAScript iterable into a Vec, enforcing [`WebIdlLimits::max_sequence_length`]
@@ -34,7 +39,11 @@ pub(crate) fn materialize_iterable<R, T>(
 where
   R: WebIdlJsRuntime,
 {
-  let mut iterator_record: IteratorRecord<R::JsValue> = rt.get_iterator_from_method(iterable, method)?;
+  // `GetIteratorFromMethod` calls the iterator method and can therefore allocate/GC. Root the
+  // iterable + method values across the runtime call in case the iterator method is produced by an
+  // accessor getter (i.e. not otherwise reachable from `iterable`).
+  let mut iterator_record: IteratorRecord<R::JsValue> =
+    rt.with_stack_roots(&[iterable, method], |rt| rt.get_iterator_from_method(iterable, method))?;
 
   rt.with_stack_roots(
     &[
