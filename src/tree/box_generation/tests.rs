@@ -3430,6 +3430,50 @@ fn audio_src_prefers_source_type_prefix() {
 }
 
 #[test]
+fn video_src_prefers_playable_type_hint_over_unplayable_type_hint() {
+  let html = "<html><body><video>
+    <source src=\"bad.ogg\" type=\"video/ogg; codecs=bogus\">
+    <source src=\"good.mp4\" type=\"video/mp4\">
+  </video></body></html>";
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+  let box_tree = generate_box_tree(&styled);
+
+  fn find_video_src(node: &BoxNode) -> Option<String> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::Video { src, .. } = &repl.replaced_type {
+        return Some(src.clone());
+      }
+    }
+    node.children.iter().find_map(find_video_src)
+  }
+
+  assert_eq!(find_video_src(&box_tree.root).as_deref(), Some("good.mp4"));
+}
+
+#[test]
+fn audio_src_prefers_playable_type_hint_over_unplayable_type_hint() {
+  let html = "<html><body><audio controls>
+    <source src=\"bad.ogg\" type=\"audio/ogg; codecs=bogus\">
+    <source src=\"good.mp4\" type=\"audio/mp4\">
+  </audio></body></html>";
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+  let box_tree = generate_box_tree(&styled);
+
+  fn find_audio_src(node: &BoxNode) -> Option<String> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::Audio { src } = &repl.replaced_type {
+        return Some(src.clone());
+      }
+    }
+    node.children.iter().find_map(find_audio_src)
+  }
+
+  assert_eq!(find_audio_src(&box_tree.root).as_deref(), Some("good.mp4"));
+}
+
+#[test]
 fn video_src_respects_source_media_queries_with_viewport_option() {
   use crate::css::types::StyleSheet;
 
