@@ -24467,6 +24467,9 @@ impl App {
     }
 
     let appearance_before = self.browser_state.appearance.clone();
+    // Mirror front-end side panel state into the shared chrome model so the egui toolbar can expose
+    // expanded/collapsed state to AccessKit (screen readers).
+    self.browser_state.chrome.downloads_panel_open = self.downloads_panel_open;
     let chrome_actions = if self.renderer_chrome_enabled {
       // Renderer-chrome (FastRender HTML/CSS chrome). This is intentionally incremental: only the
       // tab strip is rendered today, and interactions are hosted in Rust (no JS).

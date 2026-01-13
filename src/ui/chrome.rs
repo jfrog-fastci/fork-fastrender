@@ -1829,6 +1829,29 @@ pub fn chrome_ui_with_bookmarks(
               move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
             });
 
+            // Expose the button as an expanded/collapsed control so screen readers can announce
+            // whether the downloads side panel is open.
+            let downloads_panel_open = app.chrome.downloads_panel_open;
+            let _ = ctx.accesskit_node_builder(downloads_resp.id, |builder| {
+              builder.set_expanded(downloads_panel_open);
+              if downloads_panel_open {
+                builder.add_action(accesskit::Action::Collapse);
+                builder.remove_action(accesskit::Action::Expand);
+              } else {
+                builder.add_action(accesskit::Action::Expand);
+                builder.remove_action(accesskit::Action::Collapse);
+              }
+            });
+
+            // AccessKit may request explicit expand/collapse actions when the node exposes an
+            // expanded state.
+            let expand_requested = ui.input(|i| {
+              i.has_accesskit_action_request(downloads_resp.id, accesskit::Action::Expand)
+            });
+            let collapse_requested = ui.input(|i| {
+              i.has_accesskit_action_request(downloads_resp.id, accesskit::Action::Collapse)
+            });
+
             // Micro-interaction: fade a subtle hover fill in/out.
             let highlight = downloads_resp.hovered() || downloads_resp.has_focus();
             let hover_t = motion.animate_bool(
@@ -1897,7 +1920,11 @@ pub fn chrome_ui_with_bookmarks(
 
             paint_focus_ring(ui, &downloads_resp, focus_ring);
 
-            if downloads_resp.clicked() || keyboard_activate(ui, &downloads_resp) {
+            if (expand_requested && !downloads_panel_open)
+              || (collapse_requested && downloads_panel_open)
+              || downloads_resp.clicked()
+              || keyboard_activate(ui, &downloads_resp)
+            {
               actions.push(ChromeAction::ToggleDownloadsPanel);
             }
 
@@ -4486,6 +4513,46 @@ mod tests {
     out.into_iter().collect()
   }
 
+  fn expect_accesskit_node_named<'a>(
+    output: &'a egui::FullOutput,
+    name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    let update = output.platform_output.accesskit_update.as_ref().expect(
+      "egui did not emit an AccessKit update; ensure ctx.enable_accesskit() was called",
+    );
+    update
+      .nodes
+      .iter()
+      .find_map(|(id, node)| {
+        let node_name = node.name().unwrap_or("").trim();
+        (node_name == name).then_some((*id, node))
+      })
+      .unwrap_or_else(|| {
+        let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(output);
+        panic!(
+          "expected AccessKit node named {name:?} in output.\n\nsnapshot:\n{snapshot}"
+        );
+      })
+  }
+
+  fn begin_frame_with_accesskit_requests(
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+    accesskit_action_requests: Vec<accesskit::ActionRequest>,
+  ) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    raw.events = events;
+    raw.accesskit_action_requests = accesskit_action_requests;
+    ctx.begin_frame(raw);
+  }
+
   #[test]
   fn focus_ring_strengthens_when_profile_high_contrast_enabled() {
     let ctx = new_context();
@@ -4949,6 +5016,104 @@ mod tests {
     assert!(accesskit_node_selected(
       accesskit_node_by_name(update2, gamma_label).1
     ));
+  }
+
+  #[test]
+  fn downloads_button_accesskit_expanded_state_tracks_panel_open_state() {
+    for (open, expected_expanded, supports_expand, supports_collapse) in [
+      (false, Some(false), true, false),
+      (true, Some(true), false, true),
+    ] {
+      let mut app = BrowserAppState::new();
+      app.push_tab(
+        BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+        true,
+      );
+      app.chrome.downloads_panel_open = open;
+
+      let ctx = egui::Context::default();
+      ctx.enable_accesskit();
+
+      begin_frame(&ctx, Vec::new());
+      let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+      let output = ctx.end_frame();
+
+      let (_id, node) = expect_accesskit_node_named(&output, "Show downloads");
+      assert_eq!(
+        node.is_expanded(),
+        expected_expanded,
+        "expected downloads button expanded={expected_expanded:?} when open={open}"
+      );
+      assert_eq!(
+        node.supports_action(accesskit::Action::Expand),
+        supports_expand,
+        "expected downloads button supports_expand={supports_expand} when open={open}"
+      );
+      assert_eq!(
+        node.supports_action(accesskit::Action::Collapse),
+        supports_collapse,
+        "expected downloads button supports_collapse={supports_collapse} when open={open}"
+      );
+    }
+  }
+
+  #[test]
+  fn downloads_button_accesskit_expand_request_opens_only_when_closed() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
+    app.chrome.downloads_panel_open = false;
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // Frame 0: render once and capture the AccessKit node id for the downloads button.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+    let output = ctx.end_frame();
+    let (downloads_node_id, _node) = expect_accesskit_node_named(&output, "Show downloads");
+
+    // Frame 1: request Expand. When closed, we should emit a toggle action to open the panel.
+    begin_frame_with_accesskit_requests(
+      &ctx,
+      Vec::new(),
+      vec![accesskit::ActionRequest {
+        action: accesskit::Action::Expand,
+        target: downloads_node_id,
+        data: None,
+      }],
+    );
+    let actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ToggleDownloadsPanel)),
+      "expected ChromeAction::ToggleDownloadsPanel when Expand is requested while closed, got {actions:?}"
+    );
+
+    // Frame 2: simulate the panel being open and request Expand again. This should be a no-op
+    // (avoid toggling closed due to a mismatched action request).
+    app.chrome.downloads_panel_open = true;
+    begin_frame_with_accesskit_requests(
+      &ctx,
+      Vec::new(),
+      vec![accesskit::ActionRequest {
+        action: accesskit::Action::Expand,
+        target: downloads_node_id,
+        data: None,
+      }],
+    );
+    let actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      !actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ToggleDownloadsPanel)),
+      "did not expect ChromeAction::ToggleDownloadsPanel when Expand is requested while open, got {actions:?}"
+    );
   }
 
   #[test]

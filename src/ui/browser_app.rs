@@ -1452,6 +1452,12 @@ pub struct ChromeState {
   pub bookmarks_manager_open: bool,
   /// Search/filter query for the Bookmarks Manager panel.
   pub bookmarks_manager_search_text: String,
+  /// Whether the chrome Downloads side panel is currently visible.
+  ///
+  /// The windowed `browser` front-end owns the downloads panel UI. This flag is mirrored into the
+  /// shared chrome state so the egui toolbar button can expose the expanded/collapsed state to
+  /// AccessKit (screen readers).
+  pub downloads_panel_open: bool,
   /// Whether the bookmarks bar is visible.
   pub bookmarks_bar_visible: bool,
   /// Whether the browser-style in-window menu bar is visible.
