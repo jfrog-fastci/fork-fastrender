@@ -45372,7 +45372,6 @@ fn init_window_globals(
     let html_link_element_proto = platform.prototype_for(DomInterface::HTMLLinkElement);
     let html_script_element_proto = platform.prototype_for(DomInterface::HTMLScriptElement);
     let document_proto = platform.prototype_for(DomInterface::Document);
-    let document_type_proto = platform.prototype_for(DomInterface::DocumentType);
     let document_fragment_proto = platform.prototype_for(DomInterface::DocumentFragment);
     let shadow_root_proto = platform.prototype_for(DomInterface::ShadowRoot);
     let text_proto = platform.prototype_for(DomInterface::Text);
@@ -46066,6 +46065,52 @@ fn init_window_globals(
         .heap_mut()
         .object_set_prototype(ctor, Some(html_element_ctor))?;
     }
+
+    // HTMLMediaElement.prototype.preload
+    let preload_get_call_id = vm.register_native_call(element_reflected_string_get_native)?;
+    let preload_set_call_id = vm.register_native_call(element_reflected_string_set_native)?;
+    let preload_attr_s = scope.alloc_string("preload")?;
+    scope.push_root(Value::String(preload_attr_s))?;
+
+    let preload_get_name = scope.alloc_string("get preload")?;
+    scope.push_root(Value::String(preload_get_name))?;
+    let preload_get_func = scope.alloc_native_function_with_slots(
+      preload_get_call_id,
+      None,
+      preload_get_name,
+      0,
+      &[Value::String(preload_attr_s)],
+    )?;
+    scope.heap_mut().object_set_prototype(
+      preload_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(preload_get_func))?;
+
+    let preload_set_name = scope.alloc_string("set preload")?;
+    scope.push_root(Value::String(preload_set_name))?;
+    let preload_set_func = scope.alloc_native_function_with_slots(
+      preload_set_call_id,
+      None,
+      preload_set_name,
+      1,
+      &[Value::String(preload_attr_s)],
+    )?;
+    scope.heap_mut().object_set_prototype(
+      preload_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(preload_set_func))?;
+
+    let preload_key = alloc_key(&mut scope, "preload")?;
+    scope.define_property(
+      html_media_element_proto,
+      preload_key,
+      idl_attribute_desc(
+        Value::Object(preload_get_func),
+        Value::Object(preload_set_func),
+      ),
+    )?;
 
     // HTMLTextAreaElement.prototype.value
     let text_area_value_get_call_id =
@@ -55862,6 +55907,35 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_preload_reflects_content_attribute() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const v = document.createElement('video');\n\
+        if (typeof HTMLMediaElement !== 'function') return 'no-html-media-element';\n\
+        if (typeof HTMLVideoElement !== 'function') return 'no-html-video-element';\n\
+        if (!(v instanceof HTMLMediaElement)) return 'bad-instanceof-media';\n\
+        if (!(v instanceof HTMLVideoElement)) return 'bad-instanceof-video';\n\
+        const protoOk = Object.getPrototypeOf(HTMLVideoElement.prototype) === HTMLMediaElement.prototype;\n\
+        if (!protoOk) return 'bad-proto-chain';\n\
+        const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'preload');\n\
+        if (!desc || typeof desc.get !== 'function' || typeof desc.set !== 'function') return 'missing-descriptor';\n\
+        if (v.preload !== '') return 'bad-default:' + v.preload;\n\
+        v.preload = 'metadata';\n\
+        if (v.preload !== 'metadata') return 'bad-roundtrip:' + v.preload;\n\
+        if (v.getAttribute('preload') !== 'metadata') return 'bad-attr:' + v.getAttribute('preload');\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 
