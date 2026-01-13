@@ -243,14 +243,14 @@ This tool is **macOS-only**.
 
 ```bash
 # From repo root (wrapper-safe; no raw `cargo`).
-bash scripts/cargo_agent.sh run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
+timeout -k 10 600 bash scripts/cargo_agent.sh run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 ```
 
 Tip: if you're iterating on Seatbelt profiles and want faster rebuilds, you can disable the crate's
 default features during probe runs:
 
 ```bash
-bash scripts/cargo_agent.sh run --no-default-features --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
+timeout -k 10 600 bash scripts/cargo_agent.sh run --no-default-features --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 ```
 
 ### Network probe
@@ -390,5 +390,5 @@ releases).
 Run it explicitly on macOS with:
 
 ```bash
-bash scripts/cargo_agent.sh test -p fastrender sandbox_exec_blocks_network_bind -- --nocapture
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender sandbox_exec_blocks_network_bind -- --nocapture
 ```
