@@ -5608,14 +5608,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
-    let mut appearance = startup_appearance.clone();
-    let mut session_home_url = home_url.clone();
-    if let Some(active_id) = active_window_id.and_then(|id| windows.get(&id).map(|_| id)) {
-      if let Some(active) = windows.get(&active_id) {
-        appearance = active.app.browser_state.appearance.clone();
-        session_home_url = active.app.home_url.clone();
-      }
-    }
+    let appearance = global_appearance.clone();
+    let session_home_url = global_home_url.clone();
 
     let mut session =
       fastrender::ui::BrowserSession::from_windows(session_windows, active_window_index, appearance);
