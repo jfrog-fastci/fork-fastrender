@@ -604,11 +604,12 @@ Accessibility sources:
 
 - **Chrome widgets (egui):** tabs, toolbar buttons, address bar, menus/panels/popups are exposed via
   egui-winit + AccessKit when compiled with `--features browser_ui`.
-- **Page content (renderer tree):** the renderer can compute a semantic accessibility tree
-  (`AccessibilityNode`, via `src/accessibility.rs`). The render worker can also emit a live
-  `WorkerToUi::PageAccessibility` snapshot (semantic tree + best-effort bounds in viewport-local CSS
-  pixels), stored in `ui::browser_app::PageAccessibilitySnapshot`. Per-element OS-facing page content
-  exposure is still in progress (see [page_accessibility.md](page_accessibility.md)).
+- **Page content (renderer tree):** page content accessibility can be exposed by injecting an
+  AccessKit subtree derived from the renderer’s accessibility tree (`AccessibilityNode`, via
+  `src/accessibility.rs`). The render worker can emit a live `WorkerToUi::PageAccessibility` snapshot
+  (semantic tree + best-effort bounds in viewport-local CSS pixels), stored in
+  `ui::browser_app::PageAccessibilitySnapshot`. Per-element OS-facing page content exposure is still
+  in progress (see [page_accessibility.md](page_accessibility.md)).
 
 For background and developer workflow:
 
@@ -633,9 +634,10 @@ Current limitations (MVP / in-progress):
 - **Page subtree injection is not complete:** depending on the build/runtime configuration, the OS
   accessibility tree may contain only the egui chrome widgets + a single labeled page region (pixmap),
   without per-element page semantics.
-- **Action support is evolving:** chrome widgets support focus/activate via egui. There is
-  infrastructure to forward some AccessKit actions to page content (focus/scroll-into-view/etc), but
-  full parity is still in progress.
+- **Action support is evolving:** chrome widgets support focus/activate via egui. The worker also
+  supports additional page actions such as **scroll into view**, **set value** (basic form controls),
+  and **set text selection** (text inputs), but full parity with platform/AT actions is still in
+  progress.
 - **Bounds/geometry may be missing or approximate** for page nodes once exposed, which can affect
   hit-testing and “click this element” style commands.
 - **Selection/value reporting may be partial** for some controls (e.g. caret/selection state or
