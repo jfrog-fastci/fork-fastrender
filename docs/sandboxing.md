@@ -125,6 +125,10 @@ restrictions, it may run jobless) and prints a warning to stderr.
 ### Windows version constraints
 
 - **AppContainer requires Windows 8+**.
+- Some hardened Windows environments expose the AppContainer exports but still refuse profile creation
+  or token usage (e.g. `CreateAppContainerProfile` fails due to system policy). Treat this as “no
+  AppContainer support”: the spawner fails closed by default unless explicitly opted into fallback
+  mode (`FASTR_ALLOW_UNSANDBOXED_RENDERER=1`).
 - For best results and modern sandbox behavior, **Windows 10+ is recommended**.
 
 ### Debug escape hatch (Windows)
