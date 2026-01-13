@@ -95,7 +95,6 @@ pub enum SandboxError {
   },
 }
 
-
 /// Apply the renderer sandbox for the current process.
 ///
 /// Call this during renderer startup, before spawning any thread pools. On Linux, the sandbox is
