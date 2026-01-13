@@ -138,6 +138,9 @@ pub mod profile_autosave;
 #[cfg(any(test, feature = "browser_ui"))]
 pub mod session;
 
+#[cfg(any(test, feature = "browser_ui"))]
+pub mod session_save_scheduler;
+
 #[cfg(feature = "browser_ui")]
 pub mod session_autosave;
 

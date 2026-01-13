@@ -2613,6 +2613,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
   let mut session_autosave =
     fastrender::ui::session_autosave::SessionAutosave::new(session_path.clone());
+  let mut session_save_scheduler =
+    fastrender::ui::session_save_scheduler::SessionSaveScheduler::new();
   use winit::event::Event;
   use winit::event::StartCause;
   use winit::event::WindowEvent;
@@ -3169,7 +3171,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if session_dirty {
-          request_autosave(&windows, &window_order, active_window_id);
+          session_save_scheduler.mark_dirty(std::time::Instant::now());
         }
       }
       Event::UserEvent(UserEvent::WorkerWake(window_id)) => {
@@ -3279,7 +3281,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         }
         if session_dirty {
-          request_autosave(&windows, &window_order, active_window_id);
+          session_save_scheduler.mark_dirty(std::time::Instant::now());
         }
       }
       Event::UserEvent(UserEvent::SearchSuggestWake(window_id)) => {
@@ -3438,7 +3440,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         window_order.push(window_id);
         active_window_id = Some(window_id);
-        request_autosave(&windows, &window_order, active_window_id);
+        session_save_scheduler.mark_dirty(std::time::Instant::now());
       }
       Event::UserEvent(UserEvent::RequestNewWindowWithSession {
         from_id,
@@ -3572,7 +3574,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         window_order.push(window_id);
         active_window_id = Some(window_id);
-        request_autosave(&windows, &window_order, active_window_id);
+        session_save_scheduler.mark_dirty(std::time::Instant::now());
       }
       Event::RedrawRequested(window_id) => {
         let mut session_dirty = false;
@@ -3580,7 +3582,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           session_dirty = win.app.render_frame(control_flow);
         }
         if session_dirty {
-          request_autosave(&windows, &window_order, active_window_id);
+          session_save_scheduler.mark_dirty(std::time::Instant::now());
         }
       }
       Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
@@ -3595,7 +3597,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         //
         // This is the crash marker: if the process is terminated unexpectedly, `did_exit_cleanly`
         // remains false on disk and the next launch can restore + log.
-        request_autosave(&windows, &window_order, active_window_id);
+        session_save_scheduler.mark_dirty(std::time::Instant::now());
 
         // Ensure we draw at least one frame on startup.
         for win in windows.values() {
@@ -3678,12 +3680,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       return;
     }
 
+    // Flush a debounced session snapshot if it is due.
+    let now = std::time::Instant::now();
+    if session_save_scheduler.should_flush(now) && session_save_scheduler.take_pending() {
+      request_autosave(&windows, &window_order, active_window_id);
+    }
+
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
-    // pending deadline (worker ticks, viewport throttling, egui repaint scheduling).
+    // pending deadline (worker ticks, viewport throttling, egui repaint scheduling, session autosave).
     for win in windows.values_mut() {
       win
         .app
         .drive_periodic_tasks_and_update_control_flow(control_flow);
+    }
+
+    // Ensure the event loop wakes up to flush the next pending session snapshot, if any.
+    if let Some(deadline) = session_save_scheduler.next_deadline(now) {
+      *control_flow = match *control_flow {
+        ControlFlow::Wait => ControlFlow::WaitUntil(deadline),
+        ControlFlow::WaitUntil(existing) => ControlFlow::WaitUntil(existing.min(deadline)),
+        other => other,
+      };
     }
   });
 }
