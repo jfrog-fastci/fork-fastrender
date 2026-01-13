@@ -4324,6 +4324,78 @@ fn page_break_inside_avoid_does_not_prevent_column_breaks() {
 }
 
 #[test]
+fn break_inside_avoid_page_keeps_flex_item_whole() {
+  // Regression test: `break-inside: avoid-page` on flex items should prevent the item from being
+  // split/clipped when it would fit on the next page.
+  //
+  // The flex item contains two 20px children, which creates a tempting break opportunity at y=90
+  // (closer to the 100px page boundary than the item's start at y=70). The avoid-page item must be
+  // moved entirely to the next page instead.
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          html, body { margin: 0; padding: 0; }
+          .flex { display: flex; flex-direction: column; width: 200px; }
+          .spacer { height: 70px; flex: none; }
+          .avoid {
+            height: 40px;
+            flex: none;
+            break-inside: avoid-page;
+            background: rgb(12, 34, 56);
+          }
+          .inner { height: 20px; }
+        </style>
+      </head>
+      <body>
+        <div class="flex">
+          <div class="spacer"></div>
+          <div class="avoid">
+            <div class="inner"></div>
+            <div class="inner"></div>
+          </div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+
+  let page_roots = pages(&tree);
+  assert!(
+    page_roots.len() >= 2,
+    "expected at least two pages, got {}",
+    page_roots.len()
+  );
+
+  let color = Rgba::rgb(12, 34, 56);
+  let pages_with_item: Vec<usize> = page_roots
+    .iter()
+    .enumerate()
+    .filter_map(|(idx, page)| find_fragment_by_background(page, color).map(|_| idx))
+    .collect();
+
+  assert_eq!(
+    pages_with_item,
+    vec![1],
+    "expected avoid-page flex item to appear only on page 2"
+  );
+
+  let item_fragment =
+    find_fragment_by_background(page_roots[1], color).expect("avoid-page flex item fragment");
+  assert!(
+    (item_fragment.bounds.height() - 40.0).abs() < 0.1,
+    "expected avoid-page flex item to keep full height on page 2 (got h={})",
+    item_fragment.bounds.height()
+  );
+}
+
+#[test]
 fn webkit_page_break_inside_avoid_maps_to_avoid_page() {
   let html = r#"
     <html>
