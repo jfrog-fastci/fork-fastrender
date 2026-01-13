@@ -795,9 +795,27 @@ status = "pass"
 reason = "vm-js implements the Array.prototype.concat max-safe-integer length guard (prevents pathological length loops)."
 
 [[expectations]]
-id = "built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js"
-status = "skip"
-reason = "vm-js: test262 case triggers a timeout (large TypedArray concat)."
+glob = "built-ins/Array/prototype/concat/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Array/prototype/slice/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/slice/coerced-start-end-grow.js"
+status = "xfail"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js / TypedArray + BigInt64Array variants)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/slice/coerced-start-end-shrink.js"
+status = "xfail"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js / TypedArray + BigInt64Array variants)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/slice/resizable-buffer.js"
+status = "xfail"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js / TypedArray + BigInt64Array variants)."
 
 [[expectations]]
 id = "built-ins/Array/prototype/sort/comparefn-grow.js"
