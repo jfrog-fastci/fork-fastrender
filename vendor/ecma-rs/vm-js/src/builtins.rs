@@ -26998,4 +26998,19 @@ mod regexp_prototype_tests {
     assert_eq!(v, Value::Bool(true));
     Ok(())
   }
+
+  #[test]
+  fn regexp_source_preserves_slash_inside_character_class() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        // `/` only needs escaping when it could terminate a RegExp literal. `/` inside a character
+        // class is not a terminator and should be preserved.
+        (/[/]/).source === "[/]" &&
+        (/a\/b/).source === "a\\/b"
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
 }
