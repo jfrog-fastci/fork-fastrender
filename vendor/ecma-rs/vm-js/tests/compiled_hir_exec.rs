@@ -2785,6 +2785,32 @@ fn proxy_get_own_property_descriptor_trap_enumerable(
   Ok(Value::Object(desc))
 }
 
+fn proxy_get_trap_return_target(
+  _vm: &mut Vm,
+  _scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Proxy `get` trap signature is (target, property, receiver). This helper ignores the requested
+  // property and returns `target`.
+  Ok(args.get(0).copied().unwrap_or(Value::Undefined))
+}
+
+fn native_has_instance_returns_true(
+  _vm: &mut Vm,
+  _scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Bool(true))
+}
+
 #[test]
 fn compiled_member_get_dispatches_proxy_get_trap() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -6942,6 +6968,20 @@ fn compiled_instanceof_rhs_not_object_throws() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_instanceof_rhs_not_callable_throws() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", "({} instanceof {})")?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::ThrowWithStack { .. } | VmError::Throw(_) | VmError::TypeError(_) => Ok(()),
+    other => panic!("expected TypeError, got {other:?}"),
+  }
+}
+
+#[test]
 fn compiled_instanceof_custom_has_instance() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -6957,6 +6997,98 @@ fn compiled_instanceof_custom_has_instance() -> Result<(), VmError> {
   )?;
 
   let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_instanceof_uses_proxy_get_trap_for_has_instance() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Split-borrow the runtime so we can access both VM (for native call registration) and Heap (for
+  // compilation/allocation) without borrow checker gymnastics.
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+
+  let script = CompiledScript::compile_script(
+    heap,
+    "test.js",
+    r#"
+      function f(o, C) { return o instanceof C; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let get_trap_id = vm.register_native_call(proxy_get_trap_return_target)?;
+  let has_instance_id = vm.register_native_call(native_has_instance_returns_true)?;
+
+  let mut scope = heap.scope();
+
+  // Create `@@hasInstance` function (native, returns true).
+  let has_instance_name = scope.alloc_string("hasInstance")?;
+  scope.push_root(Value::String(has_instance_name))?;
+  let has_instance_fn = scope.alloc_native_function(has_instance_id, None, has_instance_name, 1)?;
+  scope.push_root(Value::Object(has_instance_fn))?;
+
+  // Proxy handler: { get: <native get trap> }, where the trap returns the Proxy target object (the
+  // `has_instance_fn` we set below).
+  let handler = scope.alloc_object()?;
+  scope.push_root(Value::Object(handler))?;
+
+  let get_name = scope.alloc_string("get")?;
+  scope.push_root(Value::String(get_name))?;
+  let get_fn = scope.alloc_native_function(get_trap_id, None, get_name, 3)?;
+  scope.push_root(Value::Object(get_fn))?;
+
+  let get_key_s = scope.alloc_string("get")?;
+  scope.push_root(Value::String(get_key_s))?;
+  let get_key = vm_js::PropertyKey::from_string(get_key_s);
+  scope.define_property(
+    handler,
+    get_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Object(get_fn),
+        writable: true,
+      },
+    },
+  )?;
+
+  // Set the Proxy target to the custom `@@hasInstance` method. The get trap returns its target for
+  // all property keys, so `GetMethod(proxy, @@hasInstance)` yields `has_instance_fn`.
+  let proxy = scope.alloc_proxy(Some(has_instance_fn), Some(handler))?;
+  scope.push_root(Value::Object(proxy))?;
+
+  let lhs = scope.alloc_object()?;
+  scope.push_root(Value::Object(lhs))?;
+
+  let f_name = scope.alloc_string("f")?;
+  scope.push_root(Value::String(f_name))?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    f_name,
+    2,
+  )?;
+  scope.push_root(Value::Object(f))?;
+
+  // If `instanceof` uses `GetMethod(C, @@hasInstance)` with proper Proxy semantics, the Proxy `get`
+  // trap will supply a custom `@@hasInstance` method and `lhs instanceof proxy` evaluates to true.
+  //
+  // If the compiled engine bypasses Proxy traps, it will fall back to
+  // `Function.prototype[@@hasInstance]` (OrdinaryHasInstance) and return false because `lhs` is not
+  // in `has_instance_fn.prototype`'s chain.
+  let result = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Object(lhs), Value::Object(proxy)],
+  )?;
   assert_eq!(result, Value::Bool(true));
   Ok(())
 }
