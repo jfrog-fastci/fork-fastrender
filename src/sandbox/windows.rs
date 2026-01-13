@@ -137,19 +137,19 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
 use windows_sys::Win32::System::JobObjects::{
-  AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
+  AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectBasicUIRestrictions,
   JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_BASIC_UI_RESTRICTIONS,
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
-  JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_UILIMIT_DESKTOP,
-  JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
-  JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES, JOB_OBJECT_UILIMIT_READCLIPBOARD,
-  JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
+  JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_DISPLAYSETTINGS,
+  JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
+  JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
+  JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
 };
 use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapAlloc, HeapFree, LocalFree};
 use windows_sys::Win32::System::Threading::{
   CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess,
   InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
-  CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+  CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
   PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_LIST,
   PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, STARTUPINFOW,
 };
@@ -165,7 +165,13 @@ pub enum WindowsSandboxLevel {
 pub struct SandboxedChild {
   pub process: OwnedHandle,
   pub pid: u32,
-  pub job: JobObject,
+  /// Job object used to enforce kill-on-close + process-count limits.
+  ///
+  /// When the parent process is already inside a Windows Job that disallows breakaway/nested jobs
+  /// (common in CI/supervisors), `AssignProcessToJobObject` can fail. In that case we still spawn
+  /// the process in an AppContainer/restricted token, but `job` is `None` to indicate the job
+  /// containment guarantees are not enforced.
+  pub job: Option<JobObject>,
   pub level: WindowsSandboxLevel,
   // Keep any relocated AppContainer executable alive for the lifetime of the child handle.
   _temp_dir: Option<TempDir>,
@@ -378,26 +384,73 @@ impl Drop for LocalAllocSid {
   }
 }
 
+fn current_process_in_job() -> io::Result<bool> {
+  let mut in_job: BOOL = FALSE;
+  win32_bool(unsafe { IsProcessInJob(GetCurrentProcess(), 0, &mut in_job) })?;
+  Ok(in_job != FALSE)
+}
+
+fn spawn_with_optional_breakaway<F>(
+  parent_in_job: bool,
+  create_process: &mut F,
+  base_flags: u32,
+) -> io::Result<(PROCESS_INFORMATION, bool)>
+where
+  F: FnMut(u32) -> io::Result<PROCESS_INFORMATION>,
+{
+  if !parent_in_job {
+    return create_process(base_flags).map(|pi| (pi, false));
+  }
+
+  match create_process(base_flags | CREATE_BREAKAWAY_FROM_JOB) {
+    Ok(pi) => Ok((pi, true)),
+    Err(err) => {
+      if err.raw_os_error() != Some(ERROR_ACCESS_DENIED as i32) {
+        return Err(err);
+      }
+      log_sandbox_debug(
+        "windows sandbox: CreateProcess* with CREATE_BREAKAWAY_FROM_JOB returned ERROR_ACCESS_DENIED; retrying without breakaway",
+      );
+      create_process(base_flags).map(|pi| (pi, false))
+    }
+  }
+}
+
 pub fn spawn_sandboxed(
   exe: &Path,
   args: &[OsString],
   inherit_handles: &[RawHandle],
 ) -> io::Result<SandboxedChild> {
+  let parent_in_job = match current_process_in_job() {
+    Ok(value) => value,
+    Err(err) => {
+      log_sandbox_debug(&format!(
+        "windows sandbox: IsProcessInJob(GetCurrentProcess) failed ({err}); assuming parent is not in a job"
+      ));
+      false
+    }
+  };
+
   let Some(requested) = requested_renderer_sandbox_level() else {
-    return spawn_unsandboxed(exe, args, inherit_handles);
+    return spawn_unsandboxed(exe, args, inherit_handles, parent_in_job);
   };
 
   match requested {
-    WindowsRendererSandboxLevel::AppContainer => match spawn_appcontainer(exe, args, inherit_handles)
-    {
+    WindowsRendererSandboxLevel::AppContainer => match spawn_appcontainer(
+      exe,
+      args,
+      inherit_handles,
+      parent_in_job,
+    ) {
       Ok(child) => Ok(child),
       Err(appcontainer_err) => {
         eprintln!(
           "warning: Windows AppContainer sandbox failed ({appcontainer_err}); falling back to restricted-token mode"
         );
-        match spawn_restricted_token(exe, args, inherit_handles) {
+        match spawn_restricted_token(exe, args, inherit_handles, parent_in_job) {
           Ok(child) => Ok(child),
-          Err(restricted_err) => match spawn_unsandboxed(exe, args, inherit_handles) {
+          Err(restricted_err) => match spawn_unsandboxed(exe, args, inherit_handles, parent_in_job)
+          {
             Ok(child) => Ok(child),
             Err(unsandboxed_err) => Err(io::Error::new(
               unsandboxed_err.kind(),
@@ -409,10 +462,10 @@ pub fn spawn_sandboxed(
         }
       }
     },
-    WindowsRendererSandboxLevel::RestrictedToken => match spawn_restricted_token(exe, args, inherit_handles)
+    WindowsRendererSandboxLevel::RestrictedToken => match spawn_restricted_token(exe, args, inherit_handles, parent_in_job)
     {
       Ok(child) => Ok(child),
-      Err(restricted_err) => match spawn_unsandboxed(exe, args, inherit_handles) {
+      Err(restricted_err) => match spawn_unsandboxed(exe, args, inherit_handles, parent_in_job) {
         Ok(child) => Ok(child),
         Err(unsandboxed_err) => Err(io::Error::new(
           unsandboxed_err.kind(),
@@ -429,6 +482,7 @@ fn spawn_appcontainer(
   exe: &Path,
   args: &[OsString],
   inherit_handles: &[RawHandle],
+  parent_in_job: bool,
 ) -> io::Result<SandboxedChild> {
   let job = JobObject::new()?;
   let name = wide_from_str("FastRender.Renderer");
@@ -464,10 +518,10 @@ fn spawn_appcontainer(
   }
 
   let inherit = if handles.is_empty() { FALSE } else { TRUE };
-  let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+  let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
 
   let mut create_process =
-    |image: &Path, current_dir: Option<&Path>| -> io::Result<PROCESS_INFORMATION> {
+    |image: &Path, flags: u32, current_dir: Option<&Path>| -> io::Result<PROCESS_INFORMATION> {
     let application_name = wide_from_os(image.as_os_str());
     let mut cmdline = build_command_line(image, args);
 
@@ -505,8 +559,42 @@ fn spawn_appcontainer(
     Ok(pi)
   };
 
-  match create_process(exe, None) {
-    Ok(pi) => return finish_spawn(job, pi, WindowsSandboxLevel::AppContainer, None),
+  let mut create_process_with_job_strategy =
+    |image: &Path, current_dir: Option<&Path>| -> io::Result<(PROCESS_INFORMATION, bool)> {
+      if !parent_in_job {
+        return create_process(image, base_flags, current_dir).map(|pi| (pi, false));
+      }
+
+      match create_process(
+        image,
+        base_flags | CREATE_BREAKAWAY_FROM_JOB,
+        current_dir,
+      ) {
+        Ok(pi) => Ok((pi, true)),
+        Err(err) => {
+          if err.raw_os_error() != Some(ERROR_ACCESS_DENIED as i32) {
+            return Err(err);
+          }
+          log_sandbox_debug(&format!(
+            "windows sandbox: CreateProcessW with CREATE_BREAKAWAY_FROM_JOB returned ERROR_ACCESS_DENIED for {}; retrying without breakaway",
+            image.display()
+          ));
+          create_process(image, base_flags, current_dir).map(|pi| (pi, false))
+        }
+      }
+    };
+
+  match create_process_with_job_strategy(exe, None) {
+    Ok((pi, used_breakaway)) => {
+      return finish_spawn(
+        job,
+        pi,
+        WindowsSandboxLevel::AppContainer,
+        None,
+        parent_in_job,
+        used_breakaway,
+      );
+    }
     Err(err) => {
       if err.raw_os_error() != Some(ERROR_ACCESS_DENIED as i32) {
         return Err(err);
@@ -524,12 +612,14 @@ fn spawn_appcontainer(
     relocated.display()
   ));
 
-  match create_process(&relocated, Some(temp_dir.path())) {
-    Ok(pi) => finish_spawn(
+  match create_process_with_job_strategy(&relocated, Some(temp_dir.path())) {
+    Ok((pi, used_breakaway)) => finish_spawn(
       job,
       pi,
       WindowsSandboxLevel::AppContainer,
       Some(temp_dir),
+      parent_in_job,
+      used_breakaway,
     ),
     Err(err) => {
       eprintln!(
@@ -666,6 +756,7 @@ fn spawn_restricted_token(
   exe: &Path,
   args: &[OsString],
   inherit_handles: &[RawHandle],
+  parent_in_job: bool,
 ) -> io::Result<SandboxedChild> {
   let job = JobObject::new()?;
 
@@ -709,7 +800,6 @@ fn spawn_restricted_token(
   set_low_integrity(restricted.as_raw_handle() as HANDLE)?;
 
   let application_name = wide_from_os(exe.as_os_str());
-  let mut cmdline = build_command_line(exe, args);
 
   let handles: Vec<HANDLE> = inherit_handles
     .iter()
@@ -717,29 +807,36 @@ fn spawn_restricted_token(
     .map(|h| h as HANDLE)
     .collect();
   let mut handles = handles;
-  let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
-  if handles.is_empty() {
+  let (pi, used_breakaway) = if handles.is_empty() {
     let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
     startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    let ok = unsafe {
-      CreateProcessAsUserW(
-        restricted.as_raw_handle() as HANDLE,
-        application_name.as_ptr(),
-        cmdline.as_mut_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        FALSE,
-        CREATE_SUSPENDED,
-        std::ptr::null(),
-        std::ptr::null(),
-        &startup,
-        &mut pi,
-      )
+
+    let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
+      let mut cmdline = build_command_line(exe, args);
+      let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+      let ok = unsafe {
+        CreateProcessAsUserW(
+          restricted.as_raw_handle() as HANDLE,
+          application_name.as_ptr(),
+          cmdline.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          FALSE,
+          flags,
+          std::ptr::null(),
+          std::ptr::null(),
+          &mut startup,
+          &mut pi,
+        )
+      };
+      if ok == 0 {
+        return Err(io::Error::last_os_error());
+      }
+      Ok(pi)
     };
-    if ok == 0 {
-      return Err(io::Error::last_os_error());
-    }
+
+    spawn_with_optional_breakaway(parent_in_job, &mut create_process, CREATE_SUSPENDED)?
   } else {
     let mut attrs = AttributeList::new(1)?;
     attrs.update_raw(
@@ -751,38 +848,53 @@ fn spawn_restricted_token(
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attrs.list;
-    let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
-    let ok = unsafe {
-      CreateProcessAsUserW(
-        restricted.as_raw_handle() as HANDLE,
-        application_name.as_ptr(),
-        cmdline.as_mut_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        TRUE,
-        flags,
-        std::ptr::null(),
-        std::ptr::null(),
-        std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
-        &mut pi,
-      )
-    };
-    if ok == 0 {
-      return Err(io::Error::last_os_error());
-    }
-  }
+    let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
 
-  finish_spawn(job, pi, WindowsSandboxLevel::RestrictedToken, None)
+    let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
+      let mut cmdline = build_command_line(exe, args);
+      let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+      let ok = unsafe {
+        CreateProcessAsUserW(
+          restricted.as_raw_handle() as HANDLE,
+          application_name.as_ptr(),
+          cmdline.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          TRUE,
+          flags,
+          std::ptr::null(),
+          std::ptr::null(),
+          std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
+          &mut pi,
+        )
+      };
+      if ok == 0 {
+        return Err(io::Error::last_os_error());
+      }
+      Ok(pi)
+    };
+
+    spawn_with_optional_breakaway(parent_in_job, &mut create_process, base_flags)?
+  };
+
+  finish_spawn(
+    job,
+    pi,
+    WindowsSandboxLevel::RestrictedToken,
+    None,
+    parent_in_job,
+    used_breakaway,
+  )
 }
 
 fn spawn_unsandboxed(
   exe: &Path,
   args: &[OsString],
   inherit_handles: &[RawHandle],
+  parent_in_job: bool,
 ) -> io::Result<SandboxedChild> {
   let job = JobObject::new()?;
   let application_name = wide_from_os(exe.as_os_str());
-  let mut cmdline = build_command_line(exe, args);
 
   let handles: Vec<HANDLE> = inherit_handles
     .iter()
@@ -790,28 +902,35 @@ fn spawn_unsandboxed(
     .map(|h| h as HANDLE)
     .collect();
   let mut handles = handles;
-  let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
-  if handles.is_empty() {
+  let (pi, used_breakaway) = if handles.is_empty() {
     let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
     startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    let ok = unsafe {
-      CreateProcessW(
-        application_name.as_ptr(),
-        cmdline.as_mut_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        FALSE,
-        CREATE_SUSPENDED,
-        std::ptr::null(),
-        std::ptr::null(),
-        &startup,
-        &mut pi,
-      )
+
+    let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
+      let mut cmdline = build_command_line(exe, args);
+      let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+      let ok = unsafe {
+        CreateProcessW(
+          application_name.as_ptr(),
+          cmdline.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          FALSE,
+          flags,
+          std::ptr::null(),
+          std::ptr::null(),
+          &mut startup,
+          &mut pi,
+        )
+      };
+      if ok == 0 {
+        return Err(io::Error::last_os_error());
+      }
+      Ok(pi)
     };
-    if ok == 0 {
-      return Err(io::Error::last_os_error());
-    }
+
+    spawn_with_optional_breakaway(parent_in_job, &mut create_process, CREATE_SUSPENDED)?
   } else {
     let mut attrs = AttributeList::new(1)?;
     attrs.update_raw(
@@ -823,27 +942,42 @@ fn spawn_unsandboxed(
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attrs.list;
-    let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
-    let ok = unsafe {
-      CreateProcessW(
-        application_name.as_ptr(),
-        cmdline.as_mut_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        TRUE,
-        flags,
-        std::ptr::null(),
-        std::ptr::null(),
-        std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
-        &mut pi,
-      )
-    };
-    if ok == 0 {
-      return Err(io::Error::last_os_error());
-    }
-  }
+    let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
 
-  finish_spawn(job, pi, WindowsSandboxLevel::None, None)
+    let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
+      let mut cmdline = build_command_line(exe, args);
+      let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+      let ok = unsafe {
+        CreateProcessW(
+          application_name.as_ptr(),
+          cmdline.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          TRUE,
+          flags,
+          std::ptr::null(),
+          std::ptr::null(),
+          std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
+          &mut pi,
+        )
+      };
+      if ok == 0 {
+        return Err(io::Error::last_os_error());
+      }
+      Ok(pi)
+    };
+
+    spawn_with_optional_breakaway(parent_in_job, &mut create_process, base_flags)?
+  };
+
+  finish_spawn(
+    job,
+    pi,
+    WindowsSandboxLevel::None,
+    None,
+    parent_in_job,
+    used_breakaway,
+  )
 }
 
 fn finish_spawn(
@@ -851,6 +985,8 @@ fn finish_spawn(
   pi: PROCESS_INFORMATION,
   level: WindowsSandboxLevel,
   temp_dir: Option<TempDir>,
+  parent_in_job: bool,
+  used_breakaway: bool,
 ) -> io::Result<SandboxedChild> {
   if pi.hProcess == 0 || pi.hThread == 0 {
     return Err(io::Error::new(
@@ -864,9 +1000,13 @@ fn finish_spawn(
   let thread = unsafe { OwnedHandle::from_raw_handle(pi.hThread as RawHandle) };
   let h_process = process.as_raw_handle() as HANDLE;
 
-  if let Err(err) = job.assign_process(h_process) {
-    let _ = unsafe { TerminateProcess(h_process, 1) };
-    return Err(err);
+  let mut job = Some(job);
+  if let Err(err) = job.as_ref().unwrap().assign_process(h_process) {
+    eprintln!(
+      "warning: Windows sandbox failed to assign child process {pid} to JobObject ({err}); \
+job limits (kill-on-close + active process limit) are NOT enforced (parent_in_job={parent_in_job}, used_breakaway={used_breakaway}, level={level:?})"
+    );
+    job = None;
   }
 
   let resume_rc = unsafe { ResumeThread(thread.as_raw_handle() as HANDLE) };
@@ -1021,6 +1161,9 @@ mod tests {
   use std::sync::Mutex;
 
   static ENV_LOCK: Mutex<()> = Mutex::new(());
+  const JOB_CHILD_ENV: &str = "FASTR_TEST_WINDOWS_JOB_CHILD";
+  const JOB_CHILD_TEST_NAME: &str =
+    concat!(module_path!(), "::sandbox_spawn_in_job_does_not_panic_child");
 
   #[test]
   fn sandbox_disabled_env_forces_none() {
@@ -1045,5 +1188,91 @@ mod tests {
       Some(value) => std::env::set_var(ENV_WINDOWS_RENDERER_SANDBOX, value),
       None => std::env::remove_var(ENV_WINDOWS_RENDERER_SANDBOX),
     }
+  }
+
+  /// Regression coverage for environments where the current process is already inside a Windows
+  /// Job that disallows breakaway/nested jobs (common in CI/supervisors).
+  #[test]
+  fn sandbox_spawn_in_job_does_not_panic() {
+    // Run the actual job-munging logic in a dedicated subprocess so we don't permanently place the
+    // main test runner into a Job (processes cannot leave a Job once assigned).
+    let exe = std::env::current_exe().expect("current_exe");
+    let status = std::process::Command::new(exe)
+      .env(JOB_CHILD_ENV, "1")
+      .arg("--nocapture")
+      .arg("--exact")
+      .arg(JOB_CHILD_TEST_NAME)
+      .status()
+      .expect("spawn child test process");
+    assert!(status.success(), "child test process failed: {status}");
+  }
+
+  #[test]
+  fn sandbox_spawn_in_job_does_not_panic_child() {
+    if std::env::var_os(JOB_CHILD_ENV).is_none() {
+      return;
+    }
+
+    // Ensure the process is inside a Job. If we're already in a job (CI), this is already true.
+    // Otherwise, create a new job and assign ourselves to it so that the sandbox spawn code takes
+    // the "parent already in job" path.
+    let mut _job_guard: Option<OwnedHandle> = None;
+    let in_job = current_process_in_job().unwrap_or(false);
+    if !in_job {
+      let job_handle = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+      if job_handle == 0 {
+        eprintln!(
+          "warning: CreateJobObjectW failed in Windows job regression test: {}",
+          io::Error::last_os_error()
+        );
+        return;
+      }
+      let owned = unsafe { OwnedHandle::from_raw_handle(job_handle as RawHandle) };
+      if let Err(err) = win32_bool(unsafe { AssignProcessToJobObject(job_handle, GetCurrentProcess()) }) {
+        eprintln!(
+          "warning: AssignProcessToJobObject(self) failed in Windows job regression test ({err}); skipping"
+        );
+        return;
+      }
+      _job_guard = Some(owned);
+      assert!(
+        current_process_in_job().unwrap_or(false),
+        "expected IsProcessInJob to be true after assigning self to a Job"
+      );
+    }
+
+    // Force the spawn path to use the "unsandboxed" mode so we can execute a well-known binary
+    // (cmd.exe) without AppContainer policy interfering with the test.
+    std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, "1");
+
+    let cmd_exe = std::env::var_os("COMSPEC")
+      .map(PathBuf::from)
+      .or_else(|| {
+        std::env::var_os("SystemRoot")
+          .map(PathBuf::from)
+          .map(|root| root.join("System32").join("cmd.exe"))
+      })
+      .unwrap_or_else(|| PathBuf::from("cmd.exe"));
+
+    let args: Vec<OsString> = vec!["/C".into(), "exit".into(), "0".into()];
+    let child = spawn_sandboxed(&cmd_exe, &args, &[]).expect("spawn_sandboxed");
+
+    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+
+    let wait_rc = unsafe { WaitForSingleObject(child.process.as_raw_handle() as HANDLE, 10_000) };
+    match wait_rc {
+      WAIT_OBJECT_0 => {}
+      WAIT_TIMEOUT => {
+        let _ = unsafe { TerminateProcess(child.process.as_raw_handle() as HANDLE, 1) };
+        panic!("timed out waiting for sandbox child process to exit");
+      }
+      other => panic!("WaitForSingleObject returned {other}"),
+    }
+
+    let mut exit_code: u32 = 0;
+    let ok = unsafe { GetExitCodeProcess(child.process.as_raw_handle() as HANDLE, &mut exit_code) };
+    assert_ne!(ok, 0, "GetExitCodeProcess failed");
+    assert_eq!(exit_code, 0, "sandbox child exited with code {exit_code}");
   }
 }
