@@ -925,7 +925,8 @@ impl Document {
       let _ = self.insert_before(parent_id, new_node, reference)?;
 
       // Step 7.2–7.5: Live range updates.
-      self.live_range_split_text_steps(node_id, offset, new_node, parent_id, index);
+      let tree_index = self.tree_child_index_from_raw_index_for_range(parent_id, index);
+      self.live_range_split_text_steps(node_id, offset, new_node, parent_id, tree_index);
     }
 
     // Step 8: Replace the data from `offset` to the end with the empty string.
