@@ -22,6 +22,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::OnceLock;
 
+use crate::sandbox::config;
+
 /// Debug escape hatch: disable the macOS Seatbelt renderer sandbox entirely.
 ///
 /// This matches the Windows escape-hatch name so cross-platform harnesses can share a single knob.
@@ -57,6 +59,19 @@ fn sandbox_disabled_via_env() -> bool {
   if env_var_truthy(std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX).as_deref()) {
     return true;
   }
+
+  // New multiprocess renderer sandbox knob (`FASTR_RENDERER_SANDBOX=strict|relaxed|off`).
+  // Treat explicit `off`/`0` as a sandbox disable escape hatch.
+  if let Some(raw) = std::env::var_os(config::ENV_RENDERER_SANDBOX) {
+    if !raw.is_empty() {
+      let raw = raw.to_string_lossy();
+      let trimmed = raw.trim();
+      if !trimmed.is_empty() && matches!(trimmed.to_ascii_lowercase().as_str(), "0" | "off") {
+        return true;
+      }
+    }
+  }
+
   let Some(raw) = std::env::var_os(ENV_MACOS_RENDERER_SANDBOX) else {
     return false;
   };
@@ -79,12 +94,37 @@ fn log_sandbox_disabled_once() {
   LOGGED.get_or_init(|| {
     eprintln!(
       "warning: macOS Seatbelt renderer sandbox is DISABLED (debug escape hatch; INSECURE). \
-Set {ENV_DISABLE_RENDERER_SANDBOX}=0/1 or {ENV_MACOS_RENDERER_SANDBOX}=pure-computation|system-fonts|off to control this."
+Set {ENV_DISABLE_RENDERER_SANDBOX}=0/1, {config_var}={strict}|{relaxed}|{off}, or {ENV_MACOS_RENDERER_SANDBOX}=pure-computation|system-fonts|off to control this.",
+      config_var = config::ENV_RENDERER_SANDBOX,
+      strict = "strict",
+      relaxed = "relaxed",
+      off = "off",
     );
   });
 }
 
 fn sandbox_mode_override_from_env() -> io::Result<Option<MacosSandboxMode>> {
+  if let Some(raw) = std::env::var_os(config::ENV_RENDERER_SANDBOX) {
+    if !raw.is_empty() {
+      let raw = raw.to_string_lossy();
+      let trimmed = raw.trim();
+      if !trimmed.is_empty() {
+        return match trimmed.to_ascii_lowercase().as_str() {
+          "0" | "off" => Ok(None),
+          "1" | "strict" => Ok(Some(MacosSandboxMode::PureComputation)),
+          "relaxed" => Ok(Some(MacosSandboxMode::RendererSystemFonts)),
+          other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+              "invalid {}={other:?} (expected strict|relaxed|off)",
+              config::ENV_RENDERER_SANDBOX
+            ),
+          )),
+        };
+      }
+    }
+  }
+
   let Some(raw) = std::env::var_os(ENV_MACOS_RENDERER_SANDBOX) else {
     return Ok(None);
   };

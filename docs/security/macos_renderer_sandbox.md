@@ -78,11 +78,33 @@ For an exact IPC/shared-memory capability matrix, use `macos_sandbox_probe` (see
 The renderer sandbox is a security boundary. These knobs exist to unblock local debugging and
 bring-up; do not rely on them in production.
 
+### Configure renderer sandbox mode (recommended)
+
+Set:
+
+- `FASTR_RENDERER_SANDBOX=strict|relaxed|off`
+
+Notes:
+
+- On macOS, the default (when unset) is `strict` for renderer processes.
+- `strict` maps to Seatbelt `pure-computation` (FastRender uses a hardened wrapper profile with a
+  fallback embedded SBPL profile for older macOS versions).
+- `relaxed` maps to the renderer-friendly “system fonts” profile (still blocks network).
+- `off` disables sandboxing (debugging only; insecure).
+
+Advanced override:
+
+- `FASTR_RENDERER_MACOS_SEATBELT_PROFILE=pure-computation|no-internet|renderer-default|<path>` can be
+  used to override the underlying Seatbelt profile when sandboxing is enabled. This is intended for
+  experimentation; it overrides the `strict`/`relaxed` profile mapping.
+
 ### Disable the Seatbelt renderer sandbox
 
 Set:
 
-- `FASTR_DISABLE_RENDERER_SANDBOX=1`
+- `FASTR_RENDERER_SANDBOX=off` (preferred for multiprocess renderer processes), or
+- `FASTR_DISABLE_RENDERER_SANDBOX=1`, or
+- `FASTR_MACOS_RENDERER_SANDBOX=off` (legacy alias).
 
 On macOS this makes the in-process Seatbelt entrypoints in `src/sandbox/macos.rs`
 (`apply_strict_sandbox`, `apply_pure_computation_sandbox`, `apply_renderer_sandbox`) return `Ok(())`
@@ -99,7 +121,10 @@ FastRender prints a warning to stderr once per process so insecure runs are not 
 
 Set:
 
-- `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off`
+- Prefer `FASTR_RENDERER_SANDBOX=strict|relaxed|off` for the multiprocess renderer sandbox entrypoints
+  in `src/sandbox/mod.rs`.
+- `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off` remains as a legacy macOS-only
+  alias for the low-level Seatbelt wrappers in `src/sandbox/macos.rs`.
 
 Notes:
 
@@ -116,7 +141,8 @@ Some tests and tooling can opt into launching a renderer already sandboxed using
 - `FASTR_MACOS_USE_SANDBOX_EXEC=1`
 
 Note: when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or
-`FASTR_MACOS_RENDERER_SANDBOX=off`, the `sandbox-exec` wrappers become no-ops.
+`FASTR_RENDERER_SANDBOX=off` or `FASTR_MACOS_RENDERER_SANDBOX=off`, the `sandbox-exec` wrappers become
+no-ops.
 
 ---
 
@@ -131,14 +157,14 @@ timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integrat
 Force the relaxed "system fonts" profile (useful for bring-up):
 
 ```bash
-FASTR_MACOS_RENDERER_SANDBOX=system-fonts \
+FASTR_RENDERER_SANDBOX=relaxed \
   timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
 ```
 
 Disable the renderer sandbox entirely (debug escape hatch; insecure):
 
 ```bash
-FASTR_DISABLE_RENDERER_SANDBOX=1 \
+FASTR_RENDERER_SANDBOX=off \
   timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
 ```
 
