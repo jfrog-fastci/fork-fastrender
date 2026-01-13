@@ -195,6 +195,45 @@ fn parses_test262_regexp_prototype_unicode_sets_tests() {
 }
 
 #[test]
+fn parses_test262_property_escapes_generated_strings_corpus() {
+  // The test262 Unicode property escape generator also emits a corpus for properties of strings,
+  // which are only valid when using the `v` flag. Ensure the positive fixtures parse and the
+  // negative fixtures are classified as invalid patterns.
+  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("../test262-semantic/data/test/built-ins/RegExp/property-escapes/generated/strings");
+  if !root.is_dir() {
+    return;
+  }
+
+  let opts = ecma_script_opts();
+  for entry in std::fs::read_dir(&root).expect("read property-escapes corpus dir") {
+    let entry = entry.expect("read_dir entry");
+    let path = entry.path();
+    if path.extension().and_then(|s| s.to_str()) != Some("js") {
+      continue;
+    }
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+      continue;
+    };
+    let src = std::fs::read_to_string(&path).expect("read test262 file");
+    let expects_parse_error = src.contains("negative:") && src.contains("phase: parse");
+    if expects_parse_error {
+      let err = parse_with_options(&src, opts).expect_err("expected parse error");
+      assert_eq!(
+        err.typ,
+        SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+        "unexpected error type for {name}",
+      );
+    } else {
+      assert!(
+        parse_with_options(&src, opts).is_ok(),
+        "expected {name} to parse",
+      );
+    }
+  }
+}
+
+#[test]
 fn accepts_unicode_sets_examples() {
   let opts = ecma_script_opts();
   assert!(parse_with_options("let r = /^[[0-9]_]+$/v;", opts).is_ok());
