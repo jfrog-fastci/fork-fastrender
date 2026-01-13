@@ -56,9 +56,9 @@ fn iterator_close_get_method_throw_takes_precedence_over_throw_completion_in_asy
 
     let out = rt.exec_script("out")?;
     // Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, `GetMethod(iterator, "return")` is
-    // still performed and any error thrown while getting/calling `iterator.return` overrides the
-    // incoming completion (even when that incoming completion is itself a throw completion).
-    assert_eq!(value_to_string(&rt, out), "getter1");
+    // still performed, but any error thrown while getting/calling `iterator.return` is ignored for
+    // throw completions (the original throw is preserved).
+    assert_eq!(value_to_string(&rt, out), "body1");
 
     let closed = rt.exec_script("closed")?;
     assert_eq!(closed, Value::Bool(true));
@@ -106,7 +106,7 @@ fn iterator_close_get_method_throw_takes_precedence_over_throw_completion_in_asy
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
     let out = rt.exec_script("out")?;
-    assert_eq!(value_to_string(&rt, out), "getter2");
+    assert_eq!(value_to_string(&rt, out), "body2");
 
     let closed = rt.exec_script("closed")?;
     assert_eq!(closed, Value::Bool(true));
@@ -158,7 +158,7 @@ fn iterator_close_get_method_throw_takes_precedence_over_throw_completion_in_asy
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
     let out = rt.exec_script("out")?;
-    assert_eq!(value_to_string(&rt, out), "close");
+    assert_eq!(value_to_string(&rt, out), "ReferenceError");
 
     let closed = rt.exec_script("closed")?;
     assert_eq!(closed, Value::Bool(true));
