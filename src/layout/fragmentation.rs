@@ -2451,12 +2451,6 @@ fn fragment_tree_impl(
     options.fragmentainer_size,
     context,
   );
-  apply_table_cell_parallel_flow_forced_break_shifts(
-    &mut root,
-    axes,
-    options.fragmentainer_size,
-    context,
-  );
 
   let mut analyzer =
     FragmentationAnalyzer::new(&root, context, axes, true, Some(options.fragmentainer_size));
