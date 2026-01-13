@@ -14,12 +14,13 @@
     "layout": 44.022767348344374,
     "paint": 415.2147374900662
   },
-  "notes": "Microsoft serves a bot-mitigation \"Your request has been blocked\" error page in CI; the fixture is this static error page rather than the real homepage. Chrome diff is limited to minor text antialiasing.",
+  "notes": "Microsoft serves a bot-mitigation \"Your request has been blocked\" interstitial in CI; this fixture captures that static error page (not the real homepage). Chrome diffs are dominated by text rasterization/antialiasing (high pixel diff %, low perceptual) rather than layout bugs.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 44092,
-    "diff_percent": 4.5929,
-    "perceptual": 0.1111,
+    "diff_pixels": 46661,
+    "diff_percent": 4.8605,
+    "perceptual": 0.0163,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 1075,
       "y": 10,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "b7efc5bf2098edaa669885291d76019f3749209b"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,
