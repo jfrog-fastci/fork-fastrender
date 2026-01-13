@@ -207,7 +207,7 @@ Most renderer debug knobs are environment variables; the canonical list is
 To capture machine-readable browser responsiveness metrics:
 
 ```bash
-scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
+bash scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
 
 # Wrapper-friendly helper (sets env vars for you):
 bash scripts/cargo_agent.sh xtask browser --release \
@@ -226,7 +226,7 @@ Summarize a captured log with:
 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input target/browser_perf.jsonl
 ```
 
-(`scripts/capture_browser_perf_log.sh --summary ...` runs the summary tool automatically after the
+(`bash scripts/capture_browser_perf_log.sh --summary ...` runs the summary tool automatically after the
 browser exits.)
 
 For automated, headless measurements (JSON summary):
