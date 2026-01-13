@@ -147,6 +147,12 @@ pub enum SiteKey {
 
     /// Unique (opaque) site keys used for documents with opaque origins.
     Opaque(OpaqueSiteId),
+
+    /// Browser-internal documents that must never share a process with untrusted web content.
+    ///
+    /// This is used for built-in `about:*` pages like `about:newtab` and `about:history` (excluding
+    /// inheriting URLs like `about:blank` and `about:srcdoc`). See §2.6.
+    Internal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -335,18 +341,19 @@ state snapshots**.
 
 **Rule (normative):**
 
-- `about:*` URLs other than `about:blank` and `about:srcdoc` get a fresh opaque site:
-  - `derive_site_key(about:history, initiator_site) == SiteKey::Opaque(new_opaque_id())`
-  - i.e. they **do not inherit** `initiator_site`.
+- `about:*` URLs other than `about:blank` and `about:srcdoc` map to `SiteKey::Internal`.
+- They **do not inherit** `initiator_site`.
 
 Rationale:
 - Internal pages must not share a renderer process with arbitrary web content, otherwise a renderer
   compromise in a web page could read the internal page’s in-memory state after navigating.
+  - Internal pages may safely share a process with each other (they are all browser-generated and
+    belong to the same trust bucket).
 
-Future note:
-- When “renderer chrome” lands (trusted UI pages rendered by FastRender), we may replace the
-  “fresh opaque id” rule with a stable `SiteKey::Internal` bucket. If that happens, update this doc
-  and add tests so we do not regress the “internal pages never share with web origins” invariant.
+Implementation note:
+- `SiteKey::Internal` is expected to run in a **trusted** context (browser process or a dedicated
+  privileged renderer), since internal pages can embed browser-owned state snapshots (history,
+  bookmarks, downloads).
 
 ### 2.7 Other schemes (`blob:`, `javascript:`, unknown)
 
@@ -655,6 +662,7 @@ Add browser-side unit tests for `derive_site_key`:
 - `about:blank` inherits initiator site.
 - `about:blank` with no initiator is `Opaque`.
 - `about:srcdoc` inherits initiator site.
+- `about:newtab` / `about:history` map to `SiteKey::Internal` (do not inherit).
 - `data:` always produces `Opaque` and never inherits.
 
 Notes:
