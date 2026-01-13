@@ -286,8 +286,7 @@ fn dom2_is_potentially_focusable_element_for_autofocus(
   }
 
   // `input type=hidden` is never focusable, even when tabindex is set.
-  if dom2_tag_name(dom, node)
-    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+  if dom2_tag_name(dom, node).is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
     && dom2_input_type(dom, node).eq_ignore_ascii_case("hidden")
   {
     return false;
@@ -308,120 +307,6 @@ fn dom2_is_potentially_focusable_element_for_autofocus(
       || tag.eq_ignore_ascii_case("select")
       || tag.eq_ignore_ascii_case("button")
   })
-}
-
-fn dom2_node_self_is_inert(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  let node_ref = dom.node(node);
-  // `<template>` contents are always inert. For interaction/autofocus we treat the `<template>`
-  // element itself as inert as well, mirroring `effective_disabled::node_self_is_inert` for the
-  // renderer DOM.
-  if node_ref.inert_subtree {
-    return true;
-  }
-  if dom2_has_attribute(dom, node, "inert") {
-    return true;
-  }
-  dom2_get_attribute_ref(dom, node, "data-fastr-inert")
-    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-}
-
-fn dom2_node_self_is_hidden(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  if dom2_has_attribute(dom, node, "hidden") {
-    return true;
-  }
-  dom2_get_attribute_ref(dom, node, "data-fastr-hidden")
-    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-}
-
-fn dom2_is_html_namespace(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  match &dom.node(node).kind {
-    dom2::NodeKind::Element { namespace, .. } | dom2::NodeKind::Slot { namespace, .. } => {
-      namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE
-    }
-    _ => false,
-  }
-}
-
-fn dom2_is_html_fieldset(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  dom2_is_html_namespace(dom, node)
-    && matches!(&dom.node(node).kind, dom2::NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("fieldset"))
-}
-
-fn dom2_is_html_legend(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  dom2_is_html_namespace(dom, node)
-    && matches!(&dom.node(node).kind, dom2::NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("legend"))
-}
-
-fn dom2_is_fieldset_disabled_candidate(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  dom2_is_html_namespace(dom, node)
-    && matches!(&dom.node(node).kind, dom2::NodeKind::Element { tag_name, .. } if {
-      tag_name.eq_ignore_ascii_case("input")
-        || tag_name.eq_ignore_ascii_case("select")
-        || tag_name.eq_ignore_ascii_case("textarea")
-        || tag_name.eq_ignore_ascii_case("button")
-    })
-}
-
-fn dom2_fieldset_first_legend_child(dom: &dom2::Document, fieldset: dom2::NodeId) -> Option<dom2::NodeId> {
-  debug_assert!(dom2_is_html_fieldset(dom, fieldset));
-  let node = dom.node(fieldset);
-  node.children.iter().copied().find(|&child| {
-    if child.index() >= dom.nodes_len() {
-      return false;
-    }
-    if dom.node(child).parent != Some(fieldset) {
-      return false;
-    }
-    dom2_is_html_legend(dom, child)
-  })
-}
-
-fn dom2_is_effectively_disabled(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  let node_ref = dom.node(node);
-  let is_element = matches!(
-    node_ref.kind,
-    dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. }
-  );
-  if !is_element {
-    return false;
-  }
-
-  // Treat `disabled` as authoritative on the element itself (mirrors legacy interaction behavior).
-  if dom2_has_attribute(dom, node, "disabled") {
-    return true;
-  }
-
-  if !dom2_is_fieldset_disabled_candidate(dom, node) {
-    return false;
-  }
-
-  let mut ancestors: Vec<dom2::NodeId> = Vec::new();
-  let mut current = Some(node);
-  let mut remaining = dom.nodes_len() + 1;
-  while let Some(id) = current {
-    if remaining == 0 {
-      break;
-    }
-    remaining -= 1;
-
-    ancestors.push(id);
-
-    if dom2_is_html_fieldset(dom, id) && dom2_has_attribute(dom, id, "disabled") {
-      match dom2_fieldset_first_legend_child(dom, id) {
-        Some(first_legend) => {
-          let in_first_legend = ancestors.iter().any(|&ancestor| ancestor == first_legend);
-          if !in_first_legend {
-            return true;
-          }
-        }
-        None => return true,
-      }
-    }
-
-    current = dom.parent_node(id);
-  }
-
-  false
 }
 
 fn autofocus_target_node_id_dom2_in_tree(dom: &dom2::Document) -> Option<dom2::NodeId> {
@@ -448,7 +333,8 @@ fn autofocus_target_node_id_dom2_in_tree(dom: &dom2::Document) -> Option<dom2::N
     let self_inert_or_hidden = if inherited_inert_or_hidden {
       true
     } else if is_element {
-      dom2_node_self_is_inert(dom, node_id) || dom2_node_self_is_hidden(dom, node_id)
+      super::effective_disabled_dom2::node_self_is_inert(node_id, dom)
+        || super::effective_disabled_dom2::node_self_is_hidden(node_id, dom)
     } else {
       false
     };
@@ -456,7 +342,7 @@ fn autofocus_target_node_id_dom2_in_tree(dom: &dom2::Document) -> Option<dom2::N
     if is_element && !self_inert_or_hidden {
       if dom2_has_attribute(dom, node_id, "autofocus")
         && dom2_is_potentially_focusable_element_for_autofocus(dom, node_id)
-        && !dom2_is_effectively_disabled(dom, node_id)
+        && !super::effective_disabled_dom2::is_effectively_disabled(node_id, dom)
       {
         return Some(node_id);
       }
@@ -464,10 +350,6 @@ fn autofocus_target_node_id_dom2_in_tree(dom: &dom2::Document) -> Option<dom2::N
 
     // All descendants are inert/hidden once we've crossed an inert/hidden boundary. Prune traversal.
     if self_inert_or_hidden {
-      continue;
-    }
-    // `<template>` contents are inert; do not descend into the inert subtree.
-    if node.inert_subtree {
       continue;
     }
 
@@ -497,9 +379,7 @@ pub fn autofocus_target_node_id_dom2(dom: &dom2::Document) -> Option<dom2::NodeI
 /// Build an [`InteractionStateDom2`] reflecting initial autofocus selection, if any.
 ///
 /// This is the `dom2` equivalent of [`interaction_state_for_autofocus`].
-pub fn interaction_state_for_autofocus_dom2(
-  dom: &dom2::Document,
-) -> Option<InteractionStateDom2> {
+pub fn interaction_state_for_autofocus_dom2(dom: &dom2::Document) -> Option<InteractionStateDom2> {
   let focused = autofocus_target_node_id_dom2_in_tree(dom)?;
 
   let mut focus_chain: Vec<dom2::NodeId> = Vec::new();
