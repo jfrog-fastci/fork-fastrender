@@ -219,7 +219,7 @@ fn iterator_step_value_sets_done_true_when_value_getter_throws() -> Result<(), V
 }
 
 #[test]
-fn iterator_close_propagates_get_method_error_for_throw_completion() -> Result<(), VmError> {
+fn iterator_close_get_method_error_is_ignored_for_throw_completion() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
@@ -280,9 +280,9 @@ fn iterator_close_propagates_get_method_error_for_throw_completion() -> Result<(
       Value::Object(iter_method),
     )?;
 
-    // Throw completion: closing errors from `GetMethod(iterator, "return")` must still propagate and
-    // override the incoming completion.
-    let err = iterator::iterator_close(
+    // Throw completion: errors from `GetMethod(iterator, \"return\")` are ignored and the caller
+    // should preserve the incoming throw completion.
+    iterator::iterator_close(
       &mut vm,
       &mut host,
       &mut hooks,
@@ -290,8 +290,7 @@ fn iterator_close_propagates_get_method_error_for_throw_completion() -> Result<(
       &record,
       CloseCompletionKind::Throw,
     )
-    .expect_err("expected IteratorClose to propagate GetMethod error for Throw completion");
-    assert_eq!(err.thrown_value(), Some(Value::Number(1.0)));
+    .expect("expected IteratorClose to ignore GetMethod error for Throw completion");
 
     // Non-throw completion: closing errors must also propagate.
     let err = iterator::iterator_close(

@@ -13872,6 +13872,10 @@ pub fn regexp_prototype_source_get(
   // The spec is flexible about *how* escaping is performed ("as necessary"), but test262 asserts
   // that `/` and `LineTerminator` code units are escaped such that no literal line terminators
   // appear in the output.
+  //
+  // Note: `/` only needs escaping when it would be interpreted as the RegExp literal terminator.
+  // Slashes inside a character class (`[...]`) are not terminators and therefore do not need to be
+  // escaped.
   const SLASH: u16 = 0x002F;
   const BACKSLASH: u16 = 0x005C;
   const BRACKET_OPEN: u16 = 0x005B;

@@ -385,8 +385,8 @@ pub fn iterator_close(
 
 /// `IteratorClose` (ECMA-262) with completion-sensitive error precedence.
 ///
-/// This is a convenience wrapper for callers that need the *full* `IteratorClose` semantics from
-/// ECMA-262 (which takes an input completion):
+/// This is a convenience wrapper for callers that need completion-sensitive `IteratorClose`
+/// semantics but do not want to thread an explicit [`Completion`] value:
 /// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
 /// - If `completion_is_throw` is `true`, any JavaScript exceptions thrown while getting/calling
 ///   `iterator.return` are ignored (the incoming throw completion is preserved).

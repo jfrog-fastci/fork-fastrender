@@ -2649,7 +2649,9 @@ impl Intrinsics {
     scope.define_property(
       string_constructor,
       common.prototype,
-      // Per ECMA-262, constructor `.prototype` properties are writable but non-configurable.
+      // Per ECMA-262, constructor `.prototype` properties are writable but non-configurable. This
+      // also ensures Proxy `[[Get]]` invariants allow `newTarget.prototype` to be overridden via a
+      // `get` trap when `newTarget` is a Proxy.
       data_desc(Value::Object(string_prototype), true, false, false),
     )?;
     scope.define_property(
