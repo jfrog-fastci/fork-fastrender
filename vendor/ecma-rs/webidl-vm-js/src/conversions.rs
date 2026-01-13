@@ -71,26 +71,17 @@ where
     Value,
   ) -> Result<Value, VmError>,
 {
-  let _ = expected_object_message;
-
-  // WebIDL sequence conversions use `GetMethod(V, @@iterator)`, which applies `ToObject(V)` under
-  // the hood. Accept primitives here by explicitly boxing them before iteration.
+  // WebIDL `sequence<T>` conversion is intentionally *stricter* than ECMAScript iteration:
   //
-  // Root `value` across `ToObject` (boxing may allocate/GC and `value` may contain GC handles).
-  rt.scope.push_root(value)?;
-
-  let obj = match value {
-    Value::Object(obj) => obj,
-    other => match rt.scope.to_object(&mut *rt.vm, host, hooks, other) {
-      Ok(obj) => obj,
-      // `ToObject` throws a TypeError for `null`/`undefined`. Convert internal `VmError::TypeError`
-      // into a catchable thrown `TypeError` object so tests can inspect it.
-      Err(VmError::TypeError(message)) => return Err(rt.throw_type_error(message)),
-      Err(err) => return Err(err),
-    },
+  // - If `V` is not an Object, throw a TypeError.
+  // - Then do `GetMethod(V, @@iterator)`; if it's undefined, throw a TypeError.
+  //
+  // Critically, this does **not** apply `ToObject(V)` (so primitives like strings must be
+  // rejected, rather than being auto-boxed and iterated).
+  let v = value;
+  let Value::Object(_obj) = v else {
+    return Err(rt.throw_type_error(expected_object_message));
   };
-
-  let v = Value::Object(obj);
   rt.scope.push_root(v)?;
 
   let mut iterator_record = match vm_js::iterator::get_iterator(
