@@ -11162,6 +11162,88 @@ mod tests {
   }
 
   #[test]
+  fn parse_html_preserves_mathml_template_children() {
+    let dom = parse_html("<!doctype html><math><template><mrow id=hit></mrow></template></math>")
+      .expect("parse html");
+
+    let hit = find_element_by_id(&dom, "hit").expect("expected element with id=hit");
+
+    fn build_path_to_node<'a>(
+      node: &'a DomNode,
+      target: *const DomNode,
+      path: &mut Vec<&'a DomNode>,
+    ) -> bool {
+      path.push(node);
+      if node as *const DomNode == target {
+        return true;
+      }
+      for child in node.children.iter() {
+        if build_path_to_node(child, target, path) {
+          return true;
+        }
+      }
+      path.pop();
+      false
+    }
+
+    let mut path = Vec::new();
+    assert!(
+      build_path_to_node(&dom, hit as *const DomNode, &mut path),
+      "expected to find a path from the root to the hit node"
+    );
+
+    let template = path
+      .iter()
+      .rev()
+      .find(|node| matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("template")))
+      .copied()
+      .expect("expected <template> ancestor for MathML hit element");
+
+    assert_eq!(
+      template.namespace(),
+      Some(MATHML_NAMESPACE),
+      "expected nearest <template> ancestor to be in the MathML namespace"
+    );
+    assert!(
+      !template.template_contents_are_inert(),
+      "non-HTML <template> elements must not be treated as inert template contents"
+    );
+  }
+
+  #[test]
+  fn parse_html_fragment_preserves_svg_template_children() {
+    let nodes = parse_html_fragment(
+      "<template><g id=hit></g></template>",
+      "svg",
+      SVG_NAMESPACE,
+      DomParseOptions::default(),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment");
+
+    let hit = nodes
+      .iter()
+      .find_map(|node| find_element_by_id(node, "hit"))
+      .expect("expected element with id=hit in fragment");
+    drop(hit);
+
+    let template = nodes
+      .iter()
+      .find(|node| matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("template")))
+      .expect("expected <template> root node in fragment");
+
+    assert_eq!(
+      template.namespace(),
+      Some(SVG_NAMESPACE),
+      "expected fragment <template> node to be in the SVG namespace"
+    );
+    assert!(
+      !template.template_contents_are_inert(),
+      "non-HTML <template> elements must not be treated as inert template contents"
+    );
+  }
+
+  #[test]
   fn declarative_shadow_dom_skips_in_inert_template() {
     let html = "<template><div id='host'><template shadowroot='open'><p id='shadow'>shadow</p></template></div></template>";
     let dom = parse_html(html).expect("parse html");
