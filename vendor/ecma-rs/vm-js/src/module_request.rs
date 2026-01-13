@@ -10,6 +10,8 @@
 
 use std::cmp::Ordering;
 
+use crate::JsString;
+
 /// Compare two strings by lexicographic order of UTF-16 code units (ECMA-262 string ordering).
 ///
 /// This intentionally does **not** use Rust's default `str` ordering (UTF-8 byte order).
@@ -61,11 +63,27 @@ fn cmp_import_attribute(a: &ImportAttribute, b: &ImportAttribute) -> Ordering {
 /// Spec: <https://tc39.es/ecma262/#sec-modulerequest-record>
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ModuleRequest {
-  pub specifier: String,
+  pub specifier: JsString,
   pub attributes: Vec<ImportAttribute>,
 }
 
 impl ModuleRequest {
+  /// Returns the raw UTF-16 code units of the module specifier.
+  #[inline]
+  pub fn specifier_code_units(&self) -> &[u16] {
+    self.specifier.as_code_units()
+  }
+
+  /// Returns a UTF-8 string representation of the module specifier, replacing any unpaired
+  /// surrogates with U+FFFD.
+  ///
+  /// This is intended for debug/error paths and host integrations (e.g. filesystem paths). For
+  /// spec-visible equality, use UTF-16 code unit comparisons (via `Eq` / [`module_requests_equal`]).
+  #[inline]
+  pub fn specifier_utf8_lossy(&self) -> String {
+    self.specifier.to_utf8_lossy()
+  }
+
   /// Construct a new module request, canonicalizing the attribute list.
   ///
   /// Canonicalization sorts by `(key, value)` using lexicographic order of UTF-16 code units so:
@@ -73,12 +91,12 @@ impl ModuleRequest {
   /// - derived `Eq`/`Hash` become compatible with `ModuleRequestsEqual` when all instances are
   ///   constructed via this constructor (or [`ModuleRequest::canonicalize`]).
   #[inline]
-  pub fn new(specifier: impl Into<String>, mut attributes: Vec<ImportAttribute>) -> Self {
+  pub fn new(specifier: JsString, mut attributes: Vec<ImportAttribute>) -> Self {
     // Use an in-place unstable sort to avoid heap allocations. Import attributes are treated as a
     // set by the spec; relative ordering between equal entries is not observable.
     attributes.sort_unstable_by(cmp_import_attribute);
     Self {
-      specifier: specifier.into(),
+      specifier,
       attributes,
     }
   }
@@ -129,13 +147,13 @@ impl<M> LoadedModuleRequest<M> {
 /// This exists so [`module_requests_equal`] can be implemented in the same shape as the spec
 /// (`ModuleRequestsEqual` accepts either record).
 pub trait ModuleRequestLike {
-  fn specifier(&self) -> &str;
+  fn specifier(&self) -> &JsString;
   fn attributes(&self) -> &[ImportAttribute];
 }
 
 impl ModuleRequestLike for ModuleRequest {
   #[inline]
-  fn specifier(&self) -> &str {
+  fn specifier(&self) -> &JsString {
     &self.specifier
   }
 
@@ -147,8 +165,8 @@ impl ModuleRequestLike for ModuleRequest {
 
 impl<M> ModuleRequestLike for LoadedModuleRequest<M> {
   #[inline]
-  fn specifier(&self) -> &str {
-    self.request.specifier.as_str()
+  fn specifier(&self) -> &JsString {
+    &self.request.specifier
   }
 
   #[inline]

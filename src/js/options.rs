@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::render_control;
 use std::time::Duration;
 use std::time::Instant;
-use vm_js::Budget as VmJsBudget;
+use vm_js::{Budget as VmJsBudget, JsString};
 use webidl::WebIdlLimits;
 
 use super::import_maps::ImportMapLimits;
@@ -141,7 +141,7 @@ pub struct JsExecutionOptions {
   /// The entry module has depth 0. Each `import` adds 1.
   pub max_module_graph_depth: usize,
 
-  /// Maximum number of bytes accepted for a single module specifier string.
+  /// Maximum allowed length for a module specifier string, measured in UTF-16 code units.
   ///
   /// This is a host-side guard against pathological `import "<very long string>"` inputs.
   pub max_module_specifier_length: usize,
@@ -184,7 +184,23 @@ impl JsExecutionOptions {
 
   /// Validate a module specifier against [`JsExecutionOptions::max_module_specifier_length`].
   pub fn check_module_specifier(&self, specifier: &str) -> Result<()> {
-    let len = specifier.len();
+    // Module specifiers are ECMAScript Strings, which are UTF-16 code units.
+    let len = specifier.encode_utf16().count();
+    if len > self.max_module_specifier_length {
+      return Err(Error::Other(format!(
+        "Module specifier exceeded max_module_specifier_length (len={len}, limit={})",
+        self.max_module_specifier_length
+      )));
+    }
+    Ok(())
+  }
+
+  /// Validate a module specifier represented as a `vm-js` `JsString`.
+  ///
+  /// This performs the same check as [`Self::check_module_specifier`] but operates on UTF-16 code
+  /// units directly, preserving unpaired surrogates (which are allowed in ECMAScript strings).
+  pub fn check_module_specifier_js_string(&self, specifier: &JsString) -> Result<()> {
+    let len = specifier.len_code_units();
     if len > self.max_module_specifier_length {
       return Err(Error::Other(format!(
         "Module specifier exceeded max_module_specifier_length (len={len}, limit={})",

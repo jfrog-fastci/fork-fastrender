@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vm_js::{
   format_stack_trace, job_queue::JobQueue, Agent, Budget, HeapLimits, Job, JobKind,
-  LoadedModuleRequest, MicrotaskQueue,
+  JsString, LoadedModuleRequest, MicrotaskQueue,
   ModuleGraph, ModuleId, ModuleRequest, ModuleStatus, PropertyDescriptor, PropertyKey, PropertyKind,
   RootId, SourceTextModuleRecord, StackFrame, Value, VmError, VmHostHooks, VmJobContext, VmOptions,
   MAX_PROTOTYPE_CHAIN,
@@ -372,19 +372,18 @@ fn main() {
     // Keep the filler buffer alive for the duration of linking so the process stays close to the
     // RLIMIT_AS ceiling.
     let _keep = &filler;
-    let alloc_ascii_string = |len: usize| -> Option<String> {
-      let mut bytes: Vec<u8> = Vec::new();
-      bytes.try_reserve_exact(len).ok()?;
-      bytes.resize(len, b'a');
-      // Safety: bytes are ASCII.
-      Some(unsafe { String::from_utf8_unchecked(bytes) })
+    let alloc_ascii_js_string = |len: usize| -> Option<JsString> {
+      let mut units: Vec<u16> = Vec::new();
+      units.try_reserve_exact(len).ok()?;
+      units.resize(len, b'a' as u16);
+      JsString::from_u16_vec(units).ok()
     };
 
-    let Some(spec1) = alloc_ascii_string(len_code_units) else {
+    let Some(spec1) = alloc_ascii_js_string(len_code_units) else {
       eprintln!("oom_harness: failed to allocate large module specifier (entry)");
       process::exit(1);
     };
-    let Some(spec2) = alloc_ascii_string(len_code_units) else {
+    let Some(spec2) = alloc_ascii_js_string(len_code_units) else {
       eprintln!("oom_harness: failed to allocate large module specifier (loaded_modules)");
       process::exit(1);
     };

@@ -1258,7 +1258,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
 
     if let Err(err) = self
       .options
-      .check_module_specifier(&module_request.specifier)
+      .check_module_specifier_js_string(&module_request.specifier)
     {
       let thrown = self.throw_type_error(vm, scope, &err.to_string());
       vm.finish_loading_imported_module(
@@ -1282,10 +1282,11 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
       ModuleReferrer::Script(_) | ModuleReferrer::Realm(_) => self.document_url.to_string(),
     };
 
+    let specifier = module_request.specifier.to_utf8_lossy();
     let resolved_url = match self.resolve_module_specifier(
       vm,
       scope,
-      &module_request.specifier,
+      specifier.as_str(),
       base_url.as_str(),
     ) {
       Ok(url) => url,

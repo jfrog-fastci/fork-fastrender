@@ -2,15 +2,20 @@ use std::cmp::Ordering;
 
 use vm_js::cmp_utf16;
 use vm_js::ImportAttribute;
+use vm_js::JsString;
 use vm_js::ModuleRequest;
+
+fn req(specifier: &str, attrs: Vec<ImportAttribute>) -> ModuleRequest {
+  ModuleRequest::new(JsString::from_str(specifier).unwrap(), attrs)
+}
 
 #[test]
 fn module_request_canonicalizes_attribute_order() {
   let a_type = ImportAttribute::new("type", "json");
   let a_mode = ImportAttribute::new("mode", "strict");
 
-  let left = ModuleRequest::new("./foo.mjs", vec![a_type.clone(), a_mode.clone()]);
-  let right = ModuleRequest::new("./foo.mjs", vec![a_mode, a_type]);
+  let left = req("./foo.mjs", vec![a_type.clone(), a_mode.clone()]);
+  let right = req("./foo.mjs", vec![a_mode, a_type]);
 
   // `ModuleRequestsEqual` semantics.
   assert!(left.spec_equal(&right));
@@ -23,8 +28,8 @@ fn module_request_not_equal_with_different_attribute_count() {
   let a_type = ImportAttribute::new("type", "json");
   let a_mode = ImportAttribute::new("mode", "strict");
 
-  let left = ModuleRequest::new("./foo.mjs", vec![a_type.clone()]);
-  let right = ModuleRequest::new("./foo.mjs", vec![a_type, a_mode]);
+  let left = req("./foo.mjs", vec![a_type.clone()]);
+  let right = req("./foo.mjs", vec![a_type, a_mode]);
 
   assert!(!left.spec_equal(&right));
   assert_ne!(left, right);
@@ -41,4 +46,3 @@ fn cmp_utf16_orders_by_utf16_code_units() {
   // Rust's default `str` ordering is based on UTF-8 bytes, where 0xF0 > 0xEE => 😀 > U+E000.
   assert_eq!("😀".cmp("\u{E000}"), Ordering::Greater);
 }
-

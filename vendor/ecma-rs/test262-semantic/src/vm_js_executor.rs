@@ -348,6 +348,7 @@ impl VmHostHooks for Test262ModuleHooks {
   ) -> Result<(), VmError> {
     let base_dir = self.resolve_base_dir(referrer)?;
     let specifier = module_request.specifier.clone();
+    let specifier_utf8 = specifier.to_utf8_lossy();
 
     // Validate the import specifier before touching the filesystem.
     if specifier.is_empty() {
@@ -363,7 +364,7 @@ impl VmHostHooks for Test262ModuleHooks {
         result,
       );
     }
-    if specifier.contains('\0') {
+    if specifier.as_code_units().iter().any(|&u| u == 0) {
       let result = Err(module_load_type_error(vm, scope, "import specifier contains NUL")?);
       return finish_loading_imported_module(
         vm,
@@ -376,7 +377,7 @@ impl VmHostHooks for Test262ModuleHooks {
         result,
       );
     }
-    if is_absolute_filesystem_specifier(&specifier) {
+    if is_absolute_filesystem_specifier(&specifier_utf8) {
       let result = Err(module_load_type_error(vm, scope, "import specifier must not be an absolute path")?);
       return finish_loading_imported_module(
         vm,
@@ -450,13 +451,13 @@ impl VmHostHooks for Test262ModuleHooks {
       }
     };
 
-    let joined = base_dir.join(&specifier);
+    let joined = base_dir.join(&specifier_utf8);
     let normalized = normalize_path(&joined);
     if !normalized.starts_with(&self.test_root_dir_normalized) {
       let result = Err(module_load_type_error(
         vm,
         scope,
-        &format!("import specifier escapes test262 sandbox: {specifier}"),
+        &format!("import specifier escapes test262 sandbox: {specifier_utf8}"),
       )?);
       return finish_loading_imported_module(
         vm,
@@ -477,7 +478,7 @@ impl VmHostHooks for Test262ModuleHooks {
           let result = Err(module_load_type_error(
             vm,
             scope,
-            &format!("import specifier escapes test262 sandbox: {specifier}"),
+            &format!("import specifier escapes test262 sandbox: {specifier_utf8}"),
           )?);
           return finish_loading_imported_module(
             vm,
@@ -496,7 +497,7 @@ impl VmHostHooks for Test262ModuleHooks {
         let result = Err(module_load_type_error(
           vm,
           scope,
-          &format!("module not found: {specifier}"),
+          &format!("module not found: {specifier_utf8}"),
         )?);
         return finish_loading_imported_module(
           vm,
@@ -513,7 +514,7 @@ impl VmHostHooks for Test262ModuleHooks {
         let result = Err(module_load_type_error(
           vm,
           scope,
-          &format!("module not found: {specifier}"),
+          &format!("module not found: {specifier_utf8}"),
         )?);
         return finish_loading_imported_module(
           vm,
@@ -552,7 +553,7 @@ impl VmHostHooks for Test262ModuleHooks {
         let result = Err(module_load_type_error(
           vm,
           scope,
-          &format!("module not found: {specifier}"),
+          &format!("module not found: {specifier_utf8}"),
         )?);
         return finish_loading_imported_module(
           vm,
@@ -596,7 +597,7 @@ impl VmHostHooks for Test262ModuleHooks {
             let result = Err(module_load_syntax_error_message(
               vm,
               scope,
-              &format!("Failed to parse JSON module '{specifier}': {err}"),
+              &format!("Failed to parse JSON module '{specifier_utf8}': {err}"),
             )?);
             return finish_loading_imported_module(
               vm,
@@ -619,7 +620,7 @@ impl VmHostHooks for Test262ModuleHooks {
             let result = Err(module_load_syntax_error_message(
               vm,
               scope,
-              &format!("Failed to serialize JSON module '{specifier}': {err}"),
+              &format!("Failed to serialize JSON module '{specifier_utf8}': {err}"),
             )?);
             return finish_loading_imported_module(
               vm,
@@ -646,7 +647,8 @@ impl VmHostHooks for Test262ModuleHooks {
         // If we passed `Err(VmError::Syntax(..))` through to `FinishLoadingImportedModule`,
         // `GraphLoadingState::reject_promise` would reject with `undefined` (because
         // `VmError::Syntax` has no `thrown_value()`), losing the error type/message.
-        let message = render_syntax_diagnostics(&specifier, source_text.text.as_ref(), &mut diags);
+        let message =
+          render_syntax_diagnostics(&specifier_utf8, source_text.text.as_ref(), &mut diags);
         let intr = vm
           .intrinsics()
           .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  Heap, HeapLimits, HostDefined, Job, MicrotaskQueue, ModuleGraph, ModuleId, ModuleLoadPayload,
-  ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope, SourceTextModuleRecord,
-  Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
+  Heap, HeapLimits, HostDefined, Job, JsString, MicrotaskQueue, ModuleGraph, ModuleId,
+  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope,
+  SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
 };
 
 /// Host hooks that:
@@ -12,7 +12,7 @@ use vm_js::{
 /// - record the `referrer` passed when requesting `dep.js`
 struct ReferrerRecordingHostHooks {
   microtasks: MicrotaskQueue,
-  modules: HashMap<String, ModuleId>,
+  modules: HashMap<JsString, ModuleId>,
   dep_referrer: Option<ModuleReferrer>,
 }
 
@@ -26,7 +26,9 @@ impl ReferrerRecordingHostHooks {
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
-    self.modules.insert(specifier.to_string(), module);
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
   }
 
   fn teardown_jobs(&mut self, vm: &mut Vm, heap: &mut Heap) {
@@ -168,13 +170,13 @@ impl VmHostHooks for ReferrerRecordingHostHooks {
     _host_defined: HostDefined,
     payload: ModuleLoadPayload,
   ) -> Result<(), VmError> {
-    if module_request.specifier == "dep.js" {
+    if module_request.specifier == JsString::from_str("dep.js").unwrap() {
       self.dep_referrer = Some(referrer);
     }
 
     let module = *self
       .modules
-      .get(module_request.specifier.as_str())
+      .get(&module_request.specifier)
       .ok_or_else(|| {
         VmError::InvariantViolation(
           "ReferrerRecordingHostHooks: no module registered for specifier",

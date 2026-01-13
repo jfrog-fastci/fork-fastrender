@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use vm_js::{
   CompiledScript, HeapLimits, HostDefined, JsRuntime, MicrotaskQueue, ModuleId, ModuleLoadPayload,
-  ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, PropertyKind, SourceTextModuleRecord,
-  Value, Vm, VmError, VmHostHooks, VmOptions,
+  JsString, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, PropertyKind,
+  SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmOptions,
 };
 
 #[derive(Debug)]
@@ -20,7 +20,7 @@ struct PendingLoad {
 struct TestHostHooks {
   microtasks: MicrotaskQueue,
   /// Specifier → module id mapping used by `complete_load_for`.
-  modules: HashMap<String, ModuleId>,
+  modules: HashMap<JsString, ModuleId>,
   pending: Vec<PendingLoad>,
   supported_import_attributes: &'static [&'static str],
 }
@@ -43,7 +43,9 @@ impl TestHostHooks {
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
-    self.modules.insert(specifier.to_string(), module);
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
   }
 
   fn pending_count(&self) -> usize {
@@ -51,16 +53,17 @@ impl TestHostHooks {
   }
 
   fn complete_load_for(&mut self, rt: &mut JsRuntime, specifier: &str) {
+    let spec = JsString::from_str(specifier).unwrap();
     let idx = self
       .pending
       .iter()
-      .position(|p| p.request.specifier == specifier)
+      .position(|p| p.request.specifier == spec)
       .unwrap_or_else(|| panic!("no pending module load for specifier {specifier:?}"));
     let pending = self.pending.remove(idx);
 
     let module = *self
       .modules
-      .get(specifier)
+      .get(&spec)
       .unwrap_or_else(|| panic!("no module registered for specifier {specifier:?}"));
 
     let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
@@ -140,7 +143,7 @@ impl VmHostHooks for TestHostHooks {
 /// calling `FinishLoadingImportedModule`.
 struct SyncImportHooks {
   microtasks: MicrotaskQueue,
-  modules: HashMap<String, ModuleId>,
+  modules: HashMap<JsString, ModuleId>,
 }
 
 impl SyncImportHooks {
@@ -152,7 +155,9 @@ impl SyncImportHooks {
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
-    self.modules.insert(specifier.to_string(), module);
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
   }
 
   fn teardown_jobs(&mut self, rt: &mut JsRuntime) {
@@ -207,7 +212,7 @@ impl VmHostHooks for SyncImportHooks {
   ) -> Result<(), VmError> {
     let module = *self
       .modules
-      .get(module_request.specifier.as_str())
+      .get(&module_request.specifier)
       .unwrap_or_else(|| panic!("no module registered for specifier {:?}", module_request.specifier));
     vm.finish_loading_imported_module(
       scope,

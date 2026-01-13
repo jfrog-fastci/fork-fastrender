@@ -283,7 +283,7 @@ impl ModuleLoader {
     }
 
     if self.max_module_specifier_length != usize::MAX
-      && key.url.len() > self.max_module_specifier_length
+      && key.url.encode_utf16().count() > self.max_module_specifier_length
     {
       return Err(VmError::TypeError(MODULE_SPECIFIER_TOO_LONG_TYPE_ERROR));
     }
@@ -422,7 +422,7 @@ impl ModuleLoader {
     }
 
     if self.max_module_specifier_length != usize::MAX
-      && key.url.len() > self.max_module_specifier_length
+      && key.url.encode_utf16().count() > self.max_module_specifier_length
     {
       return Err(VmError::TypeError(MODULE_SPECIFIER_TOO_LONG_TYPE_ERROR));
     }
@@ -475,6 +475,7 @@ impl ModuleLoader {
     referrer: ModuleReferrer,
     request: &ModuleRequest,
   ) -> Result<String, ModuleResolveError> {
+    let specifier = request.specifier_utf8_lossy();
     let base_url = match referrer {
       ModuleReferrer::Module(m) => Some(
         self
@@ -490,14 +491,14 @@ impl ModuleLoader {
     let Some(base_url) = base_url else {
       // If there's no base URL for this realm/script, we can still resolve URL-like specifiers
       // (e.g. `data:` or `https:`). Relative URLs and bare specifiers require a base URL.
-      return Url::parse(request.specifier.as_str())
+      return Url::parse(&specifier)
         .map(|url| url.to_string())
         .map_err(|_| ModuleResolveError::RelativeWithoutBase);
     };
     let base_url = Url::parse(base_url).map_err(|_| ModuleResolveError::Url)?;
     resolve_import_map_specifier(
       &mut self.import_map_state,
-      request.specifier.as_str(),
+      &specifier,
       &base_url,
     )
     .map(|url| url.to_string())
@@ -514,7 +515,9 @@ impl ModuleLoader {
     specifier: &str,
     base_url: Option<&str>,
   ) -> Result<String, VmError> {
-    if self.max_module_specifier_length != usize::MAX && specifier.len() > self.max_module_specifier_length {
+    if self.max_module_specifier_length != usize::MAX
+      && specifier.encode_utf16().count() > self.max_module_specifier_length
+    {
       return Err(VmError::TypeError(MODULE_SPECIFIER_TOO_LONG_TYPE_ERROR));
     }
 
@@ -546,7 +549,7 @@ impl ModuleLoader {
     payload: &ModuleLoadPayload,
   ) -> ModuleLoadOutcome {
     if self.max_module_specifier_length != usize::MAX
-      && module_request.specifier.len() > self.max_module_specifier_length
+      && module_request.specifier.len_code_units() > self.max_module_specifier_length
     {
       return ModuleLoadOutcome::FinishNow(Err(VmError::TypeError(
         MODULE_SPECIFIER_TOO_LONG_TYPE_ERROR,
@@ -806,7 +809,7 @@ pub type ModuleLoaderHandle = Rc<RefCell<ModuleLoader>>;
 mod tests {
   use super::*;
   use crate::resource::FetchedResource;
-  use vm_js::{Heap, HeapLimits, Realm, Scope, Vm, VmHostHooks, VmOptions};
+  use vm_js::{Heap, HeapLimits, JsString, Realm, Scope, Vm, VmHostHooks, VmOptions};
 
   #[derive(Default)]
   struct MapFetcher {
@@ -937,7 +940,7 @@ mod tests {
 
     let resolved = loader.resolve_request_url(
       ModuleReferrer::Module(module_id),
-      &ModuleRequest::new("./b.js", Vec::new()),
+      &ModuleRequest::new(JsString::from_str("./b.js").unwrap(), Vec::new()),
     );
     assert_eq!(
       resolved.unwrap(),
@@ -951,7 +954,7 @@ mod tests {
     let mut loader = ModuleLoader::new(Some("https://example.com/doc/page.html".to_string()));
     let resolved = loader.resolve_request_url(
       ModuleReferrer::Realm(vm_js::RealmId::from_raw(1)),
-      &ModuleRequest::new("./b.js", Vec::new()),
+      &ModuleRequest::new(JsString::from_str("./b.js").unwrap(), Vec::new()),
     );
     assert_eq!(resolved.unwrap(), "https://example.com/doc/b.js");
   }
@@ -965,7 +968,7 @@ mod tests {
       .expect("register script url");
     let resolved = loader.resolve_request_url(
       ModuleReferrer::Script(script_id),
-      &ModuleRequest::new("./b.js", Vec::new()),
+      &ModuleRequest::new(JsString::from_str("./b.js").unwrap(), Vec::new()),
     );
     assert_eq!(resolved.unwrap(), "https://example.com/scripts/b.js");
   }
@@ -976,7 +979,7 @@ mod tests {
     let err = loader
       .resolve_request_url(
         ModuleReferrer::Realm(vm_js::RealmId::from_raw(1)),
-        &ModuleRequest::new("foo", Vec::new()),
+        &ModuleRequest::new(JsString::from_str("foo").unwrap(), Vec::new()),
       )
       .unwrap_err();
     assert_eq!(err, ModuleResolveError::BareSpecifier);
@@ -993,7 +996,7 @@ mod tests {
     let mut loader = ModuleLoader::new(Some("https://example.com/doc/page.html".to_string()));
     loader.set_fetcher(fetcher_for_loader);
 
-    let request = ModuleRequest::new("https://example.com/a.js", Vec::new());
+    let request = ModuleRequest::new(JsString::from_str("https://example.com/a.js").unwrap(), Vec::new());
 
     let outcome = loader.request_module(
       ModuleReferrer::Realm(vm_js::RealmId::from_raw(1)),
@@ -1056,7 +1059,7 @@ mod tests {
     let mut loader = ModuleLoader::new(Some("https://example.com/doc/page.html".to_string()));
     loader.set_fetcher(fetcher_for_loader);
 
-    let request = ModuleRequest::new("https://example.com/a.js", Vec::new());
+    let request = ModuleRequest::new(JsString::from_str("https://example.com/a.js").unwrap(), Vec::new());
 
     let outcome1 = loader.request_module(
       ModuleReferrer::Realm(vm_js::RealmId::from_raw(1)),

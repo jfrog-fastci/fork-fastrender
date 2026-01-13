@@ -123,6 +123,23 @@ pub fn module_export_import_name_code_units(assoc: &NodeAssocData) -> Option<&[u
     .map(|data| data.0.as_ref())
 }
 
+/// Marker attached to import/export statement nodes recording the exact UTF-16 code units produced
+/// by decoding the module specifier string literal (`from "..."` / `import "..."`).
+///
+/// ECMAScript module specifiers are strings (UTF-16 code units) and may contain unpaired surrogate
+/// code units. Rust's `String` cannot represent those, so `parse-js` keeps the existing `String`
+/// fields on `ImportStmt` / `ExportListStmt` (derived lossily) while exposing the spec-correct code
+/// units here for downstream consumers (e.g. module loaders / VMs).
+#[derive(Clone, Debug)]
+pub struct ModuleSpecifierCodeUnits(pub Box<[u16]>);
+
+/// Returns the UTF-16 code units for a module specifier string literal, if present.
+pub fn module_specifier_code_units(assoc: &NodeAssocData) -> Option<&[u16]> {
+  assoc
+    .get::<ModuleSpecifierCodeUnits>()
+    .map(|data| data.0.as_ref())
+}
+
 /// Marker attached to template literal expression nodes recording the raw and
 /// cooked UTF-16 code units for each template string segment.
 ///

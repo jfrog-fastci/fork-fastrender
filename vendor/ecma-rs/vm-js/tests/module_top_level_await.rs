@@ -2,9 +2,9 @@ use std::any::Any;
 use std::collections::HashMap;
 
 use vm_js::{
-  Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, MicrotaskQueue, ModuleGraph, ModuleId,
-  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope,
-  SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, JsString, MicrotaskQueue, ModuleGraph,
+  ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm,
+  Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
 fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
@@ -51,7 +51,7 @@ struct TestHostHooks {
   import_meta_finalize_calls: u32,
 
   // Dynamic import capture.
-  modules: HashMap<String, ModuleId>,
+  modules: HashMap<JsString, ModuleId>,
   pending: Vec<PendingLoad>,
 }
 
@@ -68,7 +68,9 @@ impl TestHostHooks {
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
-    self.modules.insert(specifier.to_string(), module);
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
   }
 
   fn pending_count(&self) -> usize {
@@ -82,16 +84,17 @@ impl TestHostHooks {
     modules: &mut ModuleGraph,
     specifier: &str,
   ) -> Result<(), VmError> {
+    let spec = JsString::from_str(specifier).unwrap();
     let idx = self
       .pending
       .iter()
-      .position(|p| p.request.specifier == specifier)
+      .position(|p| p.request.specifier == spec)
       .ok_or_else(|| VmError::InvariantViolation("no pending module load for specifier"))?;
     let pending = self.pending.remove(idx);
 
     let module = *self
       .modules
-      .get(specifier)
+      .get(&spec)
       .ok_or_else(|| VmError::InvariantViolation("no module registered for specifier"))?;
 
     let mut scope = heap.scope();
@@ -950,7 +953,10 @@ fn dynamic_import_after_top_level_await_starts_and_resolves() -> Result<(), VmEr
 
   // Dynamic import should have started during the resumed module evaluation.
   assert_eq!(hooks.pending_count(), 1);
-  assert_eq!(hooks.pending[0].request.specifier, "./dep.js");
+  assert_eq!(
+    hooks.pending[0].request.specifier,
+    JsString::from_str("./dep.js").unwrap()
+  );
   assert_eq!(
     hooks.pending[0].referrer,
     ModuleReferrer::Module(m),

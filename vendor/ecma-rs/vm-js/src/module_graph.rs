@@ -1623,11 +1623,16 @@ impl ModuleGraph {
             let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
               "module linking requires intrinsics to create SyntaxError objects",
             ))?;
+            let (specifier, _) = crate::string::utf16_to_utf8_lossy_bounded_with_tick(
+              entry.module_request.specifier.as_code_units(),
+              crate::fallible_format::MAX_ERROR_MESSAGE_BYTES,
+              || vm.tick(),
+            )?;
             let message = crate::fallible_format::try_format_error_message2(
               "Indirect export '",
               &entry.export_name,
               "' could not be resolved (re-export from '",
-              &entry.module_request.specifier,
+              &specifier,
               "')",
             )?;
             let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
@@ -1637,11 +1642,16 @@ impl ModuleGraph {
             let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
               "module linking requires intrinsics to create SyntaxError objects",
             ))?;
+            let (specifier, _) = crate::string::utf16_to_utf8_lossy_bounded_with_tick(
+              entry.module_request.specifier.as_code_units(),
+              crate::fallible_format::MAX_ERROR_MESSAGE_BYTES,
+              || vm.tick(),
+            )?;
             let message = crate::fallible_format::try_format_error_message2(
               "Indirect export '",
               &entry.export_name,
               "' is ambiguous (re-export from '",
-              &entry.module_request.specifier,
+              &specifier,
               "')",
             )?;
             let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
@@ -1683,11 +1693,9 @@ impl ModuleGraph {
                 let mut init_scope = scope.reborrow();
                 init_scope.push_root(Value::Object(ns))?;
                 init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
-                init_scope.heap_mut().env_initialize_binding(
-                  module_env,
-                  &entry.local_name,
-                  Value::Object(ns),
-                )?;
+                init_scope
+                  .heap_mut()
+                  .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
               }
               crate::module_record::ImportName::Name(import_name) => {
                 let resolution = self.modules[module_index(imported_module)]
@@ -1698,9 +1706,14 @@ impl ModuleGraph {
                     let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
                       "module linking requires intrinsics to create SyntaxError objects",
                     ))?;
+                    let (specifier, _) = crate::string::utf16_to_utf8_lossy_bounded_with_tick(
+                      entry.module_request.specifier.as_code_units(),
+                      crate::fallible_format::MAX_ERROR_MESSAGE_BYTES,
+                      || vm.tick(),
+                    )?;
                     let message = crate::fallible_format::try_format_error_message2(
                       "The requested module '",
-                      &entry.module_request.specifier,
+                      &specifier,
                       "' does not provide an export named '",
                       import_name,
                       "'",
@@ -1713,9 +1726,14 @@ impl ModuleGraph {
                     let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
                       "module linking requires intrinsics to create SyntaxError objects",
                     ))?;
+                    let (specifier, _) = crate::string::utf16_to_utf8_lossy_bounded_with_tick(
+                      entry.module_request.specifier.as_code_units(),
+                      crate::fallible_format::MAX_ERROR_MESSAGE_BYTES,
+                      || vm.tick(),
+                    )?;
                     let message = crate::fallible_format::try_format_error_message2(
                       "The requested module '",
-                      &entry.module_request.specifier,
+                      &specifier,
                       "' provides an ambiguous export named '",
                       import_name,
                       "'",
@@ -1732,11 +1750,9 @@ impl ModuleGraph {
                     let mut init_scope = scope.reborrow();
                     init_scope.push_root(Value::Object(ns))?;
                     init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
-                    init_scope.heap_mut().env_initialize_binding(
-                      module_env,
-                      &entry.local_name,
-                      Value::Object(ns),
-                    )?;
+                    init_scope
+                      .heap_mut()
+                      .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
                   }
                   crate::module_record::BindingName::Name(target_name) => {
                     let target_env_root = self.modules[module_index(resolution.module)]
@@ -3463,13 +3479,10 @@ fn module_index(id: ModuleId) -> usize {
 }
 
 fn module_request_from_specifier(specifier: &str) -> Result<ModuleRequest, VmError> {
-  // Build an owned module specifier string using fallible allocation. The standard library's
-  // `String::from` / `ToString` paths allocate infallibly and abort the process on allocator OOM.
-  let mut specifier_owned = String::new();
-  specifier_owned
-    .try_reserve(specifier.len())
-    .map_err(|_| VmError::OutOfMemory)?;
-  specifier_owned.push_str(specifier);
+  // Build an owned module specifier string using fallible allocation. ECMAScript module specifiers
+  // are UTF-16 code units; Rust `str` inputs cannot contain unpaired surrogates, so this path is
+  // inherently lossy for those values (it is intended for host-supplied test helpers).
+  let specifier_owned = crate::JsString::from_str(specifier)?;
   Ok(ModuleRequest::new(specifier_owned, Vec::new()))
 }
 

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  Heap, HeapLimits, HostDefined, Job, MicrotaskQueue, ModuleGraph, ModuleId, ModuleLoadPayload,
-  ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope, SourceTextModuleRecord,
-  Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
+  Heap, HeapLimits, HostDefined, Job, JsString, MicrotaskQueue, ModuleGraph, ModuleId,
+  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope,
+  SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
 };
 
 #[derive(Debug)]
@@ -16,7 +16,7 @@ struct PendingLoad {
 /// Host hooks for module-evaluation dynamic import tests.
 struct TestHostHooks {
   microtasks: MicrotaskQueue,
-  modules: HashMap<String, ModuleId>,
+  modules: HashMap<JsString, ModuleId>,
   pending: Vec<PendingLoad>,
 }
 
@@ -30,7 +30,9 @@ impl TestHostHooks {
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
-    self.modules.insert(specifier.to_string(), module);
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
   }
 
   fn complete_load_for(
@@ -40,16 +42,17 @@ impl TestHostHooks {
     modules: &mut ModuleGraph,
     specifier: &str,
   ) -> Result<(), VmError> {
+    let spec = JsString::from_str(specifier).unwrap();
     let idx = self
       .pending
       .iter()
-      .position(|p| p.request.specifier == specifier)
+      .position(|p| p.request.specifier == spec)
       .ok_or_else(|| VmError::InvariantViolation("no pending module load for specifier"))?;
     let pending = self.pending.remove(idx);
 
     let module = *self
       .modules
-      .get(specifier)
+      .get(&spec)
       .ok_or_else(|| VmError::InvariantViolation("no module registered for specifier"))?;
 
     let mut scope = heap.scope();
@@ -219,7 +222,7 @@ impl VmHostHooks for TestHostHooks {
 /// returns to the caller.
 struct SyncHostHooks {
   microtasks: MicrotaskQueue,
-  modules: HashMap<String, ModuleId>,
+  modules: HashMap<JsString, ModuleId>,
 }
 
 impl SyncHostHooks {
@@ -231,7 +234,9 @@ impl SyncHostHooks {
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
-    self.modules.insert(specifier.to_string(), module);
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
   }
 
   fn teardown_jobs(&mut self, vm: &mut Vm, heap: &mut Heap) {
@@ -373,7 +378,7 @@ impl VmHostHooks for SyncHostHooks {
   ) -> Result<(), VmError> {
     let module = *self
       .modules
-      .get(module_request.specifier.as_str())
+      .get(&module_request.specifier)
       .ok_or_else(|| VmError::InvariantViolation("no module registered for specifier"))?;
     vm.finish_loading_imported_module(
       scope,
@@ -791,7 +796,10 @@ fn dynamic_import_uses_callback_module_as_referrer_in_promise_job() -> Result<()
     host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
 
     assert_eq!(host_hooks.pending.len(), 1);
-    assert_eq!(host_hooks.pending[0].request.specifier, "./dep.js");
+    assert_eq!(
+      host_hooks.pending[0].request.specifier,
+      JsString::from_str("./dep.js").unwrap()
+    );
     assert_eq!(host_hooks.pending[0].referrer, ModuleReferrer::Module(m));
 
     // Complete the dynamic import module load.
@@ -900,7 +908,10 @@ fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<
   host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
 
   assert_eq!(host_hooks.pending.len(), 1);
-  assert_eq!(host_hooks.pending[0].request.specifier, "./m.js");
+  assert_eq!(
+    host_hooks.pending[0].request.specifier,
+    JsString::from_str("./m.js").unwrap()
+  );
 
   // After the module evaluation promise settles, the VM's module graph pointer should be restored
   // back to its previous value (None in this test).

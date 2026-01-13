@@ -611,7 +611,7 @@ mod function_call_apply_bind_smoke {
 mod vmjs_module_loading_smoke {
   use std::collections::VecDeque;
   use vm_js::{
-    load_requested_modules, HostDefined, Job, ModuleGraph, ModuleId, ModuleLoadPayload,
+    load_requested_modules, HostDefined, Job, JsString, ModuleGraph, ModuleId, ModuleLoadPayload,
     ModuleReferrer, ModuleRequest, ModuleStatus, PromiseState, Realm, SourceTextModuleRecord,
     Value, Vm, VmError, VmHostHooks, VmOptions,
   };
@@ -690,7 +690,7 @@ mod vmjs_module_loading_smoke {
     let mut modules = ModuleGraph::default();
     let mut host = TestHost::new();
 
-    let request = ModuleRequest::new("dep.js", vec![]);
+    let request = ModuleRequest::new(JsString::from_str("dep.js").unwrap(), vec![]);
     let mut referrer_record = SourceTextModuleRecord::default();
     referrer_record.requested_modules.push(request.clone());
     let referrer = modules.add_module(referrer_record)?;
@@ -777,7 +777,7 @@ mod vmjs_module_loading_smoke {
     let module1 = modules.add_module(SourceTextModuleRecord::default())?;
     let module2 = modules.add_module(SourceTextModuleRecord::default())?;
 
-    let request_dup = ModuleRequest::new("dup.js", vec![]);
+    let request_dup = ModuleRequest::new(JsString::from_str("dup.js").unwrap(), vec![]);
     let mut referrer_record = SourceTextModuleRecord::default();
     // Intentionally create duplicate entries in `[[RequestedModules]]` so the loader invokes the host
     // hook twice and exercises `finish_loading_imported_module`'s caching/mismatch logic.

@@ -17,7 +17,9 @@ use parse_js::ast::expr::pat::Pat;
 use parse_js::ast::expr::lit::{LitArrElem, LitTemplatePart};
 use parse_js::ast::import_export::ExportNames;
 use parse_js::ast::import_export::ImportNames;
-use parse_js::ast::node::{literal_string_code_units, module_export_import_name_code_units, Node};
+use parse_js::ast::node::{
+  literal_string_code_units, module_export_import_name_code_units, module_specifier_code_units, Node,
+};
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stmt::ForInOfLhs;
 use parse_js::ast::stmt::decl::VarDeclMode;
@@ -840,6 +842,7 @@ fn module_record_from_top_level(
         }
         let req = module_request_from_specifier(
           &import_stmt.stx.module,
+          module_specifier_code_units(&import_stmt.assoc),
           import_stmt.stx.attributes.as_ref(),
           &mut ctx,
         )?;
@@ -972,6 +975,7 @@ fn module_record_from_top_level(
         let from = match export_stmt.stx.from.as_ref() {
           Some(specifier) => Some(module_request_from_specifier(
             specifier,
+            module_specifier_code_units(&export_stmt.assoc),
             export_stmt.stx.attributes.as_ref(),
             &mut ctx,
           )?),
@@ -2392,12 +2396,17 @@ fn class_or_obj_val_contains_top_level_await(
 
 fn module_request_from_specifier(
   specifier: &str,
+  specifier_code_units: Option<&[u16]>,
   attributes: Option<&Node<Expr>>,
   ctx: &mut ModuleRecordParseCtx<'_>,
 ) -> Result<ModuleRequest, VmError> {
   ctx.budget_tick()?;
+  let specifier = match specifier_code_units {
+    Some(units) => crate::JsString::from_code_units(units)?,
+    None => crate::JsString::from_str(specifier)?,
+  };
   Ok(ModuleRequest::new(
-    try_string_from_str(specifier)?,
+    specifier,
     with_clause_to_attributes(attributes, ctx)?,
   ))
 }
@@ -2631,10 +2640,8 @@ fn clone_module_request(
     });
   }
 
-  Ok(ModuleRequest::new(
-    try_string_from_str(&req.specifier)?,
-    attrs,
-  ))
+  let specifier = crate::JsString::from_code_units(req.specifier.as_code_units())?;
+  Ok(ModuleRequest::new(specifier, attrs))
 }
 
 fn syntax_error(loc: parse_js::loc::Loc, message: &str) -> VmError {
@@ -2731,7 +2738,7 @@ mod tests {
       record.indirect_export_entries,
       vec![IndirectExportEntry {
         export_name: String::from("foo"),
-        module_request: crate::ModuleRequest::new("m", vec![]),
+        module_request: crate::ModuleRequest::new(crate::JsString::from_str("m").unwrap(), vec![]),
         import_name: ImportName::All,
       }]
     );
@@ -2746,7 +2753,7 @@ mod tests {
       record.indirect_export_entries,
       vec![IndirectExportEntry {
         export_name: String::from("baz"),
-        module_request: crate::ModuleRequest::new("m", vec![]),
+        module_request: crate::ModuleRequest::new(crate::JsString::from_str("m").unwrap(), vec![]),
         import_name: ImportName::Name(String::from("foo")),
       }]
     );

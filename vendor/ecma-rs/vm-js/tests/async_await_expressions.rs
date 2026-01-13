@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  Heap, HeapLimits, HostDefined, JsRuntime, MicrotaskQueue, ModuleId, ModuleLoadPayload,
+  Heap, HeapLimits, HostDefined, JsRuntime, JsString, MicrotaskQueue, ModuleId, ModuleLoadPayload,
   ModuleReferrer, ModuleRequest, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmOptions,
 };
 
@@ -321,7 +321,7 @@ fn await_in_comma_expression() -> Result<(), VmError> {
 /// jobs.
 struct SyncHostHooks {
   microtasks: MicrotaskQueue,
-  modules: HashMap<String, ModuleId>,
+  modules: HashMap<JsString, ModuleId>,
 }
 
 impl SyncHostHooks {
@@ -333,7 +333,9 @@ impl SyncHostHooks {
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
-    self.modules.insert(specifier.to_string(), module);
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
   }
 
   fn teardown_jobs(&mut self, rt: &mut JsRuntime) {
@@ -386,7 +388,7 @@ impl VmHostHooks for SyncHostHooks {
   ) -> Result<(), VmError> {
     let module = *self
       .modules
-      .get(module_request.specifier.as_str())
+      .get(&module_request.specifier)
       .unwrap_or_else(|| {
         panic!(
           "no module registered for specifier {:?}",

@@ -181,7 +181,12 @@ fn module_linking_error_strings_do_not_abort_on_oom() {
   // Module linking errors may embed attacker-controlled module specifiers / export names in the
   // thrown SyntaxError message. Ensure those error strings are constructed using bounded, fallible
   // formatting so allocator OOM does not abort the process.
-  run_oom_harness("moduleLink", 18_000_000);
+  //
+  // `vm-js` stores module specifiers as UTF-16 code units, so the OOM harness allocates
+  // significantly more host memory per character than when this test used Rust `String`.
+  // Keep the specifier large enough to stress error formatting while still fitting under the
+  // RLIMIT_AS headroom.
+  run_oom_harness("moduleLink", 8_000_000);
 }
 
 #[test]

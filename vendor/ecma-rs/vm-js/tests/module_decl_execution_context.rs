@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, JsRuntime, MicrotaskQueue, ModuleGraph,
-  ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Scope,
-  SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
+  Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, JsRuntime, JsString, MicrotaskQueue,
+  ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey,
+  Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
 };
 
 struct TestHostHooks {
   microtasks: MicrotaskQueue,
-  modules: HashMap<String, ModuleId>,
+  modules: HashMap<JsString, ModuleId>,
   import_meta_urls: HashMap<ModuleId, String>,
-  import_referrers: HashMap<String, ModuleReferrer>,
+  import_referrers: HashMap<JsString, ModuleReferrer>,
 }
 
 impl TestHostHooks {
@@ -24,7 +24,9 @@ impl TestHostHooks {
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
-    self.modules.insert(specifier.to_string(), module);
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
   }
 
   fn register_import_meta_url(&mut self, module: ModuleId, url: &str) {
@@ -198,7 +200,7 @@ impl VmHostHooks for TestHostHooks {
       .insert(module_request.specifier.clone(), referrer);
     let module = *self
       .modules
-      .get(module_request.specifier.as_str())
+      .get(&module_request.specifier)
       .ok_or_else(|| VmError::InvariantViolation("no module registered for specifier"))?;
     vm.finish_loading_imported_module(scope, modules, self, referrer, module_request, payload, Ok(module))
   }
@@ -403,7 +405,10 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
     scope.push_root(p)?;
 
     assert_eq!(
-      hooks.import_referrers.get("dep2.js").copied(),
+      hooks
+        .import_referrers
+        .get(&JsString::from_str("dep2.js").unwrap())
+        .copied(),
       Some(ModuleReferrer::Module(dep))
     );
 
@@ -504,7 +509,10 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
     scope.push_root(p_value)?;
 
     assert_eq!(
-      hooks.import_referrers.get("dep3.js").copied(),
+      hooks
+        .import_referrers
+        .get(&JsString::from_str("dep3.js").unwrap())
+        .copied(),
       Some(ModuleReferrer::Module(dep))
     );
 

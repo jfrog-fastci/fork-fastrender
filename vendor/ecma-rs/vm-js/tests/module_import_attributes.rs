@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, ImportAttribute, ModuleRequest, SourceTextModuleRecord, VmError};
+use vm_js::{Heap, HeapLimits, ImportAttribute, JsString, ModuleRequest, SourceTextModuleRecord, VmError};
 
 fn assert_syntax_error(source: &str) {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -16,7 +16,7 @@ fn parses_import_with_attributes() {
   assert_eq!(
     module.requested_modules,
     vec![ModuleRequest::new(
-      "m",
+      JsString::from_str("m").unwrap(),
       vec![ImportAttribute::new("type", "json")],
     )]
   );
@@ -30,7 +30,7 @@ fn parses_export_with_attributes() {
   assert_eq!(
     module.requested_modules,
     vec![ModuleRequest::new(
-      "m",
+      JsString::from_str("m").unwrap(),
       vec![ImportAttribute::new("type", "json")],
     )]
   );

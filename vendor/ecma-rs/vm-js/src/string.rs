@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::mem;
 use std::slice;
 
@@ -16,6 +17,22 @@ pub struct JsString {
 }
 
 impl JsString {
+  /// Creates a `JsString` by encoding a Rust UTF-8 `str` into UTF-16 code units.
+  ///
+  /// This is fallible (returns [`VmError::OutOfMemory`]) and should be preferred over
+  /// infallible `String`/`Vec` allocation paths for attacker-controlled inputs.
+  pub fn from_str(s: &str) -> Result<Self, VmError> {
+    // `encode_utf16().count()` is O(n) but avoids an intermediate `Vec` allocation when
+    // pre-sizing the buffer with fallible `try_reserve_exact`.
+    let len = s.encode_utf16().count();
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    units.extend(s.encode_utf16());
+    Self::from_u16_vec(units)
+  }
+
   pub fn from_code_units(units: &[u16]) -> Result<Self, VmError> {
     // Avoid `units.to_vec()`, which allocates infallibly and can abort the host process on OOM.
     let mut buf: Vec<u16> = Vec::new();
@@ -321,6 +338,19 @@ impl PartialEq for JsString {
 }
 
 impl Eq for JsString {}
+
+impl Hash for JsString {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    // Hash the length and the code units. This keeps hashing:
+    // - compatible with `Eq` (code-unit equality),
+    // - resistant to trivial collision attacks (uses the map's keyed hasher),
+    // - and deterministic across platforms.
+    self.units.len().hash(state);
+    for unit in self.units.iter() {
+      unit.hash(state);
+    }
+  }
+}
 
 impl PartialOrd for JsString {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {

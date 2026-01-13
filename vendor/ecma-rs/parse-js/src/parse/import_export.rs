@@ -15,6 +15,7 @@ use crate::ast::import_export::ModuleExportImportName;
 use crate::ast::node::LiteralStringCodeUnits;
 use crate::ast::node::LegacyOctalEscapeSequence;
 use crate::ast::node::ModuleExportImportNameCodeUnits;
+use crate::ast::node::ModuleSpecifierCodeUnits;
 use crate::ast::node::Node;
 use crate::ast::stmt::decl::PatDecl;
 use crate::ast::stmt::ExportDefaultExprStmt;
@@ -316,7 +317,7 @@ impl<'a> Parser<'a> {
     if default.is_some() || names.is_some() {
       self.require(TT::KeywordFrom)?;
     }
-    let (_, module, module_escape, _code_units) =
+    let (_, module, module_escape, module_code_units) =
       self.lit_str_val_with_mode_and_legacy_escape(LexMode::Standard)?;
 
     // Import attributes / assertions:
@@ -355,6 +356,9 @@ impl<'a> Parser<'a> {
         attributes,
       },
     );
+    import_stmt
+      .assoc
+      .set(ModuleSpecifierCodeUnits(module_code_units.into_boxed_slice()));
     if let Some(module_escape) = module_escape {
       import_stmt
         .assoc
@@ -427,6 +431,7 @@ impl<'a> Parser<'a> {
 
   pub fn export_list_stmt(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<ExportListStmt>> {
     let mut from_escape = None;
+    let mut from_code_units: Option<Vec<u16>> = None;
     let mut node = self.with_loc(|p| {
       p.require(TT::KeywordExport)?;
       // TypeScript: export type
@@ -478,9 +483,10 @@ impl<'a> Parser<'a> {
             })
           })?;
           let from = if p.consume_if(TT::KeywordFrom).is_match() {
-            let (_, from, escape_loc, _code_units) =
+            let (_, from, escape_loc, code_units) =
               p.lit_str_val_with_mode_and_legacy_escape(LexMode::Standard)?;
             from_escape = escape_loc;
+            from_code_units = Some(code_units);
             Some(from)
           } else {
             None
@@ -535,9 +541,10 @@ impl<'a> Parser<'a> {
             }
           })?;
           p.require(TT::KeywordFrom)?;
-          let (_, from, escape_loc, _code_units) =
+          let (_, from, escape_loc, code_units) =
             p.lit_str_val_with_mode_and_legacy_escape(LexMode::Standard)?;
           from_escape = escape_loc;
+          from_code_units = Some(code_units);
           (ExportNames::All(alias), Some(from))
         }
         _ => return Err(t.error(SyntaxErrorType::ExpectedNotFound)),
@@ -569,6 +576,11 @@ impl<'a> Parser<'a> {
     })?;
     if let Some(from_escape) = from_escape {
       node.assoc.set(LegacyOctalEscapeSequence(from_escape));
+    }
+    if let Some(code_units) = from_code_units {
+      node
+        .assoc
+        .set(ModuleSpecifierCodeUnits(code_units.into_boxed_slice()));
     }
 
     // Allow ASI - semicolon not required at EOF, before a line terminator, or before `}`.

@@ -33,8 +33,8 @@ use crate::module_record::PromiseCapabilityRoots;
 use crate::property::PropertyKey;
 use crate::promise::PromiseCapability;
 use crate::{
-  GcObject, GcString, ImportAttribute, LoadedModuleRequest, ModuleId, ModuleRequest, RealmId,
-  Scope, ScriptId, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks,
+  GcObject, GcString, ImportAttribute, JsString, LoadedModuleRequest, ModuleId, ModuleRequest,
+  RealmId, Scope, ScriptId, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use std::any::Any;
 use std::alloc::{alloc, Layout};
@@ -892,6 +892,32 @@ fn try_clone_string(value: &str) -> Result<String, VmError> {
   Ok(out)
 }
 
+fn try_clone_js_string(vm: &mut Vm, value: &JsString) -> Result<JsString, VmError> {
+  vm.tick()?;
+  let units = value.as_code_units();
+
+  // Clone in chunks so extremely large specifiers still observe VM fuel/deadline budgets.
+  const TICK_EVERY_CODE_UNITS: usize = 1024;
+  let mut buf: Vec<u16> = Vec::new();
+  buf
+    .try_reserve_exact(units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut start = 0usize;
+  while start < units.len() {
+    let end = units
+      .len()
+      .min(start.saturating_add(TICK_EVERY_CODE_UNITS));
+    buf.extend_from_slice(&units[start..end]);
+    start = end;
+    if start < units.len() {
+      vm.tick()?;
+    }
+  }
+
+  JsString::from_u16_vec(buf)
+}
+
 fn try_clone_import_attribute(value: &ImportAttribute) -> Result<ImportAttribute, VmError> {
   Ok(ImportAttribute {
     key: try_clone_string(&value.key)?,
@@ -912,10 +938,10 @@ fn try_clone_module_request(vm: &mut Vm, value: &ModuleRequest) -> Result<Module
     }
     attributes.push(try_clone_import_attribute(attr)?);
   }
-  Ok(ModuleRequest {
-    specifier: try_clone_string(&value.specifier)?,
+  Ok(ModuleRequest::new(
+    try_clone_js_string(vm, &value.specifier)?,
     attributes,
-  })
+  ))
 }
 
 fn try_clone_module_requests(vm: &mut Vm, values: &[ModuleRequest]) -> Result<Vec<ModuleRequest>, VmError> {
@@ -1471,84 +1497,36 @@ fn clone_heap_string_to_string(heap: &crate::Heap, s: GcString) -> Result<String
   Ok(out)
 }
 
-fn clone_heap_string_to_string_unbounded_with_ticks(
+fn clone_heap_string_to_js_string_unbounded_with_ticks(
   vm: &mut Vm,
   heap: &crate::Heap,
   s: GcString,
-) -> Result<String, VmError> {
+) -> Result<JsString, VmError> {
   let js = heap.get_string(s)?;
-
-  // `String::from_utf16_lossy` is infallible and aborts the process on allocator OOM.
-  // Convert into a pre-reserved buffer so we can surface OOM as `VmError::OutOfMemory` instead.
-  let mut out = String::new();
-
   let units = js.as_code_units();
-  let max_utf8_len = units
-    .len()
-    // Maximum UTF-8 bytes per UTF-16 code unit is 3:
-    // - non-BMP characters are 4 bytes but take *two* code units,
-    // - invalid surrogate halves become U+FFFD (3 bytes).
-    .checked_mul(3)
-    .ok_or(VmError::LimitExceeded(
-      "string is too large to convert to UTF-8",
-    ))?;
-  out
-    .try_reserve_exact(max_utf8_len)
+
+  // Dynamic import specifiers can be arbitrarily large. Copying the UTF-16 code units must still be
+  // budgeted so hostile inputs cannot perform unbounded work within a single tick interval.
+  const TICK_EVERY_CODE_UNITS: usize = 1024;
+
+  let mut buf: Vec<u16> = Vec::new();
+  buf
+    .try_reserve_exact(units.len())
     .map_err(|_| VmError::OutOfMemory)?;
 
-  // Dynamic import specifiers can be arbitrarily large (unlike import attribute keys/values, which
-  // are capped to 1024 UTF-16 code units). Decoding the specifier must still be budgeted so hostile
-  // inputs cannot perform unbounded work within a single tick interval.
-  const TICK_EVERY_CODE_UNITS: usize = 1024;
-  let mut since_tick: usize = 0;
-  let mut i: usize = 0;
-  while i < units.len() {
-    // Track work by UTF-16 code unit count so surrogate-heavy strings can't skip tick boundaries.
-    if since_tick >= TICK_EVERY_CODE_UNITS {
+  let mut start = 0usize;
+  while start < units.len() {
+    let end = units
+      .len()
+      .min(start.saturating_add(TICK_EVERY_CODE_UNITS));
+    buf.extend_from_slice(&units[start..end]);
+    start = end;
+    if start < units.len() {
       vm.tick()?;
-      since_tick = 0;
     }
-
-    let u = units[i];
-    if (0xD800..=0xDBFF).contains(&u) {
-      // High surrogate. If it's followed by a low surrogate, decode the pair; otherwise this is an
-      // unpaired surrogate and becomes U+FFFD.
-      if i + 1 < units.len() {
-        let u2 = units[i + 1];
-        if (0xDC00..=0xDFFF).contains(&u2) {
-          let high = (u as u32) - 0xD800;
-          let low = (u2 as u32) - 0xDC00;
-          let scalar = 0x10000 + ((high << 10) | low);
-          match std::char::from_u32(scalar) {
-            Some(ch) => out.push(ch),
-            None => out.push('\u{FFFD}'),
-          }
-          i += 2;
-          since_tick = since_tick.saturating_add(2);
-          continue;
-        }
-      }
-      out.push('\u{FFFD}');
-      i += 1;
-      since_tick = since_tick.saturating_add(1);
-      continue;
-    }
-
-    if (0xDC00..=0xDFFF).contains(&u) {
-      // Unpaired low surrogate.
-      out.push('\u{FFFD}');
-      i += 1;
-      since_tick = since_tick.saturating_add(1);
-      continue;
-    }
-
-    // Non-surrogate BMP code unit.
-    out.push(char::from_u32(u as u32).unwrap_or('\u{FFFD}'));
-    i += 1;
-    since_tick = since_tick.saturating_add(1);
   }
 
-  Ok(out)
+  JsString::from_u16_vec(buf)
 }
 
 fn make_key_string(scope: &mut Scope<'_>, s: &str) -> Result<GcString, VmError> {
@@ -1825,13 +1803,13 @@ pub fn start_dynamic_import_with_host_and_hooks(
   // 2. Let specifierString be ? ToString(specifier).
   let specifier_string = match import_scope.to_string(vm, host_ctx, host, specifier) {
     Ok(s) => {
-      // Root the resulting string while converting it into a Rust `String`, since this can allocate
-      // and trigger GC later (e.g. during import attribute validation).
+      // Root the resulting string while copying its UTF-16 code units into an owned `JsString`,
+      // since this can allocate and trigger GC later (e.g. during import attribute validation).
       if let Err(err) = import_scope.push_root(Value::String(s)) {
         state.teardown_roots(import_scope.heap_mut());
         return Err(err);
       }
-      match clone_heap_string_to_string_unbounded_with_ticks(vm, import_scope.heap(), s) {
+      match clone_heap_string_to_js_string_unbounded_with_ticks(vm, import_scope.heap(), s) {
         Ok(s) => s,
         Err(err) => {
           state.teardown_roots(import_scope.heap_mut());
@@ -2252,9 +2230,10 @@ mod tests {
       check_time_every: 1,
     });
 
+    let spec = crate::JsString::from_str("A").unwrap();
     let mut requests = Vec::<ModuleRequest>::new();
     for _ in 0..5000 {
-      requests.push(ModuleRequest::new("A", Vec::new()));
+      requests.push(ModuleRequest::new(spec.clone(), Vec::new()));
     }
 
     let err = try_clone_module_requests(&mut vm, &requests).unwrap_err();
@@ -2344,7 +2323,7 @@ mod tests {
 
       let root = modules
         .add_module(crate::module_record::SourceTextModuleRecord {
-          requested_modules: vec![ModuleRequest::new("dep", Vec::new())],
+          requested_modules: vec![ModuleRequest::new(crate::JsString::from_str("dep").unwrap(), Vec::new())],
           status: ModuleStatus::New,
           ..Default::default()
         })
@@ -2600,7 +2579,7 @@ mod tests {
 
       let mut modules = ModuleGraph::new();
       let module = modules.add_module(crate::module_record::SourceTextModuleRecord {
-        requested_modules: vec![ModuleRequest::new("dep", Vec::new())],
+        requested_modules: vec![ModuleRequest::new(crate::JsString::from_str("dep").unwrap(), Vec::new())],
         status: ModuleStatus::New,
         ..Default::default()
       })

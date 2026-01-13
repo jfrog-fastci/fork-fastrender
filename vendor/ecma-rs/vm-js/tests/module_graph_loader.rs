@@ -2,9 +2,9 @@ use std::collections::{HashMap, VecDeque};
 
 use vm_js::{
   load_requested_modules, perform_promise_then, Heap, HeapLimits, HostDefined, ImportAttribute, Job,
-  JobCallback, ModuleCompletion, ModuleGraph, ModuleLoadPayload, ModuleReferrer, ModuleRequest,
-  ModuleStatus, PromiseState, PropertyKey, PropertyKind, Realm, RootId, Scope, SourceTextModuleRecord,
-  Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  JobCallback, JsString, ModuleCompletion, ModuleGraph, ModuleLoadPayload, ModuleReferrer,
+  ModuleRequest, ModuleStatus, PromiseState, PropertyKey, PropertyKind, Realm, RootId, Scope,
+  SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
 #[derive(Clone)]
@@ -22,7 +22,7 @@ struct PendingLoad {
 
 #[derive(Default)]
 struct FakeHost {
-  plan: HashMap<String, PlannedLoad>,
+  plan: HashMap<JsString, PlannedLoad>,
   pending: Vec<PendingLoad>,
   jobs: VecDeque<Job>,
   callback_calls: Vec<vm_js::GcObject>,
@@ -32,13 +32,13 @@ impl FakeHost {
   fn plan_sync(&mut self, specifier: &str, result: ModuleCompletion) {
     self
       .plan
-      .insert(specifier.to_string(), PlannedLoad::Sync(result));
+      .insert(JsString::from_str(specifier).unwrap(), PlannedLoad::Sync(result));
   }
 
   fn plan_async(&mut self, specifier: &str, result: ModuleCompletion) {
     self
       .plan
-      .insert(specifier.to_string(), PlannedLoad::Async(result));
+      .insert(JsString::from_str(specifier).unwrap(), PlannedLoad::Async(result));
   }
 
   fn complete_pending(
@@ -90,7 +90,7 @@ impl VmHostHooks for FakeHost {
   ) -> Result<(), VmError> {
     let action = self
       .plan
-      .get(module_request.specifier.as_str())
+      .get(&module_request.specifier)
       .unwrap_or_else(|| panic!("unexpected module request {:?}", module_request.specifier))
       .clone();
 
@@ -120,11 +120,14 @@ impl VmHostHooks for FakeHost {
 }
 
 fn req(specifier: &str) -> ModuleRequest {
-  ModuleRequest::new(specifier, vec![])
+  ModuleRequest::new(JsString::from_str(specifier).unwrap(), vec![])
 }
 
 fn req_with_attr(specifier: &str, key: &str, value: &str) -> ModuleRequest {
-  ModuleRequest::new(specifier, vec![ImportAttribute::new(key, value)])
+  ModuleRequest::new(
+    JsString::from_str(specifier).unwrap(),
+    vec![ImportAttribute::new(key, value)],
+  )
 }
 
 fn record(requested: Vec<ModuleRequest>) -> SourceTextModuleRecord {
