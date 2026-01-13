@@ -93,8 +93,10 @@ fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
 
   // The focused input is at 1500px; tabbing to it should scroll the viewport down so it becomes
   // visible.
-  let frame = {
+  let (frame, viewport_delta_y) = {
     let deadline = Instant::now() + DEFAULT_TIMEOUT;
+    let mut saw_delta = None::<f32>;
+    let mut saw_frame = None::<fastrender::ui::messages::RenderedFrame>;
     loop {
       let remaining = deadline
         .checked_duration_since(Instant::now())
@@ -105,12 +107,24 @@ fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
       );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       match msg {
+        WorkerToUi::ScrollStateUpdated {
+          tab_id: got,
+          scroll,
+        } if got == tab_id => {
+          if scroll.viewport.y > 0.0 {
+            saw_delta = Some(scroll.viewport_delta.y);
+          }
+        }
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
           if frame.scroll_state.viewport.y > 0.0 {
-            break frame;
+            saw_frame = Some(frame);
           }
         }
         _ => {}
+      }
+
+      if saw_frame.is_some() && saw_delta.is_some() {
+        break (saw_frame.expect("frame"), saw_delta.expect("delta"));
       }
     }
   };
@@ -138,6 +152,11 @@ fn tab_focus_scrolls_viewport_to_reveal_focused_element() {
   assert!(
     viewport_top <= input_top && viewport_bottom >= input_bottom,
     "expected focused input [{input_top}, {input_bottom}] to be visible in viewport [{viewport_top}, {viewport_bottom}]",
+  );
+
+  assert!(
+    viewport_delta_y.is_finite() && viewport_delta_y > 0.0,
+    "expected viewport_delta.y > 0 after focus scroll, got {viewport_delta_y}",
   );
 
   drop(ui_tx);
@@ -219,8 +238,10 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
 
   // The focused input is inside a nested scroll container at y=800; tabbing to it should scroll
   // the *element* scroller (not the viewport) enough for it to be visible.
-  let frame = {
+  let (frame, element_delta_y) = {
     let deadline = Instant::now() + DEFAULT_TIMEOUT;
+    let mut saw_delta = None::<f32>;
+    let mut saw_frame = None::<fastrender::ui::messages::RenderedFrame>;
     loop {
       let remaining = deadline
         .checked_duration_since(Instant::now())
@@ -231,6 +252,22 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
       );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       match msg {
+        WorkerToUi::ScrollStateUpdated {
+          tab_id: got,
+          scroll,
+        } if got == tab_id => {
+          let scrolled = scroll.elements.values().any(|offset| offset.y > 0.0);
+          if scrolled {
+            if let Some(dy) = scroll
+              .elements_delta
+              .values()
+              .map(|delta| delta.y)
+              .find(|dy| *dy > 0.0)
+            {
+              saw_delta = Some(dy);
+            }
+          }
+        }
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
           if frame
             .scroll_state
@@ -238,10 +275,14 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
             .values()
             .any(|offset| offset.y > 0.0)
           {
-            break frame;
+            saw_frame = Some(frame);
           }
         }
         _ => {}
+      }
+
+      if saw_frame.is_some() && saw_delta.is_some() {
+        break (saw_frame.expect("frame"), saw_delta.expect("delta"));
       }
     }
   };
@@ -300,6 +341,11 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
   assert!(
     viewport_top <= input_top && viewport_bottom >= input_bottom,
     "expected focused input [{input_top}, {input_bottom}] to be visible in nested scrollport [{viewport_top}, {viewport_bottom}]",
+  );
+
+  assert!(
+    element_delta_y.is_finite() && element_delta_y > 0.0,
+    "expected elements_delta.y > 0 after focus scroll, got {element_delta_y}",
   );
 
   drop(ui_tx);

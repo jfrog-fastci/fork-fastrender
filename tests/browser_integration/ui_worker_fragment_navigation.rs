@@ -344,6 +344,7 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   let mut committed_url = None::<String>;
   let mut committed_can_go_back = None::<bool>;
   let mut scroll_y = None::<f32>;
+  let mut viewport_delta_y = None::<f32>;
   let mut final_pixel = None::<[u8; 4]>;
   let mut captured: Vec<WorkerToUi> = Vec::new();
 
@@ -365,6 +366,15 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
               committed_can_go_back = Some(*can_go_back);
             }
           }
+          WorkerToUi::ScrollStateUpdated {
+            tab_id: got,
+            scroll,
+          } if *got == tab_id => {
+            if scroll.viewport.y > 0.0 {
+              scroll_y = Some(scroll.viewport.y);
+              viewport_delta_y = Some(scroll.viewport_delta.y);
+            }
+          }
           WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
             if committed_url.is_some() {
               scroll_y = Some(frame.scroll_state.viewport.y);
@@ -378,7 +388,11 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
         if saw_failed {
           break;
         }
-        if committed_url.is_some() && scroll_y.is_some() && final_pixel.is_some() {
+        if committed_url.is_some()
+          && scroll_y.is_some()
+          && viewport_delta_y.is_some()
+          && final_pixel.is_some()
+        {
           break;
         }
       }
@@ -387,7 +401,11 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
     }
   }
 
-  if committed_url.is_none() || scroll_y.is_none() || final_pixel.is_none() {
+  if committed_url.is_none()
+    || scroll_y.is_none()
+    || viewport_delta_y.is_none()
+    || final_pixel.is_none()
+  {
     // Drain for a moment to provide better assertion errors.
     captured.extend(support::drain_for(
       &worker.ui_rx,
@@ -420,6 +438,12 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   assert!(
     scroll_y > 1000.0,
     "expected viewport scroll y to increase after fragment navigation, got {scroll_y}; messages:\n{}",
+    support::format_messages(&captured)
+  );
+  let viewport_delta_y = viewport_delta_y.unwrap_or(0.0);
+  assert!(
+    viewport_delta_y.is_finite() && viewport_delta_y > 0.0,
+    "expected viewport_delta.y > 0 after fragment navigation, got {viewport_delta_y}; messages:\n{}",
     support::format_messages(&captured)
   );
   assert_eq!(
