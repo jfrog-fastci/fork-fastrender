@@ -546,43 +546,39 @@ enum TabStripOp {
 /// the strip will overflow the available viewport width at that minimum.
 ///
 /// The strip can also contain fixed-width "extra" items (e.g. tab group chips) which participate in
-/// the same `TAB_GAP` spacing as normal tabs.
-fn compute_tab_strip_sizing_with_extras(
+/// the same spacing row as normal tabs.
+///
+/// `gap_count` is the number of inter-item gaps (of width `TAB_GAP`) between all items (tabs +
+/// fixed-width extras) in the unpinned strip.
+pub(super) fn compute_tab_strip_sizing_with_fixed_width(
   available_width: f32,
   tab_count: usize,
-  extra_item_width: f32,
-  extra_item_count: usize,
+  fixed_items_total_width: f32,
+  gap_count: usize,
 ) -> TabStripSizing {
-  let total_item_count = tab_count.saturating_add(extra_item_count);
-  if total_item_count == 0 {
-    return TabStripSizing {
-      tab_width: 0.0,
-      overflow: false,
-      total_content_width: 0.0,
-    };
-  }
   let available_width = if available_width.is_finite() {
     available_width.max(0.0)
   } else {
     0.0
   };
 
-  let extra_item_width = if extra_item_width.is_finite() {
-    extra_item_width.max(0.0)
+  let fixed_items_total_width = if fixed_items_total_width.is_finite() {
+    fixed_items_total_width.max(0.0)
   } else {
     0.0
   };
 
-  let gaps = TAB_GAP * (total_item_count.saturating_sub(1) as f32);
+  let gaps = TAB_GAP * (gap_count as f32);
+
   let tab_width = if tab_count == 0 {
     0.0
   } else {
-    let available_for_tabs = (available_width - gaps - extra_item_width).max(0.0);
+    let available_for_tabs = (available_width - gaps - fixed_items_total_width).max(0.0);
     let ideal_width = (available_for_tabs / (tab_count as f32)).max(0.0);
     ideal_width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
   };
 
-  let total_content_width = extra_item_width + (tab_width * tab_count as f32) + gaps;
+  let total_content_width = fixed_items_total_width + (tab_width * tab_count as f32) + gaps;
   let overflow = total_content_width > available_width + 0.01;
 
   TabStripSizing {
@@ -593,7 +589,12 @@ fn compute_tab_strip_sizing_with_extras(
 }
 
 pub(super) fn compute_tab_strip_sizing(available_width: f32, tab_count: usize) -> TabStripSizing {
-  compute_tab_strip_sizing_with_extras(available_width, tab_count, 0.0, 0)
+  compute_tab_strip_sizing_with_fixed_width(
+    available_width,
+    tab_count,
+    0.0,
+    tab_count.saturating_sub(1),
+  )
 }
 
 fn paint_spinner(painter: &egui::Painter, rect: Rect, time: f64, color: Color32) {
@@ -1447,11 +1448,12 @@ pub(super) fn tab_strip_ui(
       idx += 1;
     }
   }
-  let sizing = compute_tab_strip_sizing_with_extras(
+  let total_item_count = visible_unpinned_count.saturating_add(group_chip_count);
+  let sizing = compute_tab_strip_sizing_with_fixed_width(
     unpinned_viewport_width,
     visible_unpinned_count,
     group_chip_total_width,
-    group_chip_count,
+    total_item_count.saturating_sub(1),
   );
 
   let mut ops: Vec<TabStripOp> = Vec::new();
@@ -2279,7 +2281,8 @@ mod tests {
     let tabs: usize = 5;
     let available = 777.0;
     let sizing_tabs = compute_tab_strip_sizing(available, tabs);
-    let sizing_extras = compute_tab_strip_sizing_with_extras(available, tabs, 0.0, 0);
+    let sizing_extras =
+      compute_tab_strip_sizing_with_fixed_width(available, tabs, 0.0, tabs.saturating_sub(1));
     assert!((sizing_tabs.tab_width - sizing_extras.tab_width).abs() < f32::EPSILON);
     assert_eq!(sizing_tabs.overflow, sizing_extras.overflow);
     assert!((sizing_tabs.total_content_width - sizing_extras.total_content_width).abs() < f32::EPSILON);
@@ -2294,7 +2297,8 @@ mod tests {
     let sizing_no_chips = compute_tab_strip_sizing(available, tabs);
     assert!((sizing_no_chips.tab_width - 196.0).abs() < 0.01);
 
-    let sizing_with_chip = compute_tab_strip_sizing_with_extras(available, tabs, chip_width, 1);
+    // 3 tabs + 1 chip => 4 items => 3 gaps.
+    let sizing_with_chip = compute_tab_strip_sizing_with_fixed_width(available, tabs, chip_width, tabs);
     assert!((sizing_with_chip.tab_width - 154.0).abs() < 0.01);
     assert!(!sizing_with_chip.overflow);
   }
@@ -2308,21 +2312,24 @@ mod tests {
 
     // One extra fixed-width chip (plus the extra gap it introduces) should force overflow even
     // though the same viewport fits tabs at `TAB_MIN_WIDTH` without it.
-    let sizing_with_chip = compute_tab_strip_sizing_with_extras(available, tabs, 100.0, 1);
+    // 4 tabs + 1 chip => 5 items => 4 gaps.
+    let sizing_with_chip = compute_tab_strip_sizing_with_fixed_width(available, tabs, 100.0, tabs);
     assert!(sizing_with_chip.overflow);
     assert!((sizing_with_chip.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
   }
 
   #[test]
   fn sizing_with_group_chips_can_overflow_even_when_few_tabs() {
-    let sizing = compute_tab_strip_sizing_with_extras(400.0, 2, 160.0, 1);
+    // 2 tabs + 1 chip => 3 items => 2 gaps.
+    let sizing = compute_tab_strip_sizing_with_fixed_width(400.0, 2, 160.0, 2);
     assert!(sizing.overflow);
     assert!((sizing.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
   }
 
   #[test]
   fn sizing_with_only_group_chips_reports_overflow() {
-    let sizing = compute_tab_strip_sizing_with_extras(200.0, 0, 240.0, 2);
+    // 0 tabs + 2 chips => 2 items => 1 gap.
+    let sizing = compute_tab_strip_sizing_with_fixed_width(200.0, 0, 240.0, 1);
     assert!(sizing.overflow);
     assert!((sizing.tab_width - 0.0).abs() < f32::EPSILON);
   }
