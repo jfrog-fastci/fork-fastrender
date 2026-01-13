@@ -110,12 +110,6 @@ status = "xfail"
 reason = "QuickJS backend does not yet implement multi-document DOM (createHTMLDocument) and cross-document adoption semantics."
 
 [[expectations]]
-id = "dom/range_basics.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement Range/AbstractRange yet (vm-js backends now pass this test)."
-
-[[expectations]]
 id = "vmjs/time_determinism.window.js"
 backend = "quickjs"
 status = "skip"
@@ -277,51 +271,9 @@ status = "skip"
 reason = "QuickJS backend uses minimal Event/EventTarget shims; strict WebIDL/brand/InvalidStateError tests are vm-js-only."
 
 [[expectations]]
-id = "dom/live_range_insert_remove.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement Range live-update behavior yet."
-
-[[expectations]]
-id = "dom/live_range_replace_data.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement Range live-update behavior yet."
-
-[[expectations]]
 id = "dom/nodeiterator_pre_remove.window.js"
 status = "xfail"
 reason = "NodeIterator pre-remove steps (live iterator updates on node removal) are not implemented yet."
-
-[[expectations]]
-id = "dom/range_basic.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement Range yet."
-
-[[expectations]]
-id = "dom/range_setstart_setend.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement Range yet."
-
-[[expectations]]
-id = "dom/range_live_updates_insert_remove.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement Range live-update behavior yet."
-
-[[expectations]]
-id = "dom/range_live_updates_characterdata.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement Range live-update behavior yet."
-
-[[expectations]]
-id = "dom/range_create_contextual_fragment.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement Range.createContextualFragment yet."
 
 [[expectations]]
 glob = "dom/ranges/tentative/FormControlRange-*.html"
@@ -353,7 +305,7 @@ reason = "Range stringifier implemented (Range.prototype.toString + dom2 travers
 glob = "dom/ranges/*.html"
 backend = "quickjs"
 status = "xfail"
-reason = "QuickJS backend does not implement Range/StaticRange yet."
+reason = "QuickJS backend still does not fully pass the upstream `dom/ranges/*.html` suite (StaticRange + remaining Range API gaps)."
 
 # vm-js backends: keep the remaining `dom/ranges/*.html` bring-up gaps explicit so newly passing
 # tests don't become hidden behind a broad glob xfail.
