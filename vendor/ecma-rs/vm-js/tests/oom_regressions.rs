@@ -170,3 +170,9 @@ fn module_get_exported_names_large_export_name_does_not_abort_on_oom() {
   // aborting the process under allocator OOM.
   run_oom_harness("moduleGetExportedNames", 15_000_000);
 }
+
+#[test]
+fn capture_stack_does_not_abort_on_oom() {
+  // Capturing the VM stack for `ThrowWithStack` must not abort the process under allocator OOM.
+  run_oom_harness("captureStack", 0);
+}

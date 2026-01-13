@@ -623,7 +623,7 @@ impl CallbackHandle {
       let mut vm = vm.execution_context_guard(ExecutionContext {
         realm,
         script_or_module: None,
-      });
+      })?;
       call(&mut vm, &mut scope)
     } else {
       call(vm, &mut scope)

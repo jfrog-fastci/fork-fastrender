@@ -8341,10 +8341,12 @@ mod tests {
     ) -> Result<Value, VmError> {
       let mut scope = self.heap.scope();
       if let Some(realm) = self.realm {
-        let mut vm = self.vm.execution_context_guard(ExecutionContext {
-          realm,
-          script_or_module: None,
-        });
+        let mut vm = self
+          .vm
+          .execution_context_guard(ExecutionContext {
+            realm,
+            script_or_module: None,
+          })?;
         vm.call_with_host_and_hooks(self.host, &mut scope, host_hooks, callee, this, args)
       } else {
         self
@@ -8362,10 +8364,12 @@ mod tests {
     ) -> Result<Value, VmError> {
       let mut scope = self.heap.scope();
       if let Some(realm) = self.realm {
-        let mut vm = self.vm.execution_context_guard(ExecutionContext {
-          realm,
-          script_or_module: None,
-        });
+        let mut vm = self
+          .vm
+          .execution_context_guard(ExecutionContext {
+            realm,
+            script_or_module: None,
+          })?;
         vm.construct_with_host_and_hooks(
           self.host, &mut scope, host_hooks, callee, args, new_target,
         )
@@ -14133,7 +14137,7 @@ mod tests {
     let vm_guard = vm.execution_context_guard(ExecutionContext {
       realm: realm.id(),
       script_or_module: None,
-    });
+    })?;
     window_form_data::clone_form_data_entries_for_fetch(&vm_guard, heap, Value::Object(fd_obj))?
       .ok_or(VmError::InvariantViolation("expected FormData object"))
   }

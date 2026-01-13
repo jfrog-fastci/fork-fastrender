@@ -319,7 +319,7 @@ fn call_without_host_respects_host_hooks_override() -> Result<(), VmError> {
     let vm = &mut rt.vm;
     let heap = &mut rt.heap;
 
-    let mut vm_ctx = vm.execution_context_guard(exec_ctx);
+    let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
     let mut scope = heap.scope();
 
     vm_ctx.with_host_hooks_override(&mut host_queue, |vm| {
@@ -400,7 +400,7 @@ fn construct_without_host_respects_host_hooks_override() -> Result<(), VmError> 
   {
     let vm = &mut rt.vm;
     let heap = &mut rt.heap;
-    let mut vm_ctx = vm.execution_context_guard(exec_ctx);
+    let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
     let mut scope = heap.scope();
 
     vm_ctx.with_host_hooks_override(&mut host_queue, |vm| {

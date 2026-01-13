@@ -460,10 +460,11 @@ mod tests {
       scope.push_root(Value::String(name_s))?;
 
       let realm_id = realm.id();
-      let mut vm = vm.execution_context_guard(ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
+      let mut vm = vm
+        .execution_context_guard(ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
 
       let obj = vm.construct_without_host(
         &mut scope,

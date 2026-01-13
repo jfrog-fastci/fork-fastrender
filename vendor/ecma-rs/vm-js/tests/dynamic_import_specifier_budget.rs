@@ -59,7 +59,7 @@ fn dynamic_import_specifier_decoding_consumes_fuel() {
       realm: realm.id(),
       script_or_module: None,
     };
-    vm.push_execution_context(ctx);
+    vm.push_execution_context(ctx).unwrap();
 
     vm.set_budget(Budget {
       fuel: Some(50),

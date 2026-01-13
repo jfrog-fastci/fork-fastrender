@@ -253,10 +253,11 @@ fn run_realm_install_and_call_get_all() -> Result<(), VmError> {
     let global_obj = realm.global_object();
     scope.push_root(Value::Object(global_obj))?;
 
-    let mut vm = vm.execution_context_guard(ExecutionContext {
-      realm: realm.id(),
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(ExecutionContext {
+        realm: realm.id(),
+        script_or_module: None,
+      })?;
 
     let ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
     let ctor = vm.get(&mut scope, global_obj, ctor_key)?;

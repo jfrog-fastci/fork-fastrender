@@ -1591,7 +1591,7 @@ impl ModuleGraph {
         realm: realm_id,
         script_or_module: Some(ScriptOrModule::Module(module)),
       };
-      let mut vm_ctx = vm.execution_context_guard(exec_ctx);
+      let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
       instantiate_module_decls(&mut *vm_ctx, scope, global_object, module_env, source, &ast.stx.body)?;
       Ok(())
     })();

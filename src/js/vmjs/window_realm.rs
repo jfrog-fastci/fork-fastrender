@@ -1150,7 +1150,7 @@ impl WindowRealm {
             realm,
             script_or_module: Some(vm_js::ScriptOrModule::Script(script_id)),
           };
-          vm.push_execution_context(exec_ctx);
+          vm.push_execution_context(exec_ctx)?;
 
           Ok(Self {
             vm: vm as *mut Vm,
@@ -1518,10 +1518,12 @@ impl WindowRealm {
         ) -> Result<Value, VmError> {
           let mut scope = self.heap.scope();
           if let Some(realm) = self.realm {
-            let mut vm = self.vm.execution_context_guard(vm_js::ExecutionContext {
-              realm,
-              script_or_module: None,
-            });
+            let mut vm = self
+              .vm
+              .execution_context_guard(vm_js::ExecutionContext {
+                realm,
+                script_or_module: None,
+              })?;
             vm.call_with_host_and_hooks(&mut *self.host, &mut scope, hooks, callee, this, args)
           } else {
             self
@@ -1539,10 +1541,12 @@ impl WindowRealm {
         ) -> Result<Value, VmError> {
           let mut scope = self.heap.scope();
           if let Some(realm) = self.realm {
-            let mut vm = self.vm.execution_context_guard(vm_js::ExecutionContext {
-              realm,
-              script_or_module: None,
-            });
+            let mut vm = self
+              .vm
+              .execution_context_guard(vm_js::ExecutionContext {
+                realm,
+                script_or_module: None,
+              })?;
             vm.construct_with_host_and_hooks(
               &mut *self.host,
               &mut scope,
@@ -2040,10 +2044,11 @@ fn dispatch_storage_event_task<Host: WindowRealmHost + 'static>(
   let result = window_realm.with_vm_budget(|rt| {
     let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })?;
     let window_obj = realm.global_object();
 
     // Root the window global while allocating keys: `alloc_key` can GC.
@@ -4854,10 +4859,11 @@ fn dispatch_hashchange_event_task<Host: WindowRealmHost + 'static>(
   let result = window_realm.with_vm_budget(|rt| {
     let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })?;
 
     let document_obj = match vm
       .user_data::<WindowRealmUserData>()
@@ -20703,10 +20709,12 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       let realm_id = realm.realm_id;
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
-      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
+      let mut vm = vm
+        .execution_context_guard(vm_js::ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })
+        .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
       let window_obj = realm_ref.global_object();
       scope
@@ -20812,10 +20820,12 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     vm.tick()
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
     let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
     let window_obj = realm_ref.global_object();
     let document_obj = {
@@ -21648,10 +21658,12 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker
     vm.tick()
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
     let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
     let window_obj = realm_ref.global_object();
     let document_obj = {
@@ -43939,10 +43951,11 @@ mod tests {
       let realm_id = realm.realm_id;
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
-      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
+      let mut vm = vm
+        .execution_context_guard(vm_js::ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
 
       let global = realm_ref.global_object();
       let a_obj = match get_prop(&mut vm, &mut scope, global, "a")? {
@@ -43998,10 +44011,11 @@ mod tests {
       let realm_id = realm.realm_id;
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
-      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
+      let mut vm = vm
+        .execution_context_guard(vm_js::ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
 
       let global = realm_ref.global_object();
       let b_obj = match get_prop(&mut vm, &mut scope, global, "b")? {
@@ -44467,10 +44481,11 @@ mod tests {
       let realm_id = realm.realm_id;
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
-      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
+      let mut vm = vm
+        .execution_context_guard(vm_js::ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
 
       let global = realm_ref.global_object();
       let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
@@ -44601,10 +44616,11 @@ mod tests {
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
     vm.set_budget(vm_js::Budget::unlimited(100));
     let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })?;
     let global = realm_ref.global_object();
     assert_eq!(
       get_prop(&mut vm, &mut scope, global, "__ran")?,
@@ -45691,10 +45707,11 @@ mod tests {
       let realm_id = realm.realm_id;
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
-      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
+      let mut vm = vm
+        .execution_context_guard(vm_js::ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
       let global = realm_ref.global_object();
       let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
         Value::Object(obj) => obj,
@@ -45765,10 +45782,11 @@ mod tests {
       let realm_id = realm.realm_id;
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
-      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
+      let mut vm = vm
+        .execution_context_guard(vm_js::ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
       let global = realm_ref.global_object();
       let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
         Value::Object(obj) => obj,
@@ -46146,10 +46164,11 @@ mod tests {
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })?;
     let global = realm_ref.global_object();
 
     let ev_obj = match get_prop(&mut vm, &mut scope, global, "__ev")? {
@@ -46437,10 +46456,11 @@ mod tests {
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })?;
     let global = realm_ref.global_object();
     let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
       Value::Object(obj) => obj,
@@ -46510,10 +46530,11 @@ mod tests {
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })?;
     let global = realm_ref.global_object();
     let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
       Value::Object(obj) => obj,
@@ -47395,10 +47416,11 @@ mod tests {
       let realm_id = realm.realm_id;
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
-      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
+      let mut vm = vm
+        .execution_context_guard(vm_js::ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
 
       let global = realm_ref.global_object();
 
@@ -47479,10 +47501,11 @@ mod tests {
     let realm_id = realm.realm_id;
     let (vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
+    let mut vm = vm
+      .execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })?;
     scope.push_root(Value::Object(taken_obj))?;
 
     let len = get_prop(&mut vm, &mut scope, taken_obj, "length")?;
@@ -50677,10 +50700,11 @@ mod tests {
       let realm_id = realm.realm_id;
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
-      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-        realm: realm_id,
-        script_or_module: None,
-      });
+      let mut vm = vm
+        .execution_context_guard(vm_js::ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
       let global = realm_ref.global_object();
       scope.push_root(Value::Object(global))?;
 

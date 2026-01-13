@@ -591,10 +591,12 @@ impl VmJobContext for WindowRealmJobContext<'_> {
     let host = &mut *self.host;
     let mut scope = self.heap.scope();
     if let Some(realm) = self.realm {
-      let mut vm = self.vm.execution_context_guard(ExecutionContext {
-        realm,
-        script_or_module: None,
-      });
+      let mut vm = self
+        .vm
+        .execution_context_guard(ExecutionContext {
+          realm,
+          script_or_module: None,
+        })?;
       vm.call_with_host_and_hooks(host, &mut scope, host_hooks, callee, this, args)
     } else {
       self
@@ -613,10 +615,12 @@ impl VmJobContext for WindowRealmJobContext<'_> {
     let host = &mut *self.host;
     let mut scope = self.heap.scope();
     if let Some(realm) = self.realm {
-      let mut vm = self.vm.execution_context_guard(ExecutionContext {
-        realm,
-        script_or_module: None,
-      });
+      let mut vm = self
+        .vm
+        .execution_context_guard(ExecutionContext {
+          realm,
+          script_or_module: None,
+        })?;
       vm.construct_with_host_and_hooks(host, &mut scope, host_hooks, callee, args, new_target)
     } else {
       self

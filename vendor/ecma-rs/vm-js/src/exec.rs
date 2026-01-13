@@ -1855,7 +1855,7 @@ impl JsRuntime {
       realm: self.realm.id(),
       script_or_module: None,
     };
-    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx);
+    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
 
     // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
     // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
@@ -1934,7 +1934,7 @@ impl JsRuntime {
       realm: self.realm.id(),
       script_or_module: None,
     };
-    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx);
+    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
     let prev_hooks = vm_ctx.push_active_host_hooks(hooks);
 
     let result: Result<Value, VmError> = (|| {
@@ -2089,7 +2089,7 @@ impl JsRuntime {
       realm: self.realm.id(),
       script_or_module: None,
     };
-    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx);
+    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
 
     // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
     // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
@@ -2526,7 +2526,7 @@ impl JsRuntime {
       realm: self.realm.id(),
       script_or_module: None,
     };
-    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx);
+    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
     let prev_host = vm_ctx.push_active_host_hooks(hooks);
 
     let result = (|| {
@@ -12630,7 +12630,7 @@ pub(crate) fn async_resume_call(
   // install it for the duration of the resumed evaluation segment so `import.meta` and dynamic
   // `import()` can observe the active module.
   if let Some(exec_ctx) = cont.exec_ctx {
-    vm.push_execution_context(exec_ctx);
+    vm.push_execution_context(exec_ctx)?;
     let res = (|| {
       let mut evaluator = Evaluator {
         vm,
@@ -28639,7 +28639,6 @@ fn gen_resume_from_frames(
               state = gen_error_to_completion(evaluator, scope, close_err)?;
               continue;
             }
-
             let err = throw_type_error(
               evaluator.vm,
               scope,
@@ -30066,7 +30065,7 @@ pub(crate) fn run_module(
     script_or_module: Some(ScriptOrModule::Module(module_id)),
   };
 
-  vm.push_execution_context(exec_ctx);
+  vm.push_execution_context(exec_ctx)?;
 
   let result = (|| -> Result<(), VmError> {
     let mut env =
@@ -30160,7 +30159,7 @@ pub(crate) fn start_module_tla_evaluation(
     realm: realm_id,
     script_or_module: Some(ScriptOrModule::Module(module_id)),
   };
-  vm.push_execution_context(exec_ctx);
+  vm.push_execution_context(exec_ctx)?;
 
   let result = (|| -> Result<ModuleTlaStepResult, VmError> {
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
@@ -30375,7 +30374,7 @@ pub(crate) fn resume_module_tla_evaluation(
     realm: realm_id,
     script_or_module: Some(ScriptOrModule::Module(module_id)),
   };
-  vm.push_execution_context(exec_ctx);
+  vm.push_execution_context(exec_ctx)?;
 
   let result = (|| -> Result<ModuleTlaStepResult, VmError> {
     let Some(mut cont) = vm.take_async_continuation(continuation_id) else {
@@ -30547,7 +30546,7 @@ pub(crate) fn run_module_async_start(
     realm: realm_id,
     script_or_module: Some(ScriptOrModule::Module(module_id)),
   };
-  vm.push_execution_context(exec_ctx);
+  vm.push_execution_context(exec_ctx)?;
 
   let result = (|| -> Result<ModuleAsyncStep, VmError> {
     // Wrap the continuation in an `Option` so we can `take()` it only when returning
@@ -30689,7 +30688,7 @@ pub(crate) fn run_module_async_resume(
     realm: realm_id,
     script_or_module: Some(ScriptOrModule::Module(module_id)),
   };
-  vm.push_execution_context(exec_ctx);
+  vm.push_execution_context(exec_ctx)?;
 
   let source = cont.as_ref().expect("module async continuation missing").env.source().clone();
 

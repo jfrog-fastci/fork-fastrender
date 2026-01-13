@@ -437,14 +437,14 @@ pub struct ExecutionContextGuard<'vm> {
 }
 
 impl<'vm> ExecutionContextGuard<'vm> {
-  fn new(vm: &'vm mut Vm, ctx: ExecutionContext) -> Self {
-    vm.push_execution_context(ctx);
+  fn new(vm: &'vm mut Vm, ctx: ExecutionContext) -> Result<Self, VmError> {
+    vm.push_execution_context(ctx)?;
     let expected_len = vm.execution_context_stack.len();
-    Self {
+    Ok(Self {
       vm,
       ctx,
       expected_len,
-    }
+    })
   }
 }
 
@@ -1839,6 +1839,11 @@ impl Vm {
     if self.stack.len() >= self.options.max_stack_depth {
       return Err(self.terminate(TerminationReason::StackOverflow));
     }
+    // `Vec::push` can abort the process on allocator OOM; reserve fallibly first.
+    self
+      .stack
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     self.stack.push(frame);
     Ok(())
   }
@@ -1850,13 +1855,15 @@ impl Vm {
   pub fn capture_stack(&self) -> Vec<StackFrame> {
     // `self.stack` is maintained in call-stack order (outermost → innermost). Stack traces are
     // conventionally rendered with the most recent frame first, so reverse during capture.
+    let len = self.stack.len();
     let mut out: Vec<StackFrame> = Vec::new();
-    // Best-effort: stack capture must never abort the process on allocator OOM. If we can't
-    // allocate a fresh stack snapshot, return an empty stack trace instead.
-    if out.try_reserve_exact(self.stack.len()).is_err() {
+    if out.try_reserve_exact(len).is_err() {
+      // Best-effort stack capture: if we cannot allocate the trace vector under memory pressure,
+      // return an empty stack rather than aborting the process.
       return out;
     }
     for frame in self.stack.iter().rev() {
+      // Safe: we reserved enough capacity above, so `push` cannot allocate.
       out.push(frame.clone());
     }
     out
@@ -1871,8 +1878,14 @@ impl Vm {
   }
 
   /// Pushes an [`ExecutionContext`] onto the execution context stack.
-  pub fn push_execution_context(&mut self, ctx: ExecutionContext) {
+  pub fn push_execution_context(&mut self, ctx: ExecutionContext) -> Result<(), VmError> {
+    // `Vec::push` can abort the process on allocator OOM; reserve fallibly first.
+    self
+      .execution_context_stack
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     self.execution_context_stack.push(ctx);
+    Ok(())
   }
 
   pub(crate) fn push_active_host_hooks(
@@ -1897,7 +1910,10 @@ impl Vm {
   }
 
   /// Pushes an [`ExecutionContext`] and returns an RAII guard that will pop it on drop.
-  pub fn execution_context_guard(&mut self, ctx: ExecutionContext) -> ExecutionContextGuard<'_> {
+  pub fn execution_context_guard(
+    &mut self,
+    ctx: ExecutionContext,
+  ) -> Result<ExecutionContextGuard<'_>, VmError> {
     ExecutionContextGuard::new(self, ctx)
   }
 
@@ -2488,7 +2504,7 @@ impl Vm {
 
         if need_ctx {
           let ctx = ExecutionContext { realm, script_or_module };
-          let mut vm_ctx = self.execution_context_guard(ctx);
+          let mut vm_ctx = self.execution_context_guard(ctx)?;
           return vm_ctx.call_impl_inner(host, scope, hooks, callee, this, args, call_site);
         }
       }
@@ -3060,7 +3076,7 @@ impl Vm {
 
         if need_ctx {
           let ctx = ExecutionContext { realm, script_or_module };
-          let mut vm_ctx = self.execution_context_guard(ctx);
+          let mut vm_ctx = self.execution_context_guard(ctx)?;
           return vm_ctx.construct_impl_inner(host, scope, hooks, callee, args, new_target, call_site);
         }
       }

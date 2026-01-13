@@ -1,9 +1,11 @@
 use std::process;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vm_js::{
   Agent, Budget, HeapLimits, Job, JobKind, LoadedModuleRequest, MicrotaskQueue, ModuleGraph, ModuleId,
   ModuleRequest, ModuleStatus, PropertyDescriptor, PropertyKey, PropertyKind, RootId,
-  SourceTextModuleRecord, Value, VmError, VmHostHooks, VmJobContext, VmOptions, MAX_PROTOTYPE_CHAIN,
+  SourceTextModuleRecord, StackFrame, Value, VmError, VmHostHooks, VmJobContext, VmOptions,
+  MAX_PROTOTYPE_CHAIN,
 };
 
 static MICROTASK_ERRORS_REMAINING: AtomicUsize = AtomicUsize::new(0);
@@ -53,7 +55,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack"
   );
   process::exit(2);
 }
@@ -178,8 +180,15 @@ fn main() {
     process::exit(0);
   }
 
+  let mut vm_options = VmOptions::default();
+  if scenario == "captureStack" {
+    // Allow pre-filling the VM stack with many frames to force `capture_stack` to allocate a large
+    // trace vector under memory pressure.
+    vm_options.max_stack_depth = 5_000_000;
+  }
+
   let mut agent = match Agent::with_options(
-    VmOptions::default(),
+    vm_options,
     // Use very large heap limits: this harness is intentionally driven by the OS address-space
     // limit (RLIMIT_AS), not by the VM heap accounting, so we can exercise fallible host-side
     // allocations.
@@ -457,6 +466,57 @@ fn main() {
 
       agent.run_script("oom_harness.js", script, Budget::unlimited(1), None)
     }
+    "captureStack" => {
+      // Force stack capture under allocator OOM pressure. We pre-fill the VM stack with synthetic
+      // frames until allocating a duplicate stack trace vector fails, then (best-effort) invoke
+      // `Vm::capture_stack` directly before running a throwing script.
+      let frame = StackFrame {
+        function: None,
+        source: Arc::<str>::from("<oom_harness>"),
+        line: 0,
+        col: 0,
+      };
+
+      // Push frames in chunks and probe whether allocating a stack trace vector of the same length
+      // succeeds. When the probe reserve fails, `Vm::capture_stack` would have aborted the process
+      // before this regression fix.
+      const CHUNK: usize = 32 * 1024;
+      const MAX_FRAMES: usize = 5_000_000;
+      let mut pushed: usize = 0;
+      let mut probe_failed = false;
+      'fill: loop {
+        for _ in 0..CHUNK {
+          if pushed >= MAX_FRAMES {
+            break 'fill;
+          }
+          match agent.vm_mut().push_frame(frame.clone()) {
+            Ok(()) => pushed += 1,
+            Err(VmError::OutOfMemory) => {
+              probe_failed = true;
+              break 'fill;
+            }
+            Err(err) => {
+              eprintln!("oom_harness: failed to push synthetic stack frame: {err:?}");
+              process::exit(1);
+            }
+          }
+        }
+
+        let mut probe: Vec<StackFrame> = Vec::new();
+        if probe.try_reserve_exact(pushed).is_err() {
+          probe_failed = true;
+          break;
+        }
+      }
+
+      if probe_failed {
+        // Execute `capture_stack` directly so the regression is exercised even if script execution
+        // returns early due to `VmError::OutOfMemory`.
+        let _ = agent.vm().capture_stack();
+      }
+
+      agent.run_script("oom_harness.js", "throw 1", Budget::unlimited(1), None)
+    }
     "getPrototypeOf_proxy_chain" => {
       // Create a Proxy so `Heap::object_prototype` traverses a proxy chain and uses a `HashSet`
       // for cycle detection.
@@ -614,6 +674,9 @@ fn main() {
   match result {
     Err(VmError::OutOfMemory) => process::exit(0),
     Err(VmError::Syntax(_)) if scenario == "labelEarlyError" => process::exit(0),
+    Err(VmError::Throw(_) | VmError::ThrowWithStack { .. }) if scenario == "captureStack" => {
+      process::exit(0)
+    }
     // `parseFloat` is allowed to succeed here: upstream implementations may parse directly from
     // UTF-16 without allocating an intermediate `String`. The key invariant is that it must not
     // abort the process under memory pressure.

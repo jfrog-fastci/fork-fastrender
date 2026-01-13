@@ -16,10 +16,12 @@ fn empty_stack_has_no_active_script_or_module() {
 #[test]
 fn contexts_with_none_script_or_module_are_skipped() {
   let mut vm = Vm::new(VmOptions::default());
-  vm.push_execution_context(ExecutionContext {
-    realm: RealmId::from_raw(1),
-    script_or_module: None,
-  });
+  vm
+    .push_execution_context(ExecutionContext {
+      realm: RealmId::from_raw(1),
+      script_or_module: None,
+    })
+    .unwrap();
   assert_eq!(vm.get_active_script_or_module(), None);
   assert_eq!(vm.current_realm(), Some(RealmId::from_raw(1)));
 }
@@ -31,20 +33,26 @@ fn nesting_scans_past_none_contexts() {
   let script_id = ScriptId::from_raw(10);
   let module_id = ModuleId::from_raw(20);
 
-  vm.push_execution_context(ExecutionContext {
-    realm: RealmId::from_raw(1),
-    script_or_module: Some(ScriptOrModule::Script(script_id)),
-  });
+  vm
+    .push_execution_context(ExecutionContext {
+      realm: RealmId::from_raw(1),
+      script_or_module: Some(ScriptOrModule::Script(script_id)),
+    })
+    .unwrap();
 
-  vm.push_execution_context(ExecutionContext {
-    realm: RealmId::from_raw(2),
-    script_or_module: None,
-  });
+  vm
+    .push_execution_context(ExecutionContext {
+      realm: RealmId::from_raw(2),
+      script_or_module: None,
+    })
+    .unwrap();
 
-  vm.push_execution_context(ExecutionContext {
-    realm: RealmId::from_raw(3),
-    script_or_module: Some(ScriptOrModule::Module(module_id)),
-  });
+  vm
+    .push_execution_context(ExecutionContext {
+      realm: RealmId::from_raw(3),
+      script_or_module: Some(ScriptOrModule::Module(module_id)),
+    })
+    .unwrap();
 
   assert_eq!(
     vm.get_active_script_or_module(),
@@ -65,16 +73,20 @@ fn nesting_scans_past_none_contexts() {
 fn current_realm_tracks_top_of_stack() {
   let mut vm = Vm::new(VmOptions::default());
 
-  vm.push_execution_context(ExecutionContext {
-    realm: RealmId::from_raw(1),
-    script_or_module: None,
-  });
+  vm
+    .push_execution_context(ExecutionContext {
+      realm: RealmId::from_raw(1),
+      script_or_module: None,
+    })
+    .unwrap();
   assert_eq!(vm.current_realm(), Some(RealmId::from_raw(1)));
 
-  vm.push_execution_context(ExecutionContext {
-    realm: RealmId::from_raw(2),
-    script_or_module: None,
-  });
+  vm
+    .push_execution_context(ExecutionContext {
+      realm: RealmId::from_raw(2),
+      script_or_module: None,
+    })
+    .unwrap();
   assert_eq!(vm.current_realm(), Some(RealmId::from_raw(2)));
 
   vm.pop_execution_context();
@@ -89,10 +101,12 @@ fn execution_context_guard_pops_on_drop() {
   let mut vm = Vm::new(VmOptions::default());
 
   {
-    let guard = vm.execution_context_guard(ExecutionContext {
+    let guard = vm
+      .execution_context_guard(ExecutionContext {
       realm: RealmId::from_raw(1),
       script_or_module: None,
-    });
+    })
+      .unwrap();
     assert_eq!(guard.current_realm(), Some(RealmId::from_raw(1)));
   }
 

@@ -935,7 +935,7 @@ fn broadcast_channel_post_message_native(
       let mut recv_vm = recv_vm.execution_context_guard(vm_js::ExecutionContext {
         realm: entry.realm_id,
         script_or_module: None,
-      });
+      })?;
 
       let msg = deserialize_value(&mut recv_vm, &mut recv_scope, &serialized)?;
       let _ = dispatch_message_event(
