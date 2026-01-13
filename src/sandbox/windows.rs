@@ -1158,12 +1158,56 @@ fn io_error_from_hresult(hr: i32) -> io::Error {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::ffi::OsString;
+  use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
   use std::sync::Mutex;
+  use std::time::Duration;
+
+  use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, WAIT_OBJECT_0, WAIT_TIMEOUT};
+  use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+  use windows_sys::Win32::Security::{
+    GetTokenInformation, TokenCapabilities, TokenIsAppContainer, TOKEN_GROUPS,
+    TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+  };
+  use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
   static ENV_LOCK: Mutex<()> = Mutex::new(());
   const JOB_CHILD_ENV: &str = "FASTR_TEST_WINDOWS_JOB_CHILD";
   const JOB_CHILD_TEST_NAME: &str =
     concat!(module_path!(), "::sandbox_spawn_in_job_does_not_panic_child");
+
+  const CHILD_ENV: &str = "FASTR_TEST_WINDOWS_SANDBOX_CHILD";
+  const PORT_ENV: &str = "FASTR_TEST_WINDOWS_SANDBOX_PORT";
+  const INTERNET_CLIENT_CAPABILITY_SID: &str = "S-1-15-3-1";
+  const CHILD_TIMEOUT_MS: u32 = 60_000;
+
+  struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<OsString>,
+  }
+
+  impl EnvVarGuard {
+    fn set(key: &'static str, value: impl Into<OsString>) -> Self {
+      let prev = std::env::var_os(key);
+      std::env::set_var(key, value.into());
+      Self { key, prev }
+    }
+
+    fn remove(key: &'static str) -> Self {
+      let prev = std::env::var_os(key);
+      std::env::remove_var(key);
+      Self { key, prev }
+    }
+  }
+
+  impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+      match self.prev.take() {
+        Some(value) => std::env::set_var(self.key, value),
+        None => std::env::remove_var(self.key),
+      }
+    }
+  }
 
   #[test]
   fn sandbox_disabled_env_forces_none() {
@@ -1274,5 +1318,310 @@ mod tests {
     let ok = unsafe { GetExitCodeProcess(child.process.as_raw_handle() as HANDLE, &mut exit_code) };
     assert_ne!(ok, 0, "GetExitCodeProcess failed");
     assert_eq!(exit_code, 0, "sandbox child exited with code {exit_code}");
+  }
+
+  #[test]
+  fn spawn_sandboxed_child_has_expected_token_state() {
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      let port: u16 = std::env::var(PORT_ENV)
+        .expect("child process missing sandbox port env var")
+        .parse()
+        .expect("parse sandbox port env var");
+
+      let token = query_current_process_token_state().expect("query current process token state");
+      if token.is_app_container {
+        assert!(
+          !token.has_internet_client_capability(),
+          "expected AppContainer token to NOT have internetClient capability ({INTERNET_CLIENT_CAPABILITY_SID}); token={token:?}"
+        );
+
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        let connect = TcpStream::connect_timeout(&addr, Duration::from_secs(2));
+        assert!(
+          connect.is_err(),
+          "expected AppContainer sandbox child to be unable to connect to localhost; token={token:?}, connect={connect:?}"
+        );
+        return;
+      }
+
+      // Fallback sandbox mode: restricted token + low integrity.
+      assert!(
+        token.is_low_or_untrusted_integrity(),
+        "expected restricted-token fallback to run at Low/Untrusted integrity; token={token:?}"
+      );
+      return;
+    }
+
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    // Ensure debug escape hatches do not disable the sandbox for this test.
+    let _disable_guard = EnvVarGuard::remove(ENV_DISABLE_RENDERER_SANDBOX);
+    let _windows_guard = EnvVarGuard::remove(ENV_WINDOWS_RENDERER_SANDBOX);
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test TCP listener");
+    let port = listener
+      .local_addr()
+      .expect("listener local addr")
+      .port()
+      .to_string();
+
+    let _child_guard = EnvVarGuard::set(CHILD_ENV, "1");
+    let _port_guard = EnvVarGuard::set(PORT_ENV, port);
+    // Reduce libtest's internal thread pool so the child is more deterministic.
+    let _threads_guard = EnvVarGuard::set("RUST_TEST_THREADS", "1");
+
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name = "sandbox::windows::tests::spawn_sandboxed_child_has_expected_token_state";
+    let args = [
+      OsString::from("--exact"),
+      OsString::from(test_name),
+      OsString::from("--nocapture"),
+    ];
+
+    let stdout = std::io::stdout().as_raw_handle();
+    let stderr = std::io::stderr().as_raw_handle();
+    let mut handles = Vec::new();
+    if !stdout.is_null() {
+      handles.push(stdout);
+    }
+    if !stderr.is_null() && stderr != stdout {
+      handles.push(stderr);
+    }
+
+    let child = spawn_sandboxed(&exe, &args, &handles).expect("spawn sandboxed child process");
+    let exit_code = wait_for_exit_code(child.process.as_raw_handle() as HANDLE)
+      .expect("wait for sandboxed child process");
+    assert_eq!(
+      exit_code, 0,
+      "sandboxed child exited with non-zero code {exit_code} (level={:?})",
+      child.level
+    );
+
+    drop(listener);
+  }
+
+  #[derive(Debug)]
+  struct TokenState {
+    is_app_container: bool,
+    integrity_sid: String,
+    integrity_rid: u32,
+    capability_sids: Vec<String>,
+  }
+
+  impl TokenState {
+    fn is_low_or_untrusted_integrity(&self) -> bool {
+      matches!(self.integrity_rid, 0 | 4096)
+    }
+
+    fn has_internet_client_capability(&self) -> bool {
+      self
+        .capability_sids
+        .iter()
+        .any(|sid| sid.eq_ignore_ascii_case(INTERNET_CLIENT_CAPABILITY_SID))
+    }
+  }
+
+  fn query_current_process_token_state() -> io::Result<TokenState> {
+    let mut token: HANDLE = 0;
+    win32_bool(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) })?;
+    if token == 0 {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        "OpenProcessToken returned null token handle",
+      ));
+    }
+    // SAFETY: We own the handle returned by OpenProcessToken and must close it.
+    let token = unsafe { OwnedHandle::from_raw_handle(token as RawHandle) };
+
+    let is_app_container = query_token_is_app_container(token.as_raw_handle() as HANDLE)?;
+    let (integrity_sid, integrity_rid) = query_token_integrity_level(token.as_raw_handle() as HANDLE)?;
+    let capability_sids = if is_app_container {
+      query_token_capabilities(token.as_raw_handle() as HANDLE)?
+    } else {
+      Vec::new()
+    };
+
+    Ok(TokenState {
+      is_app_container,
+      integrity_sid,
+      integrity_rid,
+      capability_sids,
+    })
+  }
+
+  fn query_token_is_app_container(token: HANDLE) -> io::Result<bool> {
+    let mut value: u32 = 0;
+    let mut returned: u32 = 0;
+    let ok = unsafe {
+      GetTokenInformation(
+        token,
+        TokenIsAppContainer as TOKEN_INFORMATION_CLASS,
+        std::ptr::addr_of_mut!(value).cast(),
+        std::mem::size_of::<u32>() as u32,
+        std::ptr::addr_of_mut!(returned),
+      )
+    };
+    win32_bool(ok)?;
+    Ok(value != 0)
+  }
+
+  fn query_token_integrity_level(token: HANDLE) -> io::Result<(String, u32)> {
+    let buf = get_token_information(token, TokenIntegrityLevel as TOKEN_INFORMATION_CLASS)?;
+    if buf.len() < std::mem::size_of::<TOKEN_MANDATORY_LABEL>() {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+          "TokenIntegrityLevel buffer too small ({} bytes)",
+          buf.len()
+        ),
+      ));
+    }
+
+    // SAFETY: buffer is large enough to contain TOKEN_MANDATORY_LABEL.
+    let label = unsafe { &*(buf.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()) };
+    let sid = label.Label.Sid;
+    if sid.is_null() {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        "TokenIntegrityLevel returned null SID",
+      ));
+    }
+    let sid_string = sid_to_string(sid)?;
+    let rid = sid_string
+      .rsplit('-')
+      .next()
+      .and_then(|tail| tail.parse::<u32>().ok())
+      .ok_or_else(|| {
+        io::Error::new(
+          io::ErrorKind::Other,
+          format!("unexpected integrity SID format: {sid_string}"),
+        )
+      })?;
+    Ok((sid_string, rid))
+  }
+
+  fn query_token_capabilities(token: HANDLE) -> io::Result<Vec<String>> {
+    let buf = get_token_information(token, TokenCapabilities as TOKEN_INFORMATION_CLASS)?;
+    if buf.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    if buf.len() < std::mem::size_of::<TOKEN_GROUPS>() {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!("TokenCapabilities buffer too small ({} bytes)", buf.len()),
+      ));
+    }
+
+    // SAFETY: buffer is large enough for TOKEN_GROUPS header.
+    let groups = unsafe { &*(buf.as_ptr().cast::<TOKEN_GROUPS>()) };
+    let count = groups.GroupCount as usize;
+    let first = groups.Groups.as_ptr();
+    let mut out = Vec::new();
+    for idx in 0..count {
+      // SAFETY: `idx < count` and the buffer returned by GetTokenInformation is sized to hold the
+      // full array.
+      let entry = unsafe { &*first.add(idx) };
+      if entry.Sid.is_null() {
+        continue;
+      }
+      out.push(sid_to_string(entry.Sid)?);
+    }
+    Ok(out)
+  }
+
+  fn get_token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u8>> {
+    let mut needed: u32 = 0;
+    let ok = unsafe {
+      GetTokenInformation(
+        token,
+        class,
+        std::ptr::null_mut(),
+        0,
+        std::ptr::addr_of_mut!(needed),
+      )
+    };
+    if ok != 0 {
+      // Unexpected but possible for fixed-size info classes; treat as success with empty buffer.
+      return Ok(Vec::new());
+    }
+
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+      return Err(err);
+    }
+    if needed == 0 {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        "GetTokenInformation returned ERROR_INSUFFICIENT_BUFFER but length was 0",
+      ));
+    }
+
+    let mut buf = vec![0u8; needed as usize];
+    let ok = unsafe {
+      GetTokenInformation(
+        token,
+        class,
+        buf.as_mut_ptr().cast(),
+        needed,
+        std::ptr::addr_of_mut!(needed),
+      )
+    };
+    win32_bool(ok)?;
+    buf.truncate(needed as usize);
+    Ok(buf)
+  }
+
+  fn sid_to_string(sid: *mut std::ffi::c_void) -> io::Result<String> {
+    let mut wide: *mut u16 = std::ptr::null_mut();
+    let ok = unsafe { ConvertSidToStringSidW(sid, std::ptr::addr_of_mut!(wide)) };
+    win32_bool(ok)?;
+    if wide.is_null() {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        "ConvertSidToStringSidW succeeded but returned null pointer",
+      ));
+    }
+
+    // SAFETY: `wide` is NUL-terminated per API contract.
+    let mut len = 0usize;
+    unsafe {
+      while *wide.add(len) != 0 {
+        len += 1;
+      }
+      let slice = std::slice::from_raw_parts(wide, len);
+      let s = String::from_utf16_lossy(slice);
+      LocalFree(wide as isize);
+      Ok(s)
+    }
+  }
+
+  fn wait_for_exit_code(process: HANDLE) -> io::Result<u32> {
+    let rc = unsafe { WaitForSingleObject(process, CHILD_TIMEOUT_MS) };
+    match rc {
+      WAIT_OBJECT_0 => {}
+      WAIT_TIMEOUT => {
+        let _ = unsafe { TerminateProcess(process, 1) };
+        return Err(io::Error::new(
+          io::ErrorKind::TimedOut,
+          format!("sandboxed child timed out after {CHILD_TIMEOUT_MS}ms (terminated)"),
+        ));
+      }
+      other => {
+        return Err(io::Error::new(
+          io::ErrorKind::Other,
+          format!(
+            "WaitForSingleObject failed (code={other}): {}",
+            io::Error::last_os_error()
+          ),
+        ));
+      }
+    }
+
+    let mut exit_code: u32 = 0;
+    let ok = unsafe { GetExitCodeProcess(process, std::ptr::addr_of_mut!(exit_code)) };
+    win32_bool(ok)?;
+    Ok(exit_code)
   }
 }
