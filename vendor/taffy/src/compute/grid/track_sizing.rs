@@ -6,7 +6,7 @@ use crate::style::{AlignContent, AlignSelf, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
 use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
 use crate::util::check_layout_abort;
-use crate::util::sys::{f32_max, f32_min, Map, Vec};
+use crate::util::sys::{f32_max, f32_min, Vec};
 use crate::util::MaybeMath;
 use crate::CompactLength;
 use arrayvec::ArrayVec;
@@ -666,7 +666,11 @@ pub(super) fn resolve_item_baselines(
     max_baseline: f32,
   }
 
-  let mut group_stats: Map<u16, BaselineGroupStats> = Map::default();
+  // Track baseline group stats in a dense vec indexed by other-axis start. This avoids
+  // per-group heap allocations (BTreeMap) / hash table rehashing (FxHashMap) in baseline-heavy
+  // grids.
+  let mut group_stats: Vec<BaselineGroupStats> = Vec::new();
+  let mut baseline_entries_capacity: usize = 0;
   for item in items.iter() {
     check_layout_abort();
     let key = match other_axis {
@@ -678,11 +682,25 @@ pub(super) fn resolve_item_baselines(
       None => key,
     });
     if is_baseline_aligned(item) {
-      let entry = group_stats.entry(key).or_insert(BaselineGroupStats {
-        count: 0,
-        max_baseline: f32::NEG_INFINITY,
-      });
+      let key = key as usize;
+      if key >= group_stats.len() {
+        group_stats.resize(
+          key + 1,
+          BaselineGroupStats {
+            count: 0,
+            max_baseline: f32::NEG_INFINITY,
+          },
+        );
+      }
+      let entry = &mut group_stats[key];
       entry.count += 1;
+      // `baseline_entries` contains one entry per baseline-aligned item, but only for groups
+      // with > 1 participating item.
+      if entry.count == 2 {
+        baseline_entries_capacity += 2;
+      } else if entry.count > 2 {
+        baseline_entries_capacity += 1;
+      }
     }
   }
 
@@ -746,11 +764,6 @@ pub(super) fn resolve_item_baselines(
   };
 
   // (item_index, other_axis_start_index, baseline_value)
-  let baseline_entries_capacity = group_stats
-    .values()
-    .filter(|stats| stats.count > 1)
-    .map(|stats| stats.count)
-    .sum();
   let mut baseline_entries: Vec<(usize, u16, f32)> = Vec::with_capacity(baseline_entries_capacity);
 
   for (idx, item) in items.iter_mut().enumerate() {
@@ -763,7 +776,7 @@ pub(super) fn resolve_item_baselines(
       AbstractAxis::Inline => item.column_indexes.start,
       AbstractAxis::Block => item.row_indexes.start,
     };
-    let baseline_item_count = group_stats.get(&key).map(|s| s.count).unwrap_or(0);
+    let baseline_item_count = group_stats.get(key as usize).map(|s| s.count).unwrap_or(0);
 
     // Baseline alignment is a no-op if <= 1 items in an other-axis group participate. In that
     // case we can skip the expensive baseline-measurement pass entirely, with one exception:
@@ -791,13 +804,13 @@ pub(super) fn resolve_item_baselines(
 
     let value = measure_item_baseline_value(item);
     baseline_entries.push((idx, key, value));
-    if let Some(entry) = group_stats.get_mut(&key) {
+    if let Some(entry) = group_stats.get_mut(key as usize) {
       entry.max_baseline = f32_max(entry.max_baseline, value);
     }
   }
 
   for (idx, key, value) in baseline_entries {
-    let Some(group_max) = group_stats.get(&key).map(|s| s.max_baseline) else {
+    let Some(group_max) = group_stats.get(key as usize).map(|s| s.max_baseline) else {
       continue;
     };
     let shim = group_max - value;
