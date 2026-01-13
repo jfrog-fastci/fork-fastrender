@@ -267,6 +267,18 @@ pub fn unregister_window_websocket_env(env_id: u64) {
     return;
   };
 
+  // Best-effort shutdown of any IPC-backed connections. Without this, the network process could keep
+  // the conn_id alive after the JS realm is torn down (e.g. navigation within the same renderer
+  // process).
+  if let Some(ipc) = env_state.ipc.as_ref() {
+    for ws_id in env_state.sockets.keys().copied() {
+      let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::WebSocket {
+        conn_id: ws_id,
+        cmd: WebSocketCommand::Shutdown,
+      });
+    }
+  }
+
   if let Some(mut ipc) = env_state.ipc.take() {
     ipc.stop.store(true, Ordering::Relaxed);
     if let Some(handle) = ipc.thread.take() {
@@ -4433,4 +4445,68 @@ mod tests {
 
     Ok(())
   }
-}
+
+  #[test]
+  fn websocket_ipc_env_unregister_sends_shutdown_for_all_sockets() {
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(HttpFetcher::new());
+    let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
+
+    let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WebSocketIpcCommand>(16);
+    let (_event_tx, event_rx) = mpsc::channel::<WebSocketIpcEvent>();
+    let ipc_state = IpcEnvState {
+      cmd_tx,
+      event_rx: Some(event_rx),
+      stop: Arc::new(AtomicBool::new(false)),
+      thread: None,
+    };
+
+    {
+      let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      lock.insert(env_id, EnvState::new_ipc(WindowWebSocketEnv::for_document(fetcher, None), ipc_state));
+    }
+
+    // Register a few fake sockets.
+    let mut heap = vm_js::Heap::new(vm_js::HeapLimits::new(1024 * 1024, 512 * 1024));
+    let mut scope = heap.scope();
+    let ws_obj = scope.alloc_object().expect("alloc ws object");
+    let weak = WeakGcObject::from(ws_obj);
+    with_env_state_mut(env_id, |state| {
+      state.next_id = 1;
+      for _ in 0..3 {
+        let id = state.alloc_id();
+        state.sockets.insert(
+          id,
+          WebSocketState {
+            weak_obj: weak,
+            url: "ws://example.invalid/".to_string(),
+            protocol: String::new(),
+            ready_state: WS_OPEN,
+            buffered_amount: 0,
+            pending_events: 0,
+            close_task_queued: false,
+            forced_close: None,
+            cmd_tx: None,
+            thread: None,
+          },
+        );
+      }
+      Ok(())
+    })
+    .unwrap();
+
+    unregister_window_websocket_env(env_id);
+
+    let mut conn_ids: Vec<u64> = Vec::new();
+    for _ in 0..3 {
+      match cmd_rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => {
+          assert_eq!(cmd, WebSocketCommand::Shutdown);
+          conn_ids.push(conn_id);
+        }
+        other => panic!("unexpected IPC command after env unregister: {other:?}"),
+      }
+    }
+    conn_ids.sort_unstable();
+    assert_eq!(conn_ids, vec![1, 2, 3]);
+  }
+} 
