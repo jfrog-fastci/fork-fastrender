@@ -1145,6 +1145,31 @@ fn test_pipeline_shape_simple_ltr() {
 }
 
 #[test]
+fn shaping_cache_miss_allocates_full_text_arc_only_once() {
+  let pipeline = ShapingPipeline::new();
+  let font_context = bundled_font_context();
+  let style = ComputedStyle::default();
+  let text = "Hello, world!";
+
+  ShapingPipeline::debug_reset_full_text_arc_alloc_count();
+  let runs = require_fonts!(pipeline.shape(text, &style, &font_context));
+  assert!(!runs.is_empty(), "expected shaping to produce runs");
+  assert_eq!(
+    ShapingPipeline::debug_full_text_arc_alloc_count(),
+    1,
+    "expected a cache miss to allocate the full text only once"
+  );
+
+  // A cache hit should not allocate the full text again.
+  let _ = require_fonts!(pipeline.shape(text, &style, &font_context));
+  assert_eq!(
+    ShapingPipeline::debug_full_text_arc_alloc_count(),
+    1,
+    "expected shaping cache hits to reuse the stored text without allocating a new Arc"
+  );
+}
+
+#[test]
 fn test_pipeline_shape_with_spaces() {
   let pipeline = ShapingPipeline::new();
   let font_context = bundled_font_context();

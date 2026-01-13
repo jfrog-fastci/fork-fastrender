@@ -142,6 +142,28 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
   static SHAPING_STYLE_HASH_CALLS: Cell<usize> = Cell::new(0);
+  /// Counts how many times we allocate/clone the *full input text* into an owning `Arc<str>` while
+  /// shaping.
+  ///
+  /// This is used by tests as a guardrail to ensure a single shaping-cache miss does not allocate
+  /// the full text multiple times (e.g. once for bidi analysis and again for the shaping cache).
+  static SHAPE_FULL_TEXT_ARC_ALLOCS: Cell<usize> = Cell::new(0);
+}
+
+#[cfg(test)]
+#[inline]
+fn record_full_text_arc_alloc() {
+  SHAPE_FULL_TEXT_ARC_ALLOCS.with(|calls| calls.set(calls.get().saturating_add(1)));
+}
+
+#[cfg(not(test))]
+#[inline]
+fn record_full_text_arc_alloc() {}
+
+#[inline]
+fn empty_arc_str() -> Arc<str> {
+  static EMPTY: OnceLock<Arc<str>> = OnceLock::new();
+  Arc::clone(EMPTY.get_or_init(|| Arc::from("")))
 }
 
 type ShapingCacheHasher = BuildHasherDefault<FxHasher>;
@@ -1504,7 +1526,7 @@ pub struct ExplicitBidiContext {
 #[derive(Debug)]
 pub struct BidiAnalysis {
   /// The original text being analyzed (reserved for future RTL improvements).
-  text: String,
+  text: Arc<str>,
   /// Bidi levels for each byte position (matching BidiInfo).
   levels: Vec<Level>,
   /// Paragraph boundaries in byte offsets with their base level.
@@ -1577,6 +1599,35 @@ impl BidiAnalysis {
     base_direction: Direction,
     explicit: Option<ExplicitBidiContext>,
   ) -> Self {
+    if text.is_empty() {
+      // Determine base direction from CSS direction property (inherited, initial LTR)
+      let mut base_level = match base_direction {
+        Direction::LeftToRight => Level::ltr(),
+        Direction::RightToLeft => Level::rtl(),
+      };
+      if let Some(ctx) = explicit {
+        base_level = ctx.level;
+      }
+      return Self {
+        text: empty_arc_str(),
+        levels: Vec::new(),
+        paragraphs: Vec::new(),
+        base_level,
+        needs_reordering: false,
+      };
+    }
+
+    let text = Arc::<str>::from(text);
+    record_full_text_arc_alloc();
+    Self::analyze_with_base_arc(text, style, base_direction, explicit)
+  }
+
+  fn analyze_with_base_arc(
+    text: Arc<str>,
+    style: &ComputedStyle,
+    base_direction: Direction,
+    explicit: Option<ExplicitBidiContext>,
+  ) -> Self {
     // Determine base direction from CSS direction property (inherited, initial LTR)
     let mut base_level = match base_direction {
       Direction::LeftToRight => Level::ltr(),
@@ -1590,17 +1641,6 @@ impl BidiAnalysis {
       false
     };
 
-    // Handle empty text
-    if text.is_empty() {
-      return Self {
-        text: String::new(),
-        levels: Vec::new(),
-        paragraphs: Vec::new(),
-        base_level,
-        needs_reordering: false,
-      };
-    }
-
     // Run Unicode bidi algorithm
     let base_override = match style.unicode_bidi {
       // unicode-bidi: plaintext normally resolves the paragraph base direction from the first
@@ -1611,13 +1651,11 @@ impl BidiAnalysis {
       crate::style::types::UnicodeBidi::Plaintext => None,
       _ => Some(base_level),
     };
-    let bidi_info = BidiInfo::new(text, base_override);
+    let bidi_info = BidiInfo::new(text.as_ref(), base_override);
 
     // Check if any RTL content exists
     let mut needs_reordering = bidi_info.levels.iter().any(|&level| level.is_rtl());
 
-    // Clone owned text for storage
-    let text = text.to_string();
     let mut levels = bidi_info.levels.clone();
     let para_level = bidi_info
       .paragraphs
@@ -1703,7 +1741,7 @@ impl BidiAnalysis {
 
   /// Returns the original text that was analyzed.
   pub fn text(&self) -> &str {
-    &self.text
+    self.text.as_ref()
   }
 
   /// Returns logical bidi runs in source order.
@@ -6347,7 +6385,7 @@ impl ShapingCache {
   fn insert(
     &self,
     key: ShapingCacheKey,
-    text: &str,
+    text: Arc<str>,
     runs: Arc<Vec<ShapedRun>>,
   ) -> Arc<Vec<ShapedRun>> {
     let shard_idx = self.shard_index(&key);
@@ -6358,14 +6396,17 @@ impl ShapingCache {
     {
       let mut cache = self.inner.shards[shard_idx].lock();
       if let Some(bucket) = cache.get_mut(&key) {
-        if let Some(existing) = bucket.iter().find(|entry| entry.text.as_ref() == text) {
+        if let Some(existing) = bucket
+          .iter()
+          .find(|entry| entry.text.as_ref() == text.as_ref())
+        {
           cached = Arc::clone(&existing.runs);
         } else {
           if bucket.len() >= SHAPING_CACHE_HASH_COLLISION_BUCKET_LIMIT {
             bucket.remove(0);
           }
           bucket.push(ShapingCacheEntry {
-            text: Arc::from(text),
+            text: Arc::clone(&text),
             runs: Arc::clone(&runs),
           });
         }
@@ -6374,7 +6415,7 @@ impl ShapingCache {
         cache.put(
           key,
           vec![ShapingCacheEntry {
-            text: Arc::from(text),
+            text,
             runs: Arc::clone(&runs),
           }],
         );
@@ -6451,6 +6492,18 @@ impl ShapingPipeline {
   #[doc(hidden)]
   pub fn debug_reset_new_call_count() {
     SHAPING_PIPELINE_NEW_CALLS.with(|calls| calls.set(0));
+  }
+
+  #[cfg(test)]
+  #[doc(hidden)]
+  pub fn debug_full_text_arc_alloc_count() -> usize {
+    SHAPE_FULL_TEXT_ARC_ALLOCS.with(|calls| calls.get())
+  }
+
+  #[cfg(test)]
+  #[doc(hidden)]
+  pub fn debug_reset_full_text_arc_alloc_count() {
+    SHAPE_FULL_TEXT_ARC_ALLOCS.with(|calls| calls.set(0));
   }
 
   #[cfg(test)]
@@ -6680,7 +6733,7 @@ impl ShapingPipeline {
 
     self
       .cache
-      .insert(cache_key, text, Arc::new(shaped_runs.clone()));
+      .insert(cache_key, Arc::clone(&bidi.text), Arc::new(shaped_runs.clone()));
 
     let glyphs = shape_timer
       .as_ref()
@@ -8633,8 +8686,8 @@ mod tests {
     let runs_hello = Arc::new(Vec::new());
     let runs_world = Arc::new(Vec::new());
 
-    cache.insert(key, "hello", Arc::clone(&runs_hello));
-    cache.insert(key, "world", Arc::clone(&runs_world));
+    cache.insert(key, Arc::from("hello"), Arc::clone(&runs_hello));
+    cache.insert(key, Arc::from("world"), Arc::clone(&runs_world));
 
     let got_hello = cache.get(&key, "hello").expect("expected entry for hello");
     let got_world = cache.get(&key, "world").expect("expected entry for world");
