@@ -1049,7 +1049,7 @@ fn convert_to_record<R: WebIdlJsRuntime>(
   let entries = conversions_shared::materialize_record_entries(
     rt,
     obj,
-    |rt, key_value, value| {
+    |rt, obj, key, key_value| {
       let typed_key = convert_to_idl_inner(
         rt,
         key_value,
@@ -1061,15 +1061,20 @@ fn convert_to_record<R: WebIdlJsRuntime>(
       let ConvertedValue::String(typed_key) = typed_key else {
         return Err(rt.throw_type_error("Record key did not convert to a string"));
       };
-      convert_to_idl_inner(
-        rt,
-        value,
-        value_ty,
-        ctx,
-        typedef_stack,
-        ConversionState::default(),
-      )
-      .map(|typed_value| (typed_key, typed_value))
+
+      let value = rt.get(obj, key)?;
+      let typed_value = rt.with_stack_roots(&[value], |rt| {
+        convert_to_idl_inner(
+          rt,
+          value,
+          value_ty,
+          ctx,
+          typedef_stack,
+          ConversionState::default(),
+        )
+      })?;
+
+      Ok((typed_key, typed_value))
     },
     |roots, v| append_converted_value_roots(roots, v),
   )?;

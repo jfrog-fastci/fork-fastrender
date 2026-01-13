@@ -1090,14 +1090,17 @@ fn convert_record<R: WebIdlJsRuntime>(
   let entries = conversions_shared::materialize_record_entries(
     rt,
     obj,
-    |rt, key_value, prop_value| {
+    |rt, obj, key, key_value| {
       let typed_key_idl = convert_js_to_idl(rt, key_ty, key_value)?;
       let WebIdlValue::String(typed_key_value) = typed_key_idl else {
         return Err(rt.throw_type_error("record key did not convert to a string"));
       };
       let typed_key = rt.string_to_utf8_lossy(typed_key_value)?;
 
-      let typed_value = convert_js_to_idl(rt, value_ty, prop_value)?;
+      let prop_value = rt.get(obj, key)?;
+      let typed_value = rt.with_stack_roots(&[prop_value], |rt| {
+        convert_js_to_idl(rt, value_ty, prop_value)
+      })?;
       Ok((typed_key, typed_value))
     },
     |roots, v| append_webidl_value_roots(roots, v),

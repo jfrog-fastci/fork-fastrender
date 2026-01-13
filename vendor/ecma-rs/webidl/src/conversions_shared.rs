@@ -76,7 +76,12 @@ where
 pub(crate) fn materialize_record_entries<R, V>(
   rt: &mut R,
   obj: R::JsValue,
-  mut convert_entry: impl FnMut(&mut R, R::JsValue, R::JsValue) -> Result<(String, V), R::Error>,
+  mut convert_entry: impl FnMut(
+    &mut R,
+    R::JsValue,
+    R::PropertyKey,
+    R::JsValue,
+  ) -> Result<(String, V), R::Error>,
   mut append_value_roots: impl FnMut(&mut Vec<R::JsValue>, &V),
 ) -> Result<Vec<(String, V)>, R::Error>
 where
@@ -104,9 +109,10 @@ where
       }
 
       let key_value = rt.property_key_to_js_string(key)?;
-      let value = rt.get(obj, key)?;
+      // WebIDL record conversion requires converting the key to IDL type `K` before invoking
+      // `Get(O, key)` for the corresponding property value.
       let (typed_key, typed_value) =
-        rt.with_stack_roots(&[key_value, value], |rt| convert_entry(rt, key_value, value))?;
+        rt.with_stack_roots(&[key_value], |rt| convert_entry(rt, obj, key, key_value))?;
 
       Ok(Some((typed_key, typed_value)))
     })?
