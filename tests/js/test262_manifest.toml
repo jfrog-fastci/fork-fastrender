@@ -249,6 +249,336 @@ status = "pass"
 id = "language/statements/for-await-of/iterator-close-throw-get-method-abrupt.js"
 status = "pass"
 
+# --- Classes (incremental enablement) ---
+#
+# Start with the basic (non-inheritance) semantics and keep remaining failures narrow.
+#
+# Note: `extends` + `super` are still incomplete in `vm-js`, so class inheritance tests remain xfail
+# for now.
+
+[[expectations]]
+glob = "language/statements/class/accessor-name-inst/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/class/accessor-name-static/**"
+status = "pass"
+
+# --- class/definition ---
+[[expectations]]
+id = "language/statements/class/definition/constructable-but-no-prototype.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/invalid-extends.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-async-super-call-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-async-super-call-param.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/numeric-property-names.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/prototype-getter.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/prototype-setter.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/prototype-wiring.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/side-effects-in-extends.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/side-effects-in-property-define.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/this-access-restriction-2.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/this-access-restriction.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/this-check-ordering.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-async-method-duplicate-parameters.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-method-NSPL-with-USD.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-method-arguments-in-formal-parameters.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-method-await-in-formals-default.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-method-await-in-formals.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-method-body-contains-super-call.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-method-duplicate-parameters.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-method-eval-in-formal-parameters.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-method-formals-body-duplicate.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/early-errors-class-method-formals-contains-super-call.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-gen-yield-as-function-expression-binding-identifier.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-gen-yield-as-identifier-in-nested-function.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-gen-yield-as-logical-or-expression.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-gen-yield-as-parameter.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-gen-yield-star-after-newline.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-gen-yield-weak-binding.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-gen-yield-as-expression-with-rhs.js"
+status = "xfail"
+reason = "vm-js does not yet implement `yield` as an expression in generator methods."
+
+[[expectations]]
+id = "language/statements/class/definition/methods-gen-yield-as-expression-without-rhs.js"
+status = "xfail"
+reason = "vm-js does not yet implement `yield` as an expression in generator methods."
+
+[[expectations]]
+id = "language/statements/class/definition/fn-name-accessor-get.js"
+status = "xfail"
+reason = "vm-js bug: function name inference for class accessors is incorrect."
+
+[[expectations]]
+id = "language/statements/class/definition/fn-name-accessor-set.js"
+status = "xfail"
+reason = "vm-js bug: function name inference for class accessors is incorrect."
+
+[[expectations]]
+id = "language/statements/class/definition/fn-name-gen-method.js"
+status = "xfail"
+reason = "vm-js bug: function name inference for class methods is incorrect."
+
+[[expectations]]
+id = "language/statements/class/definition/fn-name-method.js"
+status = "xfail"
+reason = "vm-js bug: function name inference for class methods is incorrect."
+
+[[expectations]]
+id = "language/statements/class/definition/setters-restricted-ids.js"
+status = "xfail"
+reason = "vm-js bug: class accessors named `arguments`/`eval` incorrectly trigger restricted function property checks."
+
+[[expectations]]
+glob = "language/statements/class/definition/**"
+status = "pass"
+
+# --- class/method ---
+[[expectations]]
+id = "language/statements/class/method/array-destructuring-param-strict-body.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method/dflt-params-duplicates.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method/dflt-params-rest.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method/object-destructuring-param-strict-body.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method/rest-param-strict-body.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method/rest-params-trailing-comma-early-error.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+glob = "language/statements/class/method/**"
+status = "pass"
+
+# --- class/method-static ---
+[[expectations]]
+id = "language/statements/class/method-static/array-destructuring-param-strict-body.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method-static/dflt-params-duplicates.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method-static/dflt-params-rest.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method-static/object-destructuring-param-strict-body.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method-static/rest-param-strict-body.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/method-static/rest-params-trailing-comma-early-error.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+glob = "language/statements/class/method-static/**"
+status = "pass"
+
+# --- class/syntax ---
+[[expectations]]
+id = "language/statements/class/syntax/class-body-has-direct-super-class-heritage.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/syntax/class-body-method-definition-super-property.js"
+status = "xfail"
+reason = "vm-js does not yet implement `super` property access."
+
+[[expectations]]
+id = "language/statements/class/syntax/class-declaration-heritage-identifier-reference-class-element-list.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/syntax/class-expression-heritage-identifier-reference.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/syntax/early-errors/class-definition-evaluation-block-duplicate-binding.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/syntax/early-errors/class-definition-evaluation-scriptbody-duplicate-binding.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+id = "language/statements/class/syntax/escaped-static.js"
+status = "xfail"
+reason = "vm-js: negative parse errors are not yet surfaced as JavaScript SyntaxError."
+
+[[expectations]]
+glob = "language/statements/class/syntax/**"
+status = "pass"
+
+# --- class/name-binding ---
+[[expectations]]
+id = "language/statements/class/name-binding/in-extends-expression-assigned.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/name-binding/in-extends-expression-grouped.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+id = "language/statements/class/name-binding/in-extends-expression.js"
+status = "xfail"
+reason = "vm-js does not yet implement class inheritance (`extends`)."
+
+[[expectations]]
+glob = "language/statements/class/name-binding/**"
+status = "pass"
+
 # --- Additional curated suites (statements + built-ins) ---
 [[expectations]]
 glob = "language/statements/**"
