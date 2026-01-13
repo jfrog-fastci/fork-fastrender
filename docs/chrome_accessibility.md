@@ -236,6 +236,16 @@ bash scripts/run_limited.sh --as 64G -- \
     --focus-address-bar --named-only
 ```
 
+Output notes:
+
+- The output is intentionally lossy and is meant to be “diff-friendly” for debugging.
+- Each node includes:
+  - `role` and `name` (primary debugging fields)
+  - `expanded` plus `supports_expand` / `supports_collapse` (useful when debugging widgets that use
+    explicit AccessKit `Expand`/`Collapse` action routing, e.g. details toggles/toasts)
+  - a stringified `id` (helpful when correlating focus updates, but avoid asserting on ids unless
+    you are explicitly debugging id stability)
+
 ### Unit tests (headless AccessKit snapshots)
 
 Many chrome widgets have unit tests that force-enable AccessKit (`ctx.enable_accesskit()`) and assert on the emitted `TreeUpdate`.
