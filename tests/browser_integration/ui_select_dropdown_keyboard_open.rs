@@ -20,7 +20,6 @@ fn browser_tab_controller_select_dropdown_keyboard_open_space_and_enter() -> Res
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
-  let tab_id = TabId(1);
   let viewport_css = (240, 120);
   let url = "https://example.com/index.html";
   let html = r#"<!doctype html>
@@ -43,60 +42,49 @@ fn browser_tab_controller_select_dropdown_keyboard_open_space_and_enter() -> Res
     </html>
   "#;
 
-  let mut controller = BrowserTabController::from_html(tab_id, html, url, viewport_css, 1.0)?;
+  let run_case = |tab_id: TabId, key: KeyAction| -> Result<()> {
+    let mut controller = BrowserTabController::from_html(tab_id, html, url, viewport_css, 1.0)?;
 
-  // Ensure the document is laid out before driving keyboard focus traversal.
-  let _ = controller.handle_message(UiToWorker::RequestRepaint {
-    tab_id,
-    reason: RepaintReason::Explicit,
-  })?;
-
-  let select_node_id = dom_preorder_id(controller.document().dom(), "sel");
-
-  // Tab until the select is focused.
-  for _ in 0..16 {
-    if controller.interaction_state().focused == Some(select_node_id) {
-      break;
-    }
-    let _ = controller.handle_message(UiToWorker::KeyAction {
+    // Ensure the document is laid out before driving keyboard focus traversal.
+    let _ = controller.handle_message(UiToWorker::RequestRepaint {
       tab_id,
-      key: KeyAction::Tab,
+      reason: RepaintReason::Explicit,
     })?;
-  }
-  assert_eq!(
-    controller.interaction_state().focused,
-    Some(select_node_id),
-    "expected Tab traversal to focus the <select>"
-  );
 
-  // Press Space to open the dropdown popup.
-  let open_space = controller.handle_message(UiToWorker::KeyAction {
-    tab_id,
-    key: KeyAction::Space,
-  })?;
-  assert!(
-    open_space.iter().any(|msg| matches!(
-      msg,
-      WorkerToUi::SelectDropdownOpened { tab_id: got_tab, select_node_id: got_select, .. }
-        if *got_tab == tab_id && *got_select == select_node_id
-    )),
-    "expected Space to open select dropdown, got {open_space:?}"
-  );
+    let select_node_id = dom_preorder_id(controller.document().dom(), "sel");
 
-  // Enter should also open the dropdown (mirrors pointer activation semantics).
-  let open_enter = controller.handle_message(UiToWorker::KeyAction {
-    tab_id,
-    key: KeyAction::Enter,
-  })?;
-  assert!(
-    open_enter.iter().any(|msg| matches!(
-      msg,
-      WorkerToUi::SelectDropdownOpened { tab_id: got_tab, select_node_id: got_select, .. }
-        if *got_tab == tab_id && *got_select == select_node_id
-    )),
-    "expected Enter to open select dropdown, got {open_enter:?}"
-  );
+    // Tab until the select is focused.
+    for _ in 0..16 {
+      if controller.interaction_state().focused == Some(select_node_id) {
+        break;
+      }
+      let _ = controller.handle_message(UiToWorker::KeyAction {
+        tab_id,
+        key: KeyAction::Tab,
+      })?;
+    }
+    assert_eq!(
+      controller.interaction_state().focused,
+      Some(select_node_id),
+      "expected Tab traversal to focus the <select>"
+    );
+
+    let open = controller.handle_message(UiToWorker::KeyAction { tab_id, key })?;
+    assert!(
+      open.iter().any(|msg| matches!(
+        msg,
+        WorkerToUi::SelectDropdownOpened { tab_id: got_tab, select_node_id: got_select, .. }
+          if *got_tab == tab_id && *got_select == select_node_id
+      )),
+      "expected {key:?} to open select dropdown, got {open:?}"
+    );
+
+    Ok(())
+  };
+
+  run_case(TabId(1), KeyAction::Space)?;
+  run_case(TabId(2), KeyAction::ShiftSpace)?;
+  run_case(TabId(3), KeyAction::Enter)?;
 
   Ok(())
 }
-
