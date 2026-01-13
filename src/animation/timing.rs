@@ -744,6 +744,54 @@ mod tests {
   }
 
   #[test]
+  fn set_playback_rate_non_monotonic_negative_rate_preserves_current_time() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      hold_time: TimeValue::UNRESOLVED,
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    let at_50 = TimeValue::resolved(50.0);
+    assert_eq!(state.current_time_at_timeline_time(at_50), at_50);
+
+    state.set_playback_rate(-1.0, at_50, false);
+
+    // The current time at the moment of change is preserved.
+    assert_eq!(state.current_time_at_timeline_time(at_50), at_50);
+
+    // Time now runs backwards as the timeline increases.
+    assert_eq!(
+      state.current_time_at_timeline_time(TimeValue::resolved(60.0)),
+      TimeValue::resolved(40.0)
+    );
+  }
+
+  #[test]
+  fn set_playback_rate_non_monotonic_while_paused_keeps_hold_time() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      hold_time: TimeValue::UNRESOLVED,
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    let at_50 = TimeValue::resolved(50.0);
+    state.pause(at_50);
+    assert_eq!(state.hold_time(), at_50);
+
+    // Change playback rate while paused.
+    state.set_playback_rate(2.0, TimeValue::resolved(60.0), false);
+    assert_eq!(state.hold_time(), at_50);
+
+    // Resuming uses the new rate while preserving the paused time.
+    state.play(TimeValue::resolved(80.0));
+    assert_eq!(state.current_time_at_timeline_time(TimeValue::resolved(80.0)), at_50);
+    assert_eq!(
+      state.current_time_at_timeline_time(TimeValue::resolved(90.0)),
+      TimeValue::resolved(70.0)
+    );
+  }
+
+  #[test]
   fn set_playback_rate_non_monotonic_zero_rate_freezes_current_time() {
     let mut state = AnimationTimingState {
       start_time: TimeValue::resolved(0.0),
