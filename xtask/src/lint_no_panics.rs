@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -191,7 +191,11 @@ pub fn lint_dir(repo_root: &Path, dir: &Path) -> Result<Vec<Violation>> {
 /// via `#[cfg(test)] mod foo;` declarations (common for large test suites where keeping tests in
 /// their own file is nicer than an inline `mod tests { ... }` block).
 fn collect_cfg_test_module_files(src_dir: &Path) -> Result<HashSet<PathBuf>> {
+  // Phase 1: Find the direct `#[cfg(test)] mod foo;` targets.
+  //
+  // These are the roots of test-only module trees.
   let mut out = HashSet::new();
+  let mut queue = VecDeque::new();
 
   for entry in WalkDir::new(src_dir)
     .into_iter()
@@ -204,7 +208,33 @@ fn collect_cfg_test_module_files(src_dir: &Path) -> Result<HashSet<PathBuf>> {
 
     let source = fs::read_to_string(entry.path())
       .with_context(|| format!("read {}", entry.path().display()))?;
-    out.extend(find_cfg_test_module_files(entry.path(), &source));
+    for path in find_cfg_test_module_files(entry.path(), &source) {
+      if out.insert(path.clone()) {
+        queue.push_back(path);
+      }
+    }
+  }
+
+  // Phase 2: Any external submodule of a test-only module is also test-only, even if the `mod ...;`
+  // declaration itself is not annotated with `#[cfg(test)]`.
+  //
+  // This handles directory modules like:
+  //   src/layout/mod.rs   -> #[cfg(test)] mod tests;
+  //   src/layout/tests/mod.rs -> mod paged_media;
+  while let Some(test_only_file) = queue.pop_front() {
+    // `lint-no-panics` only walks `src_dir`, so there's no need to follow module edges that leave
+    // the provided subtree.
+    if !test_only_file.starts_with(src_dir) {
+      continue;
+    }
+
+    let source = fs::read_to_string(&test_only_file)
+      .with_context(|| format!("read {}", test_only_file.display()))?;
+    for path in find_external_mod_files(&test_only_file, &source) {
+      if out.insert(path.clone()) {
+        queue.push_back(path);
+      }
+    }
   }
 
   Ok(out)
@@ -340,6 +370,43 @@ fn find_cfg_test_module_files(parent_path: &Path, source: &str) -> Vec<PathBuf> 
     }
 
     i += 1;
+  }
+
+  out
+}
+
+/// Find external module files referenced from `parent_path` via `mod foo;` declarations.
+///
+/// This intentionally ignores `cfg(...)` conditions: callers should decide whether the parent file
+/// itself is test-only before treating its submodules as test-only.
+fn find_external_mod_files(parent_path: &Path, source: &str) -> Vec<PathBuf> {
+  let bytes = source.as_bytes();
+  let mut i = 0usize;
+  let mut out = Vec::new();
+
+  while i < bytes.len() {
+    i = skip_ws_and_comments(bytes, i);
+    if i >= bytes.len() {
+      break;
+    }
+
+    let start = i;
+    let end = skip_cfg_item(bytes, i);
+    if end <= start {
+      // Defensive: avoid infinite loops on malformed input.
+      i = start + 1;
+      continue;
+    }
+
+    if let Some(item) = source.get(start..end) {
+      if let Some(decl) = parse_external_mod_decl(item) {
+        if let Some(path) = resolve_mod_file(parent_path, &decl) {
+          out.push(path);
+        }
+      }
+    }
+
+    i = end;
   }
 
   out
@@ -1632,6 +1699,58 @@ pub fn prod() {
       root.join("foo_tests.rs"),
       r#"
 pub fn test_only() {
+  panic!("boom");
+  let _ = Some(1).unwrap();
+}
+"#,
+    )
+    .unwrap();
+
+    let violations = lint_dir(root, root).unwrap();
+    assert_eq!(
+      violations.len(),
+      1,
+      "expected only the production file violation to be reported: {violations:#?}"
+    );
+    assert_eq!(violations[0].path, PathBuf::from("mod.rs"));
+    assert_eq!(violations[0].kind, ViolationKind::Unwrap);
+  }
+
+  #[test]
+  fn lint_dir_skips_cfg_test_external_module_file_submodules() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    fs::write(
+      root.join("mod.rs"),
+      r#"
+#[cfg(test)]
+mod tests;
+
+pub fn prod() {
+  let _ = Some(1).unwrap();
+}
+"#,
+    )
+    .unwrap();
+
+    fs::create_dir_all(root.join("tests")).unwrap();
+    fs::write(
+      root.join("tests/mod.rs"),
+      r#"
+mod nested;
+
+pub fn test_only() {
+  panic!("boom");
+  let _ = Some(1).unwrap();
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+      root.join("tests/nested.rs"),
+      r#"
+pub fn nested() {
   panic!("boom");
   let _ = Some(1).unwrap();
 }
