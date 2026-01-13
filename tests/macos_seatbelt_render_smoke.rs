@@ -27,6 +27,11 @@ fn sandboxed_render_smoke_seatbelt_profile() {
   );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
+    // Keep this smoke test lightweight: don't load large bundled emoji fonts and avoid spawning a
+    // large Rayon pool.
+    std::env::set_var("FASTR_BUNDLE_EMOJI_FONT", "0");
+    std::env::set_var("RAYON_NUM_THREADS", "1");
+
     // Apply the strictest built-in profile (`pure-computation`) so this smoke test fails if the
     // renderer starts depending on filesystem/network access inside the sandbox.
     sandbox::apply_pure_computation_sandbox().expect("apply Seatbelt pure-computation sandbox");
@@ -76,6 +81,8 @@ fn sandboxed_render_smoke_seatbelt_profile() {
   let exe = std::env::current_exe().expect("current test exe path");
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
+    .env("FASTR_BUNDLE_EMOJI_FONT", "0")
+    .env("RAYON_NUM_THREADS", "1")
     // Keep test harness output deterministic under strict sandboxing.
     .arg("--test-threads=1")
     .arg("--exact")
