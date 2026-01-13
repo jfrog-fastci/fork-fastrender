@@ -1,7 +1,8 @@
 use crate::api::BrowserDocument;
-use crate::dom::DomNode;
+use crate::dom::{DomNode, DomNodeType};
+use crate::ui::omnibox_nav::{apply_omnibox_nav_key, OmniboxNavKey};
+use crate::ui::{BrowserAppState, ChromeAction, OmniboxSuggestion};
 use crate::interaction::{fragment_tree_with_scroll, InteractionEngine, InteractionState};
-use crate::ui::BrowserAppState;
 use crate::{FastRender, Pixmap, RenderOptions, Result};
 
 pub mod dom_mutation;
@@ -57,6 +58,23 @@ const CHROME_FRAME_HTML: &str = r#"<!doctype html>
         color: black;
       }
 
+      #omnibox {
+        margin: 0 6px 6px 6px;
+        border: 1px solid #888;
+        border-radius: 4px;
+        background: white;
+        color: black;
+        width: 244px;
+      }
+
+      .omnibox-item {
+        padding: 2px 6px;
+      }
+
+      .omnibox-item.selected {
+        background: rgb(200, 200, 255);
+      }
+
       #tab-title {
         font-weight: bold;
         color: black;
@@ -71,6 +89,7 @@ const CHROME_FRAME_HTML: &str = r#"<!doctype html>
       <input id="address-bar" type="text" value="" />
       <span id="tab-title"></span>
     </div>
+    <div id="omnibox" hidden></div>
   </body>
 </html>
 "#;
@@ -153,11 +172,17 @@ impl ChromeFrameDocument {
     let changed = self.document.mutate_dom(|dom: &mut DomNode| {
       let mut changed = false;
 
-      // Address bar: avoid clobbering active edits.
-      if !app.chrome.address_bar_editing {
-        if let Some(address) = dom_mutation::find_element_by_id_mut(dom, "address-bar") {
-          changed |= dom_mutation::set_attr(address, "value", active_url);
-        }
+      // Address bar:
+      // - When the user is editing, mirror `ChromeState::address_bar_text` so keyboard omnibox
+      //   navigation can preview suggestions by updating the value.
+      // - Otherwise, display the current committed URL from the active tab.
+      if let Some(address) = dom_mutation::find_element_by_id_mut(dom, "address-bar") {
+        let desired = if app.chrome.address_bar_has_focus || app.chrome.address_bar_editing {
+          app.chrome.address_bar_text.as_str()
+        } else {
+          active_url
+        };
+        changed |= dom_mutation::set_attr(address, "value", desired);
       }
 
       if let Some(back) = dom_mutation::find_element_by_id_mut(dom, "nav-back") {
@@ -184,6 +209,65 @@ impl ChromeFrameDocument {
 
       if let Some(tab_title) = dom_mutation::find_element_by_id_mut(dom, "tab-title") {
         changed |= dom_mutation::set_text_content(tab_title, title);
+      }
+
+      // Omnibox dropdown list.
+      if let Some(omnibox) = dom_mutation::find_element_by_id_mut(dom, "omnibox") {
+        let show = app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty();
+        changed |= dom_mutation::set_bool_attr(omnibox, "hidden", !show);
+
+        if show {
+          let selected = app.chrome.omnibox.selected;
+          let desired_len = app.chrome.omnibox.suggestions.len();
+
+          let needs_rebuild = omnibox.children.len() != desired_len
+            || omnibox.children.iter().any(|c| !c.is_element());
+          if needs_rebuild {
+            omnibox.children.clear();
+            for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
+              let class = if selected == Some(idx) {
+                "omnibox-item selected"
+              } else {
+                "omnibox-item"
+              };
+              let label = omnibox_item_label(suggestion);
+
+              let mut item = DomNode {
+                node_type: DomNodeType::Element {
+                  tag_name: "div".to_string(),
+                  namespace: String::new(),
+                  attributes: vec![
+                    ("class".to_string(), class.to_string()),
+                    ("data-index".to_string(), idx.to_string()),
+                  ],
+                },
+                children: Vec::new(),
+              };
+              dom_mutation::set_text_content(&mut item, label);
+              omnibox.children.push(item);
+            }
+            changed = true;
+          } else {
+            for (idx, (child, suggestion)) in omnibox
+              .children
+              .iter_mut()
+              .zip(app.chrome.omnibox.suggestions.iter())
+              .enumerate()
+            {
+              let class = if selected == Some(idx) {
+                "omnibox-item selected"
+              } else {
+                "omnibox-item"
+              };
+              changed |= dom_mutation::set_attr(child, "class", class);
+              changed |= dom_mutation::set_attr(child, "data-index", &idx.to_string());
+              changed |= dom_mutation::set_text_content(child, omnibox_item_label(suggestion));
+            }
+          }
+        } else if !omnibox.children.is_empty() {
+          omnibox.children.clear();
+          changed = true;
+        }
       }
 
       changed
@@ -245,12 +329,47 @@ impl ChromeFrameDocument {
 
     Ok(scrolled)
   }
+
+  /// Apply an address-bar omnibox navigation key and update the DOM.
+  ///
+  /// Returns the accepted [`ChromeAction`] for Enter, if any.
+  pub fn handle_address_bar_key(
+    &mut self,
+    app: &mut BrowserAppState,
+    key: OmniboxNavKey,
+  ) -> Option<ChromeAction> {
+    if !app.chrome.address_bar_has_focus {
+      return None;
+    }
+
+    let outcome = apply_omnibox_nav_key(app, key);
+    self.sync_state(app);
+    outcome.action
+  }
+}
+
+fn omnibox_item_label(suggestion: &OmniboxSuggestion) -> &str {
+  suggestion
+    .title
+    .as_deref()
+    .map(str::trim)
+    .filter(|s| !s.is_empty())
+    .or_else(|| {
+      suggestion
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    })
+    .or_else(|| crate::ui::omnibox_nav::omnibox_suggestion_fill_text(suggestion))
+    .unwrap_or("")
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::text::font_db::FontConfig;
+  use crate::ui::{BrowserTabState, OmniboxAction, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
   use std::collections::hash_map::DefaultHasher;
   use std::hash::{Hash, Hasher};
 
@@ -391,6 +510,45 @@ mod tests {
       chrome.document().scroll_state(),
       "expected scroll state to remain unchanged at bottom"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn chrome_frame_omnibox_keyboard_navigation_emits_actions() -> Result<()> {
+    let tab1 = TabId::new();
+    let tab2 = TabId::new();
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(tab1, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab2, "https://b.example/".to_string()),
+      false,
+    );
+
+    app.chrome.address_bar_text = "typed input".to_string();
+    app.chrome.address_bar_editing = true;
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.omnibox.suggestions = vec![crate::ui::OmniboxSuggestion {
+      action: OmniboxAction::ActivateTab(tab2),
+      title: Some("B".to_string()),
+      url: Some("https://b.example/".to_string()),
+      source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
+    }];
+
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()?;
+    let mut chrome = ChromeFrameDocument::new(renderer, RenderOptions::new().with_viewport(360, 80))?;
+    chrome.sync_state(&app);
+
+    assert_eq!(
+      chrome.handle_address_bar_key(&mut app, OmniboxNavKey::ArrowDown),
+      None
+    );
+    let action = chrome.handle_address_bar_key(&mut app, OmniboxNavKey::Enter);
+    assert_eq!(action, Some(ChromeAction::ActivateTab(tab2)));
     Ok(())
   }
 }

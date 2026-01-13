@@ -39,6 +39,7 @@ pub mod history;
 pub mod history_timestamp;
 pub mod visited;
 pub mod omnibox;
+pub mod omnibox_nav;
 mod string_match;
 pub mod load_progress;
 pub mod search_suggest;

@@ -15,6 +15,9 @@ use crate::ui::omnibox::{
   build_omnibox_suggestions_default_limit, OmniboxAction, OmniboxContext, OmniboxSearchSource,
   OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource,
 };
+use crate::ui::omnibox_nav::{
+  apply_omnibox_nav_key, omnibox_suggestion_accept_action, OmniboxNavKey,
+};
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::theme;
@@ -23,7 +26,7 @@ use crate::ui::theme_parsing::{
   RgbaColor, ENV_BROWSER_ACCENT,
 };
 use crate::ui::url::{
-  resolve_omnibox_search_query, search_url_for_query, DEFAULT_SEARCH_ENGINE_TEMPLATE,
+  resolve_omnibox_search_query,
 };
 use crate::ui::url_display;
 use crate::ui::zoom;
@@ -316,24 +319,6 @@ fn omnibox_suggestion_a11y_label(suggestion: &OmniboxSuggestion) -> String {
         format!("Go to: {url_action}")
       }
     }
-  }
-}
-
-fn omnibox_suggestion_fill_text(suggestion: &OmniboxSuggestion) -> Option<&str> {
-  match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => Some(url),
-    OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
-    OmniboxAction::Search(query) => Some(query),
-  }
-}
-
-fn omnibox_suggestion_accept_action(suggestion: &OmniboxSuggestion) -> ChromeAction {
-  match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => ChromeAction::NavigateTo(url.clone()),
-    OmniboxAction::ActivateTab(tab_id) => ChromeAction::ActivateTab(*tab_id),
-    OmniboxAction::Search(query) => ChromeAction::NavigateTo(
-      search_url_for_query(query, DEFAULT_SEARCH_ENGINE_TEMPLATE).unwrap_or_else(|_| query.clone()),
-    ),
   }
 }
 
@@ -2224,68 +2209,44 @@ pub fn chrome_ui_with_bookmarks(
         }
 
         if has_focus && (key_arrow_down || key_arrow_up) {
-          if !app.chrome.omnibox.open {
-            app.chrome.omnibox.open = true;
-
-            // Avoid rebuilding suggestions if we already have suggestions for the current input (for
-            // example, after pressing Escape to close the dropdown while keeping focus).
-            if app.chrome.omnibox.last_built_for_input != app.chrome.address_bar_text
-              || app.chrome.omnibox.suggestions.is_empty()
-            {
-              let input = app.chrome.address_bar_text.as_str();
-              let suggestions = {
-                let ctx = OmniboxContext {
-                  open_tabs: &app.tabs,
-                  closed_tabs: &app.closed_tabs,
-                  visited: &app.visited,
-                  active_tab_id: app.active_tab_id(),
-                  bookmarks: omnibox_bookmarks,
-                  remote_search_suggest: Some(&app.chrome.remote_search_cache),
-                };
-                build_omnibox_suggestions_default_limit(&ctx, input)
+          // Avoid rebuilding suggestions if we already have suggestions for the current input (for
+          // example, after pressing Escape to close the dropdown while keeping focus).
+          if !app.chrome.omnibox.open
+            && (app.chrome.omnibox.last_built_for_input != app.chrome.address_bar_text
+              || app.chrome.omnibox.suggestions.is_empty())
+          {
+            let input = app.chrome.address_bar_text.as_str();
+            let suggestions = {
+              let ctx = OmniboxContext {
+                open_tabs: &app.tabs,
+                closed_tabs: &app.closed_tabs,
+                visited: &app.visited,
+                active_tab_id: app.active_tab_id(),
+                bookmarks: omnibox_bookmarks,
+                remote_search_suggest: Some(&app.chrome.remote_search_cache),
               };
-              app.chrome.omnibox.suggestions = suggestions;
-              app
-                .chrome
-                .omnibox
-                .last_built_for_input
-                .clone_from(&app.chrome.address_bar_text);
-              app.chrome.omnibox.last_built_remote_fetched_at =
-                app.chrome.remote_search_cache.fetched_at;
-            }
-
-            if app.chrome.omnibox.suggestions.is_empty() {
-              app.chrome.omnibox.open = false;
-            }
-          }
-
-          if app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty() {
-            let len = app.chrome.omnibox.suggestions.len();
-            let next = if key_arrow_down {
-              match app.chrome.omnibox.selected {
-                None => 0,
-                Some(i) => (i + 1) % len,
-              }
-            } else {
-              // ArrowUp
-              match app.chrome.omnibox.selected {
-                None => len - 1,
-                Some(i) => (i + len - 1) % len,
-              }
+              build_omnibox_suggestions_default_limit(&ctx, input)
             };
-
-            if app.chrome.omnibox.selected.is_none() && app.chrome.omnibox.original_input.is_none()
-            {
-              app.chrome.omnibox.original_input = Some(app.chrome.address_bar_text.clone());
-            }
-            app.chrome.omnibox.selected = Some(next);
-
-            if let Some(suggestion) = app.chrome.omnibox.suggestions.get(next) {
-              if let Some(fill) = omnibox_suggestion_fill_text(suggestion) {
-                app.chrome.address_bar_text = fill.to_string();
-              }
-            }
+            app.chrome.omnibox.suggestions = suggestions;
+            app
+              .chrome
+              .omnibox
+              .last_built_for_input
+              .clone_from(&app.chrome.address_bar_text);
+            app.chrome.omnibox.last_built_remote_fetched_at =
+              app.chrome.remote_search_cache.fetched_at;
           }
+
+          if app.chrome.omnibox.suggestions.is_empty() {
+            app.chrome.omnibox.open = false;
+          }
+
+          let nav_key = if key_arrow_down {
+            OmniboxNavKey::ArrowDown
+          } else {
+            OmniboxNavKey::ArrowUp
+          };
+          let _ = apply_omnibox_nav_key(app, nav_key);
         }
 
         // If remote suggestions arrived for the current query, rebuild the suggestion list so the
@@ -2333,55 +2294,37 @@ pub fn chrome_ui_with_bookmarks(
         }
 
         if has_focus && key_escape {
-          if app.chrome.omnibox.open || app.chrome.omnibox.selected.is_some() {
-            app.chrome.omnibox.open = false;
-            app.chrome.omnibox.selected = None;
-            if let Some(original) = app.chrome.omnibox.original_input.take() {
-              app.chrome.address_bar_text = original;
-            }
+          let was_open_or_selected =
+            app.chrome.omnibox.open || app.chrome.omnibox.selected.is_some();
+          let _ = apply_omnibox_nav_key(app, OmniboxNavKey::Escape);
+          if was_open_or_selected {
             // Ensure we paint at least one follow-up frame so the dropdown can fade out smoothly.
             ctx.request_repaint();
           } else {
-            app.set_address_bar_editing(false);
             response.surrender_focus();
             actions.push(ChromeAction::AddressBarFocusChanged(false));
           }
         }
 
         if has_focus && (key_enter || key_alt_enter) {
-          let accept_action = (app.chrome.omnibox.open)
-            .then_some(())
-            .and_then(|_| app.chrome.omnibox.selected)
-            .and_then(|i| app.chrome.omnibox.suggestions.get(i))
-            .map(omnibox_suggestion_accept_action);
+          let outcome = apply_omnibox_nav_key(app, OmniboxNavKey::Enter);
+          if let Some(resolved_action) = outcome.action {
+            // Alt+Enter should open the resolved navigation in a new foreground tab, leaving the
+            // current tab unchanged. (If the selected suggestion is an open-tab activation, keep the
+            // existing behaviour.)
+            let action = if key_alt_enter {
+              match resolved_action {
+                ChromeAction::NavigateTo(url) => ChromeAction::OpenUrlInNewTab(url),
+                other => other,
+              }
+            } else {
+              resolved_action
+            };
 
-          // First resolve the omnibox selection the same way plain Enter does.
-          let resolved_action = accept_action
-            .unwrap_or_else(|| ChromeAction::NavigateTo(app.chrome.address_bar_text.clone()));
-
-          if let ChromeAction::NavigateTo(url) = &resolved_action {
-            app.chrome.address_bar_text = url.clone();
+            actions.push(action);
+            actions.push(ChromeAction::AddressBarFocusChanged(false));
+            response.surrender_focus();
           }
-
-          // Alt+Enter should open the resolved navigation in a new foreground tab, leaving the
-          // current tab unchanged. (If the selected suggestion is an open-tab activation, keep the
-          // existing behaviour.)
-          let action = if key_alt_enter {
-            match resolved_action {
-              ChromeAction::NavigateTo(url) => ChromeAction::OpenUrlInNewTab(url),
-              other => other,
-            }
-          } else {
-            resolved_action
-          };
-
-          app.chrome.address_bar_editing = false;
-          app.chrome.address_bar_has_focus = false;
-          app.chrome.omnibox.reset();
-
-          actions.push(action);
-          actions.push(ChromeAction::AddressBarFocusChanged(false));
-          response.surrender_focus();
         }
 
         address_bar_text_edit_response = Some(response.clone());
