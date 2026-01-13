@@ -3166,6 +3166,7 @@ mod tests {
   use std::collections::HashMap;
   use std::sync::Arc;
   use std::sync::Mutex;
+  use std::time::Duration;
 
   static FLOAT_PROFILE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -3290,6 +3291,34 @@ mod tests {
 
       ctx.debug_dump("unit_test");
       let _ = ctx.take_timeout_error();
+    });
+  }
+
+  #[test]
+  fn float_context_timeout_auto_dump_does_not_panic() {
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_LOG_FLOAT_CONTEXT".to_string(), "1".to_string()),
+      // Suppress segment spam; we only care that the dump machinery does not panic.
+      ("FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS".to_string(), "0".to_string()),
+    ])));
+
+    runtime::with_runtime_toggles(toggles, || {
+      // Deadline that is immediately expired, but note FloatContext only checks it periodically.
+      let deadline = RenderDeadline::new(Some(Duration::from_millis(0)), None);
+      let _guard = DeadlineGuard::install(Some(&deadline));
+
+      // Construct enough float boundaries that `find_fit` will hit its periodic deadline check.
+      let mut ctx = FloatContext::new(200.0);
+      for i in 0..256 {
+        ctx.add_float_at(FloatSide::Left, 0.0, i as f32, 150.0, 1.0);
+      }
+
+      let _ = ctx.find_fit(180.0, 1.0, 0.0);
+      let err = ctx.take_timeout_error();
+      assert!(
+        matches!(err, Some(LayoutError::Timeout { .. })),
+        "expected deadline to trip and record a timeout"
+      );
     });
   }
 
