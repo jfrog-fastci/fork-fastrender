@@ -202,8 +202,8 @@ pub mod browser_cli;
 
 pub use messages::{
   BrowserMediaPreferences, CursorKind, DatalistSuggestion, DownloadId, DownloadOutcome,
-  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker,
-  WakeReason, WorkerToUi,
+  NavigationReason, PageExportKind, PageExportOutcome, PointerButton, PointerModifiers, RenderedFrame,
+  RepaintReason, TabId, UiToWorker, WakeReason, WorkerToUi,
 };
 pub use cancel::CancelGens;
 pub use renderer_process_id::RendererProcessId;

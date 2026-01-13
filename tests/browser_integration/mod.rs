@@ -244,6 +244,7 @@ mod ui_worker_text_editing;
 mod ui_worker_title;
 mod ui_worker_js_post_navigation_pump;
 mod ui_worker_download_cancel_cleans_up;
+mod ui_worker_page_export_atomic;
 mod ui_worker_download_filename_collision_suffix;
 mod ui_worker_find_query_coalescing;
 mod ui_worker_find_in_page;

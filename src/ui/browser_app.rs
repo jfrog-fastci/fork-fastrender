@@ -3314,6 +3314,11 @@ impl BrowserAppState {
           update.request_redraw = true;
         }
       }
+      WorkerToUi::PageExportFinished { .. } => {
+        // Export UX is handled by the front-end (native dialogs/toasts). The shared app model does
+        // not currently store export state; just request a redraw so callers can surface a result.
+        update.request_redraw = true;
+      }
     }
 
     if tabs_changed {

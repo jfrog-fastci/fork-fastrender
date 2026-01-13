@@ -38,8 +38,8 @@ use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, NavigationReason,
-  MediaCommand, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WakeReason,
-  WorkerToUi,
+  MediaCommand, PageExportKind, PageExportOutcome, PointerButton, RenderedFrame, ScrollMetrics, TabId,
+  UiToWorker, WakeReason, WorkerToUi,
 };
 use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
@@ -52,7 +52,7 @@ use image::imageops::FilterType;
 use rustc_hash::FxHashSet;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "browser_ui")]
 use std::sync::atomic::AtomicUsize;
@@ -3783,6 +3783,9 @@ impl BrowserRuntime {
       } => {
         self.cancel_download(download_id);
       }
+      UiToWorker::PageExport { tab_id, kind, path } => {
+        self.handle_page_export(tab_id, kind, path);
+      }
       UiToWorker::TestQueryJsDomAttribute {
         tab_id,
         element_id,
@@ -4316,6 +4319,211 @@ impl BrowserRuntime {
     let downloads = self.downloads.lock().unwrap_or_else(|err| err.into_inner());
     if let Some(download) = downloads.get(&download_id) {
       download.cancel.store(true, Ordering::Release);
+    }
+  }
+
+  fn handle_page_export(&mut self, tab_id: TabId, kind: PageExportKind, path: PathBuf) {
+    let ui_tx = self.ui_tx.clone();
+
+    let finish = |outcome: PageExportOutcome| {
+      let _ = ui_tx.send(WorkerToUi::PageExportFinished {
+        tab_id,
+        kind,
+        path: path.clone(),
+        outcome,
+      });
+    };
+
+    if path.as_os_str().is_empty() {
+      finish(PageExportOutcome::Failed {
+        error: "export path is empty".to_string(),
+      });
+      return;
+    }
+
+    let parent_dir = path
+      .parent()
+      .filter(|p| !p.as_os_str().is_empty())
+      .unwrap_or_else(|| Path::new("."));
+
+    let part_path = crate::ui::downloads::part_path_for_final(&path);
+
+    // Best-effort cleanup helper (ignore errors: file may not exist / be already removed).
+    let cleanup_part = || {
+      let _ = std::fs::remove_file(&part_path);
+    };
+
+    // If a previous export attempt crashed/was interrupted, clear any stale `.part` file up front so
+    // failures never leave behind confusing artifacts.
+    cleanup_part();
+
+    if let Err(err) = std::fs::create_dir_all(parent_dir) {
+      cleanup_part();
+      finish(PageExportOutcome::Failed {
+        error: format!("failed to create export dir {}: {err}", parent_dir.display()),
+      });
+      return;
+    }
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      cleanup_part();
+      finish(PageExportOutcome::Failed {
+        error: format!("unknown tab id {tab_id:?}"),
+      });
+      return;
+    };
+
+    // Keep the renderer's DOM snapshot in sync with the live `dom2` document owned by the JS tab
+    // so exports reflect the latest JS-driven mutations.
+    let js_dom_generation_changed = tab
+      .js_tab
+      .as_ref()
+      .is_some_and(|js_tab| js_tab.dom().mutation_generation() != tab.js_dom_mutation_generation);
+    if tab.js_dom_dirty || js_dom_generation_changed {
+      sync_render_dom_from_js_tab(tab_id, tab, &self.ui_tx);
+    }
+
+    let Some(doc) = tab.document.as_mut() else {
+      cleanup_part();
+      finish(PageExportOutcome::Failed {
+        error: "cannot export: tab has no document".to_string(),
+      });
+      return;
+    };
+
+    let snapshot = tab.cancel.snapshot_paint();
+    let cancel_callback = snapshot.cancel_callback_for_paint(&tab.cancel);
+    doc.set_cancel_callback(Some(cancel_callback.clone()));
+
+    // Export rendering can be expensive; forward stage heartbeats so front-ends can show progress.
+    let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+
+    let painted = doc.render_frame_with_scroll_state_and_interaction_state(Some(
+      tab.interaction.interaction_state(),
+    ));
+
+    let painted = match painted {
+      Ok(frame) => frame,
+      Err(err) => {
+        if cancel_callback() || !snapshot.is_still_current_for_paint(&tab.cancel) {
+          cleanup_part();
+          finish(PageExportOutcome::Cancelled);
+        } else {
+          cleanup_part();
+          finish(PageExportOutcome::Failed {
+            error: format!("failed to render export: {err}"),
+          });
+        }
+        return;
+      }
+    };
+
+    if cancel_callback() || !snapshot.is_still_current_for_paint(&tab.cancel) {
+      cleanup_part();
+      finish(PageExportOutcome::Cancelled);
+      return;
+    }
+
+    // Keep per-tab scroll state consistent with the render result.
+    tab.scroll_state = painted.scroll_state.clone();
+    tab.sync_js_scroll_state();
+    tab.history.update_scroll_state(&tab.scroll_state);
+
+    let png_bytes = match painted.pixmap.encode_png() {
+      Ok(bytes) => bytes,
+      Err(err) => {
+        cleanup_part();
+        finish(PageExportOutcome::Failed {
+          error: format!("failed to encode export PNG: {err}"),
+        });
+        return;
+      }
+    };
+
+    let mut writer = match std::fs::OpenOptions::new()
+      .write(true)
+      .create_new(true)
+      .open(&part_path)
+    {
+      Ok(file) => file,
+      Err(err) => {
+        cleanup_part();
+        finish(PageExportOutcome::Failed {
+          error: format!("failed to create temp export file {}: {err}", part_path.display()),
+        });
+        return;
+      }
+    };
+
+    if let Err(err) = writer.write_all(&png_bytes) {
+      drop(writer);
+      cleanup_part();
+      finish(PageExportOutcome::Failed {
+        error: format!("failed to write export file {}: {err}", part_path.display()),
+      });
+      return;
+    }
+    if let Err(err) = writer.flush() {
+      drop(writer);
+      cleanup_part();
+      finish(PageExportOutcome::Failed {
+        error: format!("failed to flush export file {}: {err}", part_path.display()),
+      });
+      return;
+    }
+    // Best-effort durability: don't fail the whole export if syncing is unsupported.
+    let _ = writer.sync_all();
+    drop(writer);
+
+    // If the export was cancelled while we were writing, do not publish a partially written output.
+    if cancel_callback() || !snapshot.is_still_current_for_paint(&tab.cancel) {
+      cleanup_part();
+      finish(PageExportOutcome::Cancelled);
+      return;
+    }
+
+    match std::fs::rename(&part_path, &path) {
+      Ok(()) => {
+        finish(PageExportOutcome::Completed);
+      }
+      Err(err) => {
+        // Best-effort Windows compatibility: if rename fails due to destination already existing,
+        // remove the destination and retry (not strictly atomic, but avoids leaving a `.part` file
+        // behind and matches existing profile/session persistence semantics).
+        let retry = matches!(
+          err.kind(),
+          std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+        );
+        if retry {
+          let _ = std::fs::remove_file(&path);
+          match std::fs::rename(&part_path, &path) {
+            Ok(()) => {
+              finish(PageExportOutcome::Completed);
+              return;
+            }
+            Err(err) => {
+              cleanup_part();
+              finish(PageExportOutcome::Failed {
+                error: format!(
+                  "failed to finalize export (rename {} -> {}): {err}",
+                  part_path.display(),
+                  path.display()
+                ),
+              });
+              return;
+            }
+          }
+        }
+
+        cleanup_part();
+        finish(PageExportOutcome::Failed {
+          error: format!(
+            "failed to finalize export (rename {} -> {}): {err}",
+            part_path.display(),
+            path.display()
+          ),
+        });
+      }
     }
   }
 

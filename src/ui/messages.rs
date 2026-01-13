@@ -101,6 +101,13 @@ impl DownloadId {
   }
 }
 
+/// Type of page export requested by the browser UI (e.g. Save Page… / Print…).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PageExportKind {
+  SavePage,
+  Print,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NavigationReason {
   TypedUrl,
@@ -871,6 +878,15 @@ pub enum UiToWorker {
     tab_id: TabId,
     download_id: DownloadId,
   },
+  /// Export the current page contents to a file (Save Page… / Print…).
+  ///
+  /// Workers are expected to write outputs atomically (write to a sibling `.part` file and rename on
+  /// success) to avoid leaving partially-written outputs behind.
+  PageExport {
+    tab_id: TabId,
+    kind: PageExportKind,
+    path: PathBuf,
+  },
   /// Integration-test hook: query the JS tab's DOM for a specific attribute value.
   ///
   /// This is intended for `browser_ui` integration tests that need to assert that JS event
@@ -1234,6 +1250,13 @@ pub enum WorkerToUi {
     download_id: DownloadId,
     outcome: DownloadOutcome,
   },
+  /// A page export finished, either successfully or with an error/cancellation.
+  PageExportFinished {
+    tab_id: TabId,
+    kind: PageExportKind,
+    path: PathBuf,
+    outcome: PageExportOutcome,
+  },
 }
 
 impl WorkerToUi {
@@ -1281,15 +1304,21 @@ impl WorkerToUi {
       | WorkerToUi::SetClipboardText { tab_id, .. }
       | WorkerToUi::DownloadStarted { tab_id, .. }
       | WorkerToUi::DownloadProgress { tab_id, .. }
-      | WorkerToUi::DownloadFinished { tab_id, .. } => *tab_id,
-      #[cfg(feature = "browser_ui")]
-      WorkerToUi::PageAccessKitSubtree { tab_id, .. } => *tab_id,
+      | WorkerToUi::DownloadFinished { tab_id, .. }
+      | WorkerToUi::PageExportFinished { tab_id, .. } => *tab_id,
     }
   }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadOutcome {
+  Completed,
+  Cancelled,
+  Failed { error: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageExportOutcome {
   Completed,
   Cancelled,
   Failed { error: String },
