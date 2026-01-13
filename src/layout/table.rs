@@ -4385,10 +4385,12 @@ fn build_table_collapsed_borders_metadata(
   // maximum outer-edge segment widths (and corner join widths) rather than only the baseline line
   // widths.
   //
-  // Note: `paint_bounds` can still have a negative origin because those negative coordinates
-  // represent border pixels that paint into the margin (including any outward spill). This is
-  // intentional and relied upon by the display list bounds/culling logic (see
-  // `collapsed_border_paint_bounds_include_thick_outer_segment` and WPT `border-collapse-basic-001`).
+  // Note: `paint_bounds` can have a negative origin because collapsed border strokes are centered
+  // on the outer grid lines. That means even the baseline outer border paints half outside the
+  // table border box, and later rows/columns can increase that outward spill without affecting
+  // layout (§17.6.2; WPT `border-collapse-basic-001`). The negative coordinates are intentional and
+  // relied upon by the display list bounds/culling logic (see
+  // `collapsed_border_paint_bounds_include_thick_outer_segment`).
   let mut outer_left_half = 0.0f32;
   let mut outer_right_half = 0.0f32;
   if let (Some(left), Some(right)) = (
@@ -6956,7 +6958,7 @@ impl FormattingContext for TableFormattingContext {
       let mut pad_left = resolve_table_padding(&table_root_style.padding_left);
       let mut pad_right = resolve_table_padding(&table_root_style.padding_right);
       let mut pad_top = resolve_table_padding(&table_root_style.padding_top);
-      // In the collapsing border model, the table box has no padding (CSS 2.2 §17.6.2).
+      // In the collapsing border model, the table box has no padding (CSS 2.1 §17.6.2).
       let pad_bottom = if structure.border_collapse == BorderCollapse::Collapse {
         pad_left = 0.0;
         pad_right = 0.0;
@@ -20509,7 +20511,7 @@ mod tests {
       borders.paint_bounds.x()
     );
 
-    // Layout geometry still uses the first row's outer border width (CSS 2.2 §17.6.2): the base
+    // Layout geometry still uses the first row's outer border width (CSS 2.1 §17.6.2): the base
     // width used to position the grid remains 2px, so the excess from later rows spills outward.
     assert!(
       (borders.vertical_line_base.first().copied().unwrap_or(0.0) - 2.0).abs() < 1e-6,
