@@ -413,6 +413,24 @@ impl PendingScrollDrag {
   }
 }
 
+/// Write a worker-provided clipboard update only if it is within our hard byte limit.
+///
+/// Returns `true` if `write_text` was invoked.
+#[cfg(any(test, feature = "browser_ui"))]
+fn write_clipboard_update_if_within_limit<F>(
+  update: &fastrender::ui::protocol_limits::ClipboardTextLimitResult,
+  mut write_text: F,
+) -> bool
+where
+  F: FnMut(&str),
+{
+  let limit = fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES;
+  if update.truncated || update.text.len() > limit {
+    return false;
+  }
+  write_text(&update.text);
+  true
+}
 // Keep URL resolution helpers available to both the windowed browser (feature = `browser_ui`) and
 // unit tests (which often run without the full winit/wgpu/egui stack).
 #[cfg(any(test, feature = "browser_ui"))]
@@ -1991,8 +2009,48 @@ mod scroll_coalescer_tests {
   }
 }
 
-#[cfg(feature = "browser_ui")]
-use arboard::Clipboard;
+#[cfg(test)]
+mod clipboard_limit_tests {
+  use super::write_clipboard_update_if_within_limit;
+  use fastrender::ui::protocol_limits::{sanitize_worker_to_ui_clipboard_message, MAX_CLIPBOARD_TEXT_BYTES};
+  use fastrender::ui::{TabId, WorkerToUi};
+
+  #[test]
+  fn oversized_worker_clipboard_payload_is_dropped() {
+    let oversized = "a".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1);
+    let msg = WorkerToUi::SetClipboardText {
+      tab_id: TabId(1),
+      text: oversized,
+    };
+    let (_msg, update) = sanitize_worker_to_ui_clipboard_message(msg);
+    let update = update.expect("expected clipboard update");
+    assert!(update.truncated);
+
+    let mut called = false;
+    let wrote = write_clipboard_update_if_within_limit(&update, |_text| called = true);
+    assert!(!wrote);
+    assert!(!called);
+  }
+
+  #[test]
+  fn in_limit_worker_clipboard_payload_is_forwarded() {
+    let msg = WorkerToUi::SetClipboardText {
+      tab_id: TabId(1),
+      text: "ok".to_string(),
+    };
+    let (_msg, update) = sanitize_worker_to_ui_clipboard_message(msg);
+    let update = update.expect("expected clipboard update");
+    assert!(!update.truncated);
+
+    let mut called = false;
+    let wrote = write_clipboard_update_if_within_limit(&update, |text| {
+      assert_eq!(text, "ok");
+      called = true;
+    });
+    assert!(wrote);
+    assert!(called);
+  }
+}
 #[cfg(feature = "browser_ui")]
 use clap::Parser;
 #[cfg(feature = "browser_ui")]
@@ -9704,7 +9762,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
     // The render worker can send large/hostile payloads for picker/dropdown overlays. Sanitize them
     // before any UI code (including our own pre-reducer side effects) clones/uses the data.
-    let Some(msg) = sanitize_worker_to_ui_for_windowed_browser(msg) else {
+    let Some(mut msg) = sanitize_worker_to_ui_for_windowed_browser(msg) else {
       return WorkerMessageResult {
         request_redraw: false,
         history_changed: false,
@@ -9849,7 +9907,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         // background tab triggers copy/cut.
         if self.browser_state.active_tab_id() == Some(clipboard_update.tab_id) {
           let toast_text = format!(
-            "Clipboard text too large; truncated to {} KiB",
+            "Clipboard text too large; ignoring (max {} KiB)",
             (limit / 1024).max(1)
           );
           self.chrome_toast.show(
@@ -9861,10 +9919,14 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         }
 
         let debug_line = format!(
-          "[clipboard] truncated oversized clipboard payload from tab {} ({} bytes > {} bytes)",
+          "[clipboard] dropped oversized clipboard payload from tab {} ({} bytes > {} bytes)",
           clipboard_update.tab_id.0, clipboard_update.original_bytes, limit
         );
-        eprintln!("{debug_line}");
+        // Best-effort logging only; ignore failures so a closed stderr cannot panic the browser.
+        {
+          use std::io::Write;
+          let _ = writeln!(std::io::stderr(), "{debug_line}");
+        }
         if self.debug_log_ui_enabled {
           if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
             self.debug_log.pop_front();
@@ -9873,8 +9935,28 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         }
       }
 
-      // Best-effort write to the OS clipboard, bounded to `MAX_CLIPBOARD_TEXT_BYTES`.
-      os_clipboard::write_text(&clipboard_update.text);
+      // Best-effort write to the OS clipboard (bounded). Oversized payloads are dropped entirely.
+      let wrote_clipboard = write_clipboard_update_if_within_limit(&clipboard_update, |text| {
+        os_clipboard::write_text(text);
+      });
+      if !wrote_clipboard && !clipboard_update.truncated {
+        // This should be unreachable (the protocol sanitizer should guarantee the limit), but keep a
+        // defense-in-depth guard so we never pass an oversized string into OS clipboard APIs.
+        let debug_line = format!(
+          "[clipboard] dropped clipboard payload from tab {} ({} bytes > {} bytes)",
+          clipboard_update.tab_id.0,
+          clipboard_update.text.len(),
+          limit
+        );
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{debug_line}");
+        if self.debug_log_ui_enabled {
+          if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+            self.debug_log.pop_front();
+          }
+          self.debug_log.push_back(debug_line);
+        }
+      }
       request_redraw = true;
     }
 
