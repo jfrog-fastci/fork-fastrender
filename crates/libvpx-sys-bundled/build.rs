@@ -267,11 +267,27 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
 
         let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".to_string());
         if is_msvc_target {
-            // MSVC builds: libvpx's makefiles generate Visual Studio projects and (if `msbuild.exe`
-            // is in PATH) build them. We then copy the produced `.lib` to `vpx.lib` for linking.
-            let mut make_cmd = Command::new("make");
-            make_cmd.current_dir(&build_dir).arg(format!("-j{jobs}"));
-            run(make_cmd, "libvpx make (msvc)");
+            // MSVC builds:
+            // 1) Run `make` to generate the VCXProj + solution files, without building every
+            //    configuration by default (it would otherwise build both Debug+Release).
+            // 2) Build only the Release|x64 configuration via the generated makefile target (which
+            //    calls `msbuild.exe`).
+            // 3) Copy the produced `.lib` to `vpx.lib` for consistent downstream linking.
+            let mut make_gen_cmd = Command::new("make");
+            make_gen_cmd
+                .current_dir(&build_dir)
+                .arg(format!("-j{jobs}"))
+                .env("NO_LAUNCH_DEVENV", "1");
+            run(make_gen_cmd, "libvpx make (msvc generate projects)");
+
+            // Now build Release|x64 only.
+            let mut make_build_cmd = Command::new("make");
+            make_build_cmd
+                .current_dir(&build_dir)
+                .arg(format!("-j{jobs}"))
+                .arg("target=solution")
+                .arg("Release_x64");
+            run(make_build_cmd, "libvpx make (msvc build Release_x64)");
 
             let produced = find_msvc_static_lib(&build_dir)
                 .unwrap_or_else(|| {
