@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -656,13 +657,17 @@ impl BookmarkStore {
     } else {
       Cow::Borrowed(query)
     };
-    let tokens: Vec<&str> = query_lower
-      .split_whitespace()
-      .filter(|t| !t.is_empty())
-      .collect();
-    if tokens.is_empty() {
+    let mut tokens_iter = query_lower.split_whitespace().filter(|t| !t.is_empty());
+    let Some(first_token) = tokens_iter.next() else {
       return Vec::new();
-    }
+    };
+    let tokens: Option<SmallVec<[&str; 4]>> = tokens_iter.next().map(|second_token| {
+      let mut tokens: SmallVec<[&str; 4]> = SmallVec::new();
+      tokens.push(first_token);
+      tokens.push(second_token);
+      tokens.extend(tokens_iter);
+      tokens
+    });
 
     let mut out = Vec::new();
     let mut scanned = 0usize;
@@ -694,12 +699,20 @@ impl BookmarkStore {
             .map(|t| t.trim())
             .filter(|t| !t.is_empty());
 
-          for token_lower in &tokens {
-            if !contains_ascii_case_insensitive(url, token_lower)
-              && !title.is_some_and(|t| contains_ascii_case_insensitive(t, token_lower))
-            {
-              continue 'nodes;
+          if let Some(tokens) = &tokens {
+            // Multi-token query: every token must match either title or URL.
+            for token_lower in tokens {
+              if !contains_ascii_case_insensitive(url, token_lower)
+                && !title.is_some_and(|t| contains_ascii_case_insensitive(t, token_lower))
+              {
+                continue 'nodes;
+              }
             }
+          } else if !contains_ascii_case_insensitive(url, first_token)
+            && !title.is_some_and(|t| contains_ascii_case_insensitive(t, first_token))
+          {
+            // Single-token query fast path: avoid allocating a token vector for the common case.
+            continue 'nodes;
           }
 
           out.push(id);

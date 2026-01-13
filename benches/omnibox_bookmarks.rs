@@ -66,6 +66,16 @@ fn bench_omnibox_bookmarks(c: &mut Criterion) {
     })
   });
 
+  group.bench_function("search_many_matches", |b| {
+    b.iter(|| {
+      let matches = bookmarks.search(
+        black_box(query_many_matches),
+        black_box(BOOKMARK_SCAN_LIMIT),
+      );
+      black_box(matches.len());
+    })
+  });
+
   group.bench_function("provider_no_match", |b| {
     b.iter(|| {
       let suggestions = provider.suggestions(black_box(&ctx), black_box(query_no_match));
