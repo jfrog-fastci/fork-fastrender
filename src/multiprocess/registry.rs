@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 #[cfg(any(test, feature = "browser_ui"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use url::Url;
+pub use crate::site_isolation::SiteKey;
 
 /// Stable identifier for a renderer process managed by the browser process.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -19,56 +19,6 @@ impl RendererProcessId {
 
 /// Stable identifier for a frame hosted in a renderer process.
 pub use fastrender_ipc::FrameId;
-
-/// Site isolation key used to map frames to renderer processes.
-///
-/// Today this corresponds to an origin-like tuple (scheme, host, port), where HTTP(S) URLs use the
-/// "effective" port (explicit or default).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SiteKey {
-  scheme: String,
-  host: Option<String>,
-  port: Option<u16>,
-}
-
-impl SiteKey {
-  pub fn new(scheme: String, host: Option<String>, port: Option<u16>) -> Self {
-    Self { scheme, host, port }
-  }
-
-  /// Construct a `SiteKey` from a parsed URL.
-  pub fn from_url(url: &Url) -> Self {
-    let scheme = url.scheme().to_ascii_lowercase();
-    let host = url.host_str().map(|h| h.to_ascii_lowercase());
-    let port = match scheme.as_str() {
-      "http" | "https" => url.port_or_known_default(),
-      _ => url.port(),
-    };
-    Self::new(scheme, host, port)
-  }
-
-  pub fn scheme(&self) -> &str {
-    &self.scheme
-  }
-
-  pub fn host(&self) -> Option<&str> {
-    self.host.as_deref()
-  }
-
-  pub fn port(&self) -> Option<u16> {
-    self.port
-  }
-}
-
-impl std::fmt::Display for SiteKey {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let host = self.host.as_deref().unwrap_or("<unknown>");
-    match self.port {
-      Some(port) => write!(f, "{}://{}:{}", self.scheme, host, port),
-      None => write!(f, "{}://{}", self.scheme, host),
-    }
-  }
-}
 
 /// Handle to a spawned renderer process.
 ///
@@ -284,6 +234,15 @@ impl<S: ProcessSpawner> RendererProcessRegistry<S> {
     self.by_site.get(site).map(ProcessHandle::id)
   }
 
+  /// Mutable access to a live process handle.
+  ///
+  /// This is primarily used by browser-side orchestration code (e.g. frame creation/navigation)
+  /// to send commands to a renderer once it has been spawned.
+  pub fn handle_mut(&mut self, process: RendererProcessId) -> Option<&mut S::Handle> {
+    let site = self.by_process.get(&process)?.clone();
+    self.by_site.get_mut(&site)
+  }
+
   fn terminate_process(&mut self, process: RendererProcessId) {
     let Some(site) = self.by_process.remove(&process) else {
       debug_assert!(
@@ -388,7 +347,7 @@ mod tests {
   }
 
   fn site(url: &str) -> SiteKey {
-    SiteKey::from_url(&Url::parse(url).expect("test url should parse"))
+    crate::site_isolation::site_key_for_navigation(url, None)
   }
 
   #[test]

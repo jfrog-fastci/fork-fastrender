@@ -11631,7 +11631,7 @@ mod tests {
       .iter()
       .find_map(|node| find_element_by_id(node, "hit"))
       .expect("expected element with id=hit in fragment");
-    drop(hit);
+    let _ = hit;
 
     let template = nodes
       .iter()
