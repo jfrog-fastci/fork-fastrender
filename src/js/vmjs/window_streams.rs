@@ -864,11 +864,11 @@ fn readable_stream_start_rejected_native(
 fn readable_stream_get_reader_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
-  _args: &[Value],
+  args: &[Value],
 ) -> Result<Value, VmError> {
   let stream_obj = require_host_tag(
     scope,
@@ -876,6 +876,44 @@ fn readable_stream_get_reader_native(
     READABLE_STREAM_HOST_TAG,
     "ReadableStream.getReader: illegal invocation",
   )?;
+
+  // WebIDL `ReadableStreamGetReaderOptions` dictionary:
+  //
+  // `ReadableStream.prototype.getReader(optional ReadableStreamGetReaderOptions options = {})`.
+  //
+  // Dictionary semantics:
+  // - `undefined`/`null` => treat as empty dictionary.
+  // - Otherwise => `ToObject(options)` and read `options.mode`.
+  //
+  // The only supported mode value is `"byob"`, which would request a BYOB reader. BYOB readers are
+  // currently not implemented, so explicitly throw a TypeError to avoid silently returning a
+  // default reader (which can break consumers relying on BYOB semantics).
+  let options = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !matches!(options, Value::Undefined | Value::Null) {
+    // Root the options object across property access (which can allocate/GC).
+    let options_obj = scope.to_object(vm, host, hooks, options)?;
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(options_obj))?;
+
+    let mode_key = alloc_key(&mut scope, "mode")?;
+    let mode_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, mode_key)?;
+
+    // If `mode` is present/defined, it must be `"byob"` (the only valid enum value).
+    if !matches!(mode_val, Value::Undefined) {
+      // Root `mode_val` across `ToString` conversion.
+      scope.push_root(mode_val)?;
+      let mode_s = scope.to_string(vm, host, hooks, mode_val)?;
+      let mode = scope.heap().get_string(mode_s)?.to_utf8_lossy();
+      if mode == "byob" {
+        return Err(VmError::TypeError(
+          "ReadableStream.getReader: BYOB readers are not supported",
+        ));
+      }
+      return Err(VmError::TypeError(
+        "ReadableStream.getReader: invalid mode",
+      ));
+    }
+  }
 
   let reader_proto = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
@@ -7406,6 +7444,19 @@ mod tests {
 
     let ok = realm.exec_script("new ReadableStream() instanceof ReadableStream")?;
     assert_eq!(ok, Value::Bool(true));
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_get_reader_byob_throws_typeerror() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let threw = realm.exec_script(
+      r#"(() => { try { new ReadableStream().getReader({ mode: 'byob' }); return false; } catch (e) { return e instanceof TypeError; } })()"#,
+    )?;
+    assert_eq!(threw, Value::Bool(true));
 
     realm.teardown();
     Ok(())
