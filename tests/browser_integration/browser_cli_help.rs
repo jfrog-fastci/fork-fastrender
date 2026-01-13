@@ -56,6 +56,11 @@ fn browser_help_exits_successfully_without_startup_logs() {
     .args(["--as", "64G", "--"])
     .arg(env!("CARGO_BIN_EXE_browser"))
     .arg("--help")
+    // Set invalid values for crash/watchdog env vars so this test will catch regressions where
+    // startup/env parsing happens *before* clap prints help + exits.
+    .env("FASTR_BROWSER_ALLOW_CRASH_URLS", "maybe")
+    .env("FASTR_BROWSER_RENDERER_WATCHDOG", "maybe")
+    .env("FASTR_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS", "wat")
     .output()
     .expect("spawn browser --help");
 
@@ -67,12 +72,13 @@ fn browser_help_exits_successfully_without_startup_logs() {
     String::from_utf8_lossy(&output.stdout)
   );
 
-  // clap writes help to stdout; keep stderr for compatibility with older parsers
-  let help = if output.stderr.is_empty() {
+  // clap writes help to stdout; other early errors/warnings (if any) tend to go to stderr.
+  // Concatenate both streams so failures remain diagnosable.
+  let help = format!(
+    "{}{}",
+    String::from_utf8_lossy(&output.stderr),
     String::from_utf8_lossy(&output.stdout)
-  } else {
-    String::from_utf8_lossy(&output.stderr)
-  };
+  );
   assert!(
     help.contains("Usage:"),
     "expected help usage in output, got:\n{help}"
@@ -97,6 +103,9 @@ fn browser_help_exits_successfully_without_startup_logs() {
     "--power-preference",
     "--force-fallback-adapter",
     "--wgpu-backends",
+    "--renderer-watchdog",
+    "--no-renderer-watchdog",
+    "--renderer-watchdog-timeout-ms",
     "--headless-smoke",
     "--headless-crash-smoke",
     "--exit-immediately",
