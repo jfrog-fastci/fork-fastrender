@@ -220,6 +220,7 @@ fn probe_sandbox_exec_invocation() -> Result<SandboxExecInvocation, SandboxExecE
   let probe = Command::new(SANDBOX_EXEC_PATH)
     .arg("-n")
     .arg(PURE_COMPUTATION_PROFILE_NAME)
+    .arg("--")
     .arg("/usr/bin/true")
     .output();
   match probe {
@@ -278,7 +279,7 @@ pub fn sandbox_exec_command(
     }
   }
 
-  cmd.arg(renderer_path);
+  cmd.arg("--").arg(renderer_path);
   cmd.args(args);
   Ok(cmd)
 }

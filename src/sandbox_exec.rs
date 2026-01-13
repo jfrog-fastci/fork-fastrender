@@ -3,6 +3,11 @@
 //! This module is intentionally `cfg(target_os = "macos")`-only. Non-macOS platforms should use
 //! their native sandboxing mechanisms.
 //!
+//! ⚠️ Apple has deprecated `/usr/bin/sandbox-exec` and may remove it in future macOS releases.
+//! FastRender keeps this wrapper primarily for debugging / legacy workflows. Prefer in-process
+//! Seatbelt sandboxing via `sandbox_init(3)` (`src/sandbox/macos.rs`) for long-term sandboxing, and
+//! treat any `sandbox-exec` usage as best-effort.
+//!
 //! ## Why `-f` instead of `-p`
 //!
 //! `sandbox-exec` accepts an inline profile string via `-p`, but real profiles tend to be

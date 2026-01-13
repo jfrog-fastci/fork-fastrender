@@ -44,7 +44,7 @@ fn sandbox_profile(read_path: &Path, write_path: &Path) -> String {
 
 fn sandbox_exec_command(program: &Path, profile: &str) -> Command {
   let mut cmd = Command::new(sandbox_exec_path());
-  cmd.arg("-p").arg(profile).arg(program);
+  cmd.arg("-p").arg(profile).arg("--").arg(program);
   cmd
 }
 
