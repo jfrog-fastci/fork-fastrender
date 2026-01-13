@@ -278,6 +278,18 @@ enum AssignmentReference {
   /// assignment performs `ToObject(base)` for the actual `[[Set]]` operation but uses the original
   /// base value as the receiver (`this` value) for `[[Set]]`.
   Property { base: Value, key: PropertyKey },
+  /// A `super` property reference (`super.prop` / `super[expr]`).
+  ///
+  /// `super` references are special: the base used for `[[Get]]`/`[[Set]]` is the prototype of the
+  /// current function's `[[HomeObject]]`, but the receiver is the current `this` binding.
+  ///
+  /// This stores the base value and receiver separately so compound assignments and update
+  /// expressions can reuse the reference without re-evaluating `super`.
+  Super {
+    base: Value,
+    key: PropertyKey,
+    this_value: Value,
+  },
 }
 
 #[derive(Clone, Debug)]
@@ -539,6 +551,23 @@ impl<'vm> HirEvaluator<'vm> {
       .pats
       .get(id.0 as usize)
       .ok_or(VmError::InvariantViolation("hir pat id out of bounds"))
+  }
+
+  fn super_base_value(&mut self, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    let Some(home_object) = self.home_object else {
+      return Err(VmError::InvariantViolation(
+        "super property reference missing [[HomeObject]]",
+      ));
+    };
+    // Root the home object across prototype lookup in case host hooks allocate / trigger GC.
+    scope.push_root(Value::Object(home_object))?;
+    let proto = scope.get_prototype_of_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      home_object,
+    )?;
+    Ok(proto.map(Value::Object).unwrap_or(Value::Null))
   }
 
   fn next_non_trivia_byte_from_source(&mut self, offset: u32) -> Result<Option<u8>, VmError> {
@@ -4265,6 +4294,80 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::ExprKind::Member(member) => {
+        // `++super.prop` / `super[prop]++`.
+        let object_expr = self.get_expr(body, member.object)?;
+        if matches!(object_expr.kind, hir_js::ExprKind::Super) {
+          let this_value = self.this;
+          let mut update_scope = scope.reborrow();
+          update_scope.push_root(this_value)?;
+          if let Some(home) = self.home_object {
+            update_scope.push_root(Value::Object(home))?;
+          }
+
+          let key = self.eval_object_key(&mut update_scope, body, &member.property)?;
+          root_property_key(&mut update_scope, key)?;
+
+          if self.derived_constructor && !self.this_initialized {
+            return Err(throw_reference_error(
+              self.vm,
+              &mut update_scope,
+              "Must call super constructor in derived class before accessing 'this'",
+            )?);
+          }
+
+          let base = self.super_base_value(&mut update_scope)?;
+          update_scope.push_root(base)?;
+          let obj = update_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+          update_scope.push_root(Value::Object(obj))?;
+
+          let old_value = update_scope.get_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            obj,
+            key,
+            this_value,
+          )?;
+
+          let old_numeric = self.to_numeric(&mut update_scope, old_value)?;
+          let (old_out, new_value) = match old_numeric {
+            NumericValue::Number(n) => {
+              let new_n = n + f64::from(delta);
+              (Value::Number(n), Value::Number(new_n))
+            }
+            NumericValue::BigInt(b) => {
+              let delta_bigint = crate::JsBigInt::from_i128(delta as i128)?;
+              let out = {
+                let bi = update_scope.heap().get_bigint(b)?;
+                bi.add(&delta_bigint)?
+              };
+              let out = update_scope.alloc_bigint(out)?;
+              (Value::BigInt(b), Value::BigInt(out))
+            }
+          };
+
+          update_scope.push_root(new_value)?;
+          let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+            self.vm,
+            &mut update_scope,
+            &mut *self.host,
+            &mut *self.hooks,
+            obj,
+            key,
+            new_value,
+            this_value,
+          )?;
+          if !ok && self.strict {
+            return Err(VmError::TypeError("Cannot assign to read-only property"));
+          }
+
+          return if prefix {
+            Ok(new_value)
+          } else {
+            Ok(old_out)
+          };
+        }
+
         let base = self.eval_expr(scope, body, member.object)?;
 
         let mut update_scope = scope.reborrow();
@@ -5257,6 +5360,41 @@ impl<'vm> HirEvaluator<'vm> {
       ));
     }
 
+    // Super property assignment targets: `super.x = v` / `super[expr] = v`.
+    //
+    // Per spec order, the computed key is evaluated before checking `this` initialization. The
+    // actual `this` binding is required to create the SuperReference, so attempting to assign to a
+    // super property before `super()` in a derived constructor must throw a ReferenceError before
+    // evaluating the RHS.
+    let object_expr = self.get_expr(body, member.object)?;
+    if matches!(object_expr.kind, hir_js::ExprKind::Super) {
+      // Root receiver + home object while evaluating the key.
+      let this_value = self.this;
+      let mut scope = scope.reborrow();
+      scope.push_root(this_value)?;
+      if let Some(home) = self.home_object {
+        scope.push_root(Value::Object(home))?;
+      }
+
+      let key = self.eval_object_key(&mut scope, body, &member.property)?;
+      root_property_key(&mut scope, key)?;
+
+      if self.derived_constructor && !self.this_initialized {
+        return Err(throw_reference_error(
+          self.vm,
+          &mut scope,
+          "Must call super constructor in derived class before accessing 'this'",
+        )?);
+      }
+
+      let base = self.super_base_value(&mut scope)?;
+      return Ok(AssignmentReference::Super {
+        base,
+        key,
+        this_value,
+      });
+    }
+
     let base = self.eval_expr(scope, body, member.object)?;
 
     let mut scope = scope.reborrow();
@@ -5280,19 +5418,29 @@ impl<'vm> HirEvaluator<'vm> {
     scope: &mut Scope<'_>,
     reference: &AssignmentReference,
   ) -> Result<(), VmError> {
-    let AssignmentReference::Property { base, key } = reference else {
-      return Ok(());
+    let (base, this_value, key) = match reference {
+      AssignmentReference::Binding(_) => return Ok(()),
+      AssignmentReference::Property { base, key } => (*base, None, *key),
+      AssignmentReference::Super {
+        base,
+        key,
+        this_value,
+      } => (*base, Some(*this_value), *key),
     };
-    // Root both base and key together so `push_roots` can treat them as extra roots if growing the
-    // root stack triggers a GC.
-    let roots = [
-      *base,
-      match key {
-        PropertyKey::String(s) => Value::String(*s),
-        PropertyKey::Symbol(s) => Value::Symbol(*s),
-      },
-    ];
-    scope.push_roots(&roots)?;
+
+    // Root base + optional receiver + key together so `push_roots` can treat them as extra roots if
+    // growing the root stack triggers a GC.
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    if let Some(this_value) = this_value {
+      let roots = [base, this_value, key_root];
+      scope.push_roots(&roots)?;
+    } else {
+      let roots = [base, key_root];
+      scope.push_roots(&roots)?;
+    }
     Ok(())
   }
 
@@ -5330,6 +5478,36 @@ impl<'vm> HirEvaluator<'vm> {
           *key,
           value,
           receiver,
+        )?;
+        if ok {
+          Ok(())
+        } else if self.strict {
+          Err(VmError::TypeError("Cannot assign to read-only property"))
+        } else {
+          Ok(())
+        }
+      }
+      AssignmentReference::Super {
+        base,
+        key,
+        this_value,
+      } => {
+        let mut set_scope = scope.reborrow();
+        self.root_assignment_reference(&mut set_scope, reference)?;
+        set_scope.push_root(value)?;
+
+        let obj = set_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, *base)?;
+        set_scope.push_root(Value::Object(obj))?;
+
+        let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+          self.vm,
+          &mut set_scope,
+          &mut *self.host,
+          &mut *self.hooks,
+          obj,
+          *key,
+          value,
+          *this_value,
         )?;
         if ok {
           Ok(())
@@ -5390,6 +5568,7 @@ impl<'vm> HirEvaluator<'vm> {
         PropertyKey::String(name_s)
       }
       AssignmentReference::Property { key, .. } => *key,
+      AssignmentReference::Super { key, .. } => *key,
     };
 
     crate::function_properties::set_function_name(scope, func_obj, key, None)?;
@@ -5480,6 +5659,65 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(out)
           }
           hir_js::ExprKind::Member(member) => {
+            // `super.prop += rhs` / `super[expr] += rhs`.
+            let object_expr = self.get_expr(body, member.object)?;
+            if matches!(object_expr.kind, hir_js::ExprKind::Super) {
+              let this_value = self.this;
+
+              let mut scope = scope.reborrow();
+              scope.push_root(this_value)?;
+              if let Some(home) = self.home_object {
+                scope.push_root(Value::Object(home))?;
+              }
+
+              let key = self.eval_object_key(&mut scope, body, &member.property)?;
+              root_property_key(&mut scope, key)?;
+
+              if self.derived_constructor && !self.this_initialized {
+                return Err(throw_reference_error(
+                  self.vm,
+                  &mut scope,
+                  "Must call super constructor in derived class before accessing 'this'",
+                )?);
+              }
+
+              let base = self.super_base_value(&mut scope)?;
+              scope.push_root(base)?;
+              let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+              scope.push_root(Value::Object(obj))?;
+
+              let left = scope.get_with_host_and_hooks(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                obj,
+                key,
+                this_value,
+              )?;
+              scope.push_root(left)?;
+
+              let right = self.eval_expr(&mut scope, body, value)?;
+              scope.push_root(right)?;
+
+              let out = self.apply_compound_assignment_op(&mut scope, op, left, right)?;
+              scope.push_root(out)?;
+
+              let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+                self.vm,
+                &mut scope,
+                &mut *self.host,
+                &mut *self.hooks,
+                obj,
+                key,
+                out,
+                this_value,
+              )?;
+              if !ok && self.strict {
+                return Err(VmError::TypeError("Cannot assign to read-only property"));
+              }
+              return Ok(out);
+            }
+
             let base = self.eval_expr(scope, body, member.object)?;
 
             let mut scope = scope.reborrow();
@@ -5631,6 +5869,74 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(right)
           }
           hir_js::ExprKind::Member(member) => {
+            // Logical assignment to `super` (`super.prop ||= rhs`, etc).
+            let object_expr = self.get_expr(body, member.object)?;
+            if matches!(object_expr.kind, hir_js::ExprKind::Super) {
+              let this_value = self.this;
+
+              let mut scope = scope.reborrow();
+              scope.push_root(this_value)?;
+              if let Some(home) = self.home_object {
+                scope.push_root(Value::Object(home))?;
+              }
+
+              let key = self.eval_object_key(&mut scope, body, &member.property)?;
+              root_property_key(&mut scope, key)?;
+
+              if self.derived_constructor && !self.this_initialized {
+                return Err(throw_reference_error(
+                  self.vm,
+                  &mut scope,
+                  "Must call super constructor in derived class before accessing 'this'",
+                )?);
+              }
+
+              let base = self.super_base_value(&mut scope)?;
+              // Root base across `ToObject`, `[[Get]]`, RHS evaluation, and `[[Set]]`.
+              scope.push_root(base)?;
+
+              let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+              scope.push_root(Value::Object(obj))?;
+
+              let left = scope.get_with_host_and_hooks(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                obj,
+                key,
+                this_value,
+              )?;
+              if !should_assign(&scope, left)? {
+                return Ok(left);
+              }
+
+              scope.push_root(left)?;
+              let right = self.eval_expr(&mut scope, body, value)?;
+              scope.push_root(right)?;
+
+              let reference = AssignmentReference::Super {
+                base,
+                key,
+                this_value,
+              };
+              self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, right)?;
+
+              let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+                self.vm,
+                &mut scope,
+                &mut *self.host,
+                &mut *self.hooks,
+                obj,
+                key,
+                right,
+                this_value,
+              )?;
+              if !ok && self.strict {
+                return Err(VmError::TypeError("Cannot assign to read-only property"));
+              }
+              return Ok(right);
+            }
+
             if member.optional {
               return Err(VmError::InvariantViolation(
                 "optional chaining used in assignment target",
@@ -6865,6 +7171,62 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     member: &hir_js::MemberExpr,
   ) -> Result<OptionalChainEval, VmError> {
+    // `super.prop` / `super[expr]` property access.
+    //
+    // This is a "super reference": the base object for the property lookup is the prototype of the
+    // current function's `[[HomeObject]]`, but the receiver (`this` value) is the current `this`
+    // binding.
+    let object_expr = self.get_expr(body, member.object)?;
+    if matches!(object_expr.kind, hir_js::ExprKind::Super) {
+      // Optional chaining is a syntax error on `super` itself (`super?.x` is invalid JS). HIR should
+      // never contain it, so treat it as an invariant violation to catch bugs.
+      if member.optional {
+        return Err(VmError::InvariantViolation(
+          "optional chaining used on super property access",
+        ));
+      }
+
+      let this_value = self.this;
+      // Root receiver + home object across key evaluation, prototype lookup, and property access.
+      let mut scope = scope.reborrow();
+      scope.push_root(this_value)?;
+      if let Some(home) = self.home_object {
+        scope.push_root(Value::Object(home))?;
+      }
+
+      // Spec order: evaluate the computed key before checking derived-constructor `this`
+      // initialization.
+      let key = self.eval_object_key(&mut scope, body, &member.property)?;
+      root_property_key(&mut scope, key)?;
+
+      if self.derived_constructor && !self.this_initialized {
+        return Err(throw_reference_error(
+          self.vm,
+          &mut scope,
+          "Must call super constructor in derived class before accessing 'this'",
+        )?);
+      }
+
+      let base = self.super_base_value(&mut scope)?;
+      scope.push_root(base)?;
+
+      let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+        Ok(obj) => obj,
+        Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+        Err(err) => return Err(err),
+      };
+      scope.push_root(Value::Object(obj))?;
+
+      return Ok(OptionalChainEval::Value(scope.get_with_host_and_hooks(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        obj,
+        key,
+        this_value,
+      )?));
+    }
+
     // Optional chain continuation semantics: if the base expression short-circuited, the current
     // member access is not evaluated and the whole chain evaluates to `undefined`.
     let base = match self.eval_chain_base(scope, body, member.object)? {
@@ -6916,6 +7278,63 @@ impl<'vm> HirEvaluator<'vm> {
       return Err(VmError::InvariantViolation(
         "optional chaining used in assignment target",
       ));
+    }
+
+    // `super.prop = value` / `super[expr] = value` assignment targets.
+    let object_expr = self.get_expr(body, member.object)?;
+    if matches!(object_expr.kind, hir_js::ExprKind::Super) {
+      let this_value = self.this;
+
+      let mut scope = scope.reborrow();
+      // Root receiver + RHS across key evaluation, prototype lookup, and `[[Set]]`.
+      scope.push_roots(&[this_value, value])?;
+      if let Some(home) = self.home_object {
+        scope.push_root(Value::Object(home))?;
+      }
+
+      // Spec order: evaluate computed key before checking derived-constructor `this` initialization.
+      let key = self.eval_object_key(&mut scope, body, &member.property)?;
+      root_property_key(&mut scope, key)?;
+
+      if self.derived_constructor && !self.this_initialized {
+        return Err(throw_reference_error(
+          self.vm,
+          &mut scope,
+          "Must call super constructor in derived class before accessing 'this'",
+        )?);
+      }
+
+      let base = self.super_base_value(&mut scope)?;
+      scope.push_root(base)?;
+
+      let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+        Ok(obj) => obj,
+        Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+        Err(err) => return Err(err),
+      };
+      scope.push_root(Value::Object(obj))?;
+
+      let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+        self.vm,
+        &mut scope,
+        &mut *self.host,
+        &mut *self.hooks,
+        obj,
+        key,
+        value,
+        this_value,
+      )?;
+      if ok {
+        return Ok(());
+      }
+      if self.strict {
+        return Err(throw_type_error(
+          self.vm,
+          &mut scope,
+          "Cannot assign to read-only property",
+        )?);
+      }
+      return Ok(());
     }
 
     let base = self.eval_expr(scope, body, member.object)?;
@@ -7499,34 +7918,84 @@ impl<'vm> HirEvaluator<'vm> {
     // Method call detection: `obj.prop(...)` uses `this = obj`.
     let (callee_value, this_value) = match &callee_expr.kind {
       hir_js::ExprKind::Member(member) => {
-        match self.eval_chain_base(&mut scope, body, member.object)? {
-          OptionalChainEval::Value(base) => {
-            if member.optional && matches!(base, Value::Null | Value::Undefined) {
-              return Ok(OptionalChainEval::ShortCircuit);
-            }
-            // Root base across `ToObject` + key evaluation + `[[Get]]` in case any step allocates /
-            // triggers GC.
-            scope.push_root(base)?;
-
-            let key = self.eval_object_key(&mut scope, body, &member.property)?;
-            root_property_key(&mut scope, key)?;
-
-            let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
-              Ok(obj) => obj,
-              Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
-              Err(err) => return Err(err),
-            };
-            scope.push_root(Value::Object(obj))?;
-
-            let func =
-              scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, base)?;
-            (func, base)
+        // `super.m(...)` / `super[expr](...)`.
+        let object_expr = self.get_expr(body, member.object)?;
+        if matches!(object_expr.kind, hir_js::ExprKind::Super) {
+          if member.optional {
+            return Err(VmError::InvariantViolation(
+              "optional chaining used on super property access",
+            ));
           }
-          OptionalChainEval::ShortCircuit => {
-            if callee_is_parenthesized {
-              (Value::Undefined, Value::Undefined)
-            } else {
-              return Ok(OptionalChainEval::ShortCircuit);
+
+          let this_value = self.this;
+          // Root receiver + home object across key evaluation, prototype lookup, and `[[Get]]`.
+          scope.push_root(this_value)?;
+          if let Some(home) = self.home_object {
+            scope.push_root(Value::Object(home))?;
+          }
+
+          // Spec order: evaluate the computed key before checking derived-constructor `this`
+          // initialization.
+          let key = self.eval_object_key(&mut scope, body, &member.property)?;
+          root_property_key(&mut scope, key)?;
+
+          if self.derived_constructor && !self.this_initialized {
+            return Err(throw_reference_error(
+              self.vm,
+              &mut scope,
+              "Must call super constructor in derived class before accessing 'this'",
+            )?);
+          }
+
+          let base = self.super_base_value(&mut scope)?;
+          scope.push_root(base)?;
+
+          let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+            Ok(obj) => obj,
+            Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+            Err(err) => return Err(err),
+          };
+          scope.push_root(Value::Object(obj))?;
+
+          let func = scope.get_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            obj,
+            key,
+            this_value,
+          )?;
+          (func, this_value)
+        } else {
+          match self.eval_chain_base(&mut scope, body, member.object)? {
+            OptionalChainEval::Value(base) => {
+              if member.optional && matches!(base, Value::Null | Value::Undefined) {
+                return Ok(OptionalChainEval::ShortCircuit);
+              }
+              // Root base across `ToObject` + key evaluation + `[[Get]]` in case any step allocates /
+              // triggers GC.
+              scope.push_root(base)?;
+
+              let key = self.eval_object_key(&mut scope, body, &member.property)?;
+              root_property_key(&mut scope, key)?;
+
+              let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+                Ok(obj) => obj,
+                Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+                Err(err) => return Err(err),
+              };
+              scope.push_root(Value::Object(obj))?;
+
+              let func =
+                scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, base)?;
+              (func, base)
+            }
+            OptionalChainEval::ShortCircuit => {
+              if callee_is_parenthesized {
+                (Value::Undefined, Value::Undefined)
+              } else {
+                return Ok(OptionalChainEval::ShortCircuit);
+              }
             }
           }
         }
