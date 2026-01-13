@@ -373,7 +373,9 @@ fn browser_document_dom2_unclassified_mutation_disables_incremental_relayout() -
     let changed = dom
       .set_text_data(text_id, "Goodbye")
       .expect("set_text_data");
-    dom.node_mut(box_id).script_parser_document = true;
+    // Use `node_mut` to introduce an unclassified mutation (to disable incremental relayout),
+    // without conflating the test with script-element internal slots.
+    dom.node_mut(box_id).mathml_annotation_xml_integration_point = true;
     changed
   });
   assert!(changed);
