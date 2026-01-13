@@ -8033,6 +8033,8 @@ impl FastRender {
             layout_parallelism,
             None,
             None,
+            None,
+            None,
           )
         })();
 
@@ -8333,6 +8335,8 @@ impl FastRender {
         stage_mem_budget_bytes,
         trace,
         layout_parallelism,
+        None,
+        None,
         stats.as_deref_mut(),
         None,
       )?;
@@ -9156,6 +9160,8 @@ impl FastRender {
         layout_parallelism,
         None,
         None,
+        None,
+        None,
       )
     })();
 
@@ -9467,6 +9473,8 @@ impl FastRender {
         layout_parallelism,
         None,
         None,
+        None,
+        None,
       )
     })();
 
@@ -9770,6 +9778,8 @@ impl FastRender {
         options.stage_mem_budget_bytes,
         trace,
         layout_parallelism,
+        None,
+        None,
         None,
         None,
       )
@@ -12846,6 +12856,8 @@ impl FastRender {
         self.layout_parallelism,
         None,
         None,
+        None,
+        None,
       );
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       let artifacts = artifacts_result?;
@@ -12939,6 +12951,8 @@ impl FastRender {
         self.layout_parallelism,
         None,
         None,
+        None,
+        None,
       );
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       let artifacts = artifacts_result?;
@@ -12959,6 +12973,8 @@ impl FastRender {
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
+    initial_cascade_scope: Option<&HashSet<usize>>,
+    initial_cascade_reuse_map: Option<&HashMap<usize, *const StyledNode>>,
     stats: Option<&mut RenderStatsRecorder>,
     cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
@@ -12988,6 +13004,8 @@ impl FastRender {
           stage_mem_budget_bytes,
           trace,
           layout_parallelism,
+          initial_cascade_scope,
+          initial_cascade_reuse_map,
           stats,
           cascade_reuse,
         )
@@ -13006,6 +13024,8 @@ impl FastRender {
       stage_mem_budget_bytes,
       trace,
       layout_parallelism,
+      initial_cascade_scope,
+      initial_cascade_reuse_map,
       stats,
       cascade_reuse,
     )
@@ -13024,11 +13044,18 @@ impl FastRender {
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
+    initial_cascade_scope: Option<&HashSet<usize>>,
+    initial_cascade_reuse_map: Option<&HashMap<usize, *const StyledNode>>,
     stats: Option<&mut RenderStatsRecorder>,
     cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
     let needs_large_stack = matches!(media_type, MediaType::Print) || cfg!(debug_assertions);
     if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get()) {
+      // `initial_cascade_reuse_map` contains raw pointers and is not `Sync`, so we can't capture it
+      // by reference across threads. Stash its address as a `usize` and reborrow inside the scoped
+      // thread instead.
+      let initial_cascade_reuse_map_ptr = initial_cascade_reuse_map
+        .map(|map| map as *const HashMap<usize, *const StyledNode> as usize);
       let deadline_stack = crate::render_control::deadline_stack_snapshot();
       let stage_listener_stack = crate::render_control::stage_listener_stack_snapshot();
       let stage = crate::render_control::active_stage();
@@ -13040,7 +13067,7 @@ impl FastRender {
         let handle = std::thread::Builder::new()
           .name("fastr-layout".to_string())
           .stack_size(8 * 1024 * 1024)
-          .spawn_scoped(scope, || {
+          .spawn_scoped(scope, move || {
             let _deadline_stack_guard =
               crate::render_control::DeadlineStackGuard::install(deadline_stack);
             let _stage_listener_stack_guard =
@@ -13057,6 +13084,12 @@ impl FastRender {
               crate::layout::engine::LayoutParallelDebugCollectorThreadGuard::install(
                 parallel_debug_collector.clone(),
               );
+            // Safety: `initial_cascade_reuse_map_ptr` originates from a borrow that lives for the
+            // duration of this `scope` call. The spawning thread blocks on `join`, so the map is not
+            // accessed concurrently across threads.
+            let initial_cascade_reuse_map = initial_cascade_reuse_map_ptr.map(|ptr| unsafe {
+              &*(ptr as *const HashMap<usize, *const StyledNode>)
+            });
             self.layout_document_for_media_with_artifacts_inner(
               dom,
               interaction_state,
@@ -13069,6 +13102,8 @@ impl FastRender {
               stage_mem_budget_bytes,
               trace,
               layout_parallelism,
+              initial_cascade_scope,
+              initial_cascade_reuse_map,
               stats,
               cascade_reuse,
             )
@@ -13099,6 +13134,8 @@ impl FastRender {
       stage_mem_budget_bytes,
       trace,
       layout_parallelism,
+      initial_cascade_scope,
+      initial_cascade_reuse_map,
       stats,
       cascade_reuse,
     )
@@ -13117,6 +13154,8 @@ impl FastRender {
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
+    initial_cascade_scope: Option<&HashSet<usize>>,
+    initial_cascade_reuse_map: Option<&HashMap<usize, *const StyledNode>>,
     mut stats: Option<&mut RenderStatsRecorder>,
     cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
@@ -13153,6 +13192,8 @@ impl FastRender {
         stage_mem_budget_bytes,
         trace,
         layout_parallelism,
+        initial_cascade_scope,
+        initial_cascade_reuse_map,
         stats,
         cascade_reuse,
       )
@@ -13205,6 +13246,8 @@ impl FastRender {
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
+    initial_cascade_scope: Option<&HashSet<usize>>,
+    initial_cascade_reuse_map: Option<&HashMap<usize, *const StyledNode>>,
     mut stats: Option<&mut RenderStatsRecorder>,
     cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
@@ -13250,6 +13293,8 @@ impl FastRender {
         stage_mem_budget_bytes,
         trace,
         layout_parallelism,
+        initial_cascade_scope,
+        initial_cascade_reuse_map,
         stats,
         cascade_reuse,
       );
@@ -13274,6 +13319,8 @@ impl FastRender {
         stage_mem_budget_bytes,
         trace,
         layout_parallelism,
+        initial_cascade_scope,
+        initial_cascade_reuse_map,
         stats.as_deref_mut(),
         cascade_reuse.take(),
       )?;
@@ -13345,6 +13392,8 @@ impl FastRender {
       stage_mem_budget_bytes,
       trace,
       layout_parallelism,
+      initial_cascade_scope,
+      initial_cascade_reuse_map,
       stats.as_deref_mut(),
       cascade_reuse,
     )
@@ -13367,6 +13416,8 @@ impl FastRender {
     stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
+    initial_cascade_scope: Option<&HashSet<usize>>,
+    initial_cascade_reuse_map: Option<&HashMap<usize, *const StyledNode>>,
     mut stats: Option<&mut RenderStatsRecorder>,
     cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
@@ -13596,8 +13647,14 @@ impl FastRender {
         false,
         cascade_options,
       )?;
-      let reuse_scope = cascade_reuse.as_ref().map(|reuse| &reuse.restyle_scope);
-      let reuse_map = cascade_reuse.as_ref().map(|reuse| &reuse.reuse_map);
+      let reuse_scope = cascade_reuse
+        .as_ref()
+        .map(|reuse| &reuse.restyle_scope)
+        .or(initial_cascade_scope);
+      let reuse_map = cascade_reuse
+        .as_ref()
+        .map(|reuse| &reuse.reuse_map)
+        .or(initial_cascade_reuse_map);
       let styled_tree = prepared.apply(
         target_fragment.as_deref(),
         interaction_state,
@@ -14955,6 +15012,8 @@ impl FastRender {
         None,
         &trace,
         self.layout_parallelism,
+        None,
+        None,
         None,
         None,
       );
@@ -26273,6 +26332,8 @@ mod tests {
         None,
         &trace,
         LayoutParallelism::default(),
+        None,
+        None,
         Some(&mut stats),
         None,
       )
@@ -26315,6 +26376,8 @@ mod tests {
         None,
         &trace,
         LayoutParallelism::default(),
+        None,
+        None,
         Some(&mut stats),
         None,
       )

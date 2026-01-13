@@ -1017,6 +1017,143 @@ impl StyleSheet {
     walk(&self.rules)
   }
 
+  /// Returns true if the stylesheet contains any selectors using `:has()`.
+  ///
+  /// This is a conservative structural scan intended for invalidation logic (e.g. deciding whether
+  /// incremental restyle can safely reuse previously styled subtrees).
+  pub fn has_has_selectors(&self) -> bool {
+    fn selector_has_has(
+      selector: &selectors::parser::Selector<FastRenderSelectorImpl>,
+    ) -> bool {
+      use selectors::parser::Component;
+
+      for component in selector.iter_raw_match_order() {
+        match component {
+          // `selectors` may represent `:has()` directly as a component.
+          Component::Has(_) => return true,
+          // Our pseudo-class representation also carries `:has()` plus other selector-bearing pseudos.
+          Component::NonTSPseudoClass(pseudo) => match pseudo {
+            PseudoClass::Has(_) => return true,
+            PseudoClass::Host(Some(list)) => {
+              if list.slice().iter().any(selector_has_has) {
+                return true;
+              }
+            }
+            PseudoClass::HostContext(list) => {
+              if list.slice().iter().any(selector_has_has) {
+                return true;
+              }
+            }
+            PseudoClass::NthChild(_, _, Some(list)) | PseudoClass::NthLastChild(_, _, Some(list)) => {
+              if list.slice().iter().any(selector_has_has) {
+                return true;
+              }
+            }
+            _ => {}
+          },
+          // Pseudo-classes/elements that carry nested selector lists.
+          Component::Negation(list) | Component::Is(list) | Component::Where(list) => {
+            if list.slice().iter().any(selector_has_has) {
+              return true;
+            }
+          }
+          Component::NthOf(data) => {
+            if data.selectors().iter().any(selector_has_has) {
+              return true;
+            }
+          }
+          Component::Slotted(inner) => {
+            if selector_has_has(inner) {
+              return true;
+            }
+          }
+          Component::Host(Some(inner)) => {
+            if selector_has_has(inner) {
+              return true;
+            }
+          }
+          _ => {}
+        }
+      }
+      false
+    }
+
+    fn selector_list_has_has(list: &SelectorList<FastRenderSelectorImpl>) -> bool {
+      list.slice().iter().any(selector_has_has)
+    }
+
+    fn walk(rules: &[CssRule]) -> bool {
+      for rule in rules {
+        match rule {
+          CssRule::Style(style) => {
+            if selector_list_has_has(&style.selectors) {
+              return true;
+            }
+            if walk(&style.nested_rules) {
+              return true;
+            }
+          }
+          CssRule::Scope(scope) => {
+            if scope
+              .start
+              .as_ref()
+              .is_some_and(|list| selector_list_has_has(list))
+            {
+              return true;
+            }
+            if scope
+              .end
+              .as_ref()
+              .is_some_and(|list| selector_list_has_has(list))
+            {
+              return true;
+            }
+            if walk(&scope.rules) {
+              return true;
+            }
+          }
+          CssRule::Media(media) => {
+            if walk(&media.rules) {
+              return true;
+            }
+          }
+          CssRule::Container(container) => {
+            if walk(&container.rules) {
+              return true;
+            }
+          }
+          CssRule::Supports(supports) => {
+            if walk(&supports.rules) {
+              return true;
+            }
+          }
+          CssRule::Layer(layer) => {
+            if walk(&layer.rules) {
+              return true;
+            }
+          }
+          CssRule::StartingStyle(starting) => {
+            if walk(&starting.rules) {
+              return true;
+            }
+          }
+          CssRule::Page(_)
+          | CssRule::CounterStyle(_)
+          | CssRule::Import(_)
+          | CssRule::FontFace(_)
+          | CssRule::Keyframes(_)
+          | CssRule::FontPaletteValues(_)
+          | CssRule::FontFeatureValues(_)
+          | CssRule::Property(_)
+          | CssRule::PositionTry(_) => {}
+        }
+      }
+      false
+    }
+
+    walk(&self.rules)
+  }
+
   /// Returns true if the stylesheet (or any nested block) contains @starting-style rules.
   pub fn has_starting_style_rules(&self) -> bool {
     fn walk(rules: &[CssRule]) -> bool {

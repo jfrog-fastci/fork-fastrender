@@ -32,7 +32,7 @@ use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
 pub struct BrowserDocumentDom2InvalidationCounters {
   /// Full style recomputations (cascade + layout).
   pub full_restyles: u64,
-  /// Incremental style recomputations that reused styled subtrees from the previous snapshot.
+  /// Incremental style recomputations that reuse unaffected subtrees from the previous styled tree.
   pub incremental_restyles: u64,
   /// Full layout recomputations that included a restyle.
   pub full_relayouts: u64,
@@ -2424,7 +2424,8 @@ impl BrowserDocumentDom2 {
     let interaction_state = self.interaction_state.as_ref();
 
     let toggles = self.renderer.resolve_runtime_toggles(&options);
-    let incremental_restyle_enabled = toggles.truthy("FASTR_DOM2_INCREMENTAL_RESTYLE_REUSE");
+    let incremental_restyle_enabled =
+      toggles.truthy_with_default("FASTR_DOM2_INCREMENTAL_RESTYLE_REUSE", true);
 
     // `:has()` selectors introduce reverse dependencies (ancestors and previous siblings) that our
     // current dom2 dirty sets do not model. Until we have selector dependency tracking, disable
@@ -2438,9 +2439,43 @@ impl BrowserDocumentDom2 {
       && !self.author_stylesheet_has_has_selectors
       && prev_prepared.is_some()
       && prev_mapping.is_some()
-      && (!self.dirty_style_nodes.is_empty()
-        || !self.dirty_structure_nodes.is_empty()
-        || !self.dirty_form_state_style_nodes.is_empty())
+      // DOM mutations that alter the composed tree (including slot distribution) can shift renderer
+      // preorder ids or introduce selector dependencies we are not currently tracking. Fall back to
+      // a full cascade when structure changes.
+      && self.dirty_structure_nodes.is_empty()
+      // Incremental restyle reuse is only meaningful when we have at least one style-affecting
+      // mutation classified (attribute changes or form-state changes that affect selectors like
+      // `:checked`).
+      && (!self.dirty_style_nodes.is_empty() || !self.dirty_form_state_style_nodes.is_empty())
+      // Only attempt reuse when dirty nodes are elements/slots. (Text nodes inside `<style>` are
+      // marked as dirty_style_nodes; those require a full restyle because the stylesheet changes.)
+      && self
+        .dirty_style_nodes
+        .iter()
+        .chain(self.dirty_form_state_style_nodes.iter())
+        .all(|&node_id| {
+          matches!(
+            self.dom.node(node_id).kind,
+            crate::dom2::NodeKind::Element { .. } | crate::dom2::NodeKind::Slot { .. }
+          )
+        })
+      // Reuse-based invalidation is currently conservative and does not support container query
+      // fixpoint iteration or `:has()` reverse dependencies.
+      && prev_prepared.is_some_and(|prepared| !prepared.stylesheet().has_container_rules())
+      // Shadow roots introduce additional selector dependencies through slotting/composed tree
+      // traversal; until those are modelled in the invalidation sets, disable reuse.
+      && !prev_prepared.is_some_and(|prepared| {
+        let mut stack: Vec<&crate::dom::DomNode> = vec![prepared.dom()];
+        while let Some(node) = stack.pop() {
+          if matches!(node.node_type, crate::dom::DomNodeType::ShadowRoot { .. }) {
+            return true;
+          }
+          for child in node.children.iter().rev() {
+            stack.push(child);
+          }
+        }
+        false
+      })
       && prev_mapping.is_some_and(|prev| prev.preorder_to_node_id() == mapping.preorder_to_node_id());
 
     // Build optional reuse inputs for the cascade pass.
@@ -5675,8 +5710,90 @@ mod tests {
     }
 
     let prepared = doc.prepared.as_ref().expect("prepared");
-    let value = input_text_value(&prepared.box_tree.root, styled_node_id).expect("input control value");
+    let value =
+      input_text_value(&prepared.box_tree.root, styled_node_id).expect("input control value");
     assert_eq!(value, "bar");
+    Ok(())
+  }
+
+  #[test]
+  fn attribute_mutation_uses_incremental_restyle() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #target { width: 10px; height: 10px; background: rgb(255, 0, 0); }
+          </style>
+        </head>
+        <body>
+          <div id="target"></div>
+        </body>
+      </html>
+    "#;
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
+
+    let pixmap0 = doc.render_frame()?;
+    let before = doc.invalidation_counters();
+    assert_eq!(before.incremental_restyles, 0);
+    assert_eq!(before.full_restyles, 1);
+    assert_eq!(before.full_relayouts, 1);
+    let c0 = pixmap0.pixel(5, 5).expect("pixel 5,5");
+    assert_eq!((c0.red(), c0.green(), c0.blue(), c0.alpha()), (255, 0, 0, 255));
+
+    let target = doc.dom().get_element_by_id("target").expect("#target");
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_attribute(target, "style", "background: rgb(0, 255, 0);")
+        .expect("set attribute")
+    });
+    assert!(changed);
+
+    let pixmap1 = doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.incremental_restyles, before.incremental_restyles + 1);
+    assert_eq!(after.full_restyles, before.full_restyles);
+    assert_eq!(after.full_relayouts, before.full_relayouts + 1);
+    let c1 = pixmap1.pixel(5, 5).expect("pixel 5,5");
+    assert_eq!((c1.red(), c1.green(), c1.blue(), c1.alpha()), (0, 255, 0, 255));
+    Ok(())
+  }
+
+  #[test]
+  fn incremental_restyle_disabled_for_has() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            div:has(span) { outline: 1px solid red; }
+            #target { width: 10px; height: 10px; background: rgb(255, 0, 0); }
+            #target.blue { background: rgb(0, 0, 255); }
+          </style>
+        </head>
+        <body>
+          <div id="target"></div>
+        </body>
+      </html>
+    "#;
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+    assert_eq!(before.incremental_restyles, 0);
+    assert_eq!(before.full_restyles, 1);
+
+    let target = doc.dom().get_element_by_id("target").expect("#target");
+    let changed =
+      doc.mutate_dom(|dom| dom.set_attribute(target, "class", "blue").expect("set attribute"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.incremental_restyles, before.incremental_restyles);
+    assert_eq!(after.full_restyles, before.full_restyles + 1);
+    assert_eq!(after.full_relayouts, before.full_relayouts + 1);
     Ok(())
   }
 

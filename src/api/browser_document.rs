@@ -7,6 +7,7 @@ use crate::geometry::{Point, Size};
 use crate::interaction::InteractionState;
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
+use crate::style::cascade::StyledNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
 use std::collections::hash_map::DefaultHasher;
@@ -1520,6 +1521,8 @@ pub(super) fn prepare_dom_inner(
       options.stage_mem_budget_bytes,
       trace,
       layout_parallelism,
+      None,
+      None,
       None,
       cascade_reuse,
     )
