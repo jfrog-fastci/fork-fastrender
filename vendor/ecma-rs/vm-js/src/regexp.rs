@@ -5779,6 +5779,84 @@ mod regexp_unicode_sets_tests {
     assert!(ok);
     Ok(())
   }
+
+  #[test]
+  fn regexp_unicode_sets_mode_accepts_class_set_expression_shape_patterns() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // Union by adjacency with a nested class: `[[0-9]_]`.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { return new RegExp("^[[0-9]_]+$", "v").test("0_"); } catch (e) { return false; } })()"#,
+    )?);
+
+    // Intersection: `[[0-9]&&[0-9]]`.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { return new RegExp("^[[0-9]&&[0-9]]+$", "v").test("012"); } catch (e) { return false; } })()"#,
+    )?);
+
+    // Subtraction: `[[0-9]--_]`.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { return new RegExp("^[[0-9]--_]+$", "v").test("012"); } catch (e) { return false; } })()"#,
+    )?);
+
+    // ClassStringDisjunction: `\q{...}`.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("^[\\q{0|2|4|9\\uFE0F\\u20E3}_]+$", "v"); return true; } catch (e) { return false; } })()"#,
+    )?);
+
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_unicode_sets_mode_class_set_expression_early_errors() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // Unescaped ClassSetSyntaxCharacter.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[(]", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[)]", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+
+    // Reserved double punctuators.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[**]", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[@@]", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[^^^]", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+
+    // Range order: start must not be greater than end.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[b-a]", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+
+    // Negated nested classes may not contain strings.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[[^\\q{ab}]]", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+
+    Ok(())
+  }
 }
 
 #[cfg(test)]
