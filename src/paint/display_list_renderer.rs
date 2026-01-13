@@ -10846,12 +10846,12 @@ impl DisplayListRenderer {
   }
 
   /// Applies a scroll-blit optimization (copying pixels from the previous frame) and repaints the
-  /// newly exposed strip.
+  /// newly exposed region.
   ///
   /// This is intended for scroll-driven repaints where the scroll delta is a translation in
   /// device pixels. When the delta is unsupported (non-integer after scaling, too large, or
-  /// diagonal), or when the display list is not safe to evaluate in isolation, the method falls
-  /// back to a full repaint.
+  /// zero), or when the display list is not safe to evaluate in isolation, the method falls back
+  /// to a full repaint.
   pub fn render_scroll_blit_with_report(
     mut self,
     list: &DisplayList,
@@ -10920,7 +10920,7 @@ impl DisplayListRenderer {
     let dx = Self::snap_near_integer(dx_f, 1e-3).and_then(to_i32);
     let dy = Self::snap_near_integer(dy_f, 1e-3).and_then(to_i32);
 
-    // Support single-axis scroll blits only for now.
+    // Require integer scroll delta in device pixels so the blit is an exact pixel translation.
     let Some(dx) = dx else {
       let mut full_renderer = DisplayListRenderer::new_with_text_state(
         self.canvas.width(),
@@ -10966,7 +10966,7 @@ impl DisplayListRenderer {
       });
     };
 
-    if (dx != 0 && dy != 0) || (dx == 0 && dy == 0) {
+    if dx == 0 && dy == 0 {
       let mut full_renderer = DisplayListRenderer::new_with_text_state(
         self.canvas.width(),
         self.canvas.height(),
@@ -11065,26 +11065,36 @@ impl DisplayListRenderer {
     })?;
     self.mark_current_pixmap_mutated();
 
-    // Compute the exposed strip and repaint it.
-    let exposed_device = if dy != 0 {
-      if dy > 0 {
+    let halo_px = self.tile_halo_px(list)?;
+    let mut repainted_tiles = 0usize;
+    let to_css = |device: Rect| {
+      Rect::from_xywh(
+        device.x() / self.scale,
+        device.y() / self.scale,
+        device.width() / self.scale,
+        device.height() / self.scale,
+      )
+    };
+
+    if dy != 0 {
+      let exposed_device = if dy > 0 {
         Rect::from_xywh(0.0, (height - dy) as f32, width as f32, dy as f32)
       } else {
         Rect::from_xywh(0.0, 0.0, width as f32, (-dy) as f32)
-      }
-    } else if dx > 0 {
-      Rect::from_xywh((width - dx) as f32, 0.0, dx as f32, height as f32)
-    } else {
-      Rect::from_xywh(0.0, 0.0, (-dx) as f32, height as f32)
-    };
-    let exposed_css = Rect::from_xywh(
-      exposed_device.x() / self.scale,
-      exposed_device.y() / self.scale,
-      exposed_device.width() / self.scale,
-      exposed_device.height() / self.scale,
-    );
-    let halo_px = self.tile_halo_px(list)?;
-    let repainted_tiles = self.repaint_tiles_for_damage(list, halo_px, exposed_css)?;
+      };
+      repainted_tiles = repainted_tiles
+        .saturating_add(self.repaint_tiles_for_damage(list, halo_px, to_css(exposed_device))?);
+    }
+
+    if dx != 0 {
+      let exposed_device = if dx > 0 {
+        Rect::from_xywh((width - dx) as f32, 0.0, dx as f32, height as f32)
+      } else {
+        Rect::from_xywh(0.0, 0.0, (-dx) as f32, height as f32)
+      };
+      repainted_tiles = repainted_tiles
+        .saturating_add(self.repaint_tiles_for_damage(list, halo_px, to_css(exposed_device))?);
+    }
 
     Ok(ScrollBlitReport {
       pixmap: self.canvas.into_pixmap(),
@@ -22458,6 +22468,7 @@ mod tests {
   use std::time::Duration;
 
   mod display_list;
+  mod scroll_blit;
 
   #[test]
   fn rgba_bytes_rejects_overflow() {
