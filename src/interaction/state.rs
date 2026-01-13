@@ -609,20 +609,20 @@ impl InteractionStateDom2 {
       })
     });
 
-    InteractionState {
-      focused: focused_preorder,
-      focus_visible: self.focus_visible && focused_preorder.is_some(),
-      focus_chain,
-      hover_chain,
-      active_chain,
-      visited_links,
-      ime_preedit,
-      text_edit,
-      form_state: self.form_state.project_to_preorder(mapping),
-      // Document selection state is currently tracked by the preorder-id based interaction engine.
-      // Porting it to stable node ids is out of scope for this initial projection layer.
-      document_selection: None,
-      user_validity,
-    }
+    let mut projected = InteractionState::default();
+    projected.focused = focused_preorder;
+    projected.focus_visible = self.focus_visible && focused_preorder.is_some();
+    projected.set_focus_chain(focus_chain);
+    projected.set_hover_chain(hover_chain);
+    projected.set_active_chain(active_chain);
+    projected.visited_links = visited_links;
+    projected.ime_preedit = ime_preedit;
+    projected.text_edit = text_edit;
+    projected.form_state = self.form_state.project_to_preorder(mapping);
+    // Document selection state is currently tracked by the preorder-id based interaction engine.
+    // Porting it to stable node ids is out of scope for this initial projection layer.
+    projected.document_selection = None;
+    projected.user_validity = user_validity;
+    projected
   }
 }

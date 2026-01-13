@@ -1835,7 +1835,7 @@ mod autofocus_tests {
     let state = controller.interaction_state();
     assert_eq!(state.focused, Some(autofocus_id));
     assert!(
-      state.focus_chain.contains(&autofocus_id),
+      state.focus_chain().contains(&autofocus_id),
       "expected focus chain to include the focused element"
     );
     assert!(

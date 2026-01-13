@@ -111,9 +111,9 @@ fn interaction_state_fingerprint(state: Option<&InteractionState>) -> u64 {
       1u8.hash(&mut hasher);
       state.focused.hash(&mut hasher);
       state.focus_visible.hash(&mut hasher);
-      state.focus_chain.hash(&mut hasher);
-      state.hover_chain.hash(&mut hasher);
-      state.active_chain.hash(&mut hasher);
+      state.focus_chain().hash(&mut hasher);
+      state.hover_chain().hash(&mut hasher);
+      state.active_chain().hash(&mut hasher);
       hash_usize_set(&mut hasher, &state.visited_links);
       // File input state is stored out-of-DOM, so include it in the interaction fingerprint so file
       // drops trigger a rerender (label updates and form submission semantics).
@@ -3504,10 +3504,9 @@ mod tests {
       .preorder_for_node_id(node_id)
       .expect("preorder id");
 
-    doc.set_interaction_state(Some(InteractionState {
-      hover_chain: vec![preorder_id],
-      ..Default::default()
-    }));
+    let mut interaction_state = InteractionState::default();
+    interaction_state.set_hover_chain(vec![preorder_id]);
+    doc.set_interaction_state(Some(interaction_state));
 
     let pixmap1 = doc
       .render_if_needed()?

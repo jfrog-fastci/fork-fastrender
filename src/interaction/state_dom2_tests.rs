@@ -30,7 +30,8 @@ fn interaction_state_dom2_projection_updates_preorder_ids_after_dom_mutation() {
 
   let projected_1 = state_dom2.project_to_preorder(&snapshot1.mapping);
   assert_eq!(projected_1.focused, Some(focused_preorder_1));
-  assert_eq!(projected_1.focus_chain, vec![focused_preorder_1]);
+  assert_eq!(projected_1.focus_chain(), &[focused_preorder_1]);
+  assert!(projected_1.is_focus_within(focused_preorder_1));
 
   // Mutate the DOM by inserting a new sibling immediately before the focused element; this should
   // shift renderer preorder ids while leaving the focused NodeId stable.
@@ -53,7 +54,8 @@ fn interaction_state_dom2_projection_updates_preorder_ids_after_dom_mutation() {
   assert_eq!(state_dom2.focused, Some(focused));
   let projected_2 = state_dom2.project_to_preorder(&snapshot2.mapping);
   assert_eq!(projected_2.focused, Some(focused_preorder_2));
-  assert_eq!(projected_2.focus_chain, vec![focused_preorder_2]);
+  assert_eq!(projected_2.focus_chain(), &[focused_preorder_2]);
+  assert!(projected_2.is_focus_within(focused_preorder_2));
 }
 
 #[test]
@@ -80,7 +82,7 @@ fn interaction_state_dom2_projection_clears_unmappable_focus() {
   let projected = state_dom2.project_to_preorder(&snapshot.mapping);
   assert_eq!(projected.focused, None);
   assert!(
-    projected.focus_chain.is_empty(),
+    projected.focus_chain().is_empty(),
     "focus_chain should be cleared when focused node is unmappable"
   );
   assert!(
@@ -88,4 +90,3 @@ fn interaction_state_dom2_projection_clears_unmappable_focus() {
     "focus_visible should be cleared when no focused element is projected"
   );
 }
-
