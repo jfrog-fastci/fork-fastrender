@@ -6,60 +6,72 @@ Committed snapshot of `vm-js` conformance on the curated `test262-semantic` suit
 
 ```bash
 # from repo root
-CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+
+# Build the vendored runner first (outside the hard timeout so compilation doesn't eat the budget).
+bash scripts/cargo_agent.sh build --manifest-path vendor/ecma-rs/Cargo.toml -p test262-semantic --release
+
+# Run the curated suite under a hard timeout, writing the JSON report.
+LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  target/release/test262-semantic \
+  --test262-dir vendor/ecma-rs/test262-semantic/data \
   --harness test262 \
-  --suite-path ../../tests/js/test262_suites/curated.toml \
-  --manifest ../../tests/js/test262_manifest.toml \
+  --suite-path tests/js/test262_suites/curated.toml \
+  --manifest tests/js/test262_manifest.toml \
   --timeout-secs 10 \
   --jobs 4 \
-  --report-path ../../target/js/test262_curated_now.json \
+  --report-path target/js/test262.json \
   --fail-on none
 ```
 
 - RegExp-focused suite (separate from the curated suite):
   ```bash
   # from repo root
-  CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+  LIMIT_STACK=64M timeout -k 10 900 bash scripts/run_limited.sh --as 64G -- \
+    target/release/test262-semantic \
+    --test262-dir vendor/ecma-rs/test262-semantic/data \
     --harness test262 \
-    --suite-path ../../tests/js/test262_suites/regexp.toml \
-    --manifest ../../tests/js/test262_manifest.toml \
+    --suite-path tests/js/test262_suites/regexp.toml \
+    --manifest tests/js/test262_manifest.toml \
     --timeout-secs 10 \
     --jobs 4 \
-    --report-path ../../target/js/test262_regexp.json \
+    --report-path target/js/test262_regexp.json \
     --fail-on none
   ```
 
 - RegExp `/v` Unicode sets suite (large generated corpus; kept separate from `regexp.toml`):
   ```bash
   # from repo root
-  CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+  LIMIT_STACK=64M timeout -k 10 900 bash scripts/run_limited.sh --as 64G -- \
+    target/release/test262-semantic \
+    --test262-dir vendor/ecma-rs/test262-semantic/data \
     --harness test262 \
-    --suite-path ../../tests/js/test262_suites/regexp_unicode_sets.toml \
-    --manifest ../../tests/js/test262_manifest.toml \
+    --suite-path tests/js/test262_suites/regexp_unicode_sets.toml \
+    --manifest tests/js/test262_manifest.toml \
     --timeout-secs 10 \
     --jobs 4 \
-    --report-path ../../target/js/test262_regexp_unicode_sets.json \
+    --report-path target/js/test262_regexp_unicode_sets.json \
     --fail-on none
   ```
 
 - RegExp Unicode property escapes (generated) suite (large; some known slow cases are excluded in the suite file):
   ```bash
   # from repo root
-  CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+  LIMIT_STACK=64M timeout -k 10 900 bash scripts/run_limited.sh --as 64G -- \
+    target/release/test262-semantic \
+    --test262-dir vendor/ecma-rs/test262-semantic/data \
     --harness test262 \
-    --suite-path ../../tests/js/test262_suites/regexp_property_escapes_generated.toml \
-    --manifest ../../tests/js/test262_manifest.toml \
+    --suite-path tests/js/test262_suites/regexp_property_escapes_generated.toml \
+    --manifest tests/js/test262_manifest.toml \
     --timeout-secs 10 \
     --jobs 4 \
-    --report-path ../../target/js/test262_regexp_property_escapes_generated.json \
+    --report-path target/js/test262_regexp_property_escapes_generated.json \
     --fail-on none
   ```
 
-- JSON report (not committed): `target/js/test262_curated_now.json`
-- Note: `scripts/cargo_agent.sh` runs the vendored `test262-semantic` workspace from `vendor/ecma-rs/`,
-  so the `../../...` paths above are relative to that directory.
-- Note: `CARGO_TARGET_DIR=../../target` keeps build artifacts under the repo-root `target/` (avoids
-  creating `vendor/ecma-rs/target/`).
+- JSON report (not committed): `target/js/test262.json`
+- Note: running `target/debug/test262-semantic` (or `target/release/test262-semantic`) directly requires
+  building it first (e.g. `bash scripts/cargo_agent.sh build --manifest-path vendor/ecma-rs/Cargo.toml -p test262-semantic`)
+  to avoid accidentally using a stale binary.
 - Note: `test262-semantic` runs each case on a fresh large-stack thread (see
   `vendor/ecma-rs/test262-semantic/src/vm_js_executor.rs`) so deep-recursion tests should fail
   cleanly with `execution terminated: stack overflow` rather than aborting the host process.
