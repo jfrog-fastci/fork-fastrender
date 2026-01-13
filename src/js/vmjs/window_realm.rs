@@ -37976,18 +37976,24 @@ fn init_window_globals(
     let last_element_child_key = alloc_key(&mut scope, "lastElementChild")?;
 
     for proto in [element_proto, document_proto, document_fragment_proto] {
-      scope.define_property(
-        proto,
-        children_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(parent_children_get_func),
-            set: Value::Undefined,
+      if scope
+        .heap()
+        .object_get_own_property(proto, &children_key)?
+        .is_none()
+      {
+        scope.define_property(
+          proto,
+          children_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(parent_children_get_func),
+              set: Value::Undefined,
+            },
           },
-        },
-      )?;
+        )?;
+      }
       if scope
         .heap()
         .object_get_own_property(proto, &child_element_count_key)?

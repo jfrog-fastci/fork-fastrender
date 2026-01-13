@@ -1887,10 +1887,12 @@ mod tests {
     let ok = host.exec_script_in_event_loop(
       &mut event_loop,
       "(() => {\n\
+        const childrenDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'children');\n\
         const firstDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'firstElementChild');\n\
         const lastDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'lastElementChild');\n\
         const countDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'childElementCount');\n\
-        if (!firstDesc || !lastDesc || !countDesc) return false;\n\
+        if (!childrenDesc || !firstDesc || !lastDesc || !countDesc) return false;\n\
+        if (childrenDesc.enumerable !== true) return false;\n\
         if (firstDesc.enumerable !== true) return false;\n\
         if (lastDesc.enumerable !== true) return false;\n\
         if (countDesc.enumerable !== true) return false;\n\
@@ -1900,6 +1902,12 @@ mod tests {
         const b = document.createElement('b');\n\
         parent.appendChild(a);\n\
         parent.appendChild(b);\n\
+\n\
+        const children1 = parent.children;\n\
+        const children2 = parent.children;\n\
+        if (children1 !== children2) return false;\n\
+        if (children1.length !== 2) return false;\n\
+        if (children1[0] !== a || children1[1] !== b) return false;\n\
         if (parent.firstElementChild !== a) return false;\n\
         if (parent.lastElementChild !== b) return false;\n\
         if (parent.childElementCount !== 2) return false;\n\

@@ -47,6 +47,12 @@ const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 const INTERNAL_NODE_ID_KEY: &str = "__fastrender_node_id";
 // Must match `window_realm::WRAPPER_DOCUMENT_KEY`.
 const INTERNAL_WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
+// Must match `window_realm::NODE_CHILDREN_KEY`.
+const INTERNAL_NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
+// Must match `window_realm::HTML_COLLECTION_PROTOTYPE_KEY`.
+const INTERNAL_HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
+// Must match `window_realm::HTML_COLLECTION_ROOT_KEY`.
+const INTERNAL_HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -4037,6 +4043,129 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let js = scope.alloc_string(&tag_name)?;
         scope.push_root(Value::String(js))?;
         Ok(Value::String(js))
+      }
+      ("Element", "children", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let handle =
+          require_dom_platform_mut(vm)?.require_element_handle(scope.heap(), Value::Object(wrapper_obj))?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        // WebIDL wrapper objects store a back-reference to their owning `Document` wrapper via an
+        // internal `__fastrender_*` property; reuse the same storage scheme as the handwritten
+        // `ParentNode.children` shim so `instanceof HTMLCollection` works with the realm's
+        // per-document prototype.
+        let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+        let document_obj = match scope
+          .heap()
+          .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => return Err(VmError::TypeError("Illegal invocation")),
+        };
+        scope.push_root(Value::Object(document_obj))?;
+
+        let children_key = key_from_str(scope, INTERNAL_NODE_CHILDREN_KEY)?;
+        let collection_obj = match scope
+          .heap()
+          .object_get_own_data_property_value(wrapper_obj, &children_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => {
+            let collection = scope.alloc_object()?;
+            scope.push_root(Value::Object(collection))?;
+
+            let proto_key = key_from_str(scope, INTERNAL_HTML_COLLECTION_PROTOTYPE_KEY)?;
+            let proto = match scope
+              .heap()
+              .object_get_own_data_property_value(document_obj, &proto_key)?
+            {
+              Some(Value::Object(obj)) => obj,
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "missing HTMLCollection prototype for Element.children",
+                ))
+              }
+            };
+            scope
+              .heap_mut()
+              .object_set_prototype(collection, Some(proto))?;
+
+            // Keep the root wrapper alive even if the caller only holds the collection object.
+            let root_key = key_from_str(scope, INTERNAL_HTML_COLLECTION_ROOT_KEY)?;
+            scope.define_property(
+              collection,
+              root_key,
+              data_property(Value::Object(wrapper_obj), false, false, false),
+            )?;
+
+            scope.define_property(
+              wrapper_obj,
+              children_key,
+              data_property(Value::Object(collection), false, false, false),
+            )?;
+
+            collection
+          }
+        };
+        scope.push_root(Value::Object(collection_obj))?;
+
+        let children: Vec<(NodeId, DomInterface)> = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            dom
+              .children_elements(node_id)
+              .into_iter()
+              .map(|child_id| {
+                let primary = DomInterface::primary_for_node_kind(&dom.node(child_id).kind);
+                (child_id, primary)
+              })
+              .collect()
+          }))
+        })?;
+
+        let length_key = key_from_str(scope, "length")?;
+        let old_len = match scope
+          .heap()
+          .object_get_own_data_property_value(collection_obj, &length_key)?
+        {
+          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+          _ => 0,
+        };
+
+        for (idx, (child_id, primary)) in children.iter().copied().enumerate() {
+          let child_wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+            scope,
+            document_id,
+            child_id,
+            primary,
+          )?;
+          scope.push_root(Value::Object(child_wrapper))?;
+
+          let idx_key = key_from_str(scope, &idx.to_string())?;
+          scope.define_property(
+            collection_obj,
+            idx_key,
+            data_property(Value::Object(child_wrapper), true, true, true),
+          )?;
+        }
+
+        for idx in children.len()..old_len {
+          let idx_key = key_from_str(scope, &idx.to_string())?;
+          scope.heap_mut().delete_property_or_throw(collection_obj, idx_key)?;
+        }
+
+        // Keep the `length` property non-configurable like the handwritten shim; make it writable so
+        // we can update it after each DOM mutation without redefining the property shape.
+        scope.define_property(
+          collection_obj,
+          length_key,
+          data_property(Value::Number(children.len() as f64), true, false, false),
+        )?;
+
+        Ok(Value::Object(collection_obj))
       }
       ("Element", "firstElementChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
