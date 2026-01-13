@@ -1021,6 +1021,35 @@ fn compiled_switch_default_path() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_switch_instantiates_lexical_decls_for_tdz() -> Result<(), VmError> {
+  // The `let x` inside the switch should create a TDZ binding for the whole case block, so the
+  // case selector expression `x` resolves to the uninitialized binding and throws (instead of
+  // reading the outer `x`).
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let x = 1;
+      switch (0) {
+        case x: 1; break;
+        default: 2; let x = 3;
+      }
+      'no'
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::ThrowWithStack { .. } => Ok(()),
+    other => panic!("expected ThrowWithStack, got {other:?}"),
+  }
+}
+
+#[test]
 fn compiled_postfix_update_expression_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

@@ -848,6 +848,21 @@ impl<'vm> HirEvaluator<'vm> {
         let result = (|| -> Result<Flow, VmError> {
           const CASE_TICK_EVERY: usize = 32;
 
+          // Create `let` / `const` bindings for the entire case block up-front so TDZ + shadowing
+          // semantics are correct across case selectors and clause bodies.
+          for (i, case) in cases.iter().enumerate() {
+            // Budget case traversal even when the case bodies are empty.
+            if i % CASE_TICK_EVERY == 0 {
+              self.vm.tick()?;
+            }
+            self.instantiate_lexical_decls(
+              &mut switch_scope,
+              body,
+              case.consequent.as_slice(),
+              switch_env,
+            )?;
+          }
+
           // Find the first matching case (or the `default` case).
           let mut default_idx: Option<usize> = None;
           let mut start_idx: Option<usize> = None;
