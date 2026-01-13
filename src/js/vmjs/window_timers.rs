@@ -3320,7 +3320,7 @@ mod tests {
   fn request_idle_callback_deadline_uses_idle_deadline_prototype_when_available(
   ) -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
-    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_window_host(dom, "https://example.com/")?;
 
     host.exec_script(
       r#"
