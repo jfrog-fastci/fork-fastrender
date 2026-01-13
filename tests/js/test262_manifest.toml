@@ -1679,8 +1679,7 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/cstm-replace-on-bigint-primitive.js"
-status = "xfail"
-reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/regexp-capture-by-index.js"
