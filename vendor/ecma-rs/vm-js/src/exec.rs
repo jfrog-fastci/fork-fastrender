@@ -35960,6 +35960,63 @@ mod tests {
   }
 
   #[test]
+  fn async_class_extends_await_non_constructor_throws_type_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var out;
+      async function f() {
+        try {
+          class D extends (await Promise.resolve(1)) {}
+          return "no throw";
+        } catch (e) {
+          return e.name;
+        }
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+    )?;
+    assert_eq!(value, Value::Undefined);
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("out === 'TypeError'")?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn async_class_extends_await_explicit_constructor_super_works() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var out;
+      async function f() {
+        class B { constructor(x) { this.x = x; } }
+        class D extends (await Promise.resolve(B)) {
+          constructor(x) { super(x + 1); }
+        }
+        return new D(1).x === 2;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+    )?;
+    assert_eq!(value, Value::Undefined);
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("out")?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn prototype_cycle_throw_captures_statement_location() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
