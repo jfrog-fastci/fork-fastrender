@@ -1905,8 +1905,8 @@ pub(super) fn tab_strip_ui(
   ui.ctx()
     .data_mut(|d| d.insert_temp(last_active_id_key, active_id));
 
-  // Clone the egui context handle so we don't hold an `&Context` borrow of `ui` across later
-  // `&mut Ui` calls (e.g. `child_ui`), which would otherwise trip the borrow checker.
+  // Clone the egui `Context` handle so we don't hold an immutable borrow of `ui` across later
+  // `child_ui` calls (which require `&mut Ui`).
   let ctx = ui.ctx().clone();
   let motion_enabled = motion.enabled && ctx.style().animation_time > 0.0;
   let now = ui.input(|i| i.time);
