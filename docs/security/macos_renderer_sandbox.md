@@ -125,27 +125,27 @@ Note: when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or
 Render smoke test under the strict Seatbelt sandbox (`pure-computation`):
 
 ```bash
-bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
 ```
 
 Force the relaxed "system fonts" profile (useful for bring-up):
 
 ```bash
 FASTR_MACOS_RENDERER_SANDBOX=system-fonts \
-  bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
+  timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
 ```
 
 Disable the renderer sandbox entirely (debug escape hatch; insecure):
 
 ```bash
 FASTR_DISABLE_RENDERER_SANDBOX=1 \
-  bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
+  timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
 ```
 
 Probe IPC allowances under a minimal SBPL-based renderer profile:
 
 ```bash
-bash scripts/cargo_agent.sh run --bin macos_renderer_sandbox_ipc_probe -- pipes-only pipe-stdio
+timeout -k 10 600 bash scripts/cargo_agent.sh run --bin macos_renderer_sandbox_ipc_probe -- pipes-only pipe-stdio
 ```
 
 ---
@@ -192,7 +192,7 @@ Common cases:
 Probe tool (macOS-only; built behind the non-default `macos_sandbox_probe` cargo feature):
 
 ```bash
-bash scripts/cargo_agent.sh run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
+timeout -k 10 600 bash scripts/cargo_agent.sh run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 ```
 
 macOS sandbox unit tests:
