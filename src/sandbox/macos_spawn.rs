@@ -155,18 +155,8 @@ pub fn wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Resu
 ///   read `/etc/passwd` should be denied.
 /// - This profile still allows process execution (`process*`) so the target renderer can start.
 #[cfg(target_os = "macos")]
-const PURE_COMPUTATION_PROFILE_FALLBACK: &str = r#"(version 1)
-(deny default)
-(allow process*)
-(allow file-read*
-  (subpath "/System")
-  (subpath "/usr/lib")
-  (subpath "/usr/share")
-  (subpath "/Library")
-  (subpath "/dev")
-  (subpath "/private/var/db")
-)
-"#;
+const PURE_COMPUTATION_PROFILE_FALLBACK: &str =
+  crate::sandbox::macos::RELAXED_SYSTEM_ALLOWLIST_PROFILE;
 
 #[cfg(target_os = "macos")]
 const PURE_COMPUTATION_PROFILE_FILES: &[&str] = &[

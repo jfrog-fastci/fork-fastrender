@@ -289,6 +289,7 @@ enum StrictSandboxBackend {
   EmbeddedFallback,
 }
 
+<<<<<<< HEAD
 // `sandbox_check` filters are not exposed in `libc` either. These values match `<sandbox.h>`.
 const SANDBOX_FILTER_NONE: libc::c_int = 0;
 const SANDBOX_FILTER_PATH: libc::c_int = 1;
@@ -371,6 +372,26 @@ pub fn sandbox_check_network_outbound() -> io::Result<bool> {
 pub fn sandbox_check_network_outbound_diagnostic() -> String {
   format_sandbox_check(sandbox_check_network_outbound())
 }
+=======
+/// A "relaxed" Seatbelt profile that still denies access to most of the filesystem, but allows
+/// read access to a conservative set of system paths needed by typical dynamically-linked Rust
+/// binaries.
+///
+/// This is intentionally an allowlist: anything outside these paths (including the current working
+/// directory and `/tmp`) should be denied with a permission error.
+pub(crate) const RELAXED_SYSTEM_ALLOWLIST_PROFILE: &str = r#"(version 1)
+(deny default)
+(allow process*)
+(allow file-read*
+  (subpath "/System")
+  (subpath "/usr/lib")
+  (subpath "/usr/share")
+  (subpath "/Library")
+  (subpath "/dev")
+  (subpath "/private/var/db")
+)
+"#;
+>>>>>>> cddf2109 (test(macos): ensure relaxed Seatbelt profile blocks cwd and /tmp reads)
 
 fn sandbox_init_profile(profile: &CStr, flags: u64) -> io::Result<()> {
   let mut errorbuf: *mut libc::c_char = std::ptr::null_mut();
@@ -539,6 +560,9 @@ mod tests {
   const PORT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_PORT";
   const SHM_ALLOWED_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_SHM_ALLOWED";
   const SHM_DENIED_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_SHM_DENIED";
+  const RELAXED_CHILD_ENV: &str = "FASTR_TEST_MACOS_RELAXED_SANDBOX_CHILD";
+  const RELAXED_CWD_FILE_ENV: &str = "FASTR_TEST_MACOS_RELAXED_SANDBOX_CWD_FILE";
+  const RELAXED_TMP_FILE_ENV: &str = "FASTR_TEST_MACOS_RELAXED_SANDBOX_TMP_FILE";
 
   fn shm_name(label: &str) -> String {
     let pid = std::process::id();
@@ -1163,6 +1187,7 @@ mod tests {
       String::from_utf8_lossy(&output.stderr)
     );
   }
+
   #[test]
   fn renderer_sbpl_ipc_posix_shm_allowlist() {
     let is_child = std::env::var_os(CHILD_ENV).is_some();
@@ -1211,12 +1236,94 @@ mod tests {
     // Clean up even if the child failed before unlinking.
     shm_unlink_best_effort(&allowed);
     shm_unlink_best_effort(&denied);
-
     assert!(
       output.status.success(),
       "child process should exit successfully (stdout={}, stderr={})",
       String::from_utf8_lossy(&output.stdout),
       String::from_utf8_lossy(&output.stderr)
     );
+
+  }
+
+  #[test]
+  fn seatbelt_relaxed_profile_denies_reads_outside_allowlist() {
+    // Seatbelt sandboxing is process-wide and irreversible, so run the assertions in a child
+    // process to keep the parent test runner unrestricted.
+    if std::env::var_os(RELAXED_CHILD_ENV).is_some() {
+      let cwd_path = std::env::var_os(RELAXED_CWD_FILE_ENV)
+        .map(std::path::PathBuf::from)
+        .expect("child missing RELAXED_CWD_FILE_ENV");
+      let tmp_path = std::env::var_os(RELAXED_TMP_FILE_ENV)
+        .map(std::path::PathBuf::from)
+        .expect("child missing RELAXED_TMP_FILE_ENV");
+
+      apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
+        .expect("apply relaxed (renderer system fonts) sandbox profile");
+
+      let cwd_err = std::fs::read(&cwd_path)
+        .expect_err("expected sandbox to deny reading canary file in current working directory");
+      assert!(
+        is_permission_error(&cwd_err),
+        "expected permission error when reading {}, got {cwd_err:?}",
+        cwd_path.display()
+      );
+
+      let tmp_err = std::fs::read(&tmp_path)
+        .expect_err("expected sandbox to deny reading canary file under /tmp");
+      assert!(
+        is_permission_error(&tmp_err),
+        "expected permission error when reading {}, got {tmp_err:?}",
+        tmp_path.display()
+      );
+      return;
+    }
+
+    // Create canary files in locations that should be denied by the relaxed renderer sandbox.
+    let cwd = std::env::current_dir().expect("current working directory");
+    let repo_tmp = tempfile::Builder::new()
+      .prefix("fastr_sandbox_relaxed_cwd")
+      .tempdir_in(&cwd)
+      .expect("create temp dir in current working directory");
+    let cwd_file_path = repo_tmp.path().join("canary.txt");
+    std::fs::write(&cwd_file_path, b"fastrender sandbox canary")
+      .expect("write canary file in cwd temp dir");
+
+    let mut tmp_file = tempfile::Builder::new()
+      .prefix("fastr_sandbox_relaxed_tmp")
+      .tempfile_in("/tmp")
+      .expect("create canary file under /tmp");
+    tmp_file
+      .write_all(b"fastrender sandbox canary")
+      .expect("write canary file under /tmp");
+    let _ = tmp_file.flush();
+
+    // Ensure the files are readable before sandboxing so failures are attributed to the sandbox
+    // policy rather than missing files.
+    std::fs::read(&cwd_file_path).expect("parent should be able to read cwd canary before sandbox");
+    std::fs::read(tmp_file.path()).expect("parent should be able to read /tmp canary before sandbox");
+
+    let exe = std::env::current_exe().expect("current test executable path");
+    let test_name = "sandbox::macos::tests::seatbelt_relaxed_profile_denies_reads_outside_allowlist";
+    let output = Command::new(exe)
+      .env(RELAXED_CHILD_ENV, "1")
+      .env_os(RELAXED_CWD_FILE_ENV, &cwd_file_path)
+      .env_os(RELAXED_TMP_FILE_ENV, tmp_file.path())
+      // Keep the libtest harness single-threaded in the child process (best-effort).
+      .env("RUST_TEST_THREADS", "1")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn sandboxed child test process");
+    assert!(
+      output.status.success(),
+      "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Keep the tempdir and tempfile alive until after the child exits.
+    drop(tmp_file);
+    drop(repo_tmp);
   }
 }
