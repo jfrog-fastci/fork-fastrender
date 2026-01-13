@@ -2643,6 +2643,8 @@ const WINDOW_REALM_CONSOLE_HOST_TAG: u64 = u64::from_be_bytes(*b"CONSOLE_");
 const HOST_EXOTIC_DOM_TOKEN_LIST: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const HOST_EXOTIC_DOM_STRING_MAP: u64 = u64::from_be_bytes(*b"FRDOMDSM");
 const HOST_EXOTIC_COMPUTED_STYLE: u64 = u64::from_be_bytes(*b"FRCOMPUT");
+const HOST_EXOTIC_NAMED_NODE_MAP: u64 = u64::from_be_bytes(*b"FRDOMNNM");
+const HOST_OBJECT_ATTR: u64 = u64::from_be_bytes(*b"FRDOMATR");
 const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 /// Internal-only indirection used when a JS `Document` wrapper is backed by a different "platform"
@@ -2787,6 +2789,9 @@ const ELEMENT_GET_ATTRIBUTE_NAMES_KEY: &str = "__fastrender_element_get_attribut
 const ELEMENT_GET_ATTRIBUTE_NS_KEY: &str = "__fastrender_element_get_attribute_ns";
 const ELEMENT_SET_ATTRIBUTE_NS_KEY: &str = "__fastrender_element_set_attribute_ns";
 const ELEMENT_REMOVE_ATTRIBUTE_NS_KEY: &str = "__fastrender_element_remove_attribute_ns";
+const ELEMENT_ATTRIBUTES_MAP_KEY: &str = "__fastrender_element_attributes";
+const NAMED_NODE_MAP_OWNER_ELEMENT_KEY: &str = "__fastrender_named_node_map_owner_element";
+const NAMED_NODE_MAP_ATTR_PROTO_KEY: &str = "__fastrender_named_node_map_attr_proto";
 const ELEMENT_INNER_HTML_GET_KEY: &str = "__fastrender_element_inner_html_get";
 const ELEMENT_INNER_HTML_SET_KEY: &str = "__fastrender_element_inner_html_set";
 const ELEMENT_OUTER_HTML_GET_KEY: &str = "__fastrender_element_outer_html_get";
@@ -2883,6 +2888,9 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   NODE_LIST_PROTOTYPE_KEY,
   HTML_COLLECTION_PROTOTYPE_KEY,
   HTML_OPTIONS_COLLECTION_PROTOTYPE_KEY,
+  // Attr / NamedNodeMap prototypes (used by `Element.attributes` and `Document.createAttribute*`).
+  ATTR_PROTOTYPE_KEY,
+  NAMED_NODE_MAP_PROTOTYPE_KEY,
   // EventTarget shared methods.
   EVENT_TARGET_ADD_EVENT_LISTENER_KEY,
   EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY,
@@ -2979,6 +2987,8 @@ const MUTATION_OBSERVER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMOB"); // Mut
 const MUTATION_RECORD_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMRC"); // MutationRecord
 const NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 const MUTATION_RECORD_PROTOTYPE_KEY: &str = "__fastrender_mutation_record_prototype";
+const ATTR_PROTOTYPE_KEY: &str = "__fastrender_attr_prototype";
+const NAMED_NODE_MAP_PROTOTYPE_KEY: &str = "__fastrender_named_node_map_prototype";
 
 const NODE_LIST_ITERATOR_LIST_KEY: &str = "__fastrender_node_list_iterator_list";
 const NODE_LIST_ITERATOR_INDEX_KEY: &str = "__fastrender_node_list_iterator_index";
@@ -3184,6 +3194,12 @@ pub(crate) fn dispatch_host_exotic_get(
   }
 
   if let Some(value) = dom_token_list_exotic_get(scope, payload.vm_host_mut(), obj, key)? {
+    return Ok(Some(value));
+  }
+
+  if let Some(value) =
+    named_node_map_exotic_get(scope, payload.vm_host_mut(), dataset_ctx, obj, key)?
+  {
     return Ok(Some(value));
   }
 
@@ -3773,6 +3789,164 @@ pub(crate) fn dom_token_list_exotic_delete(
   }
 
   Ok(None)
+}
+
+pub(crate) fn named_node_map_exotic_get(
+  scope: &mut Scope<'_>,
+  mut host: Option<&mut dyn VmHost>,
+  ctx: &DatasetExoticContext,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Option<Value>, VmError> {
+  // `host_exotic_get` is called for *all* objects, including VM-internal kinds like Promises and
+  // typed arrays. `Heap::object_host_slots` only supports ordinary objects/functions; for other
+  // object kinds, treat this as "no host slots" rather than failing the property access.
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Ok(None);
+  };
+  if slots.b != HOST_EXOTIC_NAMED_NODE_MAP {
+    return Ok(None);
+  }
+
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+
+  let node_index = match usize::try_from(slots.a) {
+    Ok(v) => v,
+    Err(_) => return Ok(None),
+  };
+  let idx = idx as usize;
+
+  scope.push_root(Value::Object(obj))?;
+
+  // Resolve the owning document for this NamedNodeMap.
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(None),
+  };
+  let document_id = gc_object_id(document_obj);
+
+  // Resolve the owner element wrapper + Attr prototype to construct Attr objects.
+  let owner_element_key = alloc_key(scope, NAMED_NODE_MAP_OWNER_ELEMENT_KEY)?;
+  let owner_element = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &owner_element_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(None),
+  };
+  scope.push_root(Value::Object(owner_element))?;
+
+  let attr_proto_key = alloc_key(scope, NAMED_NODE_MAP_ATTR_PROTO_KEY)?;
+  let attr_proto = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &attr_proto_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(None),
+  };
+  scope.push_root(Value::Object(attr_proto))?;
+
+  let resolve_attr = |dom: &dom2::Document| -> Option<(String, String, bool)> {
+    let node_id = dom.node_id_from_index(node_index).ok()?;
+    let (namespace, attrs) = match &dom.node(node_id).kind {
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => (namespace.as_str(), attributes.as_slice()),
+      _ => return None,
+    };
+    let (name, value) = attrs.get(idx)?;
+    let is_html = dom.is_html_case_insensitive_namespace(namespace);
+    let name = if is_html {
+      name.to_ascii_lowercase()
+    } else {
+      name.clone()
+    };
+    Some((name, value.clone(), is_html))
+  };
+
+  let (name, value, _is_html) = if let Some(dom) = ctx.owned_dom2_documents.borrow().get(&document_id) {
+    let dom = dom.as_ref();
+    let Some(tuple) = resolve_attr(dom) else {
+      return Ok(None);
+    };
+    tuple
+  } else if let Some(host) = host.as_deref_mut() {
+    let Some(dom) = dom_from_vm_host(host) else {
+      return Ok(None);
+    };
+    let Some(tuple) = resolve_attr(dom) else {
+      return Ok(None);
+    };
+    tuple
+  } else {
+    return Ok(None);
+  };
+
+  // Construct an Attr object that reflects the current attribute value.
+  let attr_obj = scope.alloc_object_with_prototype(Some(attr_proto))?;
+  scope.push_root(Value::Object(attr_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    attr_obj,
+    HostSlots {
+      a: node_index as u64,
+      b: HOST_OBJECT_ATTR,
+    },
+  )?;
+
+  let name_key = alloc_key(scope, "name")?;
+  let local_name_key = alloc_key(scope, "localName")?;
+  let prefix_key = alloc_key(scope, "prefix")?;
+  let namespace_uri_key = alloc_key(scope, "namespaceURI")?;
+  let value_key = alloc_key(scope, "value")?;
+  let owner_element_key = alloc_key(scope, "ownerElement")?;
+  let specified_key = alloc_key(scope, "specified")?;
+
+  let name_s = scope.alloc_string(&name)?;
+  scope.push_root(Value::String(name_s))?;
+  let local_name_s = scope.alloc_string(&name)?;
+  scope.push_root(Value::String(local_name_s))?;
+  let value_s = scope.alloc_string(&value)?;
+  scope.push_root(Value::String(value_s))?;
+
+  scope.define_property(attr_obj, name_key, read_only_data_desc(Value::String(name_s)))?;
+  scope.define_property(
+    attr_obj,
+    local_name_key,
+    read_only_data_desc(Value::String(local_name_s)),
+  )?;
+  scope.define_property(attr_obj, prefix_key, read_only_data_desc(Value::Null))?;
+  scope.define_property(attr_obj, namespace_uri_key, read_only_data_desc(Value::Null))?;
+  scope.define_property(attr_obj, value_key, data_desc(Value::String(value_s)))?;
+  scope.define_property(
+    attr_obj,
+    owner_element_key,
+    read_only_data_desc(Value::Object(owner_element)),
+  )?;
+  scope.define_property(
+    attr_obj,
+    specified_key,
+    read_only_data_desc(Value::Bool(true)),
+  )?;
+
+  Ok(Some(Value::Object(attr_obj)))
 }
 
 fn computed_style_is_reserved_property_name(prop: &str) -> bool {
@@ -12858,7 +13032,7 @@ fn document_create_attribute_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(_document_obj) = this else {
+  let Value::Object(document_obj) = this else {
     return Err(VmError::TypeError(
       "document.createAttribute must be called on a document object",
     ));
@@ -12879,8 +13053,25 @@ fn document_create_attribute_native(
     local_name = local_name.to_ascii_lowercase();
   }
 
-  let attr_obj = scope.alloc_object()?;
+  // Construct a branded Attr object (`instanceof Attr` / `instanceof Node`).
+  scope.push_root(Value::Object(document_obj))?;
+  let attr_proto_key = alloc_key(scope, ATTR_PROTOTYPE_KEY)?;
+  let attr_proto = scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &attr_proto_key)?
+    .and_then(|v| match v {
+      Value::Object(o) => Some(o),
+      _ => None,
+    });
+  let attr_obj = scope.alloc_object_with_prototype(attr_proto)?;
   scope.push_root(Value::Object(attr_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    attr_obj,
+    HostSlots {
+      a: 0,
+      b: HOST_OBJECT_ATTR,
+    },
+  )?;
 
   // Basic Attr shape: name/localName/prefix/namespaceURI/value.
   let name = local_name.clone();
@@ -12890,6 +13081,8 @@ fn document_create_attribute_native(
   let prefix_key = alloc_key(scope, "prefix")?;
   let namespace_uri_key = alloc_key(scope, "namespaceURI")?;
   let value_key = alloc_key(scope, "value")?;
+  let owner_element_key = alloc_key(scope, "ownerElement")?;
+  let specified_key = alloc_key(scope, "specified")?;
 
   let name_s = scope.alloc_string(&name)?;
   scope.push_root(Value::String(name_s))?;
@@ -12898,18 +13091,28 @@ fn document_create_attribute_native(
   let empty_s = scope.alloc_string("")?;
   scope.push_root(Value::String(empty_s))?;
 
-  scope.define_property(attr_obj, name_key, data_desc(Value::String(name_s)))?;
+  scope.define_property(attr_obj, name_key, read_only_data_desc(Value::String(name_s)))?;
   scope.define_property(
     attr_obj,
     local_name_key,
-    data_desc(Value::String(local_name_s)),
+    read_only_data_desc(Value::String(local_name_s)),
   )?;
-  scope.define_property(attr_obj, prefix_key, data_desc(Value::Null))?;
-  scope.define_property(attr_obj, namespace_uri_key, data_desc(Value::Null))?;
+  scope.define_property(attr_obj, prefix_key, read_only_data_desc(Value::Null))?;
+  scope.define_property(attr_obj, namespace_uri_key, read_only_data_desc(Value::Null))?;
   scope.define_property(
     attr_obj,
     value_key,
     data_desc(Value::String(empty_s)),
+  )?;
+  scope.define_property(
+    attr_obj,
+    owner_element_key,
+    read_only_data_desc(Value::Null),
+  )?;
+  scope.define_property(
+    attr_obj,
+    specified_key,
+    read_only_data_desc(Value::Bool(true)),
   )?;
 
   Ok(Value::Object(attr_obj))
@@ -12924,7 +13127,7 @@ fn document_create_attribute_ns_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(_document_obj) = this else {
+  let Value::Object(document_obj) = this else {
     return Err(VmError::TypeError(
       "document.createAttributeNS must be called on a document object",
     ));
@@ -12956,8 +13159,25 @@ fn document_create_attribute_ns_native(
     local_name = local_name.to_ascii_lowercase();
   }
 
-  let attr_obj = scope.alloc_object()?;
+  // Construct a branded Attr object (`instanceof Attr` / `instanceof Node`).
+  scope.push_root(Value::Object(document_obj))?;
+  let attr_proto_key = alloc_key(scope, ATTR_PROTOTYPE_KEY)?;
+  let attr_proto = scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &attr_proto_key)?
+    .and_then(|v| match v {
+      Value::Object(o) => Some(o),
+      _ => None,
+    });
+  let attr_obj = scope.alloc_object_with_prototype(attr_proto)?;
   scope.push_root(Value::Object(attr_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    attr_obj,
+    HostSlots {
+      a: 0,
+      b: HOST_OBJECT_ATTR,
+    },
+  )?;
 
   let name = match prefix.as_deref() {
     Some(prefix) => format!("{prefix}:{local_name}"),
@@ -12969,6 +13189,8 @@ fn document_create_attribute_ns_native(
   let prefix_key = alloc_key(scope, "prefix")?;
   let namespace_uri_key = alloc_key(scope, "namespaceURI")?;
   let value_key = alloc_key(scope, "value")?;
+  let owner_element_key = alloc_key(scope, "ownerElement")?;
+  let specified_key = alloc_key(scope, "specified")?;
 
   let name_s = scope.alloc_string(&name)?;
   scope.push_root(Value::String(name_s))?;
@@ -12977,11 +13199,11 @@ fn document_create_attribute_ns_native(
   let empty_s = scope.alloc_string("")?;
   scope.push_root(Value::String(empty_s))?;
 
-  scope.define_property(attr_obj, name_key, data_desc(Value::String(name_s)))?;
+  scope.define_property(attr_obj, name_key, read_only_data_desc(Value::String(name_s)))?;
   scope.define_property(
     attr_obj,
     local_name_key,
-    data_desc(Value::String(local_name_s)),
+    read_only_data_desc(Value::String(local_name_s)),
   )?;
   match prefix.as_deref() {
     Some(prefix) => {
@@ -12990,11 +13212,11 @@ fn document_create_attribute_ns_native(
       scope.define_property(
         attr_obj,
         prefix_key,
-        data_desc(Value::String(prefix_s)),
+        read_only_data_desc(Value::String(prefix_s)),
       )?;
     }
     None => {
-      scope.define_property(attr_obj, prefix_key, data_desc(Value::Null))?;
+      scope.define_property(attr_obj, prefix_key, read_only_data_desc(Value::Null))?;
     }
   }
   match namespace.as_deref() {
@@ -13004,17 +13226,27 @@ fn document_create_attribute_ns_native(
       scope.define_property(
         attr_obj,
         namespace_uri_key,
-        data_desc(Value::String(ns_s)),
+        read_only_data_desc(Value::String(ns_s)),
       )?;
     }
     None => {
-      scope.define_property(attr_obj, namespace_uri_key, data_desc(Value::Null))?;
+      scope.define_property(attr_obj, namespace_uri_key, read_only_data_desc(Value::Null))?;
     }
   }
   scope.define_property(
     attr_obj,
     value_key,
     data_desc(Value::String(empty_s)),
+  )?;
+  scope.define_property(
+    attr_obj,
+    owner_element_key,
+    read_only_data_desc(Value::Null),
+  )?;
+  scope.define_property(
+    attr_obj,
+    specified_key,
+    read_only_data_desc(Value::Bool(true)),
   )?;
 
   Ok(Value::Object(attr_obj))
@@ -33850,6 +34082,644 @@ fn element_get_attribute_names_native(
   Ok(Value::Object(array))
 }
 
+fn element_attributes_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let handle = element_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+
+  let cache_key = alloc_key(scope, ELEMENT_ATTRIBUTES_MAP_KEY)?;
+  if let Some(Value::Object(map_obj)) = scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &cache_key)?
+  {
+    return Ok(Value::Object(map_obj));
+  }
+
+  // Create + cache a live `NamedNodeMap` for this element.
+  let map_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(map_obj))?;
+
+  // Use the realm's NamedNodeMap prototype so `instanceof NamedNodeMap` works.
+  let proto_key = alloc_key(scope, NAMED_NODE_MAP_PROTOTYPE_KEY)?;
+  let named_node_map_proto = match scope
+    .heap()
+    .object_get_own_data_property_value(handle.document_obj, &proto_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::InvariantViolation("missing NamedNodeMap prototype")),
+  };
+  scope
+    .heap_mut()
+    .object_set_prototype(map_obj, Some(named_node_map_proto))?;
+
+  // Brand the object so `host_exotic_get` can implement numeric index access (`map[0]`).
+  scope.heap_mut().object_set_host_slots(
+    map_obj,
+    HostSlots {
+      a: handle.node_id.index() as u64,
+      b: HOST_EXOTIC_NAMED_NODE_MAP,
+    },
+  )?;
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  scope.define_property(
+    map_obj,
+    wrapper_document_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(handle.document_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  // Keep the element wrapper alive even if the caller only holds the NamedNodeMap.
+  let owner_element_key = alloc_key(scope, NAMED_NODE_MAP_OWNER_ELEMENT_KEY)?;
+  scope.define_property(
+    map_obj,
+    owner_element_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(wrapper_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  // Store `Attr.prototype` on the map object so exotic hooks (which don't have `&mut Vm`) can create
+  // branded Attr objects.
+  let attr_proto_internal_key = alloc_key(scope, ATTR_PROTOTYPE_KEY)?;
+  let attr_proto = match scope
+    .heap()
+    .object_get_own_data_property_value(handle.document_obj, &attr_proto_internal_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::InvariantViolation("missing Attr prototype")),
+  };
+  let attr_proto_key = alloc_key(scope, NAMED_NODE_MAP_ATTR_PROTO_KEY)?;
+  scope.define_property(
+    map_obj,
+    attr_proto_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(attr_proto),
+        writable: false,
+      },
+    },
+  )?;
+
+  scope.define_property(
+    wrapper_obj,
+    cache_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(map_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(map_obj))
+}
+
+fn is_attr_object(heap: &Heap, obj: GcObject) -> Result<bool, VmError> {
+  let slots = match heap.object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if heap.is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  Ok(matches!(slots, Some(slots) if slots.b == HOST_OBJECT_ATTR))
+}
+
+fn make_attr_obj(
+  scope: &mut Scope<'_>,
+  attr_proto: GcObject,
+  node_index: u64,
+  name: &str,
+  value: &str,
+  owner_element: Value,
+) -> Result<GcObject, VmError> {
+  let attr_obj = scope.alloc_object_with_prototype(Some(attr_proto))?;
+  scope.push_root(Value::Object(attr_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    attr_obj,
+    HostSlots {
+      a: node_index,
+      b: HOST_OBJECT_ATTR,
+    },
+  )?;
+
+  let name_key = alloc_key(scope, "name")?;
+  let local_name_key = alloc_key(scope, "localName")?;
+  let prefix_key = alloc_key(scope, "prefix")?;
+  let namespace_uri_key = alloc_key(scope, "namespaceURI")?;
+  let value_key = alloc_key(scope, "value")?;
+  let owner_element_key = alloc_key(scope, "ownerElement")?;
+  let specified_key = alloc_key(scope, "specified")?;
+
+  let name_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(name_s))?;
+  let local_name_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(local_name_s))?;
+  let value_s = scope.alloc_string(value)?;
+  scope.push_root(Value::String(value_s))?;
+
+  scope.define_property(
+    attr_obj,
+    name_key,
+    read_only_data_desc(Value::String(name_s)),
+  )?;
+  scope.define_property(
+    attr_obj,
+    local_name_key,
+    read_only_data_desc(Value::String(local_name_s)),
+  )?;
+  scope.define_property(attr_obj, prefix_key, read_only_data_desc(Value::Null))?;
+  scope.define_property(
+    attr_obj,
+    namespace_uri_key,
+    read_only_data_desc(Value::Null),
+  )?;
+  scope.define_property(attr_obj, value_key, data_desc(Value::String(value_s)))?;
+  scope.define_property(attr_obj, owner_element_key, read_only_data_desc(owner_element))?;
+  scope.define_property(
+    attr_obj,
+    specified_key,
+    read_only_data_desc(Value::Bool(true)),
+  )?;
+
+  Ok(attr_obj)
+}
+
+fn named_node_map_context(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  this: Value,
+  error_message: &'static str,
+) -> Result<(GcObject, ElementHandle, NonNull<dom2::Document>, GcObject, HostSlots), VmError> {
+  let Value::Object(map_obj) = this else {
+    return Err(VmError::TypeError(error_message));
+  };
+
+  let slots = match scope.heap().object_host_slots(map_obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(map_obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Err(VmError::TypeError(error_message));
+  };
+  if slots.b != HOST_EXOTIC_NAMED_NODE_MAP {
+    return Err(VmError::TypeError(error_message));
+  }
+
+  scope.push_root(Value::Object(map_obj))?;
+
+  let owner_element_key = alloc_key(scope, NAMED_NODE_MAP_OWNER_ELEMENT_KEY)?;
+  let owner_element = match scope
+    .heap()
+    .object_get_own_data_property_value(map_obj, &owner_element_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::TypeError(error_message)),
+  };
+  scope.push_root(Value::Object(owner_element))?;
+
+  let attr_proto_key = alloc_key(scope, NAMED_NODE_MAP_ATTR_PROTO_KEY)?;
+  let attr_proto = match scope
+    .heap()
+    .object_get_own_data_property_value(map_obj, &attr_proto_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::TypeError(error_message)),
+  };
+  scope.push_root(Value::Object(attr_proto))?;
+
+  let handle = element_handle_from_wrapper_obj(vm, scope, owner_element, error_message)?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError(error_message))?;
+
+  Ok((owner_element, handle, dom_ptr, attr_proto, slots))
+}
+
+fn named_node_map_length_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (_owner_element, handle, dom_ptr, _attr_proto, _slots) =
+    named_node_map_context(vm, scope, host, this, "Illegal invocation")?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let attrs_len = match &dom.node(handle.node_id).kind {
+    NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes.len(),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  Ok(Value::Number(attrs_len as f64))
+}
+
+fn named_node_map_item_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (owner_element, handle, dom_ptr, attr_proto, slots) =
+    named_node_map_context(vm, scope, host, this, "Illegal invocation")?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let index_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut n = scope.heap_mut().to_number(index_value)?;
+  if !n.is_finite() || n.is_nan() {
+    n = 0.0;
+  }
+  let n = n.trunc();
+  if n < 0.0 {
+    return Ok(Value::Null);
+  }
+  let idx = if n >= usize::MAX as f64 {
+    usize::MAX
+  } else {
+    n as usize
+  };
+
+  let (namespace, attrs) = match &dom.node(handle.node_id).kind {
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => (namespace.as_str(), attributes.as_slice()),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let Some((name, value)) = attrs.get(idx) else {
+    return Ok(Value::Null);
+  };
+
+  let is_html = dom.is_html_case_insensitive_namespace(namespace);
+  let name = if is_html {
+    name.to_ascii_lowercase()
+  } else {
+    name.clone()
+  };
+
+  let attr_obj = make_attr_obj(
+    scope,
+    attr_proto,
+    slots.a,
+    &name,
+    value,
+    Value::Object(owner_element),
+  )?;
+  Ok(Value::Object(attr_obj))
+}
+
+fn named_node_map_get_named_item_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (owner_element, handle, dom_ptr, attr_proto, slots) =
+    named_node_map_context(vm, scope, host, this, "Illegal invocation")?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let query_value = scope.heap_mut().to_string(query_value)?;
+  let query = scope
+    .heap()
+    .get_string(query_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let (namespace, attrs) = match &dom.node(handle.node_id).kind {
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => (namespace.as_str(), attributes.as_slice()),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let is_html = dom.is_html_case_insensitive_namespace(namespace);
+  let mut found: Option<(&String, &String)> = None;
+  for (k, v) in attrs {
+    let matches = if is_html {
+      k.eq_ignore_ascii_case(&query)
+    } else {
+      k == &query
+    };
+    if matches {
+      found = Some((k, v));
+      break;
+    }
+  }
+
+  let Some((name, value)) = found else {
+    return Ok(Value::Null);
+  };
+  let name = if is_html {
+    name.to_ascii_lowercase()
+  } else {
+    name.clone()
+  };
+
+  let attr_obj = make_attr_obj(
+    scope,
+    attr_proto,
+    slots.a,
+    &name,
+    value,
+    Value::Object(owner_element),
+  )?;
+  Ok(Value::Object(attr_obj))
+}
+
+fn named_node_map_get_named_item_ns_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // `dom2` does not currently track attribute namespaces separately; mirror `Element.getAttributeNS`
+  // by looking up the provided `localName` using normal name matching rules.
+  let local_name = args.get(1).copied().unwrap_or(Value::Undefined);
+  named_node_map_get_named_item_native(vm, scope, host, hooks, callee, this, &[local_name])
+}
+
+fn named_node_map_set_named_item_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (owner_element, handle, dom_ptr, attr_proto, slots) =
+    named_node_map_context(vm, scope, host, this, "Illegal invocation")?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let attr_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(attr_obj) = attr_value else {
+    return Err(VmError::TypeError(
+      "NamedNodeMap.setNamedItem must be called with an Attr object",
+    ));
+  };
+  if !is_attr_object(scope.heap(), attr_obj)? {
+    return Err(VmError::TypeError(
+      "NamedNodeMap.setNamedItem must be called with an Attr object",
+    ));
+  }
+
+  let name_key = alloc_key(scope, "name")?;
+  let value_key = alloc_key(scope, "value")?;
+
+  let name_val = scope
+    .heap()
+    .object_get_own_data_property_value(attr_obj, &name_key)?
+    .unwrap_or(Value::Undefined);
+  let name_val = scope.heap_mut().to_string(name_val)?;
+  let name = scope
+    .heap()
+    .get_string(name_val)
+    .map(|s| s.to_utf8_lossy().to_string())
+    .unwrap_or_default();
+
+  let value_val = scope
+    .heap()
+    .object_get_own_data_property_value(attr_obj, &value_key)?
+    .unwrap_or(Value::Undefined);
+  let value_val = scope.heap_mut().to_string(value_val)?;
+  let value = scope
+    .heap()
+    .get_string(value_val)
+    .map(|s| s.to_utf8_lossy().to_string())
+    .unwrap_or_default();
+
+  // Capture the existing attribute (if any) so we can return it. This is intentionally computed
+  // from the element's current attribute list (rather than retaining stable Attr identity).
+  let (namespace, attrs) = match &dom.node(handle.node_id).kind {
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => (namespace.as_str(), attributes.as_slice()),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let is_html = dom.is_html_case_insensitive_namespace(namespace);
+  let mut replaced: Option<(String, String)> = None;
+  for (k, v) in attrs {
+    let matches = if is_html {
+      k.eq_ignore_ascii_case(&name)
+    } else {
+      k == &name
+    };
+    if matches {
+      let k = if is_html {
+        k.to_ascii_lowercase()
+      } else {
+        k.clone()
+      };
+      replaced = Some((k, v.clone()));
+      break;
+    }
+  }
+
+  let name_s = scope.alloc_string(&name)?;
+  scope.push_root(Value::String(name_s))?;
+  let value_s = scope.alloc_string(&value)?;
+  scope.push_root(Value::String(value_s))?;
+
+  // Reuse Element.setAttribute so MutationObserver + dynamic script bookkeeping stays consistent.
+  let dummy_callee = scope.alloc_object()?;
+  element_set_attribute_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    dummy_callee,
+    Value::Object(owner_element),
+    &[Value::String(name_s), Value::String(value_s)],
+  )?;
+
+  if let Some((old_name, old_value)) = replaced {
+    let replaced_attr = make_attr_obj(
+      scope,
+      attr_proto,
+      slots.a,
+      &old_name,
+      &old_value,
+      Value::Null,
+    )?;
+    return Ok(Value::Object(replaced_attr));
+  }
+
+  Ok(Value::Null)
+}
+
+fn named_node_map_set_named_item_ns_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // `dom2` does not currently track attribute namespaces separately; treat this as `setNamedItem`.
+  named_node_map_set_named_item_native(vm, scope, host, hooks, callee, this, args)
+}
+
+fn named_node_map_remove_named_item_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (owner_element, handle, dom_ptr, attr_proto, slots) =
+    named_node_map_context(vm, scope, host, this, "Illegal invocation")?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let query_value = scope.heap_mut().to_string(query_value)?;
+  let query = scope
+    .heap()
+    .get_string(query_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let (namespace, attrs) = match &dom.node(handle.node_id).kind {
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => (namespace.as_str(), attributes.as_slice()),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let is_html = dom.is_html_case_insensitive_namespace(namespace);
+  let mut found: Option<(&String, &String)> = None;
+  for (k, v) in attrs {
+    let matches = if is_html {
+      k.eq_ignore_ascii_case(&query)
+    } else {
+      k == &query
+    };
+    if matches {
+      found = Some((k, v));
+      break;
+    }
+  }
+
+  let Some((name, value)) = found else {
+    return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+  };
+
+  let name = if is_html {
+    name.to_ascii_lowercase()
+  } else {
+    name.clone()
+  };
+
+  // Return the removed Attr (with ownerElement null).
+  let removed_attr = make_attr_obj(scope, attr_proto, slots.a, &name, value, Value::Null)?;
+
+  let name_s = scope.alloc_string(&name)?;
+  scope.push_root(Value::String(name_s))?;
+
+  // Reuse Element.removeAttribute so MutationObserver + dynamic script bookkeeping stays consistent.
+  let dummy_callee = scope.alloc_object()?;
+  element_remove_attribute_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    dummy_callee,
+    Value::Object(owner_element),
+    &[Value::String(name_s)],
+  )?;
+
+  Ok(Value::Object(removed_attr))
+}
+
+fn named_node_map_remove_named_item_ns_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // `dom2` does not currently track attribute namespaces separately; mirror `Element.removeAttributeNS`
+  // by removing the attribute matched by `localName`.
+  let local_name = args.get(1).copied().unwrap_or(Value::Undefined);
+  named_node_map_remove_named_item_native(vm, scope, host, hooks, callee, this, &[local_name])
+}
+
 fn element_toggle_attribute_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -40026,6 +40896,276 @@ fn init_window_globals(
         Value::Object(text_area_value_set_func),
       ),
     )?;
+
+    // Attr constructor + prototype.
+    //
+    // This is needed for `document.createAttribute()` and `instanceof Attr`/`instanceof Node`.
+    let attr_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(attr_proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(attr_proto, Some(node_proto))?;
+
+    let attr_ctor = make_illegal_ctor(&mut scope, "Attr")?;
+    scope.push_root(Value::Object(attr_ctor))?;
+    scope.define_property(
+      attr_ctor,
+      prototype_key,
+      ctor_link_desc(Value::Object(attr_proto)),
+    )?;
+    scope.define_property(
+      attr_proto,
+      constructor_key,
+      ctor_link_desc(Value::Object(attr_ctor)),
+    )?;
+    // Inherit the interface constructor chain so `Object.getPrototypeOf(Attr)` is `Node` (spec-ish).
+    scope
+      .heap_mut()
+      .object_set_prototype(attr_ctor, Some(node_ctor))?;
+    let attr_key = alloc_key(&mut scope, "Attr")?;
+    scope.define_property(global, attr_key, data_desc(Value::Object(attr_ctor)))?;
+
+    let attr_proto_internal_key = alloc_key(&mut scope, ATTR_PROTOTYPE_KEY)?;
+    scope.define_property(
+      document_obj,
+      attr_proto_internal_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(attr_proto),
+          writable: false,
+        },
+      },
+    )?;
+
+    // NamedNodeMap constructor + prototype.
+    //
+    // This is needed for `Element.attributes` (`instanceof NamedNodeMap`) and for the legacy
+    // attribute APIs (`getNamedItem`, `item`, etc).
+    let named_node_map_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(named_node_map_proto))?;
+    scope.heap_mut().object_set_prototype(
+      named_node_map_proto,
+      Some(realm.intrinsics().object_prototype()),
+    )?;
+
+    let named_node_map_ctor = make_illegal_ctor(&mut scope, "NamedNodeMap")?;
+    scope.push_root(Value::Object(named_node_map_ctor))?;
+    scope.define_property(
+      named_node_map_ctor,
+      prototype_key,
+      ctor_link_desc(Value::Object(named_node_map_proto)),
+    )?;
+    scope.define_property(
+      named_node_map_proto,
+      constructor_key,
+      ctor_link_desc(Value::Object(named_node_map_ctor)),
+    )?;
+    let named_node_map_key = alloc_key(&mut scope, "NamedNodeMap")?;
+    scope.define_property(
+      global,
+      named_node_map_key,
+      data_desc(Value::Object(named_node_map_ctor)),
+    )?;
+
+    let named_node_map_proto_internal_key = alloc_key(&mut scope, NAMED_NODE_MAP_PROTOTYPE_KEY)?;
+    scope.define_property(
+      document_obj,
+      named_node_map_proto_internal_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(named_node_map_proto),
+          writable: false,
+        },
+      },
+    )?;
+
+    // NamedNodeMap.prototype.length
+    let named_node_map_length_get_call_id =
+      vm.register_native_call(named_node_map_length_get_native)?;
+    let named_node_map_length_get_name = scope.alloc_string("get length")?;
+    scope.push_root(Value::String(named_node_map_length_get_name))?;
+    let named_node_map_length_get_func = scope.alloc_native_function(
+      named_node_map_length_get_call_id,
+      None,
+      named_node_map_length_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      named_node_map_length_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(named_node_map_length_get_func))?;
+    let length_key = alloc_key(&mut scope, "length")?;
+    scope.define_property(
+      named_node_map_proto,
+      length_key,
+      idl_attribute_desc(Value::Object(named_node_map_length_get_func), Value::Undefined),
+    )?;
+
+    // NamedNodeMap.prototype.item(index)
+    let named_node_map_item_call_id = vm.register_native_call(named_node_map_item_native)?;
+    let named_node_map_item_name = scope.alloc_string("item")?;
+    scope.push_root(Value::String(named_node_map_item_name))?;
+    let named_node_map_item_func = scope.alloc_native_function(
+      named_node_map_item_call_id,
+      None,
+      named_node_map_item_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      named_node_map_item_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(named_node_map_item_func))?;
+    let item_key = alloc_key(&mut scope, "item")?;
+    scope.define_property(
+      named_node_map_proto,
+      item_key,
+      data_desc(Value::Object(named_node_map_item_func)),
+    )?;
+
+    // NamedNodeMap.prototype.getNamedItem(name)
+    let named_node_map_get_named_item_call_id =
+      vm.register_native_call(named_node_map_get_named_item_native)?;
+    let named_node_map_get_named_item_name = scope.alloc_string("getNamedItem")?;
+    scope.push_root(Value::String(named_node_map_get_named_item_name))?;
+    let named_node_map_get_named_item_func = scope.alloc_native_function(
+      named_node_map_get_named_item_call_id,
+      None,
+      named_node_map_get_named_item_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      named_node_map_get_named_item_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(named_node_map_get_named_item_func))?;
+    let get_named_item_key = alloc_key(&mut scope, "getNamedItem")?;
+    scope.define_property(
+      named_node_map_proto,
+      get_named_item_key,
+      data_desc(Value::Object(named_node_map_get_named_item_func)),
+    )?;
+
+    // NamedNodeMap.prototype.getNamedItemNS(namespace, localName)
+    let named_node_map_get_named_item_ns_call_id =
+      vm.register_native_call(named_node_map_get_named_item_ns_native)?;
+    let named_node_map_get_named_item_ns_name = scope.alloc_string("getNamedItemNS")?;
+    scope.push_root(Value::String(named_node_map_get_named_item_ns_name))?;
+    let named_node_map_get_named_item_ns_func = scope.alloc_native_function(
+      named_node_map_get_named_item_ns_call_id,
+      None,
+      named_node_map_get_named_item_ns_name,
+      2,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      named_node_map_get_named_item_ns_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(named_node_map_get_named_item_ns_func))?;
+    let get_named_item_ns_key = alloc_key(&mut scope, "getNamedItemNS")?;
+    scope.define_property(
+      named_node_map_proto,
+      get_named_item_ns_key,
+      data_desc(Value::Object(named_node_map_get_named_item_ns_func)),
+    )?;
+
+    // NamedNodeMap.prototype.setNamedItem(attr)
+    let named_node_map_set_named_item_call_id =
+      vm.register_native_call(named_node_map_set_named_item_native)?;
+    let named_node_map_set_named_item_name = scope.alloc_string("setNamedItem")?;
+    scope.push_root(Value::String(named_node_map_set_named_item_name))?;
+    let named_node_map_set_named_item_func = scope.alloc_native_function(
+      named_node_map_set_named_item_call_id,
+      None,
+      named_node_map_set_named_item_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      named_node_map_set_named_item_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(named_node_map_set_named_item_func))?;
+    let set_named_item_key = alloc_key(&mut scope, "setNamedItem")?;
+    scope.define_property(
+      named_node_map_proto,
+      set_named_item_key,
+      data_desc(Value::Object(named_node_map_set_named_item_func)),
+    )?;
+
+    // NamedNodeMap.prototype.setNamedItemNS(attr)
+    let named_node_map_set_named_item_ns_call_id =
+      vm.register_native_call(named_node_map_set_named_item_ns_native)?;
+    let named_node_map_set_named_item_ns_name = scope.alloc_string("setNamedItemNS")?;
+    scope.push_root(Value::String(named_node_map_set_named_item_ns_name))?;
+    let named_node_map_set_named_item_ns_func = scope.alloc_native_function(
+      named_node_map_set_named_item_ns_call_id,
+      None,
+      named_node_map_set_named_item_ns_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      named_node_map_set_named_item_ns_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(named_node_map_set_named_item_ns_func))?;
+    let set_named_item_ns_key = alloc_key(&mut scope, "setNamedItemNS")?;
+    scope.define_property(
+      named_node_map_proto,
+      set_named_item_ns_key,
+      data_desc(Value::Object(named_node_map_set_named_item_ns_func)),
+    )?;
+
+    // NamedNodeMap.prototype.removeNamedItem(name)
+    let named_node_map_remove_named_item_call_id =
+      vm.register_native_call(named_node_map_remove_named_item_native)?;
+    let named_node_map_remove_named_item_name = scope.alloc_string("removeNamedItem")?;
+    scope.push_root(Value::String(named_node_map_remove_named_item_name))?;
+    let named_node_map_remove_named_item_func = scope.alloc_native_function(
+      named_node_map_remove_named_item_call_id,
+      None,
+      named_node_map_remove_named_item_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      named_node_map_remove_named_item_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(named_node_map_remove_named_item_func))?;
+    let remove_named_item_key = alloc_key(&mut scope, "removeNamedItem")?;
+    scope.define_property(
+      named_node_map_proto,
+      remove_named_item_key,
+      data_desc(Value::Object(named_node_map_remove_named_item_func)),
+    )?;
+
+    // NamedNodeMap.prototype.removeNamedItemNS(namespace, localName)
+    let named_node_map_remove_named_item_ns_call_id =
+      vm.register_native_call(named_node_map_remove_named_item_ns_native)?;
+    let named_node_map_remove_named_item_ns_name = scope.alloc_string("removeNamedItemNS")?;
+    scope.push_root(Value::String(named_node_map_remove_named_item_ns_name))?;
+    let named_node_map_remove_named_item_ns_func = scope.alloc_native_function(
+      named_node_map_remove_named_item_ns_call_id,
+      None,
+      named_node_map_remove_named_item_ns_name,
+      2,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      named_node_map_remove_named_item_ns_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(named_node_map_remove_named_item_ns_func))?;
+    let remove_named_item_ns_key = alloc_key(&mut scope, "removeNamedItemNS")?;
+    scope.define_property(
+      named_node_map_proto,
+      remove_named_item_ns_key,
+      data_desc(Value::Object(named_node_map_remove_named_item_ns_func)),
+    )?;
+
     // HTMLCollection constructor + prototype.
     //
     // This is needed for `ParentNode.children` (`instanceof HTMLCollection`).
@@ -42733,6 +43873,22 @@ fn init_window_globals(
     data_desc(Value::Object(remove_attribute_func)),
   )?;
 
+  // `Element.prototype.attributes` ([SameObject] NamedNodeMap).
+  let element_attributes_get_call_id = vm.register_native_call(element_attributes_get_native)?;
+  let element_attributes_get_name = scope.alloc_string("get attributes")?;
+  scope.push_root(Value::String(element_attributes_get_name))?;
+  let element_attributes_get_func = scope.alloc_native_function(
+    element_attributes_get_call_id,
+    None,
+    element_attributes_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_attributes_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_attributes_get_func))?;
+
   // Element helpers: install on `document` for wrapper reuse, and also on `Element.prototype` for
   // WebIDL / WPT conformance.
   let element_proto = dom_platform
@@ -42763,6 +43919,19 @@ fn init_window_globals(
     define_method_if_missing("getAttribute", get_attribute_func)?;
     define_method_if_missing("setAttribute", set_attribute_func)?;
     define_method_if_missing("removeAttribute", remove_attribute_func)?;
+
+    let attributes_key = alloc_key(&mut scope, "attributes")?;
+    if scope
+      .heap()
+      .object_get_own_property(element_proto, &attributes_key)?
+      .is_none()
+    {
+      scope.define_property(
+        element_proto,
+        attributes_key,
+        idl_attribute_desc(Value::Object(element_attributes_get_func), Value::Undefined),
+      )?;
+    }
   }
 
   // HTMLElement global attributes (`title`/`lang`/`dir`/`hidden`) must be defined on
