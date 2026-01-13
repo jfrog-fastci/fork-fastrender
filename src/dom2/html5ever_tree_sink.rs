@@ -214,6 +214,7 @@ impl Dom2TreeSink {
     };
 
     doc.live_mutation.pre_remove(target, old_parent, pos);
+    doc.live_range_pre_remove_steps(target, old_parent, pos);
     doc.node_mut(old_parent).children.remove(pos);
     doc.node_mut(target).parent = None;
   }
@@ -246,6 +247,11 @@ impl Dom2TreeSink {
     }
 
     doc.live_mutation.pre_insert(parent, insertion_idx, 1);
+    doc.live_range_pre_insert_steps(
+      parent,
+      doc.tree_child_index_from_raw_index_for_range(parent, insertion_idx),
+      doc.inserted_tree_children_count_for_range(parent, &[child]),
+    );
     doc.node_mut(parent).children.insert(insertion_idx, child);
     doc.node_mut(child).parent = Some(parent);
     true
@@ -266,17 +272,30 @@ impl Dom2TreeSink {
       if !break_text_merge {
         if let Some(last_child) = doc.node(parent).children.last().copied() {
           if matches!(&doc.node(last_child).kind, NodeKind::Text { .. }) {
-            if doc.live_mutation.has_subscribers() {
+            let has_live_subscribers = doc.live_mutation.has_subscribers();
+            let has_live_ranges = !doc.ranges.is_empty();
+            if has_live_subscribers || has_live_ranges {
               let offset = match &doc.node(last_child).kind {
                 NodeKind::Text { content } => utf16_len(content),
                 _ => 0,
               };
-              doc.live_mutation.replace_data(
-                last_child,
-                offset,
-                /* removed_len */ 0,
-                /* inserted_len */ utf16_len(text),
-              );
+              let inserted_len = utf16_len(text);
+              if has_live_subscribers {
+                doc.live_mutation.replace_data(
+                  last_child,
+                  offset,
+                  /* removed_len */ 0,
+                  /* inserted_len */ inserted_len,
+                );
+              }
+              if has_live_ranges {
+                doc.live_range_replace_data_steps(
+                  last_child,
+                  offset,
+                  /* removed_len */ 0,
+                  /* inserted_len */ inserted_len,
+                );
+              }
             }
             if let NodeKind::Text { content } = &mut doc.node_mut(last_child).kind {
               content.push_str(text);
@@ -288,6 +307,11 @@ impl Dom2TreeSink {
 
       let insertion_idx = doc.node(parent).children.len();
       doc.live_mutation.pre_insert(parent, insertion_idx, 1);
+      doc.live_range_pre_insert_steps(
+        parent,
+        doc.tree_child_index_from_raw_index_for_range(parent, insertion_idx),
+        /* count */ 1,
+      );
       doc.push_node(
         NodeKind::Text {
           content: text.to_string(),
@@ -325,7 +349,9 @@ impl Dom2TreeSink {
         debug_assert!(false, "can_merge_prev implies a previous sibling exists");
         return;
       };
-      let (prev_old_len, inserted_len) = if doc.live_mutation.has_subscribers() {
+      let has_live_subscribers = doc.live_mutation.has_subscribers();
+      let has_live_ranges = !doc.ranges.is_empty();
+      let (prev_old_len, inserted_len) = if has_live_subscribers || has_live_ranges {
         (
           match &doc.node(prev_id).kind {
             NodeKind::Text { content } => utf16_len(content),
@@ -336,10 +362,18 @@ impl Dom2TreeSink {
       } else {
         (0, 0)
       };
-      if doc.live_mutation.has_subscribers() {
+      if has_live_subscribers {
         doc.live_mutation.replace_data(
           prev_id,
-          /* offset */ prev_old_len,
+          prev_old_len,
+          /* removed_len */ 0,
+          inserted_len,
+        );
+      }
+      if has_live_ranges {
+        doc.live_range_replace_data_steps(
+          prev_id,
+          prev_old_len,
           /* removed_len */ 0,
           /* inserted_len */ inserted_len,
         );
@@ -354,13 +388,25 @@ impl Dom2TreeSink {
           NodeKind::Text { content } => content.clone(),
           _ => String::new(),
         };
-        if doc.live_mutation.has_subscribers() {
-          doc.live_mutation.replace_data(
-            prev_id,
-            /* offset */ prev_old_len + inserted_len,
-            /* removed_len */ 0,
-            /* inserted_len */ utf16_len(&next_content),
-          );
+        let next_inserted_len =
+          (has_live_subscribers || has_live_ranges).then(|| utf16_len(&next_content));
+        if let Some(next_inserted_len) = next_inserted_len {
+          if has_live_subscribers {
+            doc.live_mutation.replace_data(
+              prev_id,
+              /* offset */ prev_old_len + inserted_len,
+              /* removed_len */ 0,
+              /* inserted_len */ next_inserted_len,
+            );
+          }
+          if has_live_ranges {
+            doc.live_range_replace_data_steps(
+              prev_id,
+              prev_old_len + inserted_len,
+              /* removed_len */ 0,
+              /* inserted_len */ next_inserted_len,
+            );
+          }
         }
         if let NodeKind::Text { content } = &mut doc.node_mut(prev_id).kind {
           content.push_str(&next_content);
@@ -372,13 +418,26 @@ impl Dom2TreeSink {
     }
 
     if can_merge_next {
-      if doc.live_mutation.has_subscribers() {
-        doc.live_mutation.replace_data(
-          reference,
-          /* offset */ 0,
-          /* removed_len */ 0,
-          /* inserted_len */ utf16_len(text),
-        );
+      let has_live_subscribers = doc.live_mutation.has_subscribers();
+      let has_live_ranges = !doc.ranges.is_empty();
+      if has_live_subscribers || has_live_ranges {
+        let inserted_len = utf16_len(text);
+        if has_live_subscribers {
+          doc.live_mutation.replace_data(
+            reference,
+            /* offset */ 0,
+            /* removed_len */ 0,
+            /* inserted_len */ inserted_len,
+          );
+        }
+        if has_live_ranges {
+          doc.live_range_replace_data_steps(
+            reference,
+            /* offset */ 0,
+            /* removed_len */ 0,
+            /* inserted_len */ inserted_len,
+          );
+        }
       }
       if let NodeKind::Text { content } = &mut doc.node_mut(reference).kind {
         content.insert_str(0, text);
@@ -394,6 +453,11 @@ impl Dom2TreeSink {
       /* inert_subtree */ false,
     );
     doc.live_mutation.pre_insert(parent, insert_pos, 1);
+    doc.live_range_pre_insert_steps(
+      parent,
+      doc.tree_child_index_from_raw_index_for_range(parent, insert_pos),
+      /* count */ 1,
+    );
     doc.node_mut(parent).children.insert(insert_pos, text_id);
     doc.node_mut(text_id).parent = Some(parent);
   }
@@ -695,6 +759,11 @@ impl TreeSink for Dom2TreeSink {
     );
     doc.node_mut(shadow_root_id).parent = Some(*location);
     doc.live_mutation.pre_insert(*location, 0, 1);
+    doc.live_range_pre_insert_steps(
+      *location,
+      doc.tree_child_index_from_raw_index_for_range(*location, 0),
+      doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]),
+    );
     doc.node_mut(*location).children.insert(0, shadow_root_id);
 
     self
@@ -944,6 +1013,12 @@ impl TreeSink for Dom2TreeSink {
     let old_len = doc.node(*new_parent).children.len();
     let moved_children_snapshot = doc.node(*node).children.clone();
     if !moved_children_snapshot.is_empty() {
+      // Run pre-remove steps in reverse so offsets are updated as though children were removed from
+      // the end towards the start. This matches a sequence of individual removals without requiring
+      // us to mutate the children list until we `take()` it below.
+      for (idx, &child) in moved_children_snapshot.iter().enumerate().rev() {
+        doc.live_range_pre_remove_steps(child, *node, idx);
+      }
       for (idx, &child) in moved_children_snapshot.iter().enumerate() {
         doc.node_iterator_pre_remove_steps(child);
         doc.live_mutation.pre_remove(child, *node, idx);
@@ -951,6 +1026,11 @@ impl TreeSink for Dom2TreeSink {
       doc
         .live_mutation
         .pre_insert(*new_parent, old_len, moved_children_snapshot.len());
+      doc.live_range_pre_insert_steps(
+        *new_parent,
+        doc.tree_child_index_from_raw_index_for_range(*new_parent, old_len),
+        doc.inserted_tree_children_count_for_range(*new_parent, &moved_children_snapshot),
+      );
     }
     let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
     if moved_children.is_empty() {
@@ -978,17 +1058,30 @@ impl TreeSink for Dom2TreeSink {
           NodeKind::Text { content } => content.clone(),
           _ => String::new(),
         };
-        if doc.live_mutation.has_subscribers() {
+        let has_live_subscribers = doc.live_mutation.has_subscribers();
+        let has_live_ranges = !doc.ranges.is_empty();
+        if has_live_subscribers || has_live_ranges {
           let offset = match &doc.node(prev).kind {
             NodeKind::Text { content } => utf16_len(content),
             _ => 0,
           };
-          doc.live_mutation.replace_data(
-            prev,
-            offset,
-            /* removed_len */ 0,
-            /* inserted_len */ utf16_len(&next_content),
-          );
+          let inserted_len = utf16_len(&next_content);
+          if has_live_subscribers {
+            doc.live_mutation.replace_data(
+              prev,
+              offset,
+              /* removed_len */ 0,
+              /* inserted_len */ inserted_len,
+            );
+          }
+          if has_live_ranges {
+            doc.live_range_replace_data_steps(
+              prev,
+              offset,
+              /* removed_len */ 0,
+              /* inserted_len */ inserted_len,
+            );
+          }
         }
         if let NodeKind::Text { content } = &mut doc.node_mut(prev).kind {
           content.push_str(&next_content);
@@ -1863,8 +1956,16 @@ mod live_mutation_hook_tests {
 
     let (parent, child) = {
       let mut doc = sink.document_mut();
-      let parent = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
-      let child = doc.push_node(new_element("span"), Some(parent), /* inert_subtree */ false);
+      let parent = doc.push_node(
+        new_element("div"),
+        Some(root),
+        /* inert_subtree */ false,
+      );
+      let child = doc.push_node(
+        new_element("span"),
+        Some(parent),
+        /* inert_subtree */ false,
+      );
       (parent, child)
     };
 
@@ -1889,7 +1990,11 @@ mod live_mutation_hook_tests {
 
     let (parent, child) = {
       let mut doc = sink.document_mut();
-      let parent = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
+      let parent = doc.push_node(
+        new_element("div"),
+        Some(root),
+        /* inert_subtree */ false,
+      );
       let child = doc.push_node(new_element("span"), None, /* inert_subtree */ false);
       (parent, child)
     };
@@ -1920,7 +2025,11 @@ mod live_mutation_hook_tests {
 
     let (parent, prev_text, next_text) = {
       let mut doc = sink.document_mut();
-      let parent = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
+      let parent = doc.push_node(
+        new_element("div"),
+        Some(root),
+        /* inert_subtree */ false,
+      );
       let prev_text = doc.push_node(
         NodeKind::Text {
           content: "a".to_string(),
@@ -1977,8 +2086,16 @@ mod live_mutation_hook_tests {
 
     let (from, to, to_text, moved_text) = {
       let mut doc = sink.document_mut();
-      let from = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
-      let to = doc.push_node(new_element("div"), Some(root), /* inert_subtree */ false);
+      let from = doc.push_node(
+        new_element("div"),
+        Some(root),
+        /* inert_subtree */ false,
+      );
+      let to = doc.push_node(
+        new_element("div"),
+        Some(root),
+        /* inert_subtree */ false,
+      );
       let to_text = doc.push_node(
         NodeKind::Text {
           content: "hello".to_string(),
@@ -2085,7 +2202,9 @@ mod live_mutation_hook_tests {
 
     let doc = tokenizer.sink.sink.document.borrow().clone();
     let body = doc.body().expect("expected <body>");
-    let after = doc.get_element_by_id("after").expect("expected <p id=after>");
+    let after = doc
+      .get_element_by_id("after")
+      .expect("expected <p id=after>");
     let after_idx = doc
       .index_of_child(body, after)
       .expect("index_of_child")
@@ -2100,5 +2219,105 @@ mod live_mutation_hook_tests {
       )),
       "expected pre_insert hook for <p id=after> insertion into <body>, got {events:?}"
     );
+  }
+}
+
+#[cfg(test)]
+mod live_range_tests {
+  use super::Dom2TreeSink;
+  use crate::dom2::NodeKind;
+
+  fn new_element(tag: &str) -> NodeKind {
+    NodeKind::Element {
+      tag_name: tag.to_string(),
+      namespace: String::new(),
+      prefix: None,
+      attributes: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn insert_node_before_updates_live_ranges() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let (range, parent) = {
+      let mut doc = sink.document_mut();
+      let parent = doc.push_node(
+        new_element("div"),
+        Some(root),
+        /* inert_subtree */ false,
+      );
+      let _child1 = doc.push_node(
+        new_element("span"),
+        Some(parent),
+        /* inert_subtree */ false,
+      );
+      let child2 = doc.push_node(
+        new_element("span"),
+        Some(parent),
+        /* inert_subtree */ false,
+      );
+      let inserted = doc.push_node(new_element("p"), None, /* inert_subtree */ false);
+
+      let range = doc.create_range();
+      doc.range_set_start(range, parent, 2).unwrap();
+      doc.range_set_end(range, parent, 2).unwrap();
+
+      assert!(Dom2TreeSink::insert_node_before(
+        &mut doc,
+        parent,
+        Some(child2),
+        inserted
+      ));
+
+      (range, parent)
+    };
+
+    let doc = sink.document();
+    assert_eq!(doc.range_start_container(range).unwrap(), parent);
+    assert_eq!(doc.range_start_offset(range).unwrap(), 3);
+    assert_eq!(doc.range_end_container(range).unwrap(), parent);
+    assert_eq!(doc.range_end_offset(range).unwrap(), 3);
+  }
+
+  #[test]
+  fn append_text_at_merge_updates_live_ranges() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let (range, text_id) = {
+      let mut doc = sink.document_mut();
+      let parent = doc.push_node(
+        new_element("div"),
+        Some(root),
+        /* inert_subtree */ false,
+      );
+      let text_id = doc.push_node(
+        NodeKind::Text {
+          content: "b".to_string(),
+        },
+        Some(parent),
+        /* inert_subtree */ false,
+      );
+
+      let range = doc.create_range();
+      doc.range_set_start(range, text_id, 1).unwrap();
+      doc.range_set_end(range, text_id, 1).unwrap();
+
+      Dom2TreeSink::append_text_at(&mut doc, parent, Some(text_id), "a", false);
+
+      (range, text_id)
+    };
+
+    let doc = sink.document();
+    let NodeKind::Text { content } = &doc.node(text_id).kind else {
+      panic!("expected text node");
+    };
+    assert_eq!(content, "ab");
+    assert_eq!(doc.range_start_container(range).unwrap(), text_id);
+    assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+    assert_eq!(doc.range_end_container(range).unwrap(), text_id);
+    assert_eq!(doc.range_end_offset(range).unwrap(), 2);
   }
 }

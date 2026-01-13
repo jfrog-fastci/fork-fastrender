@@ -1,6 +1,6 @@
 use crate::dom::{is_valid_shadow_host_name, ShadowRootMode, HTML_NAMESPACE};
 
-use super::{DomError, Document, NodeId, NodeKind, SlotAssignmentMode};
+use super::{Document, DomError, NodeId, NodeKind, SlotAssignmentMode};
 
 fn node_is_element_like(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
@@ -46,7 +46,10 @@ fn has_attribute(attrs: &[(String, String)], name: &str) -> bool {
   attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case(name))
 }
 
-fn parse_shadow_root_definition(doc: &Document, kind: &NodeKind) -> Option<(ShadowRootMode, bool, bool, bool)> {
+fn parse_shadow_root_definition(
+  doc: &Document,
+  kind: &NodeKind,
+) -> Option<(ShadowRootMode, bool, bool, bool)> {
   let NodeKind::Element {
     tag_name,
     namespace,
@@ -95,6 +98,7 @@ fn promote_template_to_shadow_root(
   // Detach the template from the host.
   doc.node_iterator_pre_remove_steps(template);
   doc.live_mutation.pre_remove(template, host, template_idx);
+  doc.live_range_pre_remove_steps(template, host, template_idx);
   doc.nodes[host.index()].children.remove(template_idx);
   doc.nodes[template.index()].parent = None;
 
@@ -114,6 +118,9 @@ fn promote_template_to_shadow_root(
 
   // Move template children to shadow root.
   let template_children = doc.nodes[template.index()].children.clone();
+  for (idx, &child) in template_children.iter().enumerate().rev() {
+    doc.live_range_pre_remove_steps(child, template, idx);
+  }
   for (idx, &child) in template_children.iter().enumerate() {
     if doc.nodes[child.index()].parent == Some(template) {
       doc.node_iterator_pre_remove_steps(child);
@@ -128,6 +135,11 @@ fn promote_template_to_shadow_root(
     doc
       .live_mutation
       .pre_insert(shadow_root, 0, moved_children.len());
+    doc.live_range_pre_insert_steps(
+      shadow_root,
+      doc.tree_child_index_from_raw_index_for_range(shadow_root, 0),
+      doc.inserted_tree_children_count_for_range(shadow_root, &moved_children),
+    );
   }
   for &child in &moved_children {
     doc.nodes[child.index()].parent = Some(shadow_root);
@@ -136,6 +148,11 @@ fn promote_template_to_shadow_root(
 
   // Attach shadow root to host at index 0.
   doc.live_mutation.pre_insert(host, 0, 1);
+  doc.live_range_pre_insert_steps(
+    host,
+    doc.tree_child_index_from_raw_index_for_range(host, 0),
+    doc.inserted_tree_children_count_for_range(host, &[shadow_root]),
+  );
   doc.nodes[host.index()].children.insert(0, shadow_root);
   doc.nodes[shadow_root.index()].parent = Some(host);
 }
@@ -170,12 +187,10 @@ impl Document {
       return Err(DomError::NotSupportedError);
     }
 
-    if self
-      .node(host)
-      .children
-      .iter()
-      .any(|&child| self.node(child).parent == Some(host) && matches!(self.node(child).kind, NodeKind::ShadowRoot { .. }))
-    {
+    if self.node(host).children.iter().any(|&child| {
+      self.node(child).parent == Some(host)
+        && matches!(self.node(child).kind, NodeKind::ShadowRoot { .. })
+    }) {
       return Err(DomError::NotSupportedError);
     }
 
@@ -226,7 +241,7 @@ impl Document {
           node.children.iter().position(|&child_id| {
             self.node(child_id).parent == Some(id)
               && parse_shadow_root_definition(self, &self.node(child_id).kind).is_some()
-           })
+          })
         } else {
           None
         };
@@ -274,15 +289,18 @@ impl Document {
                 return None;
               }
               let child_kind = &self.node(child_id).kind;
-              parse_shadow_root_definition(self, child_kind)
-                .map(|(mode, delegates_focus, clonable, serializable)| {
+              parse_shadow_root_definition(self, child_kind).map(
+                |(mode, delegates_focus, clonable, serializable)| {
                   (idx, child_id, mode, delegates_focus, clonable, serializable)
-                })
+                },
+              )
             })
         }
       };
 
-      let Some((template_idx, template_id, mode, delegates_focus, clonable, serializable)) = shadow_template else {
+      let Some((template_idx, template_id, mode, delegates_focus, clonable, serializable)) =
+        shadow_template
+      else {
         continue;
       };
 
@@ -303,8 +321,8 @@ impl Document {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
   use crate::debug::snapshot::snapshot_dom;
+  use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
   use selectors::context::QuirksMode;
 
   fn node_id_attribute(kind: &NodeKind) -> Option<&str> {
@@ -474,7 +492,10 @@ mod tests {
     doc.attach_shadow_roots();
 
     let shadow_root = doc.node(host).children[0];
-    assert!(matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }));
+    assert!(matches!(
+      doc.node(shadow_root).kind,
+      NodeKind::ShadowRoot { .. }
+    ));
     assert_eq!(doc.node(span).parent, Some(shadow_root));
 
     assert_eq!(
