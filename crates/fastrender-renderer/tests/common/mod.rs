@@ -408,6 +408,31 @@ impl RendererProc {
             last_error,
           };
         }
+        RendererToBrowser::FramePaintPlan(plan) => {
+          let frame_id = plan.frame_id;
+          let subframes = plan.slots.clone();
+          let buffer = match fastrender_ipc::composite_paint_plan(
+            plan,
+            std::iter::empty::<(&SubframeInfo, &FrameBuffer)>(),
+          ) {
+            Ok(buffer) => buffer,
+            Err(err) => {
+              last_error = Some(format!("composite_paint_plan failed: {err:?}"));
+              FrameBuffer {
+                width: 0,
+                height: 0,
+                rgba8: Vec::new(),
+              }
+            }
+          };
+          return FrameReadyWithMeta {
+            frame_id,
+            buffer,
+            subframes,
+            last_committed,
+            last_error,
+          };
+        }
         RendererToBrowser::Error { message, .. } => last_error = Some(message),
         RendererToBrowser::SubframesDiscovered { .. }
         | RendererToBrowser::NavigationFailed { .. }

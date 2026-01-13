@@ -108,6 +108,15 @@ pub enum DisplayItem {
   /// Draw an image
   Image(ImageItem),
 
+  /// Marker for an out-of-process iframe surface to be composited by the browser.
+  ///
+  /// This is a metadata-only display item: the display list renderer ignores it.
+  ///
+  /// When a root frame contains remote iframe slots, the renderer must preserve paint order by
+  /// splitting the root paint into multiple layers around these markers, then having the browser
+  /// compositor interleave child frame surfaces between the layers.
+  RemoteFrameSlot(RemoteFrameSlotItem),
+
   /// Draw a repeating image pattern (background-repeat: repeat)
   ImagePattern(ImagePatternItem),
 
@@ -200,6 +209,7 @@ impl DisplayItem {
       DisplayItem::Outline(item) => Some(item.outer_rect()),
       DisplayItem::Text(item) => Some(text_bounds(item)),
       DisplayItem::Image(item) => Some(item.dest_rect),
+      DisplayItem::RemoteFrameSlot(item) => Some(item.rect),
       DisplayItem::ImagePattern(item) => Some(item.dest_rect),
       DisplayItem::BoxShadow(item) => {
         if item.inset {
@@ -1276,6 +1286,38 @@ pub struct ImageItem {
   /// Source rectangle (for sprite sheets, etc.)
   /// If None, uses the entire image
   pub src_rect: Option<Rect>,
+}
+
+// ============================================================================
+// Remote Frame Slot Item
+// ============================================================================
+
+/// Clip metadata for a [`RemoteFrameSlotItem`].
+#[derive(Debug, Clone)]
+pub struct RemoteFrameClip {
+  /// Clip rectangle in CSS px (display-list coordinate space).
+  pub rect: Rect,
+  /// Optional rounded corner radii for the clip.
+  pub radii: Option<BorderRadii>,
+}
+
+/// Marker describing where an out-of-process iframe should be composited.
+///
+/// This does **not** draw anything by itself; it is consumed by higher-level layering/compositing
+/// code that splits a parent paint into layers and interleaves child frame surfaces between them.
+#[derive(Debug, Clone)]
+pub struct RemoteFrameSlotItem {
+  /// Stable slot index in paint order, starting at 0 for each parent frame paint.
+  pub slot_index: u32,
+  /// Resolved iframe `src` URL string (best-effort).
+  ///
+  /// This is a temporary identifier for early multiprocess work; browser-side frame trees should
+  /// eventually use a stable `FrameId`/token instead of URLs.
+  pub src: String,
+  /// The destination rectangle (content box) in CSS px where the child frame should be composited.
+  pub rect: Rect,
+  /// Optional clip to apply when compositing the child frame (e.g. border-radius).
+  pub clip: Option<RemoteFrameClip>,
 }
 
 /// Sampling quality for raster images

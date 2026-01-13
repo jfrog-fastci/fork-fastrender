@@ -1078,6 +1078,18 @@ fn snapshot_display_item(item_id: usize, item: &DisplayItem) -> DisplayItemSnaps
         }
       })),
     ),
+    DisplayItem::RemoteFrameSlot(slot) => (
+      "remote_frame_slot".to_string(),
+      Some(serde_json::json!({
+        "slot_index": slot.slot_index,
+        "src": slot.src,
+        "rect": snapshot_rect(slot.rect),
+        "clip": slot.clip.as_ref().map(|clip| serde_json::json!({
+          "rect": snapshot_rect(clip.rect),
+          "radii": clip.radii.map(snapshot_radii),
+        })),
+      })),
+    ),
     DisplayItem::ImagePattern(pattern) => (
       "image_pattern".to_string(),
       Some(serde_json::json!({

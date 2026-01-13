@@ -15456,6 +15456,9 @@ impl DisplayListRenderer {
         self.render_text(&scaled)?;
       }
       DisplayItem::Image(item) => self.render_image(item)?,
+      DisplayItem::RemoteFrameSlot(_) => {
+        // Metadata-only marker consumed by higher-level OOPIF compositing code.
+      }
       DisplayItem::ImagePattern(item) => self.render_image_pattern(item)?,
       DisplayItem::BoxShadow(item) => self.render_box_shadow(item)?,
       DisplayItem::ListMarker(item) => {

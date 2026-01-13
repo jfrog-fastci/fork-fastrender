@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererToBrowserKind {
   FrameReady,
+  FramePaintPlan,
   SubframesDiscovered,
   NavigationCommitted,
   NavigationFailed,
@@ -120,6 +121,28 @@ impl BrowserIpcSecurityState {
           return;
         }
         self.latest_frame.insert(frame_id, buffer);
+      }
+      RendererToBrowser::FramePaintPlan(plan) => {
+        let frame_id = plan.frame_id;
+        if !self.check_frame(sender, frame_id, RendererToBrowserKind::FramePaintPlan) {
+          return;
+        }
+        if !self.check_subframes(
+          sender,
+          frame_id,
+          &plan.slots,
+          RendererToBrowserKind::FramePaintPlan,
+        ) {
+          return;
+        }
+        // Simulated presentation state: flatten the embedder layers, treating any missing child
+        // surfaces as transparent.
+        if let Ok(buffer) = crate::composite_paint_plan(
+          plan,
+          std::iter::empty::<(&crate::SubframeInfo, &crate::FrameBuffer)>(),
+        ) {
+          self.latest_frame.insert(frame_id, buffer);
+        }
       }
       RendererToBrowser::SubframesDiscovered {
         parent_frame_id,

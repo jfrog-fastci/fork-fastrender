@@ -88,6 +88,7 @@ mod form_invalid_placeholder_shown_fixture;
 mod fragmented_root_paint;
 mod hr_default_style;
 mod iframe_background_compositing;
+mod remote_iframe_stacking_order;
 mod image_downscale_sampling;
 mod image_fractional_src_rect_baking_downscale;
 mod image_set_intrinsic_background_size;

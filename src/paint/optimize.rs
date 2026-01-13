@@ -704,6 +704,9 @@ impl DisplayListOptimizer {
         }
         true
       }
+      // Remote iframe slots are metadata-only markers and must be preserved so the compositor can
+      // interleave child surfaces at the correct paint order.
+      DisplayItem::RemoteFrameSlot(_) => false,
       DisplayItem::Outline(item) => {
         item.width <= 0.0
           || matches!(

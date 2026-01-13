@@ -928,6 +928,12 @@ fn display_item_value(item: &DisplayItem) -> Value {
         Value::String(format!("{:?}", it.filter_quality)),
       ),
     ]),
+    DisplayItem::RemoteFrameSlot(it) => map_from_pairs(vec![
+      ("type", Value::String("RemoteFrameSlot".into())),
+      ("slot_index", Value::from(it.slot_index as u64)),
+      ("src", Value::String(it.src.clone())),
+      ("rect", rect_value(it.rect, None)),
+    ]),
     DisplayItem::ImagePattern(it) => map_from_pairs(vec![
       ("type", Value::String("ImagePattern".into())),
       ("dest_rect", rect_value(it.dest_rect, None)),

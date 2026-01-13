@@ -20553,6 +20553,216 @@ pub(crate) fn repaint_display_list_region_with_resources_scaled_with_trace(
   Ok(PartialRepaintReport { used_optimized_list })
 }
 
+/// Result of painting a frame into multiple ordered layers interleaved with remote iframe slots.
+///
+/// Composition order is:
+/// `layers[0] -> slot[0] -> layers[1] -> slot[1] -> ... -> layers[N]`
+#[derive(Debug)]
+pub struct LayeredPaintResult {
+  /// Parent frame layers in paint order. Each pixmap is an RGBA (premultiplied) surface with a
+  /// transparent initial backdrop.
+  pub layers: Vec<Pixmap>,
+  /// Remote iframe slots encountered in paint order.
+  pub slots: Vec<crate::paint::display_list::RemoteFrameSlotItem>,
+}
+
+#[derive(Debug)]
+struct LayeredDisplayListPlan {
+  layers: Vec<crate::paint::display_list::DisplayList>,
+  slots: Vec<crate::paint::display_list::RemoteFrameSlotItem>,
+}
+
+fn split_display_list_for_remote_iframe_slots(
+  display_list: &crate::paint::display_list::DisplayList,
+) -> Result<LayeredDisplayListPlan> {
+  use crate::paint::display_list::DisplayItem;
+
+  fn is_push(item: &DisplayItem) -> bool {
+    matches!(
+      item,
+      DisplayItem::PushClip(_)
+        | DisplayItem::PushOpacity(_)
+        | DisplayItem::PushTransform(_)
+        | DisplayItem::PushBlendMode(_)
+        | DisplayItem::PushStackingContext(_)
+        | DisplayItem::PushBackfaceVisibility(_)
+    )
+  }
+
+  fn pop_for_push(push: &DisplayItem) -> DisplayItem {
+    match push {
+      DisplayItem::PushClip(_) => DisplayItem::PopClip,
+      DisplayItem::PushOpacity(_) => DisplayItem::PopOpacity,
+      DisplayItem::PushTransform(_) => DisplayItem::PopTransform,
+      DisplayItem::PushBlendMode(_) => DisplayItem::PopBlendMode,
+      DisplayItem::PushStackingContext(_) => DisplayItem::PopStackingContext,
+      DisplayItem::PushBackfaceVisibility(_) => DisplayItem::PopBackfaceVisibility,
+      _ => {
+        debug_assert!(false, "unexpected non-push item in stack");
+        DisplayItem::PopClip
+      }
+    }
+  }
+
+  fn pop_matches_push(pop: &DisplayItem, push: &DisplayItem) -> bool {
+    matches!(
+      (pop, push),
+      (DisplayItem::PopClip, DisplayItem::PushClip(_))
+        | (DisplayItem::PopOpacity, DisplayItem::PushOpacity(_))
+        | (DisplayItem::PopTransform, DisplayItem::PushTransform(_))
+        | (DisplayItem::PopBlendMode, DisplayItem::PushBlendMode(_))
+        | (DisplayItem::PopStackingContext, DisplayItem::PushStackingContext(_))
+        | (DisplayItem::PopBackfaceVisibility, DisplayItem::PushBackfaceVisibility(_))
+    )
+  }
+
+  let mut layers: Vec<crate::paint::display_list::DisplayList> = Vec::new();
+  let mut slots: Vec<crate::paint::display_list::RemoteFrameSlotItem> = Vec::new();
+
+  // Stack of currently-active push items at the current scan position.
+  let mut active_stack: Vec<DisplayItem> = Vec::new();
+  let mut current_items: Vec<DisplayItem> = Vec::new();
+  let mut next_slot_index: u32 = 0;
+
+  fn append_stack_pops(items: &mut Vec<DisplayItem>, active_stack: &[DisplayItem]) {
+    for push in active_stack.iter().rev() {
+      items.push(pop_for_push(push));
+    }
+  }
+
+  fn start_layer_with_prefix(items: &mut Vec<DisplayItem>, active_stack: &[DisplayItem]) {
+    items.extend(active_stack.iter().cloned());
+  }
+
+  start_layer_with_prefix(&mut current_items, &active_stack);
+
+  for item in display_list.items().iter() {
+    match item {
+      DisplayItem::RemoteFrameSlot(slot) => {
+        append_stack_pops(&mut current_items, &active_stack);
+        layers.push(crate::paint::display_list::DisplayList::from_items(std::mem::take(
+          &mut current_items,
+        )));
+
+        let mut slot = slot.clone();
+        slot.slot_index = next_slot_index;
+        next_slot_index = next_slot_index.saturating_add(1);
+        slots.push(slot);
+
+        // Begin a new layer after the slot.
+        start_layer_with_prefix(&mut current_items, &active_stack);
+      }
+      DisplayItem::PopClip
+      | DisplayItem::PopOpacity
+      | DisplayItem::PopTransform
+      | DisplayItem::PopBlendMode
+      | DisplayItem::PopStackingContext
+      | DisplayItem::PopBackfaceVisibility => {
+        current_items.push(item.clone());
+        let Some(push) = active_stack.pop() else {
+          return Err(Error::Render(RenderError::PaintFailed {
+            operation: "remote iframe layer split: stack underflow".to_string(),
+          }));
+        };
+        if !pop_matches_push(item, &push) {
+          return Err(Error::Render(RenderError::PaintFailed {
+            operation: "remote iframe layer split: stack mismatch".to_string(),
+          }));
+        }
+      }
+      other => {
+        current_items.push(other.clone());
+        if is_push(other) {
+          active_stack.push(other.clone());
+        }
+      }
+    }
+  }
+
+  append_stack_pops(&mut current_items, &active_stack);
+  layers.push(crate::paint::display_list::DisplayList::from_items(current_items));
+
+  Ok(LayeredDisplayListPlan { layers, slots })
+}
+
+/// Paints a fragment tree via the display-list pipeline, returning ordered layers split around
+/// out-of-process iframe slots.
+///
+/// Each returned layer pixmap is cleared to transparent before rendering so the browser compositor
+/// can blend them together (interleaving remote child frame surfaces) while preserving paint order.
+pub fn paint_tree_display_list_layered_with_resources_scaled_offset_depth(
+  tree: &FragmentTree,
+  width: u32,
+  height: u32,
+  font_ctx: FontContext,
+  image_cache: ImageCache,
+  scale: f32,
+  offset: Point,
+  paint_parallelism: PaintParallelism,
+  scroll_state: &ScrollState,
+  max_iframe_depth: usize,
+) -> Result<LayeredPaintResult> {
+  record_stage(StageHeartbeat::PaintBuild);
+  check_active(RenderStage::Paint).map_err(Error::Render)?;
+
+  let viewport = tree.viewport_size();
+  let culling_viewport = Size::new(width as f32, height as f32);
+
+  let mut display_list = DisplayListBuilder::with_image_cache(image_cache.clone())
+    .with_font_context(font_ctx.clone())
+    .with_svg_filter_defs(tree.svg_filter_defs.clone())
+    .with_svg_id_defs(tree.svg_id_defs.clone())
+    .with_svg_id_defs_raw(tree.svg_id_defs_raw.clone())
+    .with_appearance_none_form_controls(tree.appearance_none_form_controls.clone())
+    .with_scroll_state(scroll_state.clone())
+    .with_device_pixel_ratio(scale)
+    .with_parallelism(&paint_parallelism)
+    .with_max_iframe_depth(max_iframe_depth)
+    .with_viewport_size(viewport.width, viewport.height)
+    .with_culling_viewport_size(culling_viewport.width, culling_viewport.height)
+    .build_with_stacking_tree_offset_checked(&tree.root, offset)?;
+  for extra in &tree.additional_fragments {
+    let extra_list = DisplayListBuilder::with_image_cache(image_cache.clone())
+      .with_font_context(font_ctx.clone())
+      .with_svg_filter_defs(tree.svg_filter_defs.clone())
+      .with_svg_id_defs(tree.svg_id_defs.clone())
+      .with_svg_id_defs_raw(tree.svg_id_defs_raw.clone())
+      .with_appearance_none_form_controls(tree.appearance_none_form_controls.clone())
+      .with_scroll_state(scroll_state.clone())
+      .with_device_pixel_ratio(scale)
+      .with_parallelism(&paint_parallelism)
+      .with_max_iframe_depth(max_iframe_depth)
+      .with_viewport_size(viewport.width, viewport.height)
+      .with_culling_viewport_size(culling_viewport.width, culling_viewport.height)
+      .build_with_stacking_tree_offset_checked(extra, offset)?;
+    display_list.append(extra_list);
+  }
+
+  // Optimize the full list once, then split into layers.
+  let optimizer = DisplayListOptimizer::new();
+  let viewport_rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+  let list_to_render = match optimizer.optimize_checked(&display_list, viewport_rect) {
+    Ok((optimized, _stats)) => optimized,
+    Err(_) => display_list,
+  };
+
+  let plan = split_display_list_for_remote_iframe_slots(&list_to_render)?;
+
+  record_stage(StageHeartbeat::PaintRasterize);
+  let mut layers = Vec::with_capacity(plan.layers.len());
+  for layer_list in plan.layers {
+    let mut renderer =
+      DisplayListRenderer::new_scaled(width, height, Rgba::TRANSPARENT, font_ctx.clone(), scale)?;
+    renderer.set_parallelism(paint_parallelism);
+    layers.push(renderer.render_with_report(&layer_list)?.pixmap);
+  }
+
+  Ok(LayeredPaintResult {
+    layers,
+    slots: plan.slots,
+  })
+}
+
 /// Paints a fragment tree via the display-list pipeline using explicit resources.
 pub fn paint_tree_display_list_with_resources(
   tree: &FragmentTree,

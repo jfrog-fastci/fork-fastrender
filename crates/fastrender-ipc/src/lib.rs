@@ -849,6 +849,23 @@ pub struct FrameBuffer {
   pub rgba8: Vec<u8>,
 }
 
+/// A multi-layer paint plan for a frame, split around out-of-process iframe slots.
+///
+/// Composition order is:
+/// `layers[0] -> slots[0] -> layers[1] -> slots[1] -> ... -> layers[N]`.
+///
+/// Invariant (expected): `layers.len() == slots.len() + 1`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FramePaintPlan {
+  pub frame_id: FrameId,
+  /// Embedder layers. Each layer must be an RGBA8 premultiplied buffer with a transparent
+  /// background so the browser can composite it over child frame surfaces.
+  pub layers: Vec<FrameBuffer>,
+  /// Remote frame slots in stable paint order. Each slot describes where to composite the
+  /// corresponding child frame surface.
+  pub slots: Vec<SubframeInfo>,
+}
+
 /// Messages sent from the browser process to a renderer process.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BrowserToRenderer {
@@ -927,6 +944,11 @@ pub enum RendererToBrowser {
     frame_id: Option<FrameId>,
     message: String,
   },
+  /// A frame paint plan is ready for browser-side compositing.
+  ///
+  /// This supersedes `FrameReady` for site-isolation mode where the browser must interleave
+  /// out-of-process iframe surfaces with embedder content in paint order.
+  FramePaintPlan(FramePaintPlan),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1132,6 +1154,67 @@ pub fn composite_subframes<'a>(
   Ok(parent)
 }
 
+fn composite_layer_in_place(dst: &mut FrameBuffer, src: &FrameBuffer) -> Result<(), CompositeError> {
+  if dst.width != src.width || dst.height != src.height {
+    return Err(CompositeError::BufferSizeMismatch);
+  }
+  let expected_len = dst
+    .width
+    .checked_mul(dst.height)
+    .and_then(|px| px.checked_mul(4))
+    .map(|len| len as usize)
+    .ok_or(CompositeError::BufferSizeMismatch)?;
+  if dst.rgba8.len() != expected_len || src.rgba8.len() != expected_len {
+    return Err(CompositeError::BufferSizeMismatch);
+  }
+
+  for (dst_px, src_px) in dst
+    .rgba8
+    .chunks_exact_mut(4)
+    .zip(src.rgba8.chunks_exact(4))
+  {
+    let mut dst_arr = [dst_px[0], dst_px[1], dst_px[2], dst_px[3]];
+    let src_arr = [src_px[0], src_px[1], src_px[2], src_px[3]];
+    blend_src_over(&mut dst_arr, src_arr);
+    dst_px.copy_from_slice(&dst_arr);
+  }
+
+  Ok(())
+}
+
+/// Composite a [`FramePaintPlan`] into a single buffer.
+///
+/// This is intended to run in the browser process when composing out-of-process iframes.
+///
+/// Missing child buffers are treated as transparent (the corresponding slot is skipped).
+pub fn composite_paint_plan<'a>(
+  plan: FramePaintPlan,
+  subframes: impl IntoIterator<Item = (&'a SubframeInfo, &'a FrameBuffer)>,
+) -> Result<FrameBuffer, CompositeError> {
+  if plan.layers.len() != plan.slots.len() + 1 {
+    return Err(CompositeError::BufferSizeMismatch);
+  }
+
+  let mut by_child: HashMap<FrameId, &'a FrameBuffer> = HashMap::new();
+  for (info, buffer) in subframes {
+    by_child.insert(info.child, buffer);
+  }
+
+  let mut layers = plan.layers.into_iter();
+  let mut out = layers
+    .next()
+    .ok_or(CompositeError::BufferSizeMismatch)?;
+
+  for (slot, layer) in plan.slots.into_iter().zip(layers) {
+    if let Some(child) = by_child.get(&slot.child) {
+      composite_subframe(&mut out, child, &slot)?;
+    }
+    composite_layer_in_place(&mut out, &layer)?;
+  }
+
+  Ok(out)
+}
+
 // -----------------------------------------------------------------------------
 // Frame hit testing (browser-side input routing)
 // -----------------------------------------------------------------------------
@@ -1305,6 +1388,14 @@ mod compositor_tests {
   fn pixel(buf: &FrameBuffer, x: u32, y: u32) -> [u8; 4] {
     let idx = ((y * buf.width + x) * 4) as usize;
     [buf.rgba8[idx], buf.rgba8[idx + 1], buf.rgba8[idx + 2], buf.rgba8[idx + 3]]
+  }
+
+  fn transparent_buffer(width: u32, height: u32) -> FrameBuffer {
+    FrameBuffer {
+      width,
+      height,
+      rgba8: vec![0u8; (width * height * 4) as usize],
+    }
   }
 
   #[test]
@@ -1489,6 +1580,56 @@ mod compositor_tests {
     // Provide in reverse input order; blue should still end up on top due to z_index sorting.
     let out = composite_subframes(parent, [(&info_blue, &blue), (&info_red, &red)]).unwrap();
     assert_eq!(pixel(&out, 1, 1), [0, 0, 255, 255]);
+  }
+
+  #[test]
+  fn composites_paint_plan_interleaving_layers_and_subframes() {
+    let layer0 = solid_buffer(4, 4, [0, 0, 0, 255]);
+    let mut layer1 = transparent_buffer(4, 4);
+    // Overlay pixel above the iframe region.
+    let idx = ((2 * layer1.width + 2) * 4) as usize;
+    layer1.rgba8[idx..idx + 4].copy_from_slice(&[0, 0, 255, 255]);
+
+    let child = solid_buffer(2, 2, [255, 0, 0, 255]);
+
+    let slot = SubframeInfo {
+      child: FrameId(2),
+      src: None,
+      transform: AffineTransform {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 1.0,
+        f: 1.0,
+      },
+      clip_stack: vec![ClipItem {
+        rect: Rect {
+          x: 0.0,
+          y: 0.0,
+          width: 4.0,
+          height: 4.0,
+        },
+        radius: BorderRadius::ZERO,
+      }],
+      z_index: 0,
+      hit_testable: true,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
+    };
+
+    let plan = FramePaintPlan {
+      frame_id: FrameId(1),
+      layers: vec![layer0, layer1],
+      slots: vec![slot.clone()],
+    };
+
+    // Expected paint order: layer0 -> child -> layer1 (overlay).
+    let out = composite_paint_plan(plan, [(&slot, &child)]).unwrap();
+    assert_eq!(pixel(&out, 2, 2), [0, 0, 255, 255], "overlay should be above iframe");
+    assert_eq!(pixel(&out, 1, 1), [255, 0, 0, 255], "iframe pixels should appear above background");
+    assert_eq!(pixel(&out, 0, 0), [0, 0, 0, 255], "background should remain visible");
   }
 
   #[test]

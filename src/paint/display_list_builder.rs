@@ -7360,6 +7360,71 @@ impl DisplayListBuilder {
           } = replaced_type
           {
             if let Some(cache) = self.image_cache.as_ref() {
+              // When site isolation is enabled, cross-origin iframes become out-of-process and the
+              // parent frame must not recursively render their content. Instead, emit a metadata
+              // slot so the browser compositor can interleave the child surface at the correct
+              // paint order.
+              if runtime::runtime_toggles().truthy("FASTR_SITE_ISOLATION") && srcdoc.is_none() {
+                let resolved_src = cache.resolve_url(src.as_str());
+                let is_about_blank = resolved_src
+                  .trim_matches(|c: char| {
+                    matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+                  })
+                  .to_ascii_lowercase()
+                  .starts_with("about:");
+                if !resolved_src.is_empty() && !is_about_blank {
+                  let parent_origin = cache
+                    .resource_context()
+                    .and_then(|ctx| ctx.policy.document_origin)
+                    .or_else(|| {
+                      cache
+                        .base_url()
+                        .as_deref()
+                        .and_then(crate::resource::origin_from_url)
+                    });
+                  let child_origin = crate::resource::origin_from_url(&resolved_src);
+
+                  let is_cross_origin = match (parent_origin.as_ref(), child_origin.as_ref()) {
+                    (Some(parent), Some(child)) => !child.same_origin(parent),
+                    // If origin data is unavailable, avoid switching iframe semantics; treat as
+                    // same-origin so existing single-process behavior is preserved.
+                    _ => false,
+                  };
+
+                  if is_cross_origin {
+                    let (content_rect, clip_radii) =
+                      self.replaced_content_rect_and_radii(rect, style_for_image);
+                    let clip_item = Self::replaced_content_clip_item(
+                      style_for_image,
+                      content_rect,
+                      content_rect,
+                      clip_radii,
+                    );
+                    let clip = clip_item.and_then(|item| match item.shape {
+                      ClipShape::Rect { rect, radii } => Some(crate::paint::display_list::RemoteFrameClip {
+                        rect,
+                        radii,
+                      }),
+                      _ => None,
+                    });
+
+                    self.list.push(DisplayItem::RemoteFrameSlot(
+                      crate::paint::display_list::RemoteFrameSlotItem {
+                        // Slot indices are assigned deterministically when building the final
+                        // layered paint plan (after display list optimization). The builder uses a
+                        // placeholder value so parallel display-list construction does not need to
+                        // coordinate on a global counter.
+                        slot_index: 0,
+                        src: resolved_src,
+                        rect: content_rect,
+                        clip,
+                      },
+                    ));
+                    break 'paint;
+                  }
+                }
+              }
+
               let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
               if let Some(image) = srcdoc.as_deref().and_then(|html| {
                 render_iframe_srcdoc(
