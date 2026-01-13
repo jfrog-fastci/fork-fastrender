@@ -2289,9 +2289,11 @@ impl BrowserAppState {
       }
       WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.scroll_state = scroll;
+          if tab.scroll_state != scroll {
+            tab.scroll_state = scroll;
+            update.request_redraw = true;
+          }
         }
-        update.request_redraw = true;
       }
       WorkerToUi::LoadingState { tab_id, loading } => {
         if let Some(tab) = self.tab_mut(tab_id) {
@@ -3023,6 +3025,31 @@ mod browser_app_tests {
     let record = app.visited.iter_recent().next().expect("expected visit");
     assert_eq!(record.url, about_pages::ABOUT_HELP);
     assert_eq!(record.title.as_deref(), Some("Help"));
+  }
+
+  #[test]
+  fn scroll_state_updated_requests_redraw_only_when_changed() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let scroll = ScrollState::with_viewport(Point::new(0.0, 10.0));
+
+    let first = app.apply_worker_msg(WorkerToUi::ScrollStateUpdated {
+      tab_id,
+      scroll: scroll.clone(),
+    });
+    assert!(first.request_redraw);
+    assert_eq!(app.active_tab().unwrap().scroll_state, scroll);
+
+    let second = app.apply_worker_msg(WorkerToUi::ScrollStateUpdated {
+      tab_id,
+      scroll: scroll.clone(),
+    });
+    assert!(
+      !second.request_redraw,
+      "expected identical scroll updates to not request redraw"
+    );
+    assert_eq!(app.active_tab().unwrap().scroll_state, scroll);
   }
 
   #[test]
