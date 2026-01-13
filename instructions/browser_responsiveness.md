@@ -80,9 +80,8 @@ timeout -k 10 600 bash scripts/capture_browser_perf_log.sh \
 timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
   --input target/browser_perf.jsonl
 
-# Profile with samply (Linux)
-timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  samply record bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+# CPU profiling (Linux): reproduce resize/scroll jank, then close the window to finish recording.
+timeout -k 10 600 bash scripts/profile_browser_samply.sh --url about:test-layout-stress
 ```
 
 ## Priority order
