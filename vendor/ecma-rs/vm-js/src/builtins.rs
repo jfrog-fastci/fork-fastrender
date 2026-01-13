@@ -15332,11 +15332,15 @@ pub fn regexp_prototype_symbol_split(
   let mut p = 0usize;
   let mut q = 0usize;
 
-  while q <= len && parts.len() < limit_usize {
+  // Spec: `RegExp.prototype[@@split]` iterates while `q < size` (not `<=`), meaning it does not
+  // attempt a final match at `q == size`. This matters for zero-width separators like `/$/` and for
+  // patterns that can match empty strings: matching at `q == size` would introduce an extra empty
+  // trailing segment.
+  while q < len && parts.len() < limit_usize {
     // Find next match at/after q.
     let mut found: Option<(usize, crate::regexp::RegExpMatch)> = None;
     let mut k = q;
-    while k <= len {
+    while k < len {
       if k % 1024 == 0 {
         vm.tick()?;
       }
@@ -27306,6 +27310,51 @@ mod regexp_unicode_sets_tests {
 
     realm_a.teardown(&mut heap);
     realm_b.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_v_advances_by_code_points_for_empty_global_matches() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(r#"("\u{20BB7}a".match(/(?:)/gv).length === 3)"#)?;
+    assert_eq!(v, Value::Bool(true), "match(/(?:)/gv) must advance by code points");
+
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const s = "\u{20BB7}a";
+          let count = 0;
+          for (const _ of s.matchAll(/(?:)/gv)) count++;
+          return count === 3;
+        })()
+      "#,
+    )?;
+    assert_eq!(
+      v,
+      Value::Bool(true),
+      "matchAll(/(?:)/gv) must advance by code points on empty matches"
+    );
+
+    let v = rt.exec_script(r#"("\u{20BB7}a".replace(/(?:)/gv, "-") === "-\u{20BB7}-a-")"#)?;
+    assert_eq!(
+      v,
+      Value::Bool(true),
+      "replace(/(?:)/gv) must not split surrogate pairs on empty matches"
+    );
+
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const parts = "\u{20BB7}a".split(/(?:)/v);
+          return parts.length === 2 && parts[0] === "\u{20BB7}" && parts[1] === "a";
+        })()
+      "#,
+    )?;
+    assert_eq!(
+      v,
+      Value::Bool(true),
+      "split(/(?:)/v) must not split surrogate pairs on empty matches"
+    );
     Ok(())
   }
 }
