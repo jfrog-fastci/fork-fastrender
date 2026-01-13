@@ -1755,6 +1755,9 @@ impl Vm {
   /// available.
   ///
   /// See also [`Vm::module_graph_ptr`].
+  ///
+  /// For end-to-end module embedding guidance (static graph loading, dynamic `import()`, top-level
+  /// `await`, and lifetime requirements for this pointer), see [`crate::docs::modules`].
   pub fn set_module_graph(&mut self, graph: &mut ModuleGraph) {
     self.module_graph = Some(graph as *mut ModuleGraph);
   }
@@ -1768,6 +1771,8 @@ impl Vm {
   ///
   /// This is intentionally a raw pointer to avoid borrowing `&mut Vm` for the duration of module
   /// graph access (the module graph is embedding-owned, not VM-owned).
+  ///
+  /// See [`Vm::set_module_graph`] and [`crate::docs::modules`].
   pub fn module_graph_ptr(&self) -> Option<*mut ModuleGraph> {
     self.module_graph
   }
