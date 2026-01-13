@@ -157,10 +157,39 @@ fn bench_shape_fallback_cache_pipeline_clones(c: &mut Criterion) {
   });
 }
 
+fn bench_apply_spacing_to_runs(c: &mut Criterion) {
+  common::bench_print_config_once("text_benches", &[]);
+  let ctx = FontContext::new();
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["sans-serif".to_string()].into();
+  style.font_size = 16.0;
+  let pipeline = ShapingPipeline::new();
+  let text = "FastRender applies letter/word spacing after shaping; this bench isolates the spacing pass. "
+    .repeat(64);
+
+  let runs = match pipeline.shape(&text, &style, &ctx) {
+    Ok(runs) => runs,
+    Err(_) => return,
+  };
+  if runs.is_empty() {
+    return;
+  }
+
+  // Clone runs per-iteration since spacing mutates glyph advances.
+  c.bench_function("text_apply_spacing_to_runs", |b| {
+    b.iter(|| {
+      let mut runs = runs.clone();
+      TextItem::apply_spacing_to_runs(&mut runs, &text, 0.5, 0.25);
+      black_box(runs);
+    });
+  });
+}
+
 criterion_group!(
   text_benches,
   bench_rasterize_cached_faces,
   bench_line_break_dense_paragraph,
+  bench_apply_spacing_to_runs,
   bench_shape_fallback_cache,
   bench_shape_fallback_cache_pipeline_clones
 );
