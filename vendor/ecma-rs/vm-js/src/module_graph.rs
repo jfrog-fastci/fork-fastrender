@@ -15,10 +15,13 @@ use crate::{
   cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleId, ModuleRequest,
   RealmId, RootId, Scope, ScriptId, StackFrame, Value, Vm, VmError,
 };
-use crate::{Heap, VmHost, VmHostHooks};
+use crate::{ExternalMemoryToken, Heap, SourceText, VmHost, VmHostHooks};
 use core::mem;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use parse_js::ast::node::Node;
+use parse_js::ast::stx::TopLevel;
+use parse_js::{Dialect, ParseOptions, SourceType};
 
 const MAX_REJECTION_STACK_FRAMES: usize = 32;
 const MAX_REJECTION_STACK_BYTES: usize = 16 * 1024;
@@ -2449,10 +2452,24 @@ impl ModuleGraph {
         .source
         .clone()
         .ok_or(VmError::Unimplemented("module source missing"))?;
-      let ast = self.modules[idx]
-        .ast
-        .clone()
-        .ok_or(VmError::Unimplemented("module AST missing"))?;
+      let mut tla_fallback_ast: Option<Arc<Node<TopLevel>>> = None;
+      let mut tla_fallback_ast_memory: Option<ExternalMemoryToken> = None;
+      let ast = if self.modules[idx].has_tla && self.modules[idx].ast.is_none() {
+        // Compiled-module TLA fallback: parse a `parse-js` AST on demand and retain it across async
+        // suspension (async frames store raw pointers into the AST).
+        //
+        // The AST lives outside the GC heap, so we must charge it against heap limits to prevent
+        // hostile modules from bypassing `HeapLimits` via enormous off-heap ASTs.
+        let (ast, token) = parse_module_ast_for_tla_fallback(vm, scope.heap_mut(), &source)?;
+        tla_fallback_ast = Some(ast.clone());
+        tla_fallback_ast_memory = Some(token);
+        ast
+      } else {
+        self.modules[idx]
+          .ast
+          .clone()
+          .ok_or(VmError::Unimplemented("module AST missing"))?
+      };
 
       if self.modules[idx].has_tla {
         match start_module_tla_evaluation(
@@ -2486,6 +2503,8 @@ impl ModuleGraph {
               global_object: state.global_object,
               realm_id: state.realm_id,
               async_continuation_ids,
+              tla_fallback_ast,
+              tla_fallback_ast_memory,
             });
             self.torn_down = false;
 
@@ -3163,6 +3182,19 @@ struct TlaEvaluationState {
   /// When an embedding aborts async module evaluation, these continuations must be torn down so
   /// their persistent roots do not leak.
   async_continuation_ids: Vec<u32>,
+  /// Parsed AST retained for compiled-module top-level await fallback.
+  ///
+  /// Async continuation frames store raw pointers into the `parse-js` AST. Source-text modules
+  /// store their AST in `SourceTextModuleRecord`; compiled modules parse on demand and keep the
+  /// resulting AST alive here until evaluation completes or is aborted.
+  #[allow(dead_code)]
+  tla_fallback_ast: Option<Arc<Node<TopLevel>>>,
+  /// External heap memory token for [`TlaEvaluationState::tla_fallback_ast`].
+  ///
+  /// The `parse-js` AST lives outside the GC heap; holding this token ensures it is accounted for
+  /// against `HeapLimits` and released when the AST is dropped.
+  #[allow(dead_code)]
+  tla_fallback_ast_memory: Option<ExternalMemoryToken>,
 }
 
 impl TlaEvaluationState {
@@ -3184,6 +3216,28 @@ impl Drop for TlaEvaluationState {
       "TlaEvaluationState dropped with leaked persistent roots; ensure the module evaluation promise is settled or aborted"
     );
   }
+}
+
+fn parse_module_ast_for_tla_fallback(
+  vm: &mut Vm,
+  heap: &mut Heap,
+  source: &Arc<SourceText>,
+) -> Result<(Arc<Node<TopLevel>>, ExternalMemoryToken), VmError> {
+  // `parse-js` AST nodes can be significantly larger than the original source (each token and
+  // syntactic construct becomes one-or-more Rust structs). Use a conservative multiplier so hostile
+  // input can't bypass heap limits by forcing large cached ASTs.
+  //
+  // This mirrors the heuristic used for `Vm::ecma_function_ast` (function snippet AST caching).
+  let estimated_ast_bytes = source.text.len().saturating_mul(4);
+  let token = heap.charge_external(estimated_ast_bytes)?;
+
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Module,
+  };
+  let top = vm.parse_top_level_with_budget(&source.text, opts)?;
+
+  Ok((Arc::new(top), token))
 }
 
 /// Per-SCC (cycle-root) module evaluation progress for async module evaluation graphs.
@@ -3583,6 +3637,24 @@ mod tests {
   use super::*;
   use crate::microtasks::MicrotaskQueue;
   use crate::{HeapLimits, Realm, VmOptions};
+
+  #[test]
+  fn tla_fallback_ast_is_charged_against_heap_limits() -> Result<(), VmError> {
+    // The module source itself should fit under heap limits, but the retained `parse-js` AST
+    // estimate should exceed them. This ensures we fail fast with `VmError::OutOfMemory` rather than
+    // attempting to allocate an enormous off-heap AST that bypasses heap accounting.
+    let max_bytes = 1024 * 1024; // 1 MiB
+    let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
+    let mut vm = Vm::new(VmOptions::default());
+
+    let filler_len = max_bytes / 3;
+    let src = format!("await 0;{}", ";".repeat(filler_len));
+    let source = Arc::new(SourceText::new_charged(&mut heap, "m", src)?);
+
+    let err = parse_module_ast_for_tla_fallback(&mut vm, &mut heap, &source).unwrap_err();
+    assert!(matches!(err, VmError::OutOfMemory));
+    Ok(())
+  }
 
   #[test]
   fn tla_resume_callbacks_are_cached_per_vm() -> Result<(), VmError> {
