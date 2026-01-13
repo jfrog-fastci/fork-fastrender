@@ -19,6 +19,7 @@ pub mod framing;
 pub mod frame_pool;
 pub mod network;
 pub mod protocol;
+pub mod received_frame;
 pub mod shm;
 #[cfg(target_os = "linux")]
 pub mod unix_seqpacket;
@@ -37,3 +38,4 @@ pub use framing::{
   write_frame, MAX_IPC_MESSAGE_BYTES,
 };
 pub use network::{NetworkToRenderer, RendererToNetwork};
+pub use received_frame::{FrameMeta, ReceivedFrame, ShmemSliceView};
