@@ -20,7 +20,15 @@ fn run_browser_headless_smoke(
     .env("FASTR_BROWSER_SESSION_PATH", session_path)
     // Ensure we truly load from disk rather than being influenced by any inherited override env
     // from other tests or a developer environment.
-    .env_remove("FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON");
+    .env_remove("FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON")
+    // Avoid other headless-test modes taking precedence if inherited from the parent environment.
+    .env_remove("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY")
+    .env_remove("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE")
+    // Keep this test hermetic: we want the startup session to come from disk, not from unrelated
+    // headless-smoke override hooks.
+    .env_remove("FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON")
+    .env_remove("FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON")
+    .env_remove("FASTR_TEST_BROWSER_HEADLESS_SMOKE_DISABLE_WORKER");
   for (k, v) in extra_env {
     cmd.env(k, v);
   }
