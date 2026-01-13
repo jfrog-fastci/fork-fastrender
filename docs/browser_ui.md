@@ -16,6 +16,9 @@ Renderer-chrome also relies on privileged internal URL schemes (`chrome://` asse
 `chrome-action:` actions). These are documented in
 [`docs/renderer_chrome_schemes.md`](renderer_chrome_schemes.md).
 
+For page accessibility status + developer workflow (a11y tree inspection, bounds mapping, and screen
+reader testing), see [page_accessibility.md](page_accessibility.md).
+
 ## Build / run
 
 The `browser` binary is behind the Cargo feature `browser_ui` (note the underscore) and is **not**
