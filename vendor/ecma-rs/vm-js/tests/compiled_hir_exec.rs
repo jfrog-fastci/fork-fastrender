@@ -386,6 +386,27 @@ fn compiled_new_target_is_constructor_function_in_new_call() -> Result<(), VmErr
 }
 
 #[test]
+fn compiled_new_target_inside_constructor() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function C() {
+        return { ok: new.target === C };
+      }
+      new C().ok === true
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_arrow_function_captures_lexical_new_target_in_plain_call() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
