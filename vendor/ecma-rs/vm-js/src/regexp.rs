@@ -19,6 +19,8 @@ use core::mem;
 use core::ptr;
 use std::alloc::alloc;
 
+mod case_folding;
+
 #[derive(Debug, Clone)]
 pub(crate) struct RegExpSyntaxError {
   pub(crate) message: &'static str,
@@ -275,7 +277,7 @@ impl RegExpFlags {
           flags.unicode = true;
         }
         b'v' => {
-          if flags.unicode_sets || flags.unicode {
+          if flags.unicode || flags.unicode_sets {
             return Err(RegExpSyntaxError {
               message: "Invalid flags supplied to RegExp constructor",
             }
@@ -324,7 +326,8 @@ impl RegExpFlags {
     }
     if self.unicode {
       out.push('u');
-    } else if self.unicode_sets {
+    }
+    if self.unicode_sets {
       out.push('v');
     }
     if self.sticky {
@@ -522,7 +525,7 @@ impl RegExpProgram {
             let Some(&u) = input.get(state.pos) else {
               break;
             };
-            if !char_eq(*ch, u, flags.ignore_case) {
+            if !canonical_eq(*ch, u, flags) {
               break;
             }
             state.pos += 1;
@@ -542,7 +545,7 @@ impl RegExpProgram {
             let Some(&u) = input.get(state.pos) else {
               break;
             };
-            if !cls.matches(u, flags.ignore_case) {
+            if !cls.matches(u, flags) {
               break;
             }
             state.pos += 1;
@@ -589,7 +592,7 @@ impl RegExpProgram {
             break;
           }
           Inst::WordBoundary { negated } => {
-            let at = is_word_boundary(input, state.pos);
+            let at = is_word_boundary(input, state.pos, flags);
             if *negated {
               if at {
                 break;
@@ -634,7 +637,7 @@ impl RegExpProgram {
               .iter()
               .copied()
               .zip(input[state.pos..state.pos + slice.len()].iter().copied())
-              .all(|(a, b)| char_eq(a, b, flags.ignore_case))
+              .all(|(a, b)| canonical_eq(a, b, flags))
             {
               break;
             }
@@ -688,7 +691,7 @@ impl RegExpProgram {
               if i % 1024 == 0 {
                 tick()?;
               }
-              if !char_eq(a, b, flags.ignore_case) {
+              if !canonical_eq(a, b, flags) {
                 ok = false;
                 break;
               }
@@ -1096,10 +1099,10 @@ impl CharClass {
     })
   }
 
-  fn matches(&self, u: u16, ignore_case: bool) -> bool {
+  fn matches(&self, u: u16, flags: RegExpFlags) -> bool {
     let mut any = false;
     for item in self.items.iter() {
-      if item.matches(u, ignore_case) {
+      if item.matches(u, flags) {
         any = true;
         break;
       }
@@ -1118,26 +1121,21 @@ enum CharClassItem {
 }
 
 impl CharClassItem {
-  fn matches(self, u: u16, ignore_case: bool) -> bool {
+  fn matches(self, u: u16, flags: RegExpFlags) -> bool {
     match self {
-      CharClassItem::Char(c) => char_eq(c, u, ignore_case),
+      CharClassItem::Char(c) => canonical_eq(c, u, flags),
       CharClassItem::Range(a, b) => {
         if a <= b {
-          if !ignore_case {
+          if !flags.ignore_case {
             return u >= a && u <= b;
           }
-          // Minimal ASCII-only case-folding for common `[a-z]` / `[A-Z]` ranges.
-          if (b'a' as u16..=b'z' as u16).contains(&a) && (b'a' as u16..=b'z' as u16).contains(&b)
-          {
-            let u = ascii_lower(u);
-            return u >= a && u <= b;
-          }
-          if (b'A' as u16..=b'Z' as u16).contains(&a) && (b'A' as u16..=b'Z' as u16).contains(&b)
-          {
-            let u = ascii_lower(u);
-            return u >= ascii_lower(a) && u <= ascii_lower(b);
-          }
-          u >= a && u <= b
+
+          // Approximation of the spec `CharacterRange` matching behaviour:
+          // canonicalize the input and endpoints before comparing.
+          let cu = canonicalize_utf16_unit(flags, u);
+          let ca = canonicalize_utf16_unit(flags, a);
+          let cb = canonicalize_utf16_unit(flags, b);
+          cu >= ca && cu <= cb
         } else {
           false
         }
@@ -1147,7 +1145,7 @@ impl CharClassItem {
         if negated { !is_digit } else { is_digit }
       }
       CharClassItem::Word { negated } => {
-        let is_word = is_word_unit(u);
+        let is_word = is_word_unit(u, flags);
         if negated { !is_word } else { is_word }
       }
       CharClassItem::Space { negated } => {
@@ -1160,19 +1158,76 @@ impl CharClassItem {
   }
 }
 
-fn ascii_lower(u: u16) -> u16 {
-  if (b'A' as u16..=b'Z' as u16).contains(&u) {
-    u + 32
-  } else {
-    u
+/// ECMAScript `Canonicalize` abstract operation (Runtime Semantics: Canonicalize).
+///
+/// This implementation follows ECMA-262 `Canonicalize ( rer, ch )`:
+/// - With either Unicode flag (`u` or `v`) and ignoreCase, use CaseFolding.txt
+///   **simple/common** mappings (no full case folding).
+/// - With ignoreCase and *no* Unicode flag, use `toUppercase` with the spec's
+///   single-code-unit + ASCII-guard rules.
+#[inline]
+fn canonicalize(flags: RegExpFlags, ch: u32) -> u32 {
+  // 1. If IgnoreCase is false, return ch.
+  if !flags.ignore_case {
+    return ch;
   }
+
+  // 2. If HasEitherUnicodeFlag(rer) is true, apply simple/common case folding.
+  if flags.has_either_unicode_flag() {
+    // Canonicalize operates on Unicode code points. Surrogate code points are not
+    // valid Unicode scalar values and canonicalize to themselves.
+    if (0xD800..=0xDFFF).contains(&ch) || ch > 0x10FFFF {
+      return ch;
+    }
+    if let Some(mapped) = case_folding::simple_case_fold(ch) {
+      return mapped;
+    }
+    return ch;
+  }
+
+  // 3. Otherwise, ignoreCase is true with no Unicode flags; treat `ch` as a UTF-16 code unit.
+  if ch > 0xFFFF {
+    // Should be unreachable (we canonicalize UTF-16 units), but keep the function total.
+    return ch;
+  }
+  let cu = ch as u16;
+
+  // Surrogate code units are not Unicode scalar values; canonicalize to themselves.
+  let Some(scalar) = char::from_u32(cu as u32) else {
+    return ch;
+  };
+
+  // Compute toUppercase (Unicode Default Case Conversion).
+  let mut upper_iter = scalar.to_uppercase();
+  let Some(upper0) = upper_iter.next() else {
+    return ch;
+  };
+  if upper_iter.next().is_some() {
+    // Not exactly one code unit.
+    return ch;
+  }
+  let upper_cp = upper0 as u32;
+  if upper_cp > 0xFFFF {
+    // Uppercase expands to a surrogate pair (two code units).
+    return ch;
+  }
+  let upper_cu = upper_cp as u16;
+
+  // Spec guard: if original >= 128 and the mapping is ASCII, keep original.
+  if cu >= 128 && upper_cu < 128 {
+    return ch;
+  }
+  upper_cu as u32
 }
 
-fn char_eq(a: u16, b: u16, ignore_case: bool) -> bool {
-  if !ignore_case {
-    return a == b;
-  }
-  ascii_lower(a) == ascii_lower(b)
+#[inline]
+fn canonicalize_utf16_unit(flags: RegExpFlags, unit: u16) -> u32 {
+  canonicalize(flags, unit as u32)
+}
+
+#[inline]
+fn canonical_eq(a: u16, b: u16, flags: RegExpFlags) -> bool {
+  canonicalize_utf16_unit(flags, a) == canonicalize_utf16_unit(flags, b)
 }
 
 fn is_regexp_identifier_start_ascii(u: u16) -> bool {
@@ -1190,18 +1245,37 @@ fn is_line_terminator_unit(u: u16) -> bool {
   matches!(u, 0x000A | 0x000D | 0x2028 | 0x2029)
 }
 
-fn is_word_unit(u: u16) -> bool {
+#[inline]
+fn is_basic_word_unit(u: u16) -> bool {
   matches!(u, 0x0030..=0x0039)
     || matches!(u, 0x0061..=0x007A)
     || matches!(u, 0x0041..=0x005A)
     || u == (b'_' as u16)
 }
 
-fn is_word_boundary(input: &[u16], pos: usize) -> bool {
+#[inline]
+fn is_word_unit(u: u16, flags: RegExpFlags) -> bool {
+  if is_basic_word_unit(u) {
+    return true;
+  }
+  // WordCharacters(rer) adds `extraWordChars` only when ignoreCase and either
+  // Unicode flag are present.
+  if !flags.ignore_case || !flags.has_either_unicode_flag() {
+    return false;
+  }
+
+  let cu = canonicalize_utf16_unit(flags, u);
+  matches!(cu, 0x0030..=0x0039)
+    || matches!(cu, 0x0061..=0x007A)
+    || matches!(cu, 0x0041..=0x005A)
+    || cu == 0x005F
+}
+
+fn is_word_boundary(input: &[u16], pos: usize, flags: RegExpFlags) -> bool {
   let left = pos.checked_sub(1).and_then(|i| input.get(i)).copied();
   let right = input.get(pos).copied();
-  let left_word = left.is_some_and(is_word_unit);
-  let right_word = right.is_some_and(is_word_unit);
+  let left_word = left.is_some_and(|u| is_word_unit(u, flags));
+  let right_word = right.is_some_and(|u| is_word_unit(u, flags));
   left_word != right_word
 }
 
