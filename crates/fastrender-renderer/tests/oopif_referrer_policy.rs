@@ -1,6 +1,7 @@
+use bincode::Options;
 use fastrender_ipc::{
   BrowserToRenderer, DocumentOrigin, FrameId, NavigationContext, ReferrerPolicy, RendererToBrowser,
-  SiteKey, SubframeInfo,
+  SiteKey, SubframeInfo, MAX_IPC_MESSAGE_BYTES,
 };
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -278,7 +279,32 @@ impl RendererProc {
     let (msg_tx, msg_rx) = mpsc::channel::<RendererToBrowser>();
     let reader = thread::spawn(move || {
       let mut stdout = stdout;
-      while let Ok(msg) = bincode::deserialize_from::<_, RendererToBrowser>(&mut stdout) {
+      loop {
+        let mut len_prefix = [0u8; 4];
+        match stdout.read_exact(&mut len_prefix) {
+          Ok(()) => {}
+          Err(err) => {
+            if err.kind() == std::io::ErrorKind::UnexpectedEof {
+              break;
+            }
+            break;
+          }
+        }
+
+        let len = u32::from_le_bytes(len_prefix) as usize;
+        if len == 0 || len > MAX_IPC_MESSAGE_BYTES {
+          break;
+        }
+
+        let mut limited = stdout.by_ref().take(len as u64);
+        let msg = match bincode::DefaultOptions::new()
+          .with_limit(len as u64)
+          .deserialize_from::<_, RendererToBrowser>(&mut limited)
+        {
+          Ok(msg) => msg,
+          Err(_) => break,
+        };
+        let _ = std::io::copy(&mut limited, &mut std::io::sink());
         if msg_tx.send(msg).is_err() {
           break;
         }
@@ -295,8 +321,19 @@ impl RendererProc {
   }
 
   fn send(&mut self, msg: &BrowserToRenderer) {
-    bincode::serialize_into(&mut self.stdin, msg).expect("write message");
-    self.stdin.flush().expect("flush");
+    let opts = bincode::DefaultOptions::new();
+    let len = opts.serialized_size(msg).expect("size message");
+    assert!(len > 0);
+    assert!(len <= (u32::MAX as u64));
+    assert!(len <= (MAX_IPC_MESSAGE_BYTES as u64));
+    self
+      .stdin
+      .write_all(&(len as u32).to_le_bytes())
+      .expect("write length prefix");
+    opts
+      .serialize_into(&mut self.stdin, msg)
+      .expect("write message payload");
+    self.stdin.flush().expect("flush stdin");
   }
 
   fn recv_frame_ready(
@@ -328,7 +365,16 @@ impl RendererProc {
   }
 
   fn shutdown(mut self) {
-    bincode::serialize_into(&mut self.stdin, &BrowserToRenderer::Shutdown).expect("write shutdown");
+    let msg = BrowserToRenderer::Shutdown;
+    let opts = bincode::DefaultOptions::new();
+    let len = opts.serialized_size(&msg).expect("size shutdown");
+    self
+      .stdin
+      .write_all(&(len as u32).to_le_bytes())
+      .expect("write shutdown length");
+    opts
+      .serialize_into(&mut self.stdin, &msg)
+      .expect("write shutdown payload");
     self.stdin.flush().expect("flush shutdown");
     drop(self.stdin);
 

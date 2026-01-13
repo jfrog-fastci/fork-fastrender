@@ -776,6 +776,7 @@ mod tests {
       .send(BrowserToRenderer::Navigate {
         frame_id: frame,
         url: "https://example.test/a".to_string(),
+        context: NavigationContext::default(),
       })
       .unwrap();
     to_renderer_tx
