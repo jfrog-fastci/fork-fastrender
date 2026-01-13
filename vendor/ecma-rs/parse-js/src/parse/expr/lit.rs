@@ -1086,7 +1086,9 @@ fn regex_group_prefix_info(
         });
       }
       match bytes[start + 3] {
-        b'=' | b'!' => Ok((!unicode_mode, 4, None)), // (?<=...) / (?<!...) lookbehind assertions
+        // Annex B only permits quantifying lookahead assertions; lookbehind assertions are never
+        // quantifiable in ECMAScript regular expressions.
+        b'=' | b'!' => Ok((false, 4, None)), // (?<=...) / (?<!...) lookbehind assertions
         _ => {
           // Named capturing group: (?<name>...)
           let after_prefix = start + 3;

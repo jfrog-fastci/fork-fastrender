@@ -178,6 +178,29 @@ fn regex_duplicate_named_captures_are_rejected() {
 }
 
 #[test]
+fn regex_lookbehind_assertions_are_not_quantifiable() {
+  for src in [
+    "/(?<=a)+/",
+    "/(?<!a)+/",
+    "/(?<=a){2}/",
+    "/(?<!a){2}/",
+    "/(?<=a)*/",
+    "/(?<!a)?/",
+  ] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+
+  // Plain lookbehind assertions are still valid patterns.
+  parse("/(?<=a)b/").unwrap();
+  parse("/(?<!a)b/").unwrap();
+}
+
+#[test]
 fn regex_invalid_unicode_escape_in_charset_is_rejected() {
   let err = parse("/[\\u{}]/u").unwrap_err();
   assert_eq!(
