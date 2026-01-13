@@ -6,6 +6,7 @@
 //! run the full multi-process browser stack.
 
 use clap::{Parser, ValueEnum};
+use std::collections::BTreeSet;
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::io;
@@ -92,7 +93,11 @@ fn run() -> i32 {
   println!("== IPC capability matrix (after sandbox) ==");
 
   let socketpair_result = probe_unix_stream_pair();
-  unexpected_success |= report_action("ipc: unix socketpair (UnixStream::pair)", socketpair_result, false);
+  unexpected_success |= report_action(
+    "ipc: unix socketpair (UnixStream::pair)",
+    socketpair_result,
+    false,
+  );
 
   let pipe_result = probe_pipe();
   unexpected_success |= report_action("ipc: pipe() (anonymous)", pipe_result, false);
@@ -116,7 +121,10 @@ fn run() -> i32 {
     Ok(fd) => probe_posix_shm_mmap_inherited_fd(fd),
     Err(err) => ActionResult::failure_with_context("pre-sandbox shm_open", err),
   };
-  report_capability("ipc: posix shmem mmap(inherited fd) (mmap)", shm_mmap_result);
+  report_capability(
+    "ipc: posix shmem mmap(inherited fd) (mmap)",
+    shm_mmap_result,
+  );
 
   if let Ok(fd) = preopened_shm_fd {
     // SAFETY: `fd` is a live file descriptor owned by this process.
@@ -162,17 +170,25 @@ fn prepare_listener(port: u16) -> (Option<TcpListener>, u16) {
 fn build_profile(mode: SandboxMode, temp_dir: &PathBuf) -> (String, u64) {
   // NOTE: Seatbelt string escaping is C-like; we keep it minimal and only escape quotes and
   // backslashes in the dynamically injected temp-dir path.
-  let temp_dir = escape_seatbelt_string(&temp_dir.to_string_lossy());
+  let temp_dir_variants = seatbelt_path_variants(temp_dir);
   match mode {
     SandboxMode::Strict => (
-      format!(
-        r#"(version 1)
+      {
+        let write_rules = temp_dir_variants
+          .iter()
+          .map(|dir| format!("(deny file-write* (subpath \"{dir}\"))"))
+          .collect::<Vec<_>>()
+          .join("\n");
+        format!(
+          r#"(version 1)
 (allow default)
 (deny network*)
 (deny file-read* (literal "/etc/passwd"))
-(deny file-write* (subpath "{temp_dir}"))
+(deny file-read* (literal "/private/etc/passwd"))
+{write_rules}
 "#
-      ),
+        )
+      },
       0,
     ),
     SandboxMode::Relaxed => (
@@ -180,6 +196,7 @@ fn build_profile(mode: SandboxMode, temp_dir: &PathBuf) -> (String, u64) {
 (allow default)
 (deny network*)
 (deny file-read* (literal "/etc/passwd"))
+(deny file-read* (literal "/private/etc/passwd"))
 "#
       .to_string(),
       0,
@@ -188,12 +205,44 @@ fn build_profile(mode: SandboxMode, temp_dir: &PathBuf) -> (String, u64) {
   }
 }
 
+fn seatbelt_path_variants(path: &PathBuf) -> Vec<String> {
+  let mut variants = BTreeSet::new();
+  variants.insert(escape_seatbelt_string(&path.to_string_lossy()));
+
+  if let Ok(canonical) = path.canonicalize() {
+    variants.insert(escape_seatbelt_string(&canonical.to_string_lossy()));
+  }
+
+  // macOS path aliases: `/etc`, `/tmp`, and `/var` typically resolve into `/private/*`.
+  // Ensure we include both forms in case Seatbelt matches the resolved (canonical) path.
+  let existing: Vec<String> = variants.iter().cloned().collect();
+  for candidate in existing {
+    if let Some(stripped) = candidate.strip_prefix("/private") {
+      variants.insert(stripped.to_string());
+    } else if candidate.starts_with("/etc/") || candidate == "/etc" {
+      variants.insert(format!("/private{candidate}"));
+    } else if candidate.starts_with("/var/") || candidate == "/var" {
+      variants.insert(format!("/private{candidate}"));
+    } else if candidate.starts_with("/tmp/") || candidate == "/tmp" {
+      variants.insert(format!("/private{candidate}"));
+    }
+  }
+
+  variants.into_iter().collect()
+}
+
 fn escape_seatbelt_string(raw: &str) -> String {
   raw.replace('\\', r"\\").replace('"', r#"\""#)
 }
 
 fn probe_read_passwd() -> ActionResult {
-  match fs::read("/etc/passwd") {
+  match fs::read("/etc/passwd").or_else(|err| {
+    if err.kind() == io::ErrorKind::NotFound {
+      fs::read("/private/etc/passwd")
+    } else {
+      Err(err)
+    }
+  }) {
     Ok(bytes) => ActionResult::success(format!("read {} bytes", bytes.len())),
     Err(err) => ActionResult::failure(err),
   }
@@ -297,7 +346,10 @@ fn probe_pipe() -> ActionResult {
   if buf == payload {
     ActionResult::success(format!("sent {} bytes", payload.len()))
   } else {
-    ActionResult::failure(io::Error::new(io::ErrorKind::Other, "pipe message mismatch"))
+    ActionResult::failure(io::Error::new(
+      io::ErrorKind::Other,
+      "pipe message mismatch",
+    ))
   }
 }
 
@@ -359,7 +411,10 @@ fn report_action(name: &str, result: ActionResult, expected_denied: bool) -> boo
     println!("{name}: {status} ({expected}; {})", result.detail);
   } else {
     if let Some(errno) = result.raw_os_error {
-      println!("{name}: {status} ({expected}; errno={errno}; error={})", result.detail);
+      println!(
+        "{name}: {status} ({expected}; errno={errno}; error={})",
+        result.detail
+      );
     } else {
       println!("{name}: {status} ({expected}; error={})", result.detail);
     }
@@ -409,7 +464,8 @@ const SANDBOX_NAMED: u64 = 1;
 const POSIX_SHM_LEN: usize = 4096;
 
 fn apply_sandbox(profile: &str, flags: u64) -> Result<(), String> {
-  let profile = CString::new(profile).map_err(|_| "sandbox profile contains NUL byte".to_string())?;
+  let profile =
+    CString::new(profile).map_err(|_| "sandbox profile contains NUL byte".to_string())?;
   let mut errorbuf: *mut libc::c_char = std::ptr::null_mut();
   // SAFETY: Calls into macOS' libsandbox. `errorbuf` is either left null or set to a malloc'd
   // C-string that must be released with `sandbox_free_error`.
@@ -421,7 +477,9 @@ fn apply_sandbox(profile: &str, flags: u64) -> Result<(), String> {
     return Err("sandbox_init failed (no error buffer)".to_string());
   }
   // SAFETY: `errorbuf` is a valid NUL-terminated C string allocated by libsandbox.
-  let message = unsafe { CStr::from_ptr(errorbuf) }.to_string_lossy().into_owned();
+  let message = unsafe { CStr::from_ptr(errorbuf) }
+    .to_string_lossy()
+    .into_owned();
   // SAFETY: `sandbox_free_error` is the documented destructor for the returned buffer.
   unsafe { sandbox_free_error(errorbuf) };
   Err(message)
@@ -454,7 +512,13 @@ fn create_posix_shm_object_pre_sandbox(name: &CString) -> io::Result<i32> {
   }
 
   // SAFETY: libc FFI. Returns an owned FD on success.
-  let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_CREAT | libc::O_EXCL | libc::O_RDWR, 0o600) };
+  let fd = unsafe {
+    libc::shm_open(
+      name.as_ptr(),
+      libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+      0o600,
+    )
+  };
   if fd < 0 {
     return Err(io::Error::last_os_error());
   }
@@ -490,7 +554,13 @@ fn probe_posix_shm_create_after_sandbox(name: &CString) -> ActionResult {
   best_effort_shm_unlink(name);
 
   // SAFETY: libc FFI. Returns an owned FD on success.
-  let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_CREAT | libc::O_EXCL | libc::O_RDWR, 0o600) };
+  let fd = unsafe {
+    libc::shm_open(
+      name.as_ptr(),
+      libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+      0o600,
+    )
+  };
   if fd < 0 {
     return ActionResult::failure_with_context("shm_open", io::Error::last_os_error());
   }

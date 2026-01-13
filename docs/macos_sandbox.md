@@ -207,6 +207,10 @@ is listening there you may see `connection refused` instead of a sandbox permiss
   - Applies Apple’s built-in `pure-computation` Seatbelt profile (very strict).
   - This is the closest quick approximation to a “renderer can only compute” sandbox.
 
+Note: on macOS, `/etc` is typically a symlink into `/private/etc` (and similarly `/var` → `/private/var`).
+The probe’s built-in Seatbelt profiles deny both the public and `/private/*` paths so the results are
+stable across hosts.
+
 ### IPC capability matrix (Seatbelt)
 
 The probe attempts a few IPC primitives **after** applying the sandbox. This is intended to inform
