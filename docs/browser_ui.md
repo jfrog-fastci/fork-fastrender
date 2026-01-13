@@ -218,7 +218,7 @@ The session file format is versioned (currently v2) and includes:
 - The configured home page URL
 - Best-effort window geometry (position/size/maximized) when available
 - A crash marker (`did_exit_cleanly`) for detecting unclean exits
-- Appearance settings (theme mode, high contrast, reduced motion, UI scale)
+- Appearance settings (theme mode, accent color, high contrast, reduced motion, UI scale)
 
 The windowed `browser` app uses a background autosave helper (`SessionAutosave`) so session writes
 do not block the UI thread:
