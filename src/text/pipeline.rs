@@ -7888,6 +7888,106 @@ mod tests {
   }
 
   #[test]
+  fn font_feature_settings_override_text_rendering_optimize_speed_for_kerning() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    assert!(
+      !ctx.database().is_empty(),
+      "bundled font context should load deterministic fonts for tests"
+    );
+
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["sans-serif".to_string()].into();
+    style.font_size = 48.0;
+    style.text_rendering = TextRendering::OptimizeSpeed;
+    style.font_feature_settings = vec![FontFeatureSetting {
+      tag: *b"kern",
+      value: 1,
+    }]
+    .into();
+
+    let pipeline = ShapingPipeline::new();
+    let av_adv = pipeline
+      .measure_width("AV", &style, &ctx)
+      .expect("measure AV advance");
+    let separate_adv = pipeline
+      .measure_width("A", &style, &ctx)
+      .expect("measure A advance")
+      + pipeline
+        .measure_width("V", &style, &ctx)
+        .expect("measure V advance");
+
+    let delta = separate_adv - av_adv;
+    assert!(
+      delta.abs() > 0.1,
+      "expected font-feature-settings to re-enable kerning even under optimizeSpeed (A+V={} AV={} delta={})",
+      separate_adv,
+      av_adv,
+      delta
+    );
+  }
+
+  #[test]
+  fn font_feature_settings_override_text_rendering_optimize_speed_for_ligatures() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    assert!(
+      !ctx.database().is_empty(),
+      "bundled font context should load deterministic fonts for tests"
+    );
+
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["sans-serif".to_string()].into();
+    style.font_size = 48.0;
+    style.text_rendering = TextRendering::OptimizeSpeed;
+
+    let pipeline = ShapingPipeline::new();
+    let text = "ffi";
+    let char_count = text.chars().count();
+
+    let speed = pipeline
+      .shape(text, &style, &ctx)
+      .expect("shape optimizeSpeed");
+    let speed_glyphs: usize = speed.iter().map(|run| run.glyphs.len()).sum();
+    assert_eq!(
+      speed_glyphs, char_count,
+      "optimizeSpeed baseline should disable ligatures for {:?}",
+      text
+    );
+
+    let mut override_style = style.clone();
+    override_style.font_feature_settings = vec![
+      FontFeatureSetting {
+        tag: *b"liga",
+        value: 1,
+      },
+      FontFeatureSetting {
+        tag: *b"clig",
+        value: 1,
+      },
+    ]
+    .into();
+
+    let override_runs = pipeline
+      .shape(text, &override_style, &ctx)
+      .expect("shape optimizeSpeed with feature overrides");
+    let override_glyphs: usize = override_runs.iter().map(|run| run.glyphs.len()).sum();
+
+    assert!(
+      override_glyphs < char_count,
+      "expected font-feature-settings to re-enable ligatures even under optimizeSpeed (chars={} glyphs={})",
+      char_count,
+      override_glyphs
+    );
+    assert!(
+      override_glyphs < speed_glyphs,
+      "expected font-feature-settings override to reduce glyph count relative to optimizeSpeed baseline (baseline={} override={})",
+      speed_glyphs,
+      override_glyphs
+    );
+  }
+
+  #[test]
   fn combining_marks_do_not_force_last_resort_fallback_or_render_notdef() {
     let style = ComputedStyle::default();
     let ctx = FontContext::with_config(FontConfig::bundled_only());
@@ -8996,6 +9096,47 @@ mod tests {
         }),
       )
       .expect("shaping with explicit bidi succeeds");
+
+    let stats_after_second = pipeline.cache_stats();
+    assert_eq!(stats_after_second.misses, 2);
+    assert_eq!(stats_after_second.hits, 0);
+    assert_eq!(pipeline.cache_len(), 2);
+  }
+
+  #[test]
+  fn shaping_cache_misses_when_text_rendering_changes() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    assert!(
+      !ctx.database().is_empty(),
+      "bundled font context should load deterministic fonts for tests"
+    );
+    let pipeline = ShapingPipeline::with_cache_capacity_for_test(8);
+    SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.set(0));
+
+    let text = "Cached text-rendering";
+    let style = ComputedStyle::default();
+
+    pipeline
+      .shape(text, &style, &ctx)
+      .expect("initial shape succeeds");
+    let first_calls = SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.get());
+    assert!(first_calls > 0);
+
+    let stats_after_first = pipeline.cache_stats();
+    assert_eq!(stats_after_first.misses, 1);
+    assert_eq!(stats_after_first.hits, 0);
+
+    let mut speed_style = style.clone();
+    speed_style.text_rendering = TextRendering::OptimizeSpeed;
+    pipeline
+      .shape(text, &speed_style, &ctx)
+      .expect("optimizeSpeed shape succeeds");
+    let second_calls = SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.get());
+    assert!(
+      second_calls > first_calls,
+      "text-rendering change should miss the shaping cache"
+    );
 
     let stats_after_second = pipeline.cache_stats();
     assert_eq!(stats_after_second.misses, 2);
