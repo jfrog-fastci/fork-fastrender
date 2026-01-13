@@ -292,11 +292,9 @@ jobs:
       - name: Validate generated emoji tables
         run: cargo xtask generate-emoji-tables --check
 
-      - name: Validate generated RegExp `/v` Unicode property-of-strings tables
-        # To reproduce locally:
-        #   bash scripts/cargo_agent.sh xtask generate-regexp-unicode-property-strings
-        run: cargo xtask generate-regexp-unicode-property-strings --check
-
+      # Note: RegExp `/v` Unicode property-of-strings tables are validated in the js_test262
+      # workflow because the source-of-truth (test262 semantic corpus) lives in an optional
+      # heavyweight submodule.
       - name: Validate generated WebIDL bindings
         # To reproduce locally:
         #   bash scripts/cargo_agent.sh xtask webidl-bindings --check

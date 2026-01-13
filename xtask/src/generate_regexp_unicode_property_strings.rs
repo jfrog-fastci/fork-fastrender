@@ -79,6 +79,8 @@ pub fn run_generate_regexp_unicode_property_strings(
   };
   let output = repo_root.join("vendor/ecma-rs/vm-js/src/regexp_unicode_property_strings.rs");
 
+  ensure_inputs_present(&input_dir)?;
+
   let generated =
     generate(&input_dir).with_context(|| format!("generating tables from {input_dir:?}"))?;
 
@@ -93,6 +95,36 @@ pub fn run_generate_regexp_unicode_property_strings(
   }
 
   fs::write(&output, generated).with_context(|| format!("writing {output:?}"))?;
+  Ok(())
+}
+
+fn ensure_inputs_present(input_dir: &Path) -> Result<()> {
+  let mut missing = Vec::new();
+  for spec in PROPERTY_SPECS {
+    let path = input_dir.join(format!("{}.js", spec.js_name));
+    if !path.is_file() {
+      missing.push(path);
+    }
+  }
+  let rgi_path = input_dir.join("RGI_Emoji.js");
+  if !rgi_path.is_file() {
+    missing.push(rgi_path);
+  }
+
+  if !missing.is_empty() {
+    let mut msg = String::new();
+    msg.push_str("missing RegExp property-of-strings source files:\n");
+    for path in missing {
+      msg.push_str(&format!("  - {path:?}\n"));
+    }
+    msg.push_str(
+      "\nHint: these files live in the optional test262 semantic corpus submodule.\n\
+Run:\n\
+  git submodule update --init vendor/ecma-rs/test262-semantic/data\n",
+    );
+    bail!("{msg}");
+  }
+
   Ok(())
 }
 

@@ -79,6 +79,9 @@ jobs:
           path: target
           key: js-test262-${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Validate generated RegExp Unicode property-of-strings tables
+        run: cargo xtask generate-regexp-unicode-property-strings --check
+
       - name: Run curated test262 semantics suite
         shell: bash
         run: |
