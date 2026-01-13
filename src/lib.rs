@@ -143,6 +143,20 @@
 //! # }
 //! ```
 //!
+//! ## Stateful document/tab containers (live DOM, optional JS)
+//!
+//! In addition to one-shot rendering via [`FastRender`], FastRender exposes stateful containers for
+//! multi-frame rendering and (optionally) JavaScript execution:
+//!
+//! - [`BrowserDocument`]: renderer `dom::DomNode`, no JS/event loop.
+//! - [`BrowserDocumentDom2`] / [`BrowserDocument2`]: live `dom2::Document` + render caching, no
+//!   JS/event loop.
+//! - [`BrowserTab`]: `dom2` + JS executor + HTML event loop + navigation/history.
+//! - [`BrowserDocumentJs`]: legacy JS host wrapper (manual script execution; no HTML `<script>`
+//!   scheduling).
+//!
+//! For a fuller comparison and usage guidance, see `docs/runtime_stacks.md` in the repository.
+//!
 //! # Architecture
 //!
 //! FastRender uses a pipeline architecture:
