@@ -18,6 +18,8 @@ mod image_integration;
 mod js;
 mod layout;
 mod misc;
+#[cfg(target_os = "macos")]
+mod macos_sandbox_exec;
 mod progress;
 mod render;
 mod resource;
