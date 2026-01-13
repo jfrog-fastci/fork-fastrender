@@ -629,6 +629,51 @@ struct DrainOutcome {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
+fn scroll_change_marks_session_dirty(
+  prev_viewport: Option<fastrender::Point>,
+  next_viewport: Option<fastrender::Point>,
+) -> bool {
+  match (prev_viewport, next_viewport) {
+    (Some(prev), Some(next)) => prev != next,
+    _ => false,
+  }
+}
+
+#[cfg(test)]
+mod scroll_change_marks_session_dirty_tests {
+  use super::scroll_change_marks_session_dirty;
+  use fastrender::Point;
+
+  #[test]
+  fn frame_ready_with_same_scroll_does_not_mark_dirty() {
+    let prev = Some(Point::new(0.0, 0.0));
+    let next = Some(Point::new(0.0, 0.0));
+    assert!(!scroll_change_marks_session_dirty(prev, next));
+  }
+
+  #[test]
+  fn frame_ready_with_different_scroll_marks_dirty() {
+    let prev = Some(Point::new(10.0, 20.0));
+    let next = Some(Point::new(10.0, 40.0));
+    assert!(scroll_change_marks_session_dirty(prev, next));
+  }
+
+  #[test]
+  fn scroll_state_updated_with_different_scroll_marks_dirty() {
+    let prev = Some(Point::new(0.0, 0.0));
+    let next = Some(Point::new(5.0, 0.0));
+    assert!(scroll_change_marks_session_dirty(prev, next));
+  }
+
+  #[test]
+  fn scroll_state_updated_identical_does_not_mark_dirty() {
+    let prev = Some(Point::new(1.0, 2.0));
+    let next = Some(Point::new(1.0, 2.0));
+    assert!(!scroll_change_marks_session_dirty(prev, next));
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 #[allow(dead_code)]
 fn drain_mpsc_receiver_with_budget<T>(
   rx: &std::sync::mpsc::Receiver<T>,
@@ -7248,6 +7293,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 break;
               };
               drained_count = drained_count.saturating_add(1);
+              let scroll_tab_id = match &item {
+                QueuedMsg::Worker(fastrender::ui::WorkerToUi::FrameReady { tab_id, .. })
+                | QueuedMsg::Worker(fastrender::ui::WorkerToUi::ScrollStateUpdated { tab_id, .. }) => {
+                  Some(*tab_id)
+                }
+                _ => None,
+              };
+              let prev_scroll_viewport = scroll_tab_id
+                .and_then(|tab_id| win.app.browser_state.tab(tab_id))
+                .map(|tab| tab.scroll_state.viewport);
               if let QueuedMsg::Worker(msg) = &item {
                 session_dirty |= matches!(
                   msg,
@@ -7264,6 +7319,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 QueuedMsg::Worker(msg) => win.app.handle_worker_message(msg, window_is_active),
                 QueuedMsg::Clipboard(update) => win.app.handle_worker_clipboard_update(update),
               };
+              if let Some(tab_id) = scroll_tab_id {
+                let next_scroll_viewport = win
+                  .app
+                  .browser_state
+                  .tab(tab_id)
+                  .map(|tab| tab.scroll_state.viewport);
+                if scroll_change_marks_session_dirty(prev_scroll_viewport, next_scroll_viewport) {
+                  session_dirty = true;
+                }
+              }
               request_redraw |= result.request_redraw;
               history_deltas.extend(result.history_deltas);
             }
