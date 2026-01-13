@@ -7,7 +7,7 @@ FastRender is spec-first: correctness is defined by the HTML/CSS specifications 
 ### HTML
 - **Parsing**: HTML5 parsing via html5ever's spec-mode tree builder (`DomParseOptions`/`ParseOpts` in `src/dom.rs`).
   - **HTML parser `scripting_enabled`**: This is `html5ever::tree_builder::TreeBuilderOpts::scripting_enabled` and affects parsing of `<noscript>` (children parsed as DOM when disabled; as raw text when enabled).
-  - **JavaScript execution**: Separate concern. "Scripting enabled" parsing semantics do **not** imply scripts run; the static render pipeline does not execute JS.
+  - **JavaScript execution**: Separate concern. "Scripting enabled" parsing semantics do **not** imply scripts run; the static render pipeline does not execute JS. Author script execution is hosted by the JS-capable runtime container (`api::BrowserTab`); see [`docs/runtime_stacks.md`](runtime_stacks.md).
 - **`FastRender::parse_html` / `parse_html_dom2`**: Default to `FastRenderConfig.dom_scripting_enabled = false`. Opt into scripting-enabled parsing semantics via `FastRenderConfig::with_dom_scripting_enabled(true)`; runtime toggles (e.g. `FASTR_SCRIPTING`) take precedence.
 - **Render pipeline (`render_html` / `render_url`)**: Parses with scripting-enabled semantics by default (`DomParseOptions.scripting_enabled = true`) to match Chrome baselines captured with CSP `script-src` blocked (script execution disabled, but parsing semantics still "scripting enabled").
   - Use `FastRenderConfig::with_render_parse_scripting_enabled(false)` (or CLI `--render-parse-scripting-enabled=false`) to force scripting-disabled parsing semantics for rendering.
