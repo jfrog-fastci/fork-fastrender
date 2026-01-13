@@ -623,7 +623,9 @@ jobs:
             exit 1
           fi
 
-          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test macos_sandbox
+          # The Seatbelt sandbox assertions live in the `sandbox` module unit tests, so run a
+          # library-scoped test filter instead of expecting a separate integration test binary.
+          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test --locked -p fastrender --lib sandbox
 
   # ===========================================================================
   # Browser UI - Cross-platform compile + Linux headless smoke (no display/GPU)
