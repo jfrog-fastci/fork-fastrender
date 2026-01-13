@@ -22,6 +22,80 @@ When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetc
 
 These env vars are read in the rendering binaries (`render_pages`, `fetch_and_render`) and cascade internals; leave them unset for normal runs.
 
+## Browser responsiveness
+
+FastRender’s windowed `browser` UI has separate instrumentation for **responsiveness** (UI frame
+times, scroll/resize smoothness, and input latency). This is distinct from the render-pipeline
+profiling above (which focuses on parse/style/layout/paint timings during page renders).
+
+See the workstream goals/metric definitions in
+[`instructions/browser_responsiveness.md`](../instructions/browser_responsiveness.md).
+
+### Windowed JSONL perf logging (`FASTR_PERF_LOG=1`)
+
+Set `FASTR_PERF_LOG=1` when running the windowed browser to emit **JSON Lines** (one JSON object per
+line) describing UI responsiveness events.
+
+Typical run (writes a JSONL log you can post-process with `jq`, pandas, etc.):
+
+```bash
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
+  bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+```
+
+When enabled, you should expect events covering at least:
+
+- **TTFP** (“time to first paint”): navigation start → first presented frame for that tab.
+- **Frame time samples** during scroll and resize (used to spot jank and dropped frames).
+- **Input latency** samples (input arrival → visible UI response).
+
+The exact schema evolves, but each JSON line is intended to be self-describing. Common fields
+include:
+
+- `event` (string): the event kind (e.g. `frame`, `input_latency`, `ttfp`).
+- `ts_ms` (number): monotonic timestamp in milliseconds (relative to process start).
+- `tab_id` / `window_id` (optional): identifiers for multi-tab/multi-window sessions.
+- `dt_ms` / `frame_ms` / `latency_ms` (number): the measured duration in milliseconds.
+- `reason` (string, optional): why a frame was produced (e.g. `scroll`, `resize`, `idle`,
+  `navigation`).
+
+### Headless benchmark harness: `ui_perf_smoke`
+
+For automated/regression-friendly measurements, use the headless harness `ui_perf_smoke`. It runs a
+small scripted set of UI scenarios and writes a single JSON summary.
+
+If your checkout includes an `xtask` wrapper:
+
+```bash
+bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
+```
+
+Or run the binary directly:
+
+```bash
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin ui_perf_smoke -- \
+  --output target/ui_perf_smoke.json
+```
+
+How to map the harness output back to the metrics table in
+`instructions/browser_responsiveness.md`:
+
+- **TTFP**: `ui_perf_smoke` reports a navigation `ttfp_ms` (or equivalent) metric.
+- **Scroll frame time**: look for `scroll_*frame*_ms` samples/percentiles (p50/p95/max).
+- **Resize frame time**: look for `resize_*frame*_ms` samples/percentiles.
+- **Input latency**: look for `input_*latency*_ms` samples/percentiles.
+
+### Traces (Perfetto)
+
+If you need a timeline view (what happened *during* a janky frame), enable trace output and open it
+in [Perfetto UI](https://ui.perfetto.dev):
+
+- Renderer pipeline trace (parse/style/layout/paint): `FASTR_TRACE_OUT=/tmp/trace.json` (captures the
+  most recent render).
+- UI responsiveness trace (if supported by your build): `FASTR_PERF_TRACE_OUT=/tmp/ui_trace.json`.
+
 ## Other useful profiling flags
 
 - `FASTR_RENDER_TIMINGS=1` — prints high-level timing for parse/cascade/box_tree/layout/paint per page in the render binaries.

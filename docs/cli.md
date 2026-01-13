@@ -161,6 +161,10 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - The `pageset-guardrails` suite runs in isolation and **fails on missing fixtures by default**; pass `--allow-missing-fixtures` to skip missing pageset-guardrails captures for local partial runs.
   - Pass `--fail-on-budget` to exit non-zero when a fixture exceeds its `budget_ms`.
   - Pass `--count-threshold`, `--fail-fast`, and `--fail-on-failure` to tune count regression and fixture failure gating.
+- Browser UI responsiveness harness (headless):
+  - Via `xtask` (if available): `bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json`
+  - Direct: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin ui_perf_smoke -- --output target/ui_perf_smoke.json`
+  - See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness) for metric mapping (TTFP, scroll/resize frame times, input latency).
 
 `render-page` wraps `fetch_and_render` in release mode by default (add `--debug` to keep a debug build).
 

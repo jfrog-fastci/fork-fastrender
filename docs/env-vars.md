@@ -103,6 +103,22 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON=<json>` – **test-only** hook: override the global history store used by headless smoke mode with an explicit JSON value.
   - This is expected to be the same schema as the history file on disk (`PersistedGlobalHistoryStore`), but legacy list schemas are still accepted and migrated.
 
+### Performance / responsiveness logging (browser UI)
+
+These env vars enable machine-readable performance logging for the windowed browser UI (frame times,
+scroll/resize smoothness, and input latency). See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness)
+and [`instructions/browser_responsiveness.md`](../instructions/browser_responsiveness.md) for how to
+interpret the metrics.
+
+- `FASTR_PERF_LOG=0|1` – enable JSONL (“JSON Lines”) perf logging in the windowed `browser` UI.
+  - When enabled, the browser emits one JSON object per line describing frame-time samples, input
+    latency, and navigation TTFP measurements.
+- `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` – optional output path for `FASTR_PERF_LOG` JSONL events.
+  - When unset, the browser may default to stderr or a build-defined path; set this explicitly when
+    you want a stable on-disk artifact.
+- `FASTR_PERF_TRACE_OUT=/path/to/trace.json` – optional Perfetto/Chrome trace output for UI
+  responsiveness (when supported by your build).
+
 ### Appearance / accessibility / debugging (browser UX)
 
 These are intended for the windowed `browser` UI and affect the browser chrome (and, where noted, the default user-preference media query surface seen by rendered pages).
