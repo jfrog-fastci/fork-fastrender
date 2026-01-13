@@ -22,6 +22,10 @@ fn sandboxed_minimal_offline_render_succeeds() {
   let exe = std::env::current_exe().expect("resolve current test executable");
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
+    // Keep libtest from spawning a large worker thread pool (the sandbox is process-global and
+    // should ideally be applied before any background threads start).
+    .env("RUST_TEST_THREADS", "1")
+    .arg("--test-threads=1")
     // Run only this test in the child process. The renderer sandbox is process-global, so we must
     // avoid concurrently executing any other tests in the same binary.
     .arg("--exact")
