@@ -163,7 +163,6 @@ pub mod job_queue;
 mod jobs;
 mod microtasks;
 mod module_graph;
-pub mod module_graph_loader;
 mod module_loading;
 mod module_record;
 mod module_request;
