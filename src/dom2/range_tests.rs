@@ -736,6 +736,31 @@ fn live_range_replace_data_clamps_and_shifts_offsets() {
 }
 
 #[test]
+fn live_range_offsets_clamp_on_full_character_data_replacement() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let text = doc.create_text("abcd");
+  doc.append_child(parent, text).unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 3).unwrap();
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 3);
+
+  assert!(doc.set_text_data(text, "wxyz").unwrap());
+  assert_eq!(doc.text_data(text).unwrap(), "wxyz");
+
+  assert_eq!(doc.range_start_container(range).unwrap(), text);
+  assert_eq!(doc.range_end_container(range).unwrap(), text);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 0);
+}
+
+#[test]
 fn range_split_text_shifts_parent_boundary_point_immediately_after_split_node() {
   let mut doc: Document =
     parse_html("<!doctype html><div id=host>hello<span id=after></span></div>").unwrap();
