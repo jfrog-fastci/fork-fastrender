@@ -339,6 +339,25 @@ Tabs should expose which tab is currently selected:
 
 This keeps screen-reader navigation predictable when the active tab changes, and allows assistive tech to announce which tab is selected.
 
+### Suggestion lists (omnibox, tab search)
+
+For “typeahead” UIs where **keyboard focus stays in a text input** but a **list of suggestions/results**
+appears underneath, model the accessibility tree like a standard ARIA combobox:
+
+- **Input**: expose as `Role::SearchBox` (AccessKit 0.11) / `Role::ComboBox` (when available) and keep
+  its `expanded` state in sync with dropdown visibility.
+- **List**: expose the suggestions/results container as `Role::ListBox` with a stable, descriptive
+  name (for example: “Omnibox suggestions” / “Tab search results”).
+- **Rows**: expose each row as `Role::ListBoxOption` (AccessKit 0.11) / `Role::Option` (when available)
+  and set `selected=true` for the highlighted row.
+- **Focus behavior**: keep egui focus on the input; use **active-descendant** on the input to point
+  to the currently highlighted option so screen readers announce selection changes without moving
+  focus into the list.
+
+In egui, prefer doing this by overriding semantics via `ctx.accesskit_node_builder(id, |builder| { … })`
+so the widget layout/interaction behavior stays unchanged while the OS accessibility tree matches
+combobox/listbox conventions.
+
 ### FastRender documents: mapping AccessKit actions into the interaction engine (prototype)
 
 For FastRender-rendered UI (renderer-chrome and, eventually, page content), AccessKit action requests

@@ -484,6 +484,10 @@ fn tab_search_overlay_ui(
       input.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, a11y::TAB_SEARCH_LABEL)
       });
+      let _ = ctx.accesskit_node_builder(input.id, |builder| {
+        builder.set_role(accesskit::Role::SearchBox);
+        builder.set_expanded(app.chrome.tab_search.open);
+      });
       // Keep focus in the search box while the overlay is open.
       if app.chrome.tab_search.open && shortcuts_enabled {
         input.request_focus();
@@ -528,38 +532,37 @@ fn tab_search_overlay_ui(
       }
 
       let mut clicked: Option<TabId> = None;
-      {
-        let matches = app.chrome.tab_search.cached_matches();
-        egui::ScrollArea::vertical()
-          .id_source(overlay_id.with("matches_scroll"))
-          .max_height(360.0)
-          .auto_shrink([false, false])
-          .show_rows(
-            ui,
-            ui.spacing().interact_size.y.max(28.0),
-            matches.len(),
-            |ui, row_range| {
-              let row_height = ui.spacing().interact_size.y.max(28.0);
-              let rounding = egui::Rounding::same(4.0);
-              let inner_margin = egui::vec2(6.0, 4.0);
-              let selected_fill = ui.visuals().selection.bg_fill;
-              let hovered_fill = {
-                // Use a subtle text-colored scrim so hover remains visible even when the theme's
-                // hovered widget fill matches the popup background.
-                let base = ui.visuals().text_color();
-                let alpha = if ui.visuals().dark_mode { 24 } else { 14 };
-                egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
-              };
+      let matches = app.chrome.tab_search.cached_matches();
+      let results_list = egui::ScrollArea::vertical()
+        .id_source(overlay_id.with("matches_scroll"))
+        .max_height(360.0)
+        .auto_shrink([false, false])
+        .show_rows(
+          ui,
+          ui.spacing().interact_size.y.max(28.0),
+          matches.len(),
+          |ui, row_range| {
+            let row_height = ui.spacing().interact_size.y.max(28.0);
+            let rounding = egui::Rounding::same(4.0);
+            let inner_margin = egui::vec2(6.0, 4.0);
+            let selected_fill = ui.visuals().selection.bg_fill;
+            let hovered_fill = {
+              // Use a subtle text-colored scrim so hover remains visible even when the theme's
+              // hovered widget fill matches the popup background.
+              let base = ui.visuals().text_color();
+              let alpha = if ui.visuals().dark_mode { 24 } else { 14 };
+              egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
+            };
 
-              let scroll_selected_id = overlay_id.with("scroll_selected");
-              let mut scrolled_to_selected = ctx
-                .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
-                .unwrap_or(None);
-              let should_scroll_selected =
-                opening || down || up || query_changed || matches_recomputed;
-              if should_scroll_selected {
-                scrolled_to_selected = None;
-              }
+            let scroll_selected_id = overlay_id.with("scroll_selected");
+            let mut scrolled_to_selected = ctx
+              .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
+              .unwrap_or(None);
+            let should_scroll_selected =
+              opening || down || up || query_changed || matches_recomputed;
+            if should_scroll_selected {
+              scrolled_to_selected = None;
+            }
 
               // `show_rows` only constructs visible rows. To keep keyboard navigation UX identical
               // to the non-virtualized implementation, request scrolling to the selected row even
@@ -602,6 +605,10 @@ fn tab_search_overlay_ui(
                   move || {
                     egui::WidgetInfo::selected(egui::WidgetType::Button, selected, label.clone())
                   }
+                });
+                let _ = ctx.accesskit_node_builder(response.id, |builder| {
+                  builder.set_role(accesskit::Role::ListBoxOption);
+                  builder.set_selected(is_selected);
                 });
 
                 let hover_t = motion.animate_bool(
@@ -680,9 +687,12 @@ fn tab_search_overlay_ui(
               ctx.data_mut(|d| {
                 d.insert_temp(scroll_selected_id, scrolled_to_selected);
               });
-            },
-          );
-      }
+          },
+        );
+      let _ = ctx.accesskit_node_builder(results_list.response.id, |builder| {
+        builder.set_role(accesskit::Role::ListBox);
+        builder.set_name("Tab search results".to_string());
+      });
 
       app.chrome.tab_search.selected = selected;
       clicked
@@ -2592,6 +2602,15 @@ pub fn chrome_ui_with_bookmarks(
           }
         }
 
+        // Advertise the address bar as a combobox-like control so assistive tech can associate the
+        // omnibox suggestions list with the focused input.
+        let omnibox_expanded =
+          app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty();
+        let _ = ctx.accesskit_node_builder(response.id, |builder| {
+          builder.set_role(accesskit::Role::SearchBox);
+          builder.set_expanded(omnibox_expanded);
+        });
+
         address_bar_text_edit_response = Some(response.clone());
       }
 
@@ -3096,132 +3115,142 @@ pub fn chrome_ui_with_bookmarks(
           let row_height = ui.spacing().interact_size.y.max(24.0);
           let max_height = row_height * (MAX_VISIBLE_ROWS as f32);
 
-          egui::ScrollArea::vertical()
-            .max_height(max_height)
-            .show(ui, |ui| {
-              let scroll_selected_id = omnibox_dropdown_id.with("scroll_selected");
-              let mut scrolled_to_selected = ctx
-                .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
-                .unwrap_or(None);
-              if app.chrome.omnibox.selected.is_none() {
-                scrolled_to_selected = None;
-              }
-              for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
-                let is_selected = app.chrome.omnibox.selected == Some(idx);
-                let (rect, response) = ui.allocate_exact_size(
-                  egui::vec2(ui.available_width(), row_height),
-                  egui::Sense::click(),
-                );
-                response.widget_info({
-                  let label = omnibox_suggestion_a11y_label(suggestion);
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                });
-
-                let row_id = omnibox_dropdown_id.with(("row", idx));
-                let hover_t = motion.animate_bool(
-                  ctx,
-                  row_id.with("hover"),
-                  response.hovered(),
-                  motion.durations.hover_fade,
-                );
-                let selected_t = motion.animate_bool(
-                  ctx,
-                  row_id.with("selected"),
-                  is_selected,
-                  motion.durations.hover_fade,
-                );
-                if hover_t > 0.0 {
-                  ui.painter().rect_filled(
-                    rect,
-                    0.0,
-                    with_alpha(
-                      ui.visuals().widgets.hovered.bg_fill,
-                      hover_t * omnibox_open_opacity,
-                    ),
+          let suggestions_list =
+            egui::ScrollArea::vertical()
+              .max_height(max_height)
+              .show(ui, |ui| {
+                let scroll_selected_id = omnibox_dropdown_id.with("scroll_selected");
+                let mut scrolled_to_selected = ctx
+                  .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
+                  .unwrap_or(None);
+                if app.chrome.omnibox.selected.is_none() {
+                  scrolled_to_selected = None;
+                }
+                for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
+                  let is_selected = app.chrome.omnibox.selected == Some(idx);
+                  let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), row_height),
+                    egui::Sense::click(),
                   );
-                }
-                if selected_t > 0.0 {
-                  ui.painter().rect_filled(
-                    rect,
-                    0.0,
-                    with_alpha(
-                      ui.visuals().selection.bg_fill,
-                      selected_t * omnibox_open_opacity,
-                    ),
+                  response.widget_info({
+                    let label = omnibox_suggestion_a11y_label(suggestion);
+                    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                  });
+                  let _ = ctx.accesskit_node_builder(response.id, |builder| {
+                    builder.set_role(accesskit::Role::ListBoxOption);
+                    builder.set_selected(is_selected);
+                  });
+
+                  let row_id = omnibox_dropdown_id.with(("row", idx));
+                  let hover_t = motion.animate_bool(
+                    ctx,
+                    row_id.with("hover"),
+                    response.hovered(),
+                    motion.durations.hover_fade,
                   );
-                }
-                if is_selected && scrolled_to_selected != Some(idx) {
-                  response.scroll_to_me(Some(egui::Align::Center));
-                  scrolled_to_selected = Some(idx);
-                }
+                  let selected_t = motion.animate_bool(
+                    ctx,
+                    row_id.with("selected"),
+                    is_selected,
+                    motion.durations.hover_fade,
+                  );
+                  if hover_t > 0.0 {
+                    ui.painter().rect_filled(
+                      rect,
+                      0.0,
+                      with_alpha(
+                        ui.visuals().widgets.hovered.bg_fill,
+                        hover_t * omnibox_open_opacity,
+                      ),
+                    );
+                  }
+                  if selected_t > 0.0 {
+                    ui.painter().rect_filled(
+                      rect,
+                      0.0,
+                      with_alpha(
+                        ui.visuals().selection.bg_fill,
+                        selected_t * omnibox_open_opacity,
+                      ),
+                    );
+                  }
+                  if is_selected && scrolled_to_selected != Some(idx) {
+                    response.scroll_to_me(Some(egui::Align::Center));
+                    scrolled_to_selected = Some(idx);
+                  }
 
-                ui.allocate_ui_at_rect(rect, |ui| {
-                  ui.spacing_mut().item_spacing.x = 8.0;
-                  ui.horizontal(|ui| {
-                    ui.add_space(6.0);
-                    match omnibox_suggestion_icon(suggestion) {
-                      OmniboxSuggestionIcon::Icon(icon) => {
-                        // Render decorative row icons without allocating an egui widget so we don't
-                        // add noise to the accessibility tree (the row itself has a semantic label).
-                        let icon_side = ui.spacing().icon_width;
-                        let (_id, icon_rect) = ui.allocate_space(egui::vec2(icon_side, row_height));
-                        paint_icon_in_rect(
-                          ui,
-                          icon_rect,
-                          icon,
-                          icon_side,
-                          with_alpha(ui.visuals().text_color(), omnibox_open_opacity),
-                        );
+                  ui.allocate_ui_at_rect(rect, |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.horizontal(|ui| {
+                      ui.add_space(6.0);
+                      match omnibox_suggestion_icon(suggestion) {
+                        OmniboxSuggestionIcon::Icon(icon) => {
+                          // Render decorative row icons without allocating an egui widget so we don't
+                          // add noise to the accessibility tree (the row itself has a semantic label).
+                          let icon_side = ui.spacing().icon_width;
+                          let (_id, icon_rect) =
+                            ui.allocate_space(egui::vec2(icon_side, row_height));
+                          paint_icon_in_rect(
+                            ui,
+                            icon_rect,
+                            icon,
+                            icon_side,
+                            with_alpha(ui.visuals().text_color(), omnibox_open_opacity),
+                          );
+                        }
+                        OmniboxSuggestionIcon::Text(text) => {
+                          ui.label(egui::RichText::new(text).strong());
+                        }
                       }
-                      OmniboxSuggestionIcon::Text(text) => {
-                        ui.label(egui::RichText::new(text).strong());
-                      }
-                    }
 
-                    let title = suggestion
-                      .title
-                      .as_deref()
-                      .map(str::trim)
-                      .filter(|s| !s.is_empty());
-                    let url = suggestion
-                      .url
-                      .as_deref()
-                      .map(str::trim)
-                      .filter(|s| !s.is_empty());
+                      let title = suggestion
+                        .title
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                      let url = suggestion
+                        .url
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
 
-                    let (primary, secondary) = if let Some(title) = title {
-                      (title, url)
-                    } else if let Some(url) = url {
-                      (url, None)
-                    } else if let OmniboxAction::Search(query) = &suggestion.action {
-                      (query.as_str(), None)
-                    } else {
-                      ("", None)
-                    };
+                      let (primary, secondary) = if let Some(title) = title {
+                        (title, url)
+                      } else if let Some(url) = url {
+                        (url, None)
+                      } else if let OmniboxAction::Search(query) = &suggestion.action {
+                        (query.as_str(), None)
+                      } else {
+                        ("", None)
+                      };
 
-                    ui.vertical(|ui| {
-                      ui.add(egui::Label::new(primary).wrap(false).truncate(true));
-                      if let Some(secondary) = secondary {
-                        ui.add(
-                          egui::Label::new(egui::RichText::new(secondary).small().color(
-                            with_alpha(ui.visuals().weak_text_color(), omnibox_open_opacity),
-                          ))
-                          .wrap(false)
-                          .truncate(true),
-                        );
-                      }
+                      ui.vertical(|ui| {
+                        ui.add(egui::Label::new(primary).wrap(false).truncate(true));
+                        if let Some(secondary) = secondary {
+                          ui.add(
+                            egui::Label::new(egui::RichText::new(secondary).small().color(
+                              with_alpha(ui.visuals().weak_text_color(), omnibox_open_opacity),
+                            ))
+                            .wrap(false)
+                            .truncate(true),
+                          );
+                        }
+                      });
                     });
                   });
-                });
 
-                if response.clicked() {
-                  clicked_suggestion = Some(idx);
+                  if response.clicked() {
+                    clicked_suggestion = Some(idx);
+                  }
                 }
-              }
-              ctx.data_mut(|d| {
-                d.insert_temp(scroll_selected_id, scrolled_to_selected);
+                ctx.data_mut(|d| {
+                  d.insert_temp(scroll_selected_id, scrolled_to_selected);
+                });
               });
-            });
+          let _ = ctx.accesskit_node_builder(suggestions_list.response.id, |builder| {
+            builder.set_role(accesskit::Role::ListBox);
+            builder.set_name("Omnibox suggestions".to_string());
+          });
         });
       });
 
@@ -4636,7 +4665,7 @@ mod tests {
   }
 
   #[test]
-  fn chrome_accesskit_exposes_address_bar_as_text_field_when_editing() {
+  fn chrome_accesskit_exposes_address_bar_as_search_box_when_editing() {
     let mut app = BrowserAppState::new();
     app.push_tab(
       BrowserTabState::new(TabId(1), "about:newtab".to_string()),
@@ -4657,8 +4686,8 @@ mod tests {
     assert!(
       nodes
         .iter()
-        .any(|n| n.name == crate::ui::a11y::ADDRESS_BAR_LABEL && n.role == "TextField"),
-      "expected address bar to appear as a TextField when editing.\n\nsnapshot:\n{snapshot}"
+        .any(|n| n.name == crate::ui::a11y::ADDRESS_BAR_LABEL && n.role == "SearchBox"),
+      "expected address bar to appear as a SearchBox when editing.\n\nsnapshot:\n{snapshot}"
     );
   }
 
@@ -4919,6 +4948,151 @@ mod tests {
     assert!(accesskit_node_selected(
       accesskit_node_by_name(update2, gamma_label).1
     ));
+  }
+
+  #[test]
+  fn omnibox_accesskit_exposes_suggestions_as_listbox_options() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
+    app.chrome.request_focus_address_bar = true;
+    app.chrome.omnibox.open = true;
+    app.chrome.omnibox.suggestions = vec![
+      OmniboxSuggestion {
+        action: OmniboxAction::Search("cats".to_string()),
+        title: Some("cats".to_string()),
+        url: None,
+        source: OmniboxSuggestionSource::Primary,
+      },
+      OmniboxSuggestion {
+        action: OmniboxAction::NavigateToUrl("https://example.com".to_string()),
+        title: Some("Example".to_string()),
+        url: Some("https://example.com".to_string()),
+        source: OmniboxSuggestionSource::Primary,
+      },
+    ];
+    app.chrome.omnibox.selected = Some(1);
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output = ctx.end_frame();
+
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    let update = output
+      .platform_output
+      .accesskit_update
+      .as_ref()
+      .expect("expected AccessKit update from chrome_ui");
+
+    let mut saw_listbox = false;
+    let mut options: Vec<(String, bool)> = Vec::new();
+    for (_id, node) in &update.nodes {
+      let name = node.name().unwrap_or("").trim().to_string();
+      if node.role() == accesskit::Role::ListBox && name == "Omnibox suggestions" {
+        saw_listbox = true;
+      }
+      if node.role() == accesskit::Role::ListBoxOption && !name.is_empty() {
+        options.push((name, node.is_selected()));
+      }
+    }
+
+    assert!(
+      saw_listbox,
+      "expected omnibox suggestion container to be a ListBox named \"Omnibox suggestions\".\n\nsnapshot:\n{snapshot}"
+    );
+
+    let expected = app
+      .chrome
+      .omnibox
+      .suggestions
+      .iter()
+      .enumerate()
+      .map(|(idx, s)| (omnibox_suggestion_a11y_label(s), idx == 1))
+      .collect::<Vec<_>>();
+
+    for (label, should_be_selected) in expected {
+      let found = options.iter().find(|(name, _)| name == &label);
+      assert!(
+        found.is_some(),
+        "expected omnibox option {label:?} in AccessKit output.\n\noptions: {options:#?}\n\nsnapshot:\n{snapshot}"
+      );
+      let (_name, selected) = found.unwrap();
+      assert_eq!(
+        *selected, should_be_selected,
+        "expected omnibox option {label:?} selected={should_be_selected}, got {selected}.\n\noptions: {options:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
+  }
+
+  #[test]
+  fn tab_search_accesskit_exposes_results_as_listbox_options() {
+    let mut app = BrowserAppState::new();
+    let mut tab_a = BrowserTabState::new(TabId(1), "https://a.example".to_string());
+    tab_a.title = Some("Alpha".to_string());
+    let mut tab_b = BrowserTabState::new(TabId(2), "https://b.example".to_string());
+    tab_b.title = Some("Beta".to_string());
+    let mut tab_c = BrowserTabState::new(TabId(3), "https://c.example".to_string());
+    tab_c.title = Some("Gamma".to_string());
+    app.push_tab(tab_a, true);
+    app.push_tab(tab_b, false);
+    app.push_tab(tab_c, false);
+
+    app.chrome.tab_search.open = true;
+    app.chrome.tab_search.query.clear();
+    app.chrome.tab_search.selected = 1;
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output = ctx.end_frame();
+
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    let update = output
+      .platform_output
+      .accesskit_update
+      .as_ref()
+      .expect("expected AccessKit update from chrome_ui");
+
+    let mut saw_listbox = false;
+    let mut options: Vec<(String, bool)> = Vec::new();
+    for (_id, node) in &update.nodes {
+      let name = node.name().unwrap_or("").trim().to_string();
+      if node.role() == accesskit::Role::ListBox && name == "Tab search results" {
+        saw_listbox = true;
+      }
+      if node.role() == accesskit::Role::ListBoxOption && !name.is_empty() {
+        options.push((name, node.is_selected()));
+      }
+    }
+
+    assert!(
+      saw_listbox,
+      "expected tab search results container to be a ListBox named \"Tab search results\".\n\nsnapshot:\n{snapshot}"
+    );
+
+    for (name, should_be_selected) in [
+      ("Alpha".to_string(), false),
+      ("Beta".to_string(), true),
+      ("Gamma".to_string(), false),
+    ] {
+      let found = options.iter().find(|(n, _)| n == &name);
+      assert!(
+        found.is_some(),
+        "expected tab search option {name:?} in AccessKit output.\n\noptions: {options:#?}\n\nsnapshot:\n{snapshot}"
+      );
+      let (_name, selected) = found.unwrap();
+      assert_eq!(
+        *selected, should_be_selected,
+        "expected tab search option {name:?} selected={should_be_selected}, got {selected}.\n\noptions: {options:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
   }
 
   #[test]
