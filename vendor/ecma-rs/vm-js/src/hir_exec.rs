@@ -10278,6 +10278,7 @@ fn run_compiled_async_function(
         strict,
         exec_ctx: None,
         script_ast: None,
+        script_ast_memory: None,
         this_root,
         new_target_root,
         home_object_root,

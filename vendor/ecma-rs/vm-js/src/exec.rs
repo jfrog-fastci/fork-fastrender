@@ -4,8 +4,8 @@ use crate::error_object::new_error;
 use crate::fallible_alloc::{arc_try_new_vm, box_try_new_vm};
 use crate::for_in::ForInEnumerator;
 use crate::heap::{
-  AsyncGeneratorContinuation, AsyncGeneratorState, GeneratorContinuation, GeneratorState, Trace,
-  Tracer,
+  AsyncGeneratorContinuation, AsyncGeneratorState, ExternalMemoryToken, GeneratorContinuation,
+  GeneratorState, Trace, Tracer,
 };
 use crate::iterator;
 use crate::promise_ops::promise_resolve_for_await_with_host_and_hooks;
@@ -2856,11 +2856,30 @@ impl JsRuntime {
             return Err(err);
           }
 
+          // `parse-js` AST nodes can be significantly larger than the original source. Charge a
+          // conservative estimate so async classic scripts can't bypass heap limits by suspending
+          // with an untracked retained AST.
+          let script_ast_bytes = source.text.len().saturating_mul(4);
+          let script_ast_memory = match root_scope.heap_mut().charge_external(script_ast_bytes) {
+            Ok(token) => Some(token),
+            Err(err) => {
+              for id in roots.drain(..) {
+                root_scope.heap_mut().remove_root(id);
+              }
+              env.teardown(root_scope.heap_mut());
+              for mut frame in frames {
+                async_teardown_frame(root_scope.heap_mut(), &mut frame);
+              }
+              return Err(err);
+            }
+          };
+
           let cont = AsyncContinuation {
             env: env.clone(),
             strict: strict_at_suspend,
             exec_ctx: Some(exec_ctx),
             script_ast: Some(top.clone()),
+            script_ast_memory,
             this_root,
             new_target_root,
             home_object_root,
@@ -3381,11 +3400,30 @@ impl JsRuntime {
             return Err(err);
           }
 
+          // `parse-js` AST nodes can be significantly larger than the original source. Charge a
+          // conservative estimate so async classic scripts can't bypass heap limits by suspending
+          // with an untracked retained AST.
+          let script_ast_bytes = source.text.len().saturating_mul(4);
+          let script_ast_memory = match root_scope.heap_mut().charge_external(script_ast_bytes) {
+            Ok(token) => Some(token),
+            Err(err) => {
+              for id in roots.drain(..) {
+                root_scope.heap_mut().remove_root(id);
+              }
+              env.teardown(root_scope.heap_mut());
+              for mut frame in frames {
+                async_teardown_frame(root_scope.heap_mut(), &mut frame);
+              }
+              return Err(err);
+            }
+          };
+
           let cont = AsyncContinuation {
             env: env.clone(),
             strict: strict_at_suspend,
             exec_ctx: Some(exec_ctx),
             script_ast: Some(top.clone()),
+            script_ast_memory,
             this_root,
             new_target_root,
             home_object_root,
@@ -15951,6 +15989,14 @@ pub(crate) struct AsyncContinuation {
   /// and evaluate synchronously so dropping the AST is fine, but async classic scripts return a
   /// Promise and continue execution from microtasks after this entrypoint returns.
   pub(crate) script_ast: Option<Arc<Node<parse_js::ast::stx::TopLevel>>>,
+  /// External heap memory token for [`AsyncContinuation::script_ast`].
+  ///
+  /// `parse-js` AST nodes are allocated outside the GC heap. Async classic scripts can suspend and
+  /// retain the full parsed script AST across microtasks; holding this token ensures that retained
+  /// AST memory is accounted for against `HeapLimits` and released when the continuation completes
+  /// or is aborted.
+  #[allow(dead_code)]
+  pub(crate) script_ast_memory: Option<ExternalMemoryToken>,
   pub(crate) this_root: RootId,
   pub(crate) new_target_root: RootId,
   pub(crate) home_object_root: RootId,
@@ -38582,6 +38628,7 @@ pub(crate) fn run_ecma_function(
           strict: evaluator.strict,
           exec_ctx: None,
           script_ast: None,
+          script_ast_memory: None,
           this_root,
           new_target_root,
           home_object_root,
@@ -39135,6 +39182,7 @@ pub(crate) fn start_module_tla_evaluation(
         strict: true,
         exec_ctx: Some(exec_ctx),
         script_ast: None,
+        script_ast_memory: None,
         this_root: roots[0],
         new_target_root: roots[1],
         home_object_root: roots[2],
@@ -39889,6 +39937,36 @@ fn strict_equal(heap: &Heap, a: Value, b: Value) -> Result<bool, VmError> {
 mod tests {
   use super::*;
   use crate::{HeapLimits, VmOptions};
+
+  #[test]
+  fn async_script_retained_ast_is_charged_and_released() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // Use an explicit charged `SourceText` so the baseline external-bytes count already includes the
+    // script source itself; the only delta we assert on is the retained AST charge.
+    let source = SourceText::new_charged_arc(&mut rt.heap, "<inline>", "await 0;")?;
+    let expected_ast_bytes = source.text.len().saturating_mul(4);
+
+    let before = rt.heap.vm_external_bytes();
+    let promise = rt.exec_script_source(source)?;
+    let Value::Object(_) = promise else {
+      panic!("expected top-level await script to return a Promise, got {promise:?}");
+    };
+    let after_suspend = rt.heap.vm_external_bytes();
+    assert_eq!(
+      after_suspend.saturating_sub(before),
+      expected_ast_bytes,
+      "expected async classic script to charge for retained parsed AST while suspended"
+    );
+
+    // Drain microtasks; this should complete the async script and drop the continuation, releasing
+    // the charged AST bytes.
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    assert_eq!(rt.heap.vm_external_bytes(), before);
+    Ok(())
+  }
 
   fn assert_module_instantiate_syntax_error(stmts: Vec<Node<Stmt>>) -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
