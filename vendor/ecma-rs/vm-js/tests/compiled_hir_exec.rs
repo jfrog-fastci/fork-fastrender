@@ -5228,6 +5228,26 @@ fn compiled_strict_arguments_callee_is_poison_pill() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_sloppy_duplicate_parameter_names_last_wins() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(a, a){ return a; }
+      f(1, 2)
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_rest_parameters_collect_remaining_args() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(

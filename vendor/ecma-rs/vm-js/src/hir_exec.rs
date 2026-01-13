@@ -2201,9 +2201,22 @@ impl<'vm> HirEvaluator<'vm> {
         if !scope.heap().env_has_binding(env_rec, name.as_str())? {
           scope.env_create_mutable_binding(env_rec, name.as_str())?;
         }
-        scope
-          .heap_mut()
-          .env_initialize_binding(env_rec, name.as_str(), value)
+        // Sloppy-mode functions with a simple parameter list may contain duplicate parameter names.
+        // When a duplicate is encountered, the binding has already been initialized by the earlier
+        // parameter and should be updated instead.
+        match scope
+          .heap()
+          .env_get_binding_value(env_rec, name.as_str(), /* strict */ false)
+        {
+          Ok(_) => scope
+            .heap_mut()
+            .env_set_mutable_binding(env_rec, name.as_str(), value, /* strict */ false),
+          // TDZ sentinel from `Heap::env_get_binding_value`.
+          Err(VmError::Throw(Value::Null)) => scope
+            .heap_mut()
+            .env_initialize_binding(env_rec, name.as_str(), value),
+          Err(err) => Err(err),
+        }
       }
     }
   }

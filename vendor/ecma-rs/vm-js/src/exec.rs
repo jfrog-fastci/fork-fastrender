@@ -3254,13 +3254,14 @@ impl<'a> Evaluator<'a> {
     let env_rec = self.env.lexical_env;
     for param in &func.stx.parameters {
       self.tick()?;
-      self.instantiate_lexical_names_from_pat(
-        scope,
-        env_rec,
-        &param.stx.pattern.stx.pat.stx,
-        param.loc,
-        true,
-      )?;
+      // Parameter lists can legally contain duplicate names in sloppy mode when the parameter list
+      // is "simple" (e.g. `function f(a, a) { ... }`). Unlike lexical declarations, duplicate
+      // parameter names do not create duplicate bindings; later parameters simply update the same
+      // binding.
+      //
+      // Create each identifier binding at most once here so parameter binding evaluation can
+      // initialize/update it later.
+      self.instantiate_param_names_from_pat(scope, env_rec, &param.stx.pattern.stx.pat.stx, param.loc)?;
     }
 
     // Create a minimal `arguments` object for non-arrow functions.
@@ -4943,6 +4944,55 @@ impl<'a> Evaluator<'a> {
         if let Some(rest) = &arr.stx.rest {
           self.tick()?;
           self.instantiate_lexical_names_from_pat(scope, env, &rest.stx, loc, mutable)?;
+        }
+        Ok(())
+      }
+      Pat::AssignTarget(_) => Err(VmError::Unimplemented(
+        "lexical declaration assignment targets",
+      )),
+    }
+  }
+
+  fn instantiate_param_names_from_pat(
+    &mut self,
+    scope: &mut Scope<'_>,
+    env: GcEnv,
+    pat: &Pat,
+    loc: parse_js::loc::Loc,
+  ) -> Result<(), VmError> {
+    // Like `instantiate_lexical_names_from_pat`, but tolerant of duplicate names.
+    //
+    // Sloppy-mode functions with a *simple* parameter list may contain duplicate parameter names,
+    // and those duplicates are not early errors. To support that, parameter binding instantiation
+    // must only create each binding once.
+    match pat {
+      Pat::Id(id) => {
+        if !scope.heap().env_has_binding(env, &id.stx.name)? {
+          scope.env_create_mutable_binding(env, &id.stx.name)?;
+        }
+        Ok(())
+      }
+      Pat::Obj(obj) => {
+        for prop in &obj.stx.properties {
+          self.tick()?;
+          self.instantiate_param_names_from_pat(scope, env, &prop.stx.target.stx, loc)?;
+        }
+        if let Some(rest) = &obj.stx.rest {
+          self.tick()?;
+          self.instantiate_param_names_from_pat(scope, env, &rest.stx, loc)?;
+        }
+        Ok(())
+      }
+      Pat::Arr(arr) => {
+        for elem in &arr.stx.elements {
+          self.tick()?;
+          if let Some(elem) = elem {
+            self.instantiate_param_names_from_pat(scope, env, &elem.target.stx, loc)?;
+          }
+        }
+        if let Some(rest) = &arr.stx.rest {
+          self.tick()?;
+          self.instantiate_param_names_from_pat(scope, env, &rest.stx, loc)?;
         }
         Ok(())
       }

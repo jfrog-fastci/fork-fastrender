@@ -50,6 +50,13 @@ fn arguments_object_is_visible_to_default_parameter_initializers() {
 }
 
 #[test]
+fn sloppy_duplicate_parameter_names_are_allowed_and_last_wins() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script("function f(a, a){ return a; } f(1, 2)").unwrap();
+  assert_eq!(value, Value::Number(2.0));
+}
+
+#[test]
 fn function_length_excludes_default_and_rest_parameters() {
   let mut rt = new_runtime();
   let value = rt
@@ -70,4 +77,3 @@ fn default_parameter_initializer_cannot_reference_itself() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
-

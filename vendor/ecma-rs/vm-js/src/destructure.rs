@@ -257,7 +257,22 @@ fn bind_identifier(
         // Non-block statement contexts may not have performed lexical hoisting yet.
         scope.env_create_mutable_binding(env_rec, name)?;
       }
-      scope.heap_mut().env_initialize_binding(env_rec, name, value)
+      // In most binding contexts (e.g. `let` declarations), bindings should be uninitialized at
+      // this point, and `InitializeBinding` is the correct operation.
+      //
+      // However, sloppy-mode functions with a simple parameter list may legally contain duplicate
+      // parameter names (`function f(a, a) { ... }`). In that case, the parameter binding is
+      // initialized by the first parameter and then updated by the later parameter(s).
+      //
+      // Best-effort: if the binding is already initialized, fall back to `SetMutableBinding`.
+      match scope.heap().env_get_binding_value(env_rec, name, /* strict */ false) {
+        Ok(_) => scope
+          .heap_mut()
+          .env_set_mutable_binding(env_rec, name, value, /* strict */ false),
+        // TDZ sentinel from `Heap::env_get_binding_value`.
+        Err(VmError::Throw(Value::Null)) => scope.heap_mut().env_initialize_binding(env_rec, name, value),
+        Err(err) => Err(err),
+      }
     }
     BindingKind::Const => {
       let env_rec = env.lexical_env();
