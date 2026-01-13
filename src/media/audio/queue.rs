@@ -701,6 +701,24 @@ mod tests {
   }
 
   #[test]
+  fn shared_queue_drains_when_gain_is_zero() {
+    let q = PcmF32Queue::new(1, 48_000, 8).unwrap();
+    assert_eq!(q.push_without_pts(&[1.0; 8]), 8);
+
+    // Muted consumption still advances the read cursor (drains) but does not modify the output.
+    let mut muted_out = [123.0f32; 4];
+    assert_eq!(q.pop_add_into(&mut muted_out, 0.0), 4);
+    assert_eq!(muted_out, [123.0; 4]);
+    assert_eq!(q.buffered_frames(), 4);
+
+    // Unmuting should play immediately without backlog: only the remaining frames should mix.
+    let mut out = [0.0f32; 8];
+    assert_eq!(q.pop_add_into(&mut out, 1.0), 4);
+    assert_eq!(out, [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(q.buffered_frames(), 0);
+  }
+
+  #[test]
   fn rejects_invalid_queue_specs() {
     assert!(matches!(
       pcm_f32_queue(0, 48_000, 8),
