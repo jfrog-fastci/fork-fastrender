@@ -5121,6 +5121,7 @@ impl BrowserRuntime {
         // If only paint was bumped (e.g. scroll/viewport change) while the initial paint was
         // in-flight, treat this as a cancelled paint rather than a navigation failure.
         if paint_cancel_callback() || !paint_snapshot.is_still_current_for_paint(&cancel) {
+          let runtime_toggles = Arc::clone(&self.runtime_toggles);
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return None;
           };
@@ -5135,7 +5136,7 @@ impl BrowserRuntime {
           tab.last_base_url = base_url.clone();
 
           Self::sync_js_tab_for_committed_navigation(
-            &self.runtime_toggles,
+            &runtime_toggles,
             tab_id,
             tab,
             &committed_url,
@@ -5242,6 +5243,7 @@ impl BrowserRuntime {
       return None;
     }
 
+    let runtime_toggles = Arc::clone(&self.runtime_toggles);
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return None;
     };
@@ -5265,7 +5267,7 @@ impl BrowserRuntime {
     tab.last_base_url = base_url.clone();
 
     Self::sync_js_tab_for_committed_navigation(
-      &self.runtime_toggles,
+      &runtime_toggles,
       tab_id,
       tab,
       &committed_url,
