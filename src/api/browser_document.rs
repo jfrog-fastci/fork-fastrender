@@ -576,7 +576,7 @@ impl BrowserDocument {
   ///
   /// This is exposed for browser-UI integrations that want to fetch/decode small extra resources
   /// (e.g. favicons) using the same resource policy, fetcher, and caches as normal page rendering.
-  pub(crate) fn image_cache(&self) -> &crate::image_loader::ImageCache {
+  pub fn image_cache(&self) -> &crate::image_loader::ImageCache {
     &self.renderer.image_cache
   }
 

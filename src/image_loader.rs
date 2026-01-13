@@ -6808,6 +6808,12 @@ enum GifTimingCacheValue {
 /// ```
 pub struct ImageCache {
   instance_id: u64,
+  /// Monotonically increasing generation counter for paint-affecting cache changes.
+  ///
+  /// This is used by scroll-blit / incremental paint paths to conservatively detect when pixels
+  /// from a previous frame may have become stale due to an image being decoded and inserted into
+  /// the cache between frames.
+  epoch: Arc<AtomicU64>,
   /// In-memory cache of decoded images (keyed by resolved URL)
   cache: Arc<Mutex<SizedLruCache<String, Arc<CachedImage>>>>,
   /// In-flight decodes keyed by resolved URL to de-duplicate concurrent loads.
@@ -7111,6 +7117,7 @@ impl ImageCache {
   ) -> Self {
     Self {
       instance_id: NEXT_IMAGE_CACHE_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
+      epoch: Arc::new(AtomicU64::new(0)),
       cache: Arc::new(Mutex::new(SizedLruCache::new(
         config.max_cached_images,
         config.max_cached_image_bytes,
@@ -7211,6 +7218,15 @@ impl ImageCache {
 
   pub(crate) fn instance_id(&self) -> u64 {
     self.instance_id
+  }
+
+  /// Returns the current image-cache epoch/generation.
+  ///
+  /// The epoch is incremented whenever a decoded **non-placeholder** image is inserted into the
+  /// cache (including replacing a previously cached placeholder), since that can change future
+  /// paint output even if layout does not change.
+  pub fn epoch(&self) -> u64 {
+    self.epoch.load(Ordering::Relaxed)
   }
 
   pub(crate) fn is_placeholder_image(&self, image: &Arc<CachedImage>) -> bool {
@@ -8408,6 +8424,18 @@ impl ImageCache {
       bytes = bytes.saturating_add(svg.len());
     }
     if let Ok(mut cache) = self.cache.lock() {
+      // Bump the epoch when this insertion can change paint output. This is intentionally
+      // conservative: any transition from "missing/placeholder" → real image must bump so scroll
+      // blit paths don't reuse stale pixels from an older frame.
+      if !self.is_placeholder_image(&image) {
+        let should_bump = match cache.get_cloned(resolved_url) {
+          None => true,
+          Some(prev) => self.is_placeholder_image(&prev) || !Arc::ptr_eq(&prev, &image),
+        };
+        if should_bump {
+          self.epoch.fetch_add(1, Ordering::Relaxed);
+        }
+      }
       cache.insert(resolved_url.to_string(), image, bytes);
     }
   }
@@ -12873,6 +12901,7 @@ impl Clone for ImageCache {
   fn clone(&self) -> Self {
     Self {
       instance_id: self.instance_id,
+      epoch: Arc::clone(&self.epoch),
       cache: Arc::clone(&self.cache),
       in_flight: Arc::clone(&self.in_flight),
       meta_cache: Arc::clone(&self.meta_cache),
