@@ -130,6 +130,66 @@ fn details_summary_pointer_click_toggles_open() -> Result<()> {
 }
 
 #[test]
+fn details_summary_requires_down_and_up_within_summary() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    details_fixture_html(),
+    url,
+    viewport_css,
+    1.0,
+  )?;
+
+  // Render once so hit-testing works.
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Down on summary but release outside => should NOT toggle.
+  let down_on_summary = (10.0, 10.0);
+  let up_outside_summary = (10.0, 100.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    down_on_summary,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    up_outside_summary,
+    PointerButton::Primary,
+  ))?;
+  assert!(
+    find_element_by_id(controller.document().dom(), "d")
+      .get_attribute_ref("open")
+      .is_none(),
+    "releasing outside <summary> should not toggle <details>"
+  );
+
+  // Down outside but release on summary => should NOT toggle.
+  let down_outside_summary = (10.0, 100.0);
+  let up_on_summary = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    down_outside_summary,
+    PointerButton::Primary,
+  ))?;
+  let _ =
+    controller.handle_message(support::pointer_up(tab_id, up_on_summary, PointerButton::Primary))?;
+  assert!(
+    find_element_by_id(controller.document().dom(), "d")
+      .get_attribute_ref("open")
+      .is_none(),
+    "pressing outside <summary> should not toggle <details> even if released over <summary>"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn details_summary_is_tab_focusable_and_space_toggles_open() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
