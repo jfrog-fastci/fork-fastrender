@@ -1,8 +1,11 @@
-use crate::source::format_stack_trace;
-use crate::property::{PropertyKey, PropertyKind};
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::fallible_format;
-use crate::{Budget, Heap, HeapLimits, JsRuntime, Realm, SourceText, Termination, Value, Vm, VmError, VmOptions};
+use crate::property::{PropertyKey, PropertyKind};
+use crate::source::format_stack_trace;
+use crate::{
+  Budget, CompiledScript, Heap, HeapLimits, JsRuntime, Realm, SourceText, Termination, Value, Vm,
+  VmError, VmOptions,
+};
 use std::sync::Arc;
 
 const OOM_PLACEHOLDER: &str = "<oom>";
@@ -245,7 +248,11 @@ impl Agent {
     budget: Budget,
     mut host_hooks: Option<&mut dyn HostHooks>,
   ) -> Result<Value, VmError> {
-    let source = arc_try_new_vm(SourceText::new_charged(self.heap_mut(), source_name, source_text)?)?;
+    let source = arc_try_new_vm(SourceText::new_charged(
+      self.heap_mut(),
+      source_name,
+      source_text,
+    )?)?;
 
     // Swap the VM budget in/out without holding a borrow across `exec_script`.
     let prev_budget = self.runtime.vm.swap_budget_state(budget);
@@ -297,6 +304,66 @@ impl Agent {
     result
   }
 
+  /// Run a pre-compiled classic script (HIR) with a per-run [`Budget`].
+  ///
+  /// This mirrors [`Agent::run_script`], but executes HIR lowered via [`CompiledScript`]
+  /// ([`JsRuntime::exec_compiled_script`]) instead of parsing source text at runtime.
+  pub fn run_compiled_script(
+    &mut self,
+    script: Arc<CompiledScript>,
+    budget: Budget,
+    mut host_hooks: Option<&mut dyn HostHooks>,
+  ) -> Result<Value, VmError> {
+    // Swap the VM budget in/out without holding a borrow across `exec_compiled_script`.
+    let prev_budget = self.runtime.vm.swap_budget_state(budget);
+
+    let mut result = self.runtime.exec_compiled_script(script);
+
+    // If the script executed (successfully or with a JS `throw`), the HTML script processing model
+    // performs a microtask checkpoint afterwards. For now this is a host hook placeholder.
+    if matches!(
+      result,
+      Ok(_) | Err(VmError::Throw(_)) | Err(VmError::ThrowWithStack { .. })
+    ) {
+      if let Some(hooks) = host_hooks.as_mut() {
+        // Root the completion value across the checkpoint so a host checkpoint implementation can
+        // allocate/GC without invalidating the returned value.
+        let root = match &result {
+          Ok(v) => self.heap_mut().add_root(*v).ok(),
+          Err(err) => err
+            .thrown_value()
+            .and_then(|v| self.heap_mut().add_root(v).ok()),
+        };
+
+        // If we fail to allocate a persistent root (OOM), skip the checkpoint: running it without
+        // rooting could allow GC to invalidate the completion value that we are about to return to
+        // the host.
+        let checkpoint_result = if root.is_some() {
+          hooks.microtask_checkpoint(self)
+        } else {
+          Ok(())
+        };
+
+        if let Some(root) = root {
+          self.heap_mut().remove_root(root);
+        }
+
+        result = match result {
+          Ok(v) => checkpoint_result.map(|_| v),
+          Err(err) => {
+            // Preserve the original script error; checkpoint errors should be reported separately
+            // by the host.
+            let _ = checkpoint_result;
+            Err(err)
+          }
+        };
+      }
+    }
+
+    self.runtime.vm.restore_budget_state(prev_budget);
+    result
+  }
+
   /// Convert a JavaScript value into a host-owned string for exception reporting.
   ///
   /// This uses the VM's `ToString` implementation (via [`Heap::to_string`]).
@@ -333,10 +400,7 @@ impl Agent {
     let marker = "…";
     let max_bytes = fallible_format::MAX_ERROR_MESSAGE_BYTES;
     let max_before_marker = max_bytes.saturating_sub(marker.len());
-    match crate::string::utf16_to_utf8_lossy_bounded(
-      js.as_code_units(),
-      max_before_marker,
-    ) {
+    match crate::string::utf16_to_utf8_lossy_bounded(js.as_code_units(), max_before_marker) {
       Ok((mut out, truncated)) => {
         if truncated {
           // Best-effort truncation marker. If we can't allocate even a few bytes, return the
@@ -377,12 +441,10 @@ impl Agent {
       }
       VmError::Termination(term) => format_termination(term),
       VmError::OutOfMemory => string_from_str_best_effort("out of memory"),
-      VmError::InvariantViolation(msg) => fallible_format::try_format_error_message(
-        "invariant violation: ",
-        msg,
-        "",
-      )
-      .unwrap_or_default(),
+      VmError::InvariantViolation(msg) => {
+        fallible_format::try_format_error_message("invariant violation: ", msg, "")
+          .unwrap_or_default()
+      }
       VmError::LimitExceeded(msg) => {
         fallible_format::try_format_error_message("limit exceeded: ", msg, "").unwrap_or_default()
       }
@@ -552,7 +614,8 @@ impl Agent {
     }
 
     let remaining = max_bytes.saturating_sub(out.len());
-    let Some((message, message_truncated)) = message_value.and_then(|s| to_utf8_bounded(s, remaining))
+    let Some((message, message_truncated)) =
+      message_value.and_then(|s| to_utf8_bounded(s, remaining))
     else {
       return Some(out);
     };

@@ -5,7 +5,7 @@ use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vm_js::{Budget, CompiledScript, HeapLimits, JsRuntime, VmError, VmOptions};
+use vm_js::{Agent, Budget, CompiledScript, HeapLimits, HostHooks, VmError, VmOptions};
 
 const MAX_SOURCE_BYTES: usize = 8 * 1024;
 
@@ -109,46 +109,51 @@ fn make_budget() -> Budget {
   }
 }
 
-fn drain_microtasks(rt: &mut JsRuntime) {
-  // If compilation or execution terminated early (termination/OOM), Promise jobs may still be
-  // queued. Drain/discard them before dropping the runtime so jobs can clean up persistent roots.
-  let prev_budget = rt.vm.swap_budget_state(make_budget());
-  if let Err(err) = rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
-    panic_on_vm_bug(err);
-  }
-  rt.vm.restore_budget_state(prev_budget);
-}
+struct FuzzHostHooks;
 
-fn compile_and_exec(rt: &mut JsRuntime, name: &str, source: &str) {
-  // Apply the budget across both compilation and execution.
-  let prev_budget = rt.vm.swap_budget_state(make_budget());
-
-  let script =
-    match CompiledScript::compile_script_with_budget(&mut rt.heap, &mut rt.vm, name, source) {
-      Ok(s) => s,
-      Err(err) => {
-        rt.vm.restore_budget_state(prev_budget);
-        panic_on_vm_bug(err);
-        return;
-      }
-    };
-
-  let result = rt.exec_compiled_script(script);
-
-  // If the script executed (successfully or with a JS `throw`), perform a microtask checkpoint
-  // afterwards (HTML terminology).
-  if matches!(
-    result,
-    Ok(_) | Err(VmError::Throw(_)) | Err(VmError::ThrowWithStack { .. })
-  ) {
-    if let Err(err) = rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+impl HostHooks for FuzzHostHooks {
+  fn microtask_checkpoint(&mut self, agent: &mut Agent) -> Result<(), VmError> {
+    // Drain any queued Promise jobs so fuzzing covers Promise job execution paths too.
+    //
+    // Ignore errors here: the fuzz harness is primarily interested in panics and invariant
+    // violations. VM termination/OOM are expected outcomes under tight budgets/heap limits.
+    if let Err(err) = agent.perform_microtask_checkpoint() {
       panic_on_vm_bug(err);
     }
+    Ok(())
   }
+}
 
-  rt.vm.restore_budget_state(prev_budget);
+fn drain_microtasks(agent: &mut Agent) {
+  // If compilation or execution terminated early (termination/OOM), Promise jobs may still be
+  // queued. Drain/discard them before dropping the runtime so jobs can clean up persistent roots.
+  let prev_budget = agent.vm_mut().swap_budget_state(make_budget());
+  if let Err(err) = agent.perform_microtask_checkpoint() {
+    panic_on_vm_bug(err);
+  }
+  agent.vm_mut().restore_budget_state(prev_budget);
+}
 
-  if let Err(err) = result {
+fn compile_and_exec(agent: &mut Agent, name: &str, source: &str, hooks: &mut FuzzHostHooks) {
+  // Apply the budget during compilation so we catch missed-tick hangs and respect interrupt
+  // requests in the parser/early-error paths.
+  let prev_budget = agent.vm_mut().swap_budget_state(make_budget());
+
+  let script = match {
+    // Borrow-split the Agent so we can pass `&mut Vm` + `&mut Heap` to the compilation API.
+    let (vm, _realm, heap) = agent.vm_realm_and_heap_mut();
+    CompiledScript::compile_script_with_budget(heap, vm, name, source)
+  } {
+    Ok(s) => s,
+    Err(err) => {
+      agent.vm_mut().restore_budget_state(prev_budget);
+      panic_on_vm_bug(err);
+      return;
+    }
+  };
+  agent.vm_mut().restore_budget_state(prev_budget);
+
+  if let Err(err) = agent.run_compiled_script(script, make_budget(), Some(hooks)) {
     panic_on_vm_bug(err);
   }
 }
@@ -183,25 +188,26 @@ fuzz_target!(|data: &[u8]| {
 
   let heap_limits = HeapLimits::new(HEAP_MAX_BYTES, HEAP_GC_THRESHOLD);
 
-  let Ok(mut rt) = JsRuntime::new(vm_js::Vm::new(vm_options), vm_js::Heap::new(heap_limits)) else {
+  let Ok(mut agent) = Agent::with_options(vm_options, heap_limits) else {
     return;
   };
+  let mut hooks = FuzzHostHooks;
 
   // --- Compile + execute the input directly as a classic script (HIR). ---
   if data.first().is_some_and(|b| (b & 1) != 0) {
     interrupt_flag.store(true, Ordering::Relaxed);
   }
-  compile_and_exec(&mut rt, "<fuzz>", source.as_ref());
-  drain_microtasks(&mut rt);
+  compile_and_exec(&mut agent, "<fuzz>", source.as_ref(), &mut hooks);
+  drain_microtasks(&mut agent);
 
   // Clear any interrupt requested above so subsequent runs can proceed.
-  rt.vm.reset_interrupt();
+  agent.vm_mut().reset_interrupt();
 
   // --- Compile + execute a wrapper script that forces builtins + eval/Function coverage. ---
   if data.first().is_some_and(|b| (b & 2) != 0) {
     interrupt_flag.store(true, Ordering::Relaxed);
   }
   let wrapper = wrapper_script(source.as_ref());
-  compile_and_exec(&mut rt, "<fuzz-wrapper>", &wrapper);
-  drain_microtasks(&mut rt);
+  compile_and_exec(&mut agent, "<fuzz-wrapper>", &wrapper, &mut hooks);
+  drain_microtasks(&mut agent);
 });
