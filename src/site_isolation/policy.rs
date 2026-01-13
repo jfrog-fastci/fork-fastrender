@@ -93,10 +93,26 @@ pub fn should_isolate_child_frame(
   child_url: &str,
   child_is_srcdoc: bool,
 ) -> bool {
+  should_isolate_child_frame_with_force_opaque_origin(parent, child_url, child_is_srcdoc, false)
+}
+
+/// Like [`should_isolate_child_frame`], but allows the caller to force the child into a unique
+/// opaque origin.
+///
+/// This is primarily used for `<iframe sandbox>` when the sandbox token list does **not** contain
+/// `allow-same-origin`, causing the child document to have an opaque origin even for `srcdoc` /
+/// `about:blank` navigations.
+pub fn should_isolate_child_frame_with_force_opaque_origin(
+  parent: &SiteKey,
+  child_url: &str,
+  child_is_srcdoc: bool,
+  force_opaque_origin: bool,
+) -> bool {
   should_isolate_child_frame_with_mode(
     parent,
     child_url,
     child_is_srcdoc,
+    force_opaque_origin,
     SiteIsolationMode::from_env(),
   )
 }
@@ -105,14 +121,15 @@ fn should_isolate_child_frame_with_mode(
   parent: &SiteKey,
   child_url: &str,
   child_is_srcdoc: bool,
+  force_opaque_origin: bool,
   mode: SiteIsolationMode,
 ) -> bool {
-  if child_is_srcdoc {
+  if child_is_srcdoc && !force_opaque_origin {
     return false;
   }
 
   let trimmed = child_url.trim();
-  if trimmed.is_empty() {
+  if trimmed.is_empty() && !force_opaque_origin {
     // HTML: missing/empty iframe `src` behaves like `about:blank` and inherits the creator origin.
     return false;
   }
@@ -120,7 +137,7 @@ fn should_isolate_child_frame_with_mode(
   // Relative URLs resolve against the parent document base URL. `should_isolate_child_frame` is
   // typically called with an already-resolved absolute URL; for unresolved relative inputs we
   // conservatively assume the navigation stays within the parent site.
-  if !trimmed.contains(':') && !trimmed.starts_with("//") {
+  if !trimmed.contains(':') && !trimmed.starts_with("//") && !force_opaque_origin {
     return false;
   }
 
@@ -139,7 +156,7 @@ fn should_isolate_child_frame_with_mode(
     trimmed
   };
 
-  let child_site = site_key_for_navigation(child_url, Some(parent));
+  let child_site = site_key_for_navigation(child_url, Some(parent), force_opaque_origin);
 
   if &child_site == parent {
     return false;
@@ -154,10 +171,11 @@ mod tests {
 
   #[test]
   fn same_origin_iframe_not_isolated() {
-    let parent = site_key_for_navigation("https://example.com/", None);
+    let parent = site_key_for_navigation("https://example.com/", None, false);
     assert!(!should_isolate_child_frame_with_mode(
       &parent,
       "https://example.com/child",
+      false,
       false,
       SiteIsolationMode::PerOrigin
     ));
@@ -165,10 +183,11 @@ mod tests {
 
   #[test]
   fn cross_origin_iframe_isolated() {
-    let parent = site_key_for_navigation("https://example.com/", None);
+    let parent = site_key_for_navigation("https://example.com/", None, false);
     assert!(should_isolate_child_frame_with_mode(
       &parent,
       "https://other.com/",
+      false,
       false,
       SiteIsolationMode::PerOrigin
     ));
@@ -176,21 +195,23 @@ mod tests {
 
   #[test]
   fn srcdoc_iframe_not_isolated() {
-    let parent = site_key_for_navigation("https://example.com/", None);
+    let parent = site_key_for_navigation("https://example.com/", None, false);
     assert!(!should_isolate_child_frame_with_mode(
       &parent,
       "https://other.com/",
       true,
+      false,
       SiteIsolationMode::PerOrigin
     ));
   }
 
   #[test]
   fn about_blank_iframe_not_isolated() {
-    let parent = site_key_for_navigation("https://example.com/", None);
+    let parent = site_key_for_navigation("https://example.com/", None, false);
     assert!(!should_isolate_child_frame_with_mode(
       &parent,
       "about:blank",
+      false,
       false,
       SiteIsolationMode::PerOrigin
     ));
@@ -198,11 +219,24 @@ mod tests {
 
   #[test]
   fn data_iframe_isolated() {
-    let parent = site_key_for_navigation("https://example.com/", None);
+    let parent = site_key_for_navigation("https://example.com/", None, false);
     assert!(should_isolate_child_frame_with_mode(
       &parent,
       "data:text/html,hello",
       false,
+      false,
+      SiteIsolationMode::PerOrigin
+    ));
+  }
+
+  #[test]
+  fn sandboxed_srcdoc_iframe_isolated() {
+    let parent = site_key_for_navigation("https://example.com/", None, false);
+    assert!(should_isolate_child_frame_with_mode(
+      &parent,
+      "about:srcdoc",
+      true,
+      true,
       SiteIsolationMode::PerOrigin
     ));
   }

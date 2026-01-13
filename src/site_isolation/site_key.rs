@@ -184,8 +184,19 @@ impl SiteKeyFactory {
   /// - `about:blank` / `about:srcdoc`: inherit `parent` when provided; otherwise create a new
   ///   opaque key.
   /// - `data:`: always opaque.
+  /// - When `force_opaque_origin` is true (e.g. sandboxed iframes without `allow-same-origin`),
+  ///   always return a fresh opaque key regardless of URL or parent.
   /// - Unparseable/unsupported URLs: opaque.
-  pub fn site_key_for_navigation(&self, url: &str, parent: Option<&SiteKey>) -> SiteKey {
+  pub fn site_key_for_navigation(
+    &self,
+    url: &str,
+    parent: Option<&SiteKey>,
+    force_opaque_origin: bool,
+  ) -> SiteKey {
+    if force_opaque_origin {
+      return self.new_opaque();
+    }
+
     // `blob:` URLs (e.g. `blob:https://example.com/uuid`) inherit their origin from the embedded
     // URL. Treat same-origin blob navigations as the same `SiteKey` to avoid unnecessary process
     // swaps/churn for `URL.createObjectURL()` results.
@@ -210,12 +221,12 @@ impl SiteKeyFactory {
           if parsed_embedded.host_str().is_none() {
             self.new_opaque()
           } else {
-            origin_from_url(parsed_embedded.as_str()).map_or_else(|| self.new_opaque(), SiteKey::Origin)
+            origin_from_url(parsed_embedded.as_str())
+              .map_or_else(|| self.new_opaque(), SiteKey::Origin)
           }
         }
         "file" => self.site_key_for_file_url(&parsed_embedded),
-        "about" => self.new_opaque(),
-        "data" => self.new_opaque(),
+        "about" | "data" => self.new_opaque(),
         _ => self.new_opaque(),
       };
     }
@@ -253,11 +264,11 @@ impl SiteKeyFactory {
 }
 
 /// Derive the site key for a navigation using a shared global factory.
-pub fn site_key_for_navigation(url: &str, parent: Option<&SiteKey>) -> SiteKey {
+pub fn site_key_for_navigation(url: &str, parent: Option<&SiteKey>, force_opaque_origin: bool) -> SiteKey {
   static FACTORY: OnceLock<SiteKeyFactory> = OnceLock::new();
   FACTORY
     .get_or_init(SiteKeyFactory::default)
-    .site_key_for_navigation(url, parent)
+    .site_key_for_navigation(url, parent, force_opaque_origin)
 }
 
 #[cfg(test)]
@@ -269,12 +280,12 @@ mod tests {
   fn http_https_normalizes_host_case_and_default_ports() {
     let factory = SiteKeyFactory::new_with_seed(1);
 
-    let a = factory.site_key_for_navigation("https://EXAMPLE.com", None);
-    let b = factory.site_key_for_navigation("https://example.com:443/path?q=1", None);
+    let a = factory.site_key_for_navigation("https://EXAMPLE.com", None, false);
+    let b = factory.site_key_for_navigation("https://example.com:443/path?q=1", None, false);
     assert_eq!(a, b);
 
-    let c = factory.site_key_for_navigation("http://Example.COM", None);
-    let d = factory.site_key_for_navigation("http://example.com:80/other", None);
+    let c = factory.site_key_for_navigation("http://Example.COM", None, false);
+    let d = factory.site_key_for_navigation("http://example.com:80/other", None, false);
     assert_eq!(c, d);
   }
 
@@ -282,28 +293,27 @@ mod tests {
   fn cross_origin_urls_produce_different_site_keys() {
     let factory = SiteKeyFactory::new_with_seed(1);
 
-    let a = factory.site_key_for_navigation("https://example.com", None);
-    let b = factory.site_key_for_navigation("https://example.org", None);
+    let a = factory.site_key_for_navigation("https://example.com", None, false);
+    let b = factory.site_key_for_navigation("https://example.org", None, false);
     assert_ne!(a, b);
 
-    let c = factory.site_key_for_navigation("https://example.com", None);
-    let d = factory.site_key_for_navigation("http://example.com", None);
+    let c = factory.site_key_for_navigation("https://example.com", None, false);
+    let d = factory.site_key_for_navigation("http://example.com", None, false);
     assert_ne!(c, d);
 
-    let e = factory.site_key_for_navigation("http://example.com:8080", None);
-    let f = factory.site_key_for_navigation("http://example.com", None);
+    let e = factory.site_key_for_navigation("http://example.com:8080", None, false);
+    let f = factory.site_key_for_navigation("http://example.com", None, false);
     assert_ne!(e, f);
   }
 
   #[test]
   fn blob_urls_inherit_embedded_origin() {
     let factory = SiteKeyFactory::new_with_seed(1);
-
-    let blob = factory.site_key_for_navigation("blob:https://a.test/1", None);
-    let https = factory.site_key_for_navigation("https://a.test/", None);
+    let blob = factory.site_key_for_navigation("blob:https://a.test/1", None, false);
+    let https = factory.site_key_for_navigation("https://a.test/", None, false);
     assert_eq!(blob, https);
 
-    let other = factory.site_key_for_navigation("https://b.test/", None);
+    let other = factory.site_key_for_navigation("https://b.test/", None, false);
     assert_ne!(blob, other);
   }
 
@@ -311,7 +321,7 @@ mod tests {
   fn blob_null_urls_are_opaque() {
     let factory = SiteKeyFactory::new_with_seed(9);
 
-    let key = factory.site_key_for_navigation("blob:null/1", None);
+    let key = factory.site_key_for_navigation("blob:null/1", None, false);
     assert_eq!(key, SiteKey::Opaque(9));
   }
 
@@ -331,8 +341,8 @@ mod tests {
       FileUrlSiteIsolation::OpaquePerUrl,
     );
 
-    let key_a = factory.site_key_for_navigation(url_a.as_str(), None);
-    let key_b = factory.site_key_for_navigation(url_b.as_str(), None);
+    let key_a = factory.site_key_for_navigation(url_a.as_str(), None, false);
+    let key_b = factory.site_key_for_navigation(url_b.as_str(), None, false);
     assert_ne!(key_a, key_b);
     assert!(matches!(key_a, SiteKey::Opaque(_)));
     assert!(matches!(key_b, SiteKey::Opaque(_)));
@@ -349,8 +359,8 @@ mod tests {
       1,
       FileUrlSiteIsolation::OpaquePerUrl,
     );
-    let a = factory.site_key_for_navigation(url.as_str(), None);
-    let b = factory.site_key_for_navigation(url.as_str(), None);
+    let a = factory.site_key_for_navigation(url.as_str(), None, false);
+    let b = factory.site_key_for_navigation(url.as_str(), None, false);
     assert_eq!(a, b);
   }
 
@@ -358,11 +368,11 @@ mod tests {
   fn about_blank_inherits_parent_when_provided() {
     let factory = SiteKeyFactory::new_with_seed(1);
 
-    let parent = factory.site_key_for_navigation("https://example.com", None);
-    let child = factory.site_key_for_navigation("about:blank", Some(&parent));
+    let parent = factory.site_key_for_navigation("https://example.com", None, false);
+    let child = factory.site_key_for_navigation("about:blank", Some(&parent), false);
     assert_eq!(child, parent);
 
-    let srcdoc = factory.site_key_for_navigation("about:srcdoc", Some(&parent));
+    let srcdoc = factory.site_key_for_navigation("about:srcdoc", Some(&parent), false);
     assert_eq!(srcdoc, parent);
   }
 
@@ -387,14 +397,16 @@ mod tests {
   fn blob_child_frame_site_key_matches_embedded_origin() {
     let factory = SiteKeyFactory::new_with_seed(1);
 
-    let parent = factory.site_key_for_navigation("https://a.test/", None);
-    let same_origin_blob = factory.site_key_for_navigation("blob:https://a.test/1", Some(&parent));
+    let parent = factory.site_key_for_navigation("https://a.test/", None, false);
+    let same_origin_blob =
+      factory.site_key_for_navigation("blob:https://a.test/1", Some(&parent), false);
     assert_eq!(same_origin_blob, parent);
 
-    let cross_origin_blob = factory.site_key_for_navigation("blob:https://b.test/1", Some(&parent));
+    let cross_origin_blob =
+      factory.site_key_for_navigation("blob:https://b.test/1", Some(&parent), false);
     assert_ne!(cross_origin_blob, parent);
 
-    let opaque_blob = factory.site_key_for_navigation("blob:null/1", Some(&parent));
+    let opaque_blob = factory.site_key_for_navigation("blob:null/1", Some(&parent), false);
     assert_ne!(opaque_blob, parent);
     assert!(matches!(opaque_blob, SiteKey::Opaque(_)));
   }
@@ -403,8 +415,8 @@ mod tests {
   fn about_blank_without_parent_is_unique_per_navigation() {
     let factory = SiteKeyFactory::new_with_seed(100);
 
-    let a = factory.site_key_for_navigation("about:blank", None);
-    let b = factory.site_key_for_navigation("about:blank", None);
+    let a = factory.site_key_for_navigation("about:blank", None, false);
+    let b = factory.site_key_for_navigation("about:blank", None, false);
     assert_ne!(a, b);
 
     assert!(matches!(a, SiteKey::Opaque(100)));
@@ -415,8 +427,8 @@ mod tests {
   fn data_urls_are_always_opaque() {
     let factory = SiteKeyFactory::new_with_seed(5);
 
-    let a = factory.site_key_for_navigation("data:text/plain,Hello", None);
-    let b = factory.site_key_for_navigation("data:text/plain,Hello", None);
+    let a = factory.site_key_for_navigation("data:text/plain,Hello", None, false);
+    let b = factory.site_key_for_navigation("data:text/plain,Hello", None, false);
     assert_ne!(a, b);
 
     assert!(matches!(a, SiteKey::Opaque(5)));
@@ -446,7 +458,33 @@ mod tests {
   fn unparseable_urls_are_opaque() {
     let factory = SiteKeyFactory::new_with_seed(9);
 
-    let key = factory.site_key_for_navigation("not a url", None);
+    let key = factory.site_key_for_navigation("not a url", None, false);
     assert_eq!(key, SiteKey::Opaque(9));
+  }
+
+  #[test]
+  fn sandboxed_iframe_without_allow_same_origin_is_always_opaque() {
+    let factory = SiteKeyFactory::new_with_seed(1);
+
+    let parent = factory.site_key_for_navigation("https://example.com", None, false);
+    // `about:srcdoc` would normally inherit the parent's site, but sandbox without
+    // `allow-same-origin` forces a unique opaque origin.
+    let child = factory.site_key_for_navigation("about:srcdoc", Some(&parent), true);
+    assert_ne!(child, parent);
+    assert!(matches!(child, SiteKey::Opaque(_)));
+
+    // Even same-origin URLs must not share when the sandbox forces an opaque origin.
+    let same_origin = factory.site_key_for_navigation("https://example.com/path", Some(&parent), true);
+    assert_ne!(same_origin, parent);
+    assert!(matches!(same_origin, SiteKey::Opaque(_)));
+  }
+
+  #[test]
+  fn sandboxed_iframe_with_allow_same_origin_uses_normal_inheritance() {
+    let factory = SiteKeyFactory::new_with_seed(1);
+
+    let parent = factory.site_key_for_navigation("https://example.com", None, false);
+    let child = factory.site_key_for_navigation("about:srcdoc", Some(&parent), false);
+    assert_eq!(child, parent);
   }
 }

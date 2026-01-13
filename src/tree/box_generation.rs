@@ -65,6 +65,7 @@ use crate::tree::box_tree::FormControlKind;
 use crate::tree::box_tree::GeneratedPseudoElement;
 use crate::tree::box_tree::ImageDecodingAttribute;
 use crate::tree::box_tree::ImageLoadingAttribute;
+use crate::tree::box_tree::IframeSandboxAttribute;
 use crate::tree::box_tree::MarkerContent;
 use crate::tree::box_tree::MathReplaced;
 use crate::tree::box_tree::PictureSource;
@@ -7818,6 +7819,7 @@ fn create_replaced_box_from_styled(
       .node
       .get_attribute_ref("srcdoc")
       .map(|s| s.to_string());
+    let sandbox = IframeSandboxAttribute::from_attribute(styled.node.get_attribute_ref("sandbox"));
     let referrer_policy = styled
       .node
       .get_attribute_ref("referrerpolicy")
@@ -7825,6 +7827,7 @@ fn create_replaced_box_from_styled(
     ReplacedType::Iframe {
       src,
       srcdoc,
+      sandbox,
       referrer_policy,
       // Use the styled DOM node id as a stable per-document token. This id is derived from
       // `dom::enumerate_dom_ids` and remains stable across layout/paint passes as long as the DOM is

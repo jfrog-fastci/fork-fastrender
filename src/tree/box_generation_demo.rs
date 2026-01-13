@@ -16,7 +16,8 @@ use crate::style::ComputedStyle;
 use crate::tree::anonymous::AnonymousBoxCreator;
 use crate::tree::box_generation::marker_content_from_style;
 use crate::tree::box_tree::{
-  BoxNode, BoxTree, CrossOriginAttribute, ImageDecodingAttribute, ReplacedType, SvgContent,
+  BoxNode, BoxTree, CrossOriginAttribute, IframeSandboxAttribute, ImageDecodingAttribute,
+  ReplacedType, SvgContent,
 };
 use crate::tree::debug::DebugInfo;
 use std::sync::Arc;
@@ -268,6 +269,7 @@ impl DOMNode {
       "iframe" => Some(ReplacedType::Iframe {
         src,
         srcdoc,
+        sandbox: IframeSandboxAttribute::None,
         referrer_policy: None,
         frame_token: None,
       }),

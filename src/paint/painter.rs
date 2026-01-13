@@ -26322,6 +26322,7 @@ mod tests {
         replaced_type: ReplacedType::Iframe {
           src: String::new(),
           srcdoc: Some(outer),
+          sandbox: crate::tree::box_tree::IframeSandboxAttribute::None,
           referrer_policy: None,
           frame_token: None,
         },
@@ -26367,6 +26368,7 @@ mod tests {
         replaced_type: ReplacedType::Iframe {
           src: String::new(),
           srcdoc: Some(html.to_string()),
+          sandbox: crate::tree::box_tree::IframeSandboxAttribute::None,
           referrer_policy: None,
           frame_token: None,
         },
@@ -26392,6 +26394,7 @@ mod tests {
       &ReplacedType::Iframe {
         src: "   ".to_string(),
         srcdoc: None,
+        sandbox: crate::tree::box_tree::IframeSandboxAttribute::None,
         referrer_policy: None,
         frame_token: None,
       },

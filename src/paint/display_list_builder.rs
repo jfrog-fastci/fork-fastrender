@@ -7358,6 +7358,7 @@ impl DisplayListBuilder {
             srcdoc,
             referrer_policy,
             frame_token: _,
+            ..
           } = replaced_type
           {
             if let Some(cache) = self.image_cache.as_ref() {
@@ -21032,6 +21033,7 @@ mod tests {
         replaced_type: ReplacedType::Iframe {
           src: "about:blank".to_string(),
           srcdoc: Some("<html></html>".to_string()),
+          sandbox: crate::tree::box_tree::IframeSandboxAttribute::None,
           referrer_policy: None,
           frame_token: None,
         },
@@ -21121,6 +21123,7 @@ mod tests {
         replaced_type: ReplacedType::Iframe {
           src: "about:blank".to_string(),
           srcdoc: Some("<html></html>".to_string()),
+          sandbox: crate::tree::box_tree::IframeSandboxAttribute::None,
           referrer_policy: None,
           frame_token: None,
         },

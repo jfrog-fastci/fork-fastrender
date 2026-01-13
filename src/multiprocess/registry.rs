@@ -1,7 +1,7 @@
+pub use crate::site_isolation::SiteKey;
 use std::collections::HashMap;
 #[cfg(any(test, feature = "browser_ui"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-pub use crate::site_isolation::SiteKey;
 
 /// Stable identifier for a renderer process managed by the browser process.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -283,6 +283,7 @@ impl<S: ProcessSpawner> Drop for RendererProcessRegistry<S> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::site_isolation::SiteKeyFactory;
   use std::sync::Arc;
 
   #[derive(Debug)]
@@ -347,7 +348,7 @@ mod tests {
   }
 
   fn site(url: &str) -> SiteKey {
-    crate::site_isolation::site_key_for_navigation(url, None)
+    crate::site_isolation::site_key_for_navigation(url, None, false)
   }
 
   #[test]

@@ -17,7 +17,7 @@ impl FakeProcessRegistry {
   }
 
   fn open_tab(&mut self, factory: &SiteKeyFactory, url: &Url) -> u64 {
-    let site = factory.site_key_for_navigation(url.as_str(), None);
+    let site = factory.site_key_for_navigation(url.as_str(), None, false);
     if let Some(existing) = self.by_site.get(&site) {
       return *existing;
     }
@@ -53,4 +53,3 @@ fn file_tabs_do_not_share_renderer_process_when_file_isolation_enabled() {
     "different file:// pages must not reuse the same renderer process when file isolation is enabled"
   );
 }
-

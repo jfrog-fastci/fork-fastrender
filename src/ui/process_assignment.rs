@@ -142,7 +142,7 @@ impl ProcessAssignmentState {
 
     // When deriving a SiteKey from a commit, treat the current process lock as the "parent" so
     // special URLs like `about:blank` inherit the existing site key.
-    let committed_site = site_key_for_navigation(committed_url, Some(&locked_site));
+    let committed_site = site_key_for_navigation(committed_url, Some(&locked_site), false);
 
     match self.process_model {
       ProcessModel::PerSiteKey => {
@@ -411,7 +411,7 @@ mod tests {
   use super::*;
 
   fn site(url: &str) -> SiteKey {
-    site_key_for_navigation(url, None)
+    site_key_for_navigation(url, None, false)
   }
 
   #[test]

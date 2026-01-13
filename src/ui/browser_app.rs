@@ -41,6 +41,20 @@ const CRASH_REASON_MAX_CHARS: usize = 200;
 
 static NEXT_TAB_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 
+fn derive_site_key_from_url(url: &str) -> Option<SiteKey> {
+  let parsed = Url::parse(url).ok()?;
+  // Treat internal `about:` pages as having no site key; they do not participate in site isolation
+  // decisions or global history bookkeeping.
+  if parsed.scheme().eq_ignore_ascii_case("about") {
+    return None;
+  }
+  Some(crate::site_isolation::site_key_for_navigation(
+    parsed.as_str(),
+    None,
+    false,
+  ))
+}
+
 /// Identifier for a chrome tab group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabGroupId(pub u64);
@@ -534,10 +548,11 @@ pub struct BrowserTabState {
 impl BrowserTabState {
   pub fn new(tab_id: TabId, initial_url: String) -> Self {
     let committed_url = initial_url.clone();
+    let renderer_site_key = derive_site_key_from_url(&committed_url);
     Self {
       id: tab_id,
       renderer_process: None,
-      renderer_site_key: None,
+      renderer_site_key,
       pinned: false,
       group: None,
       cancel: CancelGens::new(),
@@ -2529,10 +2544,7 @@ impl BrowserAppState {
         let site_key = if url.len() > MAX_URL_BYTES {
           None
         } else {
-          safe_url
-            .as_deref()
-            .and_then(|url| Url::parse(url).ok())
-            .map(|url| SiteKey::from_url(&url))
+          safe_url.as_deref().and_then(derive_site_key_from_url)
         };
         if let Some(tab) = self.tab_mut(tab_id) {
           if tab.renderer_crashed {
@@ -2578,10 +2590,7 @@ impl BrowserAppState {
         let site_key = if url.len() > MAX_URL_BYTES {
           None
         } else {
-          safe_url
-            .as_deref()
-            .and_then(|url| Url::parse(url).ok())
-            .map(|url| SiteKey::from_url(&url))
+          safe_url.as_deref().and_then(derive_site_key_from_url)
         };
 
         if let Some(url) = safe_url.as_ref() {
@@ -2667,10 +2676,7 @@ impl BrowserAppState {
         let site_key = if url.len() > MAX_URL_BYTES {
           None
         } else {
-          safe_url
-            .as_deref()
-            .and_then(|url| Url::parse(url).ok())
-            .map(|url| SiteKey::from_url(&url))
+          safe_url.as_deref().and_then(derive_site_key_from_url)
         };
         // Do not record failed navigations in global omnibox history.
         if let Some(tab) = self.tab_mut(tab_id) {
@@ -2943,10 +2949,9 @@ mod browser_tab_tests {
 mod browser_app_tests {
   use super::*;
   use crate::geometry::Point;
-  use url::Url;
 
   fn site(url: &str) -> SiteKey {
-    SiteKey::from_url(&Url::parse(url).expect("test url should parse"))
+    derive_site_key_from_url(url).expect("test url should produce a site key")
   }
 
   fn assert_active_is_valid(app: &BrowserAppState) {

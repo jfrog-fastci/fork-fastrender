@@ -114,6 +114,56 @@ impl ImageLoadingAttribute {
   }
 }
 
+/// Parsed `sandbox` attribute state for `<iframe>` elements.
+///
+/// We currently only model the origin semantics needed for site isolation:
+/// when `sandbox` is present *without* `allow-same-origin`, the iframe document
+/// gets a unique opaque origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum IframeSandboxAttribute {
+  /// No `sandbox` attribute present.
+  #[default]
+  None,
+  /// `sandbox` present but does **not** include `allow-same-origin` (unique opaque origin).
+  OpaqueOrigin,
+  /// `sandbox` present and includes `allow-same-origin`.
+  AllowSameOrigin,
+}
+
+impl IframeSandboxAttribute {
+  /// Parse the `sandbox` attribute value.
+  ///
+  /// The HTML `sandbox` attribute is a space-separated token list (ASCII case-insensitive).
+  /// If the attribute is present with an empty value, the token list is empty.
+  pub fn from_attribute(value: Option<&str>) -> Self {
+    let Some(value) = value else {
+      return Self::None;
+    };
+
+    // Presence of the attribute enables sandboxing; `allow-same-origin` disables the unique-origin
+    // behaviour.
+    for token in value.split_ascii_whitespace() {
+      if token.eq_ignore_ascii_case("allow-same-origin") {
+        return Self::AllowSameOrigin;
+      }
+    }
+    Self::OpaqueOrigin
+  }
+
+  pub fn is_present(self) -> bool {
+    !matches!(self, Self::None)
+  }
+
+  /// Returns `true` when sandboxing forces a unique opaque origin (i.e. `allow-same-origin` missing).
+  pub fn opaque_origin(self) -> bool {
+    matches!(self, Self::OpaqueOrigin)
+  }
+
+  pub fn allows_same_origin(self) -> bool {
+    matches!(self, Self::AllowSameOrigin)
+  }
+}
+
 /// A block-level box
 ///
 /// Block boxes stack vertically and establish block formatting contexts.
@@ -765,6 +815,8 @@ pub enum ReplacedType {
     src: String,
     /// Inline HTML content overriding src
     srcdoc: Option<String>,
+    /// Parsed `sandbox` attribute state (origin semantics only).
+    sandbox: IframeSandboxAttribute,
     /// Optional parsed `referrerpolicy` attribute.
     referrer_policy: Option<ReferrerPolicy>,
     /// Stable identifier for this iframe element within the document, used to map the DOM node to a
@@ -3690,6 +3742,7 @@ mod tests {
     let iframe = ReplacedType::Iframe {
       src: "https://example.com".to_string(),
       srcdoc: Some("hello world".to_string()),
+      sandbox: IframeSandboxAttribute::None,
       referrer_policy: None,
       frame_token: None,
     };
@@ -3698,6 +3751,7 @@ mod tests {
     let iframe_no_srcdoc = ReplacedType::Iframe {
       src: "https://example.com".to_string(),
       srcdoc: None,
+      sandbox: IframeSandboxAttribute::None,
       referrer_policy: None,
       frame_token: None,
     };

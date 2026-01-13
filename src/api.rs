@@ -28906,6 +28906,7 @@ mod tests {
           ReplacedType::Iframe {
             src: "#".into(),
             srcdoc: None,
+            sandbox: crate::tree::box_tree::IframeSandboxAttribute::None,
             referrer_policy: None,
             frame_token: None,
           },
@@ -28940,6 +28941,7 @@ mod tests {
       ReplacedType::Iframe {
         src: "https://example.com/embed.html".to_string(),
         srcdoc: None,
+        sandbox: crate::tree::box_tree::IframeSandboxAttribute::None,
         referrer_policy: None,
         frame_token: None,
       },
