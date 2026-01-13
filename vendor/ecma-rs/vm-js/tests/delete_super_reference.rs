@@ -234,6 +234,45 @@ fn delete_super_property_computed_member_propagates_to_property_key_errors_compi
 }
 
 #[test]
+fn delete_super_property_object_literal_method_throws_reference_error() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var obj = {
+        del() {
+          try { delete super.toString; return "no"; }
+          catch (e) { return e.name; }
+        }
+      };
+      obj.del()
+    "#,
+  )?;
+
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn delete_super_property_object_literal_method_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var obj = {
+        del() {
+          try { delete super.toString; return "no"; }
+          catch (e) { return e.name; }
+        }
+      };
+      obj.del()
+    "#,
+  )?;
+
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
 fn delete_super_property_computed_member_with_await_in_key_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
