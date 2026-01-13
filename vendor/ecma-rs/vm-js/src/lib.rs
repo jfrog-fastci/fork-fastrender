@@ -199,6 +199,12 @@ mod test_alloc;
 #[cfg(test)]
 mod regexp_unicode_property_strings_tests;
 
+// Some unit tests are authored as standalone files under `../tests/` so they can also run as
+// integration tests. Alias the crate as `vm_js` so those files can `use vm_js::...` regardless of
+// whether they are compiled as unit or integration tests.
+#[cfg(test)]
+extern crate self as vm_js;
+
 // Unit tests that need access to crate-private internals live in `../tests/unit/` and are pulled
 // into the library test target here so they can exercise non-public APIs.
 #[cfg(test)]
@@ -220,6 +226,10 @@ mod typed_array_dataview_rooting_gc_tests;
 #[cfg(test)]
 #[path = "../tests/unit/private_in.rs"]
 mod private_in_tests;
+
+#[cfg(test)]
+#[path = "../tests/compound_assignment_bitwise_shift.rs"]
+mod compound_assignment_bitwise_shift_tests;
 
 pub use crate::handle::EnvRootId;
 
