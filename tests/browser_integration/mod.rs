@@ -60,6 +60,7 @@ mod ui_cancellation;
 mod ui_clipboard;
 mod ui_document_selection_clipboard;
 mod ui_document_selection_multi_range;
+mod ui_document_selection_pointer_multiclick;
 mod ui_context_menu;
 mod ui_context_menu_text_caret_right_click;
 mod ui_context_menu_bookmarks;

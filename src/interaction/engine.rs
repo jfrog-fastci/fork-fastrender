@@ -2716,6 +2716,14 @@ fn document_selection_point_at_page_point(
   fragment_tree: &FragmentTree,
   page_point: Point,
 ) -> Option<DocumentSelectionPoint> {
+  document_selection_hit_at_page_point(box_tree, fragment_tree, page_point).map(|(point, _)| point)
+}
+
+fn document_selection_hit_at_page_point(
+  box_tree: &BoxTree,
+  fragment_tree: &FragmentTree,
+  page_point: Point,
+) -> Option<(DocumentSelectionPoint, usize)> {
   let (root, path) = fragment_tree.hit_test_path(page_point)?;
   let mut node = match root {
     HitTestRoot::Root => &fragment_tree.root,
@@ -2776,7 +2784,178 @@ fn document_selection_point_at_page_point(
   let total_chars = text_box.text.chars().count();
   let char_offset = (start_char + local_char).min(total_chars);
 
-  Some(DocumentSelectionPoint { node_id, char_offset })
+  Some((DocumentSelectionPoint { node_id, char_offset }, box_id))
+}
+
+fn cmp_document_selection_points(a: DocumentSelectionPoint, b: DocumentSelectionPoint) -> std::cmp::Ordering {
+  a.node_id
+    .cmp(&b.node_id)
+    .then_with(|| a.char_offset.cmp(&b.char_offset))
+}
+
+fn document_word_selection_range(
+  box_tree: &BoxTree,
+  text_box_id: usize,
+  point: DocumentSelectionPoint,
+) -> Option<DocumentSelectionRange> {
+  let box_node = box_node_by_id(box_tree, text_box_id)?;
+  let node_id = box_node.styled_node_id.unwrap_or(point.node_id);
+  let BoxType::Text(text_box) = &box_node.box_type else {
+    return None;
+  };
+  let (start, end) = word_selection_range(&text_box.text, point.char_offset)?;
+  let len = text_box.text.chars().count();
+  let start = start.min(len);
+  let end = end.min(len);
+  if start >= end {
+    return None;
+  }
+  Some(DocumentSelectionRange {
+    start: DocumentSelectionPoint {
+      node_id,
+      char_offset: start,
+    },
+    end: DocumentSelectionPoint {
+      node_id,
+      char_offset: end,
+    },
+  })
+}
+
+fn nearest_block_level_box_for_box_id<'a>(
+  root: &'a BoxNode,
+  target_box_id: usize,
+) -> Option<&'a BoxNode> {
+  struct Frame<'a> {
+    node: &'a BoxNode,
+    nearest_block: Option<&'a BoxNode>,
+  }
+
+  let mut stack = vec![Frame {
+    node: root,
+    nearest_block: None,
+  }];
+
+  while let Some(Frame { node, nearest_block }) = stack.pop() {
+    let nearest_block = if node.style.display.is_block_level() {
+      Some(node)
+    } else {
+      nearest_block
+    };
+
+    if node.id == target_box_id {
+      return nearest_block;
+    }
+
+    // Mirror `assign_box_ids` / selection serialization traversal ordering.
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(Frame {
+        node: body,
+        nearest_block,
+      });
+    }
+    for child in node.children.iter().rev() {
+      stack.push(Frame {
+        node: child,
+        nearest_block,
+      });
+    }
+  }
+
+  None
+}
+
+fn document_text_extents_in_box(block: &BoxNode) -> Option<DocumentSelectionRange> {
+  let mut min: Option<DocumentSelectionPoint> = None;
+  let mut max: Option<DocumentSelectionPoint> = None;
+
+  let mut stack: Vec<&BoxNode> = vec![block];
+  while let Some(node) = stack.pop() {
+    if !box_is_selectable_for_document_selection(node) {
+      continue;
+    }
+
+    if let BoxType::Text(text_box) = &node.box_type {
+      if let Some(node_id) = node.styled_node_id {
+        let len = text_box.text.chars().count();
+        if len > 0 {
+          let start = DocumentSelectionPoint {
+            node_id,
+            char_offset: 0,
+          };
+          let end = DocumentSelectionPoint {
+            node_id,
+            char_offset: len,
+          };
+          min = Some(match min {
+            None => start,
+            Some(existing) => {
+              if cmp_document_selection_points(start, existing) == std::cmp::Ordering::Less {
+                start
+              } else {
+                existing
+              }
+            }
+          });
+          max = Some(match max {
+            None => end,
+            Some(existing) => {
+              if cmp_document_selection_points(end, existing) == std::cmp::Ordering::Greater {
+                end
+              } else {
+                existing
+              }
+            }
+          });
+        }
+      }
+    }
+
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  match (min, max) {
+    (Some(start), Some(end)) if start != end => Some(DocumentSelectionRange { start, end }),
+    _ => None,
+  }
+}
+
+fn document_block_selection_range(
+  box_tree: &BoxTree,
+  text_box_id: usize,
+  point: DocumentSelectionPoint,
+) -> Option<DocumentSelectionRange> {
+  if let Some(block) = nearest_block_level_box_for_box_id(&box_tree.root, text_box_id) {
+    if let Some(range) = document_text_extents_in_box(block) {
+      return Some(range.normalized());
+    }
+  }
+
+  // Fallback: select the entire current text node.
+  let box_node = box_node_by_id(box_tree, text_box_id)?;
+  let node_id = box_node.styled_node_id.unwrap_or(point.node_id);
+  let BoxType::Text(text_box) = &box_node.box_type else {
+    return None;
+  };
+  let len = text_box.text.chars().count();
+  if len == 0 {
+    return None;
+  }
+  Some(DocumentSelectionRange {
+    start: DocumentSelectionPoint {
+      node_id,
+      char_offset: 0,
+    },
+    end: DocumentSelectionPoint {
+      node_id,
+      char_offset: len,
+    },
+  })
 }
 
 fn inferred_text_direction_from_dom(
@@ -4964,7 +5143,9 @@ impl InteractionEngine {
         .as_ref()
         .is_some_and(|hit| matches!(hit.kind, HitTestKind::FormControl))
     {
-      if let Some(point) = document_selection_point_at_page_point(box_tree, fragment_tree, page_point)
+      let click_count = click_count.clamp(1, 3);
+      if let Some((point, text_box_id)) =
+        document_selection_hit_at_page_point(box_tree, fragment_tree, page_point)
       {
         // Starting a document selection drag should blur the currently-focused control when the
         // gesture begins outside that focused subtree (so subsequent keyboard input does not keep
@@ -4976,6 +5157,18 @@ impl InteractionEngine {
             dom_changed |= self.set_focus(&mut index, None, false);
           }
         }
+
+        let single_range = |range: DocumentSelectionRange| {
+          let range = range.normalized();
+          let mut ranges = DocumentSelectionRanges {
+            ranges: vec![range],
+            primary: 0,
+            anchor: range.start,
+            focus: range.end,
+          };
+          ranges.normalize();
+          Some(DocumentSelectionState::Ranges(ranges))
+        };
 
         let next = if modifiers.shift() {
           match self.state.document_selection.clone() {
@@ -5010,7 +5203,15 @@ impl InteractionEngine {
             _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
           }
         } else {
-          Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)))
+          match click_count {
+            2 => document_word_selection_range(box_tree, text_box_id, point)
+              .and_then(single_range)
+              .or_else(|| Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)))),
+            3 => document_block_selection_range(box_tree, text_box_id, point)
+              .and_then(single_range)
+              .or_else(|| Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)))),
+            _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
+          }
         };
 
         self.state.document_selection = next;
