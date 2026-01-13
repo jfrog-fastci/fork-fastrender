@@ -619,7 +619,7 @@ impl CallbackHandle {
             return vm.call_with_host_and_hooks(host, scope, hooks, callback, this, args);
           }
 
-          let Value::Object(obj) = callback else {
+          let Value::Object(_) = callback else {
             return Err(VmError::TypeError(
               "Callback interface value is not an object",
             ));
@@ -629,32 +629,13 @@ impl CallbackHandle {
           let key_str = scope.alloc_string("handleEvent")?;
           scope.push_root(Value::String(key_str))?;
           let key = VmPropertyKey::from_string(key_str);
-          // Implement `GetMethod` + `[[Get]]` directly so accessor getters are invoked via
-          // `call_with_host_and_hooks` (preserving embedder host context / host hooks).
-          let method = match scope.heap().get_property(obj, &key)? {
-            None => Value::Undefined,
-            Some(desc) => match desc.kind {
-              vm_js::PropertyKind::Data { value, .. } => value,
-              vm_js::PropertyKind::Accessor { get, .. } => {
-                if matches!(get, Value::Undefined) {
-                  Value::Undefined
-                } else {
-                  if !scope.heap().is_callable(get)? {
-                    return Err(VmError::TypeError("accessor getter is not callable"));
-                  }
-                  vm.call_with_host_and_hooks(host, scope, hooks, get, callback, &[])?
-                }
-              }
-            },
-          };
-          if matches!(method, Value::Undefined | Value::Null) {
+          // Use spec-shaped `GetMethod` so Proxy `get` traps are respected and accessor getters are
+          // invoked via `call_with_host_and_hooks` (preserving embedder host context / host hooks).
+          let Some(method) = vm.get_method_with_host_and_hooks(host, scope, hooks, callback, key)? else {
             return Err(VmError::TypeError(
               "Callback interface object is missing a callable handleEvent method",
             ));
-          }
-          if !scope.heap().is_callable(method)? {
-            return Err(VmError::TypeError("GetMethod: target is not callable"));
-          }
+          };
           scope.push_root(method)?;
 
           vm.call_with_host_and_hooks(host, scope, hooks, method, callback, args)
@@ -1705,35 +1686,19 @@ pub fn invoke_callback_interface(
   scope.push_root(Value::String(key_s))?;
   let key = VmPropertyKey::from_string(key_s);
 
-  // Implement `GetMethod` in a way that invokes accessor getters via `Vm::call_with_host` so host
-  // hooks overrides are respected.
-  let method = match scope.heap().get_property(obj, &key)? {
-    None => Value::Undefined,
-    Some(desc) => match desc.kind {
-      vm_js::PropertyKind::Data { value, .. } => value,
-      vm_js::PropertyKind::Accessor { get, .. } => {
-        if matches!(get, Value::Undefined) {
-          Value::Undefined
-        } else {
-          if !scope.heap().is_callable(get)? {
-            return Err(VmError::TypeError("accessor getter is not callable"));
-          }
-          vm.call_with_host(&mut scope, hooks, get, Value::Object(obj), &[])?
-        }
-      }
-    },
+  // Spec-shaped `GetMethod` so Proxy `get` traps are respected.
+  //
+  // `GetMethod` can invoke user code (Proxy traps, accessors) which can enqueue Promise jobs, so
+  // temporarily install the embedder host hooks override while performing the property access.
+  let method = vm.with_host_hooks_override(hooks, |vm| {
+    vm.get_method_from_object(&mut scope, obj, key)
+  })?;
+  let Some(method) = method else {
+    return Err(VmError::TypeError(
+      "Callback interface object is missing a callable handleEvent method",
+    ));
   };
-
-  if matches!(method, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Callback interface object is missing a callable handleEvent method",
-    ));
-  }
-  if !scope.heap().is_callable(method)? {
-    return Err(VmError::TypeError(
-      "Callback interface object is missing a callable handleEvent method",
-    ));
-  }
+  scope.push_root(method)?;
   vm.call_with_host(&mut scope, hooks, method, Value::Object(obj), args)
 }
 
