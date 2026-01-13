@@ -3,6 +3,27 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
+// Ensure the backup is not the default single-tab newtab session so we can assert restoration.
+const BACKUP_JSON: &str = r#"{
+  "version": 2,
+  "home_url": "about:blank",
+  "windows": [{
+    "tabs": [
+      {"url": "about:blank", "zoom": 1.25},
+      {"url": "about:test-scroll", "zoom": 0.75, "pinned": true},
+      {"url": "about:error", "zoom": 2.0}
+    ],
+    "active_tab_index": 2
+  }],
+  "active_window_index": 0,
+  "appearance": {
+    "theme": "dark",
+    "high_contrast": true,
+    "reduced_motion": true,
+    "ui_scale": 1.25
+  }
+}"#;
+
 fn run_browser_headless_smoke(
   args: &[&str],
   session_path: &Path,
@@ -100,29 +121,9 @@ fn browser_restores_session_from_backup_when_primary_file_is_corrupted() {
 
   std::fs::write(&session_path, "{not valid json").expect("write corrupted primary session.json");
 
-  // Ensure the backup is not the default single-tab newtab session so we can assert restoration.
-  let backup_json = r#"{
-    "version": 2,
-    "home_url": "about:blank",
-    "windows": [{
-      "tabs": [
-        {"url": "about:blank", "zoom": 1.25},
-        {"url": "about:test-scroll", "zoom": 0.75, "pinned": true},
-        {"url": "about:error", "zoom": 2.0}
-      ],
-      "active_tab_index": 2
-    }],
-    "active_window_index": 0,
-    "appearance": {
-      "theme": "dark",
-      "high_contrast": true,
-      "reduced_motion": true,
-      "ui_scale": 1.25
-    }
-  }"#;
-  std::fs::write(&backup_path, backup_json).expect("write backup session.json.bak");
+  std::fs::write(&backup_path, BACKUP_JSON).expect("write backup session.json.bak");
 
-  let expected_session = fastrender::ui::session::parse_session_json(backup_json)
+  let expected_session = fastrender::ui::session::parse_session_json(BACKUP_JSON)
     .expect("parse expected backup session JSON");
 
   let (status, stderr, stdout) = run_browser_headless_smoke(&[], &session_path, &[]);
@@ -142,6 +143,43 @@ fn browser_restores_session_from_backup_when_primary_file_is_corrupted() {
 
   // Backup recovery should also rewrite the primary session file so subsequent launches don't keep
   // tripping over a corrupted session.json.
+  let disk_json = std::fs::read_to_string(&session_path).expect("read rewritten session.json");
+  let disk_session =
+    fastrender::ui::session::parse_session_json(&disk_json).expect("parse rewritten session JSON");
+  assert_eq!(disk_session, expected_session);
+}
+
+#[test]
+fn browser_restores_session_from_backup_when_primary_file_is_invalid_utf8() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let dir = tempfile::tempdir().expect("temp dir");
+  let session_path = dir.path().join("session.json");
+  let backup_path = session_path.with_extension("json.bak"); // session.json.bak
+
+  // Write invalid UTF-8 bytes to force `read_to_string` to fail.
+  std::fs::write(&session_path, [0xff, 0xfe, 0xfd]).expect("write invalid utf-8 session.json");
+  std::fs::write(&backup_path, BACKUP_JSON).expect("write backup session.json.bak");
+
+  let expected_session = fastrender::ui::session::parse_session_json(BACKUP_JSON)
+    .expect("parse expected backup session JSON");
+
+  let (status, stderr, stdout) = run_browser_headless_smoke(&[], &session_path, &[]);
+  assert_browser_succeeded(status, &stderr, &stdout);
+
+  assert!(
+    stdout.contains("HEADLESS_SESSION source=restored "),
+    "expected restored session source marker, got stdout:\n{stdout}\nstderr:\n{stderr}"
+  );
+  assert!(
+    stderr.contains("failed to read session file") && stderr.contains("recovered from backup"),
+    "expected stderr to mention backup recovery from read error, got stderr:\n{stderr}\nstdout:\n{stdout}"
+  );
+  let (source, session) = parse_headless_session(&stdout);
+  assert_eq!(source, "restored");
+  assert_eq!(session, expected_session);
+
   let disk_json = std::fs::read_to_string(&session_path).expect("read rewritten session.json");
   let disk_session =
     fastrender::ui::session::parse_session_json(&disk_json).expect("parse rewritten session JSON");
