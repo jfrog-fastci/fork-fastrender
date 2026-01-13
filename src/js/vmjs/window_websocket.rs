@@ -2498,7 +2498,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -2598,7 +2598,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -2692,7 +2692,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -3021,7 +3021,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"

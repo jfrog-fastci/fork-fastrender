@@ -2264,7 +2264,9 @@ mod tests {
   use crate::dom2;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::window::WindowHost;
+  use crate::resource::{FetchedResource, ResourceFetcher};
   use selectors::context::QuirksMode;
+  use std::sync::Arc;
   use vm_js::{HostSlots, Value};
 
   fn get_string(realm: &WindowRealm, value: Value) -> String {
@@ -2272,6 +2274,21 @@ mod tests {
       panic!("expected string value");
     };
     realm.heap().get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Err(crate::Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> crate::error::Result<WindowHost> {
+    WindowHost::new_with_fetcher(dom, document_url, Arc::new(NoFetchResourceFetcher))
   }
 
   #[test]
@@ -3038,7 +3055,7 @@ mod tests {
   #[test]
   fn structured_clone_rejects_fetch_api_objects_and_web_socket() -> crate::error::Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.com/")?;
+    let mut host = make_host(dom, "https://example.com/")?;
 
     let headers = host.exec_script(
       "(() => {\

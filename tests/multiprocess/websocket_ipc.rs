@@ -448,7 +448,7 @@ fn websocket_ipc_rejects_unrequested_protocol_selected_by_server() -> Result<()>
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "https://example.invalid/")?;
 
   let _ipc_bindings = {
     let window = host.host_mut().window_mut();
@@ -613,7 +613,7 @@ fn websocket_ipc_protocol_is_set_from_server_handshake_response() -> Result<()> 
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "https://example.invalid/")?;
 
   let _ipc_bindings = {
     let window = host.host_mut().window_mut();
@@ -752,7 +752,7 @@ fn websocket_ipc_rejects_protocol_when_none_were_requested() -> Result<()> {
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "https://example.invalid/")?;
 
   let _ipc_bindings = {
     let window = host.host_mut().window_mut();
