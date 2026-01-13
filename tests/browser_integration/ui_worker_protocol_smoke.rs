@@ -126,7 +126,7 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
     h.cancel_gens.clone(),
   ));
 
-  let messages = h.collect_until(Duration::from_secs(3), |msgs| {
+  let messages = h.collect_until(support::DEFAULT_TIMEOUT, |msgs| {
     let mut saw_started = false;
     let mut saw_loading_true = false;
     let mut saw_committed = false;
@@ -293,11 +293,11 @@ fn viewport_changed_triggers_frame_ready() {
   ));
 
   // Drain initial navigation.
-  let _initial = h.recv_next_frame(Duration::from_secs(3));
+  let _initial = h.recv_next_frame(support::DEFAULT_TIMEOUT);
 
   h.send(support::viewport_changed_msg(tab_id, (320, 240), 2.0));
 
-  let frame = h.recv_next_frame(Duration::from_secs(3));
+  let frame = h.recv_next_frame(support::DEFAULT_TIMEOUT);
   assert_eq!(frame.viewport_css, (320, 240));
   assert_eq!(frame.dpr, 2.0);
 
