@@ -41,6 +41,38 @@ pub struct BrowserTabController {
 }
 
 impl BrowserTabController {
+  fn apply_autofocus_if_present(&mut self) {
+    let Some(target_id) =
+      crate::interaction::autofocus::autofocus_target_node_id(self.document.dom())
+    else {
+      return;
+    };
+
+    // `InteractionEngine::focus_node_id` does not mutate the DOM; avoid invalidating cached layout
+    // so that navigation-prepared documents can still paint without rerunning layout.
+    self.document.mutate_dom(|dom| {
+      let _ = self.interaction.focus_node_id(dom, Some(target_id), true);
+      false
+    });
+
+    // Best-effort: scroll to reveal the focused node (including within scroll containers). This
+    // requires layout artifacts, so it only applies when we already have a prepared document (e.g.
+    // after a URL/about navigation that installed a prepared cache).
+    if let Some(prepared) = self.document.prepared() {
+      if let Some(next_scroll) = crate::interaction::focus_scroll::scroll_state_for_focus(
+        prepared.box_tree(),
+        prepared.fragment_tree(),
+        &self.scroll_state,
+        target_id,
+      ) {
+        if next_scroll != self.scroll_state {
+          self.scroll_state = next_scroll;
+          self.document.set_scroll_state(self.scroll_state.clone());
+        }
+      }
+    }
+  }
+
   /// Create a new controller backed by an HTML string.
   ///
   /// This is primarily intended for tests and `about:` pages.
@@ -77,7 +109,7 @@ impl BrowserTabController {
       Some(document_url.to_string()),
     );
 
-    Ok(Self {
+    let mut controller = Self {
       tab_id,
       document,
       interaction: InteractionEngine::new(),
@@ -92,7 +124,13 @@ impl BrowserTabController {
       find_case_sensitive: false,
       find_matches: Vec::new(),
       find_active_match_index: None,
-    })
+    };
+
+    // Match UI-worker behaviour: apply HTML autofocus once up-front so the first render can show
+    // focus styling/caret/selection for trusted documents (e.g. chrome UI documents).
+    controller.apply_autofocus_if_present();
+
+    Ok(controller)
   }
 
   pub fn tab_id(&self) -> TabId {
@@ -1429,6 +1467,8 @@ impl BrowserTabController {
     self.scroll_state = ScrollState::default();
     self.document.set_scroll_state(self.scroll_state.clone());
 
+    self.apply_autofocus_if_present();
+
     // Paint first frame.
     out.extend(self.force_repaint()?);
 
@@ -1516,6 +1556,8 @@ impl BrowserTabController {
     self.interaction = InteractionEngine::new();
     self.scroll_state = ScrollState::default();
     self.document.set_scroll_state(self.scroll_state.clone());
+
+    self.apply_autofocus_if_present();
 
     // Paint first frame.
     out.extend(self.force_repaint()?);
@@ -1741,6 +1783,71 @@ fn strip_fragment(url: &str) -> String {
   };
   parsed.set_fragment(None);
   parsed.to_string()
+}
+
+#[cfg(test)]
+mod autofocus_tests {
+  use super::*;
+  use crate::text::font_db::FontConfig;
+  use crate::ui::messages::RepaintReason;
+
+  #[test]
+  fn autofocus_applies_focus_and_text_edit_state_on_first_render() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+
+    let tab_id = TabId(1);
+    let viewport_css = (240, 80);
+    let dpr = 1.0;
+    let html = r#"<!doctype html>
+      <html>
+        <head><meta charset="utf-8"></head>
+        <body>
+          <input id="a" value="abc" autofocus>
+        </body>
+      </html>"#;
+
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      renderer,
+      tab_id,
+      html,
+      "https://example.com/",
+      viewport_css,
+      dpr,
+    )
+    .expect("controller from_html_with_renderer");
+
+    // Trigger the first render so the controller has had a chance to wire focus state into the
+    // renderer pipeline.
+    let _ = controller
+      .handle_message(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: RepaintReason::Explicit,
+      })
+      .expect("initial repaint");
+
+    let autofocus_id =
+      crate::interaction::autofocus::autofocus_target_node_id(controller.document().dom())
+        .expect("expected autofocus target node");
+
+    let state = controller.interaction_state();
+    assert_eq!(state.focused, Some(autofocus_id));
+    assert!(
+      state.focus_chain.contains(&autofocus_id),
+      "expected focus chain to include the focused element"
+    );
+    assert!(
+      state.focus_visible,
+      "expected autofocus to opt into focus-visible semantics"
+    );
+    assert_eq!(
+      state.text_edit.map(|t| t.node_id),
+      Some(autofocus_id),
+      "expected focused input to initialize text-edit state (caret/selection)"
+    );
+  }
 }
 
 #[cfg(test)]
