@@ -157,6 +157,8 @@ Debugging note (Windows): you can temporarily disable the renderer OS sandbox wi
 `FASTR_DISABLE_RENDERER_SANDBOX=1` (alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off`). This is **insecure**
 and prints a warning to stderr; see [sandboxing.md](sandboxing.md) for details.
 
+To debug Windows sandbox spawn failures, set `FASTR_LOG_SANDBOX=1` for verbose sandbox logs.
+
 ## Implementation notes
 
 For implementation details (code layout, message protocol, cancellation, platform prerequisites),
