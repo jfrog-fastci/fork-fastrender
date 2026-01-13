@@ -8277,7 +8277,10 @@ impl App {
           }
 
           // Capture the detached tab's serializable state before we mutate the window.
-          let (url, zoom, scroll_css) = {
+          //
+          // Note: Session persistence supports pinned tabs + tab groups, so we keep that state when
+          // detaching into a new window.
+          let (url, zoom, scroll_css, pinned, group) = {
             let tab = self
               .browser_state
               .tab(tab_id)
@@ -8289,6 +8292,8 @@ impl App {
               .cloned()
               .unwrap_or_else(|| fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
             let zoom = tab.zoom;
+            let pinned = tab.pinned;
+            let group = tab.group.and_then(|group_id| self.browser_state.tab_groups.get(&group_id).cloned());
             let scroll_css = {
               let viewport = tab.scroll_state.viewport;
               let x = viewport.x;
@@ -8301,17 +8306,33 @@ impl App {
                 ((x, y) != (0.0, 0.0)).then_some((x, y))
               }
             };
-            (url, zoom, scroll_css)
+            (url, zoom, scroll_css, pinned, group)
           };
 
           // Spawn the new window on the winit event loop thread.
+          let (tab_groups, group_idx) = if let Some(group) = group {
+            (
+              vec![fastrender::ui::BrowserSessionTabGroup {
+                title: group.title,
+                color: group.color,
+                collapsed: group.collapsed,
+              }],
+              Some(0),
+            )
+          } else {
+            (Vec::new(), None)
+          };
           let session_window = fastrender::ui::BrowserSessionWindow {
             tabs: vec![fastrender::ui::BrowserSessionTab {
               url,
               zoom: Some(zoom),
               scroll_css,
+              pinned,
+              group: group_idx,
             }],
+            tab_groups,
             active_tab_index: 0,
+            show_menu_bar: self.browser_state.chrome.show_menu_bar,
             window_state: None,
           };
           let _ = self
