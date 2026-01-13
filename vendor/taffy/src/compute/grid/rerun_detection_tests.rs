@@ -260,3 +260,88 @@ fn rerun_row_sizing_still_occurs_for_aspect_ratio_items_with_definite_height() {
     "expected row 2 to be sized from the aspect-ratio item's rerun contribution (100px), got {row_height}"
   );
 }
+
+/// Regression test: the column rerun probe must refresh intrinsic caches for *all* probed items
+/// before rerun sizing occurs.
+///
+/// The probe historically used `.any(...)` while mutating per-item intrinsic caches. Because `.any`
+/// short-circuits, only the first changed item would have its cache refreshed. If another probed
+/// item also changes (e.g. multiple aspect-ratio items in different columns), rerun column sizing
+/// would reuse stale cached contributions and compute incorrect track sizes.
+#[test]
+#[cfg(feature = "detailed_layout_info")]
+fn rerun_column_sizing_refreshes_all_aspect_ratio_items_before_rerun() {
+  use crate::tree::DetailedLayoutInfo;
+
+  let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+  // Both items derive their inline intrinsic contributions from the (stretched) row height via
+  // aspect ratio. After the block-axis sizing pass, the row becomes definite (from container
+  // height + stretch), so both items' min-content widths change and must be reflected in the rerun
+  // column sizing pass.
+  let col_1_item = taffy
+    .new_leaf(Style {
+      grid_row: line(1),
+      grid_column: line(1),
+      aspect_ratio: Some(2.0), // 50px height -> 100px width
+      ..default()
+    })
+    .unwrap();
+
+  let col_2_item = taffy
+    .new_leaf(Style {
+      grid_row: line(1),
+      grid_column: line(2),
+      aspect_ratio: Some(3.0), // 50px height -> 150px width
+      ..default()
+    })
+    .unwrap();
+
+  let root = taffy
+    .new_with_children(
+      Style {
+        display: Display::Grid,
+        // Definite container size:
+        // - width is large enough that min-content columns don't get clamped.
+        // - height is used to stretch the auto row to a definite 50px in the block-axis pass.
+        size: Size {
+          width: length(500.0),
+          height: length(50.0),
+        },
+        grid_template_columns: vec![min_content(), min_content()],
+        grid_template_rows: vec![auto()],
+        ..default()
+      },
+      &[col_1_item, col_2_item],
+    )
+    .unwrap();
+
+  taffy
+    .compute_layout_with_measure(
+      root,
+      Size::MAX_CONTENT,
+      |known_dimensions, _available_space, _node_id, _context, _style| {
+        MeasureOutput::from_size(Size {
+          width: known_dimensions.width.unwrap_or(10.0),
+          height: known_dimensions.height.unwrap_or(10.0),
+        })
+      },
+    )
+    .unwrap();
+
+  let detailed = match taffy.detailed_layout_info(root) {
+    DetailedLayoutInfo::Grid(info) => info.as_ref(),
+    other => panic!("expected detailed grid info, got {other:?}"),
+  };
+
+  let col1 = detailed.columns.sizes[0];
+  let col2 = detailed.columns.sizes[1];
+  assert!(
+    (col1 - 100.0).abs() < 0.01,
+    "expected column 1 to size to 100px from aspect-ratio rerun contribution, got {col1}"
+  );
+  assert!(
+    (col2 - 150.0).abs() < 0.01,
+    "expected column 2 to size to 150px from aspect-ratio rerun contribution, got {col2}"
+  );
+}
