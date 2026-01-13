@@ -7379,6 +7379,17 @@ impl App {
       //
       // As a forward-compatible fallback, attempt to extract `tab_id` from the derived `Debug`
       // representation: `Variant { tab_id: TabId(<u64>), ... }`.
+      #[cfg(debug_assertions)]
+      {
+        use std::sync::Once;
+        static WARN_ONCE: Once = Once::new();
+        WARN_ONCE.call_once(|| {
+          eprintln!(
+            "warning: BrowserApp::send_worker_msg: UiToWorker::tab_id() fallback active; \
+add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug parsing"
+          );
+        });
+      }
       const NEEDLE: &str = "tab_id: TabId(";
       let debug = format!("{msg:?}");
       let start = debug.find(NEEDLE)? + NEEDLE.len();
