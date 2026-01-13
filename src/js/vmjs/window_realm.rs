@@ -31044,8 +31044,18 @@ fn utf16_code_unit_len(s: &str) -> usize {
 }
 
 #[inline]
-fn webidl_to_uint32(scope: &mut Scope<'_>, value: Value) -> Result<u32, VmError> {
-  let n = scope.heap_mut().to_number(value)?;
+fn webidl_to_uint32(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<u32, VmError> {
+  // WebIDL `unsigned long`: ECMAScript ToNumber + ToUint32.
+  //
+  // Use `Scope::to_number` (spec-shaped) rather than `Heap::to_number` (primitive-only) so objects
+  // are converted via `ToPrimitive` (valueOf/toString).
+  let n = scope.to_number(vm, host, hooks, value)?;
   if !n.is_finite() || n == 0.0 {
     return Ok(0);
   }
@@ -31180,7 +31190,7 @@ fn character_data_insert_data_native(
   let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
 
   let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
 
   let data_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let data_value = scope.heap_mut().to_string(data_value)?;
@@ -31254,10 +31264,10 @@ fn character_data_delete_data_native(
   let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
 
   let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
 
   let count_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let count = webidl_to_uint32(scope, count_value)? as usize;
+  let count = webidl_to_uint32(vm, scope, host, hooks, count_value)? as usize;
 
   let needs_microtask = if is_host_document_id(vm, handle.document_id) {
     mutate_dom_for_vm_host(host, |dom| {
@@ -31323,10 +31333,10 @@ fn character_data_replace_data_native(
   let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
 
   let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
 
   let count_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let count = webidl_to_uint32(scope, count_value)? as usize;
+  let count = webidl_to_uint32(vm, scope, host, hooks, count_value)? as usize;
 
   let data_value = args.get(2).copied().unwrap_or(Value::Undefined);
   let data_value = scope.heap_mut().to_string(data_value)?;
@@ -31866,9 +31876,18 @@ fn create_range_wrapper(
 }
 
 #[inline]
-fn webidl_to_uint16(scope: &mut Scope<'_>, value: Value) -> Result<u16, VmError> {
+fn webidl_to_uint16(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<u16, VmError> {
   // WebIDL `unsigned short`: ToNumber + ToUint16.
-  let number = scope.heap_mut().to_number(value)?;
+  //
+  // Use spec-shaped `ToNumber` (via `Scope::to_number`) so objects are converted via
+  // `ToPrimitive` instead of erroring.
+  let number = scope.to_number(vm, host, hooks, value)?;
   if !number.is_finite() || number == 0.0 {
     return Ok(0);
   }
@@ -32106,7 +32125,7 @@ fn range_set_start_native(
   }
 
   let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
 
   let result = if is_host_document_id(vm, handle.document_id) {
     mutate_dom_for_vm_host(host, |dom| (dom.range_set_start(handle.range_id, node_key.node_id, offset), false))
@@ -32160,7 +32179,7 @@ fn range_set_end_native(
   }
 
   let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
 
   let result = if is_host_document_id(vm, handle.document_id) {
     mutate_dom_for_vm_host(host, |dom| (dom.range_set_end(handle.range_id, node_key.node_id, offset), false))
@@ -32205,7 +32224,7 @@ fn range_compare_boundary_points_native(
   let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
 
   let how_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let how = webidl_to_uint16(scope, how_value)?;
+  let how = webidl_to_uint16(vm, scope, host, hooks, how_value)?;
 
   if how > 3 {
     return Err(VmError::Throw(make_dom_exception(vm, scope, "NotSupportedError", "")?));
