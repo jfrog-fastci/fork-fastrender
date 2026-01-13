@@ -1776,65 +1776,35 @@ mod date_time_picker_a11y_tests {
   }
 
   #[test]
-  fn time_picker_drag_values_have_accessible_labels_and_request_focus_on_open() {
+  fn date_time_picker_value_text_edit_has_accessible_label_and_requests_focus_on_open() {
     let ctx = egui::Context::default();
     begin_frame(&ctx);
 
-    let mut hour: u32 = 9;
-    let mut minute: u32 = 30;
-    let mut hour_id: Option<egui::Id> = None;
-    let mut minute_id: Option<egui::Id> = None;
+    let mut value = "2026-01-13".to_string();
+    let mut value_id: Option<egui::Id> = None;
     let tab_id = fastrender::ui::TabId(1);
     let input_node_id: usize = 42;
 
     egui::CentralPanel::default().show(&ctx, |ui| {
-      ui.horizontal(|ui| {
-        let (hour_resp, minute_resp) = App::render_date_time_picker_time_inputs(
-          ui,
-          tab_id,
-          input_node_id,
-          &mut hour,
-          &mut minute,
-          true,
-        );
-        hour_id = Some(hour_resp.id);
-        minute_id = Some(minute_resp.id);
-      });
+      let resp =
+        App::render_date_time_picker_value_input(ui, tab_id, input_node_id, &mut value, true);
+      value_id = Some(resp.id);
     });
 
     let _output = ctx.end_frame();
 
-    let hour_id = hour_id.expect("expected hour response id");
+    let value_id = value_id.expect("expected value response id");
     assert!(
-      ctx.memory(|mem| mem.has_focus(hour_id)),
-      "expected hour DragValue to be focused when the picker opens"
+      ctx.memory(|mem| mem.has_focus(value_id)),
+      "expected picker TextEdit to be focused when the picker opens"
     );
 
-    let minute_id = minute_id.expect("expected minute response id");
-    assert_ne!(
-      hour_id, minute_id,
-      "expected hour/minute DragValues to have distinct egui ids"
-    );
-
-    let hour_label =
-      ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_time_hour_label")));
-    let minute_label =
-      ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_time_minute_label")));
-
+    let label = ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_value_label")));
     assert!(
-      hour_label
-        .as_deref()
-        .is_some_and(|label| !label.trim().is_empty()),
-      "expected hour DragValue to have a non-empty accessible label"
+      label.as_deref().is_some_and(|label| !label.trim().is_empty()),
+      "expected picker TextEdit to have a non-empty accessible label"
     );
-    assert!(
-      minute_label
-        .as_deref()
-        .is_some_and(|label| !label.trim().is_empty()),
-      "expected minute DragValue to have a non-empty accessible label"
-    );
-    assert_eq!(hour_label.as_deref(), Some("Hour"));
-    assert_eq!(minute_label.as_deref(), Some("Minute"));
+    assert_eq!(label.as_deref(), Some("Value"));
   }
 }
 
@@ -3937,23 +3907,6 @@ struct OpenSelectDropdown {
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
-enum DateTimePickerState {
-  Date {
-    year: i32,
-    month: u32,
-    selected_day: Option<u32>,
-  },
-  Time {
-    hour: u32,
-    minute: u32,
-  },
-  Text {
-    draft: String,
-  },
-}
-
-#[cfg(feature = "browser_ui")]
-#[derive(Debug, Clone)]
 struct OpenDateTimePicker {
   tab_id: fastrender::ui::TabId,
   input_node_id: usize,
@@ -3967,7 +3920,8 @@ struct OpenDateTimePicker {
   anchor_css: fastrender::geometry::Rect,
   /// Fallback anchor position in egui points (cursor position).
   anchor_points: egui::Pos2,
-  state: DateTimePickerState,
+  /// Draft value string shown in the popup.
+  value: String,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -6628,44 +6582,6 @@ impl App {
             }
           }
         }
-
-        let state = match kind {
-          fastrender::ui::messages::DateTimeInputKind::Date => {
-            let parsed = fastrender::dom::parse_input_date_value(&safe_value)
-              .and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
-            let year = parsed
-              .as_ref()
-              .map(|d| chrono::Datelike::year(d))
-              .unwrap_or(1970);
-            let month = parsed
-              .as_ref()
-              .map(|d| chrono::Datelike::month(d))
-              .unwrap_or(1);
-            let selected_day = parsed.as_ref().map(|d| chrono::Datelike::day(d));
-            DateTimePickerState::Date {
-              year,
-              month,
-              selected_day,
-            }
-          }
-          fastrender::ui::messages::DateTimeInputKind::Time => {
-            let (mut hour, mut minute) = (0u32, 0u32);
-            if let Some(ms) = fastrender::dom::parse_input_time_value(&safe_value) {
-              if ms >= 0 {
-                let total_minutes = (ms / 60_000) as u32;
-                hour = (total_minutes / 60) % 24;
-                minute = total_minutes % 60;
-              }
-            }
-            DateTimePickerState::Time { hour, minute }
-          }
-          fastrender::ui::messages::DateTimeInputKind::DateTimeLocal
-          | fastrender::ui::messages::DateTimeInputKind::Month
-          | fastrender::ui::messages::DateTimeInputKind::Week => DateTimePickerState::Text {
-            draft: safe_value.clone(),
-          },
-        };
-
         self.open_date_time_picker = Some(OpenDateTimePicker {
           tab_id: *tab_id,
           input_node_id: *input_node_id,
@@ -6673,7 +6589,7 @@ impl App {
           focus_before_open,
           anchor_css: *anchor_css,
           anchor_points,
-          state,
+          value: safe_value,
         });
         self.open_date_time_picker_rect = None;
         request_redraw = true;
@@ -9083,54 +8999,34 @@ impl App {
     self.window.request_redraw();
   }
 
-  fn render_date_time_picker_time_inputs(
+  fn render_date_time_picker_value_input(
     ui: &mut egui::Ui,
     tab_id: fastrender::ui::TabId,
     input_node_id: usize,
-    hour: &mut u32,
-    minute: &mut u32,
+    value: &mut String,
     request_initial_focus: bool,
-  ) -> (egui::Response, egui::Response) {
-    const HOUR_LABEL: &str = "Hour";
-    const MINUTE_LABEL: &str = "Minute";
+  ) -> egui::Response {
+    const VALUE_LABEL: &str = "Value";
 
-    ui.label("Hour");
-    let hour_resp = ui
-      .push_id(
-        ui.make_persistent_id(("dt_picker_time_hour", tab_id.0, input_node_id)),
-        |ui| ui.add(egui::DragValue::new(hour).clamp_range(0..=23)),
-      )
-      .inner;
-    hour_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, HOUR_LABEL));
+    ui.label(VALUE_LABEL);
+    let text_id = ui.make_persistent_id(("dt_picker_value", tab_id.0, input_node_id));
+    let resp = ui.add(
+      egui::TextEdit::singleline(value)
+        .id(text_id)
+        .desired_width(220.0),
+    );
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, VALUE_LABEL));
     #[cfg(test)]
     ui.ctx().data_mut(|d| {
       d.insert_temp(
-        egui::Id::new("test_dt_picker_time_hour_label"),
-        HOUR_LABEL.to_string(),
-      )
-    });
-    if request_initial_focus {
-      hour_resp.request_focus();
-    }
-
-    ui.label("Minute");
-    let minute_resp = ui
-      .push_id(
-        ui.make_persistent_id(("dt_picker_time_minute", tab_id.0, input_node_id)),
-        |ui| ui.add(egui::DragValue::new(minute).clamp_range(0..=59)),
-      )
-      .inner;
-    minute_resp
-      .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, MINUTE_LABEL));
-    #[cfg(test)]
-    ui.ctx().data_mut(|d| {
-      d.insert_temp(
-        egui::Id::new("test_dt_picker_time_minute_label"),
-        MINUTE_LABEL.to_string(),
+        egui::Id::new("test_dt_picker_value_label"),
+        VALUE_LABEL.to_string(),
       );
     });
-
-    (hour_resp, minute_resp)
+    if request_initial_focus {
+      resp.request_focus();
+    }
+    resp
   }
 
   fn render_date_time_picker(&mut self, ctx: &egui::Context) {
@@ -9180,6 +9076,16 @@ impl App {
       Cancel,
     }
 
+    fn kind_label(kind: DateTimeInputKind) -> &'static str {
+      match kind {
+        DateTimeInputKind::Date => "Date",
+        DateTimeInputKind::Time => "Time",
+        DateTimeInputKind::DateTimeLocal => "DateTimeLocal",
+        DateTimeInputKind::Month => "Month",
+        DateTimeInputKind::Week => "Week",
+      }
+    }
+
     let popup = egui::Area::new(egui::Id::new((
       "fastr_date_time_picker_popup",
       tab_id.0,
@@ -9193,271 +9099,24 @@ impl App {
           return None;
         };
 
+        ui.label(egui::RichText::new(kind_label(kind)).strong());
+        Self::render_date_time_picker_value_input(
+          ui,
+          tab_id,
+          input_node_id,
+          &mut picker.value,
+          request_initial_focus,
+        );
+
         let mut action: Option<Action> = None;
-        match (&picker.kind, &mut picker.state) {
-          (
-            DateTimeInputKind::Date,
-            DateTimePickerState::Date {
-              year,
-              month,
-              selected_day,
-            },
-          ) => {
-            let header = format!("{:04}-{:02}", *year, *month);
-            ui.horizontal(|ui| {
-              let prev_resp = fastrender::ui::icon_button(
-                ui,
-                fastrender::ui::BrowserIcon::Back,
-                "Previous month",
-                true,
-              );
-              prev_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Previous month")
-              });
-              if prev_resp.clicked() {
-                if *month <= 1 {
-                  *month = 12;
-                  *year -= 1;
-                } else {
-                  *month -= 1;
-                }
-              }
-              ui.label(header);
-              let next_resp = fastrender::ui::icon_button(
-                ui,
-                fastrender::ui::BrowserIcon::Forward,
-                "Next month",
-                true,
-              );
-              next_resp
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Next month"));
-              if next_resp.clicked() {
-                if *month >= 12 {
-                  *month = 1;
-                  *year += 1;
-                } else {
-                  *month += 1;
-                }
-              }
-
-              if ui.button("Clear").clicked() {
-                action = Some(Action::Choose(String::new()));
-              }
-            });
-            ui.separator();
-
-            let Some(first_day) = chrono::NaiveDate::from_ymd_opt(*year, *month, 1) else {
-              ui.colored_label(ui.visuals().error_fg_color, "Invalid month/year");
-              return action;
-            };
-            let (next_year, next_month) = if *month == 12 {
-              (*year + 1, 1)
-            } else {
-              (*year, *month + 1)
-            };
-            let Some(first_next_month) = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1)
-            else {
-              ui.colored_label(ui.visuals().error_fg_color, "Invalid month/year");
-              return action;
-            };
-            let last_day = first_next_month - chrono::Duration::days(1);
-            let days_in_month = chrono::Datelike::day(&last_day);
-            let weekday_idx = chrono::Datelike::weekday(&first_day).num_days_from_monday() as usize;
-            let focus_day = if request_initial_focus {
-              let selected_valid = selected_day
-                .as_ref()
-                .filter(|day| (1..=days_in_month).contains(day))
-                .copied();
-              selected_valid.or_else(|| {
-                let today = chrono::Local::now().date_naive();
-                let today_is_visible = chrono::Datelike::year(&today) == *year
-                  && chrono::Datelike::month(&today) == *month;
-                if today_is_visible {
-                  Some(chrono::Datelike::day(&today).min(days_in_month).max(1))
-                } else {
-                  Some(1)
-                }
-              })
-            } else {
-              None
-            };
-
-            let week_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-            egui::Grid::new(egui::Id::new((
-              "dt_picker_calendar",
-              tab_id.0,
-              input_node_id,
-            )))
-            .num_columns(7)
-            .spacing([4.0, 4.0])
-            .show(ui, |ui| {
-              for label in week_labels {
-                ui.label(egui::RichText::new(label).small().strong());
-              }
-              ui.end_row();
-
-              let mut col = 0usize;
-              for _ in 0..weekday_idx {
-                ui.label("");
-                col += 1;
-              }
-
-              for day in 1..=days_in_month {
-                let selected = *selected_day == Some(day);
-                let response = ui
-                  .push_id(
-                    ui.make_persistent_id((
-                      "dt_picker_calendar_day",
-                      tab_id.0,
-                      input_node_id,
-                      *year,
-                      *month,
-                      day,
-                    )),
-                    |ui| ui.selectable_label(selected, day.to_string()),
-                  )
-                  .inner;
-                response.widget_info({
-                  let label = date_picker_day_a11y_label(*year, *month, day, selected);
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                });
-                if focus_day == Some(day) {
-                  response.request_focus();
-                }
-
-                // `SelectableLabel` doesn't reliably trigger `clicked()` for keyboard activation
-                // (Enter/Space), so explicitly wire it up for keyboard-only workflows.
-                let mut choose_requested = response.clicked();
-                if response.has_focus() {
-                  choose_requested |= ui.input_mut(|i| {
-                    i.consume_key(Default::default(), egui::Key::Enter)
-                      || i.consume_key(Default::default(), egui::Key::Space)
-                  });
-
-                  // Ensure focus is visible even when the day isn't selected (so there's no
-                  // built-in selection highlight).
-                  let focus_stroke = ui.visuals().selection.stroke;
-                  let expand = 1.0 + focus_stroke.width * 0.5;
-                  let focus_rect = response.rect.expand(expand);
-                  let rounding = ui.visuals().widgets.inactive.rounding;
-                  let focus_rounding = egui::Rounding::same(rounding.nw + expand);
-                  ui.painter()
-                    .rect_stroke(focus_rect, focus_rounding, focus_stroke);
-                }
-
-                if choose_requested {
-                  *selected_day = Some(day);
-                  action = Some(Action::Choose(format!(
-                    "{:04}-{:02}-{:02}",
-                    *year, *month, day
-                  )));
-                }
-                col += 1;
-                if col == 7 {
-                  ui.end_row();
-                  col = 0;
-                }
-              }
-
-              if col != 0 {
-                for _ in col..7 {
-                  ui.label("");
-                }
-                ui.end_row();
-              }
-            });
+        ui.horizontal(|ui| {
+          if ui.button("Apply").clicked() {
+            action = Some(Action::Choose(picker.value.clone()));
           }
-          (DateTimeInputKind::Time, DateTimePickerState::Time { hour, minute }) => {
-            ui.horizontal(|ui| {
-              let (_hour_resp, _minute_resp) = Self::render_date_time_picker_time_inputs(
-                ui,
-                tab_id,
-                input_node_id,
-                hour,
-                minute,
-                request_initial_focus,
-              );
-            });
-            ui.horizontal(|ui| {
-              if ui.button("Set").clicked() {
-                action = Some(Action::Choose(format!("{:02}:{:02}", *hour, *minute)));
-              }
-              if ui.button("Clear").clicked() {
-                action = Some(Action::Choose(String::new()));
-              }
-              if ui.button("Cancel").clicked() {
-                action = Some(Action::Cancel);
-              }
-            });
+          if ui.button("Cancel").clicked() {
+            action = Some(Action::Cancel);
           }
-          (DateTimeInputKind::DateTimeLocal, DateTimePickerState::Text { draft })
-          | (DateTimeInputKind::Month, DateTimePickerState::Text { draft })
-          | (DateTimeInputKind::Week, DateTimePickerState::Text { draft }) => {
-            let hint = match kind {
-              DateTimeInputKind::DateTimeLocal => "YYYY-MM-DDTHH:MM",
-              DateTimeInputKind::Month => "YYYY-MM",
-              DateTimeInputKind::Week => "YYYY-Www",
-              _ => "",
-            };
-            ui.label(format!("Value ({hint})"));
-            let text_id = ui.make_persistent_id(("dt_picker_text_value", tab_id.0, input_node_id));
-            let value_resp = ui.add(
-              egui::TextEdit::singleline(draft)
-                .id(text_id)
-                .desired_width(180.0),
-            );
-            value_resp.widget_info({
-              let label = if hint.is_empty() {
-                "Value".to_string()
-              } else {
-                format!("Value ({hint})")
-              };
-              move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, label.clone())
-            });
-            if request_initial_focus {
-              value_resp.request_focus();
-            }
-
-            let trimmed = draft.trim();
-            let valid = trimmed.is_empty()
-              || match kind {
-                DateTimeInputKind::DateTimeLocal => {
-                  fastrender::dom::parse_input_datetime_local_value(trimmed).is_some()
-                }
-                DateTimeInputKind::Month => {
-                  fastrender::dom::parse_input_month_value(trimmed).is_some()
-                }
-                DateTimeInputKind::Week => {
-                  fastrender::dom::parse_input_week_value(trimmed).is_some()
-                }
-                _ => true,
-              };
-            if !valid {
-              ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
-            }
-
-            ui.horizontal(|ui| {
-              let apply = ui.add_enabled(valid, egui::Button::new("Apply"));
-              if apply.clicked() {
-                action = Some(Action::Choose(draft.clone()));
-              }
-              if ui.button("Clear").clicked() {
-                action = Some(Action::Choose(String::new()));
-              }
-              if ui.button("Cancel").clicked() {
-                action = Some(Action::Cancel);
-              }
-            });
-          }
-          // Mismatch: reset to a text editor as a fallback.
-          (_, state) => {
-            let current = match state {
-              DateTimePickerState::Text { draft } => draft.clone(),
-              DateTimePickerState::Date { .. } | DateTimePickerState::Time { .. } => String::new(),
-            };
-            *state = DateTimePickerState::Text { draft: current };
-          }
-        }
+        });
 
         action
       });
@@ -14357,7 +14016,7 @@ mod select_dropdown_a11y_tests {
 #[cfg(all(test, feature = "browser_ui"))]
 mod page_form_popup_focus_tests {
   use super::{
-    close_date_time_picker_popup, egui_focused_widget_id, DateTimePickerState, OpenDateTimePicker,
+    close_date_time_picker_popup, egui_focused_widget_id, OpenDateTimePicker,
   };
   use fastrender::geometry::Rect;
   use fastrender::ui::messages::DateTimeInputKind;
@@ -14406,9 +14065,7 @@ mod page_form_popup_focus_tests {
       focus_before_open: None,
       anchor_css: Rect::ZERO,
       anchor_points: egui::pos2(0.0, 0.0),
-      state: DateTimePickerState::Text {
-        draft: String::new(),
-      },
+      value: String::new(),
     });
     let mut picker_rect = Some(egui::Rect::NOTHING);
     close_date_time_picker_popup(&ctx, &mut open_picker, &mut picker_rect);
@@ -14467,9 +14124,7 @@ mod page_form_popup_focus_tests {
       focus_before_open: Some(prev_id),
       anchor_css: Rect::ZERO,
       anchor_points: egui::pos2(0.0, 0.0),
-      state: DateTimePickerState::Text {
-        draft: String::new(),
-      },
+      value: String::new(),
     });
     let mut picker_rect = Some(egui::Rect::NOTHING);
     close_date_time_picker_popup(&ctx, &mut open_picker, &mut picker_rect);
