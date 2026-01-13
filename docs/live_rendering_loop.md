@@ -87,10 +87,7 @@ FastRender models this separation too:
 - rAF callbacks are queued separately from tasks/microtasks,
 - driving tasks to idle does not run rAF.
 
-**Intended behavior:** `tick_frame()` is the “one host tick” primitive, so it should run rAF
-callbacks on the frame schedule (when due) as part of the same call.
-
-**Current behavior:** if you observe that rAF callbacks are not running in your build, use
+**Current behavior:** `tick_frame()` does **not** run `requestAnimationFrame` callbacks. Use
 `run_until_stable(...)` (below) to include rAF, or drive `EventLoop::run_animation_frame(...)` in a
 lower-level embedding.
 
