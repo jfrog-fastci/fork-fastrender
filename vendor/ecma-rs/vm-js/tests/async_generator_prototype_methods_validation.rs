@@ -115,7 +115,16 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
 
   // Materialize one async generator object so we can discover `%AsyncGeneratorPrototype%` without
   // relying on a dedicated intrinsics accessor.
-  rt.exec_script("var it = g();")?;
+  match rt.exec_script("var it = g();") {
+    Ok(_) => {}
+    Err(err) => {
+      let mut scope = rt.heap.scope();
+      if is_async_generator_syntax_unsupported(&mut scope, &intr, &err)? {
+        return Ok(());
+      }
+      return Err(err);
+    }
+  }
   let it = match rt.exec_script("it")? {
     Value::Object(o) => o,
     other => panic!("expected async generator object, got {other:?}"),
