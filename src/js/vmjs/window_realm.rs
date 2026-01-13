@@ -3,6 +3,7 @@ use crate::dom2::{self, NodeId, NodeKind};
 use crate::geometry::Rect;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
+use crate::js::bindings::dom_exception_vmjs::legacy_code_for_dom_exception_name;
 use crate::clock::{Clock, RealClock};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::document_write::{
@@ -5236,6 +5237,7 @@ fn make_dom_exception_fallback_object(
 
   let name_key = alloc_key(scope, "name")?;
   let message_key = alloc_key(scope, "message")?;
+  let code_key = alloc_key(scope, "code")?;
 
   scope.define_property(
     obj,
@@ -5257,6 +5259,20 @@ fn make_dom_exception_fallback_object(
       configurable: true,
       kind: PropertyKind::Data {
         value: Value::String(message_s),
+        writable: false,
+      },
+    },
+  )?;
+
+  let code = legacy_code_for_dom_exception_name(name);
+  scope.define_property(
+    obj,
+    code_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Number(code as f64),
         writable: false,
       },
     },
