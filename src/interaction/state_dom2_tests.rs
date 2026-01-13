@@ -679,3 +679,69 @@ fn document_selection_ranges_dom2_normalize_drops_cross_shadow_root_ranges() {
     "cross-shadow-root selection ranges should be pruned"
   );
 }
+
+#[test]
+fn document_selection_ranges_dom2_normalize_prefers_anchor_root_when_multiple_roots_present() {
+  // While cross-shadow-root *ranges* are pruned, it's still possible for callers to construct a
+  // multi-range selection that contains ranges from different Range tree roots (Document vs
+  // ShadowRoot). Normalization should deterministically pick a root; prefer the anchor/focus span
+  // root (primary range semantics) so behavior does not depend on `ranges` vector order.
+  let mut doc = crate::dom2::parse_html("<!doctype html><div id=host></div>").unwrap();
+  let host = doc.get_element_by_id("host").expect("host element");
+  let shadow = doc
+    .attach_shadow_root(
+      host,
+      ShadowRootMode::Open,
+      /* clonable */ false,
+      /* serializable */ false,
+      /* delegates_focus */ false,
+      SlotAssignmentMode::Named,
+    )
+    .unwrap();
+
+  let light_text = doc.create_text("light");
+  doc.append_child(host, light_text).unwrap();
+  let shadow_text = doc.create_text("shadow");
+  doc.append_child(shadow, shadow_text).unwrap();
+
+  let mut selection = DocumentSelectionRangesDom2 {
+    // Put the light-dom range first to ensure we don't accidentally pick it via vec order.
+    ranges: vec![
+      DocumentSelectionRangeDom2 {
+        start: DocumentSelectionPointDom2 {
+          node_id: light_text,
+          char_offset: 0,
+        },
+        end: DocumentSelectionPointDom2 {
+          node_id: light_text,
+          char_offset: 0,
+        },
+      },
+      DocumentSelectionRangeDom2 {
+        start: DocumentSelectionPointDom2 {
+          node_id: shadow_text,
+          char_offset: 0,
+        },
+        end: DocumentSelectionPointDom2 {
+          node_id: shadow_text,
+          char_offset: 0,
+        },
+      },
+    ],
+    primary: 0,
+    anchor: DocumentSelectionPointDom2 {
+      node_id: shadow_text,
+      char_offset: 0,
+    },
+    focus: DocumentSelectionPointDom2 {
+      node_id: shadow_text,
+      char_offset: 0,
+    },
+  };
+
+  selection.normalize(&doc);
+  assert_eq!(selection.ranges.len(), 1);
+  assert_eq!(selection.ranges[0].start.node_id, shadow_text);
+  assert_eq!(selection.anchor.node_id, shadow_text);
+  assert_eq!(selection.focus.node_id, shadow_text);
+}

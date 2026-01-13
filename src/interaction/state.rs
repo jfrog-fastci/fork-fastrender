@@ -496,7 +496,28 @@ impl DocumentSelectionRangesDom2 {
     // vs ShadowRoot). That is intentional so callers can prune cross-boundary selections, but it
     // also means we must ensure the selection only contains ranges from a single comparable root
     // before we sort/merge.
-    let selection_root = dom.tree_root_for_range(self.ranges[0].start.node_id);
+    let primary_span = Self::normalize_range(
+      dom,
+      DocumentSelectionRangeDom2 {
+        start: self.anchor,
+        end: self.focus,
+      },
+    );
+
+    let fallback_root = dom.tree_root_for_range(self.ranges[0].start.node_id);
+    let selection_root = primary_span
+      .as_ref()
+      .map(|span| dom.tree_root_for_range(span.start.node_id))
+      .filter(|&root| {
+        // Only trust the primary span root if at least one actual range shares it; otherwise fall
+        // back to the first normalized range root to avoid dropping the entire selection due to an
+        // inconsistent anchor/focus.
+        self
+          .ranges
+          .iter()
+          .any(|r| dom.tree_root_for_range(r.start.node_id) == root)
+      })
+      .unwrap_or(fallback_root);
     self
       .ranges
       .retain(|r| dom.tree_root_for_range(r.start.node_id) == selection_root);
@@ -525,14 +546,8 @@ impl DocumentSelectionRangesDom2 {
     self.ranges = merged;
 
     // Repair primary index based on the current anchor/focus span.
-    let primary_span = Self::normalize_range(
-      dom,
-      DocumentSelectionRangeDom2 {
-        start: self.anchor,
-        end: self.focus,
-      },
-    )
-    .filter(|span| dom.tree_root_for_range(span.start.node_id) == selection_root);
+    let primary_span = primary_span
+      .filter(|span| dom.tree_root_for_range(span.start.node_id) == selection_root);
 
     if let Some(primary_span) = primary_span {
       if let Some(idx) = self
