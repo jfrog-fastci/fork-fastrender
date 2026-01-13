@@ -2,6 +2,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree, HitTestRoot};
+use std::collections::HashMap;
 
 /// Collect all non-generated box ids that originate from `styled_node_id`.
 ///
@@ -46,6 +47,170 @@ pub fn union_scrolled_absolute_bounds_for_box_ids(
   let mut tree = fragment_tree.clone();
   crate::scroll::apply_scroll_offsets(&mut tree, scroll);
   union_absolute_bounds_for_box_ids(&tree, box_ids)
+}
+
+/// Compute viewport-local bounds for many DOM/styled node preorder ids.
+///
+/// The returned rectangles are in **viewport CSS pixel coordinates** (i.e. the coordinate space
+/// used by pointer events and accessibility APIs).
+///
+/// - Element scroll offsets and sticky offsets are applied by cloning the prepared document's
+///   fragment tree via [`crate::api::PreparedDocument::fragment_tree_for_geometry`].
+/// - Viewport scroll (`scroll.viewport`) is then subtracted for all nodes **except** those that are
+///   truly viewport-fixed (`position: fixed` with no fixed containing block ancestor).
+///
+/// Nodes that do not produce any non-generated boxes (e.g. `display: none`, `display: contents`,
+/// some text nodes) are **omitted** from the output map.
+pub fn viewport_bounds_for_dom_node_ids(
+  prepared: &crate::api::PreparedDocument,
+  scroll: &ScrollState,
+  node_ids: &[usize],
+) -> HashMap<usize, Rect> {
+  use rustc_hash::FxHashSet;
+
+  if node_ids.is_empty() {
+    return HashMap::new();
+  }
+
+  // 1) Map styled node ids -> box ids (non-generated only) by walking the box tree once.
+  let requested: FxHashSet<usize> = node_ids.iter().copied().collect();
+  let mut box_ids_by_node: HashMap<usize, Vec<usize>> = HashMap::new();
+  let mut principal_box_id_by_node: HashMap<usize, usize> = HashMap::new();
+  let mut principal_is_fixed_candidate: HashMap<usize, bool> = HashMap::new();
+
+  let mut stack: Vec<&crate::tree::box_tree::BoxNode> = vec![&prepared.box_tree().root];
+  while let Some(node) = stack.pop() {
+    if node.generated_pseudo.is_none() {
+      if let Some(styled_node_id) = node.styled_node_id {
+        if requested.contains(&styled_node_id) {
+          box_ids_by_node
+            .entry(styled_node_id)
+            .or_default()
+            .push(node.id);
+          if !principal_box_id_by_node.contains_key(&styled_node_id) {
+            principal_box_id_by_node.insert(styled_node_id, node.id);
+            principal_is_fixed_candidate.insert(styled_node_id, node.style.position.is_fixed());
+          }
+        }
+      }
+    }
+
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  if box_ids_by_node.is_empty() {
+    return HashMap::new();
+  }
+
+  // 2) Clone and translate the fragment tree into paint-time geometry coordinates (element scroll +
+  // sticky), then collect bounds for every referenced box id in a single fragment-tree traversal.
+  let fragment_tree = prepared.fragment_tree_for_geometry(scroll);
+
+  let mut needed_box_ids: FxHashSet<usize> = FxHashSet::default();
+  for ids in box_ids_by_node.values() {
+    needed_box_ids.extend(ids.iter().copied());
+  }
+
+  let mut box_bounds: HashMap<usize, Rect> = HashMap::with_capacity(needed_box_ids.len());
+
+  struct Frame<'a> {
+    node: &'a FragmentNode,
+    parent_offset: Point,
+  }
+
+  let mut frag_stack: Vec<Frame<'_>> = Vec::new();
+  for root in fragment_tree.additional_fragments.iter().rev() {
+    frag_stack.push(Frame {
+      node: root,
+      parent_offset: Point::ZERO,
+    });
+  }
+  frag_stack.push(Frame {
+    node: &fragment_tree.root,
+    parent_offset: Point::ZERO,
+  });
+
+  while let Some(frame) = frag_stack.pop() {
+    let absolute_bounds = frame.node.bounds.translate(frame.parent_offset);
+    if let Some(box_id) = frame.node.box_id() {
+      if needed_box_ids.contains(&box_id) {
+        box_bounds
+          .entry(box_id)
+          .and_modify(|existing| *existing = existing.union(absolute_bounds))
+          .or_insert(absolute_bounds);
+      }
+    }
+
+    let child_parent_offset = absolute_bounds.origin;
+    for child in frame.node.children.iter().rev() {
+      frag_stack.push(Frame {
+        node: child,
+        parent_offset: child_parent_offset,
+      });
+    }
+  }
+
+  // 3) Union per-node bounds, then convert page → viewport coordinates.
+  let mut out: HashMap<usize, Rect> = HashMap::new();
+  let viewport_offset = Point::new(-scroll.viewport.x, -scroll.viewport.y);
+
+  for &node_id in node_ids {
+    let Some(box_ids) = box_ids_by_node.get(&node_id) else {
+      continue;
+    };
+
+    let mut bounds: Option<Rect> = None;
+    for &box_id in box_ids {
+      let Some(rect) = box_bounds.get(&box_id).copied() else {
+        continue;
+      };
+      bounds = Some(match bounds {
+        Some(existing) => existing.union(rect),
+        None => rect,
+      });
+    }
+    let Some(mut rect) = bounds else {
+      continue;
+    };
+
+    // Viewport-fixed nodes are painted without applying the viewport scroll translation.
+    let viewport_fixed = principal_is_fixed_candidate
+      .get(&node_id)
+      .copied()
+      .unwrap_or(false)
+      && principal_box_id_by_node
+        .get(&node_id)
+        .copied()
+        .is_some_and(|principal_box_id| {
+          let Some((root_kind, path)) = find_first_fragment_path_for_box_id(&fragment_tree, principal_box_id)
+          else {
+            return false;
+          };
+          let Some((fragment, _origin, has_fixed_cb_ancestor)) =
+            resolve_fragment_path(&fragment_tree, root_kind, &path)
+          else {
+            return false;
+          };
+          fragment
+            .style
+            .as_deref()
+            .is_some_and(|style| style.position.is_fixed())
+            && !has_fixed_cb_ancestor
+        });
+
+    if !viewport_fixed {
+      rect = rect.translate(viewport_offset);
+    }
+
+    out.insert(node_id, rect);
+  }
+
+  out
 }
 
 fn find_fragment_path_within_root(root: &FragmentNode, box_id: usize) -> Option<Vec<usize>> {
