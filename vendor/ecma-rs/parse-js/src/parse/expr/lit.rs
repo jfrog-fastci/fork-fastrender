@@ -1551,20 +1551,59 @@ fn validate_regex_pattern(
           }
           if bytes[after_u] == b'{' {
             let mut j = after_u + 1;
-            let mut digits = 0usize;
+            let mut saw_digit = false;
+            // Overflow-safe numeric parse with arbitrary leading zeros.
+            // `\u{...}` escapes are only valid up to 0x10FFFF.
+            let mut started = false;
+            let mut significant_digits: usize = 0;
+            let mut value: u32 = 0;
             while j < bytes.len() && bytes[j] != b'}' {
-              let c = bytes[j] as char;
-              if !c.is_ascii_hexdigit() {
+              let b = bytes[j];
+              if !(b as char).is_ascii_hexdigit() {
                 return Err(RegexError {
                   kind: RegexErrorKind::InvalidPattern,
                   offset: base_offset + escape_start,
                   len: j + 1 - escape_start,
                 });
               }
-              digits += 1;
+              saw_digit = true;
+              let digit: u32 = match b {
+                b'0'..=b'9' => (b - b'0') as u32,
+                b'a'..=b'f' => (b - b'a' + 10) as u32,
+                b'A'..=b'F' => (b - b'A' + 10) as u32,
+                _ => unreachable!(),
+              };
+
+              if !started {
+                if digit != 0 {
+                  started = true;
+                  significant_digits = 1;
+                  value = digit;
+                }
+              } else {
+                significant_digits += 1;
+                // 0x10FFFF fits in 6 hex digits; any additional significant digit is definitely out
+                // of range.
+                if significant_digits > 6 {
+                  return Err(RegexError {
+                    kind: RegexErrorKind::InvalidPattern,
+                    offset: base_offset + escape_start,
+                    len: j + 1 - escape_start,
+                  });
+                }
+                value = (value << 4) | digit;
+                if value > 0x10FFFF {
+                  return Err(RegexError {
+                    kind: RegexErrorKind::InvalidPattern,
+                    offset: base_offset + escape_start,
+                    len: j + 1 - escape_start,
+                  });
+                }
+              }
               j += 1;
             }
-            if j >= bytes.len() || digits == 0 {
+            // Require at least one hex digit and a closing `}`.
+            if j >= bytes.len() || !saw_digit {
               return Err(RegexError {
                 kind: RegexErrorKind::InvalidPattern,
                 offset: base_offset + escape_start,

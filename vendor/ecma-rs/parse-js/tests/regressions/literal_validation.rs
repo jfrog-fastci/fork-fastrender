@@ -122,6 +122,15 @@ fn regex_unicode_braced_escape_is_checked_inside_character_classes() {
 }
 
 #[test]
+fn regex_unicode_braced_escape_is_checked_inside_unicode_sets_character_classes() {
+  let err = parse("/[\\u{110000}]/v").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
 fn regex_unicode_braced_escape_is_checked_inside_named_group_names() {
   let err = parse("/(?<a\\u{110000}>.)/u").unwrap_err();
   assert_eq!(
