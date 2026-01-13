@@ -35,6 +35,7 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use super::string_match::contains_ascii_case_insensitive;
+use crate::ui::html_escape::escape_html;
 use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
 use crate::ui::theme_parsing::{RgbaColor, ENV_BROWSER_ACCENT, ENV_BROWSER_HIGH_CONTRAST, ENV_BROWSER_THEME};
 use crate::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE;
@@ -1468,21 +1469,6 @@ fn test_form_html() -> String {
   )
 }
 
-fn escape_html(text: &str) -> String {
-  let mut out = String::with_capacity(text.len());
-  for ch in text.chars() {
-    match ch {
-      '&' => out.push_str("&amp;"),
-      '<' => out.push_str("&lt;"),
-      '>' => out.push_str("&gt;"),
-      '"' => out.push_str("&quot;"),
-      '\'' => out.push_str("&#39;"),
-      _ => out.push(ch),
-    }
-  }
-  out
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -2076,14 +2062,6 @@ mod tests {
     assert!(
       html.contains("omnibox") && html.contains("ArrowDown"),
       "expected about:help HTML to mention omnibox suggestions, got: {html}"
-    );
-  }
-
-  #[test]
-  fn escape_html_escapes_html_special_chars() {
-    assert_eq!(
-      escape_html("&<>\"'"),
-      "&amp;&lt;&gt;&quot;&#39;".to_string()
     );
   }
 
