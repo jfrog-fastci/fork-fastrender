@@ -34065,12 +34065,7 @@ fn range_prototype_from_document(scope: &mut Scope<'_>, document_obj: GcObject) 
   }
 }
 
-fn create_range_wrapper(
-  _vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  document_obj: GcObject,
-  range_id: dom2::RangeId,
-) -> Result<GcObject, VmError> {
+fn alloc_range_wrapper(scope: &mut Scope<'_>, document_obj: GcObject) -> Result<GcObject, VmError> {
   let range_proto = range_prototype_from_document(scope, document_obj)?;
 
   // Root values while allocating property keys / objects: those operations can trigger GC.
@@ -34080,14 +34075,6 @@ fn create_range_wrapper(
 
   let range_obj = scope.alloc_object_with_prototype(Some(range_proto))?;
   scope.push_root(Value::Object(range_obj))?;
-
-  scope.heap_mut().object_set_host_slots(
-    range_obj,
-    HostSlots {
-      a: range_id.as_u64(),
-      b: RANGE_HOST_TAG,
-    },
-  )?;
 
   let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
   scope.define_property(
@@ -34154,8 +34141,12 @@ fn document_create_range_native(
     .map_err(|_| VmError::TypeError("document.createRange must be called on a document object"))?
     .document_id;
 
+  // Allocate the JS wrapper object before creating the backing `dom2` state so we can register it
+  // in the document's weak live-traversal registry.
+  let range_obj = alloc_range_wrapper(scope, document_obj)?;
+
   let range_id = if is_host_document_id(vm, document_id) {
-    mutate_dom_for_vm_host(host, |dom| (dom.create_range(), false))
+    mutate_dom_for_vm_host(host, |dom| (dom.register_live_range(scope.heap(), range_obj), false))
       .ok_or(VmError::TypeError(
         "document.createRange requires a DOM-backed document",
       ))?
@@ -34167,13 +34158,22 @@ fn document_create_range_native(
     // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
     // exclusive access for the duration of this native call.
     let dom_mut = unsafe { dom_ptr.as_mut() };
-    let range_id = dom_mut.create_range();
+    let range_id = dom_mut.register_live_range(scope.heap(), range_obj);
     // Owned documents: skip MutationObserver microtask scheduling.
     let _ = dom_mut.take_mutation_observer_microtask_needed();
     range_id
   };
 
-  let range_obj = create_range_wrapper(vm, scope, document_obj, range_id)?;
+  // Set wrapper host slots after registration so the weak registry can observe wrapper GC and prune
+  // stale `dom2::Document` range state.
+  scope.heap_mut().object_set_host_slots(
+    range_obj,
+    HostSlots {
+      a: range_id.as_u64(),
+      b: RANGE_HOST_TAG,
+    },
+  )?;
+
   Ok(Value::Object(range_obj))
 }
 
@@ -34211,8 +34211,12 @@ fn range_constructor_construct_native(
     .map_err(|_| VmError::TypeError("Illegal invocation"))?
     .document_id;
 
+  // Allocate the JS wrapper object before creating the backing `dom2` state so we can register it
+  // in the document's weak live-traversal registry.
+  let range_obj = alloc_range_wrapper(scope, document_obj)?;
+
   let range_id = if is_host_document_id(vm, document_id) {
-    mutate_dom_for_vm_host(host, |dom| (dom.create_range(), false))
+    mutate_dom_for_vm_host(host, |dom| (dom.register_live_range(scope.heap(), range_obj), false))
       .ok_or(VmError::TypeError("Illegal invocation"))?
   } else {
     let mut dom_ptr =
@@ -34222,13 +34226,22 @@ fn range_constructor_construct_native(
     // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
     // exclusive access for the duration of this native call.
     let dom_mut = unsafe { dom_ptr.as_mut() };
-    let range_id = dom_mut.create_range();
+    let range_id = dom_mut.register_live_range(scope.heap(), range_obj);
     // Owned documents: skip MutationObserver microtask scheduling.
     let _ = dom_mut.take_mutation_observer_microtask_needed();
     range_id
   };
 
-  let range_obj = create_range_wrapper(vm, scope, document_obj, range_id)?;
+  // Set wrapper host slots after registration so the weak registry can observe wrapper GC and prune
+  // stale `dom2::Document` range state.
+  scope.heap_mut().object_set_host_slots(
+    range_obj,
+    HostSlots {
+      a: range_id.as_u64(),
+      b: RANGE_HOST_TAG,
+    },
+  )?;
+
   Ok(Value::Object(range_obj))
 }
 
@@ -58914,6 +58927,30 @@ mod tests {
     )?;
     let clicked = realm.exec_script("__clicked")?;
     assert_eq!(get_string(realm.heap(), clicked), "t");
+    Ok(())
+  }
+
+  #[test]
+  fn range_state_is_swept_after_range_wrapper_gc() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let base = host.dom().range_state_len_for_test();
+
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => { for (let i = 0; i < 200; i++) document.createRange(); })();",
+    )?;
+
+    assert_eq!(host.dom().range_state_len_for_test(), base + 200);
+
+    realm.heap_mut().collect_garbage();
+    host
+      .dom_mut()
+      .sweep_dead_live_traversals_if_needed(realm.heap());
+
+    assert_eq!(host.dom().range_state_len_for_test(), base);
     Ok(())
   }
 

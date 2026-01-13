@@ -253,6 +253,11 @@ impl Document {
     id
   }
 
+  #[cfg(test)]
+  pub(crate) fn range_state_len_for_test(&self) -> usize {
+    self.ranges.len()
+  }
+
   pub(crate) fn create_range_for_id(&mut self, id: RangeId) {
     self.insert_range_state(id);
   }
