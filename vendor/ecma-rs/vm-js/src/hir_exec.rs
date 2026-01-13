@@ -1228,6 +1228,7 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::ExprKind::This => Ok(self.this),
+      hir_js::ExprKind::NewTarget => Ok(self.new_target),
       hir_js::ExprKind::Literal(lit) => self.eval_literal(scope, lit),
       hir_js::ExprKind::Unary { op, expr } => self.eval_unary(scope, body, *op, *expr),
       hir_js::ExprKind::Update { op, expr, prefix } => self.eval_update(scope, body, *op, *expr, *prefix),
@@ -1273,9 +1274,7 @@ impl<'vm> HirEvaluator<'vm> {
         hir_js::ExprKind::ImportCall { .. } | hir_js::ExprKind::ImportMeta => {
           VmError::Unimplemented("import() / import.meta (hir-js compiled path)")
         }
-        hir_js::ExprKind::Super | hir_js::ExprKind::NewTarget => {
-          VmError::Unimplemented("super/new.target (hir-js compiled path)")
-        }
+        hir_js::ExprKind::Super => VmError::Unimplemented("super (hir-js compiled path)"),
         hir_js::ExprKind::Jsx(_) => VmError::Unimplemented("jsx (hir-js compiled path)"),
         hir_js::ExprKind::TypeAssertion { .. }
         | hir_js::ExprKind::NonNull { .. }
