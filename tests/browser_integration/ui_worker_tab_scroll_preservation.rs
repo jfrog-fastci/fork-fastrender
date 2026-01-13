@@ -33,25 +33,18 @@ fn tab_switching_preserves_per_tab_scroll_position() {
         if *tab_id == tab_a && url == "about:test-scroll"
     )
   });
-  let (frame_a, _scroll_a, _events) = h.wait_for_frame_and_scroll_state(tab_a, DEFAULT_TIMEOUT);
+  let (frame_a, _events) = h.wait_for_frame(tab_a, DEFAULT_TIMEOUT);
   assert_eq!(
     frame_a.viewport_css, viewport,
     "expected initial tab A frame to use requested viewport"
   );
 
   h.send(scroll_msg(tab_a, (0.0, 300.0), None));
-  let (scrolled_frame_a, scrolled_scroll_a, _events) =
-    h.wait_for_frame_and_scroll_state(tab_a, DEFAULT_TIMEOUT);
+  let (scrolled_frame_a, _events) = h.wait_for_frame(tab_a, DEFAULT_TIMEOUT);
   let scrolled_y = scrolled_frame_a.scroll_state.viewport.y;
   assert!(
     scrolled_y > 0.0,
     "expected scroll to move tab A viewport down, got y={scrolled_y}"
-  );
-
-  let updated_scroll_y = scrolled_scroll_a.viewport.y;
-  assert!(
-    (updated_scroll_y - scrolled_y).abs() < 1e-3,
-    "expected ScrollStateUpdated y to match FrameReady y (frame={scrolled_y}, update={updated_scroll_y})"
   );
 
   // ---------------------------------------------------------------------------
@@ -73,20 +66,18 @@ fn tab_switching_preserves_per_tab_scroll_position() {
         if *tab_id == tab_b && url == "about:blank"
     )
   });
-  let (_frame_b, _scroll_b, _events) = h.wait_for_frame_and_scroll_state(tab_b, DEFAULT_TIMEOUT);
+  let (_frame_b, _events) = h.wait_for_frame(tab_b, DEFAULT_TIMEOUT);
 
   // ---------------------------------------------------------------------------
   // Switch active tab B → A and ensure tab A's scroll position is preserved.
   // ---------------------------------------------------------------------------
   h.send(UiToWorker::SetActiveTab { tab_id: tab_b });
   h.send(request_repaint(tab_b, RepaintReason::Explicit));
-  let (_frame_b_repaint, _scroll_b_repaint, _events) =
-    h.wait_for_frame_and_scroll_state(tab_b, DEFAULT_TIMEOUT);
+  let (_frame_b_repaint, _events) = h.wait_for_frame(tab_b, DEFAULT_TIMEOUT);
 
   h.send(UiToWorker::SetActiveTab { tab_id: tab_a });
   h.send(request_repaint(tab_a, RepaintReason::Explicit));
-  let (frame_a_after_switch, _scroll_a_after_switch, _events) =
-    h.wait_for_frame_and_scroll_state(tab_a, DEFAULT_TIMEOUT);
+  let (frame_a_after_switch, _events) = h.wait_for_frame(tab_a, DEFAULT_TIMEOUT);
   let restored_y = frame_a_after_switch.scroll_state.viewport.y;
 
   assert!(

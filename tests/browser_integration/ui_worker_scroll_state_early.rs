@@ -63,11 +63,6 @@ fn scroll_state_updated_matches_frame_ready_with_scroll_snap() {
   })
   .expect("initial FrameReady");
 
-  // Drain the initial ScrollStateUpdated from navigation so subsequent waits don't match it.
-  let _ = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
-
   // Ensure the channel is quiet before issuing the scroll request.
   while rx.try_recv().is_ok() {}
 

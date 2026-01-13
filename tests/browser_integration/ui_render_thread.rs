@@ -106,18 +106,12 @@ fn scroll_produces_scroll_update_and_frame() {
 
   tx.send(scroll_msg(tab_id, (0.0, 200.0), None)).unwrap();
 
-  let mut saw_scroll = false;
   let mut saw_frame = false;
   let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT * 2;
   while std::time::Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
       Ok(msg) => match msg {
-        WorkerToUi::ScrollStateUpdated { scroll, .. } => {
-          if scroll.viewport.y > 0.0 {
-            saw_scroll = true;
-          }
-        }
         WorkerToUi::FrameReady { frame, .. } => {
           if frame.scroll_state.viewport.y > 0.0 {
             saw_frame = true;
@@ -128,7 +122,7 @@ fn scroll_produces_scroll_update_and_frame() {
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
     }
-    if saw_scroll && saw_frame {
+    if saw_frame {
       break;
     }
   }
@@ -136,7 +130,6 @@ fn scroll_produces_scroll_update_and_frame() {
   drop(tx);
   handle.join().unwrap();
 
-  assert!(saw_scroll, "expected non-zero ScrollStateUpdated");
   assert!(saw_frame, "expected FrameReady after scroll");
 }
 

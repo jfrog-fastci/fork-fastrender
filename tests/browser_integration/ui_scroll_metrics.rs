@@ -62,18 +62,17 @@ fn ui_worker_reports_scroll_metrics_and_scroll_to_updates_scroll_state() {
     .expect("ScrollTo");
 
   let msg = super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| match msg {
-    WorkerToUi::ScrollStateUpdated { scroll, .. } => (scroll.viewport.y - target_y).abs() < 2.0,
+    WorkerToUi::FrameReady { frame, .. } => (frame.scroll_state.viewport.y - target_y).abs() < 2.0,
     _ => false,
   })
-  .expect("ScrollStateUpdated after ScrollTo");
-  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+  .expect("FrameReady after ScrollTo");
+  let WorkerToUi::FrameReady { frame, .. } = msg else {
     unreachable!();
   };
-
   assert!(
-    (scroll.viewport.y - target_y).abs() < 2.0,
+    (frame.scroll_state.viewport.y - target_y).abs() < 2.0,
     "expected ScrollTo to update viewport scroll to ~{target_y}, got {:?}",
-    scroll.viewport
+    frame.scroll_state.viewport
   );
 
   drop(ui_tx);

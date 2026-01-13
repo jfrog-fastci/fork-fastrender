@@ -76,10 +76,6 @@ fn tick_does_not_repaint_clean_tab() {
     !initial.wants_ticks,
     "expected about:blank to render without time-based effects"
   );
-  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
   while handle.ui_rx.try_recv().is_ok() {}
 
   handle
@@ -151,10 +147,6 @@ fn tick_emits_new_frames_for_css_animation() {
     initial.wants_ticks,
     "expected animation fixture page to request periodic ticks"
   );
-  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
   while handle.ui_rx.try_recv().is_ok() {}
 
   handle
@@ -231,10 +223,6 @@ fn tick_runs_js_request_animation_frame_and_repaints() {
     [0, 0, 0, 255],
     "expected initial frame to be black before rAF callback runs"
   );
-  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
   while handle.ui_rx.try_recv().is_ok() {}
 
   handle

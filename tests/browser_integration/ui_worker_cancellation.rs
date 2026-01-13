@@ -470,7 +470,7 @@ fn rapid_scroll_cancels_stale_paint() {
   };
   assert_eq!(
     latest.viewport, frame_scroll.viewport,
-    "expected FrameReady scroll_state to match ScrollStateUpdated"
+    "expected FrameReady.scroll_state to match ScrollStateUpdated"
   );
 
   // Ensure a stale FrameReady doesn't arrive after the latest frame.

@@ -89,12 +89,13 @@ fn scroll_snap_updates_viewport_scroll_state() {
   ui_tx.send(scroll_msg(tab_id, (0.0, 60.0), None)).unwrap();
 
   let msg = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| match msg {
-    WorkerToUi::ScrollStateUpdated { tab_id: t, scroll } if *t == tab_id => scroll.viewport.y > 0.0,
+    WorkerToUi::FrameReady { tab_id: t, frame } if *t == tab_id => frame.scroll_state.viewport.y > 0.0,
     _ => false,
   });
-  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+  let WorkerToUi::FrameReady { frame, .. } = msg else {
     unreachable!();
   };
+  let scroll = frame.scroll_state;
 
   assert!(
     (scroll.viewport.y - 100.0).abs() < 1.0,
@@ -183,14 +184,15 @@ fn element_scroll_at_pointer_updates_element_scroll_state() {
     .unwrap();
 
   let msg = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| match msg {
-    WorkerToUi::ScrollStateUpdated { tab_id: t, scroll } if *t == tab_id => {
-      scroll.elements.contains_key(&expected_box_id)
+    WorkerToUi::FrameReady { tab_id: t, frame } if *t == tab_id => {
+      frame.scroll_state.elements.contains_key(&expected_box_id)
     }
     _ => false,
   });
-  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+  let WorkerToUi::FrameReady { frame, .. } = msg else {
     unreachable!();
   };
+  let scroll = frame.scroll_state;
 
   let offset = scroll
     .elements

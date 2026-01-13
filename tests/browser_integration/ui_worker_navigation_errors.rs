@@ -88,13 +88,12 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
   let mut saw_loading_true = false;
   let mut saw_failed = false;
   let mut saw_error_frame = false;
-  let mut saw_scroll_update = false;
   let mut saw_loading_false = false;
 
-  while !(saw_failed && saw_error_frame && saw_scroll_update && saw_loading_false) {
+  while !(saw_failed && saw_error_frame && saw_loading_false) {
     let Some(msg) = recv_until_deadline(&ui_rx, deadline) else {
       panic!(
-        "timed out waiting for navigation failure flow (started={saw_started}, loading_true={saw_loading_true}, failed={saw_failed}, frame={saw_error_frame}, scroll={saw_scroll_update}, loading_false={saw_loading_false})"
+        "timed out waiting for navigation failure flow (started={saw_started}, loading_true={saw_loading_true}, failed={saw_failed}, frame={saw_error_frame}, loading_false={saw_loading_false})"
       );
     };
 
@@ -140,15 +139,6 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
         // The worker should render an `about:error` fallback for missing files.
         assert!(saw_failed, "expected NavigationFailed before FrameReady");
         saw_error_frame = true;
-      }
-      WorkerToUi::ScrollStateUpdated {
-        tab_id: msg_tab, ..
-      } if msg_tab == tab_id => {
-        assert!(
-          saw_failed,
-          "expected NavigationFailed before ScrollStateUpdated for about:error fallback"
-        );
-        saw_scroll_update = true;
       }
       WorkerToUi::NavigationCommitted {
         tab_id: msg_tab, ..
@@ -219,7 +209,7 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
       let Some(msg) = recv_until_deadline(&ui_rx, scan_deadline) else {
         break;
       };
-      if matches!(msg, WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. } if msg_tab == tab_id) {
+      if matches!(msg, WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id) {
         break;
       }
     }
@@ -332,7 +322,6 @@ fn missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
 
   let deadline = Instant::now() + DEFAULT_TIMEOUT;
   let mut saw_frame = false;
-  let mut saw_scroll = false;
   let mut saw_failed = false;
 
   while Instant::now() < deadline {
@@ -377,13 +366,6 @@ fn missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
         );
         saw_frame = true;
       }
-      WorkerToUi::ScrollStateUpdated {
-        tab_id: msg_tab, ..
-      } if msg_tab == tab_id => {
-        if saw_failed {
-          saw_scroll = true;
-        }
-      }
       WorkerToUi::NavigationCommitted {
         tab_id: msg_tab,
         url,
@@ -396,7 +378,7 @@ fn missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
       _ => {}
     }
 
-    if saw_failed && saw_frame && saw_scroll {
+    if saw_failed && saw_frame {
       break;
     }
   }
@@ -405,10 +387,6 @@ fn missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
   assert!(
     saw_frame,
     "expected about:error fallback FrameReady after failure"
-  );
-  assert!(
-    saw_scroll,
-    "expected ScrollStateUpdated for the about:error fallback frame"
   );
 
   worker.join().expect("join ui worker");
@@ -439,14 +417,13 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
   let mut saw_loading_true = false;
   let mut saw_failed = false;
   let mut saw_frame = false;
-  let mut saw_scroll_update = false;
   let mut saw_loading_false = false;
   let deadline = Instant::now() + DEFAULT_TIMEOUT;
 
-  while !(saw_failed && saw_frame && saw_scroll_update && saw_loading_false) {
+  while !(saw_failed && saw_frame && saw_loading_false) {
     let Some(msg) = recv_until_deadline(&ui_rx, deadline) else {
       panic!(
-        "timed out waiting for missing-file navigation messages (started={saw_started}, loading_true={saw_loading_true}, failed={saw_failed}, frame={saw_frame}, scroll={saw_scroll_update}, loading_false={saw_loading_false})"
+        "timed out waiting for missing-file navigation messages (started={saw_started}, loading_true={saw_loading_true}, failed={saw_failed}, frame={saw_frame}, loading_false={saw_loading_false})"
       );
     };
 
@@ -497,13 +474,6 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
           "expected a non-empty pixmap for about:error fallback"
         );
         saw_frame = true;
-      }
-      WorkerToUi::ScrollStateUpdated {
-        tab_id: msg_tab, ..
-      } if msg_tab == tab_id => {
-        if saw_failed {
-          saw_scroll_update = true;
-        }
       }
       WorkerToUi::NavigationCommitted {
         tab_id: msg_tab, ..

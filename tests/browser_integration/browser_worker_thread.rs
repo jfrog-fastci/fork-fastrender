@@ -1,7 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::scroll::ScrollState;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_browser_worker;
@@ -315,47 +314,11 @@ fn scroll_produces_scroll_update_and_frame() {
     })
     .expect("Scroll");
 
-  let deadline = Instant::now() + TIMEOUT;
-  let mut scroll_state: Option<ScrollState> = None;
-  let mut frame_scroll_state: Option<ScrollState> = None;
-  while Instant::now() < deadline && (scroll_state.is_none() || frame_scroll_state.is_none()) {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let msg = match worker.rx.recv_timeout(remaining) {
-      Ok(msg) => msg,
-      Err(_) => break,
-    };
-    match msg {
-      WorkerToUi::ScrollStateUpdated {
-        tab_id: got,
-        scroll,
-      } if got == tab_id => {
-        scroll_state = Some(scroll);
-      }
-      WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
-        frame_scroll_state = Some(frame.scroll_state);
-      }
-      WorkerToUi::NavigationFailed { url, error, .. } => {
-        panic!("navigation failed for {url}: {error}");
-      }
-      _ => {}
-    }
-  }
-
-  let scroll_state =
-    scroll_state.unwrap_or_else(|| panic!("expected ScrollStateUpdated after scroll"));
-  let frame_scroll_state =
-    frame_scroll_state.unwrap_or_else(|| panic!("expected FrameReady after scroll"));
-
+  let frame = wait_for_frame(&worker.rx, tab_id, TIMEOUT);
   assert!(
-    scroll_state.viewport.y > 0.0,
-    "expected scroll.viewport.y > 0, got {:?}",
-    scroll_state.viewport
-  );
-  assert!(
-    (frame_scroll_state.viewport.y - scroll_state.viewport.y).abs() < 1e-3,
-    "expected FrameReady.scroll_state.viewport.y ({}) to match ScrollStateUpdated ({})",
-    frame_scroll_state.viewport.y,
-    scroll_state.viewport.y
+    frame.scroll_state.viewport.y > 0.0,
+    "expected scroll_state.viewport.y > 0 after scroll, got {:?}",
+    frame.scroll_state.viewport
   );
 
   worker.shutdown();

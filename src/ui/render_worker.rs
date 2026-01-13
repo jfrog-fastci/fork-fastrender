@@ -407,6 +407,13 @@ struct TabState {
   viewport_css: (u32, u32),
   dpr: f32,
   scroll_state: ScrollState,
+  /// Last scroll state sent to the UI (either via `FrameReady.scroll_state` or a standalone
+  /// `ScrollStateUpdated`).
+  ///
+  /// This allows the worker to emit `ScrollStateUpdated` only when a scroll change occurs without
+  /// a corresponding `FrameReady` (e.g. cancelled paints), avoiding redundant messages in the hot
+  /// paint path.
+  last_reported_scroll_state: ScrollState,
   /// True when the next paint was triggered by a scroll message and we should coalesce any
   /// immediately-following scroll events before rendering.
   scroll_coalesce: bool,
@@ -461,6 +468,7 @@ impl TabState {
       viewport_css: (800, 600),
       dpr: 1.0,
       scroll_state: ScrollState::default(),
+      last_reported_scroll_state: ScrollState::default(),
       scroll_coalesce: false,
       document: None,
       js_tab: None,
@@ -1711,6 +1719,21 @@ impl BrowserRuntime {
       };
 
       if !self.is_output_still_current(&output) {
+        // If we drop a paint job's output (typically because the UI bumped `CancelGens` while the
+        // frame was in-flight), we still want the UI model to learn about any scroll changes that
+        // occurred while that frame was cancelled. `FrameReady` carries `scroll_state`, but in this
+        // case no `FrameReady` is emitted, so send a standalone scroll update when needed.
+        if matches!(output.snapshot_kind, SnapshotKind::Paint) {
+          if let Some(tab) = self.tabs.get_mut(&output.tab_id) {
+            if tab.scroll_state != tab.last_reported_scroll_state {
+              tab.last_reported_scroll_state = tab.scroll_state.clone();
+              let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+                tab_id: output.tab_id,
+                scroll: tab.scroll_state.clone(),
+              });
+            }
+          }
+        }
         continue;
       }
 
@@ -1719,6 +1742,19 @@ impl BrowserRuntime {
         // entirely so we don't waste wakeups/channel traffic on messages that will never be shown.
         if !self.debug_log_enabled && matches!(&msg, WorkerToUi::DebugLog { .. }) {
           continue;
+        }
+        match &msg {
+          WorkerToUi::FrameReady { tab_id, frame } => {
+            if let Some(tab) = self.tabs.get_mut(tab_id) {
+              tab.last_reported_scroll_state = frame.scroll_state.clone();
+            }
+          }
+          WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
+            if let Some(tab) = self.tabs.get_mut(tab_id) {
+              tab.last_reported_scroll_state = scroll.clone();
+            }
+          }
+          _ => {}
         }
         let _ = self.ui_tx.send(msg);
       }
@@ -2394,6 +2430,7 @@ impl BrowserRuntime {
                 tab_id,
                 scroll: tab.scroll_state.clone(),
               });
+              tab.last_reported_scroll_state = tab.scroll_state.clone();
             }
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
@@ -2432,6 +2469,7 @@ impl BrowserRuntime {
                 tab_id,
                 scroll: tab.scroll_state.clone(),
               });
+              tab.last_reported_scroll_state = tab.scroll_state.clone();
               tab.cancel.bump_paint();
               tab.needs_repaint = true;
               tab.scroll_coalesce = true;
@@ -3670,6 +3708,7 @@ impl BrowserRuntime {
         tab_id,
         scroll: tab.scroll_state.clone(),
       });
+      tab.last_reported_scroll_state = tab.scroll_state.clone();
     }
   }
 
@@ -4629,6 +4668,7 @@ impl BrowserRuntime {
           tab_id,
           scroll: tab.scroll_state.clone(),
         });
+        tab.last_reported_scroll_state = tab.scroll_state.clone();
       }
 
       (
@@ -5992,6 +6032,7 @@ impl BrowserRuntime {
           tab_id,
           scroll: tab.scroll_state.clone(),
         });
+        tab.last_reported_scroll_state = tab.scroll_state.clone();
       }
 
       let mut default_allowed = true;
@@ -7122,6 +7163,12 @@ impl BrowserRuntime {
 
           tab.loading = false;
           tab.pending_history_entry = false;
+          if tab.scroll_state != tab.last_reported_scroll_state {
+            msgs.push(WorkerToUi::ScrollStateUpdated {
+              tab_id,
+              scroll: tab.scroll_state.clone(),
+            });
+          }
           msgs.push(WorkerToUi::LoadingState {
             tab_id,
             loading: false,
@@ -7261,6 +7308,7 @@ impl BrowserRuntime {
 
     // Only emit FrameReady when the paint snapshot is still current. If the UI bumped paint while
     // we were rendering, skip this frame and let the subsequent repaint win.
+    let mut emitted_frame = false;
     if let Some(frame) = painted {
       if paint_snapshot.is_still_current_for_paint(&cancel) && !js_dom_changed {
         let actual_dpr = tab
@@ -7308,15 +7356,19 @@ impl BrowserRuntime {
             wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
           },
         });
-        msgs.push(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        emitted_frame = true;
       } else {
         tab.needs_repaint = true;
       }
     } else {
       tab.needs_repaint = true;
+    }
+
+    if !emitted_frame && tab.scroll_state != tab.last_reported_scroll_state {
+      msgs.push(WorkerToUi::ScrollStateUpdated {
+        tab_id,
+        scroll: tab.scroll_state.clone(),
+      });
     }
 
     tab.loading = false;
@@ -7574,10 +7626,6 @@ impl BrowserRuntime {
             wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
           },
         },
-        WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        },
         WorkerToUi::LoadingState {
           tab_id,
           loading: false,
@@ -7699,10 +7747,6 @@ impl BrowserRuntime {
           ),
           wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
         },
-      });
-      msgs.push(WorkerToUi::ScrollStateUpdated {
-        tab_id,
-        scroll: tab.scroll_state.clone(),
       });
     }
 

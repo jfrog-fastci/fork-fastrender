@@ -31,7 +31,6 @@ fn wait_for_scroll_response(
   mut pred: impl FnMut(f32) -> bool,
 ) -> (f32, f32) {
   let deadline = Instant::now() + timeout;
-  let mut scroll_y: Option<f32> = None;
   let mut frame_y: Option<f32> = None;
   let mut seen: Vec<WorkerToUi> = Vec::new();
 
@@ -39,26 +38,15 @@ fn wait_for_scroll_response(
     let remaining = deadline.saturating_duration_since(Instant::now());
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
       Ok(msg) => {
-        match &msg {
-          WorkerToUi::ScrollStateUpdated {
-            tab_id: got,
-            scroll,
-          } if *got == tab_id => {
-            if pred(scroll.viewport.y) {
-              scroll_y = Some(scroll.viewport.y);
-            }
+        if let WorkerToUi::FrameReady { tab_id: got, frame } = &msg {
+          if *got == tab_id && pred(frame.scroll_state.viewport.y) {
+            frame_y = Some(frame.scroll_state.viewport.y);
           }
-          WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
-            if pred(frame.scroll_state.viewport.y) {
-              frame_y = Some(frame.scroll_state.viewport.y);
-            }
-          }
-          _ => {}
         }
         if seen.len() < 64 {
           seen.push(msg);
         }
-        if scroll_y.is_some() && frame_y.is_some() {
+        if frame_y.is_some() {
           break;
         }
       }
@@ -67,19 +55,13 @@ fn wait_for_scroll_response(
     }
   }
 
-  let Some(scroll_y) = scroll_y else {
-    panic!(
-      "timed out waiting for ScrollStateUpdated satisfying predicate\nmessages:\n{}",
-      format_messages(&seen)
-    );
-  };
   let Some(frame_y) = frame_y else {
     panic!(
       "timed out waiting for FrameReady satisfying predicate\nmessages:\n{}",
       format_messages(&seen)
     );
   };
-  (scroll_y, frame_y)
+  (frame_y, frame_y)
 }
 
 #[test]
@@ -107,11 +89,6 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
 
   let initial_frame = wait_for_initial_frame(&rx, tab_id);
   let mut y = initial_frame.scroll_state.viewport.y;
-
-  // Drain the initial ScrollStateUpdated so subsequent waits don't accidentally match it.
-  let _ = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
 
   assert!(
     y.abs() < 1e-3,
@@ -193,11 +170,6 @@ fn home_end_space_keys_scroll_when_no_element_is_focused() {
 
   let initial_frame = wait_for_initial_frame(&rx, tab_id);
   let mut y = initial_frame.scroll_state.viewport.y;
-
-  // Drain the initial ScrollStateUpdated so subsequent waits don't accidentally match it.
-  let _ = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
 
   assert!(
     y.abs() < 1e-3,
@@ -342,11 +314,6 @@ fn space_scrolls_when_link_is_focused() {
   let initial_frame = wait_for_initial_frame(&rx, tab_id);
   let mut y = initial_frame.scroll_state.viewport.y;
 
-  // Drain the initial ScrollStateUpdated so subsequent waits don't accidentally match it.
-  let _ = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
-
   assert!(
     y.abs() < 1e-3,
     "expected initial scroll y to start at 0, got {y}"
@@ -450,11 +417,6 @@ fn video_controls_consume_space_and_arrow_keys() {
     [255, 0, 0, 255],
     "expected marker to start red before the video is focused"
   );
-
-  // Drain the initial ScrollStateUpdated so subsequent waits don't accidentally match it.
-  let _ = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
 
   // Focus the video element with Tab.
   tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Tab))

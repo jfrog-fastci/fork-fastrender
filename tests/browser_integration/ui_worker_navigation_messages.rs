@@ -1,7 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::scroll::ScrollState;
 use fastrender::ui::messages::WorkerToUi;
 use fastrender::ui::spawn_ui_worker;
 use fastrender::ui::{NavigationReason, TabId, UiToWorker};
@@ -35,14 +34,14 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (Strin
   }
 }
 
-fn next_scroll_state_updated(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> ScrollState {
+fn next_scroll_state(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::scroll::ScrollState {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+    matches!(msg, WorkerToUi::FrameReady { .. })
   })
-  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
 
   match msg {
-    WorkerToUi::ScrollStateUpdated { scroll, .. } => scroll,
+    WorkerToUi::FrameReady { frame, .. } => frame.scroll_state,
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   }
 }
@@ -93,7 +92,7 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
   assert_eq!(url, "about:newtab");
   assert!(!back);
   assert!(!forward);
-  let _ = next_scroll_state_updated(&handle.ui_rx, tab_id);
+  let _ = next_scroll_state(&handle.ui_rx, tab_id);
   while handle.ui_rx.try_recv().is_ok() {}
 
   handle
@@ -108,14 +107,14 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
   assert_eq!(url, url_a);
   assert!(back);
   assert!(!forward);
-  let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
+  let scroll = next_scroll_state(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 0.0);
 
   handle
     .ui_tx
     .send(support::scroll_msg(tab_id, (0.0, 120.0), None))
     .expect("scroll a");
-  let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
+  let scroll = next_scroll_state(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 120.0);
 
   handle
@@ -130,14 +129,14 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
   assert_eq!(url, url_b);
   assert!(back);
   assert!(!forward);
-  let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
+  let scroll = next_scroll_state(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 0.0);
 
   handle
     .ui_tx
     .send(support::scroll_msg(tab_id, (0.0, 240.0), None))
     .expect("scroll b");
-  let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
+  let scroll = next_scroll_state(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 240.0);
 
   handle
@@ -148,7 +147,7 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
   assert_eq!(url, url_a);
   assert!(back);
   assert!(forward);
-  let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
+  let scroll = next_scroll_state(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 120.0);
 
   handle
@@ -159,7 +158,7 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
   assert_eq!(url, url_b);
   assert!(back);
   assert!(!forward);
-  let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
+  let scroll = next_scroll_state(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 240.0);
 
   handle
@@ -170,7 +169,7 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
   assert_eq!(url, url_b);
   assert!(back);
   assert!(!forward);
-  let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
+  let scroll = next_scroll_state(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 240.0);
 
   handle.join().expect("worker join");

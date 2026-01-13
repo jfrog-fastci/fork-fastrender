@@ -289,16 +289,9 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
               committed_can_go_back = Some(*can_go_back);
             }
           }
-          WorkerToUi::ScrollStateUpdated {
-            tab_id: got,
-            scroll,
-          } if *got == tab_id => {
-            if committed_url.is_some() {
-              scroll_y = Some(scroll.viewport.y);
-            }
-          }
           WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
             if committed_url.is_some() {
+              scroll_y = Some(frame.scroll_state.viewport.y);
               final_pixel = Some(support::rgba_at(&frame.pixmap, 10, 10));
             }
           }
@@ -470,16 +463,9 @@ fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_w
               committed_can_go_back = Some(*can_go_back);
             }
           }
-          WorkerToUi::ScrollStateUpdated {
-            tab_id: got,
-            scroll,
-          } if *got == tab_id => {
-            if committed_url.is_some() {
-              scroll_y = Some(scroll.viewport.y);
-            }
-          }
           WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
             if committed_url.is_some() {
+              scroll_y = Some(frame.scroll_state.viewport.y);
               final_pixel = Some(support::rgba_at(&frame.pixmap, 10, 10));
             }
           }
@@ -606,13 +592,13 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
     .unwrap();
 
   let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+    matches!(msg, WorkerToUi::FrameReady { .. })
   })
-  .expect("expected ScrollStateUpdated after scroll");
-  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+  .expect("expected FrameReady after scroll");
+  let WorkerToUi::FrameReady { frame, .. } = msg else {
     unreachable!();
   };
-  let scroll_before = scroll.viewport.y;
+  let scroll_before = frame.scroll_state.viewport.y;
   assert!(
     scroll_before > 0.0,
     "expected pre-fragment scroll to be > 0, got {scroll_before}"
@@ -645,13 +631,13 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   })
   .expect("expected NavigationCommitted for fragment navigation");
   let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+    matches!(msg, WorkerToUi::FrameReady { .. })
   })
-  .expect("expected ScrollStateUpdated for fragment navigation");
-  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+  .expect("expected FrameReady for fragment navigation");
+  let WorkerToUi::FrameReady { frame, .. } = msg else {
     unreachable!();
   };
-  let scroll_after = scroll.viewport.y;
+  let scroll_after = frame.scroll_state.viewport.y;
   assert!(
     scroll.viewport_delta.y.is_finite() && scroll.viewport_delta.y > 0.0,
     "expected viewport_delta.y > 0 on fragment jump, got {:?}",
@@ -679,14 +665,14 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   .expect("expected NavigationCommitted after going back");
 
   let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+    matches!(msg, WorkerToUi::FrameReady { .. })
   })
-  .expect("expected ScrollStateUpdated after going back");
-  let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg else {
+  .expect("expected FrameReady after going back");
+  let WorkerToUi::FrameReady { frame, .. } = msg else {
     unreachable!();
   };
   assert_eq!(
-    scroll.viewport.y, scroll_before,
+    frame.scroll_state.viewport.y, scroll_before,
     "expected back to restore previous scroll position"
   );
   assert!(

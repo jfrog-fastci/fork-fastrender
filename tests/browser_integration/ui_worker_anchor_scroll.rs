@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{NavigationReason, TabId};
+use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
 
@@ -54,21 +54,24 @@ fn fragment_navigation_scrolls_viewport_to_target() {
     ))
     .expect("Navigate");
 
-  let (frame, scroll) =
-    support::wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, TIMEOUT);
+  let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }
+    )
+  })
+  .expect("expected FrameReady");
+  let frame = match msg {
+    WorkerToUi::FrameReady { frame, .. } => frame,
+    WorkerToUi::NavigationFailed { url, error, .. } => {
+      panic!("navigation failed for {url}: {error}");
+    }
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  };
   assert!(
     frame.scroll_state.viewport.y > 0.0,
     "expected FrameReady to reflect anchor scroll; got {:?}",
     frame.scroll_state.viewport
-  );
-  assert!(
-    scroll.viewport.y > 0.0,
-    "expected ScrollStateUpdated to reflect anchor scroll; got {:?}",
-    scroll.viewport
-  );
-  assert_eq!(
-    scroll, frame.scroll_state,
-    "expected ScrollStateUpdated to match FrameReady.scroll_state"
   );
 
   drop(ui_tx);

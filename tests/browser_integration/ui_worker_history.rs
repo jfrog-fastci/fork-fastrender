@@ -1,6 +1,5 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::scroll::ScrollState;
 use fastrender::ui::messages::WorkerToUi;
 use fastrender::ui::{NavigationReason, RenderedFrame, TabId, UiToWorker};
 use std::sync::mpsc::{Receiver, Sender};
@@ -9,7 +8,7 @@ use tempfile::tempdir;
 use url::Url;
 
 use super::support::{
-  create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg, wait_for_frame_and_scroll_state_updated,
+  create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg,
 };
 
 // These tests run alongside other render-heavy integration tests; allow extra slack to avoid
@@ -99,16 +98,6 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   })
 }
 
-fn next_scroll_state_updated(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> ScrollState {
-  recv_for_tab(rx, tab_id, TIMEOUT, |msg| match msg {
-    WorkerToUi::ScrollStateUpdated {
-      tab_id: msg_tab,
-      scroll,
-    } if msg_tab == tab_id => Some(scroll),
-    _ => None,
-  })
-}
-
 fn spawn_worker() -> (
   Sender<UiToWorker>,
   Receiver<WorkerToUi>,
@@ -168,7 +157,6 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   assert!(!can_go_back);
   assert!(!can_go_forward);
   let _ = next_frame_ready(&rx, tab_id);
-  let _ = next_scroll_state_updated(&rx, tab_id);
   while rx.try_recv().is_ok() {}
 
   tx.send(navigate_msg(
@@ -237,7 +225,6 @@ fn reload_does_not_create_new_history_entry() {
   assert!(!can_go_back);
   assert!(!can_go_forward);
   let _ = next_frame_ready(&rx, tab_id);
-  let _ = next_scroll_state_updated(&rx, tab_id);
   while rx.try_recv().is_ok() {}
 
   tx.send(navigate_msg(
@@ -307,11 +294,12 @@ fn scroll_is_restored_across_back_and_forward() {
   ))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
-  let _ = wait_for_frame_and_scroll_state_updated(&rx, tab_id, TIMEOUT);
+  let _ = next_frame_ready(&rx, tab_id);
 
   // Scroll on A and ensure it is saved in history.
   tx.send(scroll_msg(tab_id, (0.0, 240.0), None)).unwrap();
-  let (_frame_scrolled_a, scrolled_a) = wait_for_frame_and_scroll_state_updated(&rx, tab_id, TIMEOUT);
+  let frame_scrolled_a = next_frame_ready(&rx, tab_id);
+  let scrolled_a = frame_scrolled_a.scroll_state.clone();
   assert!(
     scrolled_a.viewport.y > 0.0,
     "expected scroll on A to increase, got {:?}",
@@ -327,10 +315,10 @@ fn scroll_is_restored_across_back_and_forward() {
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
-  let _ = next_scroll_state_updated(&rx, tab_id);
 
   tx.send(scroll_msg(tab_id, (0.0, 400.0), None)).unwrap();
-  let (_frame_scrolled_b, scrolled_b) = wait_for_frame_and_scroll_state_updated(&rx, tab_id, TIMEOUT);
+  let frame_scrolled_b = next_frame_ready(&rx, tab_id);
+  let scrolled_b = frame_scrolled_b.scroll_state.clone();
   assert!(
     scrolled_b.viewport.y > 0.0,
     "expected scroll on B to increase, got {:?}",

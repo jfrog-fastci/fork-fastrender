@@ -411,26 +411,17 @@ fn reload_preserves_scroll_offset() {
   );
   let _ = drain_after_frame(&h, events);
 
-  let (_frame, scroll_events) =
-    h.send_and_wait_for_frame(tab_id, scroll_viewport(tab_id, (0.0, 120.0)));
-  let scroll_events = drain_after_frame(&h, scroll_events);
-  let scrolled_y = scroll_events.iter().find_map(|ev| match ev {
-    WorkerToUiEvent::ScrollStateUpdated { scroll, .. } => Some(scroll.viewport.y),
-    _ => None,
-  });
-  let scrolled_y = scrolled_y.expect("ScrollStateUpdated after scroll");
+  let (frame, scroll_events) = h.send_and_wait_for_frame(tab_id, scroll_viewport(tab_id, (0.0, 120.0)));
+  let _ = drain_after_frame(&h, scroll_events);
+  let scrolled_y = frame.scroll_state.viewport.y;
   assert!(
     (scrolled_y - 120.0).abs() < 1.0,
     "expected scroll to move to ~120, got {scrolled_y}"
   );
 
-  let (_frame, reload_events) = h.send_and_wait_for_frame(tab_id, UiToWorker::Reload { tab_id });
-  let reload_events = drain_after_frame(&h, reload_events);
-  let reloaded_y = reload_events.iter().find_map(|ev| match ev {
-    WorkerToUiEvent::ScrollStateUpdated { scroll, .. } => Some(scroll.viewport.y),
-    _ => None,
-  });
-  let reloaded_y = reloaded_y.expect("ScrollStateUpdated after reload");
+  let (frame, reload_events) = h.send_and_wait_for_frame(tab_id, UiToWorker::Reload { tab_id });
+  let _ = drain_after_frame(&h, reload_events);
+  let reloaded_y = frame.scroll_state.viewport.y;
   assert!(
     (reloaded_y - scrolled_y).abs() < 1.0,
     "expected reload to preserve scroll (before={scrolled_y}, after={reloaded_y})"
@@ -438,7 +429,7 @@ fn reload_preserves_scroll_offset() {
 }
 
 #[test]
-fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
+fn scroll_updates_scroll_state_and_frame_snap_and_clamp() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("scroll.html");
@@ -473,28 +464,18 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   let _ = drain_after_frame(&h, events);
 
   // Scroll down; mandatory scroll snap should snap to the second section.
-  let (_frame, scroll_events) =
-    h.send_and_wait_for_frame(tab_id, scroll_viewport(tab_id, (0.0, 60.0)));
-  let scroll_events = drain_after_frame(&h, scroll_events);
-  let scroll_y = scroll_events.iter().find_map(|ev| match ev {
-    WorkerToUiEvent::ScrollStateUpdated { scroll, .. } => Some(scroll.viewport.y),
-    _ => None,
-  });
-  let scroll_y = scroll_y.expect("ScrollStateUpdated");
+  let (frame, scroll_events) = h.send_and_wait_for_frame(tab_id, scroll_viewport(tab_id, (0.0, 60.0)));
+  let _ = drain_after_frame(&h, scroll_events);
+  let scroll_y = frame.scroll_state.viewport.y;
   assert!(
     (scroll_y - 100.0).abs() < 1.0,
     "expected scroll snap to ~100, got {scroll_y}"
   );
 
   // Scroll beyond the end; should clamp to max scroll (200px for 3x100px content in 100px viewport).
-  let (_frame, clamp_events) =
-    h.send_and_wait_for_frame(tab_id, scroll_viewport(tab_id, (0.0, 10_000.0)));
-  let clamp_events = drain_after_frame(&h, clamp_events);
-  let clamp_y = clamp_events.iter().find_map(|ev| match ev {
-    WorkerToUiEvent::ScrollStateUpdated { scroll, .. } => Some(scroll.viewport.y),
-    _ => None,
-  });
-  let clamp_y = clamp_y.expect("ScrollStateUpdated after clamp");
+  let (frame, clamp_events) = h.send_and_wait_for_frame(tab_id, scroll_viewport(tab_id, (0.0, 10_000.0)));
+  let _ = drain_after_frame(&h, clamp_events);
+  let clamp_y = frame.scroll_state.viewport.y;
   assert!(
     (clamp_y - 200.0).abs() < 1.0,
     "expected clamp to ~200, got {clamp_y}"

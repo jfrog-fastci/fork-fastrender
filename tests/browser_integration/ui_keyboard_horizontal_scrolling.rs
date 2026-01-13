@@ -29,9 +29,8 @@ fn wait_for_scroll_response_x(
   tab_id: TabId,
   timeout: Duration,
   mut pred: impl FnMut(f32) -> bool,
-) -> (f32, f32) {
+) -> f32 {
   let deadline = Instant::now() + timeout;
-  let mut scroll_x: Option<f32> = None;
   let mut frame_x: Option<f32> = None;
   let mut seen: Vec<WorkerToUi> = Vec::new();
 
@@ -39,26 +38,15 @@ fn wait_for_scroll_response_x(
     let remaining = deadline.saturating_duration_since(Instant::now());
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
       Ok(msg) => {
-        match &msg {
-          WorkerToUi::ScrollStateUpdated {
-            tab_id: got,
-            scroll,
-          } if *got == tab_id => {
-            if pred(scroll.viewport.x) {
-              scroll_x = Some(scroll.viewport.x);
-            }
+        if let WorkerToUi::FrameReady { tab_id: got, frame } = &msg {
+          if *got == tab_id && pred(frame.scroll_state.viewport.x) {
+            frame_x = Some(frame.scroll_state.viewport.x);
           }
-          WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
-            if pred(frame.scroll_state.viewport.x) {
-              frame_x = Some(frame.scroll_state.viewport.x);
-            }
-          }
-          _ => {}
         }
         if seen.len() < 64 {
           seen.push(msg);
         }
-        if scroll_x.is_some() && frame_x.is_some() {
+        if frame_x.is_some() {
           break;
         }
       }
@@ -67,19 +55,13 @@ fn wait_for_scroll_response_x(
     }
   }
 
-  let Some(scroll_x) = scroll_x else {
-    panic!(
-      "timed out waiting for ScrollStateUpdated satisfying predicate\nmessages:\n{}",
-      format_messages(&seen)
-    );
-  };
   let Some(frame_x) = frame_x else {
     panic!(
       "timed out waiting for FrameReady satisfying predicate\nmessages:\n{}",
       format_messages(&seen)
     );
   };
-  (scroll_x, frame_x)
+  frame_x
 }
 
 #[test]
@@ -122,11 +104,6 @@ fn arrow_left_right_scroll_horizontally_when_nothing_is_focused() {
   let initial_frame = wait_for_initial_frame(&rx, tab_id);
   let mut x = initial_frame.scroll_state.viewport.x;
 
-  // Drain the initial ScrollStateUpdated so subsequent waits don't accidentally match it.
-  let _ = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
-
   assert!(
     x.abs() < 1e-3,
     "expected initial scroll x to start at 0, got {x}"
@@ -139,8 +116,7 @@ fn arrow_left_right_scroll_horizontally_when_nothing_is_focused() {
     fastrender::interaction::KeyAction::ArrowRight,
   ))
   .unwrap();
-  let (_scroll_x, frame_x) =
-    wait_for_scroll_response_x(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > x + 1.0);
+  let frame_x = wait_for_scroll_response_x(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > x + 1.0);
   assert!(
     (frame_x - (x + arrow_step)).abs() < 1.0,
     "expected ArrowRight to scroll by ~{arrow_step}, got {frame_x} (from {x})"
@@ -153,7 +129,7 @@ fn arrow_left_right_scroll_horizontally_when_nothing_is_focused() {
     fastrender::interaction::KeyAction::ArrowLeft,
   ))
   .unwrap();
-  let (_scroll_x, frame_x) = wait_for_scroll_response_x(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
+  let frame_x = wait_for_scroll_response_x(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
     next < x - 1.0 || next <= 1.0
   });
   assert!(
@@ -164,4 +140,3 @@ fn arrow_left_right_scroll_horizontally_when_nothing_is_focused() {
   drop(tx);
   join.join().unwrap();
 }
-
