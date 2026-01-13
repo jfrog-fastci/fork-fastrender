@@ -112,8 +112,8 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
     }
   }
 
-  // Materialize one async generator object so we can discover `%AsyncGeneratorPrototype%` without
-  // relying on a dedicated intrinsics accessor.
+  // Materialize one async generator object so we can walk its prototype chain to find
+  // `%AsyncGeneratorPrototype%` without relying on a dedicated intrinsics accessor.
   match rt.exec_script("var it = g();") {
     Ok(_) => {}
     Err(err) => {
@@ -129,13 +129,32 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
     other => panic!("expected async generator object, got {other:?}"),
   };
 
+  // `OrdinaryCreateFromConstructor(F, "%AsyncGeneratorPrototype%")` uses `F.prototype` if it is an
+  // object. For `async function* g() {}`, that means:
+  //   Object.getPrototypeOf(g()) === g.prototype
+  // and:
+  //   Object.getPrototypeOf(g.prototype) === %AsyncGeneratorPrototype%
   let async_generator_prototype = {
     let mut scope = rt.heap.scope();
     scope.push_root(Value::Object(it))?;
-    scope
+    let it_prototype = scope
       .heap()
       .object_prototype(it)?
-      .expect("async generator should have a prototype")
+      .expect("async generator should have a prototype");
+    scope.push_root(Value::Object(it_prototype))?;
+
+    // In the spec-shaped case, `it_prototype` is `g.prototype`, which does *not* have own
+    // `next/return/throw` methods. Those live on `%AsyncGeneratorPrototype%`, i.e. `[[Prototype]]`
+    // of `g.prototype`. If `g.prototype` is not an object, `it_prototype` may already be
+    // `%AsyncGeneratorPrototype%`; detect that by looking for an own `next` method.
+    if get_own_data_property(&mut scope, it_prototype, "next")?.is_some() {
+      it_prototype
+    } else {
+      scope
+        .heap()
+        .object_prototype(it_prototype)?
+        .expect("async generator prototype should have a prototype")
+    }
   };
 
   let (next, _return_, _throw_) = {
