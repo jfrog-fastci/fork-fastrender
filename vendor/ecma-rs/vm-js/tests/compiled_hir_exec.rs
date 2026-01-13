@@ -5915,6 +5915,159 @@ fn compiled_var_in_for_in_head_is_hoisted_when_loop_body_not_entered() -> Result
 }
 
 #[test]
+fn compiled_var_in_for_of_head_is_hoisted_when_no_iterations() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        for (var __vmjs_k__ of []) {}
+        return __vmjs_k__;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_var_in_switch_case_is_hoisted() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        switch (0) {
+          case 1:
+            var __vmjs_x__ = 1;
+        }
+        return __vmjs_x__;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_var_in_try_block_is_hoisted() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        try {
+          throw 1;
+          var __vmjs_x__ = 2;
+        } catch (e) {}
+        return __vmjs_x__;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_var_in_catch_block_is_hoisted() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        try {
+          0;
+        } catch (e) {
+          var __vmjs_x__ = 1;
+        }
+        return __vmjs_x__;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_var_in_finally_block_is_hoisted() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        var out = "";
+        out += __vmjs_x__;
+        try {} finally { var __vmjs_x__ = 1; }
+        out += "," + __vmjs_x__;
+        return out;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "undefined,1");
+  Ok(())
+}
+
+#[test]
+fn compiled_var_in_with_block_assigns_to_var_binding_not_with_object() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        var x = 0;
+        var o = { x: 2 };
+        with (o) { var x = 1; }
+        return o.x + "," + x;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "2,1");
+  Ok(())
+}
+
+#[test]
 fn compiled_regex_literal_executes() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
