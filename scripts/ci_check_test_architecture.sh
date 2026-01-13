@@ -4,6 +4,10 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
+# Guardrail 0) Never allow unresolved merge conflict markers in vendored Rust sources.
+# This is intentionally run before the test-architecture gating logic so it is never skipped.
+bash scripts/check_no_conflict_markers.sh
+
 doc_ref="instructions/test_cleanup.md"
 
 if [[ ! -d tests ]]; then

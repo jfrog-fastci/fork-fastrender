@@ -25,6 +25,17 @@ vm-js builds are relatively fast (separate workspace), but still:
 - Use `--lib` to avoid building binaries you don't need
 - See [`docs/build_performance.md`](../docs/build_performance.md) for general guidance
 
+### CI guardrail: no unresolved merge conflict markers
+
+Before pushing changes that touch vendored JS engine crates, run:
+
+```bash
+bash scripts/check_no_conflict_markers.sh
+```
+
+This check is enforced in CI and scans the Rust sources under `vendor/ecma-rs/{vm-js,parse-js,semantic-js,test262-semantic}/src`.
+Known upstream fixtures under `vendor/ecma-rs/parse-js/tests/TypeScript/**` are allowed to contain conflict-marker strings.
+
 ---
 
 This workstream owns the **vm-js JavaScript runtime**: execution, garbage collection, built-in objects, and ECMA-262 spec compliance.
