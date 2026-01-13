@@ -373,6 +373,9 @@ impl WebSocketBackend for DisabledWebSocketBackend {
   }
 }
 
+#[cfg(not(feature = "direct_websocket"))]
+struct DirectWebSocketBackend;
+
 #[cfg(feature = "direct_websocket")]
 struct DirectWebSocketBackend;
 
