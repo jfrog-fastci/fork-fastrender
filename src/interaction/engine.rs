@@ -7525,10 +7525,11 @@ impl InteractionEngine {
         if let Some((point, text_box_id)) =
           document_selection_hit_at_page_point(&box_index, fragment_tree, page_point)
         {
-          if let Some(DocumentSelectionState::Ranges(ranges)) =
-            self.state.document_selection.as_mut()
-          {
-            let before = ranges.clone();
+          let selection_changed = self.state.mutate_document_selection(|selection| {
+            let DocumentSelectionState::Ranges(ranges) = selection else {
+              return;
+            };
+
             if let Some(initial_range) = state.initial_range {
               let initial_range = initial_range.normalized();
               let dragging_left =
@@ -7588,10 +7589,9 @@ impl InteractionEngine {
               .normalized();
             }
             ranges.normalize();
-            if *ranges != before {
-              dom_changed = true;
-              self.state.mark_paint_hash_dirty();
-            }
+          });
+          if selection_changed {
+            dom_changed = true;
           }
         }
       }

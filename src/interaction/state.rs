@@ -929,6 +929,29 @@ impl InteractionState {
     self.mark_paint_hash_dirty();
   }
 
+  /// Mutate the existing document selection in-place, marking the cached paint hash dirty when the
+  /// selection changes.
+  ///
+  /// This is intended for callers that want to update selection ranges without allocating a fresh
+  /// [`DocumentSelectionState`]. The closure is only invoked when a selection is present.
+  ///
+  /// Returns `true` when the selection was present and changed.
+  pub fn mutate_document_selection(
+    &mut self,
+    f: impl FnOnce(&mut DocumentSelectionState),
+  ) -> bool {
+    let Some(selection) = self.document_selection.as_mut() else {
+      return false;
+    };
+    let before = selection.clone();
+    f(selection);
+    if *selection == before {
+      return false;
+    }
+    self.mark_paint_hash_dirty();
+    true
+  }
+
   /// Mutably access the document selection, marking the cached paint hash dirty.
   pub fn document_selection_mut(&mut self) -> &mut Option<DocumentSelectionState> {
     self.mark_paint_hash_dirty();
