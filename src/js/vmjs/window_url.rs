@@ -33,6 +33,10 @@ const URLSP_ARG_TOO_LONG_ERROR: &str = "URLSearchParams argument exceeded max by
 const OBJECT_URL_BLOB_REQUIRED_ERROR: &str = "URL.createObjectURL requires a Blob";
 const OBJECT_URL_QUOTA_EXCEEDED_ERROR: &str = "URL.createObjectURL exceeded object URL limits";
 
+// `URL.revokeObjectURL()` is specified as a no-op for unknown URLs. Cap the size of strings we are
+// willing to convert into a Rust `String` so untrusted scripts cannot force large Rust allocations.
+const REVOKE_OBJECT_URL_MAX_CODE_UNITS: usize = 8 * 1024;
+const REVOKE_OBJECT_URL_MAX_UTF8_BYTES: usize = REVOKE_OBJECT_URL_MAX_CODE_UNITS * 3;
 // Brand `URL`/`URLSearchParams` wrappers as platform objects via HostSlots so structuredClone rejects
 // them with DataCloneError.
 const URL_HOST_TAG: u64 = 0x5552_4C5F_5F5F_5F5F; // "URL_____"
@@ -681,7 +685,21 @@ fn url_revoke_object_url_native(
 ) -> Result<Value, VmError> {
   let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let s: GcString = scope.to_string(vm, host, hooks, url_value)?;
-  let url = scope.heap().get_string(s)?.to_utf8_lossy();
+  let code_units_len = scope.heap().get_string(s)?.len_code_units();
+  if code_units_len > REVOKE_OBJECT_URL_MAX_CODE_UNITS {
+    return Ok(Value::Undefined);
+  }
+
+  let url = match js_string_to_rust_string_limited(
+    scope,
+    s,
+    REVOKE_OBJECT_URL_MAX_UTF8_BYTES,
+    "URL.revokeObjectURL argument exceeded max bytes",
+  ) {
+    Ok(url) => url,
+    // `revokeObjectURL` should not throw for invalid/unknown URLs.
+    Err(_) => return Ok(Value::Undefined),
+  };
   window_object_url::revoke_object_url(&url);
   Ok(Value::Undefined)
 }
@@ -3087,6 +3105,24 @@ mod tests {
     let result =
       realm.exec_script("new URLSearchParams('a=1&a=2&a=3').getAll('a').join(',')")?;
     assert_eq!(get_string(realm.heap(), result), "1,2,3");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn url_revoke_object_url_is_noop_for_large_input() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      "(function(){\
+         const u = URL.createObjectURL(new Blob(['hi'], { type: 'text/plain' }));\
+         URL.revokeObjectURL(u);\
+         URL.revokeObjectURL('x'.repeat(10000));\
+         return 'ok';\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
 
     realm.teardown();
     Ok(())
