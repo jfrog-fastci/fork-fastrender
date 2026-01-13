@@ -11453,6 +11453,86 @@ impl<'a> Evaluator<'a> {
           Ok(value)
         }
       },
+      OperatorName::AssignmentSubtraction
+      | OperatorName::AssignmentMultiplication
+      | OperatorName::AssignmentDivision
+      | OperatorName::AssignmentRemainder => match &*expr.left.stx {
+        Expr::ObjPat(_) | Expr::ArrPat(_) => Err(VmError::Unimplemented(
+          "arithmetic compound assignment to destructuring patterns",
+        )),
+        _ => {
+          // Compound assignment evaluation order per ECMA-262:
+          // 1. Evaluate LHS reference once.
+          // 2. GetValue(lref) BEFORE evaluating RHS.
+          // 3. Evaluate RHS.
+          // 4. Apply operator to lval and rval.
+          // 5. PutValue(lref, result).
+          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut op_scope = scope.reborrow();
+          self.root_reference(&mut op_scope, &reference)?;
+
+          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
+          op_scope.push_root(left)?;
+          let right = self.eval_expr(&mut op_scope, &expr.right)?;
+          // Root `right` across `ToNumeric` and BigInt arithmetic.
+          op_scope.push_root(right)?;
+
+          let left_num = self.to_numeric(&mut op_scope, left)?;
+          let right_num = self.to_numeric(&mut op_scope, right)?;
+          let value = match (left_num, right_num) {
+            (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
+              OperatorName::AssignmentSubtraction => Value::Number(a - b),
+              OperatorName::AssignmentMultiplication => Value::Number(a * b),
+              OperatorName::AssignmentDivision => Value::Number(a / b),
+              OperatorName::AssignmentRemainder => Value::Number(a % b),
+              _ => unreachable!(),
+            }),
+            (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+              let out = {
+                let a = op_scope.heap().get_bigint(a)?;
+                let b = op_scope.heap().get_bigint(b)?;
+
+                if b.is_zero()
+                  && matches!(
+                    expr.operator,
+                    OperatorName::AssignmentDivision | OperatorName::AssignmentRemainder
+                  )
+                {
+                  return Err(throw_range_error(self.vm, &mut op_scope, "Division by zero")?);
+                }
+
+                match expr.operator {
+                  OperatorName::AssignmentSubtraction => a.sub(b)?,
+                  OperatorName::AssignmentMultiplication => {
+                    a.mul_with_tick(b, &mut || self.tick())?
+                  }
+                  OperatorName::AssignmentDivision => {
+                    let (q, _) = a.div_mod_with_tick(b, &mut || self.tick())?;
+                    q
+                  }
+                  OperatorName::AssignmentRemainder => {
+                    let (_, r) = a.div_mod_with_tick(b, &mut || self.tick())?;
+                    r
+                  }
+                  _ => unreachable!(),
+                }
+              };
+              let out = op_scope.alloc_bigint(out)?;
+              Ok(Value::BigInt(out))
+            }
+            _ => Err(throw_type_error(
+              self.vm,
+              &mut op_scope,
+              "Cannot mix BigInt and other types",
+            )?),
+          }?;
+
+          op_scope.push_root(value)?;
+          self.put_value_to_reference(&mut op_scope, &reference, value)?;
+          Ok(value)
+        }
+      },
       OperatorName::LogicalAnd => {
         let left = self.eval_expr(scope, &expr.left)?;
         if !to_boolean(scope.heap(), left)? {
