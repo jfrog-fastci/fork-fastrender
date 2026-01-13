@@ -1,7 +1,28 @@
 //! A cache for storing the results of layout computation
 use crate::geometry::Size;
 use crate::style::AvailableSpace;
+use crate::sys::abs;
 use crate::tree::{LayoutOutput, RunMode};
+
+#[inline]
+fn definite_space_unconstrained_match(
+  cached_space: AvailableSpace,
+  requested_space: AvailableSpace,
+  cached_size: f32,
+) -> bool {
+  match (cached_space, requested_space) {
+    (AvailableSpace::Definite(cached), AvailableSpace::Definite(requested)) => {
+      // We require the cached size to be *clearly* below the cached constraint to avoid reusing
+      // entries where the available space may have bound (e.g. text wrapping). Use the same
+      // relative epsilon strategy as AvailableSpace::is_roughly_equal.
+      let eps_cached = f32::EPSILON * (abs(cached) + abs(cached_size) + 1.0);
+      let eps_requested = f32::EPSILON * (abs(requested) + abs(cached_size) + 1.0);
+
+      cached_size < cached - eps_cached && cached_size <= requested + eps_requested
+    }
+    _ => false,
+  }
+}
 
 /// The number of cache entries for each node in the tree.
 ///
@@ -190,12 +211,22 @@ impl Cache {
               || entry
                 .available_space
                 .width
-                .is_roughly_equal(available_space.width))
+                .is_roughly_equal(available_space.width)
+              || definite_space_unconstrained_match(
+                entry.available_space.width,
+                available_space.width,
+                cached_size.width,
+              ))
             && (known_dimensions.height.is_some()
               || entry
                 .available_space
                 .height
-                .is_roughly_equal(available_space.height))
+                .is_roughly_equal(available_space.height)
+              || definite_space_unconstrained_match(
+                entry.available_space.height,
+                available_space.height,
+                cached_size.height,
+              ))
         };
 
         let cache_slot = Self::compute_cache_slot(known_dimensions, available_space);
@@ -270,12 +301,22 @@ impl Cache {
               || entry
                 .available_space
                 .width
-                .is_roughly_equal(available_space.width))
+                .is_roughly_equal(available_space.width)
+              || definite_space_unconstrained_match(
+                entry.available_space.width,
+                available_space.width,
+                cached_size.width,
+              ))
             && (known_dimensions.height.is_some()
               || entry
                 .available_space
                 .height
-                .is_roughly_equal(available_space.height))
+                .is_roughly_equal(available_space.height)
+              || definite_space_unconstrained_match(
+                entry.available_space.height,
+                available_space.height,
+                cached_size.height,
+              ))
         };
 
         // Avoid duplicating equivalent entries (and keep the most recent measurement when
@@ -563,5 +604,113 @@ mod tests {
         height: 20.0,
       })
     );
+  }
+
+  #[test]
+  fn compute_size_cache_reuses_unconstrained_definite_available_space() {
+    let mut cache = Cache::new();
+
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(500.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    // Cached size does not saturate the 500px constraint, so it can be reused for any requested
+    // definite width that is still >= 100px.
+    let hit = cache
+      .get(
+        Size::NONE,
+        Size {
+          width: AvailableSpace::Definite(600.0),
+          height: AvailableSpace::MaxContent,
+        },
+        RunMode::ComputeSize,
+      )
+      .map(|o| o.size);
+    assert_eq!(
+      hit,
+      Some(Size {
+        width: 100.0,
+        height: 10.0,
+      })
+    );
+
+    let miss = cache.get(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(80.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+    );
+    assert!(miss.is_none());
+  }
+
+  #[test]
+  fn compute_size_cache_does_not_reuse_saturating_definite_measurements_across_constraints() {
+    let mut cache = Cache::new();
+
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(100.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    // Cached size saturates the 100px constraint, so it must not be reused for a larger definite
+    // width (e.g. text might unwrap).
+    let miss = cache.get(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(200.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+    );
+    assert!(miss.is_none());
+  }
+
+  #[test]
+  fn compute_size_cache_unconstrained_match_is_per_axis() {
+    let mut cache = Cache::new();
+
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(500.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::ComputeSize,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    // Even though the width constraint can be reused, differing intrinsic sizing mode on the
+    // other axis must still prevent a hit.
+    let miss = cache.get(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(600.0),
+        height: AvailableSpace::MinContent,
+      },
+      RunMode::ComputeSize,
+    );
+    assert!(miss.is_none());
   }
 }

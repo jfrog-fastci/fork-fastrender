@@ -1406,7 +1406,9 @@ mod tests {
     view.compute_child_layout(leaf, input_b);
     view.compute_child_layout(leaf, input_a);
 
-    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    // The second call uses a larger definite constraint, but the measured size is well below the
+    // cached constraint so it can be safely reused without re-invoking the measure callback.
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
   }
 
   #[test]
