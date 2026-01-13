@@ -178,6 +178,9 @@ Reason:
 With `SOCK_SEQPACKET`, your protocol should already include a header/payload alongside the
 ancillary FD(s), but this rule is worth stating explicitly to avoid “FD-only” messages.
 
+Receiver rule: if you receive one or more FDs but **zero** payload bytes, treat it as a protocol
+violation and close the connection (likely a sender bug).
+
 References:
 - `unix(7)` (socket types, `SCM_RIGHTS`): https://man7.org/linux/man-pages/man7/unix.7.html
 - `socketpair(2)`: https://man7.org/linux/man-pages/man2/socketpair.2.html

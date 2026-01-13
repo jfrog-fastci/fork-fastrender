@@ -402,10 +402,12 @@ Security invariants:
      - `src/ipc/fd_passing.rs` uses `MSG_CMSG_CLOEXEC` on Linux/Android and sets `FD_CLOEXEC`
        best-effort on other Unix platforms.
 7. **Include at least one byte of real payload data when sending FDs.**
-   - On Linux, `SCM_RIGHTS` control messages are associated with a received datagram/packet. Sending
-     “FD-only” control messages without accompanying payload bytes is a well-known footgun; always
-     include at least one byte of non-ancillary data.
-   - See also: [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
+    - On Linux, `SCM_RIGHTS` control messages are associated with a received datagram/packet. Sending
+      “FD-only” control messages without accompanying payload bytes is a well-known footgun; always
+      include at least one byte of non-ancillary data.
+    - Receiver rule: if a message arrives with one or more FDs but **zero** payload bytes, treat it
+      as a protocol violation and close the connection (this likely indicates a sender bug).
+    - See also: [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
 
 Why this matters:
 
