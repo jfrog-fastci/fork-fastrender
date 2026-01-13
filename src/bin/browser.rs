@@ -11380,24 +11380,55 @@ impl App {
           PageTextureFilterPolicy::Nearest => wgpu::FilterMode::Nearest,
           PageTextureFilterPolicy::Linear => wgpu::FilterMode::Linear,
           PageTextureFilterPolicy::Auto => {
-            let (tex_w_px, tex_h_px) = tex.size_px();
-            let drawn_px_w = size_points.x * self.pixels_per_point;
-            let drawn_px_h = size_points.y * self.pixels_per_point;
+            // Auto mode tries to keep text crisp at 1:1, but switching between samplers requires
+            // `egui_wgpu::Renderer::free_texture/register_native_texture` and therefore a new
+            // `TextureId`.
+            //
+            // During interactive resize the drawn scale hovers around 1:1 and can fluctuate (due to
+            // both window-size rounding and pixmap updates arriving asynchronously). Use:
+            // - resize-burst forcing: always use Linear while viewport changes are being throttled,
+            // - hysteresis: avoid flipping filters when the scale sits near the threshold.
+            let resizing = self.viewport_throttle.next_deadline().is_some();
+            if resizing {
+              wgpu::FilterMode::Linear
+            } else {
+              let current = tex.filter_mode();
+              let (tex_w_px, tex_h_px) = tex.size_px();
+              let drawn_px_w = size_points.x * self.pixels_per_point;
+              let drawn_px_h = size_points.y * self.pixels_per_point;
 
-            let one_to_one =
-              if tex_w_px > 0 && tex_h_px > 0 && drawn_px_w.is_finite() && drawn_px_h.is_finite() {
+              let max_scale_delta = if tex_w_px > 0
+                && tex_h_px > 0
+                && drawn_px_w.is_finite()
+                && drawn_px_h.is_finite()
+              {
                 let scale_x = drawn_px_w / tex_w_px as f32;
                 let scale_y = drawn_px_h / tex_h_px as f32;
-                const EPSILON: f32 = 0.01;
-                (scale_x - 1.0).abs() < EPSILON && (scale_y - 1.0).abs() < EPSILON
+                if scale_x.is_finite() && scale_y.is_finite() {
+                  Some((scale_x - 1.0).abs().max((scale_y - 1.0).abs()))
+                } else {
+                  None
+                }
               } else {
-                true
+                None
               };
 
-            if one_to_one {
-              wgpu::FilterMode::Nearest
-            } else {
-              wgpu::FilterMode::Linear
+              // Hysteresis band:
+              // - switch *to* Nearest only when very close to 1:1,
+              // - switch *back* to Linear only when clearly away from 1:1.
+              const SWITCH_TO_NEAREST: f32 = 0.005;
+              const SWITCH_TO_LINEAR: f32 = 0.02;
+
+              match (current, max_scale_delta) {
+                (_, None) => current,
+                (wgpu::FilterMode::Linear, Some(delta)) if delta < SWITCH_TO_NEAREST => {
+                  wgpu::FilterMode::Nearest
+                }
+                (wgpu::FilterMode::Nearest, Some(delta)) if delta > SWITCH_TO_LINEAR => {
+                  wgpu::FilterMode::Linear
+                }
+                _ => current,
+              }
             }
           }
         };

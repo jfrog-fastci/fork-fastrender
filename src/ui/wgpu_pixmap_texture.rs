@@ -383,6 +383,11 @@ impl WgpuPixmapTexture {
     self.id
   }
 
+  /// Current sampler filter mode used by this texture's `TextureId` registration.
+  pub fn filter_mode(&self) -> wgpu::FilterMode {
+    self.filter
+  }
+
   pub fn size_px(&self) -> (u32, u32) {
     self.content_size_px
   }
