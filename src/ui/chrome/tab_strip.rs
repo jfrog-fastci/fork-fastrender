@@ -363,8 +363,14 @@ fn compute_tab_insertion_index(
   tab_rects: &[(TabId, Rect)],
   dragged_id: TabId,
 ) -> usize {
-  if !pointer_x.is_finite() {
+  if pointer_x.is_nan() || pointer_x == f32::NEG_INFINITY {
     return 0;
+  }
+  if pointer_x == f32::INFINITY {
+    return tab_rects
+      .iter()
+      .filter(|(tab_id, _)| *tab_id != dragged_id)
+      .count();
   }
 
   // Compare against tab centers (ignoring the dragged tab itself). We intentionally treat equality
@@ -4052,5 +4058,36 @@ mod tests {
     let center = rects[0].1.center().x;
     // Exact equality should deterministically pick the "after" side.
     assert_eq!(compute_tab_insertion_index(center, &rects, dragged), 1);
+  }
+
+  #[test]
+  fn insertion_index_handles_non_finite_pointer_x() {
+    let rects = vec![
+      (
+        TabId(1),
+        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(10.0, 10.0)),
+      ),
+      (
+        TabId(2),
+        Rect::from_min_max(Pos2::new(20.0, 0.0), Pos2::new(30.0, 10.0)),
+      ),
+      (
+        TabId(3),
+        Rect::from_min_max(Pos2::new(40.0, 0.0), Pos2::new(50.0, 10.0)),
+      ),
+    ];
+
+    let dragged = TabId(2);
+    // NaN/NEG_INFINITY are treated as "before the strip".
+    assert_eq!(compute_tab_insertion_index(f32::NAN, &rects, dragged), 0);
+    assert_eq!(
+      compute_tab_insertion_index(f32::NEG_INFINITY, &rects, dragged),
+      0
+    );
+    // +INF should behave like a pointer far to the right (after all other tabs).
+    assert_eq!(
+      compute_tab_insertion_index(f32::INFINITY, &rects, dragged),
+      2
+    );
   }
 }
