@@ -289,7 +289,6 @@ enum StrictSandboxBackend {
   EmbeddedFallback,
 }
 
-<<<<<<< HEAD
 // `sandbox_check` filters are not exposed in `libc` either. These values match `<sandbox.h>`.
 const SANDBOX_FILTER_NONE: libc::c_int = 0;
 const SANDBOX_FILTER_PATH: libc::c_int = 1;
@@ -372,7 +371,7 @@ pub fn sandbox_check_network_outbound() -> io::Result<bool> {
 pub fn sandbox_check_network_outbound_diagnostic() -> String {
   format_sandbox_check(sandbox_check_network_outbound())
 }
-=======
+
 /// A "relaxed" Seatbelt profile that still denies access to most of the filesystem, but allows
 /// read access to a conservative set of system paths needed by typical dynamically-linked Rust
 /// binaries.
@@ -391,7 +390,6 @@ pub(crate) const RELAXED_SYSTEM_ALLOWLIST_PROFILE: &str = r#"(version 1)
   (subpath "/private/var/db")
 )
 "#;
->>>>>>> cddf2109 (test(macos): ensure relaxed Seatbelt profile blocks cwd and /tmp reads)
 
 fn sandbox_init_profile(profile: &CStr, flags: u64) -> io::Result<()> {
   let mut errorbuf: *mut libc::c_char = std::ptr::null_mut();
