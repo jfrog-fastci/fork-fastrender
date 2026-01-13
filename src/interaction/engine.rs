@@ -7198,7 +7198,7 @@ impl InteractionEngine {
     viewport_point: Point,
   ) -> bool {
     self
-      .pointer_move_and_hit(dom, box_tree, fragment_tree, scroll, viewport_point)
+      .pointer_move_and_hit_and_drop_target(dom, box_tree, fragment_tree, scroll, viewport_point)
       .0
   }
 
@@ -7215,6 +7215,25 @@ impl InteractionEngine {
     scroll: &ScrollState,
     viewport_point: Point,
   ) -> (bool, Option<HitTestResult>) {
+    let (changed, hit, _) =
+      self.pointer_move_and_hit_and_drop_target(dom, box_tree, fragment_tree, scroll, viewport_point);
+    (changed, hit)
+  }
+
+  /// Like [`InteractionEngine::pointer_move_and_hit`], but also returns whether the hover target is
+  /// a valid drop target for the current drag-and-drop gesture (if any).
+  ///
+  /// This performs the full effective disabled/inert/hidden checks using the same DOM index already
+  /// built for hover hit-testing, allowing UI layers to avoid rebuilding an O(n) DOM index on every
+  /// pointer move during drag-and-drop.
+  pub fn pointer_move_and_hit_and_drop_target(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    viewport_point: Point,
+  ) -> (bool, Option<HitTestResult>, bool) {
     let page_point = viewport_point.translate(scroll.viewport);
     let mut index = DomIndexMut::new(dom);
     let box_index = HitTestBoxIndex::new(box_tree);
@@ -7513,6 +7532,12 @@ impl InteractionEngine {
     dom_changed |= self.sync_text_edit_paint_state();
 
     let hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point);
+    let hover_is_drop_target = hit.as_ref().is_some_and(|hit| {
+      self.drag_drop_active_kind().is_some()
+        && hit.is_editable_text_drop_target_candidate
+        && !node_is_disabled(&index, hit.dom_node_id)
+        && !node_or_ancestor_is_inert(&index, hit.dom_node_id)
+    });
     let new_chain = hit
       .as_ref()
       .and_then(|hit| nearest_element_ancestor(&index, hit.styled_node_id))
@@ -7523,7 +7548,7 @@ impl InteractionEngine {
     if changed {
       self.state.set_hover_chain(new_chain);
     }
-    (dom_changed | changed, hit)
+    (dom_changed | changed, hit, hover_is_drop_target)
   }
 
   /// Handle mouse wheel stepping for a focused `<input type="number">`.

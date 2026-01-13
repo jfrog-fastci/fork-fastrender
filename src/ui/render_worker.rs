@@ -4602,8 +4602,13 @@ impl BrowserRuntime {
       let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
         let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
-        let (changed, hit) =
-          engine.pointer_move_and_hit(dom, box_tree, fragment_tree, scroll, viewport_point);
+        let (changed, hit, hover_is_drop_target) = engine.pointer_move_and_hit_and_drop_target(
+          dom,
+          box_tree,
+          fragment_tree,
+          scroll,
+          viewport_point,
+        );
         let drag_drop_active = engine.drag_drop_active_kind().is_some();
         let (
           hovered_url,
@@ -4620,24 +4625,12 @@ impl BrowserRuntime {
                 css_cursor,
                 is_selectable_text,
                 dom_element_id,
-                is_editable_text_drop_target_candidate,
                 form_control_cursor,
                 dom_node_id,
                 kind,
                 href,
                 ..
               } = hit;
-
-              let is_drop_target = if drag_drop_active && is_editable_text_drop_target_candidate {
-                let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
-                let disabled =
-                  crate::interaction::effective_disabled::is_effectively_disabled(dom_node_id, &dom_index);
-                let inert_or_hidden =
-                  crate::interaction::effective_disabled::is_effectively_inert_or_hidden(dom_node_id, &dom_index);
-                !(disabled || inert_or_hidden)
-              } else {
-                false
-              };
 
               // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
               // behaviour matches the platform. Only fall back to legacy heuristics when the computed
@@ -4676,7 +4669,7 @@ impl BrowserRuntime {
                 cursor,
                 Some(dom_node_id),
                 dom_element_id,
-                is_drop_target,
+                hover_is_drop_target,
               )
             }
             None => (None, CursorKind::Default, None, None, false),
