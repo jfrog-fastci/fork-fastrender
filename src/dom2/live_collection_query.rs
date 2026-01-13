@@ -1,6 +1,6 @@
 use selectors::context::QuirksMode;
 
-use super::{Document, Node, NodeId, NodeKind};
+use super::{Document, Node, NodeId, NodeKind, NULL_NAMESPACE};
 
 // DOM "ASCII whitespace" for tokenization:
 // <https://infra.spec.whatwg.org/#ascii-whitespace>
@@ -159,11 +159,12 @@ impl Document {
       let namespace_ok = if namespace_is_wildcard {
         true
       } else {
-        let Some(query_ns) = namespace else {
-          // `null` namespace (WebIDL `DOMString?`) does not match HTML namespace elements in our
-          // DOM representation.
-          return false;
-        };
+        // DOM: `namespace == null` only matches elements with a null namespace.
+        //
+        // `dom2` represents a null namespace using a sentinel string (`NULL_NAMESPACE`) to avoid
+        // conflating it with the empty string, which is used to represent the HTML namespace in
+        // HTML documents.
+        let query_ns = namespace.unwrap_or(NULL_NAMESPACE);
 
         if self.is_html_case_insensitive_namespace(query_ns) {
           self.is_html_case_insensitive_namespace(node_ns)
@@ -376,6 +377,47 @@ mod tests {
     assert_eq!(
       html_doc.get_elements_by_tag_name_ns_from(html_doc.root(), Some(SVG_NAMESPACE), "span"),
       vec![svg]
+    );
+  }
+
+  #[test]
+  fn get_elements_by_tag_name_ns_null_namespace_matches_only_null_namespace_elements() {
+    // HTML document with a null-namespace element plus a normal HTML element.
+    let root = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
+        is_html_document: true,
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "DiV".to_string(),
+            namespace: NULL_NAMESPACE.to_string(),
+            attributes: vec![("id".to_string(), "null".to_string())],
+          },
+          children: Vec::new(),
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "div".to_string(),
+            namespace: "".to_string(),
+            attributes: vec![("id".to_string(), "html".to_string())],
+          },
+          children: Vec::new(),
+        },
+      ],
+    };
+    let doc = Document::from_renderer_dom(&root);
+    let null = doc.get_element_by_id("null").unwrap();
+
+    assert_eq!(
+      doc.get_elements_by_tag_name_ns_from(doc.root(), None, "DiV"),
+      vec![null]
+    );
+    assert_eq!(
+      doc.get_elements_by_tag_name_ns_from(doc.root(), None, "div"),
+      Vec::new()
     );
   }
 }
