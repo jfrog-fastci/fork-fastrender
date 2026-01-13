@@ -113,7 +113,9 @@ impl From<IpcHttpCachePolicy> for HttpCachePolicy {
       age: value.age,
       stale_if_error: value.stale_if_error,
       stale_while_revalidate: value.stale_while_revalidate,
-      last_modified: value.last_modified_epoch_secs.map(epoch_secs_to_system_time),
+      last_modified: value
+        .last_modified_epoch_secs
+        .map(epoch_secs_to_system_time),
     }
   }
 }
@@ -191,16 +193,32 @@ impl TryFrom<IpcFetchedResource> for FetchedResource {
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcCacheSourceMetadata {
+  pub status: Option<u16>,
+  #[serde(default)]
+  pub nosniff: bool,
   pub etag: Option<String>,
   pub last_modified: Option<String>,
+  pub access_control_allow_origin: Option<String>,
+  pub timing_allow_origin: Option<String>,
+  pub vary: Option<String>,
+  #[serde(default)]
+  pub access_control_allow_credentials: bool,
+  pub final_url: Option<String>,
   pub cache_policy: Option<IpcHttpCachePolicy>,
 }
 
 impl IpcCacheSourceMetadata {
   fn from_fetched(source: &FetchedResource) -> Self {
     Self {
+      status: source.status,
+      nosniff: source.nosniff,
       etag: source.etag.clone(),
       last_modified: source.last_modified.clone(),
+      access_control_allow_origin: source.access_control_allow_origin.clone(),
+      timing_allow_origin: source.timing_allow_origin.clone(),
+      vary: source.vary.clone(),
+      access_control_allow_credentials: source.access_control_allow_credentials,
+      final_url: source.final_url.clone(),
       cache_policy: source.cache_policy.as_ref().map(IpcHttpCachePolicy::from),
     }
   }
@@ -253,7 +271,9 @@ pub struct IpcHttpRequest {
 
 impl IpcHttpRequest {
   pub fn from_http_request(req: HttpRequest<'_>) -> Self {
-    let body_b64 = req.body.map(|body| base64::engine::general_purpose::STANDARD.encode(body));
+    let body_b64 = req
+      .body
+      .map(|body| base64::engine::general_purpose::STANDARD.encode(body));
     Self {
       fetch: IpcFetchRequest::from_fetch_request(req.fetch),
       method: req.method.to_string(),
@@ -331,26 +351,40 @@ pub enum IpcResult<T> {
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IpcRequest {
-  Fetch { url: String },
-  FetchWithRequest { req: IpcFetchRequest },
+  Fetch {
+    url: String,
+  },
+  FetchWithRequest {
+    req: IpcFetchRequest,
+  },
   FetchWithRequestAndValidation {
     req: IpcFetchRequest,
     etag: Option<String>,
     last_modified: Option<String>,
   },
-  FetchHttpRequest { req: IpcHttpRequest },
+  FetchHttpRequest {
+    req: IpcHttpRequest,
+  },
   FetchPartialWithContext {
     kind: FetchContextKind,
     url: String,
     max_bytes: u64,
   },
-  FetchPartialWithRequest { req: IpcFetchRequest, max_bytes: u64 },
+  FetchPartialWithRequest {
+    req: IpcFetchRequest,
+    max_bytes: u64,
+  },
   RequestHeaderValue {
     req: IpcFetchRequest,
     header_name: String,
   },
-  CookieHeaderValue { url: String },
-  StoreCookieFromDocument { url: String, cookie_string: String },
+  CookieHeaderValue {
+    url: String,
+  },
+  StoreCookieFromDocument {
+    url: String,
+    cookie_string: String,
+  },
   ReadCacheArtifact {
     kind: FetchContextKind,
     url: String,
@@ -480,7 +514,9 @@ impl IpcResourceFetcher {
           format!("failed to decode IPC fetched resource: {err}"),
         ))
       }),
-      IpcResponse::Fetched(IpcResult::Err(err)) => Err(Error::Resource(err.into_resource_error(url))),
+      IpcResponse::Fetched(IpcResult::Err(err)) => {
+        Err(Error::Resource(err.into_resource_error(url)))
+      }
       other => Err(Error::Resource(ResourceError::new(
         url,
         format!("unexpected IPC response for fetch: {other:?}"),
@@ -511,7 +547,9 @@ impl IpcResourceFetcher {
   fn rpc_maybe_string(&self, url: &str, request: &IpcRequest) -> Result<Option<String>> {
     match self.rpc(url, request)? {
       IpcResponse::MaybeString(IpcResult::Ok(value)) => Ok(value),
-      IpcResponse::MaybeString(IpcResult::Err(err)) => Err(Error::Resource(err.into_resource_error(url))),
+      IpcResponse::MaybeString(IpcResult::Err(err)) => {
+        Err(Error::Resource(err.into_resource_error(url)))
+      }
       other => Err(Error::Resource(ResourceError::new(
         url,
         format!("unexpected IPC response: {other:?}"),
@@ -733,4 +771,3 @@ impl ResourceFetcher for IpcResourceFetcher {
     self.send_best_effort(url, &request);
   }
 }
-
