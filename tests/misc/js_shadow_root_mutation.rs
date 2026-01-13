@@ -145,14 +145,14 @@ fn shadow_root_inserted_as_fragment_closed() -> Result<()> {
       try {
         host.removeChild(sr);
         throw new Error('removeChild did not throw');
-      } catch (e) {
-        if (!e || e.name !== 'NotFoundError') throw e;
-      }
-
-      return true;
-    })()
-    "#,
-  )?;
+       } catch (e) {
+         if (!e || e.name !== 'NotFoundError') throw e;
+       }
+ 
+       return true;
+     })()
+     "#,
+   )?;
 
   assert_eq!(value, Value::Bool(true));
   Ok(())
@@ -210,6 +210,80 @@ fn shadow_root_inserted_as_fragment_open_webidl() -> Result<()> {
         if (!e || e.name !== 'NotFoundError') throw e;
       }
 
+      // `Element.append` should also treat ShadowRoot like DocumentFragment insertion.
+      const spanAppend = document.createElement('span');
+      spanAppend.id = 'moved-open-append';
+      sr.appendChild(spanAppend);
+      document.body.append(sr);
+
+      if (document.getElementById('moved-open-append') !== spanAppend) throw new Error('span was not moved via append');
+      if (document.body.lastChild !== spanAppend) throw new Error('span not appended via append');
+      if (sr.childNodes.length !== 0) throw new Error('shadow root was not emptied via append');
+      if (host.shadowRoot !== sr) throw new Error('host.shadowRoot was detached via append');
+      try {
+        host.attachShadow({ mode: 'open' });
+        throw new Error('attachShadow after append did not throw');
+      } catch (e) {
+        if (!e || e.name !== 'NotSupportedError') throw e;
+      }
+
+      // Multi-arg `Element.append` must also splice ShadowRoot children at the correct position.
+      const spanAppendMulti = document.createElement('span');
+      spanAppendMulti.id = 'moved-open-append-multi';
+      sr.appendChild(spanAppendMulti);
+      document.body.append('a', sr, 'b');
+
+      if (document.getElementById('moved-open-append-multi') !== spanAppendMulti) throw new Error('span was not moved via append multi');
+      if (sr.childNodes.length !== 0) throw new Error('shadow root was not emptied via append multi');
+      if (host.shadowRoot !== sr) throw new Error('host.shadowRoot was detached via append multi');
+
+      const last = document.body.lastChild;
+      if (!last || last.nodeType !== 3 || last.data !== 'b') throw new Error('append multi did not insert trailing text');
+      if (last.previousSibling !== spanAppendMulti) throw new Error('append multi did not splice shadow root child in order');
+      const beforeSpan = spanAppendMulti.previousSibling;
+      if (!beforeSpan || beforeSpan.nodeType !== 3 || beforeSpan.data !== 'a') throw new Error('append multi did not insert leading text');
+
+      // `Element.prepend` should also treat ShadowRoot like DocumentFragment insertion.
+      const spanPrepend = document.createElement('span');
+      spanPrepend.id = 'moved-open-prepend';
+      sr.appendChild(spanPrepend);
+      document.body.prepend(sr);
+
+      if (document.getElementById('moved-open-prepend') !== spanPrepend) throw new Error('span was not moved via prepend');
+      if (document.body.firstChild !== spanPrepend) throw new Error('span not prepended to body');
+      if (sr.childNodes.length !== 0) throw new Error('shadow root was not emptied via prepend');
+      if (host.shadowRoot !== sr) throw new Error('host.shadowRoot was detached via prepend');
+      try {
+        host.attachShadow({ mode: 'open' });
+        throw new Error('attachShadow after prepend did not throw');
+      } catch (e) {
+        if (!e || e.name !== 'NotSupportedError') throw e;
+      }
+
+      // `Element.replaceWith` should also treat ShadowRoot like DocumentFragment insertion.
+      const host2 = document.createElement('div');
+      const sr2 = host2.attachShadow({ mode: 'open' });
+      const spanReplace = document.createElement('span');
+      spanReplace.id = 'moved-open-replacewith';
+      sr2.appendChild(spanReplace);
+      document.body.appendChild(host2);
+      const marker = document.createElement('p');
+      marker.id = 'marker-open-replacewith';
+      document.body.appendChild(marker);
+      host2.replaceWith(sr2);
+
+      if (document.getElementById('moved-open-replacewith') !== spanReplace) throw new Error('span was not moved via replaceWith');
+      if (marker.previousSibling !== spanReplace) throw new Error('replaceWith inserted at wrong position');
+      if (sr2.childNodes.length !== 0) throw new Error('shadow root was not emptied via replaceWith');
+      if (host2.shadowRoot !== sr2) throw new Error('host.shadowRoot was detached via replaceWith');
+      if (host2.parentNode !== null) throw new Error('host2 should be detached after replaceWith');
+      try {
+        host2.attachShadow({ mode: 'open' });
+        throw new Error('attachShadow after replaceWith did not throw');
+      } catch (e) {
+        if (!e || e.name !== 'NotSupportedError') throw e;
+      }
+
       return true;
     })()
     "#,
@@ -263,6 +337,61 @@ fn shadow_root_inserted_as_fragment_closed_webidl() -> Result<()> {
       try {
         host.attachShadow({ mode: 'open' });
         throw new Error('attachShadow after fragment insertion did not throw');
+      } catch (e) {
+        if (!e || e.name !== 'NotSupportedError') throw e;
+      }
+
+      const spanAppend = document.createElement('span');
+      spanAppend.id = 'moved-closed-append';
+      sr.appendChild(spanAppend);
+      document.body.append(sr);
+
+      if (document.getElementById('moved-closed-append') !== spanAppend) throw new Error('span was not moved via append');
+      if (document.body.lastChild !== spanAppend) throw new Error('span not appended via append');
+      if (sr.childNodes.length !== 0) throw new Error('shadow root was not emptied via append');
+      if (host.shadowRoot !== null) throw new Error('closed shadow root should not be exposed after append');
+      try {
+        host.attachShadow({ mode: 'open' });
+        throw new Error('attachShadow after append did not throw');
+      } catch (e) {
+        if (!e || e.name !== 'NotSupportedError') throw e;
+      }
+
+      const spanPrepend = document.createElement('span');
+      spanPrepend.id = 'moved-closed-prepend';
+      sr.appendChild(spanPrepend);
+      document.body.prepend(sr);
+
+      if (document.getElementById('moved-closed-prepend') !== spanPrepend) throw new Error('span was not moved via prepend');
+      if (document.body.firstChild !== spanPrepend) throw new Error('span not prepended to body');
+      if (sr.childNodes.length !== 0) throw new Error('shadow root was not emptied via prepend');
+      if (host.shadowRoot !== null) throw new Error('closed shadow root should not be exposed after prepend');
+      try {
+        host.attachShadow({ mode: 'open' });
+        throw new Error('attachShadow after prepend did not throw');
+      } catch (e) {
+        if (!e || e.name !== 'NotSupportedError') throw e;
+      }
+
+      const host2 = document.createElement('div');
+      const sr2 = host2.attachShadow({ mode: 'closed' });
+      const spanReplace = document.createElement('span');
+      spanReplace.id = 'moved-closed-replacewith';
+      sr2.appendChild(spanReplace);
+      document.body.appendChild(host2);
+      const marker = document.createElement('p');
+      marker.id = 'marker-closed-replacewith';
+      document.body.appendChild(marker);
+      host2.replaceWith(sr2);
+
+      if (document.getElementById('moved-closed-replacewith') !== spanReplace) throw new Error('span was not moved via replaceWith');
+      if (marker.previousSibling !== spanReplace) throw new Error('replaceWith inserted at wrong position');
+      if (sr2.childNodes.length !== 0) throw new Error('shadow root was not emptied via replaceWith');
+      if (host2.shadowRoot !== null) throw new Error('closed shadow root should not be exposed after replaceWith');
+      if (host2.parentNode !== null) throw new Error('host2 should be detached after replaceWith');
+      try {
+        host2.attachShadow({ mode: 'open' });
+        throw new Error('attachShadow after replaceWith did not throw');
       } catch (e) {
         if (!e || e.name !== 'NotSupportedError') throw e;
       }

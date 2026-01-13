@@ -5193,7 +5193,13 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   ReplaceWithItem::Node(id) => *id,
                   ReplaceWithItem::Text(text) => dom.create_text(text),
                 };
-                dom.append_child(fragment, child_id)?;
+                let child_is_shadow_root = child_id.index() < dom.nodes_len()
+                  && matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. });
+                if child_is_shadow_root {
+                  dom.with_shadow_root_as_document_fragment(child_id, |dom| dom.append_child(fragment, child_id))?;
+                } else {
+                  dom.append_child(fragment, child_id)?;
+                }
               }
 
               if dom.parent(node_id)? == Some(parent_id) {
@@ -5358,9 +5364,16 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   NodeOrDomString::Node(id) => *id,
                   NodeOrDomString::Text(s) => dom.create_text(s),
                 };
-                if let Err(err) = dom.append_child(fragment, child) {
+                let child_is_shadow_root =
+                  child.index() < dom.nodes_len() && matches!(dom.node(child).kind, NodeKind::ShadowRoot { .. });
+                let inserted = if child_is_shadow_root {
+                  dom.with_shadow_root_as_document_fragment(child, |dom| dom.append_child(fragment, child))
+                } else {
+                  dom.append_child(fragment, child)
+                };
+                if let Err(err) = inserted {
                   return (Err(err), false);
-                }
+                };
               }
               fragment
             };
@@ -5368,12 +5381,33 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             // `prepend` inserts before the (current) first child. For the multi-arg path, this is
             // computed after moving nodes into the temporary fragment, matching the DOM Standard.
             let reference = if prepend {
-              dom.first_child(element_id)
+              let children = match dom.children(element_id) {
+                Ok(children) => children,
+                Err(err) => return (Err(err), false),
+              };
+              children.iter().copied().find(|&child_id| {
+                if child_id.index() >= dom.nodes_len() {
+                  return false;
+                }
+                let child = dom.node(child_id);
+                child.parent == Some(element_id)
+                  && !matches!(child.kind, NodeKind::ShadowRoot { .. })
+              })
             } else {
               None
             };
 
-            let inserted = if prepend {
+            let node_is_shadow_root = node_to_insert.index() < dom.nodes_len()
+              && matches!(dom.node(node_to_insert).kind, NodeKind::ShadowRoot { .. });
+            let inserted = if node_is_shadow_root {
+              if prepend {
+                dom.with_shadow_root_as_document_fragment(node_to_insert, |dom| {
+                  dom.insert_before(element_id, node_to_insert, reference)
+                })
+              } else {
+                dom.with_shadow_root_as_document_fragment(node_to_insert, |dom| dom.append_child(element_id, node_to_insert))
+              }
+            } else if prepend {
               dom.insert_before(element_id, node_to_insert, reference)
             } else {
               dom.append_child(element_id, node_to_insert)
