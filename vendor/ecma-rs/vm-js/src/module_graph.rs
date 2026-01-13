@@ -19,6 +19,7 @@ use crate::{ExternalMemoryToken, Heap, SourceText, VmHost, VmHostHooks};
 use core::mem;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::sync::Arc;
 use parse_js::ast::node::Node;
 use parse_js::ast::stx::TopLevel;
 use parse_js::{Dialect, ParseOptions, SourceType};
