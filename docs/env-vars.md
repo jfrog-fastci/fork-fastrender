@@ -56,8 +56,6 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
     - prev/new CSS + paint hashes and whether the layout fingerprint matched.
 - `FASTR_FULL_PAGE=1` – expand output to the full document content size (instead of the viewport).
 - `FASTR_USE_BUNDLED_FONTS=1` – disable system font discovery and use the bundled fixtures (default in CI).
-- `FASTR_DISABLE_RENDERER_SANDBOX=1` – **developer-only**: disable renderer process sandboxing (when
-  using the multiprocess architecture). Intended for debugging/bisects only.
 - `FASTR_JS_CONSOLE_STDERR=0|1` – print JavaScript `console.*` output to stderr (opt-in; default off). Useful for local debugging when render diagnostics collection is disabled.
 - `FASTR_WEB_FONT_WAIT_MS=<ms>` – wait up to `<ms>` for pending `@font-face` web font loads (notably `font-display: swap`) before layout/paint so offline renders use the intended web fonts.
   - Default: `0` in the core renderer (no extra wait; renders the pre-swap state).
