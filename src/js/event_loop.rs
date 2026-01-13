@@ -1992,6 +1992,7 @@ impl<Host: 'static> EventLoop<Host> {
   pub(crate) fn pending_task_count(&self) -> usize {
     self.pending_tasks
   }
+
   fn maybe_compact_animation_frame_queue(&mut self) {
     let live = self.animation_frame_callbacks.len();
     if live == 0 {
@@ -2002,7 +2003,8 @@ impl<Host: 'static> EventLoop<Host> {
 
     // `animation_frame_queue` can contain stale IDs for canceled callbacks. Since `VecDeque` does
     // not support removal-by-key, those stale entries would otherwise accumulate unboundedly if
-    // attacker-controlled JS repeatedly schedules/cancels animation frame callbacks.
+    // attacker-controlled JS repeatedly schedules/cancels animation frame callbacks while keeping
+    // at least one callback pending (so the queue is not cleared).
     //
     // Compact opportunistically when the queue grows noticeably larger than the set of live
     // callbacks.
