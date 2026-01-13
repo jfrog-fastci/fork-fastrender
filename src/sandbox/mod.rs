@@ -34,9 +34,17 @@
 //! ## Inherited file descriptors
 //!
 //! Sandbox policies that block filesystem and network syscalls do not automatically revoke access
-//! already granted via inherited file descriptors (e.g. a pre-opened file or socket). Use
-//! [`close_fds_except`] as a defense-in-depth measure when spawning a sandboxed renderer to ensure
-//! only explicitly-whitelisted FDs (stdio + IPC endpoints) remain open.
+//! already granted via inherited file descriptors (e.g. a pre-opened file or socket).
+//!
+//! When spawning sandboxed renderer subprocesses, prefer using [`set_cloexec_on_fds_except`] as a
+//! safe defense-in-depth measure to prevent leaking unrelated file descriptors into the exec'd
+//! child process.
+//!
+//! [`close_fds_except`] is a stronger option (it closes everything not whitelisted), but it can be
+//! a footgun when used with `std::process::CommandExt::pre_exec`: `std::process::Command` may have
+//! internal `CLOEXEC` pipes used for reporting `exec(2)` failures. Closing those fds inside
+//! `pre_exec` can cause the child to abort when `exec` fails. Only use `close_fds_except` if you
+//! control the full spawn path and know exactly which internal fds must remain open.
 
 use std::io;
 
@@ -46,7 +54,7 @@ pub mod fd_sanitizer;
 
 pub mod spawn;
 
-pub use fd_sanitizer::close_fds_except;
+pub use fd_sanitizer::{close_fds_except, set_cloexec_on_fds_except};
 
 use std::env::VarError;
 
@@ -135,7 +143,9 @@ fn macos_renderer_sandbox_mode_override_via_env() -> Option<MacosSandboxMode> {
   let normalized = trimmed.to_ascii_lowercase().replace('_', "-");
   match normalized.as_str() {
     "pure-computation" | "pure" | "strict" => Some(MacosSandboxMode::Strict),
-    "system-fonts" | "fonts" | "relaxed" | "renderer-system-fonts" => Some(MacosSandboxMode::Relaxed),
+    "system-fonts" | "fonts" | "relaxed" | "renderer-system-fonts" => {
+      Some(MacosSandboxMode::Relaxed)
+    }
     _ => None,
   }
 }
@@ -405,7 +415,10 @@ pub enum SandboxError {
   },
 
   #[error("SBPL profile contains an interior NUL byte (from {var}={raw_value:?})")]
-  SeatbeltProfileContainsNul { var: &'static str, raw_value: String },
+  SeatbeltProfileContainsNul {
+    var: &'static str,
+    raw_value: String,
+  },
 
   #[cfg(target_os = "macos")]
   #[error("failed to apply macOS Seatbelt sandbox (profile={profile}): {errorbuf}")]
@@ -452,13 +465,13 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
     let profile_desc = config.macos_seatbelt_profile.describe();
 
     let apply_result = match &config.macos_seatbelt_profile {
-      MacosSeatbeltProfileSelection::PureComputation => macos::apply_renderer_sandbox(
-        macos::MacosSandboxMode::PureComputation,
-      ),
+      MacosSeatbeltProfileSelection::PureComputation => {
+        macos::apply_renderer_sandbox(macos::MacosSandboxMode::PureComputation)
+      }
       MacosSeatbeltProfileSelection::NoInternet => macos::apply_named_profile("no-internet"),
-      MacosSeatbeltProfileSelection::RendererDefault => macos::apply_renderer_sandbox(
-        macos::MacosSandboxMode::RendererSystemFonts,
-      ),
+      MacosSeatbeltProfileSelection::RendererDefault => {
+        macos::apply_renderer_sandbox(macos::MacosSandboxMode::RendererSystemFonts)
+      }
       MacosSeatbeltProfileSelection::SbplPath { .. } => {
         let sbpl = match config.macos_seatbelt_profile.load_sbpl_source() {
           Ok(sbpl) => sbpl,
@@ -502,9 +515,8 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
 /// renderer does not leak sensitive data via core files.
 #[cfg(target_os = "linux")]
 pub fn apply_renderer_sandbox_prelude() -> Result<(), SandboxError> {
-  linux_set_parent_death_signal().map_err(|source| SandboxError::SetParentDeathSignalFailed {
-    source,
-  })?;
+  linux_set_parent_death_signal()
+    .map_err(|source| SandboxError::SetParentDeathSignalFailed { source })?;
   let mut report = RendererSandboxReport::default();
   linux_hardening::apply_linux_hardening(&RendererSandboxConfig::default(), &mut report);
   Ok(())
@@ -1070,11 +1082,11 @@ mod tests {
 mod tests {
   #[cfg(target_os = "macos")]
   mod macos {
+    use super::super::apply_pure_computation_sandbox;
     use super::super::{
       apply_macos_sandbox_from_env, MacosSandboxMode, MacosSandboxNotAppliedReason,
       MacosSandboxStatus,
     };
-    use super::super::apply_pure_computation_sandbox;
     use std::io::Write;
     use std::process::Command;
 
@@ -1188,7 +1200,10 @@ mod tests {
       let output = Command::new(exe)
         .env(CHILD_ENV, "1")
         // Force the relaxed system-fonts profile via the developer override.
-        .env(super::super::macos::ENV_MACOS_RENDERER_SANDBOX, "system-fonts")
+        .env(
+          super::super::macos::ENV_MACOS_RENDERER_SANDBOX,
+          "system-fonts",
+        )
         .arg("--exact")
         .arg(test_name)
         .arg("--nocapture")
