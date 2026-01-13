@@ -830,6 +830,120 @@ fn compiled_hir_exec_unary_plus_coerces_object() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_relational_comparison_string_uses_lexicographic_order() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return 'a' < 'b';
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return '2' < '10';
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(false));
+
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return '2' < 10;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
+fn compiled_relational_comparison_supports_bigint_and_object_coercion() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return 1n < 2n;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return 2n > 1n;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return 1n < 2;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return 2 < 1n;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(false));
+
+  // BigInt/string comparisons must parse the string as a BigInt rather than rounding through
+  // Number.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return '9007199254740993' > 9007199254740992n;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+
+  // Invalid BigInt parses yield the spec's `undefined` result, which is treated as `false` by `<`.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return '0.' < 1n;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(false));
+
+  // Object operands are coerced via ToPrimitive (hint Number).
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return ({ valueOf() { return 1; } }) < 2;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
 fn compiled_regex_literal_creates_regexp() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());

@@ -3735,32 +3735,30 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::BinaryOp::StrictEquality => Ok(Value::Bool(self.strict_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::StrictInequality => Ok(Value::Bool(!self.strict_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::LessThan => {
-        let mut scope = scope.reborrow();
-        scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Bool(ln < rn))
+        Ok(Value::Bool(
+          self
+            .abstract_relational_comparison(scope, l, r, /* left_first */ true)?
+            .unwrap_or(false),
+        ))
       }
       hir_js::BinaryOp::LessEqual => {
-        let mut scope = scope.reborrow();
-        scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Bool(ln <= rn))
+        Ok(Value::Bool(match self.abstract_relational_comparison(scope, r, l, false)? {
+          None => false,
+          Some(r) => !r,
+        }))
       }
       hir_js::BinaryOp::GreaterThan => {
-        let mut scope = scope.reborrow();
-        scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Bool(ln > rn))
+        Ok(Value::Bool(
+          self
+            .abstract_relational_comparison(scope, r, l, /* left_first */ false)?
+            .unwrap_or(false),
+        ))
       }
       hir_js::BinaryOp::GreaterEqual => {
-        let mut scope = scope.reborrow();
-        scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Bool(ln >= rn))
+        Ok(Value::Bool(match self.abstract_relational_comparison(scope, l, r, true)? {
+          None => false,
+          Some(r) => !r,
+        }))
       }
       hir_js::BinaryOp::Instanceof => Ok(Value::Bool(self.instanceof_operator(scope, l, r)?)),
       hir_js::BinaryOp::Comma => {
@@ -4102,6 +4100,111 @@ impl<'vm> HirEvaluator<'vm> {
         _ => return Ok(false),
       }
     }
+  }
+
+  /// ECMA-262 Abstract Relational Comparison.
+  ///
+  /// Returns `Ok(None)` for the spec's `undefined` result (e.g. when comparing NaN).
+  fn abstract_relational_comparison(
+    &mut self,
+    scope: &mut Scope<'_>,
+    x: Value,
+    y: Value,
+    left_first: bool,
+  ) -> Result<Option<bool>, VmError> {
+    // Root inputs for the duration of the comparison: `ToPrimitive`/`ToNumeric` can allocate.
+    let mut scope = scope.reborrow();
+    scope.push_roots(&[x, y])?;
+
+    // 1. ToPrimitive, hint Number (order depends on `left_first`).
+    let (px, py) = if left_first {
+      let px = scope.to_primitive(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        x,
+        ToPrimitiveHint::Number,
+      )?;
+      scope.push_root(px)?;
+      let py = scope.to_primitive(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        y,
+        ToPrimitiveHint::Number,
+      )?;
+      scope.push_root(py)?;
+      (px, py)
+    } else {
+      let py = scope.to_primitive(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        y,
+        ToPrimitiveHint::Number,
+      )?;
+      scope.push_root(py)?;
+      let px = scope.to_primitive(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        x,
+        ToPrimitiveHint::Number,
+      )?;
+      scope.push_root(px)?;
+      (px, py)
+    };
+
+    // 2. String/string => lexicographic code-unit comparison.
+    if let (Value::String(sx), Value::String(sy)) = (px, py) {
+      let a = scope.heap().get_string(sx)?.as_code_units();
+      let b = scope.heap().get_string(sy)?.as_code_units();
+      let ord = crate::tick::code_units_cmp_with_ticks(a, b, || self.vm.tick())?;
+      return Ok(Some(ord == Ordering::Less));
+    }
+
+    // 2.b. BigInt/string => parse the string as a BigInt (StringToBigInt).
+    match (px, py) {
+      (Value::BigInt(a), Value::String(bs)) => {
+        let mut tick = || self.vm.tick();
+        let Some(bi) = string_to_bigint(scope.heap(), bs, &mut tick)? else {
+          return Ok(None);
+        };
+        return Ok(Some(scope.heap().get_bigint(a)? < &bi));
+      }
+      (Value::String(as_), Value::BigInt(b)) => {
+        let mut tick = || self.vm.tick();
+        let Some(ai) = string_to_bigint(scope.heap(), as_, &mut tick)? else {
+          return Ok(None);
+        };
+        return Ok(Some(&ai < scope.heap().get_bigint(b)?));
+      }
+      _ => {}
+    }
+
+    // 3. Otherwise => ToNumeric then numeric comparison.
+    let nx = self.to_numeric(&mut scope, px)?;
+    let ny = self.to_numeric(&mut scope, py)?;
+    Ok(match (nx, ny) {
+      (NumericValue::Number(a), NumericValue::Number(b)) => {
+        if a.is_nan() || b.is_nan() {
+          None
+        } else {
+          Some(a < b)
+        }
+      }
+      (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+        let a = scope.heap().get_bigint(a)?;
+        let b = scope.heap().get_bigint(b)?;
+        Some(a < b)
+      }
+      (NumericValue::BigInt(a), NumericValue::Number(b)) => {
+        bigint_compare_number(scope.heap(), a, b)?.map(|ord| ord == Ordering::Less)
+      }
+      (NumericValue::Number(a), NumericValue::BigInt(b)) => {
+        bigint_compare_number(scope.heap(), b, a)?.map(|ord| ord == Ordering::Greater)
+      }
+    })
   }
 
   fn eval_assignment(
