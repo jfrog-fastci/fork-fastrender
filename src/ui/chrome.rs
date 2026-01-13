@@ -4379,6 +4379,20 @@ mod tests {
       )),
       "expected ChromeAction::OpenUrlInNewTab(\"example.com\"), got {actions:?}"
     );
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::AddressBarFocusChanged(false))),
+      "expected ChromeAction::AddressBarFocusChanged(false), got {actions:?}"
+    );
+    assert!(
+      !app.chrome.address_bar_has_focus,
+      "expected address bar to be blurred after Alt+Enter"
+    );
+    assert!(
+      !app.chrome.address_bar_editing,
+      "expected address bar editing to end after Alt+Enter"
+    );
   }
 
   #[test]
@@ -6629,6 +6643,20 @@ mod tests {
       )),
       "expected ChromeAction::OpenUrlInNewTab(\"https://example.com/\"), got {actions:?}"
     );
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::AddressBarFocusChanged(false))),
+      "expected ChromeAction::AddressBarFocusChanged(false), got {actions:?}"
+    );
+    assert!(
+      !app.chrome.address_bar_has_focus,
+      "expected address bar to be blurred after Alt+Enter"
+    );
+    assert!(
+      !app.chrome.address_bar_editing,
+      "expected address bar editing to end after Alt+Enter"
+    );
   }
 
   #[test]
@@ -6693,6 +6721,20 @@ mod tests {
       !actions.iter().any(|action| matches!(action, ChromeAction::OpenUrlInNewTab(_))),
       "did not expect ChromeAction::OpenUrlInNewTab, got {actions:?}"
     );
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::AddressBarFocusChanged(false))),
+      "expected ChromeAction::AddressBarFocusChanged(false), got {actions:?}"
+    );
+    assert!(
+      !app.chrome.address_bar_has_focus,
+      "expected address bar to be blurred after Alt+Enter"
+    );
+    assert!(
+      !app.chrome.address_bar_editing,
+      "expected address bar editing to end after Alt+Enter"
+    );
   }
 
   #[test]
@@ -6743,6 +6785,20 @@ mod tests {
         ChromeAction::OpenUrlInNewTab(url) if url == "https://duckduckgo.com/?q=cats"
       )),
       "expected ChromeAction::OpenUrlInNewTab(\"https://duckduckgo.com/?q=cats\"), got {actions:?}"
+    );
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::AddressBarFocusChanged(false))),
+      "expected ChromeAction::AddressBarFocusChanged(false), got {actions:?}"
+    );
+    assert!(
+      !app.chrome.address_bar_has_focus,
+      "expected address bar to be blurred after Alt+Enter"
+    );
+    assert!(
+      !app.chrome.address_bar_editing,
+      "expected address bar editing to end after Alt+Enter"
     );
   }
 
