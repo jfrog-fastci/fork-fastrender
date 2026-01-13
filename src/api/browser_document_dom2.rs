@@ -4880,6 +4880,74 @@ mod tests {
   }
 
   #[test]
+  fn incremental_relayout_preserves_svg_id_defs_raw_metadata() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <svg width="0" height="0" style="position:absolute">
+        <symbol id="icon" viewBox="0 0 10 10">
+          <rect width="10" height="10" fill="currentColor" />
+        </symbol>
+      </svg>
+      <svg width="10" height="10">
+        <use href="#icon"></use>
+      </svg>
+      <p id="text">Hello</p>
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+    doc.render_frame()?;
+
+    let prepared = doc.prepared().expect("prepared");
+    let defs = prepared
+      .fragment_tree
+      .svg_id_defs
+      .as_deref()
+      .expect("svg_id_defs should be collected on initial layout");
+    assert!(defs.contains_key("icon"), "expected svg_id_defs to contain icon");
+
+    let raw = prepared
+      .fragment_tree
+      .svg_id_defs_raw
+      .as_deref()
+      .expect("svg_id_defs_raw should be collected on initial layout");
+    assert!(
+      raw.contains_key("icon"),
+      "expected svg_id_defs_raw to contain icon"
+    );
+
+    let before = doc.invalidation_counters();
+    let p = doc.dom().get_element_by_id("text").expect("p#text element");
+    let text_node = first_text_child(doc.dom(), p).expect("text child node");
+    let changed = doc.mutate_dom(|dom| dom.set_text_data(text_node, "Updated").expect("set text"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+
+    let prepared = doc.prepared().expect("prepared");
+    let defs = prepared
+      .fragment_tree
+      .svg_id_defs
+      .as_deref()
+      .expect("svg_id_defs should be preserved after incremental relayout");
+    assert!(
+      defs.contains_key("icon"),
+      "incremental relayout should preserve fragment-tree svg_id_defs metadata"
+    );
+    let raw = prepared
+      .fragment_tree
+      .svg_id_defs_raw
+      .as_deref()
+      .expect("svg_id_defs_raw should be preserved after incremental relayout");
+    assert!(
+      raw.contains_key("icon"),
+      "incremental relayout should preserve fragment-tree svg_id_defs_raw metadata"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn mutate_dom_false_does_not_invalidate() {
     let renderer = renderer_for_tests();
     let mut doc = BrowserDocumentDom2::new(
