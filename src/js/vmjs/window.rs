@@ -1260,6 +1260,7 @@ impl WindowRealmHost for WindowHostState {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::HttpFetcher;
   use crate::js::window_realm::DomBindingsBackend;
 
   use crate::resource::HttpFetcher;

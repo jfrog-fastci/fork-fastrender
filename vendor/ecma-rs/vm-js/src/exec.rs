@@ -20937,6 +20937,37 @@ fn async_generator_handle_execution_result(
       }
 
       AsyncBodyResult::Await {
+        kind: AsyncSuspendKind::AwaitResolved,
+        await_value: awaited_promise,
+        frames,
+      } => {
+        state.frames = frames;
+
+        // `AwaitResolved` means the internal `PromiseResolve` step has already been performed by an
+        // internal algorithm (e.g. `AsyncIteratorClose`). Avoid calling `PromiseResolve` again so we
+        // do not observe `promise.constructor` twice.
+        let mut await_scope = scope.reborrow();
+        await_scope.push_root(awaited_promise)?;
+
+        cont.env.teardown(await_scope.heap_mut());
+        await_scope
+          .heap_mut()
+          .async_generator_set_continuation(gen_obj, Some(cont))?;
+
+        async_generator_schedule_await(
+          vm,
+          &mut await_scope,
+          host,
+          hooks,
+          gen_obj,
+          awaited_promise,
+          AsyncGeneratorResumeKind::Await,
+          state,
+        )?;
+        return Ok(false);
+      }
+
+      AsyncBodyResult::Await {
         kind: AsyncSuspendKind::Yield,
         await_value,
         frames,

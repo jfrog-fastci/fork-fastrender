@@ -13728,7 +13728,9 @@ mod webidl_event_target_dom2_tests {
 mod tests {
   use super::*;
   use crate::api::RenderOptions;
+  use crate::clock::VirtualClock;
   use std::any::Any;
+  use std::sync::Arc;
   use vm_js::{
     Heap, HeapLimits, Job, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
   };
@@ -14339,6 +14341,7 @@ mod tests {
 #[cfg(test)]
 mod element_dispatch_tests {
   use super::*;
+  use crate::clock::VirtualClock;
   use crate::dom2;
   use crate::js::dom_platform::DomInterface;
   use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
@@ -14346,6 +14349,7 @@ mod element_dispatch_tests {
   use crate::js::{WindowHostState, WindowRealm, WindowRealmConfig};
   use selectors::context::QuirksMode;
   use std::any::Any;
+  use std::sync::Arc;
   use webidl_vm_js::host_from_hooks;
 
   #[derive(Default)]
@@ -14381,7 +14385,7 @@ mod element_dispatch_tests {
       Some(1),
       None,
       5 * 1024 * 1024,
-      std::sync::Arc::new(crate::clock::RealClock::default()),
+      Arc::new(VirtualClock::new()),
     ));
 
     let mut scope = heap.scope();

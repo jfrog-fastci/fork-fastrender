@@ -411,7 +411,9 @@ impl Document {
     Ok(self.range(range)?.end.offset)
   }
 
-  /// Whether the range is collapsed (its start and end boundary points are equal).
+  /// DOM `AbstractRange.collapsed`.
+  ///
+  /// True iff the range's start boundary point equals its end boundary point.
   ///
   /// Spec: https://dom.spec.whatwg.org/#dom-range-collapsed
   pub fn range_collapsed(&self, range: RangeId) -> DomResult<bool> {
@@ -472,16 +474,16 @@ impl Document {
 
     let (this_point, other_point) = match how {
       0 => (range_a.start, range_b.start), // START_TO_START
-      1 => (range_a.end, range_b.start),   // START_TO_END
+      1 => (range_a.start, range_b.end),   // START_TO_END
       2 => (range_a.end, range_b.end),     // END_TO_END
-      3 => (range_a.start, range_b.end),   // END_TO_START
-      _ => unreachable!("checked above"), // fastrender-allow-panic
+      3 => (range_a.end, range_b.start),   // END_TO_START
+      _ => unreachable!("checked above"),
     };
 
-    Ok(match self.boundary_point_position(this_point, other_point) {
-      BoundaryPointPosition::Before => -1,
-      BoundaryPointPosition::Equal => 0,
-      BoundaryPointPosition::After => 1,
+    Ok(match self.compare_boundary_points(this_point, other_point) {
+      Ordering::Less => -1,
+      Ordering::Equal => 0,
+      Ordering::Greater => 1,
     })
   }
 

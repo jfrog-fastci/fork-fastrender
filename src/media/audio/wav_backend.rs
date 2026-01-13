@@ -382,12 +382,12 @@ fn write_wav_header(file: &mut File, config: AudioStreamConfig, data_bytes: u32)
 
 #[cfg(test)]
 mod tests {
+  use crate::media::audio::AudioBackend;
   use std::convert::TryInto;
   use std::time::Duration;
 
   use super::*;
   use crate::debug::trace::TraceHandle;
-  use crate::media::audio::AudioBackend;
   use crate::media::audio::test_signal;
 
   #[test]

@@ -587,6 +587,15 @@ fn range_common_ancestor_container_matches_dom_algorithm() {
 }
 
 #[test]
+fn range_common_ancestor_container_document_initial_range() {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let range = doc.create_range();
+  assert_eq!(doc.range_common_ancestor_container(range).unwrap(), doc.root());
+}
+
+#[test]
 fn live_range_pre_insert_shifts_boundary_points_in_parent_for_single_node_insertion() {
   let html = concat!(
     "<!doctype html>",
@@ -1289,6 +1298,44 @@ fn range_compare_boundary_points_orders_boundary_points() {
   assert_eq!(doc.range_compare_boundary_points(a, 0, b).unwrap(), -1);
   assert_eq!(doc.range_compare_boundary_points(b, 0, a).unwrap(), 1);
   assert_eq!(doc.range_compare_boundary_points(a, 0, a).unwrap(), 0);
+}
+
+#[test]
+fn range_compare_boundary_points_sibling_ordering() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=parent><span id=a></span><span id=b></span><span id=c></span></div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+  let c = doc.get_element_by_id("c").unwrap();
+
+  // r_mid: collapsed at the start of b.
+  let r_mid = doc.create_range();
+  doc.range_set_start(r_mid, b, 0).unwrap();
+  assert!(doc.range_collapsed(r_mid).unwrap());
+
+  // r_span: spans from a to c.
+  let r_span = doc.create_range();
+  doc.range_set_start(r_span, a, 0).unwrap();
+  doc.range_set_end(r_span, c, 0).unwrap();
+  assert!(!doc.range_collapsed(r_span).unwrap());
+
+  // When comparing `b` to the spanning range, the result depends on whether we compare to the
+  // source's start (a) or end (c).
+  assert_eq!(doc.range_compare_boundary_points(r_mid, 0, r_span).unwrap(), 1); // START_TO_START
+  assert_eq!(doc.range_compare_boundary_points(r_mid, 1, r_span).unwrap(), -1); // START_TO_END
+  assert_eq!(doc.range_compare_boundary_points(r_mid, 2, r_span).unwrap(), -1); // END_TO_END
+  assert_eq!(doc.range_compare_boundary_points(r_mid, 3, r_span).unwrap(), 1); // END_TO_START
+
+  // When comparing the spanning range to `b`, the result depends on whether we compare the
+  // context range's start (a) or end (c).
+  assert_eq!(doc.range_compare_boundary_points(r_span, 0, r_mid).unwrap(), -1); // START_TO_START
+  assert_eq!(doc.range_compare_boundary_points(r_span, 2, r_mid).unwrap(), 1); // END_TO_END
 }
 
 #[test]

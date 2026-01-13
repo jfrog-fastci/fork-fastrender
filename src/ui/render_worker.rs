@@ -9815,6 +9815,7 @@ impl BrowserRuntime {
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
     }
+
   }
 
   fn handle_copy(&mut self, tab_id: TabId) {
@@ -11494,6 +11495,9 @@ impl BrowserRuntime {
           }
         }
       }
+
+      // Release the borrow of `tab.document` before borrowing `tab` mutably again in helper calls.
+      drop(doc);
 
       // After dispatching keyboard-initiated DOM events (click/submit), pump the JS event loop so
       // follow-up microtasks/timer tasks run before we return to the UI.
@@ -14526,6 +14530,7 @@ mod scroll_state_updated_tests {
         assert_eq!(got, tab_id);
         assert_eq!(scroll, tab.scroll_state);
       }
+      other => panic!("unexpected worker msg: {other:?}"),
       other => panic!("unexpected worker msg: {other:?}"),
     }
   }
