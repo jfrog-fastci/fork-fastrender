@@ -39,7 +39,13 @@ fn node_has_attr(doc: &Document, node: &crate::dom2::Node, name: &str) -> bool {
   };
   attrs
     .iter()
-    .any(|attr| attr.qualified_name_matches(name, is_html))
+    .any(|attr| {
+      if is_html {
+        attr.local_name.eq_ignore_ascii_case(name)
+      } else {
+        attr.local_name == name
+      }
+    })
 }
 
 fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) -> Option<&'a str> {
@@ -53,7 +59,13 @@ fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) ->
   };
   attrs
     .iter()
-    .find(|attr| attr.qualified_name_matches(name, is_html))
+    .find(|attr| {
+      if is_html {
+        attr.local_name.eq_ignore_ascii_case(name)
+      } else {
+        attr.local_name == name
+      }
+    })
     .map(|attr| attr.value.as_str())
 }
 
@@ -199,6 +211,19 @@ pub fn interaction_state_for_autofocus(doc: &Document) -> Option<InteractionStat
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn autofocus_matches_attribute_name_case_insensitively_in_html_namespace() {
+    let mut doc = crate::dom2::parse_html("<html><body><input id=\"target\"></body></html>")
+      .expect("parse");
+
+    let target = doc.get_element_by_id("target").expect("target id");
+    doc
+      .set_bool_attribute(target, "AutoFocus", true)
+      .expect("set AutoFocus");
+
+    assert_eq!(autofocus_target_node_id(&doc), Some(target));
+  }
 
   #[test]
   fn autofocus_skips_disabled_controls() {
