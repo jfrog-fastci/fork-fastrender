@@ -26,17 +26,20 @@ fn omnibox_suggestion_source_class(suggestion: &OmniboxSuggestion) -> &'static s
   }
 }
 
-fn omnibox_suggestion_destination(suggestion: &OmniboxSuggestion) -> Option<&str> {
+fn omnibox_suggestion_href(suggestion: &OmniboxSuggestion) -> Option<String> {
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => Some(url.as_str()),
+    OmniboxAction::NavigateToUrl(url) => {
+      let destination_encoded = urlencoding::encode(url);
+      Some(format!("chrome-action:navigate?url={destination_encoded}"))
+    }
     // `chrome-action:navigate` is handled like a typed navigation; passing the raw query preserves
     // the same behaviour as pressing Enter in the address bar (search-vs-url resolution happens in
     // the action handler).
-    OmniboxAction::Search(query) => Some(query.as_str()),
-    // TODO(renderer-chrome): clicking an "open tab" suggestion should activate that tab rather than
-    // navigate the current tab to the same URL. For now, keep the row clickable by treating it as a
-    // typed navigation to the tab's URL.
-    OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
+    OmniboxAction::Search(query) => {
+      let destination_encoded = urlencoding::encode(query);
+      Some(format!("chrome-action:navigate?url={destination_encoded}"))
+    }
+    OmniboxAction::ActivateTab(tab_id) => Some(format!("chrome-action:activate-tab?tab={}", tab_id.0)),
   }
 }
 
@@ -53,9 +56,7 @@ fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
   out.push_str("      <div id=\"omnibox-popup\" class=\"omnibox-popup\" role=\"listbox\">\n");
 
   for (idx, suggestion) in omnibox.suggestions.iter().enumerate() {
-    let destination = omnibox_suggestion_destination(suggestion).unwrap_or_default();
-    let destination_encoded = urlencoding::encode(destination);
-    let href = format!("chrome-action:navigate?url={destination_encoded}");
+    let href = omnibox_suggestion_href(suggestion).unwrap_or_default();
 
     let mut classes = String::new();
     classes.push_str("omnibox-suggestion");
