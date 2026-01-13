@@ -5106,15 +5106,25 @@ impl InteractionEngine {
     {
       const DRAG_THRESHOLD_PX: f32 = 4.0;
       let should_activate = self.document_selection_drag_drop.as_ref().is_some_and(|state| {
-        let dx = page_point.x - state.down_page_point.x;
-        let dy = page_point.y - state.down_page_point.y;
-        (dx * dx + dy * dy) >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX
+        // Match sentinel handling for other drags: when the pointer leaves the page image, the UI
+        // sends a negative page-point to clear hover state. Ignore those sentinel points so leaving
+        // the page doesn't accidentally activate a drag-drop gesture.
+        if !(page_point.x.is_finite()
+          && page_point.y.is_finite()
+          && page_point.x >= 0.0
+          && page_point.y >= 0.0)
+        {
+          return false;
+        }
+
+        state.down_page_point.distance_to(page_point) >= DRAG_THRESHOLD_PX
       });
 
       if should_activate {
         let payload = self.document_selection_text_with_layout(box_tree, fragment_tree);
         if let Some(state) = self.document_selection_drag_drop.as_mut() {
           state.payload = payload;
+          dom_changed = true;
         }
       }
     }
