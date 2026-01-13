@@ -290,6 +290,47 @@ impl PendingScrollDrag {
   }
 }
 
+// Worker → UI wake events can be extremely high-frequency (e.g. logging/heartbeats). Coalesce these
+// using a single atomic "pending" flag so we never enqueue one wake event per worker message.
+//
+// This helper is intentionally winit-free so we can unit test the coalescing logic without pulling
+// in the full browser UI dependency stack.
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Default)]
+struct WorkerWakeCoalescer {
+  pending: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl WorkerWakeCoalescer {
+  fn new() -> Self {
+    Self {
+      pending: std::sync::atomic::AtomicBool::new(false),
+    }
+  }
+
+  fn notify(&self, on_first: impl FnOnce()) -> bool {
+    use std::sync::atomic::Ordering;
+
+    if self
+      .pending
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+      .is_ok()
+    {
+      on_first();
+      true
+    } else {
+      false
+    }
+  }
+
+  fn begin_drain(&self) {
+    self
+      .pending
+      .store(false, std::sync::atomic::Ordering::Release);
+  }
+}
+
 // Keep URL resolution helpers available to both the windowed browser (feature = `browser_ui`) and
 // unit tests (which often run without the full winit/wgpu/egui stack).
 #[cfg(any(test, feature = "browser_ui"))]
@@ -2139,6 +2180,90 @@ mod tests {
       "Selected date: 2026-01-13"
     );
   }
+
+  #[test]
+  fn worker_wake_notify_coalesces() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let coalescer = WorkerWakeCoalescer::new();
+    let callback_calls = AtomicUsize::new(0);
+
+    for _ in 0..10 {
+      coalescer.notify(|| {
+        callback_calls.fetch_add(1, Ordering::SeqCst);
+      });
+    }
+
+    assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+  }
+
+  #[test]
+  fn worker_wake_begin_drain_rearms_notify() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let coalescer = WorkerWakeCoalescer::new();
+    let callback_calls = AtomicUsize::new(0);
+
+    coalescer.notify(|| {
+      callback_calls.fetch_add(1, Ordering::SeqCst);
+    });
+    coalescer.begin_drain();
+    coalescer.notify(|| {
+      callback_calls.fetch_add(1, Ordering::SeqCst);
+    });
+
+    assert_eq!(callback_calls.load(Ordering::SeqCst), 2);
+  }
+
+  #[test]
+  fn worker_wake_coalesces_across_threads() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let coalescer = Arc::new(WorkerWakeCoalescer::new());
+    let callback_calls = Arc::new(AtomicUsize::new(0));
+    let barrier = Arc::new(Barrier::new(3));
+
+    let spawn = |coalescer: Arc<WorkerWakeCoalescer>,
+                 callback_calls: Arc<AtomicUsize>,
+                 barrier: Arc<Barrier>| {
+      std::thread::spawn(move || {
+        barrier.wait();
+        coalescer.notify(|| {
+          callback_calls.fetch_add(1, Ordering::SeqCst);
+        });
+      })
+    };
+
+    let a = spawn(
+      coalescer.clone(),
+      callback_calls.clone(),
+      barrier.clone(),
+    );
+    let b = spawn(coalescer.clone(), callback_calls.clone(), barrier.clone());
+    barrier.wait();
+
+    a.join().expect("thread A should join");
+    b.join().expect("thread B should join");
+
+    assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+
+    coalescer.begin_drain();
+
+    let barrier = Arc::new(Barrier::new(3));
+    let a = spawn(
+      coalescer.clone(),
+      callback_calls.clone(),
+      barrier.clone(),
+    );
+    let b = spawn(coalescer.clone(), callback_calls.clone(), barrier.clone());
+    barrier.wait();
+
+    a.join().expect("thread A should join");
+    b.join().expect("thread B should join");
+
+    assert_eq!(callback_calls.load(Ordering::SeqCst), 2);
+  }
 }
 
 #[cfg(all(test, feature = "browser_ui"))]
@@ -2907,6 +3032,52 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
   }
 
+  fn spawn_worker_ui_bridge(
+    window_id: WindowId,
+    renderer_backend: fastrender::ui::ThreadRendererBackend,
+    event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
+    worker_wake_counters: Option<Arc<WorkerWakeHudCounters>>,
+  ) -> std::io::Result<(
+    WorkerMsgQueue,
+    Arc<AtomicBool>,
+    std::thread::JoinHandle<()>,
+  )> {
+    let worker_msgs = WorkerMsgQueue::new();
+    let worker_msgs_pusher = worker_msgs.pusher();
+    let worker_wake_pending = Arc::new(AtomicBool::new(false));
+    let bridge_join = std::thread::Builder::new()
+      .name(format!("browser_worker_bridge_{window_id:?}"))
+      .spawn({
+        let renderer_backend = renderer_backend.clone();
+        let worker_wake_pending = Arc::clone(&worker_wake_pending);
+        let worker_wake_counters = worker_wake_counters.clone();
+        move || {
+          while let Ok(msg) = renderer_backend.recv() {
+            if worker_msgs_pusher.push(msg).is_err() {
+              break;
+            }
+            // Coalesce wakes: the UI thread drains messages in batches so we only need one pending
+            // wake event per window.
+            let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
+            if let Some(counters) = worker_wake_counters.as_ref() {
+              if send_wake {
+                counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
+              } else {
+                counters
+                  .wake_events_coalesced
+                  .fetch_add(1, Ordering::Relaxed);
+              }
+            }
+            if send_wake {
+              // Ignore failures during shutdown (event loop already dropped).
+              let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+            }
+          }
+        }
+      })?;
+    Ok((worker_msgs, worker_wake_pending, bridge_join))
+  }
+
   let appearance_env = fastrender::ui::appearance::AppearanceEnvOverrides::from_env();
   let startup_appearance = startup_session.appearance.clone();
   let applied_appearance = startup_appearance
@@ -3160,48 +3331,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let window_id = app.window.id();
     window_ids_by_index[idx] = Some(window_id);
 
-    let worker_msgs = WorkerMsgQueue::new();
-    let worker_msgs_pusher = worker_msgs.pusher();
-    let worker_wake_pending = Arc::new(AtomicBool::new(false));
     let worker_wake_counters = app
       .hud
       .as_ref()
       .map(|hud| Arc::clone(&hud.worker_wake_counters));
-
-    // Worker → UI messages are forwarded through a small bridge thread so that we can keep the winit
-    // event loop in `ControlFlow::Wait` (no busy polling), while still waking immediately when a new
-    // frame/message arrives.
-    let bridge_join = std::thread::Builder::new()
-      .name(format!("browser_worker_bridge_{window_id:?}"))
-      .spawn({
-        let event_loop_proxy = event_loop_proxy.clone();
-        let renderer_backend = renderer_backend.clone();
-        let worker_wake_pending = Arc::clone(&worker_wake_pending);
-        let worker_wake_counters = worker_wake_counters.clone();
-        move || {
-          while let Ok(msg) = renderer_backend.recv() {
-            if worker_msgs_pusher.push(msg).is_err() {
-              break;
-            }
-            // Coalesce wakes: the UI thread drains messages in batches so we only need one pending
-            // wake event per window.
-            let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
-            if let Some(counters) = worker_wake_counters.as_ref() {
-              if send_wake {
-                counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
-              } else {
-                counters
-                  .wake_events_coalesced
-                  .fetch_add(1, Ordering::Relaxed);
-              }
-            }
-            if send_wake {
-              // Ignore failures during shutdown (event loop already dropped).
-              let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
-            }
-          }
-        }
-      })?;
+    let (worker_msgs, worker_wake_pending, bridge_join) = spawn_worker_ui_bridge(
+      window_id,
+      renderer_backend.clone(),
+      event_loop_proxy.clone(),
+      worker_wake_counters,
+    )?;
 
     // Kick the first frame so the window shows chrome immediately even before the worker responds.
     app.window.request_redraw();
@@ -3440,10 +3579,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           // can schedule another wake (avoids getting stuck with messages in the queue but no wake
           // event queued).
           win.worker_wake_pending.store(false, Ordering::Release);
-          // Clear the pending wake flag up-front so any messages that arrive while we're draining
-          // can schedule another wake (avoids getting stuck with messages in the queue but no wake
-          // event queued).
-          win.worker_wake_pending.store(false, Ordering::Release);
 
           // Pull any newly-arrived worker messages into the local backlog with a single lock so we
           // can process them without holding the mutex.
@@ -3643,42 +3778,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         let window_id = app.window.id();
-        let worker_msgs = WorkerMsgQueue::new();
-        let worker_msgs_pusher = worker_msgs.pusher();
-        let worker_wake_pending = Arc::new(AtomicBool::new(false));
         let worker_wake_counters = app
           .hud
           .as_ref()
           .map(|hud| Arc::clone(&hud.worker_wake_counters));
-        let bridge_join = match std::thread::Builder::new()
-          .name(format!("browser_worker_bridge_{window_id:?}"))
-          .spawn({
-            let event_loop_proxy = event_loop_proxy.clone();
-            let renderer_backend = renderer_backend.clone();
-            let worker_wake_pending = Arc::clone(&worker_wake_pending);
-            let worker_wake_counters = worker_wake_counters.clone();
-            move || {
-              while let Ok(msg) = renderer_backend.recv() {
-                if worker_msgs_pusher.push(msg).is_err() {
-                  break;
-                }
-                let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
-                if let Some(counters) = worker_wake_counters.as_ref() {
-                  if send_wake {
-                    counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
-                  } else {
-                    counters
-                      .wake_events_coalesced
-                      .fetch_add(1, Ordering::Relaxed);
-                  }
-                }
-                if send_wake {
-                  let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
-                }
-              }
-            }
-          }) {
-          Ok(join) => join,
+        let (worker_msgs, worker_wake_pending, bridge_join) = match spawn_worker_ui_bridge(
+          window_id,
+          renderer_backend.clone(),
+          event_loop_proxy.clone(),
+          worker_wake_counters,
+        ) {
+          Ok(v) => v,
           Err(err) => {
             eprintln!("failed to spawn new window bridge thread: {err}");
             return;
@@ -3784,42 +3894,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.browser_state.chrome.address_bar_has_focus = false;
 
         let window_id = app.window.id();
-        let worker_msgs = WorkerMsgQueue::new();
-        let worker_msgs_pusher = worker_msgs.pusher();
-        let worker_wake_pending = Arc::new(AtomicBool::new(false));
         let worker_wake_counters = app
           .hud
           .as_ref()
           .map(|hud| Arc::clone(&hud.worker_wake_counters));
-        let bridge_join = match std::thread::Builder::new()
-          .name(format!("browser_worker_bridge_{window_id:?}"))
-          .spawn({
-            let event_loop_proxy = event_loop_proxy.clone();
-            let renderer_backend = renderer_backend.clone();
-            let worker_wake_pending = Arc::clone(&worker_wake_pending);
-            let worker_wake_counters = worker_wake_counters.clone();
-            move || {
-              while let Ok(msg) = renderer_backend.recv() {
-                if worker_msgs_pusher.push(msg).is_err() {
-                  break;
-                }
-                let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
-                if let Some(counters) = worker_wake_counters.as_ref() {
-                  if send_wake {
-                    counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
-                  } else {
-                    counters
-                      .wake_events_coalesced
-                      .fetch_add(1, Ordering::Relaxed);
-                  }
-                }
-                if send_wake {
-                  let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
-                }
-              }
-            }
-          }) {
-          Ok(join) => join,
+        let (worker_msgs, worker_wake_pending, bridge_join) = match spawn_worker_ui_bridge(
+          window_id,
+          renderer_backend.clone(),
+          event_loop_proxy.clone(),
+          worker_wake_counters,
+        ) {
+          Ok(v) => v,
           Err(err) => {
             eprintln!("failed to spawn new window bridge thread: {err}");
             return;
