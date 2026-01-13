@@ -46,15 +46,13 @@ const _: () = {
 
 /// Messages sent from the browser process to the network process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum BrowserToNetwork {
   /// Begin a fetch.
   ///
   /// Note: the exact request metadata will evolve. For now this is a minimal placeholder protocol
   /// sufficient to exercise cancellation semantics and `request_id` validation.
-  Fetch {
-    request_id: u64,
-    url: String,
-  },
+  Fetch { request_id: u64, url: String },
 
   /// Best-effort cancellation for an in-flight request.
   Cancel { request_id: u64 },
@@ -68,6 +66,7 @@ pub enum BrowserToNetwork {
 
 /// Messages sent from the network process back to the browser process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum NetworkToBrowser {
   /// Fetch completed (success or failure).
   FetchResult {
@@ -90,6 +89,7 @@ pub enum NetworkToBrowser {
 
 /// Outcome of a fetch request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum FetchResult {
   /// Successful response.
   ///
@@ -223,10 +223,7 @@ mod cancel {
 
   #[test]
   fn expected_fds_counts() {
-    assert_eq!(
-      BrowserToNetwork::Cancel { request_id: 1 }.expected_fds(),
-      0
-    );
+    assert_eq!(BrowserToNetwork::Cancel { request_id: 1 }.expected_fds(), 0);
     assert_eq!(
       NetworkToBrowser::Cancelled { request_id: 1 }.expected_fds(),
       0

@@ -38,27 +38,51 @@ pub struct WebSocketConnectParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub enum WebSocketCommand {
-  Connect { params: WebSocketConnectParams },
-  SendText { text: String },
-  SendBinary { data: Vec<u8> },
-  Close { code: Option<u16>, reason: Option<String> },
+  Connect {
+    params: WebSocketConnectParams,
+  },
+  SendText {
+    text: String,
+  },
+  SendBinary {
+    data: Vec<u8>,
+  },
+  Close {
+    code: Option<u16>,
+    reason: Option<String>,
+  },
   /// Abruptly shut down the connection (best-effort).
   Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub enum WebSocketEvent {
-  Open { selected_protocol: String },
-  MessageText { text: String },
-  MessageBinary { data: Vec<u8> },
-  Error { message: Option<String> },
-  Close { code: u16, reason: String },
+  Open {
+    selected_protocol: String,
+  },
+  MessageText {
+    text: String,
+  },
+  MessageBinary {
+    data: Vec<u8>,
+  },
+  Error {
+    message: Option<String>,
+  },
+  Close {
+    code: u16,
+    reason: String,
+  },
   /// Acknowledgement that `bytes` have been flushed from the send buffer.
   ///
   /// This allows the renderer to implement `bufferedAmount` / backpressure without exposing the
   /// underlying network implementation.
-  SendAck { bytes: u32 },
+  SendAck {
+    bytes: u32,
+  },
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]

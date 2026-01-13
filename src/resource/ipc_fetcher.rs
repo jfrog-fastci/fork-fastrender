@@ -193,6 +193,7 @@ pub fn validate_ipc_request(request: &IpcRequest) -> std::result::Result<(), Str
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IpcHttpCachePolicy {
   pub max_age: Option<u64>,
   pub s_maxage: Option<u64>,
@@ -263,6 +264,7 @@ impl From<IpcHttpCachePolicy> for HttpCachePolicy {
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IpcFetchedResource {
   pub bytes_b64: String,
   pub content_type: Option<String>,
@@ -333,6 +335,7 @@ impl TryFrom<IpcFetchedResource> for FetchedResource {
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IpcCacheSourceMetadata {
   pub status: Option<u16>,
   #[serde(default)]
@@ -367,6 +370,7 @@ impl IpcCacheSourceMetadata {
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IpcFetchRequest {
   pub url: String,
   pub destination: FetchDestination,
@@ -402,6 +406,7 @@ impl IpcFetchRequest {
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IpcHttpRequest {
   pub fetch: IpcFetchRequest,
   pub method: String,
@@ -437,6 +442,7 @@ impl IpcHttpRequest {
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IpcError {
   pub message: String,
   pub content_type: Option<String>,
@@ -484,6 +490,7 @@ impl IpcError {
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum IpcResult<T> {
   Ok(T),
   Err(IpcError),
@@ -491,6 +498,7 @@ pub enum IpcResult<T> {
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum IpcRequest {
   /// Authentication handshake. Must be the first message sent by a client after connecting.
   Hello { token: String },
@@ -559,6 +567,7 @@ pub enum IpcRequest {
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum IpcResponse {
   /// Authentication handshake acknowledgement.
   HelloAck,

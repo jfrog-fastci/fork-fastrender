@@ -13,13 +13,14 @@ use super::websocket::{WebSocketCommand, WebSocketEvent};
 /// renderer channel that issued it (i.e. do not allow one renderer to affect another renderer's
 /// connections).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub enum RendererToNetwork {
   WebSocket { conn_id: u64, cmd: WebSocketCommand },
 }
 
 /// Messages sent from the network process to the renderer process.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub enum NetworkToRenderer {
   WebSocket { conn_id: u64, event: WebSocketEvent },
 }
-

@@ -23,6 +23,7 @@ pub const MAX_AUTH_TOKEN_BYTES: usize = 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum NetworkRequest {
   Hello { token: String },
   Fetch { url: String },
@@ -31,6 +32,7 @@ pub enum NetworkRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum NetworkResponse {
   HelloAck,
   FetchOk { resource: IpcFetchedResource },
@@ -39,6 +41,7 @@ pub enum NetworkResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IpcFetchedResource {
   pub bytes_base64: String,
   pub content_type: Option<String>,
@@ -160,7 +163,6 @@ pub fn read_frame_with_limit<R: Read, T: DeserializeOwned>(
   reader.read_exact(&mut buf)?;
   serde_json::from_slice(&buf).map_err(serde_err_to_io)
 }
-
 /// Write a client→network request frame.
 pub fn write_request_frame<W: Write, T: Serialize>(writer: &mut W, msg: &T) -> std::io::Result<()> {
   write_frame_with_limit(writer, msg, MAX_INBOUND_FRAME_BYTES)
