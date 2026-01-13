@@ -1,10 +1,12 @@
-#![cfg(target_os = "linux")]
-
 use std::process::Command;
 
 #[test]
 fn linux_namespaces_best_effort() {
   const CHILD_ENV: &str = "FASTR_TEST_LINUX_NAMESPACES_CHILD";
+  // Integration test names do not include the crate name (`integration`), but they *do* include the
+  // module path, so include `sandbox::...` here.
+  const TEST_NAME: &str = "sandbox::linux_namespaces::linux_namespaces_best_effort";
+
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     let status = fastrender::sandbox::linux_namespaces::apply_namespaces(
@@ -44,7 +46,7 @@ fn linux_namespaces_best_effort() {
     .env(CHILD_ENV, "1")
     .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
-    .arg("linux_namespaces_best_effort")
+    .arg(TEST_NAME)
     .arg("--nocapture")
     .output()
     .expect("spawn linux namespace sandbox child process");

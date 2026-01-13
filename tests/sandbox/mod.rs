@@ -28,6 +28,9 @@ mod macos_sandbox_fontdb;
 mod linux_landlock;
 
 #[cfg(target_os = "linux")]
+mod linux_namespaces;
+
+#[cfg(target_os = "linux")]
 mod linux_pdeathsig;
 
 #[cfg(target_os = "linux")]
