@@ -219,10 +219,21 @@ pub fn log_layout_profile(total: Duration) {
     ));
   }
   let grid_counters = crate::layout::contexts::grid::grid_measure_cache_counters();
-  if grid_counters.tls_hits > 0 || grid_counters.shared_hits > 0 || grid_counters.misses > 0 {
+  if grid_counters.tls_hits > 0
+    || grid_counters.shared_hits > 0
+    || grid_counters.misses > 0
+    || grid_counters.override_lookups > 0
+    || grid_counters.override_shared_bypass_misses > 0
+    || grid_counters.override_shared_hits > 0
+  {
     parts.push(format!(
-      "grid_measure_cache_tls_hits={} grid_measure_cache_shared_hits={} grid_measure_cache_misses={}",
-      grid_counters.tls_hits, grid_counters.shared_hits, grid_counters.misses
+      "grid_measure_cache_tls_hits={} grid_measure_cache_shared_hits={} grid_measure_cache_misses={} grid_measure_cache_override_lookups={} grid_measure_cache_override_shared_bypass_misses={} grid_measure_cache_override_shared_hits={}",
+      grid_counters.tls_hits,
+      grid_counters.shared_hits,
+      grid_counters.misses,
+      grid_counters.override_lookups,
+      grid_counters.override_shared_bypass_misses,
+      grid_counters.override_shared_hits
     ));
   }
   eprintln!(

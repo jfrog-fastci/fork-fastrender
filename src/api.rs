@@ -3025,6 +3025,17 @@ pub struct LayoutDiagnostics {
   /// Grid item measurement cache misses (requiring nested formatting-context layout).
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub grid_measure_cache_misses: Option<u64>,
+  /// Grid item measurement cache lookups where a style override fingerprint was present.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub grid_measure_cache_override_lookups: Option<u64>,
+  /// Grid item measurement cache misses attributable to bypassing the shared cache for override
+  /// keys (when override sharing is disabled).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub grid_measure_cache_override_shared_bypass_misses: Option<u64>,
+  /// Grid item measurement cache hits served from the shared cache for override keys (only when
+  /// `FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES` is enabled).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub grid_measure_cache_override_shared_hits: Option<u64>,
   pub fragment_deep_clones: Option<usize>,
   pub fragment_traversed: Option<usize>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -7556,6 +7567,11 @@ impl FastRender {
           rec.stats.layout.grid_measure_cache_tls_hits = Some(counters.tls_hits);
           rec.stats.layout.grid_measure_cache_shared_hits = Some(counters.shared_hits);
           rec.stats.layout.grid_measure_cache_misses = Some(counters.misses);
+          rec.stats.layout.grid_measure_cache_override_lookups = Some(counters.override_lookups);
+          rec.stats.layout.grid_measure_cache_override_shared_bypass_misses =
+            Some(counters.override_shared_bypass_misses);
+          rec.stats.layout.grid_measure_cache_override_shared_hits =
+            Some(counters.override_shared_hits);
         }
         let fragment_metrics = crate::tree::fragment_tree::fragment_instrumentation_counters();
         rec.stats.layout.fragment_deep_clones = Some(fragment_metrics.deep_clones);
