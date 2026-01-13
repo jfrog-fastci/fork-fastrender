@@ -775,8 +775,19 @@ impl TryFrom<IpcFetchedResource> for FetchedResource {
   type Error = String;
 
   fn try_from(value: IpcFetchedResource) -> std::result::Result<Self, Self::Error> {
-    let bytes = base64::engine::general_purpose::STANDARD
-      .decode(value.bytes_b64.as_bytes())
+    let upper = base64_decoded_len_upper_bound(&value.bytes_b64)
+      .ok_or_else(|| "invalid base64 body length".to_string())?;
+    if upper > IPC_MAX_BODY_BYTES {
+      return Err(format!(
+        "base64 body too large: decoded length upper bound {upper} exceeds hard limit {IPC_MAX_BODY_BYTES}"
+      ));
+    }
+    let mut bytes = Vec::new();
+    bytes
+      .try_reserve_exact(upper)
+      .map_err(|err| format!("base64 body allocation failed (len={upper}): {err:?}"))?;
+    base64::engine::general_purpose::STANDARD
+      .decode_vec(value.bytes_b64.as_bytes(), &mut bytes)
       .map_err(|err| format!("invalid base64 body: {err}"))?;
     Ok(FetchedResource {
       bytes,

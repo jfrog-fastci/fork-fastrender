@@ -15,6 +15,12 @@ pub const MAX_INBOUND_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 /// cap, which expands to ~67 MiB after base64, so we keep a margin.
 pub const MAX_OUTBOUND_FRAME_BYTES: usize = 80 * 1024 * 1024; // 80 MiB
 
+/// Maximum decoded response body size (bytes).
+///
+/// Keep this aligned with the default `ResourcePolicy::max_response_bytes` so a compromised network
+/// process cannot force unbounded allocations in the browser.
+const MAX_RESPONSE_BODY_BYTES: usize = 50 * 1024 * 1024; // 50 MiB
+
 /// Maximum accepted URL string length (bytes).
 pub const MAX_URL_BYTES: usize = 1024 * 1024; // 1 MiB
 
@@ -186,8 +192,22 @@ impl IpcFetchedResource {
   }
 
   pub fn into_fetched(self) -> Result<FetchedResource> {
-    let bytes = BASE64_STANDARD
-      .decode(self.bytes_base64.as_bytes())
+    let upper = base64_decoded_len_upper_bound(&self.bytes_base64).ok_or_else(|| {
+      Error::Other("invalid base64 bytes from network process: invalid length".to_string())
+    })?;
+    if upper > MAX_RESPONSE_BODY_BYTES {
+      return Err(Error::Other(format!(
+        "invalid base64 bytes from network process: decoded length upper bound {upper} exceeds hard limit {MAX_RESPONSE_BODY_BYTES}"
+      )));
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(upper).map_err(|err| {
+      Error::Other(format!(
+        "invalid base64 bytes from network process: allocation failed (len={upper}): {err:?}"
+      ))
+    })?;
+    BASE64_STANDARD
+      .decode_vec(self.bytes_base64.as_bytes(), &mut bytes)
       .map_err(|err| Error::Other(format!("invalid base64 bytes from network process: {err}")))?;
     let mut res = FetchedResource::new(bytes, self.content_type);
     res.nosniff = self.nosniff;
@@ -207,6 +227,28 @@ impl IpcFetchedResource {
 
 fn serde_err_to_io(err: serde_json::Error) -> std::io::Error {
   std::io::Error::new(std::io::ErrorKind::InvalidData, err)
+}
+
+fn base64_decoded_len_upper_bound(encoded: &str) -> Option<usize> {
+  // We use the standard padded base64 alphabet. The output length is:
+  //
+  //   decoded = (len / 4) * 3 - padding
+  //
+  // where padding is 0, 1, or 2 depending on the number of trailing '='.
+  let encoded_len = encoded.len();
+  if encoded_len % 4 != 0 {
+    return None;
+  }
+  let groups = encoded_len.checked_div(4)?;
+  let mut decoded = groups.checked_mul(3)?;
+
+  if encoded.ends_with("==") {
+    decoded = decoded.checked_sub(2)?;
+  } else if encoded.ends_with('=') {
+    decoded = decoded.checked_sub(1)?;
+  }
+
+  Some(decoded)
 }
 
 fn try_alloc_frame_buf(len: usize) -> std::io::Result<Vec<u8>> {
