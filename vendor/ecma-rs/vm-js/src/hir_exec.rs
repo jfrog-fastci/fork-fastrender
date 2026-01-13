@@ -163,6 +163,14 @@ fn throw_reference_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Resul
   Ok(VmError::Throw(value))
 }
 
+fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let value = crate::new_type_error(scope, intr, message)?;
+  Ok(VmError::Throw(value))
+}
+
 fn root_property_key(scope: &mut Scope<'_>, key: PropertyKey) -> Result<(), VmError> {
   match key {
     PropertyKey::String(s) => {
@@ -4744,6 +4752,7 @@ impl<'vm> HirEvaluator<'vm> {
       return Ok(Value::Undefined);
     }
 
+    // Root the base value across key evaluation / boxing / property access.
     let mut scope = scope.reborrow();
     // Root the original base value across `ToObject` + key evaluation + `[[Get]]` in case any step
     // allocates / triggers GC.
@@ -4752,12 +4761,16 @@ impl<'vm> HirEvaluator<'vm> {
     let key = self.eval_object_key(&mut scope, body, &member.property)?;
     root_property_key(&mut scope, key)?;
 
-    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+    // `GetValue` for property references: ToObject(base) then `[[Get]](key, Receiver=base)`.
+    let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+      Ok(obj) => obj,
+      Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+      Err(err) => return Err(err),
+    };
+    // Root the boxed object so host hooks/accessors can allocate freely.
     scope.push_root(Value::Object(obj))?;
-    // Spec: `GetV` uses the original base value as the receiver (`this` value) for `[[Get]]`.
-    let receiver = base;
 
-    scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, receiver)
+    scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, base)
   }
 
   fn assign_to_member(
@@ -4767,8 +4780,18 @@ impl<'vm> HirEvaluator<'vm> {
     member: &hir_js::MemberExpr,
     value: Value,
   ) -> Result<(), VmError> {
+    // Optional chaining is never a valid assignment target; this should be rejected by an early
+    // error pass before evaluation begins.
+    if member.optional {
+      return Err(VmError::InvariantViolation(
+        "optional chaining used in assignment target",
+      ));
+    }
+
     let base = self.eval_expr(scope, body, member.object)?;
 
+    // Root base + value while allocating the key and performing the assignment (which can invoke
+    // accessors and/or Proxy traps).
     let mut scope = scope.reborrow();
     // Root base + value across `ToObject` + key evaluation + `[[Set]]` (assignment may invoke
     // accessors/proxy traps and allocate).
@@ -4777,11 +4800,13 @@ impl<'vm> HirEvaluator<'vm> {
     let key = self.eval_object_key(&mut scope, body, &member.property)?;
     root_property_key(&mut scope, key)?;
 
-    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+    // `PutValue` for property references: ToObject(base) then `[[Set]](key, value, Receiver=base)`.
+    let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+      Ok(obj) => obj,
+      Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+      Err(err) => return Err(err),
+    };
     scope.push_root(Value::Object(obj))?;
-
-    // Spec: `PutValue` uses the original base value as the receiver (`this` value) for `[[Set]]`.
-    let receiver = base;
     let ok = crate::spec_ops::internal_set_with_host_and_hooks(
       self.vm,
       &mut scope,
@@ -4790,12 +4815,16 @@ impl<'vm> HirEvaluator<'vm> {
       obj,
       key,
       value,
-      receiver,
+      base,
     )?;
     if ok {
       Ok(())
     } else if self.strict {
-      Err(VmError::TypeError("Cannot assign to read-only property"))
+      Err(throw_type_error(
+        self.vm,
+        &mut scope,
+        "Cannot assign to read-only property",
+      )?)
     } else {
       // Sloppy-mode assignment to a non-writable/non-extensible target fails silently.
       Ok(())
@@ -5097,15 +5126,15 @@ impl<'vm> HirEvaluator<'vm> {
         let key = self.eval_object_key(&mut scope, body, &member.property)?;
         root_property_key(&mut scope, key)?;
 
-        let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+        let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+          Ok(obj) => obj,
+          Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+          Err(err) => return Err(err),
+        };
         scope.push_root(Value::Object(obj))?;
 
-        // Property access (`[[Get]]`) uses the original base value as the receiver.
-        let receiver = base;
         let func =
-          scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, receiver)?;
-        // Method calls use the original base value as `this` (strict-mode functions observe the
-        // primitive `this` value, matching JS semantics).
+          scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, base)?;
         (func, base)
       }
       _ => {

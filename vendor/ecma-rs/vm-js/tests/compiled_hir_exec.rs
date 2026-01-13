@@ -4804,3 +4804,100 @@ fn compiled_object_destructuring_rest() -> Result<(), VmError> {
   assert_eq!(result, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn compiled_member_access_boxes_primitives() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ return "abc".length; }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_method_call_uses_base_as_this() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ return "abc".slice(1); }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string result, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "bc");
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_has_object_prototype() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ return typeof ({}).toString; }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string result, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "function");
+  Ok(())
+}
+
+#[test]
+fn compiled_strict_assignment_to_primitive_throws() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      ("a").x = 1;
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  let Value::Object(thrown_obj) = thrown else {
+    panic!("expected thrown value to be an object, got {thrown:?}");
+  };
+
+  let type_error_proto = rt.realm().intrinsics().type_error_prototype();
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(thrown_obj))?;
+  let thrown_proto = scope.heap().object_prototype(thrown_obj)?;
+  assert_eq!(thrown_proto, Some(type_error_proto));
+  Ok(())
+}
