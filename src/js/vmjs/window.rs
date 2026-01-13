@@ -678,7 +678,7 @@ impl WindowHostState {
         vm,
         realm,
         heap,
-        WindowWebSocketEnv::for_document(Some(document_url.clone())),
+        WindowWebSocketEnv::for_document(Arc::clone(&host_fetcher), Some(document_url.clone())),
       ) {
         Ok(bindings) => bindings,
         Err(err) => {

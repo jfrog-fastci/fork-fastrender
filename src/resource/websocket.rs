@@ -1,0 +1,200 @@
+use super::ResourceFetcher;
+use http::header::{HeaderValue, COOKIE, SET_COOKIE};
+use std::net::TcpStream;
+use tungstenite::client::IntoClientRequest;
+use tungstenite::handshake::client::Response as ClientResponse;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{connect, WebSocket};
+use url::Url;
+
+pub type ClientSocket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+fn cookie_url_for_ws_url(ws_url: &Url) -> Option<Url> {
+  let mut cookie_url = ws_url.clone();
+  cookie_url.set_fragment(None);
+  match ws_url.scheme() {
+    "ws" => {
+      cookie_url.set_scheme("http").ok()?;
+    }
+    "wss" => {
+      cookie_url.set_scheme("https").ok()?;
+    }
+    "http" | "https" => {}
+    _ => return None,
+  }
+  Some(cookie_url)
+}
+
+/// Perform a client WebSocket handshake, integrating with the provided `fetcher`'s cookie jar.
+///
+/// The handshake behaves like a browser:
+/// - Adds a `Cookie` header based on the fetcher's stored cookies (when available).
+/// - Persists any `Set-Cookie` headers returned in the handshake response.
+///
+/// `ws_url` must use `ws:`/`wss:` (or `http:`/`https:` which are treated as their WS equivalents).
+pub(crate) fn connect_websocket_with_cookies(
+  fetcher: &dyn ResourceFetcher,
+  ws_url: &str,
+  protocols_header: Option<&str>,
+) -> tungstenite::Result<(ClientSocket, ClientResponse)> {
+  let parsed = Url::parse(ws_url).ok();
+  let cookie_url = parsed.as_ref().and_then(cookie_url_for_ws_url);
+
+  let mut request = ws_url.into_client_request()?;
+
+  if let Some(cookie_url) = cookie_url.as_ref() {
+    if let Some(cookie_header_value) = fetcher.cookie_header_value(cookie_url.as_str()) {
+      if !cookie_header_value.is_empty() {
+        if let Ok(header_value) = HeaderValue::from_str(&cookie_header_value) {
+          request.headers_mut().insert(COOKIE, header_value);
+        }
+      }
+    }
+  }
+
+  if let Some(header) = protocols_header {
+    if let Ok(value) = HeaderValue::from_str(header) {
+      request
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", value);
+    }
+  }
+
+  let (socket, response) = connect(request)?;
+
+  if let Some(cookie_url) = cookie_url.as_ref() {
+    for value in response.headers().get_all(SET_COOKIE) {
+      if let Ok(raw) = value.to_str() {
+        fetcher.store_cookie_from_document(cookie_url.as_str(), raw);
+      }
+    }
+  }
+
+  Ok((socket, response))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::resource::HttpFetcher;
+  use crate::resource::ResourceFetcher;
+  use std::collections::HashMap;
+  use std::net::TcpListener;
+  use std::time::{Duration, Instant};
+  use tungstenite::handshake::server::{Request, Response};
+
+  fn parse_cookie_header(header: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for part in header.split(';') {
+      let part = part.trim();
+      if part.is_empty() {
+        continue;
+      }
+      let Some((name, value)) = part.split_once('=') else {
+        continue;
+      };
+      out.insert(name.trim().to_string(), value.trim().to_string());
+    }
+    out
+  }
+
+  fn accept_with_deadline(listener: &TcpListener, deadline: Instant) -> std::io::Result<TcpStream> {
+    use std::io::ErrorKind;
+
+    loop {
+      match listener.accept() {
+        Ok((stream, _)) => return Ok(stream),
+        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+          if Instant::now() >= deadline {
+            return Err(std::io::Error::new(ErrorKind::TimedOut, "accept timed out"));
+          }
+          std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(err) => return Err(err),
+      }
+    }
+  }
+
+  #[test]
+  fn websocket_handshake_integrates_cookie_jar() {
+    let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
+      // Some sandboxed CI environments may forbid binding sockets; skip in that case.
+      return;
+    };
+    listener
+      .set_nonblocking(true)
+      .expect("set listener nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      // Handle two sequential handshakes so we can assert cookies persist across connections.
+      for attempt in 0..2 {
+        let stream = accept_with_deadline(&listener, Instant::now() + Duration::from_secs(5))
+          .expect("accept stream");
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+        let expected = match attempt {
+          0 => vec![("a", "1")],
+          _ => vec![("a", "1"), ("b", "2")],
+        };
+
+        let mut ws = tungstenite::accept_hdr(stream, |req: &Request, mut res: Response| {
+          let raw = req
+            .headers()
+            .get(COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+          let cookies = parse_cookie_header(raw);
+          for (name, value) in &expected {
+            assert_eq!(
+              cookies.get(*name).map(String::as_str),
+              Some(*value),
+              "attempt {attempt}: missing cookie {name}={value} (got {raw:?})"
+            );
+          }
+
+          if attempt == 0 {
+            res.headers_mut().append(
+              SET_COOKIE,
+              HeaderValue::from_static("b=2; Path=/"),
+            );
+          }
+          Ok(res)
+        })
+        .expect("accept websocket");
+        let _ = ws.close(None);
+      }
+    });
+
+    let fetcher = HttpFetcher::new();
+    let http_url = format!("http://{addr}/");
+    fetcher.store_cookie_from_document(&http_url, "a=1; Path=/");
+    let ws_url = format!("ws://{addr}/");
+
+    {
+      let (mut sock, _res) =
+        connect_websocket_with_cookies(&fetcher, &ws_url, None).expect("connect");
+      let _ = sock.close(None);
+    }
+
+    let cookie_header = fetcher
+      .cookie_header_value(&http_url)
+      .expect("cookie jar should be observable");
+    let cookies = parse_cookie_header(&cookie_header);
+    assert_eq!(cookies.get("a").map(String::as_str), Some("1"));
+    assert_eq!(
+      cookies.get("b").map(String::as_str),
+      Some("2"),
+      "expected Set-Cookie from handshake to persist"
+    );
+
+    {
+      let (mut sock, _res) =
+        connect_websocket_with_cookies(&fetcher, &ws_url, None).expect("reconnect");
+      let _ = sock.close(None);
+    }
+
+    server.join().expect("server thread panicked");
+  }
+}

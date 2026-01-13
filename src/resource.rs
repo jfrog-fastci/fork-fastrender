@@ -69,6 +69,7 @@ pub mod ipc_fetcher;
 pub mod disk_cache;
 pub mod web_fetch;
 pub mod web_url;
+pub(crate) mod websocket;
 pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
 pub use ipc_fetcher::IpcResourceFetcher;
 #[cfg(feature = "disk_cache")]

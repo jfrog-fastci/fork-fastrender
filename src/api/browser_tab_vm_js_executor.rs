@@ -615,7 +615,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         vm,
         realm_ref,
         heap,
-        WindowWebSocketEnv::for_document(Some(url.to_string())),
+        WindowWebSocketEnv::for_document(Arc::clone(&fetcher), Some(url.to_string())),
       )
       .map_err(|err| Error::Other(err.to_string()))?;
 

@@ -15,6 +15,7 @@ use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_blob;
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData, EVENT_TARGET_HOST_TAG};
 use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks};
+use crate::resource::ResourceFetcher;
 use std::borrow::Cow;
 use std::char::decode_utf16;
 use std::collections::HashMap;
@@ -23,7 +24,6 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tungstenite::protocol::{CloseFrame, Message};
-use tungstenite::{client::IntoClientRequest, connect};
 use vm_js::iterator::{self, CloseCompletionKind};
 use vm_js::{
   GcObject, GcString, Heap, HostSlots, NativeConstructId, NativeFunctionId, PropertyDescriptor,
@@ -52,12 +52,13 @@ const MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET: usize = 1_024;
 
 #[derive(Clone)]
 pub struct WindowWebSocketEnv {
+  pub fetcher: Arc<dyn ResourceFetcher>,
   pub document_url: Option<String>,
 }
 
 impl WindowWebSocketEnv {
-  pub fn for_document(document_url: Option<String>) -> Self {
-    Self { document_url }
+  pub fn for_document(fetcher: Arc<dyn ResourceFetcher>, document_url: Option<String>) -> Self {
+    Self { fetcher, document_url }
   }
 }
 
@@ -741,10 +742,12 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
       }
     }
   } else if let Some(cmd_rx) = cmd_rx_opt {
+    let fetcher = with_env_state(env_id, |state| Ok(Arc::clone(&state.env.fetcher)))?;
     let handle = std::thread::spawn(move || {
       websocket_thread_main::<Host>(
         env_id,
         ws_id,
+        fetcher,
         resolved_url_string,
         protocols_header,
         cmd_rx,
@@ -1349,41 +1352,17 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
 fn websocket_thread_main<Host: WindowRealmHost + 'static>(
   env_id: u64,
   ws_id: u64,
+  fetcher: Arc<dyn ResourceFetcher>,
   url: String,
   protocols_header: Option<String>,
   cmd_rx: mpsc::Receiver<WsCommand>,
   task_queue: ExternalTaskQueueHandle<Host>,
 ) {
-  let mut request = match url.clone().into_client_request() {
-    Ok(req) => req,
-    Err(_) => {
-      // URL parsing should already have been validated at construction time.
-      with_env_state_mut(env_id, |state| {
-        if let Some(ws) = state.sockets.get_mut(&ws_id) {
-          ws.ready_state = WS_CLOSED;
-        }
-        Ok(())
-      })
-      .ok();
-      queue_ws_task::<Host>(&task_queue, env_id, ws_id, |vm_host, heap, vm, hooks, ws_obj| {
-        let mut scope = heap.scope();
-        let ev = make_simple_event(&mut scope, "error")?;
-        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
-        let close_ev = make_simple_event(&mut scope, "close")?;
-        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
-        Ok(())
-      });
-      return;
-    }
-  };
-
-  if let Some(header) = protocols_header.as_deref() {
-    request
-      .headers_mut()
-      .insert("Sec-WebSocket-Protocol", header.parse().unwrap());
-  }
-
-  let connect_result = connect(request);
+  let connect_result = crate::resource::websocket::connect_websocket_with_cookies(
+    fetcher.as_ref(),
+    &url,
+    protocols_header.as_deref(),
+  );
   let (mut socket, response) = match connect_result {
     Ok(pair) => pair,
     Err(_err) => {
