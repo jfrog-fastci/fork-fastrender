@@ -42,8 +42,8 @@ pub mod preroll;
 pub mod test_signal;
 pub mod timed_queue;
 pub mod types;
-#[cfg(feature = "audio_wav")]
-mod wav;
+#[cfg(any(feature = "audio_wav", test))]
+mod wav_backend;
 
 pub use config::{
   audio_engine_config, set_audio_engine_config, with_audio_engine_config, AudioEngineConfig,
@@ -88,8 +88,8 @@ impl TimedAudioQueue {
 /// For timestamp-aware buffering (gaps/overlaps), use [`TimedAudioQueue`] instead.
 pub type AudioStreamHandle = PcmF32QueueProducer;
 
-#[cfg(feature = "audio_wav")]
-pub use wav::WavAudioBackend;
+#[cfg(any(feature = "audio_wav", test))]
+pub use wav_backend::WavAudioBackend;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioStreamConfig {
@@ -391,7 +391,6 @@ impl AudioEngine {
     &*self.backend
   }
 }
-
 impl PcmF32QueueProducer {
   /// Push decoder-provided PCM samples in a variety of common formats/layouts.
   ///
