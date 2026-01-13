@@ -901,12 +901,14 @@ fn string_prototype_to_locale_lower_case_and_to_locale_upper_case_work() {
         try { String.prototype.toLocaleLowerCase.call(null); } catch (e) { threwLower = e && e.name === "TypeError"; }
         var threwUpper = false;
         try { String.prototype.toLocaleUpperCase.call(undefined); } catch (e) { threwUpper = e && e.name === "TypeError"; }
-        "AbÇ".toLocaleLowerCase() === "abç"
-          && "abç".toLocaleUpperCase() === "ABÇ"
-          && String.prototype.toLocaleLowerCase.call(123) === "123"
-          && String.prototype.toLocaleUpperCase.call(123) === "123"
-          && threwLower
-          && threwUpper
+        var ok =
+          "AbÇ".toLocaleLowerCase() === "abç"
+            && "abç".toLocaleUpperCase() === "ABÇ"
+            && "AbC".toLocaleLowerCase("en-US") === "abc"
+            && "abc".toLocaleUpperCase("en-US") === "ABC"
+            && String.prototype.toLocaleLowerCase.call(123) === "123"
+            && String.prototype.toLocaleUpperCase.call(123) === "123";
+        ok && threwLower && threwUpper
       "#,
     )
     .unwrap();

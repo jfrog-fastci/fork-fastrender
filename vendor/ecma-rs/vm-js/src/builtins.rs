@@ -19589,6 +19589,7 @@ pub fn string_prototype_to_locale_lower_case(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  // Ignore `locales` (ECMA-402) for now.
   crate::spec_ops::require_object_coercible(this)?;
   string_prototype_to_lower_case(vm, scope, host, hooks, callee, this, &[])
 }
@@ -19606,6 +19607,7 @@ pub fn string_prototype_to_locale_upper_case(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  // Ignore `locales` (ECMA-402) for now.
   crate::spec_ops::require_object_coercible(this)?;
   string_prototype_to_upper_case(vm, scope, host, hooks, callee, this, &[])
 }
@@ -19624,8 +19626,8 @@ pub fn string_prototype_locale_compare(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let this = crate::spec_ops::require_object_coercible(this)?;
-  let a = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let a = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(a))?;
 
   let that = args.get(0).copied().unwrap_or(Value::Undefined);
