@@ -4,6 +4,7 @@ use crate::dom2::{DomError, NodeId, NodeKind};
 use crate::geometry::{Point, Rect};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::dom2_bindings;
+use crate::js::dom_host::DomHostVmJs;
 use crate::js::dom_platform::{DomInterface, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
@@ -250,6 +251,25 @@ fn require_element_receiver(
   let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
   let node_id = platform.require_element_id(scope.heap(), Value::Object(obj))?;
   Ok((node_id, obj))
+}
+
+fn require_dom_token_list_receiver(
+  scope: &Scope<'_>,
+  receiver: Option<Value>,
+) -> Result<(NodeId, GcObject), VmError> {
+  let Some(Value::Object(obj)) = receiver else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  if !matches!(slots, Some(slots) if slots.b == DOM_TOKEN_LIST_HOST_TAG) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  let node_index = usize::try_from(slots.unwrap().a).map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  Ok((NodeId::from_index(node_index), obj))
 }
 
 fn mutate_dom_detached<R>(
@@ -4203,16 +4223,156 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
-      ("DOMTokenList", "supports", 0) => {
-        let obj = Self::require_receiver_object(receiver)?;
-        let slots = match scope.heap().object_host_slots(obj) {
-          Ok(slots) => slots,
-          Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
-          Err(err) => return Err(err),
-        };
-        if !matches!(slots, Some(slots) if slots.b == DOM_TOKEN_LIST_HOST_TAG) {
-          return Err(VmError::TypeError("Illegal invocation"));
+      ("DOMTokenList", "add", 0) => {
+        let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
+
+        let mut tokens: Vec<String> = Vec::new();
+        tokens
+          .try_reserve(args.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        for &arg in args {
+          tokens.push(js_string_to_rust_string(scope, arg)?);
         }
+        let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+
+        let result: Result<bool, DomError> =
+          self.with_dom_host(vm, |host| Ok(host.class_list_add(element_id, &token_refs)))?;
+        match result {
+          Ok(_) => Ok(Value::Undefined),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("DOMTokenList", "remove", 0) => {
+        let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
+
+        let mut tokens: Vec<String> = Vec::new();
+        tokens
+          .try_reserve(args.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        for &arg in args {
+          tokens.push(js_string_to_rust_string(scope, arg)?);
+        }
+        let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+
+        let result: Result<bool, DomError> =
+          self.with_dom_host(vm, |host| Ok(host.class_list_remove(element_id, &token_refs)))?;
+        match result {
+          Ok(_) => Ok(Value::Undefined),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("DOMTokenList", "contains", 0) => {
+        let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
+        let token = js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<bool, DomError> = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| dom.class_list_contains(element_id, &token)))
+        })?;
+        match result {
+          Ok(b) => Ok(Value::Bool(b)),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("DOMTokenList", "toggle", 0) => {
+        let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
+        let token = js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let force = match args.get(1).copied().unwrap_or(Value::Undefined) {
+          Value::Undefined => None,
+          Value::Bool(b) => Some(b),
+          _ => None,
+        };
+
+        let result: Result<bool, DomError> =
+          self.with_dom_host(vm, |host| Ok(host.class_list_toggle(element_id, &token, force)))?;
+        match result {
+          Ok(b) => Ok(Value::Bool(b)),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("DOMTokenList", "replace", 0) => {
+        let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
+        let token = js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let new_token =
+          js_string_to_rust_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<bool, DomError> = self.with_dom_host(vm, |host| {
+          Ok(host.class_list_replace(element_id, &token, &new_token))
+        })?;
+        match result {
+          Ok(b) => Ok(Value::Bool(b)),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("DOMTokenList", "item", 0) => {
+        let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
+        let idx = match args.get(0).copied().unwrap_or(Value::Number(0.0)) {
+          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
+          _ => 0,
+        } as usize;
+
+        let result: Result<Vec<String>, DomError> =
+          self.with_dom_host(vm, |host| Ok(host.class_list_tokens(element_id)))?;
+        match result {
+          Ok(tokens) => match tokens.get(idx) {
+            Some(token) => Ok(Value::String(scope.alloc_string(token)?)),
+            None => Ok(Value::Null),
+          },
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("DOMTokenList", "length", 0) => {
+        let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
+        let result: Result<Vec<String>, DomError> =
+          self.with_dom_host(vm, |host| Ok(host.class_list_tokens(element_id)))?;
+        match result {
+          Ok(tokens) => Ok(Value::Number(tokens.len() as f64)),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("DOMTokenList", "value", 0) => {
+        let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
+        if args.is_empty() {
+          let value: String = self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| dom.element_class_name(element_id).to_string()))
+          })?;
+          Ok(Value::String(scope.alloc_string(&value)?))
+        } else {
+          let value =
+            js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+          let result: Result<bool, DomError> =
+            self.with_dom_host(vm, |host| Ok(host.set_element_class_name(element_id, &value)))?;
+          match result {
+            Ok(_) => Ok(Value::Undefined),
+            Err(err) => {
+              let class = self.dom_exception_class_for_realm(vm, scope)?;
+              Err(throw_dom_error(scope, class, err))
+            }
+          }
+        }
+      }
+      ("DOMTokenList", "supports", 0) => {
+        let _ = require_dom_token_list_receiver(scope, receiver)?;
         Err(VmError::TypeError(
           "DOMTokenList.supports: supported tokens not available",
         ))
@@ -4220,57 +4380,26 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("Element", "classList", 0) => {
         let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
 
-        // Transitional: return a stable per-element object so `element.classList` access does not
-        // crash, and brand it enough to support `DOMTokenList.prototype.supports` dispatch.
         let key = key_from_str(scope, ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT)?;
-        let supports_key = key_from_str(scope, "supports")?;
-        let ensure_supports =
-          |vm: &mut Vm, scope: &mut Scope<'_>, token_list: GcObject| -> Result<(), VmError> {
-            if scope
-              .heap()
-              .object_get_own_property(token_list, &supports_key)?
-              .is_some()
-            {
-              return Ok(());
-            }
-
-            let global = self.global.or_else(|| {
-              vm.user_data_mut::<WindowRealmUserData>()
-                .and_then(|data| data.window_obj())
-            });
-            let Some(global) = global else {
-              return Ok(());
-            };
-
-            scope.push_root(Value::Object(global))?;
-            let ctor_key = key_from_str(scope, "DOMTokenList")?;
-            let Some(Value::Object(ctor_obj)) =
-              scope.heap().object_get_own_data_property_value(global, &ctor_key)?
-            else {
-              return Ok(());
-            };
-            scope.push_root(Value::Object(ctor_obj))?;
-            let proto_key = key_from_str(scope, "prototype")?;
-            let Some(Value::Object(proto_obj)) =
-              scope.heap().object_get_own_data_property_value(ctor_obj, &proto_key)?
-            else {
-              return Ok(());
-            };
-            scope.push_root(Value::Object(proto_obj))?;
-            let Some(Value::Object(func_obj)) =
-              scope.heap().object_get_own_data_property_value(proto_obj, &supports_key)?
-            else {
-              return Ok(());
-            };
-            scope.push_root(Value::Object(func_obj))?;
-
-            scope.define_property(
-              token_list,
-              supports_key.clone(),
-              data_property(Value::Object(func_obj), true, false, true),
-            )?;
-            Ok(())
-          };
+        let global = self
+          .global
+          .or_else(|| vm.user_data_mut::<WindowRealmUserData>().and_then(|data| data.window_obj()))
+          .ok_or(VmError::TypeError("Illegal invocation"))?;
+        scope.push_root(Value::Object(global))?;
+        let ctor_key = key_from_str(scope, "DOMTokenList")?;
+        let Some(Value::Object(ctor_obj)) =
+          scope.heap().object_get_own_data_property_value(global, &ctor_key)?
+        else {
+          return Err(VmError::TypeError("DOMTokenList constructor not available"));
+        };
+        scope.push_root(Value::Object(ctor_obj))?;
+        let proto_key = key_from_str(scope, "prototype")?;
+        let Some(Value::Object(proto_obj)) =
+          scope.heap().object_get_own_data_property_value(ctor_obj, &proto_key)?
+        else {
+          return Err(VmError::TypeError("DOMTokenList.prototype not available"));
+        };
+        scope.push_root(Value::Object(proto_obj))?;
 
         if let Some(Value::Object(existing)) =
           scope.heap().object_get_own_data_property_value(obj, &key)?
@@ -4283,11 +4412,13 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               b: DOM_TOKEN_LIST_HOST_TAG,
             },
           )?;
-          ensure_supports(vm, scope, existing)?;
+          scope
+            .heap_mut()
+            .object_set_prototype(existing, Some(proto_obj))?;
           return Ok(Value::Object(existing));
         }
 
-        let class_list = scope.alloc_object()?;
+        let class_list = scope.alloc_object_with_prototype(Some(proto_obj))?;
         scope.push_root(Value::Object(class_list))?;
         scope.heap_mut().object_set_host_slots(
           class_list,
@@ -4296,7 +4427,6 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             b: DOM_TOKEN_LIST_HOST_TAG,
           },
         )?;
-        ensure_supports(vm, scope, class_list)?;
         scope.define_property(
           obj,
           key,
@@ -4749,6 +4879,31 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             ])),
             IterableKind::Keys => out.push(BindingValue::RustString(k)),
             IterableKind::Values => out.push(BindingValue::RustString(v)),
+          }
+        }
+        Ok(out)
+      }
+      "DOMTokenList" => {
+        let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
+        let tokens: Result<Vec<String>, DomError> =
+          self.with_dom_host(vm, |host| Ok(host.class_list_tokens(element_id)))?;
+        let tokens = match tokens {
+          Ok(tokens) => tokens,
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            return Err(throw_dom_error(scope, class, err));
+          }
+        };
+
+        let mut out: Vec<BindingValue> = Vec::with_capacity(tokens.len());
+        for (idx, token) in tokens.into_iter().enumerate() {
+          match kind {
+            IterableKind::Values => out.push(BindingValue::RustString(token)),
+            IterableKind::Keys => out.push(BindingValue::Number(idx as f64)),
+            IterableKind::Entries => out.push(BindingValue::Sequence(vec![
+              BindingValue::Number(idx as f64),
+              BindingValue::RustString(token),
+            ])),
           }
         }
         Ok(out)
