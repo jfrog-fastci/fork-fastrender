@@ -12392,25 +12392,13 @@ fn compiled_optional_chaining_call_short_circuits_args() -> Result<(), VmError> 
 }
 
 #[test]
-fn compiled_import_meta_outside_module_is_unimplemented_or_syntax() -> Result<(), VmError> {
+fn compiled_import_meta_outside_module_is_syntax_error() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
 
-  // `import.meta` is syntactically valid only in modules. If the parser rejects it in scripts,
-  // accept the syntax error. Otherwise ensure the compiled evaluator reports the expected runtime
-  // unimplemented error.
-  let script = match CompiledScript::compile_script(rt.heap_mut(), "test.js", "import.meta;") {
-    Ok(script) => script,
-    Err(VmError::Syntax(_)) => return Ok(()),
-    Err(other) => return Err(other),
-  };
-
-  let err = rt.exec_compiled_script(script).unwrap_err();
-  match err {
-    VmError::Unimplemented(msg) => assert_eq!(msg, "import.meta outside of modules"),
-    other => panic!("expected unimplemented import.meta error, got {other:?}"),
-  }
+  let err = CompiledScript::compile_script(rt.heap_mut(), "test.js", "import.meta;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
   Ok(())
 }
 

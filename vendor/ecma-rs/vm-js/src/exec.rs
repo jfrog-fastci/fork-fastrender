@@ -2283,6 +2283,7 @@ impl JsRuntime {
               crate::early_errors::EarlyErrorOptions {
                 strict,
                 allow_top_level_await: has_await,
+                is_module: false,
               },
               &mut tick,
             )?;
@@ -2744,6 +2745,7 @@ impl JsRuntime {
           crate::early_errors::EarlyErrorOptions {
             strict,
             allow_top_level_await: has_await,
+            is_module: false,
           },
           &mut tick,
         )?;

@@ -45,6 +45,7 @@ fn is_restricted_identifier(name: &str) -> bool {
 pub(crate) struct EarlyErrorOptions {
   pub(crate) strict: bool,
   pub(crate) allow_top_level_await: bool,
+  pub(crate) is_module: bool,
 }
 
 impl EarlyErrorOptions {
@@ -52,6 +53,7 @@ impl EarlyErrorOptions {
     Self {
       strict,
       allow_top_level_await: false,
+      is_module: false,
     }
   }
 
@@ -59,6 +61,7 @@ impl EarlyErrorOptions {
     Self {
       strict: true,
       allow_top_level_await: true,
+      is_module: true,
     }
   }
 }
@@ -91,6 +94,7 @@ where
   let mut ctx = ControlContext {
     strict: opts.strict,
     await_allowed: opts.allow_top_level_await,
+    is_module: opts.is_module,
     yield_allowed: false,
     super_call_allowed: false,
     arguments_allowed: true,
@@ -115,6 +119,10 @@ struct ControlContext {
   ///
   /// This is true at module top-level (top-level await) and inside async functions.
   await_allowed: bool,
+  /// Whether we're validating code parsed with the module grammar (`SourceType::Module`).
+  ///
+  /// Some syntax forms are valid only in modules (e.g. `import.meta`).
+  is_module: bool,
   /// Whether `yield` expressions are permitted in the current context.
   ///
   /// This is true only inside generator function bodies.
@@ -2135,6 +2143,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         Ok(())
       }
       Expr::Import(import) => self.visit_import(ctx, &import.stx),
+      Expr::ImportMeta(_) => {
+        if !ctx.is_module {
+          self.push_error(expr.loc, "Cannot use 'import.meta' outside a module")?;
+        }
+        Ok(())
+      }
       Expr::Member(member) => self.visit_member(ctx, expr.loc, &member.stx),
       Expr::TaggedTemplate(tagged) => self.visit_tagged_template(ctx, &tagged.stx),
       Expr::Unary(unary) => self.visit_unary(ctx, &unary.stx, expr.loc),
