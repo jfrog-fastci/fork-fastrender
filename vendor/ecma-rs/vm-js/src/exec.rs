@@ -24471,12 +24471,7 @@ fn async_apply_binary_operator(
       Ok(Value::Bool(ok))
     }
     // Assignment operators are handled separately (they require reference semantics).
-    OperatorName::Assignment
-    | OperatorName::AssignmentAddition
-    | OperatorName::AssignmentSubtraction
-    | OperatorName::AssignmentMultiplication
-    | OperatorName::AssignmentDivision
-    | OperatorName::AssignmentRemainder => Err(VmError::InvariantViolation(
+    op if op.is_assignment() => Err(VmError::InvariantViolation(
       "internal error: assignment operator in async_apply_binary_operator",
     )),
     _ => Err(VmError::Unimplemented("binary operator")),
