@@ -1516,10 +1516,18 @@ impl ModuleGraph {
         self.torn_down = false;
       }
 
+      // Avoid cloning attacker-controlled strings during linking: infallible `String::clone` can
+      // abort the process under allocator OOM (see `oom_regressions` / `oom_harness` moduleLink).
+      //
+      // We still clone `requested_modules` / `import_entries` here (borrow-splitting convenience)
+      // but keep `local_export_entries` and `indirect_export_entries` borrowed during their
+      // respective validation paths.
       let requested_modules = self.modules[idx].requested_modules.clone();
       let import_entries = self.modules[idx].import_entries.clone();
-      let local_exports = self.modules[idx].local_export_entries.clone();
-      let indirect_exports = self.modules[idx].indirect_export_entries.clone();
+      let has_default_export = self.modules[idx]
+        .local_export_entries
+        .iter()
+        .any(|e| e.local_name == "*default*");
       let source = self.modules[idx]
         .source
         .clone()
@@ -1546,7 +1554,7 @@ impl ModuleGraph {
       // ECMA-262 requires `ModuleDeclarationInstantiation` to throw a SyntaxError if any indirect
       // export does not resolve to a concrete binding. This ensures broken re-exports fail during
       // linking (test262 `negative.phase: resolution`) even when no other module imports them.
-      for (i, entry) in indirect_exports.into_iter().enumerate() {
+      for (i, entry) in self.modules[idx].indirect_export_entries.iter().enumerate() {
         if i % LINK_TICK_EVERY == 0 && i != 0 {
           vm.tick()?;
         }
@@ -1684,7 +1692,7 @@ impl ModuleGraph {
       }
 
       // Ensure `*default*` exists for `export default <expr>`.
-      if local_exports.iter().any(|e| e.local_name == "*default*") {
+      if has_default_export {
         if !scope.heap().env_has_binding(module_env, "*default*")? {
           scope.env_create_immutable_binding(module_env, "*default*")?;
         }
