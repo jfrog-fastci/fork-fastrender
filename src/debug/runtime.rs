@@ -1246,6 +1246,10 @@ mod tests {
   fn parses_debug_config_from_map() {
     let raw = HashMap::from([
       ("FASTR_RENDER_TIMINGS".to_string(), "1".to_string()),
+      (
+        "FASTR_LOG_INTERACTION_INVALIDATION".to_string(),
+        "1".to_string(),
+      ),
       ("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "0".to_string()),
       (
         "FASTR_DISPLAY_LIST_PARALLEL_MIN".to_string(),
@@ -1262,6 +1266,19 @@ mod tests {
     let toggles = RuntimeToggles::from_map(raw);
 
     assert!(toggles.truthy("FASTR_RENDER_TIMINGS"));
+    assert!(
+      toggles.truthy("FASTR_LOG_INTERACTION_INVALIDATION"),
+      "expected toggle to be parsed as truthy"
+    );
+    assert_eq!(
+      toggles
+        .config()
+        .bools
+        .get("FASTR_LOG_INTERACTION_INVALIDATION")
+        .copied(),
+      Some(true),
+      "expected toggle to be stored in parsed DebugConfig bools map"
+    );
     assert!(!toggles.truthy_with_default("FASTR_DISPLAY_LIST_PARALLEL", true));
     assert_eq!(
       toggles.usize_with_default("FASTR_DISPLAY_LIST_PARALLEL_MIN", 32),
