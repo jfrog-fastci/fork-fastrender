@@ -459,3 +459,209 @@ fn data_view_ctor_roots_byte_length_across_gc_in_toindex() -> Result<(), VmError
 
   Ok(())
 }
+
+#[test]
+fn array_buffer_resize_roots_new_length_across_gc_before_coercion() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const buf = new ArrayBuffer(8, { maxByteLength: 16 });
+      const newLength = { valueOf() { ({});
+        return 12;
+      }};
+      return [buf, newLength, undefined];
+    })()"#,
+  )?;
+
+  let [buf_val, new_len_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  // Force the heap to consider itself "close to the limit" so dropping a large root stack will
+  // shrink capacity back to 0, ensuring `push_root` inside the builtin triggers GC.
+  let max = heap.limits().max_bytes;
+  let min_for_root_stack_shrink = max.saturating_mul(3) / 4 + 1;
+  let extra_token = {
+    let mut scope = heap.scope();
+    // Root the target values while we manipulate the root stack / heap counters.
+    scope.push_roots(&[buf_val, new_len_val])?;
+
+    let token = {
+      let cur = scope.heap().estimated_total_bytes();
+      if cur < min_for_root_stack_shrink {
+        Some(scope.heap_mut().charge_external(min_for_root_stack_shrink - cur)?)
+      } else {
+        None
+      }
+    };
+
+    // Grow the root stack above the shrink threshold (>256) and then drop the scope.
+    let mut junk: Vec<Value> = Vec::new();
+    junk.try_reserve_exact(300).map_err(|_| VmError::OutOfMemory)?;
+    for i in 0..300 {
+      junk.push(Value::Number(i as f64));
+    }
+    scope.push_roots(&junk)?;
+    // Return the external charge token so it remains live until *after* scope drop.
+    token
+  };
+  drop(extra_token);
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_buffer();
+  let args = [new_len_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::array_buffer_prototype_resize(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    buf_val,
+    &args,
+  )?;
+  assert_eq!(out, Value::Undefined);
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected resize() to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(buf_obj) = buf_val else {
+    return Err(VmError::InvariantViolation(
+      "ArrayBuffer receiver value is not an object",
+    ));
+  };
+
+  let byte_length = builtins::array_buffer_prototype_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(buf_obj),
+    &[],
+  )?;
+  assert_eq!(byte_length, Value::Number(12.0));
+
+  Ok(())
+}
+
+#[test]
+fn data_view_get_roots_optional_little_endian_across_gc_in_toindex() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const buf = new ArrayBuffer(2);
+      const u8 = new Uint8Array(buf);
+      u8[0] = 0x34;
+      u8[1] = 0x12;
+      const view = new DataView(buf);
+      const offset = { valueOf() { ({});
+        return 0;
+      }};
+      const littleEndian = {};
+      return [view, offset, littleEndian];
+    })()"#,
+  )?;
+
+  let [view_val, offset_val, little_endian_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.data_view();
+  let args = [offset_val, little_endian_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::data_view_prototype_get_uint16(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    view_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected getUint16() to trigger GC under tiny heap limits"
+  );
+
+  assert_eq!(out, Value::Number(0x1234 as f64));
+  Ok(())
+}
+
+#[test]
+fn typed_array_slice_roots_end_across_gc_in_tonumber() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const ta = new Uint8Array([1, 2, 3, 4]);
+      const begin = { valueOf() { ({});
+        return 1;
+      }};
+      const end = { valueOf() { return 3; } };
+      return [ta, begin, end];
+    })()"#,
+  )?;
+
+  let [ta_val, begin_val, end_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.uint8_array();
+  let args = [begin_val, end_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::typed_array_prototype_slice(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    ta_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected slice() to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(slice_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "TypedArray.prototype.slice returned non-object",
+    ));
+  };
+
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(slice_obj, 0)?,
+    Some(Value::Number(2.0))
+  );
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(slice_obj, 1)?,
+    Some(Value::Number(3.0))
+  );
+  assert_eq!(scope.heap().typed_array_get_element_value(slice_obj, 2)?, None);
+
+  Ok(())
+}

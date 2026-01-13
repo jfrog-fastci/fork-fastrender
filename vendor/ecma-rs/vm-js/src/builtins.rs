@@ -3372,7 +3372,10 @@ pub fn array_buffer_prototype_resize(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("ArrayBuffer.prototype.resize called on non-object"));
   };
-  scope.push_root(Value::Object(obj))?;
+  // Root `obj` and `newLength` across any potential GC triggered by rooting / argument coercion.
+  // Host callers may invoke this builtin directly without `Vm::call_impl` argument rooting.
+  let new_len_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[Value::Object(obj), new_len_val])?;
 
   // RequireInternalSlot(O, [[ArrayBufferMaxByteLength]]).
   let resizable = scope
@@ -3393,7 +3396,6 @@ pub fn array_buffer_prototype_resize(
   }
 
   // `ToIntegerOrInfinity(newLength)` happens before the detached-buffer check (spec ordering).
-  let new_len_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let new_len = scope.to_integer_or_infinity(vm, host, hooks, new_len_val)?;
 
   // Detached check after argument coercion.
@@ -4158,7 +4160,11 @@ pub fn typed_array_prototype_subarray(
       "TypedArray.prototype.subarray called on non-object",
     ));
   };
-  scope.push_root(Value::Object(obj))?;
+  // Root the receiver + arguments before any potential GC triggered by rooting itself. Host callers
+  // may invoke this builtin without pre-rooting the argument handles.
+  let begin = args.get(0).copied().unwrap_or(Value::Undefined);
+  let end = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[Value::Object(obj), begin, end])?;
 
   let kind = scope
     .heap()
@@ -4224,7 +4230,10 @@ pub fn typed_array_prototype_slice(
       "TypedArray.prototype.slice called on non-object",
     ));
   };
-  scope.push_root(Value::Object(obj))?;
+  // Root the receiver + slice arguments across any potential GC triggered by rooting itself.
+  let begin = args.get(0).copied().unwrap_or(Value::Undefined);
+  let end = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[Value::Object(obj), begin, end])?;
 
   let kind = scope
     .heap()
@@ -4692,7 +4701,11 @@ fn data_view_get_impl(
   let Value::Object(view_obj) = this else {
     return Err(VmError::TypeError("DataView method called on non-object"));
   };
-  scope.push_root(Value::Object(view_obj))?;
+  // Root the receiver + arguments before any potential GC triggered by rooting itself. Host
+  // callers may invoke this builtin without pre-rooting the handles.
+  let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let little_endian_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[Value::Object(view_obj), offset_val, little_endian_val])?;
   let byte_length = scope
     .heap()
     .data_view_byte_length_slot(view_obj)
@@ -4706,10 +4719,9 @@ fn data_view_get_impl(
     .data_view_buffer(view_obj)
     .map_err(|_| VmError::TypeError("DataView method called on incompatible receiver"))?;
 
-  let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let offset = to_index_from_value(vm, scope, host, hooks, offset_val)?;
 
-  let little_endian = match args.get(1).copied().unwrap_or(Value::Undefined) {
+  let little_endian = match little_endian_val {
     Value::Undefined => false,
     v => scope.heap().to_boolean(v)?,
   };
@@ -4860,7 +4872,12 @@ fn data_view_set_impl(
   let Value::Object(view_obj) = this else {
     return Err(VmError::TypeError("DataView method called on non-object"));
   };
-  scope.push_root(Value::Object(view_obj))?;
+  // Root the receiver + arguments before any potential GC triggered by rooting itself. Host
+  // callers may invoke this builtin without pre-rooting the handles.
+  let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let little_endian_val = args.get(2).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[Value::Object(view_obj), offset_val, value, little_endian_val])?;
   let byte_length = scope
     .heap()
     .data_view_byte_length_slot(view_obj)
@@ -4884,15 +4901,13 @@ fn data_view_set_impl(
     return Err(VmError::TypeError("ArrayBuffer is immutable"));
   }
 
-  let value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let offset_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let offset = to_index_from_value(vm, scope, host, hooks, offset_val)?;
 
   // Convert via ToNumber (like typed arrays). Spec: `SetViewValue` performs value coercion before
   // checking for detached/out-of-bounds views.
   let n = scope.to_number(vm, host, hooks, value)?;
 
-  let little_endian = match args.get(2).copied().unwrap_or(Value::Undefined) {
+  let little_endian = match little_endian_val {
     Value::Undefined => false,
     v => scope.heap().to_boolean(v)?,
   };
