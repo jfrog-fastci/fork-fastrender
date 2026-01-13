@@ -3668,8 +3668,10 @@ impl<'vm> HirEvaluator<'vm> {
   ) -> Result<Value, VmError> {
     match op {
       hir_js::AssignOp::Assign => {
-        // Spec: evaluate the assignment target (including computed property keys / binding
-        // resolution) *before* evaluating the RHS expression.
+        // Spec note: plain assignment targets (identifiers / members) evaluate the reference (and
+        // therefore computed property keys / `with` binding resolution) before evaluating the RHS.
+        //
+        // Destructuring assignment patterns evaluate the RHS first.
         let pat = self.get_pat(body, target)?;
 
         match pat.kind {
@@ -4811,6 +4813,7 @@ impl<'vm> HirEvaluator<'vm> {
             /* name_binding */ None,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
+          crate::function_properties::set_function_length(&mut member_scope, func_obj, 0)?;
           member_scope.push_root(Value::Object(func_obj))?;
 
           member_scope.define_property(
@@ -4846,6 +4849,7 @@ impl<'vm> HirEvaluator<'vm> {
             /* name_binding */ None,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
+          crate::function_properties::set_function_length(&mut member_scope, func_obj, 1)?;
           member_scope.push_root(Value::Object(func_obj))?;
 
           member_scope.define_property(
