@@ -34995,6 +34995,35 @@ mod tests {
   }
 
   #[test]
+  fn async_class_extends_await_wires_inheritance() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async class definition evaluation (`await` in `extends`) allocates more than simple sync
+    // scripts; use a slightly larger heap to avoid spurious OOMs.
+    let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var out;
+      async function f() {
+        class B {}
+        class D extends (await Promise.resolve(B)) {}
+        return Object.getPrototypeOf(D) === B
+          && Object.getPrototypeOf(D.prototype) === B.prototype;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+    )?;
+    assert_eq!(value, Value::Undefined);
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("out")?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn prototype_cycle_throw_captures_statement_location() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
