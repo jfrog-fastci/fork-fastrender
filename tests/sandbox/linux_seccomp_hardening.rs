@@ -140,10 +140,7 @@ fn is_seccomp_unsupported_error(err: &fastrender::sandbox::SandboxError) -> bool
 #[test]
 fn linux_seccomp_blocks_ptrace_and_unshare() {
   const CHILD_ENV: &str = "FASTR_TEST_LINUX_SECCOMP_HARDENING_CHILD";
-  const TEST_NAME: &str = concat!(
-    module_path!(),
-    "::linux_seccomp_blocks_ptrace_and_unshare"
-  );
+  const TEST_NAME: &str = concat!(module_path!(), "::linux_seccomp_blocks_ptrace_and_unshare");
 
   if std::env::var_os(CHILD_ENV).is_some() {
     match fastrender::sandbox::apply_renderer_seccomp_denylist() {

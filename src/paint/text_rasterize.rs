@@ -176,7 +176,11 @@ impl SubpixelAAScratch {
     if self.pixmap.is_none() {
       // We should only hit this when something unexpected cleared the cached pixmap. Retry the
       // allocation once and surface a deterministic error if the scratch is still missing.
-      self.pixmap = Some(new_pixmap_with_context(width, height, "text subpixel AA mask")?);
+      self.pixmap = Some(new_pixmap_with_context(
+        width,
+        height,
+        "text subpixel AA mask",
+      )?);
     }
 
     let Some(pixmap) = self.pixmap.as_mut() else {
@@ -1053,6 +1057,20 @@ pub struct TextStroke {
   pub color: Rgba,
 }
 
+#[inline]
+fn antialias_enabled_for_font_smoothing(font_smoothing: FontSmoothing) -> bool {
+  !matches!(font_smoothing, FontSmoothing::None)
+}
+
+#[inline]
+fn allow_subpixel_aa_for_state(state: &TextRenderState<'_>) -> bool {
+  state.allow_subpixel_aa
+    && matches!(
+      state.font_smoothing,
+      FontSmoothing::Auto | FontSmoothing::Subpixel
+    )
+}
+
 impl<'a> Default for TextRenderState<'a> {
   fn default() -> Self {
     Self {
@@ -1192,9 +1210,8 @@ impl TextRasterizer {
     let toggles = runtime::runtime_toggles();
     let hinting_enabled = toggles.truthy("FASTR_TEXT_HINTING");
     let subpixel_aa_enabled = toggles.truthy("FASTR_TEXT_SUBPIXEL_AA");
-    let default_snap_glyph_positions = toggles.truthy("FASTR_DETERMINISTIC_PAINT")
-      && hinting_enabled
-      && !subpixel_aa_enabled;
+    let default_snap_glyph_positions =
+      toggles.truthy("FASTR_DETERMINISTIC_PAINT") && hinting_enabled && !subpixel_aa_enabled;
     let snap_glyph_positions =
       toggles.truthy_with_default(ENV_TEXT_SNAP_GLYPH_POSITIONS, default_snap_glyph_positions);
     let subpixel_aa_diagnostics = if toggles.truthy(ENV_TEXT_SUBPIXEL_AA_DIAGNOSTICS) {
@@ -1802,12 +1819,8 @@ impl TextRasterizer {
     }
     let inv_scale = 1.0 / scale.abs();
 
-    let antialias_enabled = !matches!(state.font_smoothing, FontSmoothing::None);
-    let allow_subpixel_aa = state.allow_subpixel_aa
-      && matches!(
-        state.font_smoothing,
-        FontSmoothing::Auto | FontSmoothing::Subpixel
-      );
+    let antialias_enabled = antialias_enabled_for_font_smoothing(state.font_smoothing);
+    let allow_subpixel_aa = allow_subpixel_aa_for_state(&state);
 
     // Create paint with fill color
     let mut paint = Paint::default();
@@ -1951,13 +1964,7 @@ impl TextRasterizer {
           if diag_enabled {
             let before = cache.stats();
             let path = cache
-              .get_or_build(
-                font,
-                &instance,
-                glyph.glyph_id,
-                font_size,
-                hinting,
-              )
+              .get_or_build(font, &instance, glyph.glyph_id, font_size, hinting)
               .and_then(|glyph| glyph.path.clone());
             let after = cache.stats();
             let delta = after.delta_from(&before);
@@ -1968,13 +1975,7 @@ impl TextRasterizer {
             path
           } else {
             cache
-              .get_or_build(
-                font,
-                &instance,
-                glyph.glyph_id,
-                font_size,
-                hinting,
-              )
+              .get_or_build(font, &instance, glyph.glyph_id, font_size, hinting)
               .and_then(|glyph| glyph.path.clone())
           }
         };
@@ -3865,7 +3866,10 @@ mod tests {
     fn any_color_fringes(pixmap: &Pixmap) -> bool {
       // Only meaningful when both the background and glyph color are grayscale (R==G==B). In that
       // case, any channel divergence indicates the LCD/subpixel branch ran.
-      pixmap.data().chunks_exact(4).any(|px| px[0] != px[1] || px[1] != px[2])
+      pixmap
+        .data()
+        .chunks_exact(4)
+        .any(|px| px[0] != px[1] || px[1] != px[2])
     }
 
     fn render_single_glyph(
@@ -3978,7 +3982,10 @@ mod tests {
           "1".to_string(),
         ),
         // Keep glyph positions fractional so we reliably exercise LCD edge cases.
-        ("FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(), "0".to_string()),
+        (
+          "FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(),
+          "0".to_string(),
+        ),
       ])));
       runtime::with_runtime_toggles(toggles, || {
         let Some(font) = get_test_font() else {
@@ -4035,7 +4042,10 @@ mod tests {
           "FASTR_TEXT_SUBPIXEL_AA_DIAGNOSTICS".to_string(),
           "1".to_string(),
         ),
-        ("FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(), "0".to_string()),
+        (
+          "FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(),
+          "0".to_string(),
+        ),
       ])));
       runtime::with_runtime_toggles(toggles, || {
         let Some(font) = get_test_font() else {
@@ -4078,6 +4088,34 @@ mod tests {
           "expected LCD/subpixel AA to introduce color fringes on an opaque backdrop"
         );
       });
+    }
+
+    #[test]
+    fn font_smoothing_helpers_gate_antialias_and_subpixel() {
+      assert!(!antialias_enabled_for_font_smoothing(FontSmoothing::None));
+      assert!(antialias_enabled_for_font_smoothing(
+        FontSmoothing::Grayscale
+      ));
+      assert!(antialias_enabled_for_font_smoothing(FontSmoothing::Auto));
+      assert!(antialias_enabled_for_font_smoothing(
+        FontSmoothing::Subpixel
+      ));
+
+      let mut state = TextRenderState::default();
+      state.font_smoothing = FontSmoothing::Grayscale;
+      assert!(
+        !allow_subpixel_aa_for_state(&state),
+        "FontSmoothing::Grayscale should disable subpixel AA eligibility"
+      );
+
+      state.font_smoothing = FontSmoothing::Subpixel;
+      assert!(
+        allow_subpixel_aa_for_state(&state),
+        "FontSmoothing::Subpixel should allow subpixel AA when allowed by state"
+      );
+
+      state.allow_subpixel_aa = false;
+      assert!(!allow_subpixel_aa_for_state(&state));
     }
   }
 
@@ -4190,7 +4228,10 @@ mod tests {
     let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
       ("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string()),
       // Ensure glyph positions remain fractional so the LCD/subpixel AA path would normally kick in.
-      ("FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(), "0".to_string()),
+      (
+        "FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(),
+        "0".to_string(),
+      ),
     ])));
     runtime::with_runtime_toggles(toggles, || {
       let mut rasterizer = TextRasterizer::new();
