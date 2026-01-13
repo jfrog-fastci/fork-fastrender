@@ -4371,8 +4371,10 @@ fn build_table_collapsed_borders_metadata(
   // Coordinate convention:
   // - `column_line_pos` / `row_line_pos` are **grid line center** coordinates in the table
   //   fragment's local space (i.e. relative to the table fragment origin). For collapsed-border
-  //   tables the fragment origin is aligned with the left/top outer grid line (`*_line_pos[0]`),
-  //   so the baseline outer border edge is at local coordinate 0.
+  //   tables the fragment origin is aligned with the left/top outer grid line center
+  //   (`*_line_pos[0]`), which is also the table border box edge used for sizing. The baseline
+  //   outer border stroke is centered on that line, so half of it paints into negative coordinates
+  //   (the margin area).
   // - `vertical_line_max` / `horizontal_line_max` are the **layout baseline** line widths: the
   //   widths that were used to position the grid in layout. In particular, the outer left/right
   //   edges are based on the first row per CSS 2.1 §17.6.2.
@@ -8502,8 +8504,10 @@ impl FormattingContext for TableFormattingContext {
       //
       // - `column_line_pos` / `row_line_pos` store **grid line center** positions, measured from
       //   the table fragment origin (`FragmentNode.bounds.origin == (0,0)` for the table grid
-      //   box). `*_line_pos[0]` is the left/top outer grid line, and `*_line_pos.last()` is the
-      //   right/bottom outer grid line.
+      //   box). `*_line_pos[0]` is the left/top outer grid line center, and `*_line_pos.last()` is
+      //   the right/bottom outer grid line center. Outer border strokes are centered on these
+      //   lines, so half of the baseline outer border paints into negative coordinates (the margin
+      //   area).
       // - `col_offsets` / `row_offsets` are the **cell slot starts** (inside edges): for index
       //   `i`, `offsets[i] == line_pos[i] + 0.5*line_width[i]`.
       //

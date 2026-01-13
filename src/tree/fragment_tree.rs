@@ -514,14 +514,37 @@ impl CollapsedBorderSegment {
 pub struct TableCollapsedBorders {
   pub column_count: usize,
   pub row_count: usize,
+  /// Grid line center positions for vertical boundaries (len = `column_count + 1`).
+  ///
+  /// Coordinates are in the table fragment's local space, measured from the table fragment origin
+  /// (same origin used by child cell fragments). For collapsed-border tables this origin is aligned
+  /// with the outer grid line centers (CSS 2.1 §17.6.2), so border strokes can legitimately paint
+  /// into negative coordinates.
   pub column_line_positions: Vec<f32>,
+  /// Grid line center positions for horizontal boundaries (len = `row_count + 1`).
+  ///
+  /// See [`Self::column_line_positions`] for coordinate conventions.
   pub row_line_positions: Vec<f32>,
   pub vertical_borders: Vec<CollapsedBorderSegment>,
   pub horizontal_borders: Vec<CollapsedBorderSegment>,
   pub corner_borders: Vec<CollapsedBorderSegment>,
+  /// Baseline line widths used by *layout* to position the collapsed border grid.
+  ///
+  /// For outer edges, the baseline width follows CSS 2.1 §17.6.2 (e.g. left/right are based on the
+  /// first row). Paint-time border segments can still be thicker on the outer edge; that excess
+  /// must spill outward into the margin rather than shifting the grid.
   pub vertical_line_base: Vec<f32>,
+  /// Baseline line widths used by *layout* to position the collapsed border grid.
+  ///
+  /// See [`Self::vertical_line_base`] for the baseline-vs-spill rationale.
   pub horizontal_line_base: Vec<f32>,
   /// Bounds covering all collapsed border strokes (relative to the table fragment origin).
+  ///
+  /// This can have a negative origin because collapsed border strokes are centered on the outer
+  /// grid line centers, with half the stroke painting into the margin area (CSS 2.1 §17.6.2). When
+  /// later rows/columns resolve thicker winning outer-edge segments than the baseline, that extra
+  /// thickness also spills outward and must be included here so display list culling does not clip
+  /// the border.
   pub paint_bounds: Rect,
   /// Row range `[start, end)` (in original table row indices) covered by the first repeated
   /// header group (`<thead>` / `display: table-header-group`).
@@ -530,6 +553,11 @@ pub struct TableCollapsedBorders {
   /// footer group (`<tfoot>` / `display: table-footer-group`).
   pub footer_rows: Option<(usize, usize)>,
   /// Whether this border set is already expressed in the fragment's local coordinate system.
+  ///
+  /// When a table is fragmented (e.g. print pagination with `box-decoration-break: slice`), layout
+  /// can attach a derived `TableCollapsedBorders` where line positions and `paint_bounds` are
+  /// already adjusted for that slice fragment. In that case `fragment_local` is set to true so
+  /// paint code does not apply additional origin shifts.
   pub fragment_local: bool,
 }
 
