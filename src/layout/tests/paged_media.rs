@@ -6103,9 +6103,116 @@ fn document_canvas_background_paints_under_page_padding() {
 }
 
 #[test]
+fn box_decoration_break_clone_paints_borders_on_each_page_fragment() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 100px 100px; margin: 0; background: rgb(255, 255, 255); }
+          html, body { margin: 0; background: rgb(255, 255, 255); }
+          #box {
+            height: 150px;
+            background: rgb(255, 255, 255);
+            border-top: 4px solid rgb(0, 0, 0);
+            border-bottom: 4px solid rgb(0, 0, 0);
+            box-decoration-break: clone;
+          }
+        </style>
+      </head>
+      <body>
+        <div id="box"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(100, 220)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render box-decoration-break: clone across pages");
+
+  // Page 1 ends at y=99, page 2 begins at y=100 (PageStacking::Stacked { gap: 0 }).
+  assert_eq!(
+    pixel(&pixmap, 50, 98),
+    [0, 0, 0, 255],
+    "clone should paint the bottom border on the first fragment"
+  );
+  assert_eq!(
+    pixel(&pixmap, 50, 101),
+    [0, 0, 0, 255],
+    "clone should paint the top border on the continuation fragment"
+  );
+}
+
+#[test]
+fn box_decoration_break_slice_omits_internal_fragment_edges() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 100px 100px; margin: 0; background: rgb(255, 255, 255); }
+          html, body { margin: 0; background: rgb(255, 255, 255); }
+          #box {
+            height: 150px;
+            background: rgb(255, 255, 255);
+            border-top: 4px solid rgb(0, 0, 0);
+            border-bottom: 4px solid rgb(0, 0, 0);
+            box-decoration-break: slice;
+          }
+        </style>
+      </head>
+      <body>
+        <div id="box"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(100, 220)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render box-decoration-break: slice across pages");
+
+  assert_eq!(
+    pixel(&pixmap, 50, 1),
+    [0, 0, 0, 255],
+    "slice should paint the top border on the first fragment"
+  );
+
+  // Slice should only paint at the outer edges of the fragmented box, skipping internal edges.
+  assert_eq!(
+    pixel(&pixmap, 50, 98),
+    [255, 255, 255, 255],
+    "slice should omit the bottom border at the internal fragment edge"
+  );
+  assert_eq!(
+    pixel(&pixmap, 50, 101),
+    [255, 255, 255, 255],
+    "slice should omit the top border at the internal fragment edge"
+  );
+
+  let last_black_y = (0..pixmap.height())
+    .rev()
+    .find(|&y| pixel(&pixmap, 50, y) == [0, 0, 0, 255])
+    .expect("expected slice to paint a bottom border somewhere on the last fragment");
+  assert!(
+    last_black_y > 100,
+    "expected bottom border to appear on page 2, got last black pixel at y={last_black_y}"
+  );
+}
+
+#[test]
 fn margin_boxes_paint_above_fixed_high_z_content_by_default() {
   let html = r#"
-     <html>
+      <html>
        <head>
         <style>
           @page {
