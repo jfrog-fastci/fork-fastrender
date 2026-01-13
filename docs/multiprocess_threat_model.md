@@ -311,8 +311,10 @@ These tests should be treated as *security regression tests*, not just stability
      (e.g. `fuzz/fuzz_targets/image_decoding.rs`).
 
 5. **Boundary size / quota tests**
-   - Explicit tests that overlarge frames / URLs / favicon payloads are rejected (DoS resistance).
-   - Include integer-overflow style cases (e.g. `width * height * 4` overflow).
+    - Explicit tests that overlarge frames / URLs / favicon payloads are rejected (DoS resistance).
+    - Explicit tests that per-renderer **WebSocket connection caps** are enforced in the network
+      process, and that capacity is released when sockets close / renderers disconnect.
+    - Include integer-overflow style cases (e.g. `width * height * 4` overflow).
 
 ---
 
