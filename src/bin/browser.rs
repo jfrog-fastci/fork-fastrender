@@ -3824,9 +3824,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
       Event::UserEvent(UserEvent::WorkerWake) => {
-        // Allow bridge threads to enqueue another wake while we're draining worker messages.
-        worker_wake_coalescer.begin_drain();
-
         // Drain pending worker messages across *all* windows. This is time/message-budgeted so that
         // under pathological message floods (e.g. debug-log spam) we don't monopolize the UI thread
         // and starve input/resize/OS events.
@@ -3939,7 +3936,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         }
 
-        if needs_follow_up_wake_any {
+        // Re-arm the global wake coalescer now that we've drained the worker message queues.
+        //
+        // We intentionally clear the global "pending" bit *after* draining so that bridge threads
+        // don't enqueue redundant `WorkerWake` events while the UI thread is already awake and
+        // draining messages. Any messages that arrive during the drain set the per-window
+        // `worker_wake_pending` flag and will be picked up below to schedule exactly one follow-up
+        // wake when needed.
+        worker_wake_coalescer.begin_drain();
+        let needs_follow_up_wake = needs_follow_up_wake_any
+          || windows
+            .values()
+            .any(|win| win.worker_wake_pending.load(Ordering::Acquire));
+        if needs_follow_up_wake {
           worker_wake_coalescer.notify(|| {
             let _ = event_loop_proxy.send_event(UserEvent::WorkerWake);
           });
