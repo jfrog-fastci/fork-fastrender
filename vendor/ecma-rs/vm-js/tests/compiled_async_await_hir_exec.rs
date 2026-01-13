@@ -71,9 +71,35 @@ fn compiled_async_throw_rejects_promise_instead_of_throwing_synchronously() -> R
     "#,
   )?;
 
+  let out = exec_compiled(&mut rt, "out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let out = exec_compiled(&mut rt, "out")?;
   assert_eq!(value_to_string(&rt, out), "boom");
+  Ok(())
+}
+
+#[test]
+fn compiled_async_return_resolves_promise() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  exec_compiled(
+    &mut rt,
+    r#"
+      var out = "";
+      async function f(){ return "ok"; }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = exec_compiled(&mut rt, "out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = exec_compiled(&mut rt, "out")?;
+  assert_eq!(value_to_string(&rt, out), "ok");
   Ok(())
 }
