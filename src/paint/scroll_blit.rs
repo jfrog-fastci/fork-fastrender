@@ -98,6 +98,19 @@ mod tests {
   }
 
   #[test]
+  fn view_timeline_marks_style_as_scroll_linked() {
+    let style = ComputedStyle {
+      animation_names: vec![Some("a".into())],
+      animation_timelines: vec![AnimationTimeline::View(Default::default())],
+      ..ComputedStyle::default()
+    };
+    assert!(
+      style_uses_scroll_linked_timelines(&style),
+      "expected view() timeline to be treated as scroll-linked"
+    );
+  }
+
+  #[test]
   fn animation_timeline_list_repeats_to_match_names() {
     let style = ComputedStyle {
       animation_names: vec![Some("a".into()), Some("b".into())],
@@ -120,6 +133,32 @@ mod tests {
     assert!(
       !style_uses_scroll_linked_timelines(&style),
       "expected default/empty animation-timeline list to be treated as auto (not scroll-linked)"
+    );
+  }
+
+  #[test]
+  fn animation_timeline_none_is_not_scroll_linked() {
+    let style = ComputedStyle {
+      animation_names: vec![Some("a".into())],
+      animation_timelines: vec![AnimationTimeline::None],
+      ..ComputedStyle::default()
+    };
+    assert!(
+      !style_uses_scroll_linked_timelines(&style),
+      "expected AnimationTimeline::None to be treated as not scroll-linked"
+    );
+  }
+
+  #[test]
+  fn empty_animation_name_list_is_not_scroll_linked_even_with_scroll_timeline_value() {
+    let style = ComputedStyle {
+      animation_names: Vec::new(),
+      animation_timelines: vec![AnimationTimeline::Scroll(Default::default())],
+      ..ComputedStyle::default()
+    };
+    assert!(
+      !style_uses_scroll_linked_timelines(&style),
+      "expected no animations (empty animation-name list) to be treated as not scroll-linked"
     );
   }
 }
