@@ -32501,7 +32501,7 @@ fn text_split_text_native(
           (Ok((new_text_id, parent_id, maybe_script_parent)), parent_id.is_some())
         }
         Err(err) => {
-          let exc = match make_dom_exception(scope, err.code(), "") {
+          let exc = match make_dom_exception(vm, scope, err.code(), "") {
             Ok(v) => VmError::Throw(v),
             Err(e) => e,
           };
@@ -32516,7 +32516,7 @@ fn text_split_text_native(
     let parent_id = dom.parent_node(node_key.node_id);
     let new_text_id = match dom.split_text(node_key.node_id, offset) {
       Ok(id) => id,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
     (new_text_id, parent_id, None)
   };
