@@ -1499,13 +1499,13 @@ impl BrowserAppState {
     &mut self,
     tab_id: TabId,
     process_id: RendererProcessId,
-    site_key: Option<SiteKey>,
+    renderer_site_key: Option<SiteKey>,
   ) -> bool {
     let Some(tab) = self.tab_mut(tab_id) else {
       return false;
     };
     tab.renderer_process = Some(process_id);
-    tab.renderer_site_key = site_key;
+    tab.renderer_site_key = renderer_site_key;
     true
   }
 
