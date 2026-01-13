@@ -10954,6 +10954,62 @@ impl<'a, F: ResourceFetcher> Drop for InFlightOwnerGuard<'a, F> {
   }
 }
 
+/// Merge metadata from a 304 Not Modified response into a cached resource.
+///
+/// Semantics: only overwrite cached fields when the 304 supplies a value.
+fn merge_not_modified_metadata(cached: &mut FetchedResource, res304: &FetchedResource) {
+  if let Some(etag) = res304.etag.as_ref() {
+    cached.etag = Some(etag.clone());
+  }
+  if let Some(last_modified) = res304.last_modified.as_ref() {
+    cached.last_modified = Some(last_modified.clone());
+  }
+  if let Some(policy) = res304.cache_policy.as_ref() {
+    cached.cache_policy = Some(policy.clone());
+  }
+  if let Some(content_type) = res304.content_type.as_ref() {
+    cached.content_type = Some(content_type.clone());
+  }
+  if let Some(content_encoding) = res304.content_encoding.as_ref() {
+    cached.content_encoding = Some(content_encoding.clone());
+  }
+  if res304.nosniff {
+    cached.nosniff = true;
+  }
+  if let Some(policy) = res304.response_referrer_policy {
+    cached.response_referrer_policy = Some(policy);
+  }
+  if let Some(value) = res304.access_control_allow_origin.as_ref() {
+    cached.access_control_allow_origin = Some(value.clone());
+  }
+  if res304.access_control_allow_credentials {
+    cached.access_control_allow_credentials = true;
+  }
+  if let Some(value) = res304.timing_allow_origin.as_ref() {
+    cached.timing_allow_origin = Some(value.clone());
+  }
+  if let Some(vary) = res304.vary.as_ref() {
+    cached.vary = Some(vary.clone());
+  }
+  if let Some(final_url) = res304.final_url.as_ref() {
+    cached.final_url = Some(final_url.clone());
+  }
+
+  if let Some(headers_304) = res304.response_headers.as_ref() {
+    match cached.response_headers.as_mut() {
+      Some(headers_cached) => {
+        let mut names: HashSet<String> = HashSet::new();
+        for (name, _) in headers_304 {
+          names.insert(name.to_ascii_lowercase());
+        }
+        headers_cached.retain(|(name, _)| !names.contains(&name.to_ascii_lowercase()));
+        headers_cached.extend(headers_304.iter().cloned());
+      }
+      None => cached.response_headers = Some(headers_304.clone()),
+    }
+  }
+}
+
 impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
     self.fetch_with_context(FetchContextKind::Other, url)
@@ -11025,12 +11081,18 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       Ok(res) => {
         if res.is_not_modified() {
           if let Some(snapshot) = plan.cached.as_ref() {
-            let value = snapshot.value.as_result();
-            if let Ok(ref ok) = value {
-              let mut stored_resource = ok.clone();
-              if res.vary.is_some() {
-                stored_resource.vary = res.vary.clone();
+            let mut value = snapshot.value.as_result();
+            if let Ok(ref mut cached_resource) = value {
+              // Prefer the cache entry validators in case older cache implementations only updated
+              // the validator fields (and not the stored resource metadata) on 304 responses.
+              if snapshot.etag.is_some() {
+                cached_resource.etag = snapshot.etag.clone();
               }
+              if snapshot.last_modified.is_some() {
+                cached_resource.last_modified = snapshot.last_modified.clone();
+              }
+
+              merge_not_modified_metadata(cached_resource, &res);
 
               let stored_at = SystemTime::now();
               let should_store = self.config.allow_no_store
@@ -11051,7 +11113,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 });
 
               let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
-              let memory_cacheable = match stored_resource.vary.as_deref() {
+              let memory_cacheable = match cached_resource.vary.as_deref() {
                 Some(vary) => {
                   !vary_contains_star(vary)
                     && (allow_unhandled
@@ -11061,7 +11123,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
               };
 
               if should_store && memory_cacheable {
-                let canonical_url = self.canonical_url(url, ok.final_url.as_deref());
+                let canonical_url = self.canonical_url(url, cached_resource.final_url.as_deref());
                 let canonical_request = FetchRequest {
                   url: &canonical_url,
                   destination: request.destination,
@@ -11074,8 +11136,9 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 if let Some(vary_key) = compute_vary_key_for_request(
                   &self.inner,
                   canonical_request,
-                  stored_resource.vary.as_deref(),
+                  cached_resource.vary.as_deref(),
                 ) {
+                  let stored_resource = cached_resource.clone();
                   let _ = self.cache_entry(
                     &key,
                     request,
@@ -11083,14 +11146,11 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                     vary_key,
                     CacheEntry {
                       value: CacheValue::Resource(stored_resource),
-                      etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
-                      last_modified: res
-                        .last_modified
-                        .clone()
-                        .or_else(|| snapshot.last_modified.clone()),
+                      etag: cached_resource.etag.clone(),
+                      last_modified: cached_resource.last_modified.clone(),
                       http_cache,
                     },
-                    ok.final_url.as_deref(),
+                    cached_resource.final_url.as_deref(),
                   );
                 } else {
                   self.remove_cached(&key, request);
@@ -11384,22 +11444,18 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       Ok(res) => {
         if res.is_not_modified() {
           if let Some(snapshot) = plan.cached.as_ref() {
-            let value = snapshot.value.as_result();
-            if let Ok(ref ok) = value {
-              let mut stored_resource = ok.clone();
-              if res.vary.is_some() {
-                stored_resource.vary = res.vary.clone();
+            let mut value = snapshot.value.as_result();
+            if let Ok(ref mut cached_resource) = value {
+              if snapshot.etag.is_some() {
+                cached_resource.etag = snapshot.etag.clone();
               }
+              if snapshot.last_modified.is_some() {
+                cached_resource.last_modified = snapshot.last_modified.clone();
+              }
+
+              merge_not_modified_metadata(cached_resource, &res);
+
               let stored_at = SystemTime::now();
-              let canonical_url = self.canonical_url(url, ok.final_url.as_deref());
-              let canonical_request = FetchRequest {
-                url: &canonical_url,
-                destination: req.destination,
-                referrer_url: req.referrer_url,
-                client_origin: req.client_origin,
-                referrer_policy: req.referrer_policy,
-                credentials_mode: req.credentials_mode,
-              };
               let should_store = self.config.allow_no_store
                 || !res
                   .cache_policy
@@ -11418,7 +11474,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                 });
 
               let allow_unhandled = self.config.allow_unhandled_vary || allow_unhandled_vary_env();
-              let memory_cacheable = match stored_resource.vary.as_deref() {
+              let memory_cacheable = match cached_resource.vary.as_deref() {
                 Some(vary) => {
                   !vary_contains_star(vary)
                     && (allow_unhandled
@@ -11428,11 +11484,22 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
               };
 
               if should_store && memory_cacheable {
+                let canonical_url = self.canonical_url(url, cached_resource.final_url.as_deref());
+                let canonical_request = FetchRequest {
+                  url: &canonical_url,
+                  destination: req.destination,
+                  referrer_url: req.referrer_url,
+                  client_origin: req.client_origin,
+                  referrer_policy: req.referrer_policy,
+                  credentials_mode: req.credentials_mode,
+                };
+
                 if let Some(vary_key) = compute_vary_key_for_request(
                   &self.inner,
                   canonical_request,
-                  stored_resource.vary.as_deref(),
+                  cached_resource.vary.as_deref(),
                 ) {
+                  let stored_resource = cached_resource.clone();
                   let _ = self.cache_entry(
                     &key,
                     req,
@@ -11440,14 +11507,11 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                     vary_key,
                     CacheEntry {
                       value: CacheValue::Resource(stored_resource),
-                      etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
-                      last_modified: res
-                        .last_modified
-                        .clone()
-                        .or_else(|| snapshot.last_modified.clone()),
+                      etag: cached_resource.etag.clone(),
+                      last_modified: cached_resource.last_modified.clone(),
                       http_cache: updated_meta,
                     },
-                    ok.final_url.as_deref(),
+                    cached_resource.final_url.as_deref(),
                   );
                 } else {
                   self.remove_cached(&key, req);
@@ -22482,6 +22546,9 @@ mod tests {
     etag: Option<String>,
     last_modified: Option<String>,
     cache_policy: Option<HttpCachePolicy>,
+    response_referrer_policy: Option<ReferrerPolicy>,
+    access_control_allow_origin: Option<String>,
+    response_headers: Option<Vec<(String, String)>>,
   }
 
   #[derive(Clone, Debug)]
@@ -22525,6 +22592,9 @@ mod tests {
       resource.etag = resp.etag.clone();
       resource.last_modified = resp.last_modified.clone();
       resource.cache_policy = resp.cache_policy.clone();
+      resource.response_referrer_policy = resp.response_referrer_policy;
+      resource.access_control_allow_origin = resp.access_control_allow_origin.clone();
+      resource.response_headers = resp.response_headers.clone();
       Ok(resource)
     }
 
@@ -22559,6 +22629,9 @@ mod tests {
         etag: Some("etag1".to_string()),
         last_modified: Some("lm1".to_string()),
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 304,
@@ -22566,6 +22639,9 @@ mod tests {
         etag: None,
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
 
@@ -22594,6 +22670,9 @@ mod tests {
         etag: Some("etag1".to_string()),
         last_modified: Some("lm1".to_string()),
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 304,
@@ -22601,6 +22680,9 @@ mod tests {
         etag: Some("etag2".to_string()),
         last_modified: Some("lm2".to_string()),
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 304,
@@ -22608,6 +22690,9 @@ mod tests {
         etag: None,
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
 
@@ -22636,6 +22721,60 @@ mod tests {
   }
 
   #[test]
+  fn caching_fetcher_merges_not_modified_metadata() {
+    let fetcher = ScriptedFetcher::new(vec![
+      MockResponse {
+        status: 200,
+        body: b"cached".to_vec(),
+        etag: Some("etag1".to_string()),
+        last_modified: None,
+        cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
+      },
+      MockResponse {
+        status: 304,
+        body: Vec::new(),
+        etag: Some("etag2".to_string()),
+        last_modified: None,
+        cache_policy: None,
+        response_referrer_policy: Some(ReferrerPolicy::NoReferrer),
+        access_control_allow_origin: Some("*".to_string()),
+        response_headers: None,
+      },
+    ]);
+    let cache = CachingFetcher::new(fetcher);
+    let url = "http://example.com/resource";
+
+    let first = cache.fetch(url).expect("initial fetch");
+    assert_eq!(first.bytes, b"cached");
+    assert_eq!(first.etag.as_deref(), Some("etag1"));
+    assert_eq!(first.response_referrer_policy, None);
+    assert_eq!(first.access_control_allow_origin, None);
+
+    let second = cache.fetch(url).expect("revalidated fetch");
+    assert_eq!(second.bytes, b"cached");
+    assert_eq!(second.etag.as_deref(), Some("etag2"));
+    assert_eq!(
+      second.response_referrer_policy,
+      Some(ReferrerPolicy::NoReferrer)
+    );
+    assert_eq!(second.access_control_allow_origin.as_deref(), Some("*"));
+
+    let snapshot = cache
+      .cached_entry(&CacheKey::new(FetchContextKind::Other, url.to_string()), None)
+      .expect("cache entry should exist after revalidation");
+    let stored = snapshot
+      .value
+      .as_result()
+      .expect("cache entry should be a resource");
+    assert_eq!(stored.etag.as_deref(), Some("etag2"));
+    assert_eq!(stored.response_referrer_policy, Some(ReferrerPolicy::NoReferrer));
+    assert_eq!(stored.access_control_allow_origin.as_deref(), Some("*"));
+  }
+
+  #[test]
   fn caching_fetcher_falls_back_on_transient_status() {
     let fetcher = ScriptedFetcher::new(vec![
       MockResponse {
@@ -22644,6 +22783,9 @@ mod tests {
         etag: Some("etag1".to_string()),
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 503,
@@ -22651,6 +22793,9 @@ mod tests {
         etag: None,
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 200,
@@ -22658,6 +22803,9 @@ mod tests {
         etag: Some("etag2".to_string()),
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
 
@@ -22691,6 +22839,9 @@ mod tests {
           max_age: Some(3600),
           ..Default::default()
         }),
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 403,
@@ -22701,6 +22852,9 @@ mod tests {
           no_store: true,
           ..Default::default()
         }),
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 200,
@@ -22708,6 +22862,9 @@ mod tests {
         etag: Some("etag2".to_string()),
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
 
@@ -23302,6 +23459,9 @@ mod tests {
         etag: Some("etag1".to_string()),
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 403,
@@ -23309,6 +23469,9 @@ mod tests {
         etag: None,
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
     let cache = CachingFetcher::new(fetcher);
@@ -23343,6 +23506,9 @@ mod tests {
           max_age: Some(3600),
           ..Default::default()
         }),
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 403,
@@ -23350,6 +23516,9 @@ mod tests {
         etag: None,
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
     let disk = DiskCachingFetcher::with_configs(
@@ -23598,6 +23767,9 @@ mod tests {
           max_age: Some(3600),
           ..Default::default()
         }),
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 304,
@@ -23605,6 +23777,9 @@ mod tests {
         etag: None,
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
 
@@ -23683,6 +23858,9 @@ mod tests {
           no_cache: true,
           ..Default::default()
         }),
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 304,
@@ -23690,6 +23868,9 @@ mod tests {
         etag: None,
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
 

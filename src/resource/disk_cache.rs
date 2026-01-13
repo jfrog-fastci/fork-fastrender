@@ -3262,12 +3262,16 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       Ok(res) => {
         if res.is_not_modified() {
           if let Some(snapshot) = plan.cached.as_ref() {
-            let value = snapshot.value.as_result();
-            if let Ok(ref ok) = value {
-              let mut stored_resource = ok.clone();
-              if res.vary.is_some() {
-                stored_resource.vary = res.vary.clone();
+            let mut value = snapshot.value.as_result();
+            if let Ok(ref mut cached_resource) = value {
+              if snapshot.etag.is_some() {
+                cached_resource.etag = snapshot.etag.clone();
               }
+              if snapshot.last_modified.is_some() {
+                cached_resource.last_modified = snapshot.last_modified.clone();
+              }
+
+              super::merge_not_modified_metadata(cached_resource, &res);
               let stored_at = SystemTime::now();
               let should_store = self.memory.config.allow_no_store
                 || !res
@@ -3288,7 +3292,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
               let allow_unhandled_mem =
                 self.memory.config.allow_unhandled_vary || super::allow_unhandled_vary_env();
-              let memory_cacheable = match stored_resource.vary.as_deref() {
+              let memory_cacheable = match cached_resource.vary.as_deref() {
                 Some(vary) => {
                   !super::vary_contains_star(vary)
                     && (allow_unhandled_mem
@@ -3298,7 +3302,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               };
 
               if should_store && memory_cacheable {
-                let canonical_url = self.canonical_url(url, ok.final_url.as_deref());
+                let canonical_url = self.canonical_url(url, cached_resource.final_url.as_deref());
                 let canonical_request = FetchRequest {
                   url: &canonical_url,
                   destination: request.destination,
@@ -3311,11 +3315,11 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 if let Some(vary_key) = super::compute_vary_key_for_request(
                   &self.memory.inner,
                   canonical_request,
-                  stored_resource.vary.as_deref(),
+                  cached_resource.vary.as_deref(),
                 ) {
                   let allow_unhandled_disk =
                     self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
-                  let disk_cacheable = match stored_resource.vary.as_deref() {
+                  let disk_cacheable = match cached_resource.vary.as_deref() {
                     Some(vary) => {
                       !super::vary_contains_star(vary)
                         && (allow_unhandled_disk
@@ -3324,6 +3328,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                     None => true,
                   };
 
+                  let stored_resource = cached_resource.clone();
                   let canonical = self.memory.cache_entry(
                     &key,
                     request,
@@ -3331,14 +3336,11 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                     vary_key,
                     super::CacheEntry {
                       value: super::CacheValue::Resource(stored_resource),
-                      etag: res.etag.clone().or_else(|| snapshot.etag.clone()),
-                      last_modified: res
-                        .last_modified
-                        .clone()
-                        .or_else(|| snapshot.last_modified.clone()),
+                      etag: cached_resource.etag.clone(),
+                      last_modified: cached_resource.last_modified.clone(),
                       http_cache,
                     },
-                    ok.final_url.as_deref(),
+                    cached_resource.final_url.as_deref(),
                   );
 
                   if disk_cacheable {
@@ -3411,7 +3413,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                 }
               } else {
                 self.memory.remove_cached(&key, request);
-                let canonical = self.canonical_url(url, ok.final_url.as_deref());
+                let canonical = self.canonical_url(url, cached_resource.final_url.as_deref());
                 let canonical_request = FetchRequest {
                   url: &canonical,
                   destination: request.destination,
@@ -7829,6 +7831,9 @@ mod tests {
     etag: Option<String>,
     last_modified: Option<String>,
     cache_policy: Option<HttpCachePolicy>,
+    response_referrer_policy: Option<ReferrerPolicy>,
+    access_control_allow_origin: Option<String>,
+    response_headers: Option<Vec<(String, String)>>,
   }
 
   #[derive(Clone, Debug)]
@@ -7870,6 +7875,9 @@ mod tests {
       resource.etag = resp.etag.clone();
       resource.last_modified = resp.last_modified.clone();
       resource.cache_policy = resp.cache_policy.clone();
+      resource.response_referrer_policy = resp.response_referrer_policy;
+      resource.access_control_allow_origin = resp.access_control_allow_origin.clone();
+      resource.response_headers = resp.response_headers.clone();
       Ok(resource)
     }
 
@@ -7905,6 +7913,9 @@ mod tests {
         etag: Some("etag1".to_string()),
         last_modified: Some("lm1".to_string()),
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 304,
@@ -7912,6 +7923,9 @@ mod tests {
         etag: Some("etag2".to_string()),
         last_modified: Some("lm2".to_string()),
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
 
@@ -7952,6 +7966,78 @@ mod tests {
   }
 
   #[test]
+  fn revalidates_and_merges_not_modified_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fetcher = ScriptedFetcher::new(vec![
+      MockResponse {
+        status: 200,
+        body: b"cached".to_vec(),
+        etag: Some("etag1".to_string()),
+        last_modified: None,
+        cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
+      },
+      MockResponse {
+        status: 304,
+        body: Vec::new(),
+        etag: Some("etag2".to_string()),
+        last_modified: None,
+        cache_policy: None,
+        response_referrer_policy: Some(ReferrerPolicy::NoReferrer),
+        access_control_allow_origin: Some("*".to_string()),
+        response_headers: None,
+      },
+    ]);
+
+    // Force staleness so the second fetch revalidates and merges metadata.
+    let disk = DiskCachingFetcher::with_configs(
+      fetcher.clone(),
+      tmp.path(),
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        ..CachingFetcherConfig::default()
+      },
+      DiskCacheConfig {
+        max_bytes: 0,
+        max_age: Some(Duration::from_secs(0)),
+        ..DiskCacheConfig::default()
+      },
+    );
+    let url = "https://example.com/metadata";
+
+    let first = disk.fetch(url).expect("seed fetch");
+    assert_eq!(first.bytes, b"cached");
+    assert_eq!(first.response_referrer_policy, None);
+
+    let second = disk.fetch(url).expect("revalidated fetch");
+    assert_eq!(second.bytes, b"cached");
+    assert_eq!(second.etag.as_deref(), Some("etag2"));
+    assert_eq!(
+      second.response_referrer_policy,
+      Some(ReferrerPolicy::NoReferrer)
+    );
+    assert_eq!(second.access_control_allow_origin.as_deref(), Some("*"));
+
+    let data_path = disk.data_path(TEST_KIND, url);
+    let meta_path = disk.meta_path_for_data(&data_path);
+    let meta_bytes = fs::read(meta_path).expect("meta present");
+    let meta: StoredMetadata = serde_json::from_slice(&meta_bytes).expect("valid meta");
+    assert_eq!(meta.response_referrer_policy.as_deref(), Some("no-referrer"));
+    assert_eq!(meta.access_control_allow_origin.as_deref(), Some("*"));
+
+    // "Restart" to ensure metadata persisted to disk is what gets served on future runs.
+    let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+    let cached = disk_again.fetch(url).expect("cached fetch");
+    assert_eq!(
+      cached.response_referrer_policy,
+      Some(ReferrerPolicy::NoReferrer)
+    );
+    assert_eq!(cached.access_control_allow_origin.as_deref(), Some("*"));
+  }
+
+  #[test]
   fn disk_cache_does_not_poison_successful_entry_on_http_error_refresh() {
     let tmp = tempfile::tempdir().unwrap();
     let fetcher = ScriptedFetcher::new(vec![
@@ -7964,6 +8050,9 @@ mod tests {
           max_age: Some(3600),
           ..Default::default()
         }),
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 403,
@@ -7974,6 +8063,9 @@ mod tests {
           no_store: true,
           ..Default::default()
         }),
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
 
@@ -8972,6 +9064,9 @@ mod tests {
           max_age: Some(3600),
           ..Default::default()
         }),
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
       MockResponse {
         status: 304,
@@ -8979,6 +9074,9 @@ mod tests {
         etag: None,
         last_modified: None,
         cache_policy: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        response_headers: None,
       },
     ]);
 
