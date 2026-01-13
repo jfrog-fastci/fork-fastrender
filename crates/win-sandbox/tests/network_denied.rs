@@ -4,13 +4,14 @@ use std::ffi::c_void;
 use std::ffi::OsString;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::ExitStatusExt;
 use std::time::Duration;
 
-use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
+use win_sandbox::RendererSandbox;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
-use windows_sys::Win32::Security::{GetTokenInformation, OpenProcessToken, TokenCapabilities, TokenIsAppContainer, TOKEN_QUERY};
+use windows_sys::Win32::Security::{
+  GetTokenInformation, OpenProcessToken, TokenCapabilities, TokenIsAppContainer, TOKEN_QUERY,
+};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject};
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_APPCONTAINER_NETWORK_CHILD";
@@ -20,16 +21,12 @@ const WSAEACCES: i32 = 10013;
 const WAIT_OBJECT_0: u32 = 0x0000_0000;
 const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
-const INTERNET_CLIENT_SID: &str = "S-1-15-3-1";
-const INTERNET_CLIENT_SERVER_SID: &str = "S-1-15-3-2";
-const PRIVATE_NETWORK_CLIENT_SERVER_SID: &str = "S-1-15-3-3";
-
 struct HandleGuard(HANDLE);
 
 impl Drop for HandleGuard {
   fn drop(&mut self) {
     unsafe {
-      if self.0 != 0 {
+      if !self.0.is_null() {
         CloseHandle(self.0);
       }
     }
@@ -111,7 +108,10 @@ unsafe fn token_capability_sids(token: HANDLE) -> io::Result<Vec<String>> {
   let mut out = Vec::with_capacity(count);
   for entry in slice {
     let mut sid_str: *mut u16 = std::ptr::null_mut();
-    let ok = windows_sys::Win32::Security::ConvertSidToStringSidW(entry.sid, &mut sid_str);
+    let ok = windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW(
+      entry.sid,
+      &mut sid_str,
+    );
     if ok == 0 || sid_str.is_null() {
       return Err(io::Error::last_os_error());
     }
@@ -131,10 +131,10 @@ fn appcontainer_denies_network() {
     // Child path: validate the token contains no network capabilities + connect fails.
     // -------------------------------------------------------------------------
     unsafe {
-      let mut token: HANDLE = 0;
+      let mut token: HANDLE = std::ptr::null_mut();
       let ok = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token);
       assert_ne!(ok, 0, "OpenProcessToken failed: {}", io::Error::last_os_error());
-      assert_ne!(token, 0, "OpenProcessToken returned null handle");
+      assert!(!token.is_null(), "OpenProcessToken returned null handle");
       let token_guard = HandleGuard(token);
 
       // Ensure we are actually running inside an AppContainer token (not a fallback sandbox).
@@ -159,16 +159,10 @@ fn appcontainer_denies_network() {
       );
 
       let caps = token_capability_sids(token_guard.0).expect("query TokenCapabilities");
-      if !caps.is_empty() {
-        assert!(
-          !caps.iter().any(|sid| {
-            sid == INTERNET_CLIENT_SID
-              || sid == INTERNET_CLIENT_SERVER_SID
-              || sid == PRIVATE_NETWORK_CLIENT_SERVER_SID
-          }),
-          "AppContainer token unexpectedly has network capabilities: {caps:?}"
-        );
-      }
+      assert!(
+        caps.is_empty(),
+        "expected TokenCapabilities to be empty for a no-capabilities AppContainer; got {caps:?}"
+      );
     }
 
     let addr = SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 80));
@@ -190,16 +184,10 @@ fn appcontainer_denies_network() {
   }
 
   // ---------------------------------------------------------------------------
-  // Parent path: spawn this test under the production renderer AppContainer sandbox.
+  // Parent path: spawn this test under the win-sandbox renderer AppContainer sandbox.
   // ---------------------------------------------------------------------------
   static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
   let _guard = ENV_LOCK.lock().unwrap();
-
-  // Ensure sandbox debug escape hatches are not set for this test.
-  let prev_disable = std::env::var_os("FASTR_DISABLE_RENDERER_SANDBOX");
-  let prev_legacy = std::env::var_os("FASTR_WINDOWS_RENDERER_SANDBOX");
-  std::env::remove_var("FASTR_DISABLE_RENDERER_SANDBOX");
-  std::env::remove_var("FASTR_WINDOWS_RENDERER_SANDBOX");
 
   let prev_child = std::env::var_os(CHILD_ENV);
   std::env::set_var(CHILD_ENV, "1");
@@ -213,14 +201,10 @@ fn appcontainer_denies_network() {
     OsString::from("--nocapture"),
   ];
 
-  let child = spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child");
-  assert_eq!(
-    child.level,
-    WindowsSandboxLevel::AppContainer,
-    "expected AppContainer sandboxing to be used (not fallback)"
-  );
+  let sandbox = RendererSandbox::appcontainer_no_capabilities();
+  let child = sandbox.spawn(&exe, &args).expect("spawn sandboxed child");
 
-  let handle = child.process.as_raw_handle() as HANDLE;
+  let handle = child.process.as_raw();
   let status = wait_process(handle, 20_000).expect("wait for sandboxed child");
   assert!(status.success(), "sandboxed child failed (exit={status})");
 
@@ -232,13 +216,4 @@ fn appcontainer_denies_network() {
     Some(value) => std::env::set_var("RUST_TEST_THREADS", value),
     None => std::env::remove_var("RUST_TEST_THREADS"),
   }
-  match prev_disable {
-    Some(value) => std::env::set_var("FASTR_DISABLE_RENDERER_SANDBOX", value),
-    None => std::env::remove_var("FASTR_DISABLE_RENDERER_SANDBOX"),
-  }
-  match prev_legacy {
-    Some(value) => std::env::set_var("FASTR_WINDOWS_RENDERER_SANDBOX", value),
-    None => std::env::remove_var("FASTR_WINDOWS_RENDERER_SANDBOX"),
-  }
 }
-

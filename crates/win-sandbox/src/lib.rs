@@ -55,6 +55,11 @@ mod restricted_token;
 #[cfg(windows)]
 pub use restricted_token::RestrictedToken;
 
+#[cfg(windows)]
+mod renderer_sandbox;
+#[cfg(windows)]
+pub use renderer_sandbox::{RendererSandbox, SandboxedChild};
+
 use thiserror::Error;
 
 /// Result type alias for win-sandbox operations.

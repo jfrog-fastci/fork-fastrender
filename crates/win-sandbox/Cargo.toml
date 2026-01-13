@@ -13,6 +13,8 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_Console",
   "Win32_System_JobObjects",
@@ -20,8 +22,3 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }
-
-[target.'cfg(windows)'.dev-dependencies]
-# Reuse the production Windows renderer sandbox spawner (`fastrender::sandbox::windows`) so this
-# crate's regression tests catch accidental capability additions (e.g. `internetClient`).
-fastrender = { path = "../..", default-features = false }
