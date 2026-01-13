@@ -78,7 +78,7 @@ fn resolve_socket_addrs_with_timeout(
   }
 }
 
-fn connect_with_timeout(
+pub(crate) fn connect_with_timeout(
   url: &Url,
   request: tungstenite::handshake::client::Request,
   timeout: Duration,

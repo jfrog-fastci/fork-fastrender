@@ -14,6 +14,8 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::protocol::{CloseFrame, Message as TungsteniteMessage};
 #[cfg(feature = "direct_websocket")]
 use tungstenite::Error as TungsteniteError;
+#[cfg(feature = "direct_websocket")]
+use tungstenite::stream::MaybeTlsStream;
 
 use super::ipc;
 
@@ -486,7 +488,10 @@ fn validate_ws_subprotocol_handshake_response(
 #[cfg(feature = "direct_websocket")]
 impl WebSocketBackend for DirectWebSocketBackend {
   fn connect(&self, url: &str, protocols: &[String]) -> Result<Box<dyn WebSocketStream>> {
-    let mut req = url
+    let parsed =
+      websocket_ipc::validate_and_normalize_url(url).map_err(|err| Error::Other(err.to_string()))?;
+    let mut req = parsed
+      .clone()
       .into_client_request()
       .map_err(|err| Error::Other(err.to_string()))?;
     if !protocols.is_empty() {
@@ -497,7 +502,31 @@ impl WebSocketBackend for DirectWebSocketBackend {
       );
     }
 
-    let (socket, response) = tungstenite::connect(req).map_err(map_tungstenite_err)?;
+    let connect_timeout = if cfg!(test) {
+      Duration::from_secs(1)
+    } else {
+      Duration::from_secs(5)
+    };
+    let (socket, response) =
+      crate::resource::websocket::connect_with_timeout(&parsed, req, connect_timeout)
+        .map_err(map_tungstenite_err)?;
+
+    // The network process backend is intended to provide a blocking WebSocket stream abstraction.
+    // Clear the handshake/connection timeouts so normal reads/writes do not spuriously fail once the
+    // connection is established.
+    match socket.get_ref() {
+      MaybeTlsStream::Plain(stream) => {
+        let _ = stream.set_read_timeout(None);
+        let _ = stream.set_write_timeout(None);
+      }
+      MaybeTlsStream::Rustls(stream) => {
+        let _ = stream.get_ref().set_read_timeout(None);
+        let _ = stream.get_ref().set_write_timeout(None);
+      }
+      #[allow(unreachable_patterns)]
+      _ => {}
+    }
+
     let protocol = validate_ws_subprotocol_handshake_response(protocols, response.headers())?;
 
     Ok(Box::new(DirectWebSocketStream { socket, protocol }))
