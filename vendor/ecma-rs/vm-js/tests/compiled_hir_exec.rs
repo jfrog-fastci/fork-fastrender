@@ -4623,6 +4623,26 @@ fn compiled_array_literal_holes_set_length() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_array_literal_holes_create_sparse_array() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let a = [1, , 3];
+      (0 in a) && !(1 in a) && (2 in a);
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_array_literal_spread() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -4634,12 +4654,35 @@ fn compiled_array_literal_spread() -> Result<(), VmError> {
     r#"
       let b = [2, 3];
       let a = [1, ...b, 4];
-      a[1] + a[2];
+      a[2];
     "#,
   )?;
 
   let result = rt.exec_compiled_script(script)?;
-  assert_eq!(result, Value::Number(5.0));
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_array_literal_spread_from_string() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ return ['a', ...'bc'][2]; }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string result, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "c");
   Ok(())
 }
 
