@@ -22,9 +22,9 @@ test(() => {
   // Declarative shadow DOM is processed during `innerHTML` parsing.
   host.innerHTML = "<template shadowroot=open><span id=child></span></template>";
 
-  // In this harness, the ShadowRoot is represented as a child node under the host element.
-  const shadowRoot = host.firstChild;
-  assert_true(!!shadowRoot, "host should have a firstChild (shadow root)");
+  // Spec: open shadow roots are exposed via `host.shadowRoot`, not via `firstChild/childNodes`.
+  const shadowRoot = host.shadowRoot;
+  assert_true(!!shadowRoot, "host.shadowRoot should exist for an open shadow root");
 
   const shadowChild = shadowRoot.firstChild;
   assert_true(!!shadowChild, "shadow root should have a child node");
@@ -43,4 +43,3 @@ test(() => {
     "ShadowRoot.getRootNode({composed:true}) returns the document when the host is connected"
   );
 }, "Node.getRootNode returns shadow root vs document inside shadow DOM");
-

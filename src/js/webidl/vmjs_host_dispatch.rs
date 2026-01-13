@@ -4357,6 +4357,36 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::String(js))?;
         Ok(Value::String(js))
       }
+      ("Element", "shadowRoot", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let handle = require_dom_platform_mut(vm)?.require_element_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        let shadow_root = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let shadow_root = dom.shadow_root_for_host(node_id)?;
+            match &dom.node(shadow_root).kind {
+              NodeKind::ShadowRoot { mode, .. } if *mode == crate::dom::ShadowRootMode::Open => {
+                Some(shadow_root)
+              }
+              _ => None,
+            }
+          }))
+        })?;
+        let Some(shadow_root_id) = shadow_root else {
+          return Ok(Value::Null);
+        };
+
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+          scope,
+          document_id,
+          shadow_root_id,
+          DomInterface::ShadowRoot,
+        )?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
       ("Element", "children", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
         let Value::Object(wrapper_obj) = receiver else {

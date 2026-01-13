@@ -145,6 +145,12 @@ impl Document {
     // Append the fragment; `DocumentFragment` insertion semantics splice its children into the
     // element (in order) and empty the fragment.
     let _ = self.append_child(element, fragment)?;
+
+    // Declarative shadow DOM is processed during markup parsing, but `innerHTML` uses fragment
+    // parsing where the host element is not part of the temporary parse tree. Run a post-pass after
+    // insertion so newly-inserted `<template shadowroot[mode]=...>` nodes under this document are
+    // promoted to real ShadowRoot nodes attached to their hosts.
+    self.attach_shadow_roots();
     Ok(())
   }
 
