@@ -2304,6 +2304,7 @@ struct App {
   history_panel_request_focus_search: bool,
   bookmarks_panel_open: bool,
   downloads_panel_open: bool,
+  downloads_panel_request_focus: bool,
   clear_browsing_data_dialog_open: bool,
   bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState,
   clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange,
@@ -2814,6 +2815,7 @@ impl App {
       history_panel_request_focus_search: false,
       bookmarks_panel_open: false,
       downloads_panel_open: false,
+      downloads_panel_request_focus: false,
       clear_browsing_data_dialog_open: false,
       clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange::default(),
       tab_textures: std::collections::HashMap::new(),
@@ -5167,6 +5169,9 @@ impl App {
         // Downloads are shown in the right-side panel, so close other panels that share that space.
         self.history_panel_open = false;
         self.bookmarks_panel_open = false;
+        if !self.downloads_panel_open {
+          self.downloads_panel_request_focus = true;
+        }
         self.downloads_panel_open = true;
       }
       PageContextMenuAction::OpenLinkInNewTab(url) => {
@@ -5249,6 +5254,9 @@ impl App {
       egui::Color32::from_rgba_unmultiplied(r, g, b, a)
     }
 
+    let request_initial_focus = self.downloads_panel_request_focus && !ctx.wants_keyboard_input();
+    self.downloads_panel_request_focus = false;
+
     let mut close_panel = false;
     let mut cancel_requests: Vec<(fastrender::ui::TabId, fastrender::ui::messages::DownloadId)> = Vec::new();
     let mut retry_requests: Vec<(fastrender::ui::TabId, String)> = Vec::new();
@@ -5278,6 +5286,9 @@ impl App {
             close_resp.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close downloads panel")
             });
+            if request_initial_focus {
+              close_resp.request_focus();
+            }
             if close_resp.clicked() {
               close_panel = true;
             }
@@ -5424,25 +5435,60 @@ impl App {
                   ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match &entry.status {
                       DownloadStatus::InProgress { .. } => {
-                        if ui.small_button("Cancel").clicked() {
+                        let cancel_resp = ui.small_button("Cancel");
+                        cancel_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            format!("Cancel download: {}", entry.file_name),
+                          )
+                        });
+                        if cancel_resp.clicked() {
                           cancel_requests.push((entry.tab_id, entry.download_id));
                         }
                       }
                       DownloadStatus::Completed => {
-                        if ui.small_button("Show in Folder").clicked() {
+                        let reveal_resp = ui.small_button("Show in Folder");
+                        reveal_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            format!("Show downloaded file in folder: {}", entry.file_name),
+                          )
+                        });
+                        if reveal_resp.clicked() {
                           reveal_requests.push(entry.path.clone());
                         }
-                        if ui.small_button("Open").clicked() {
+                        let open_resp = ui.small_button("Open");
+                        open_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            format!("Open downloaded file: {}", entry.file_name),
+                          )
+                        });
+                        if open_resp.clicked() {
                           open_requests.push(entry.path.clone());
                         }
                       }
                       DownloadStatus::Cancelled => {
-                        if ui.small_button("Retry").clicked() {
+                        let retry_resp = ui.small_button("Retry");
+                        retry_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            format!("Retry download: {}", entry.file_name),
+                          )
+                        });
+                        if retry_resp.clicked() {
                           retry_requests.push((entry.tab_id, entry.url.clone()));
                         }
                       }
                       DownloadStatus::Failed { .. } => {
-                        if ui.small_button("Retry").clicked() {
+                        let retry_resp = ui.small_button("Retry");
+                        retry_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            format!("Retry download: {}", entry.file_name),
+                          )
+                        });
+                        if retry_resp.clicked() {
                           retry_requests.push((entry.tab_id, entry.url.clone()));
                         }
                       }
@@ -5496,6 +5542,7 @@ impl App {
 
     if close_panel {
       self.downloads_panel_open = false;
+      self.downloads_panel_request_focus = false;
     }
 
     for (tab_id, download_id) in cancel_requests {
@@ -7680,6 +7727,7 @@ impl App {
           let next = !self.downloads_panel_open;
           self.downloads_panel_open = next;
           if next {
+            self.downloads_panel_request_focus = true;
             // Keep the right-side panel area exclusive: downloads share the same side panel space as
             // history/bookmarks.
             self.history_panel_open = false;
@@ -8731,6 +8779,11 @@ impl App {
                   .filter(|t| !t.is_empty())
                   .unwrap_or(entry.url.as_str());
                 let url = &entry.url;
+                let entry_label = if title == url.as_str() {
+                  title.to_string()
+                } else {
+                  format!("{title} ({url})")
+                };
 
                 let ts = Self::format_history_timestamp_ms(entry.visited_at_ms)
                   .unwrap_or_else(|| "Unknown time".to_string());
@@ -8758,7 +8811,7 @@ impl App {
                 }
 
                 row_resp.widget_info({
-                  let label = format!("Open {title}");
+                  let label = format!("Open history entry: {entry_label}");
                   move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                 });
 
@@ -8773,8 +8826,9 @@ impl App {
                       "Delete",
                       true,
                     );
-                    delete_resp.widget_info(|| {
-                      egui::WidgetInfo::labeled(egui::WidgetType::Button, "Delete history entry")
+                    delete_resp.widget_info({
+                      let label = format!("Delete history entry: {entry_label}");
+                      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                     });
                     if delete_resp.clicked() {
                       history_delete_index = Some(idx);
@@ -8787,12 +8841,20 @@ impl App {
                       "Open in new tab",
                       true,
                     );
+                    new_tab_resp.widget_info({
+                      let label = format!("Open history entry in new tab: {entry_label}");
+                      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                    });
                     if new_tab_resp.clicked() {
                       history_open_in_new_tab = Some(url.clone());
                       action_clicked = true;
                     }
 
                     let open_resp = ui.small_button("Open");
+                    open_resp.widget_info({
+                      let label = format!("Open history entry: {entry_label}");
+                      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                    });
                     if open_resp.clicked() {
                       panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url.clone()));
                       action_clicked = true;
