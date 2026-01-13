@@ -34,7 +34,7 @@ fn tabindex_negative_pointer_focuses_but_tab_skips() -> Result<()> {
   let html = r#"<!doctype html>
     <html>
       <head>
-        <meta charset=\"utf-8\">
+        <meta charset="utf-8">
         <style>
           html, body { margin: 0; padding: 0; }
           #a { position: absolute; left: 0; top: 0; width: 80px; height: 22px; }
@@ -43,9 +43,9 @@ fn tabindex_negative_pointer_focuses_but_tab_skips() -> Result<()> {
         </style>
       </head>
       <body>
-        <input id=\"a\">
-        <div id=\"t\" tabindex=\"-1\"></div>
-        <input id=\"b\">
+        <input id="a">
+        <div id="t" tabindex="-1"></div>
+        <input id="b">
       </body>
     </html>
   "#;
