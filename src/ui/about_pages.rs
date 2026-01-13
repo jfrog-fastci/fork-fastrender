@@ -33,6 +33,7 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
+use crate::ui::theme_parsing::RgbaColor;
 use crate::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE;
 
 #[derive(Debug, Clone, Default)]
@@ -43,6 +44,8 @@ pub struct AboutPageSnapshot {
   /// This is expected to be ordered by recency (newest first), but about pages should remain robust
   /// even when callers provide unsorted data.
   pub history: Vec<HistorySnapshot>,
+  /// Effective browser chrome accent color (used to theme `about:` pages).
+  pub chrome_accent: Option<RgbaColor>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,9 +79,12 @@ pub fn set_about_page_snapshot(snapshot: AboutPageSnapshot) {
 }
 
 pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &GlobalHistoryStore) {
+  // Preserve any separately-updated chrome settings (e.g. accent color) across snapshot refreshes.
+  let chrome_accent = about_page_snapshot_lock().read().chrome_accent;
   set_about_page_snapshot(AboutPageSnapshot {
     bookmarks: bookmark_snapshots_from_store(bookmarks),
     history: history_snapshots_from_global_history_store(history),
+    chrome_accent,
   });
 }
 
@@ -90,6 +96,10 @@ pub fn sync_about_page_snapshot_history_from_global_history_store(store: &Global
 pub fn sync_about_page_snapshot_bookmarks_from_bookmark_store(store: &BookmarkStore) {
   let bookmarks = bookmark_snapshots_from_store(store);
   about_page_snapshot_lock().write().bookmarks = bookmarks;
+}
+
+pub fn sync_about_page_snapshot_chrome_accent(accent: Option<RgbaColor>) {
+  about_page_snapshot_lock().write().chrome_accent = accent;
 }
 
 fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnapshot> {
@@ -358,10 +368,31 @@ fn about_footer_html() -> String {
   )
 }
 
+fn about_theme_css() -> String {
+  // Default accent (matches the legacy about-page palette).
+  const DEFAULT_ACCENT: RgbaColor = RgbaColor::new(10, 132, 255, 0xFF);
+  let accent = about_page_snapshot_lock()
+    .read()
+    .chrome_accent
+    .unwrap_or(DEFAULT_ACCENT);
+  let r = accent.r;
+  let g = accent.g;
+  let b = accent.b;
+  format!(
+    ":root {{
+  --about-focus: rgba({r}, {g}, {b}, 0.65);
+  --about-accent-border: rgba({r}, {g}, {b}, 0.55);
+  --about-accent-bg: rgba({r}, {g}, {b}, 0.18);
+}}
+"
+  )
+}
+
 fn about_layout_html(title: &str, current: &str, body: &str, extra_css: &str) -> String {
   let safe_title = escape_html(title);
   let header = about_header_html(current);
   let footer = about_footer_html();
+  let theme_css = about_theme_css();
   format!(
     "<!doctype html>
 <html>
@@ -371,6 +402,7 @@ fn about_layout_html(title: &str, current: &str, body: &str, extra_css: &str) ->
     <title>{safe_title}</title>
     <style>
 {shared}
+{theme_css}
 {extra_css}
     </style>
   </head>
@@ -1529,6 +1561,7 @@ mod tests {
           visit_count: 1,
         },
       ],
+      ..Default::default()
     });
 
     let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
@@ -1683,6 +1716,33 @@ mod tests {
   }
 
   #[test]
+  fn about_pages_use_chrome_accent_in_css_variables() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    set_about_page_snapshot(AboutPageSnapshot {
+      chrome_accent: Some(RgbaColor::new(255, 0, 255, 0xFF)),
+      ..Default::default()
+    });
+
+    let html = html_for_about_url(ABOUT_HELP).unwrap();
+    for needle in [
+      "--about-focus: rgba(255, 0, 255, 0.65);",
+      "--about-accent-border: rgba(255, 0, 255, 0.55);",
+      "--about-accent-bg: rgba(255, 0, 255, 0.18);",
+    ] {
+      assert!(
+        html.contains(needle),
+        "expected about page HTML to include themed accent CSS, missing {needle:?}"
+      );
+    }
+
+    set_about_page_snapshot(before);
+  }
+
+  #[test]
   fn error_page_html_includes_retry_link_and_escapes_url() {
     let retry_url = "https://example.com/?a=1&b=<x>\"'";
     let html = error_page_html("Navigation failed", "boom", Some(retry_url));
@@ -1780,6 +1840,7 @@ mod tests {
         last_visited: None,
         visit_count: 1,
       }],
+      ..Default::default()
     });
 
     let html = html_for_about_url(ABOUT_HISTORY).unwrap();
@@ -1822,6 +1883,7 @@ mod tests {
           visit_count: 1,
         },
       ],
+      ..Default::default()
     });
 
     let html = html_for_about_url("about:history?q=rust").unwrap();
@@ -1850,6 +1912,7 @@ mod tests {
         },
       ],
       history: Vec::new(),
+      ..Default::default()
     });
 
     let html_all = html_for_about_url(ABOUT_BOOKMARKS).unwrap();
