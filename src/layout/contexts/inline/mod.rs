@@ -10589,18 +10589,31 @@ fn lowercase_word(word: &str, turkic: bool) -> String {
   let chars: Vec<char> = word.chars().collect();
   let mut out = String::new();
 
-  for (idx, ch) in chars.iter().enumerate() {
-    if turkic && *ch == 'I' {
+  let mut idx = 0usize;
+  while idx < chars.len() {
+    let ch = chars[idx];
+
+    if turkic && ch == 'I' {
+      // Special-casing for Turkish/Azeri dotted vs dotless I:
+      // - U+0049 'I' lowercases to U+0131 'ı' unless it carries a dot above.
+      // - `I` + U+0307 COMBINING DOT ABOVE should lowercase to plain 'i' and drop the dot.
+      if chars.get(idx + 1) == Some(&'\u{0307}') {
+        out.push('i');
+        idx += 2;
+        continue;
+      }
       out.push('\u{0131}');
+      idx += 1;
       continue;
     }
 
-    if turkic && *ch == '\u{0130}' {
+    if turkic && ch == '\u{0130}' {
       out.push('i');
+      idx += 1;
       continue;
     }
 
-    if *ch == '\u{03A3}' {
+    if ch == '\u{03A3}' {
       let has_prev = chars[..idx].iter().rev().any(|c| c.is_alphabetic());
       let has_next = chars[idx + 1..].iter().any(|c| c.is_alphabetic());
       if has_prev && !has_next {
@@ -10608,12 +10621,14 @@ fn lowercase_word(word: &str, turkic: bool) -> String {
       } else {
         out.push('\u{03C3}');
       }
+      idx += 1;
       continue;
     }
 
     for low in ch.to_lowercase() {
       out.push(low);
     }
+    idx += 1;
   }
 
   out
@@ -30032,6 +30047,12 @@ mod tests {
   #[test]
   fn locale_lowercase_turkic_dotted_capital_i() {
     assert_eq!(locale_lowercase("İSTANBUL", "tr"), "istanbul");
+  }
+
+  #[test]
+  fn locale_lowercase_turkic_decomposed_dotted_capital_i() {
+    // Decomposed form of İ (U+0130) is "I" + COMBINING DOT ABOVE.
+    assert_eq!(locale_lowercase("I\u{0307}", "tr"), "i");
   }
 
   #[test]
