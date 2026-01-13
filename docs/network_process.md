@@ -14,6 +14,32 @@ This is primarily a **security boundary**:
 This document is aimed at new contributors: it should make it obvious where network code is allowed,
 where it is forbidden, and how to extend the network IPC surface safely.
 
+## Repo reality (today)
+
+FastRender is actively transitioning to a multiprocess architecture; some pieces are already in-tree,
+and others are scaffolding. A few important “don’t get surprised” points:
+
+- The default feature set enables **in-process networking** and **in-process WebSockets**:
+  - Cargo features: `direct_network`, `direct_websocket`, `direct_filesystem` (see `Cargo.toml`).
+  - Sandboxed renderer builds must disable these and instead use IPC proxies.
+  - CI has a “no in-process networking” build configuration via
+    `--no-default-features --features renderer_minimal`.
+- There is a minimal `network` subprocess today:
+  - Binary: [`src/bin/network.rs`](../src/bin/network.rs)
+  - Spawn helper (library): [`src/network_process.rs`](../src/network_process.rs)
+  - Current protocol is intentionally tiny: `Fetch { url }` + `Shutdown` (see
+    `fastrender::network_process::ipc`).
+- There are additional (more complete) IPC protocols already defined, even if not yet wired up
+  end-to-end:
+  - Full `ResourceFetcher` proxy protocol (JSON over TCP): [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs)
+  - Bounded binary network transport with explicit per-field limits (request/response/events):
+    [`src/net/transport.rs`](../src/net/transport.rs)
+  - WebSocket IPC message schema + validation helpers:
+    [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) and [`src/ipc/network.rs`](../src/ipc/network.rs)
+
+If you are changing IPC framing/limits, also read the normative IPC invariants doc:
+[`docs/ipc.md`](ipc.md).
+
 ## Process roles
 
 ### Browser process (trusted)
@@ -44,8 +70,12 @@ Responsibilities:
 
 Hard rule:
 
-- **No direct network I/O.** Renderer code must not open sockets, make HTTP requests, or depend on
-  “networky” crates directly (`reqwest`, `ureq`, `tungstenite`, `std::net`, etc.).
+- **No direct network I/O in sandboxed builds.** When building a renderer intended to run in a
+  sandboxed OS process, it must not open sockets or link in network stacks directly.
+  - Enforced by Cargo features: disable `direct_network`/`direct_websocket` (see `Cargo.toml`) and
+    provide IPC-backed proxies instead.
+  - In code review: renderer-side code should not be reaching for `std::net`, `reqwest`, `ureq`,
+    `tungstenite`, etc. unless it is behind one of the “direct_*” feature gates.
 
 ### Network process (sandboxed, network-only)
 
@@ -96,6 +126,27 @@ trait during process startup. That IPC fetcher is then injected into the rendere
 This keeps the majority of the renderer code agnostic to whether bytes came from an in-process HTTP
 client or the network process.
 
+### Quick start: using the network subprocess as a fetch backend
+
+The minimal `network` process can already be used as a “fetch bytes for URL” service:
+
+```rust,no_run
+use fastrender::network_process::{spawn_network_process, NetworkProcessConfig};
+use fastrender::FastRender;
+
+let network = spawn_network_process(NetworkProcessConfig::default());
+let fetcher = network.connect_client().resource_fetcher();
+
+let mut renderer = FastRender::builder()
+  .fetcher(fetcher)
+  .build()?;
+# Ok::<(), fastrender::Error>(())
+```
+
+This is useful for tests and for validating the process/IPC plumbing. As the multiprocess workstream
+expands, the same pattern will apply: the renderer is always configured with a `ResourceFetcher`,
+which may be IPC-backed.
+
 ### Surfaces exposed over IPC
 
 At a high level, the network IPC surface is:
@@ -105,6 +156,10 @@ At a high level, the network IPC surface is:
   to the renderer.
 - **WebSocket**: connect/send/close plus an event stream for incoming frames and close/error events.
 - **Downloads**: start/cancel/progress with explicit user-gesture mediation (browser-controlled).
+
+Status note (repo reality): the *minimal* `network` subprocess currently only implements the HTTP
+`Fetch { url }` round-trip. The other bullets above are the intended full surface and already have
+in-tree protocol definitions, but may not yet be wired end-to-end.
 
 ## HTTP IPC (Fetch / subresources)
 
@@ -134,6 +189,24 @@ The response payload typically includes:
 - Response headers (already filtered appropriately for CORS and internal-only headers)
 - Body bytes (or a streamed body/event protocol for large responses)
 - Structured network error information (timeout, DNS failure, TLS failure, etc.)
+
+### Code: current prototype vs target protocol
+
+There are currently multiple HTTP IPC shapes in-tree:
+
+- **Prototype (`network` binary):** [`src/bin/network.rs`](../src/bin/network.rs) implements a tiny
+  request set (`Fetch { url }` / `Shutdown`) defined in [`src/network_process.rs`](../src/network_process.rs)
+  (`fastrender::network_process::ipc`).
+  - Transport: TCP on localhost, length-prefixed JSON (`u32_be` length; see `write_frame` /
+    `read_frame` in `network_process::ipc`).
+  - Limitation: the prototype constructs a new `HttpFetcher` per request, so cookie state is not yet
+    shared/persisted across requests.
+- **Full `ResourceFetcher` proxy protocol:** [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs)
+  defines `IpcRequest`/`IpcResponse` messages that cover the broader `ResourceFetcher` surface
+  (including cookies and cache artifacts).
+- **Bounded binary network protocol (long-term):** [`src/net/transport.rs`](../src/net/transport.rs)
+  defines a request/response/events protocol with explicit per-field limits and streaming event
+  types for WebSockets and downloads.
 
 ### Forbidden headers and “policy lives in the network process”
 
@@ -172,6 +245,10 @@ Implementation notes:
   [`src/resource/web_fetch/adapter.rs`](../src/resource/web_fetch/adapter.rs) and relies on the
   underlying resource fetcher for the actual HTTP bytes.
 
+Status note: today, much of this logic still lives in the in-process resource stack. As the network
+process is wired up, any CORS checks that gate what bytes/headers are visible to untrusted code must
+move to (or be duplicated in) the network process so a compromised renderer cannot bypass them.
+
 Runtime toggle:
 
 - `FASTR_FETCH_ENFORCE_CORS=0|false|no|off` disables CORS enforcement (default is enabled). See
@@ -181,7 +258,8 @@ Runtime toggle:
 
 ### Ownership
 
-The HTTP cookie store (RFC 6265-ish) is owned by the **network process**. The renderer must not:
+Target design: the HTTP cookie store (RFC 6265-ish) is owned by the **network process**. The renderer
+must not:
 
 - Read raw cookies for unrelated origins.
 - Read `HttpOnly` cookies.
@@ -192,6 +270,17 @@ The network process:
 - Attaches cookies to outgoing requests based on the request URL + credentials mode.
 - Applies `Set-Cookie` responses to its store.
 - Exposes a **scoped cookie API** to the renderer for `document.cookie` (if/when enabled).
+
+Repo reality (today):
+
+- Cookie plumbing is still largely in-process:
+  - HTTP cookie attachment is implemented by `HttpFetcher` in [`src/resource.rs`](../src/resource.rs)
+    (it uses a `reqwest::cookie::Jar` internally when `direct_network` is enabled).
+  - The JS `document.cookie` surface has an MVP in-memory store in
+    [`src/js/cookie_jar.rs`](../src/js/cookie_jar.rs).
+- The `ResourceFetcher` trait already has explicit cookie hooks (`cookie_header_value` and
+  `store_cookie_from_document`) which are the intended seam for moving cookie state out-of-process.
+  The corresponding IPC message types exist in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs).
 
 ### Sharing
 
@@ -232,6 +321,18 @@ Design constraints:
 - The network process must apply appropriate bounds (frame sizes, message queue limits) and should
   surface backpressure to avoid unbounded memory growth.
 
+Code pointers:
+
+- JS bindings live in [`src/js/vmjs/window_websocket.rs`](../src/js/vmjs/window_websocket.rs).
+  - In-process mode (default) is gated by the Cargo feature `direct_websocket` (links `tungstenite`).
+  - There is also an IPC-backed install path (`install_window_websocket_ipc_bindings`) that allows a
+    host embedding to route WebSocket commands/events across a process boundary.
+- IPC message schema + validation helpers (intended for renderer→network hardening):
+  [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) and the renderer↔network envelope
+  [`src/ipc/network.rs`](../src/ipc/network.rs).
+- Network-process resource caps (defense in depth):
+  [`src/network_process/websocket_manager.rs`](../src/network_process/websocket_manager.rs).
+
 ## Downloads IPC
 
 Downloads are special because they combine:
@@ -259,6 +360,16 @@ The desktop browser UI already has filename/path helpers (even in single-process
 [`src/ui/downloads.rs`](../src/ui/downloads.rs); in multiprocess mode these same constraints should
 apply.
 
+Repo reality / code pointers:
+
+- The windowed browser’s current download implementation runs in the browser worker thread:
+  - Messages: `UiToWorker::StartDownload` / `CancelDownload` in [`src/ui/messages.rs`](../src/ui/messages.rs)
+  - Implementation: [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
+  - Filename/path helpers: [`src/ui/downloads.rs`](../src/ui/downloads.rs)
+- The long-term multiprocess design expects the network process to stream download body chunks over
+  IPC and the browser to write them to disk. The event type for this already exists in
+  [`src/net/transport.rs`](../src/net/transport.rs) (`NetworkEvent::DownloadChunk`).
+
 ## Debugging tips
 
 ### Network logging / compatibility
@@ -276,6 +387,19 @@ Because the network process is a separate OS process, make sure you’re looking
 - In development, run the browser from a terminal and capture stdout/stderr (the network process
   should inherit the parent’s stdio unless explicitly redirected).
 - Enable `RUST_BACKTRACE=1` when diagnosing crashes.
+- The `NetworkProcessConfig` used by `spawn_network_process` has an `inherit_stderr` knob; see
+  [`src/network_process.rs`](../src/network_process.rs).
+
+### Feature gates (ensuring the renderer has no direct network access)
+
+When validating “renderer cannot do direct network I/O” invariants, use the feature gates:
+
+- `direct_network`: in-process HTTP stack (`reqwest`/`ureq`)
+- `direct_websocket`: in-process WebSocket stack (`tungstenite`)
+- `direct_filesystem`: in-process `file://` fetch support
+
+CI uses the feature set `renderer_minimal` to ensure a renderer build can link without any in-process
+network stacks.
 
 ### Build/run reminders
 
