@@ -143,6 +143,9 @@ pub fn create_restricted_token_low_integrity() -> Result<OwnedHandle> {
 
 /// Spawn a child process with the provided primary token via `CreateProcessAsUserW`.
 ///
+/// Note: `cfg.env` is an override list applied on top of the current process environment; this
+/// helper does **not** perform environment sanitization.
+///
 /// ## Parent already in a Job object
 ///
 /// When `cfg.job` is set and the current process is already running inside a Windows Job, the OS
