@@ -45,7 +45,12 @@ fn scroll_box_id_for_node_id(node_id: NodeId) -> Option<usize> {
 }
 
 fn is_overflow_scrollable(overflow: Overflow) -> bool {
-  matches!(overflow, Overflow::Auto | Overflow::Scroll)
+  // CSS Overflow 3: `overflow: hidden` still establishes a scroll container (scrollbars are simply
+  // suppressed). Assistive tech should still be able to drive scroll actions for these containers.
+  matches!(
+    overflow,
+    Overflow::Auto | Overflow::Scroll | Overflow::Hidden
+  )
 }
 
 fn fragment_is_scroll_container(node: &FragmentNode) -> bool {
@@ -167,10 +172,7 @@ fn scroll_container_info_for_box_id(
         .map(|style| crate::scroll::scrollport_rect_for_fragment(node, style).size)
         .unwrap_or(viewport);
 
-      return Some(ScrollContainerInfo {
-        bounds,
-        scrollport,
-      });
+      return Some(ScrollContainerInfo { bounds, scrollport });
     }
 
     let establishes_fixed_cb = node
@@ -241,7 +243,7 @@ fn is_scroll_action(action: Action) -> bool {
 ///
 /// The returned tree intentionally contains *only* scroll container nodes:
 /// - root node: viewport scroll container
-/// - children: element scroll containers (overflow: auto|scroll)
+/// - children: element scroll containers (overflow: auto|scroll|hidden)
 ///
 /// Higher-level accessibility tree building (roles/names/relationships) is handled elsewhere.
 pub fn build_scroll_container_tree_update(
@@ -279,7 +281,9 @@ pub fn build_scroll_container_tree_update(
 
   while let Some(frame) = stack.pop() {
     let node = frame.node;
-    let abs_origin = frame.abs_origin.translate(Point::new(node.bounds.x(), node.bounds.y()));
+    let abs_origin = frame
+      .abs_origin
+      .translate(Point::new(node.bounds.x(), node.bounds.y()));
     let abs_rect = node.bounds.translate(frame.abs_origin);
 
     if let Some(box_id) = node.box_id() {
@@ -303,13 +307,7 @@ pub fn build_scroll_container_tree_update(
           .as_deref()
           .map(|style| crate::scroll::scrollport_rect_for_fragment(node, style).size)
           .unwrap_or(viewport_local);
-        element_scroll_containers.insert(
-          box_id,
-          ScrollContainerInfo {
-            bounds,
-            scrollport,
-          },
-        );
+        element_scroll_containers.insert(box_id, ScrollContainerInfo { bounds, scrollport });
       }
     }
 
@@ -344,10 +342,13 @@ pub fn build_scroll_container_tree_update(
     child_ids.push(node_id);
 
     let mut builder = NodeBuilder::new(accesskit::Role::GenericContainer);
-    let abs_bounds = abs_bounds_by_box_id.get(&box_id).copied().unwrap_or_else(|| {
-      // Fallback for unexpected cases where we collected a scroll container without bounds.
-      crate::geometry::Rect::from_xywh(0.0, 0.0, 0.0, 0.0)
-    });
+    let abs_bounds = abs_bounds_by_box_id
+      .get(&box_id)
+      .copied()
+      .unwrap_or_else(|| {
+        // Fallback for unexpected cases where we collected a scroll container without bounds.
+        crate::geometry::Rect::from_xywh(0.0, 0.0, 0.0, 0.0)
+      });
     let viewport_bounds = abs_bounds.translate(Point::new(-viewport_scroll.x, -viewport_scroll.y));
     builder.set_bounds(accesskit_rect_from_xywh(
       viewport_bounds.x(),
@@ -366,7 +367,12 @@ pub fn build_scroll_container_tree_update(
   {
     let root_info = scroll_container_info_for_root(fragment_tree, viewport);
     let mut builder = NodeBuilder::new(accesskit::Role::Document);
-    builder.set_bounds(accesskit_rect_from_xywh(0.0, 0.0, viewport.width, viewport.height));
+    builder.set_bounds(accesskit_rect_from_xywh(
+      0.0,
+      0.0,
+      viewport.width,
+      viewport.height,
+    ));
     builder.set_children(child_ids.clone());
     set_scroll_properties(
       &mut builder,
@@ -490,7 +496,10 @@ pub fn apply_scroll_action_to_scroll_state(
     return None;
   }
 
-  let delta = Point::new(next_offset.x - current_offset.x, next_offset.y - current_offset.y);
+  let delta = Point::new(
+    next_offset.x - current_offset.x,
+    next_offset.y - current_offset.y,
+  );
 
   let mut next = ScrollState::from_parts(current.viewport, current.elements.clone());
 
