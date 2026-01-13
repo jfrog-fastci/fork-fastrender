@@ -7,7 +7,8 @@ use std::ptr;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-  ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+  ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,
+  HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
@@ -259,6 +260,15 @@ impl Drop for AttributeList {
   }
 }
 
+fn mitigation_policy_attribute_unsupported(err: &WinSandboxError) -> bool {
+  match err {
+    WinSandboxError::Win32 { code, .. } => {
+      *code == ERROR_INVALID_PARAMETER || *code == ERROR_NOT_SUPPORTED
+    }
+    _ => false,
+  }
+}
+
 /// Spawn a sandboxed process using `CreateProcessW` + `STARTUPINFOEXW` attributes.
 pub fn spawn_sandboxed(
   cfg: &SpawnConfig<'_>,
@@ -271,6 +281,24 @@ pub fn spawn_sandboxed(
     _ => None,
   };
 
+  match spawn_sandboxed_inner(cfg, mitigation_policy) {
+    Ok(child) => Ok(child),
+    Err(err)
+      if mitigation_policy.is_some()
+        && mitigation_policy_attribute_unsupported(&err) =>
+    {
+      // Best-effort compatibility: if the OS doesn't recognize the mitigation policy attribute,
+      // retry without it instead of failing process creation.
+      spawn_sandboxed_inner(cfg, None)
+    }
+    Err(err) => Err(err),
+  }
+}
+
+fn spawn_sandboxed_inner(
+  cfg: &SpawnConfig<'_>,
+  mitigation_policy: Option<u64>,
+) -> std::result::Result<ChildProcess, WinSandboxError> {
   let exe_w = wide_null(cfg.exe.as_os_str());
   let mut cmdline = build_command_line(cfg.exe.as_os_str(), &cfg.args);
 

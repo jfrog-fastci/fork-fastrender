@@ -13,8 +13,9 @@
 use crate::spawn::{build_command_line, build_environment_block, wide_null, AttributeList};
 use crate::{ChildProcess, OwnedHandle, OwnedSid, Result, SpawnConfig, WinSandboxError};
 
-use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, FALSE, HANDLE, TRUE};
+use windows_sys::Win32::Foundation::{
+  ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, FALSE, HANDLE, TRUE,
+};
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
 use windows_sys::Win32::Security::{
   CreateRestrictedToken, GetLengthSid, SetTokenInformation, TokenIntegrityLevel,
@@ -150,6 +151,33 @@ pub fn spawn_with_token(cfg: &SpawnConfig<'_>, token: &OwnedHandle) -> Result<Ch
     }
     _ => None,
   };
+
+  fn mitigation_policy_attribute_unsupported(err: &WinSandboxError) -> bool {
+    match err {
+      WinSandboxError::Win32 { code, .. } => {
+        *code == ERROR_INVALID_PARAMETER || *code == ERROR_NOT_SUPPORTED
+      }
+      _ => false,
+    }
+  }
+
+  match spawn_with_token_inner(cfg, token, mitigation_policy) {
+    Ok(child) => Ok(child),
+    Err(err)
+      if mitigation_policy.is_some()
+        && mitigation_policy_attribute_unsupported(&err) =>
+    {
+      spawn_with_token_inner(cfg, token, None)
+    }
+    Err(err) => Err(err),
+  }
+}
+
+fn spawn_with_token_inner(
+  cfg: &SpawnConfig<'_>,
+  token: &OwnedHandle,
+  mitigation_policy: Option<u64>,
+) -> Result<ChildProcess> {
 
   let application_name = wide_null(cfg.exe.as_os_str());
   let mut cmdline = build_command_line(cfg.exe.as_os_str(), &cfg.args);
