@@ -380,16 +380,16 @@ mod tests {
   fn internal_about_pages_are_stable_and_ignore_query_and_fragment() {
     let factory = SiteKeyFactory::new_with_seed(1);
 
-    let base = factory.site_key_for_navigation("about:history", None);
-    let query = factory.site_key_for_navigation("about:history?q=rust", None);
-    let frag = factory.site_key_for_navigation("about:history#foo", None);
-    let mixed_case = factory.site_key_for_navigation("ABOUT:History?q=ignored#bar", None);
+    let base = factory.site_key_for_navigation("about:history", None, false);
+    let query = factory.site_key_for_navigation("about:history?q=rust", None, false);
+    let frag = factory.site_key_for_navigation("about:history#foo", None, false);
+    let mixed_case = factory.site_key_for_navigation("ABOUT:History?q=ignored#bar", None, false);
 
     assert_eq!(base, query);
     assert_eq!(base, frag);
     assert_eq!(base, mixed_case);
 
-    let other = factory.site_key_for_navigation("about:newtab", None);
+    let other = factory.site_key_for_navigation("about:newtab", None, false);
     assert_ne!(base, other);
   }
 
@@ -444,10 +444,10 @@ mod tests {
 
     // Use a non-local file URL host to force `Url::to_file_path()` to fail so the implementation
     // falls back to hashing the URL string. Fragment/query differences must not change the key.
-    let base = factory.site_key_for_navigation("file://example.com/tmp/a.html", None);
-    let frag = factory.site_key_for_navigation("file://example.com/tmp/a.html#x", None);
-    let query = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1", None);
-    let both = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1#y", None);
+    let base = factory.site_key_for_navigation("file://example.com/tmp/a.html", None, false);
+    let frag = factory.site_key_for_navigation("file://example.com/tmp/a.html#x", None, false);
+    let query = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1", None, false);
+    let both = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1#y", None, false);
 
     assert_eq!(base, frag);
     assert_eq!(base, query);

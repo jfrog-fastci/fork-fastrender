@@ -171,7 +171,7 @@ impl ProcessAssignmentState {
     }
 
     Url::parse(initial_url).map_err(|err| format!("invalid URL {initial_url:?}: {err}"))?;
-    let site = site_key_for_navigation(initial_url, None);
+    let site = site_key_for_navigation(initial_url, None, false);
 
     match self.process_model {
       ProcessModel::PerTab => {
@@ -244,7 +244,7 @@ impl ProcessAssignmentState {
       .get(&current_process)
       .ok_or_else(|| format!("unknown renderer process: {:?}", current_process))?
       .clone();
-    let target_site = site_key_for_navigation(target_url, Some(&current_site));
+    let target_site = site_key_for_navigation(target_url, Some(&current_site), false);
 
     match self.process_model {
       ProcessModel::PerTab => Ok((current_process, Vec::new())),
