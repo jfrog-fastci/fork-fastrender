@@ -104,3 +104,19 @@ fn computed_field_names_are_evaluated_once_at_class_definition() -> Result<(), V
   Ok(())
 }
 
+#[test]
+fn private_methods_are_available_to_field_initializers_regardless_of_source_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class C {
+          x = this.#m();
+          #m() { return 5; }
+        }
+        new C().x === 5
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

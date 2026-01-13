@@ -160,6 +160,59 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
     out
   };
 
+  // Private methods must be available to all field initializers, regardless of source order.
+  //
+  // vm-js stores private instance methods in the instance-element slot list as `(sym, func)` pairs,
+  // interleaved with field records. Define those methods up-front so subsequent field initializer
+  // evaluation can call `this.#m()` even when `#m` is declared later in the class body.
+  for pair in pairs.chunks_exact(2) {
+    let key_value = pair[0];
+    let init_value = pair[1];
+
+    let Value::Symbol(sym) = key_value else {
+      continue;
+    };
+    if !init_scope.heap().is_internal_symbol(sym) {
+      continue;
+    }
+    let Value::Object(func) = init_value else {
+      continue;
+    };
+
+    // Skip field initializer functions (they are invoked in source order below).
+    let is_field_init = match init_scope.heap().get_function(func) {
+      Ok(f) => match &f.call {
+        CallHandler::Ecma(code_id) => vm
+          .ecma_function_source_span(*code_id)
+          .map(|(_, _, _, kind)| kind == crate::vm::EcmaFunctionKind::ClassFieldInitializer)
+          .unwrap_or(false),
+        _ => false,
+      },
+      Err(_) => false,
+    };
+    if is_field_init {
+      continue;
+    }
+
+    let key = PropertyKey::from_symbol(sym);
+    if init_scope.heap().get_own_property(receiver, key)?.is_some() {
+      continue;
+    }
+
+    init_scope.push_root(Value::Object(func))?;
+    init_scope.define_property_or_throw(
+      receiver,
+      key,
+      crate::PropertyDescriptorPatch {
+        value: Some(Value::Object(func)),
+        writable: Some(false),
+        enumerable: Some(false),
+        configurable: Some(false),
+        ..Default::default()
+      },
+    )?;
+  }
+
   for pair in pairs.chunks_exact(2) {
     let key_value = pair[0];
     let init_value = pair[1];
@@ -209,6 +262,10 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
           )?;
           (value, true)
         } else {
+          // Private methods were defined in the pre-pass above.
+          if is_private {
+            continue;
+          }
           (Value::Object(func), false)
         }
       }
