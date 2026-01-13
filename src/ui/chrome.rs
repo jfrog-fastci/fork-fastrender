@@ -1182,6 +1182,8 @@ pub fn chrome_ui_with_bookmarks(
           }
         }
         let response = icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true);
+        #[cfg(test)]
+        store_test_id(ctx, "chrome_zoom_in_button_id", response.id);
         if response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_in(tab.zoom);
@@ -1192,19 +1194,38 @@ pub fn chrome_ui_with_bookmarks(
       // ---------------------------------------------------------------------------
       // Address bar (pill + truncation + security indicator)
       // ---------------------------------------------------------------------------
-       ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-       let address_bar_id = ui.make_persistent_id("address_bar");
-       let egui_focus = ctx.memory(|mem| mem.has_focus(address_bar_id));
-       let show_text_edit_initial =
-         egui_focus || app.chrome.address_bar_has_focus || app.chrome.request_focus_address_bar;
+      //
+      // Keep widget insertion order left-to-right so Tab/Shift+Tab traversal matches the
+      // visual order. `Layout::right_to_left` is convenient for placement, but egui's focus
+      // navigation follows insertion order, not visual layout.
+      let address_bar_id = ui.make_persistent_id("address_bar");
+      let address_bar_display_id = address_bar_id.with("display");
+      #[cfg(test)]
+      store_test_id(ctx, "chrome_address_bar_text_edit_id", address_bar_id);
+      #[cfg(test)]
+      store_test_id(ctx, "chrome_address_bar_display_id", address_bar_display_id);
+
+      let egui_focus = ctx.memory(|mem| mem.has_focus(address_bar_id));
+      let display_focus = ctx.memory(|mem| mem.has_focus(address_bar_display_id));
+      let show_text_edit_initial = egui_focus
+        || display_focus
+        || app.chrome.address_bar_has_focus
+        || app.chrome.request_focus_address_bar;
+
+      // If the address bar's display pill is focused (e.g. via Tab traversal), promote it to the
+      // real `TextEdit` so typing works as expected.
+      if display_focus {
+        app.chrome.request_focus_address_bar = true;
+        app.chrome.request_select_all_address_bar = true;
+      }
 
        // Capture + consume navigation keys (ArrowUp/Down/Enter/Escape) when the address bar is in
        // text-edit mode so they don't reach the `TextEdit` (cursor movement) or bubble up to the
        // page.
        //
        // NOTE: We intentionally *don't* consume keys based solely on the initial focus state:
-       // winit/egui can batch a click-to-focus and the first keystroke into the same frame, so we
-       // need to wait until after `clicked_display_mode` is computed below.
+       // winit/egui can batch a focus change (click or Tab) and the first keystroke into the same
+       // frame, so we need to wait until after `activated_display_mode` is computed below.
        let mut key_arrow_down = false;
        let mut key_arrow_up = false;
        let mut key_enter = false;
@@ -1234,190 +1255,35 @@ pub fn chrome_ui_with_bookmarks(
         Some(stage) => format!("Loading… {}", stage.as_str()),
         None => "Loading…".to_string(),
       };
-
-      // Toolbar menu (hamburger) button.
-      //
-      // We can't use `ui.menu_button` here because it only accepts text, but we want to use the
-      // repo-owned SVG icon set for consistent chrome iconography.
-      let menu_id = ui.make_persistent_id("chrome_menu");
-      let menu_open_id = menu_id.with("open");
-      let menu_popup_id = menu_id.with("popup");
-      let mut menu_open = ctx
-        .data(|d| d.get_temp::<bool>(menu_open_id))
-        .unwrap_or(false);
-      let menu_open_prev = menu_open;
-
-      let menu_button = icon_button(ui, BrowserIcon::Menu, "Menu", true);
-      #[cfg(test)]
-      store_test_rect(ctx, "chrome_menu_button_rect", menu_button.rect);
-
-      let menu_clicked = menu_button.clicked();
-      if menu_clicked {
-        menu_open = !menu_open;
-      }
-      let menu_opened_now = menu_clicked && menu_open;
-
-      let open_t = motion.animate_bool(
-        ctx,
-        menu_id.with("popup_open"),
-        menu_open,
-        motion.durations.popup_open,
-      );
-      let open_opacity = open_t.clamp(0.0, 1.0);
-
-      let mut menu_rect: Option<egui::Rect> = None;
-      if menu_open || open_opacity > 0.0 {
-        let mut close_menu = false;
-        // Anchor the popup menu below the menu button.
-        let pos = egui::pos2(menu_button.rect.left(), menu_button.rect.bottom());
-        let area = egui::Area::new(menu_popup_id)
-          .order(egui::Order::Foreground)
-          .fixed_pos(pos)
-          .constrain_to(ctx.screen_rect())
-          .interactable(menu_open);
-        let inner = area.show(ctx, |ui| {
-          ui.set_enabled(menu_open);
-          ui.visuals_mut().override_text_color =
-            Some(with_alpha(ui.visuals().text_color(), open_opacity));
-          let mut frame = egui::Frame::popup(ui.style());
-          frame.fill = with_alpha(frame.fill, open_opacity);
-          frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
-          frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
-          frame.show(ui, |ui| {
-            ui.set_min_width(220.0);
-
-            if menu_open && ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
-              close_menu = true;
-            }
-
-            ui.label(egui::RichText::new("Bookmarks").strong());
-            let toggle_bookmark_label = if active_url_is_bookmarked {
-              "Remove bookmark"
-            } else {
-              "Bookmark this page"
-            };
-            let toggle_bookmark = ui.add_enabled(
-              !active_url_trim.is_empty(),
-              egui::Button::new(toggle_bookmark_label),
-            );
-            toggle_bookmark.widget_info({
-              let label = toggle_bookmark_label.to_string();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-            });
-            if menu_opened_now && !active_url_trim.is_empty() {
-              toggle_bookmark.request_focus();
-            }
-            if menu_open {
-              #[cfg(test)]
-              store_test_rect(ctx, "chrome_menu_item_toggle_bookmark_rect", toggle_bookmark.rect);
-            }
-            if menu_open && toggle_bookmark.clicked() {
-              actions.push(ChromeAction::ToggleBookmarkForActiveTab);
-              close_menu = true;
-            }
-
-            let bookmarks_mgr = ui.button("Show bookmarks manager");
-            bookmarks_mgr.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show bookmarks manager")
-            });
-            if menu_opened_now && active_url_trim.is_empty() {
-              bookmarks_mgr.request_focus();
-            }
-            if menu_open {
-              #[cfg(test)]
-              store_test_rect(
-                ctx,
-                "chrome_menu_item_toggle_bookmarks_manager_rect",
-                bookmarks_mgr.rect,
-              );
-            }
-            if menu_open && bookmarks_mgr.clicked() {
-              actions.push(ChromeAction::ToggleBookmarksManager);
-              close_menu = true;
-            }
-
-            ui.separator();
-
-            ui.label(egui::RichText::new("History").strong());
-            let history = ui.button("Show history");
-            history
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show history"));
-            if menu_open {
-              #[cfg(test)]
-              store_test_rect(ctx, "chrome_menu_item_toggle_history_rect", history.rect);
-            }
-            if menu_open && history.clicked() {
-              actions.push(ChromeAction::ToggleHistoryPanel);
-              close_menu = true;
-            }
-
-            let clear = ui.button("Clear browsing data…");
-            clear.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear browsing data")
-            });
-            if menu_open {
-              #[cfg(test)]
-              store_test_rect(
-                ctx,
-                "chrome_menu_item_open_clear_browsing_data_rect",
-                clear.rect,
-              );
-            }
-            if menu_open && clear.clicked() {
-              actions.push(ChromeAction::OpenClearBrowsingDataDialog);
-              close_menu = true;
-            }
-          })
-        });
-        menu_rect = Some(inner.response.rect);
-        if close_menu {
-          menu_open = false;
-        }
-      }
-
-      // Best-effort: close the menu when clicking outside the popup and button.
-      if menu_open {
-        let clicked_outside = ctx.input(|i| {
-          i.pointer.any_pressed()
-            && i
-              .pointer
-              .interact_pos()
-              .or_else(|| i.pointer.latest_pos())
-              .is_some_and(|pos| {
-                !menu_button.rect.contains(pos)
-                  && menu_rect.is_some_and(|rect| !rect.contains(pos))
-              })
-        });
-        if clicked_outside {
-          menu_open = false;
-        }
-      }
-      if menu_open_prev && !menu_open {
-        // Ensure we paint at least one follow-up frame so the menu can fade out smoothly.
-        ctx.request_repaint();
-      }
-
-      ctx.data_mut(|d| {
-        d.insert_temp(menu_open_id, menu_open);
-      });
-
       let bar_height = ui.spacing().interact_size.y;
-      let reserved_right = ui.spacing().interact_size.y + ui.spacing().item_spacing.x;
-      let (bar_rect, mut bar_response) = ui.allocate_exact_size(
-        egui::vec2((ui.available_width() - reserved_right).max(0.0), bar_height),
+      let button_side = ui.spacing().interact_size.y;
+      let spacing_x = ui.spacing().item_spacing.x;
+      // Reserve space for the right-side menu + appearance buttons (+ spacing between them).
+      let reserved_right = button_side * 2.0 + spacing_x * 2.0;
+      let (_id, bar_rect) = ui.allocate_space(egui::vec2(
+        (ui.available_width() - reserved_right).max(0.0),
+        bar_height,
+      ));
+      let mut bar_response = ui.interact(
+        bar_rect,
+        address_bar_display_id,
         if show_text_edit_initial {
           egui::Sense::hover()
         } else {
           egui::Sense::click()
         },
       );
-       let clicked_display_mode = !show_text_edit_initial && bar_response.clicked();
-       if clicked_display_mode {
-         app.chrome.request_focus_address_bar = true;
-         app.chrome.request_select_all_address_bar = true;
-         ctx.request_repaint();
-       }
-       let show_text_edit = show_text_edit_initial || clicked_display_mode;
+
+      // When the address bar gains focus in display mode (e.g. via Tab), immediately open the real
+      // text field so subsequent typing works (and so we don't drop a batched Tab+Text input frame).
+      let activated_display_mode =
+        !show_text_edit_initial && (bar_response.clicked() || bar_response.has_focus());
+      if activated_display_mode {
+        app.chrome.request_focus_address_bar = true;
+        app.chrome.request_select_all_address_bar = true;
+        ctx.request_repaint();
+      }
+      let show_text_edit = show_text_edit_initial || activated_display_mode;
 
        if show_text_edit {
          ui.input_mut(|i| {
@@ -2201,6 +2067,176 @@ pub fn chrome_ui_with_bookmarks(
 
         address_bar_text_edit_response = Some(response.clone());
       }
+
+      // Toolbar menu (hamburger) button.
+      //
+      // We can't use `ui.menu_button` here because it only accepts text, but we want to use the
+      // repo-owned SVG icon set for consistent chrome iconography.
+      //
+      // NOTE: This is rendered *after* the address bar so Tab/Shift+Tab focus traversal matches the
+      // left-to-right visual order.
+      let menu_id = ui.make_persistent_id("chrome_menu");
+      let menu_open_id = menu_id.with("open");
+      let menu_popup_id = menu_id.with("popup");
+      let mut menu_open = ctx
+        .data(|d| d.get_temp::<bool>(menu_open_id))
+        .unwrap_or(false);
+      let menu_open_prev = menu_open;
+
+      let menu_button = icon_button(ui, BrowserIcon::Menu, "Menu", true);
+      #[cfg(test)]
+      store_test_rect(ctx, "chrome_menu_button_rect", menu_button.rect);
+      #[cfg(test)]
+      store_test_id(ctx, "chrome_menu_button_id", menu_button.id);
+
+      let menu_clicked = menu_button.clicked();
+      if menu_clicked {
+        menu_open = !menu_open;
+      }
+      let menu_opened_now = menu_clicked && menu_open;
+
+      let open_t = motion.animate_bool(
+        ctx,
+        menu_id.with("popup_open"),
+        menu_open,
+        motion.durations.popup_open,
+      );
+      let open_opacity = open_t.clamp(0.0, 1.0);
+
+      let mut menu_rect: Option<egui::Rect> = None;
+      if menu_open || open_opacity > 0.0 {
+        let mut close_menu = false;
+        // Anchor the popup menu below the menu button.
+        let pos = egui::pos2(menu_button.rect.left(), menu_button.rect.bottom());
+        let area = egui::Area::new(menu_popup_id)
+          .order(egui::Order::Foreground)
+          .fixed_pos(pos)
+          .constrain_to(ctx.screen_rect())
+          .interactable(menu_open);
+        let inner = area.show(ctx, |ui| {
+          ui.set_enabled(menu_open);
+          ui.visuals_mut().override_text_color =
+            Some(with_alpha(ui.visuals().text_color(), open_opacity));
+          let mut frame = egui::Frame::popup(ui.style());
+          frame.fill = with_alpha(frame.fill, open_opacity);
+          frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
+          frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
+          frame.show(ui, |ui| {
+            ui.set_min_width(220.0);
+
+            if menu_open && ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
+              close_menu = true;
+            }
+
+            ui.label(egui::RichText::new("Bookmarks").strong());
+            let toggle_bookmark_label = if active_url_is_bookmarked {
+              "Remove bookmark"
+            } else {
+              "Bookmark this page"
+            };
+            let toggle_bookmark = ui.add_enabled(
+              !active_url_trim.is_empty(),
+              egui::Button::new(toggle_bookmark_label),
+            );
+            toggle_bookmark.widget_info({
+              let label = toggle_bookmark_label.to_string();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+            });
+            if menu_opened_now && !active_url_trim.is_empty() {
+              toggle_bookmark.request_focus();
+            }
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(ctx, "chrome_menu_item_toggle_bookmark_rect", toggle_bookmark.rect);
+            }
+            if menu_open && toggle_bookmark.clicked() {
+              actions.push(ChromeAction::ToggleBookmarkForActiveTab);
+              close_menu = true;
+            }
+
+            let bookmarks_mgr = ui.button("Show bookmarks manager");
+            bookmarks_mgr.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show bookmarks manager")
+            });
+            if menu_opened_now && active_url_trim.is_empty() {
+              bookmarks_mgr.request_focus();
+            }
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(
+                ctx,
+                "chrome_menu_item_toggle_bookmarks_manager_rect",
+                bookmarks_mgr.rect,
+              );
+            }
+            if menu_open && bookmarks_mgr.clicked() {
+              actions.push(ChromeAction::ToggleBookmarksManager);
+              close_menu = true;
+            }
+
+            ui.separator();
+
+            ui.label(egui::RichText::new("History").strong());
+            let history = ui.button("Show history");
+            history
+              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show history"));
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(ctx, "chrome_menu_item_toggle_history_rect", history.rect);
+            }
+            if menu_open && history.clicked() {
+              actions.push(ChromeAction::ToggleHistoryPanel);
+              close_menu = true;
+            }
+
+            let clear = ui.button("Clear browsing data…");
+            clear.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear browsing data")
+            });
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(
+                ctx,
+                "chrome_menu_item_open_clear_browsing_data_rect",
+                clear.rect,
+              );
+            }
+            if menu_open && clear.clicked() {
+              actions.push(ChromeAction::OpenClearBrowsingDataDialog);
+              close_menu = true;
+            }
+          })
+        });
+        menu_rect = Some(inner.response.rect);
+        if close_menu {
+          menu_open = false;
+        }
+      }
+
+      // Best-effort: close the menu when clicking outside the popup and button.
+      if menu_open {
+        let clicked_outside = ctx.input(|i| {
+          i.pointer.any_pressed()
+            && i
+              .pointer
+              .interact_pos()
+              .or_else(|| i.pointer.latest_pos())
+              .is_some_and(|pos| {
+                !menu_button.rect.contains(pos)
+                  && menu_rect.is_some_and(|rect| !rect.contains(pos))
+              })
+        });
+        if clicked_outside {
+          menu_open = false;
+        }
+      }
+      if menu_open_prev && !menu_open {
+        // Ensure we paint at least one follow-up frame so the menu can fade out smoothly.
+        ctx.request_repaint();
+      }
+
+      ctx.data_mut(|d| {
+        d.insert_temp(menu_open_id, menu_open);
       });
 
       let appearance_response = ui
@@ -3201,6 +3237,13 @@ pub fn chrome_ui_with_bookmarks(
 fn store_test_rect(ctx: &egui::Context, key: &'static str, rect: egui::Rect) {
   ctx.data_mut(|d| {
     d.insert_temp(egui::Id::new(key), rect);
+  });
+}
+
+#[cfg(test)]
+fn store_test_id(ctx: &egui::Context, key: &'static str, id: egui::Id) {
+  ctx.data_mut(|d| {
+    d.insert_temp(egui::Id::new(key), id);
   });
 }
 
@@ -5539,6 +5582,81 @@ mod tests {
     ctx
       .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(key)))
       .unwrap_or_else(|| panic!("expected temp rect {key:?}"))
+  }
+
+  fn expect_temp_id(ctx: &egui::Context, key: &'static str) -> egui::Id {
+    ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new(key)))
+      .unwrap_or_else(|| panic!("expected temp id {key:?}"))
+  }
+
+  #[test]
+  fn tab_focus_traversal_in_nav_row_is_left_to_right() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let ctx = egui::Context::default();
+
+    // Frame 1: layout and capture widget IDs.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    let zoom_in_id = expect_temp_id(&ctx, "chrome_zoom_in_button_id");
+    let address_bar_text_edit_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
+    let address_bar_display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
+    let menu_button_id = expect_temp_id(&ctx, "chrome_menu_button_id");
+
+    // Frame 2: focus a left-side toolbar button so we have a stable starting point for Tab
+    // traversal.
+    ctx.memory_mut(|mem| mem.request_focus(zoom_in_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      ctx.memory(|mem| mem.has_focus(zoom_in_id)),
+      "expected initial focus on zoom-in button"
+    );
+
+    // Now Tab forward through widgets and ensure we reach the address bar before the menu button.
+    let mut address_step: Option<usize> = None;
+    let mut menu_step: Option<usize> = None;
+
+    for step in 0..32 {
+      begin_frame(&ctx, vec![key_press(egui::Key::Tab)]);
+      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+      let _ = ctx.end_frame();
+
+      let address_focused = ctx.memory(|mem| {
+        mem.has_focus(address_bar_text_edit_id) || mem.has_focus(address_bar_display_id)
+      });
+      let menu_focused = ctx.memory(|mem| mem.has_focus(menu_button_id));
+
+      if address_focused && address_step.is_none() {
+        address_step = Some(step);
+      }
+      if menu_focused && menu_step.is_none() {
+        menu_step = Some(step);
+      }
+
+      if address_step.is_some() && menu_step.is_some() {
+        break;
+      }
+    }
+
+    let address_step = address_step.unwrap_or_else(|| {
+      panic!("expected Tab traversal to reach address bar before giving up")
+    });
+    let menu_step = menu_step.unwrap_or_else(|| panic!("expected Tab traversal to reach menu button"));
+
+    assert!(
+      address_step < menu_step,
+      "expected address bar to be focused before menu button (address step {address_step}, menu step {menu_step})"
+    );
   }
 
   fn click_menu_item(
