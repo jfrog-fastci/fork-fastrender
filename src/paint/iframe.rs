@@ -2,9 +2,9 @@ use crate::api::{render_html_with_shared_resources, ResourceContext, ResourceKin
 use crate::debug::runtime;
 use crate::error::{Error, RenderStage};
 use crate::geometry::Rect;
-use crate::html::iframe_url::{iframe_navigation_from_src, IframeNavigation};
 use crate::html::content_security_policy::CspPolicy;
 use crate::html::encoding::decode_html_bytes;
+use crate::html::iframe_url::{iframe_navigation_from_src, IframeNavigation};
 use crate::image_loader::ImageCache;
 use crate::paint::display_list::ImageData;
 use crate::paint::pixmap::new_pixmap;
@@ -118,7 +118,11 @@ fn iframe_renderer_bin() -> Option<PathBuf> {
   iframe_renderer_bin_from_toggles().or_else(iframe_renderer_bin_guess_from_current_exe)
 }
 
-fn crashed_iframe_placeholder_image(css_width: u32, css_height: u32, device_pixel_ratio: f32) -> Arc<ImageData> {
+fn crashed_iframe_placeholder_image(
+  css_width: u32,
+  css_height: u32,
+  device_pixel_ratio: f32,
+) -> Arc<ImageData> {
   let device_width = ((css_width as f32) * device_pixel_ratio).round().max(1.0) as u32;
   let device_height = ((css_height as f32) * device_pixel_ratio).round().max(1.0) as u32;
   let mut pixels = vec![0u8; (device_width as usize) * (device_height as usize) * 4];
@@ -161,6 +165,19 @@ fn render_iframe_out_of_process(
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
 
+  // Defense-in-depth: prevent leaking unrelated file descriptors into the iframe renderer process.
+  //
+  // This is implemented by setting `FD_CLOEXEC` on all inherited FDs except stdio. Unlike closing
+  // FDs directly, this does not interfere with `std::process::Command`'s internal exec-error pipes.
+  #[cfg(unix)]
+  {
+    use std::os::unix::process::CommandExt as _;
+    let keep = [0, 1, 2];
+    unsafe {
+      cmd.pre_exec(move || crate::sandbox::fd_sanitizer::set_cloexec_on_fds_except(&keep));
+    }
+  }
+
   // Apply a minimal sandbox as early as possible in the child (after `fork`, before `exec`).
   //
   // This is defense-in-depth: the iframe renderer is a security boundary (see `src/bin/iframe_renderer.rs`).
@@ -192,9 +209,8 @@ fn render_iframe_out_of_process(
       device_pixel_ratio,
       max_iframe_depth,
     };
-    serde_json::to_writer(&mut stdin, &req).map_err(|err| {
-      OopifError::Io(io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
-    })?;
+    serde_json::to_writer(&mut stdin, &req)
+      .map_err(|err| OopifError::Io(io::Error::new(io::ErrorKind::InvalidData, err.to_string())))?;
   }
 
   let output = child.wait_with_output().map_err(OopifError::Io)?;
@@ -205,18 +221,16 @@ fn render_iframe_out_of_process(
     });
   }
 
-  let resp: OopifRenderResponse =
-    serde_json::from_slice(&output.stdout).map_err(|err| OopifError::ResponseDecode(err.to_string()))?;
+  let resp: OopifRenderResponse = serde_json::from_slice(&output.stdout)
+    .map_err(|err| OopifError::ResponseDecode(err.to_string()))?;
   if resp.status != "ok" {
-    return Err(OopifError::ResponseDecode(
-      resp
-        .message
-        .unwrap_or_else(|| format!("iframe renderer returned status {}", resp.status)),
-    ));
+    return Err(OopifError::ResponseDecode(resp.message.unwrap_or_else(
+      || format!("iframe renderer returned status {}", resp.status),
+    )));
   }
-  let pixel_width = resp.pixel_width.ok_or_else(|| {
-    OopifError::ResponseDecode("iframe renderer missing pixel_width".to_string())
-  })?;
+  let pixel_width = resp
+    .pixel_width
+    .ok_or_else(|| OopifError::ResponseDecode("iframe renderer missing pixel_width".to_string()))?;
   let pixel_height = resp.pixel_height.ok_or_else(|| {
     OopifError::ResponseDecode("iframe renderer missing pixel_height".to_string())
   })?;
