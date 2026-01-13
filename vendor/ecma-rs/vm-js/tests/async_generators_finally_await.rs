@@ -10,6 +10,14 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn new_runtime_if_supported() -> Result<Option<JsRuntime>, VmError> {
+  let mut rt = new_runtime();
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
+    return Ok(None);
+  }
+  Ok(Some(rt))
+}
+
 fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   let Value::String(s) = value else {
     panic!("expected string, got {value:?}");
@@ -19,7 +27,9 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 
 #[test]
 fn async_generator_return_awaits_async_finally() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   // Ensure we don't leak queued microtasks even if this test fails.
   let result: Result<(), VmError> = (|| {
@@ -101,7 +111,9 @@ fn async_generator_return_awaits_async_finally() -> Result<(), VmError> {
 
 #[test]
 fn async_generator_throw_awaits_async_finally() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     match rt.exec_script(
@@ -182,7 +194,9 @@ fn async_generator_throw_awaits_async_finally() -> Result<(), VmError> {
 
 #[test]
 fn async_generator_return_rejects_if_async_finally_rejects() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   // Ensure we don't leak queued microtasks even if this test fails.
   let result: Result<(), VmError> = (|| {
@@ -264,7 +278,9 @@ fn async_generator_return_rejects_if_async_finally_rejects() -> Result<(), VmErr
 
 #[test]
 fn async_generator_throw_rejects_if_async_finally_rejects() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     match rt.exec_script(

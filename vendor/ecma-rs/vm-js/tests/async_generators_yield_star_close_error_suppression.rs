@@ -11,6 +11,14 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn new_runtime_if_supported() -> Result<Option<JsRuntime>, VmError> {
+  let mut rt = new_runtime();
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
+    return Ok(None);
+  }
+  Ok(Some(rt))
+}
+
 fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   let Value::String(s) = value else {
     panic!("expected string, got {value:?}");
@@ -20,7 +28,9 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 
 #[test]
 fn yield_star_throw_suppresses_close_error_from_return_getter() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   // Ensure we don't leak queued microtasks even if this test fails.
   let result: Result<(), VmError> = (|| {
@@ -105,7 +115,9 @@ fn yield_star_throw_suppresses_close_error_from_return_getter() -> Result<(), Vm
 
 #[test]
 fn yield_star_return_does_not_suppress_close_error_from_return_getter() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -176,7 +188,9 @@ fn yield_star_return_does_not_suppress_close_error_from_return_getter() -> Resul
 
 #[test]
 fn yield_star_throw_suppresses_close_error_from_return_non_callable() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -261,7 +275,9 @@ fn yield_star_throw_suppresses_close_error_from_return_non_callable() -> Result<
 #[test]
 fn yield_star_return_does_not_suppress_close_error_from_return_non_callable() -> Result<(), VmError>
 {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -331,7 +347,9 @@ fn yield_star_return_does_not_suppress_close_error_from_return_non_callable() ->
 
 #[test]
 fn yield_star_throw_suppresses_close_error_from_return_non_object() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
       r#"
@@ -415,7 +433,9 @@ fn yield_star_throw_suppresses_close_error_from_return_non_object() -> Result<()
 
 #[test]
 fn yield_star_return_does_not_suppress_close_error_from_return_non_object() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
       r#"
@@ -486,7 +506,9 @@ fn yield_star_return_does_not_suppress_close_error_from_return_non_object() -> R
 
 #[test]
 fn yield_star_throw_suppresses_close_error_from_return_promise_reject() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -575,7 +597,9 @@ fn yield_star_throw_suppresses_close_error_from_return_promise_reject() -> Resul
 
 #[test]
 fn yield_star_return_does_not_suppress_close_error_from_return_promise_reject() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(

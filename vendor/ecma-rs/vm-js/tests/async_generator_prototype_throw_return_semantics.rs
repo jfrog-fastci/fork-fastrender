@@ -12,6 +12,14 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn new_runtime_if_supported() -> Result<Option<JsRuntime>, VmError> {
+  let mut rt = new_runtime();
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
+    return Ok(None);
+  }
+  Ok(Some(rt))
+}
+
 fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   let Value::String(s) = value else {
     panic!("expected string, got {value:?}");
@@ -22,7 +30,9 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 #[test]
 fn async_generator_throw_on_suspended_start_rejects_and_completes_without_executing_body(
 ) -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"
@@ -77,7 +87,9 @@ fn async_generator_throw_on_suspended_start_rejects_and_completes_without_execut
 
 #[test]
 fn async_generator_throw_on_completed_generator_rejects_with_argument() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"
@@ -120,7 +132,9 @@ fn async_generator_throw_on_completed_generator_rejects_with_argument() -> Resul
 #[test]
 fn async_generator_throw_on_completed_generator_does_not_await_promise_argument(
 ) -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"
@@ -184,7 +198,9 @@ fn async_generator_throw_on_completed_generator_does_not_await_promise_argument(
 #[test]
 fn async_generator_throw_on_suspended_start_does_not_await_promise_argument() -> Result<(), VmError>
 {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"
@@ -242,7 +258,9 @@ fn async_generator_throw_on_suspended_start_does_not_await_promise_argument() ->
 
 #[test]
 fn async_generator_throw_can_be_caught_inside_generator() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"
@@ -297,7 +315,9 @@ fn async_generator_throw_can_be_caught_inside_generator() -> Result<(), VmError>
 #[test]
 fn async_generator_return_on_suspended_start_resolves_and_awaits_argument_without_executing_body(
 ) -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"
@@ -336,7 +356,9 @@ fn async_generator_return_on_suspended_start_resolves_and_awaits_argument_withou
 #[test]
 fn async_generator_return_on_suspended_start_rejects_if_promise_resolve_throws(
 ) -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"
@@ -399,7 +421,9 @@ fn async_generator_return_on_suspended_start_rejects_if_promise_resolve_throws(
 #[test]
 fn async_generator_return_on_completed_generator_resolves_to_done_true_with_awaited_argument(
 ) -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"
@@ -442,7 +466,9 @@ fn async_generator_return_on_completed_generator_resolves_to_done_true_with_awai
 #[test]
 fn async_generator_return_on_completed_generator_rejects_if_promise_resolve_throws(
 ) -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"
@@ -496,7 +522,9 @@ fn async_generator_return_on_completed_generator_rejects_if_promise_resolve_thro
 
 #[test]
 fn async_generator_first_next_argument_is_ignored() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let value = match rt.exec_script(
     r#"

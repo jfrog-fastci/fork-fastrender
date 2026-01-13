@@ -11,6 +11,14 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn new_runtime_if_supported() -> Result<Option<JsRuntime>, VmError> {
+  let mut rt = new_runtime();
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
+    return Ok(None);
+  }
+  Ok(Some(rt))
+}
+
 fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   let Value::String(s) = value else {
     panic!("expected string, got {value:?}");
@@ -20,7 +28,9 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 
 #[test]
 fn internal_await_delays_first_yield() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -73,7 +83,9 @@ fn internal_await_delays_first_yield() -> Result<(), VmError> {
 
 #[test]
 fn next_requests_are_queued_across_internal_await() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -122,7 +134,9 @@ fn next_requests_are_queued_across_internal_await() -> Result<(), VmError> {
 
 #[test]
 fn next_requests_queue_across_internal_await_after_first_yield() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -170,7 +184,9 @@ fn next_requests_queue_across_internal_await_after_first_yield() -> Result<(), V
 
 #[test]
 fn return_request_is_queued_across_internal_await_before_first_yield() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -218,7 +234,9 @@ fn return_request_is_queued_across_internal_await_before_first_yield() -> Result
 
 #[test]
 fn throw_request_is_queued_across_internal_await_before_first_yield() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -269,7 +287,9 @@ fn throw_request_is_queued_across_internal_await_before_first_yield() -> Result<
 
 #[test]
 fn return_request_is_queued_across_internal_await_after_first_yield() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
@@ -322,7 +342,9 @@ fn return_request_is_queued_across_internal_await_after_first_yield() -> Result<
 
 #[test]
 fn throw_request_is_queued_across_internal_await_after_first_yield() -> Result<(), VmError> {
-  let mut rt = new_runtime();
+  let Some(mut rt) = new_runtime_if_supported()? else {
+    return Ok(());
+  };
 
   let result: Result<(), VmError> = (|| {
     let value = match rt.exec_script(
