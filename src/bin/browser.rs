@@ -16379,6 +16379,21 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     // Keep fullscreen tracking in sync with winit (e.g. when the user toggles fullscreen via
     // platform window controls).
     self.window_fullscreen = self.window.fullscreen().is_some();
+
+    // Best-effort: ensure `surface_config` matches the current window size even if a resize event
+    // was missed or coalesced by the platform. This keeps the swapchain configuration and egui
+    // screen descriptor coherent before we attempt to acquire the next surface texture.
+    let current_size = self.window.inner_size();
+    if current_size.width > 0
+      && current_size.height > 0
+      && (current_size.width != self.surface_config.width
+        || current_size.height != self.surface_config.height)
+    {
+      self.surface_config.width = current_size.width;
+      self.surface_config.height = current_size.height;
+      self.surface_needs_configure = true;
+      self.viewport_cache_tab = None;
+    }
     let mut session_dirty = false;
 
     {
