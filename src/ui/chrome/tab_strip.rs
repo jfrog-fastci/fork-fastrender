@@ -1024,6 +1024,7 @@ fn group_chip_ui(
   group_id: TabGroupId,
   ops: &mut Vec<TabStripOp>,
   focus_ring: FocusRingStyle,
+  precomputed_width: Option<f32>,
 ) {
   let Some(group) = app.tab_groups.get(&group_id) else {
     return;
@@ -1038,7 +1039,10 @@ fn group_chip_ui(
   };
 
   let id = ui.make_persistent_id(("tab_group_chip", group_id.0));
-  let width = group_chip_width(ui, &title);
+  let width = precomputed_width
+    .filter(|w| w.is_finite())
+    .map(|w| w.max(0.0).clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH))
+    .unwrap_or_else(|| group_chip_width(ui, &title));
   let (_, chip_rect) = ui.allocate_space(Vec2::new(width, TAB_HEIGHT));
   let mut response = ui.interact(chip_rect, id, Sense::click());
   if response.hovered() {
@@ -2018,7 +2022,10 @@ pub(super) fn tab_strip_ui(
       if group_expand_t.contains_key(&group_id) {
         continue;
       }
-      let collapsed = app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed);
+      let Some(group) = app.tab_groups.get(&group_id) else {
+        continue;
+      };
+      let collapsed = group.collapsed;
       let id = ui.make_persistent_id(("tab_group_expand", group_id.0));
       let t = motion.animate_bool(
         ui.ctx(),
@@ -2047,6 +2054,7 @@ pub(super) fn tab_strip_ui(
   // jumping at the end of the animation.
   let mut tab_units: f32 = 0.0;
   let mut group_chip_total_width: f32 = 0.0;
+  let mut group_chip_widths: HashMap<TabGroupId, f32> = HashMap::new();
   let mut total_gap_width: f32 = 0.0;
   let mut first_item = true;
   // Gap scaling is driven by the *previous* item: gaps after group-member tabs shrink with the
@@ -2099,7 +2107,9 @@ pub(super) fn tab_strip_ui(
         } else {
           group.title.as_str()
         };
-        group_chip_total_width += group_chip_width(ui, title);
+        let w = group_chip_width(ui, title);
+        group_chip_total_width += w;
+        group_chip_widths.insert(group_id, w);
         if !first_item {
           total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0).clamp(0.0, 1.0);
         }
@@ -2732,7 +2742,10 @@ pub(super) fn tab_strip_ui(
               maybe_insert_source_placeholder!(false);
 
               let tab_id = app.tabs[idx].id;
-              let tab_group = app.tabs[idx].group;
+              let tab_group = app
+                .tabs[idx]
+                .group
+                .filter(|group_id| app.tab_groups.contains_key(group_id));
 
               if let Some(group_id) = tab_group {
                 let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
@@ -2746,7 +2759,8 @@ pub(super) fn tab_strip_ui(
                     GapKind::Normal,
                     false,
                   );
-                  group_chip_ui(ui, motion, app, group_id, &mut ops, focus_ring);
+                  let chip_width = group_chip_widths.get(&group_id).copied();
+                  group_chip_ui(ui, motion, app, group_id, &mut ops, focus_ring, chip_width);
                   unpinned_items_for_snapshot.push(TabStripItemKey::GroupChip(group_id));
                   prev_kind = GapKind::Normal;
                   prev_gap_scale = None;
