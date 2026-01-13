@@ -3364,6 +3364,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut global_bookmarks = bookmarks;
   let mut global_history = history;
 
+  // Throttle/clamp expensive "clone full store" autosave update messages so frequent history
+  // mutations (e.g. navigating a lot) don't repeatedly clone large stores on the UI thread.
+  let mut bookmarks_autosave_send_scheduler =
+    fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_millis(250));
+  let mut history_autosave_send_scheduler =
+    fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_secs(1));
+
   let wgpu_init = {
     let cli_backends = cli.wgpu_backends.as_deref().map(|backends| {
       let mut out = wgpu::Backends::empty();
@@ -3646,6 +3653,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       session.did_exit_cleanly = true;
 
       if let Some(autosave) = profile_autosave.take() {
+        if let Some(tx) = profile_autosave_tx.as_ref() {
+          let now = std::time::Instant::now();
+          // Ensure the autosave worker receives the final profile state even if updates are still
+          // pending in the UI-thread scheduler.
+          if bookmarks_autosave_send_scheduler.take_force(now) {
+            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
+              global_bookmarks.clone(),
+            ));
+          }
+          if history_autosave_send_scheduler.take_force(now) {
+            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(global_history.clone()));
+          }
+        }
         autosave.shutdown_with_timeout(std::time::Duration::from_millis(500));
       } else {
         // Best-effort fallback: if profile autosave isn't running, persist synchronously on shutdown.
@@ -3908,11 +3928,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
               &global_history,
             );
-            if let Some(tx) = profile_autosave_tx.as_ref() {
-              let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
-                global_history.clone(),
-              ));
-            }
+            history_autosave_send_scheduler.mark_dirty();
             for win in windows.values_mut() {
               win.app.browser_state.history = global_history.clone();
               win.app.browser_state.visited.clear();
@@ -4379,14 +4395,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some((new_history, flush)) = history_update {
       global_history = new_history;
+      history_autosave_send_scheduler.mark_dirty();
       fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
         &global_history,
       );
       if let Some(tx) = profile_autosave_tx.as_ref() {
-        let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
-          global_history.clone(),
-        ));
         if flush {
+          let now = std::time::Instant::now();
+          if history_autosave_send_scheduler.take_force(now) {
+            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+              global_history.clone(),
+            ));
+          }
           let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
           let _ = tx.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
           let _ = done_rx.recv_timeout(std::time::Duration::from_millis(200));
@@ -4401,7 +4421,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
-    if matches!(*control_flow, ControlFlow::Exit) {
+    // Debounce/clamp UI-thread autosave update messages so we only clone+send large stores at a
+    // limited rate (or on explicit flush requests handled above).
+    if let Some(tx) = profile_autosave_tx.as_ref() {
+      let now = std::time::Instant::now();
+      if history_autosave_send_scheduler.take_if_due(now) {
+        let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(global_history.clone()));
+      }
+    }
+
+    if matches!(
+      *control_flow,
+      ControlFlow::Exit | ControlFlow::ExitWithCode(_)
+    ) {
       return;
     }
 
@@ -4419,8 +4451,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .drive_periodic_tasks_and_update_control_flow(control_flow);
     }
 
-    // Ensure the event loop wakes up to flush the next pending session snapshot, if any.
-    if let Some(deadline) = session_save_scheduler.next_deadline(now) {
+    // Ensure the event loop wakes up to flush pending autosaves (profile/session), if any.
+    let mut next_deadline = session_save_scheduler.next_deadline(now);
+    if profile_autosave_tx.is_some() {
+      for deadline in [
+        history_autosave_send_scheduler.next_deadline(now),
+      ] {
+        if let Some(deadline) = deadline {
+          next_deadline = Some(match next_deadline {
+            Some(existing) => existing.min(deadline),
+            None => deadline,
+          });
+        }
+      }
+    }
+
+    if let Some(deadline) = next_deadline {
       *control_flow = match *control_flow {
         ControlFlow::Wait => ControlFlow::WaitUntil(deadline),
         ControlFlow::WaitUntil(existing) => ControlFlow::WaitUntil(existing.min(deadline)),

@@ -147,6 +147,12 @@ pub mod theme;
 pub mod profile_persistence;
 pub mod profile_autosave;
 
+// UI-thread throttle for sending large profile snapshots (history/bookmarks) to the autosave worker.
+#[cfg(any(test, feature = "browser_ui"))]
+pub mod autosave_send_scheduler;
+#[cfg(any(test, feature = "browser_ui"))]
+pub use autosave_send_scheduler::AutosaveSendScheduler;
+
 #[cfg(any(test, feature = "browser_ui"))]
 pub mod session;
 
