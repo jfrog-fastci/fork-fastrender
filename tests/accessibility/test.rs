@@ -1596,6 +1596,203 @@ fn accessibility_layout_table_suppresses_table_descendant_roles() {
 }
 
 #[test]
+fn accessibility_layout_table_presentational_role_disallowed_with_aria_description() {
+  let html = r##"
+    <html>
+      <body>
+        <table id="tp" role="presentation" aria-description="Extra detail">
+          <caption id="tp_cap">Cap</caption>
+          <tr id="tp_r">
+            <th id="tp_h">H</th>
+            <td id="tp_c">C</td>
+          </tr>
+        </table>
+
+        <table id="tn" role="none" aria-description="Extra detail">
+          <caption id="tn_cap">Cap</caption>
+          <tr id="tn_r">
+            <th id="tn_h">H</th>
+            <td id="tn_c">C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let subset = snapshot_subset(
+    &tree,
+    &["tp", "tp_cap", "tp_r", "tp_h", "tp_c", "tn", "tn_cap", "tn_r", "tn_h", "tn_c"],
+  );
+
+  assert_eq!(
+    subset,
+    json!({
+      "tp": {
+        "role": "table",
+        "name": "Cap",
+        "description": "Extra detail",
+        "value": null,
+        "level": null,
+        "html_tag": "table",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tp_cap": {
+        "role": "caption",
+        "name": "Cap",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "caption",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tp_r": {
+        "role": "row",
+        "name": "H C",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "tr",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tp_h": {
+        "role": "columnheader",
+        "name": "H",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "th",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tp_c": {
+        "role": "cell",
+        "name": "C",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "td",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tn": {
+        "role": "table",
+        "name": "Cap",
+        "description": "Extra detail",
+        "value": null,
+        "level": null,
+        "html_tag": "table",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tn_cap": {
+        "role": "caption",
+        "name": "Cap",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "caption",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tn_r": {
+        "role": "row",
+        "name": "H C",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "tr",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tn_h": {
+        "role": "columnheader",
+        "name": "H",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "th",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tn_c": {
+        "role": "cell",
+        "name": "C",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "td",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      }
+    })
+  );
+}
+
+#[test]
 fn accessibility_layout_table_role_none_suppresses_table_descendant_roles() {
   let html = r##"
     <html>
