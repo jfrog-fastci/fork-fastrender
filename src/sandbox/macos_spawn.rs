@@ -91,51 +91,66 @@ static INVOCATION: OnceLock<SandboxExecInvocation> = OnceLock::new();
 
 #[cfg(target_os = "macos")]
 fn sandbox_exec_invocation() -> Result<&'static SandboxExecInvocation, SandboxExecError> {
-  INVOCATION.get_or_try_init(|| {
-    let sandbox_exec = Path::new(SANDBOX_EXEC_PATH);
-    if !sandbox_exec.is_file() {
+  if let Some(invocation) = INVOCATION.get() {
+    return Ok(invocation);
+  }
+
+  let invocation = probe_sandbox_exec_invocation()?;
+  // If multiple threads race to initialize, whichever wins sets the value; all others can use the
+  // already-set value.
+  let _ = INVOCATION.set(invocation);
+  Ok(
+    INVOCATION
+      .get()
+      .expect("OnceLock should contain invocation after initialization"),
+  )
+}
+
+#[cfg(target_os = "macos")]
+fn probe_sandbox_exec_invocation() -> Result<SandboxExecInvocation, SandboxExecError> {
+  let sandbox_exec = Path::new(SANDBOX_EXEC_PATH);
+  if !sandbox_exec.is_file() {
+    return Err(SandboxExecError::MissingSandboxExec {
+      path: sandbox_exec.to_path_buf(),
+    });
+  }
+
+  // Probe whether `-n pure-computation` is supported.
+  // `sandbox-exec` returns non-zero when `-n` is unsupported, or when the profile name is unknown.
+  // In either case, fall back to `-p` with an inline profile.
+  let probe = Command::new(SANDBOX_EXEC_PATH)
+    .arg("-n")
+    .arg(PURE_COMPUTATION_PROFILE_NAME)
+    .arg("/usr/bin/true")
+    .output();
+  match probe {
+    Ok(output) if output.status.success() => return Ok(SandboxExecInvocation::NamedProfile),
+    Ok(_output) => {
+      // Fall back to the inline profile.
+    }
+    Err(err) if err.kind() == io::ErrorKind::NotFound => {
       return Err(SandboxExecError::MissingSandboxExec {
-        path: sandbox_exec.to_path_buf(),
+        path: PathBuf::from(SANDBOX_EXEC_PATH),
       });
     }
+    Err(err) => return Err(SandboxExecError::ProbeFailed { source: err }),
+  };
 
-    // Probe whether `-n pure-computation` is supported.
-    // `sandbox-exec` returns non-zero when `-n` is unsupported, or when the profile name is
-    // unknown. In either case, fall back to `-p` with an inline profile.
-    let probe = Command::new(SANDBOX_EXEC_PATH)
-      .arg("-n")
-      .arg(PURE_COMPUTATION_PROFILE_NAME)
-      .arg("/usr/bin/true")
-      .output();
-    match probe {
-      Ok(output) if output.status.success() => return Ok(SandboxExecInvocation::NamedProfile),
-      Ok(_output) => {
-        // Fall back to the inline profile.
-      }
-      Err(err) if err.kind() == io::ErrorKind::NotFound => {
-        return Err(SandboxExecError::MissingSandboxExec {
-          path: PathBuf::from(SANDBOX_EXEC_PATH),
-        });
-      }
-      Err(err) => return Err(SandboxExecError::ProbeFailed { source: err }),
-    };
-
-    // Best-effort: if the system ships a `pure-computation` profile file, use its contents.
-    // This keeps behaviour closer to the named profile on older OS versions.
-    for path in PURE_COMPUTATION_PROFILE_FILES {
-      let path = Path::new(path);
-      if !path.is_file() {
-        continue;
-      }
-      match fs::read_to_string(path) {
-        Ok(profile) => return Ok(SandboxExecInvocation::InlineProfile { profile }),
-        Err(_) => continue,
-      }
+  // Best-effort: if the system ships a `pure-computation` profile file, use its contents.
+  // This keeps behaviour closer to the named profile on older OS versions.
+  for path in PURE_COMPUTATION_PROFILE_FILES {
+    let path = Path::new(path);
+    if !path.is_file() {
+      continue;
     }
+    match fs::read_to_string(path) {
+      Ok(profile) => return Ok(SandboxExecInvocation::InlineProfile { profile }),
+      Err(_) => continue,
+    }
+  }
 
-    Ok(SandboxExecInvocation::InlineProfile {
-      profile: PURE_COMPUTATION_PROFILE_FALLBACK.to_string(),
-    })
+  Ok(SandboxExecInvocation::InlineProfile {
+    profile: PURE_COMPUTATION_PROFILE_FALLBACK.to_string(),
   })
 }
 
