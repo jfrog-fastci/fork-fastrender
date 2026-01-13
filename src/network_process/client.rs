@@ -421,7 +421,8 @@ struct DisabledWebSocketBackend;
 impl WebSocketBackend for DisabledWebSocketBackend {
   fn connect(&self, _url: &str, _protocols: &[String]) -> Result<Box<dyn WebSocketStream>> {
     Err(Error::Other(
-      "WebSocket backend is unavailable (direct_websocket feature disabled)".to_string(),
+      "WebSocket backend is unavailable (direct_websocket feature disabled; rebuild with --features direct_websocket)"
+        .to_string(),
     ))
   }
 }
