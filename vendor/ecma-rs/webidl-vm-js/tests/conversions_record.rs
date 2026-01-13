@@ -354,6 +354,68 @@ fn record_conversion_throws_on_enumerable_symbol_keys() -> Result<(), VmError> {
 }
 
 #[test]
+fn record_conversion_proxy_forwarding_throws_on_enumerable_symbol_keys() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let mut dummy_host = ();
+  let mut hooks = DummyHooks;
+  let mut rt = BindingsRuntime::from_scope(&mut vm, scope.reborrow());
+  let intr = realm.intrinsics();
+
+  let target = rt.alloc_object()?;
+
+  // Include a normal string key so we validate that record conversion can start, then throws when
+  // it encounters the enumerable symbol key.
+  let a_key = rt.property_key("a")?;
+  rt.define_data_property(
+    target,
+    a_key,
+    Value::Number(1.0),
+    DataPropertyAttributes::new(true, true, true),
+  )?;
+
+  let sym = intr.well_known_symbols().iterator;
+  rt.scope.push_root(Value::Symbol(sym))?;
+  let sym_key = PropertyKey::from_symbol(sym);
+  rt.define_data_property(
+    target,
+    sym_key,
+    Value::Number(2.0),
+    DataPropertyAttributes::new(true, true, true),
+  )?;
+
+  let handler = rt.alloc_object()?;
+  let proxy = rt.scope.alloc_proxy(Some(target), Some(handler))?;
+
+  let err = conversions::to_record(
+    &mut rt,
+    &mut dummy_host,
+    &mut hooks,
+    Value::Object(proxy),
+    "expected object for record",
+    |_rt, _host, _hooks, v| Ok(v),
+  )
+  .expect_err("expected enumerable symbol key to fail record conversion (via Proxy)");
+
+  assert_thrown_error(
+    &mut rt,
+    &realm,
+    err,
+    intr.type_error_prototype(),
+    "TypeError",
+    "Cannot convert a Symbol value to a string",
+  )?;
+
+  drop(rt);
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn record_conversion_enforces_max_record_entries() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
