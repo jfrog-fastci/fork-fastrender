@@ -1608,6 +1608,7 @@ impl TextItem {
       Vec::with_capacity(runs.iter().map(|r| r.glyphs.len()).sum());
     let mut last_offset: Option<usize> = None;
     let mut needs_sort = false;
+    let mut monotonic_decreasing = true;
 
     for (run_idx, run) in runs.iter().enumerate() {
       if run.glyphs.is_empty() {
@@ -1628,6 +1629,9 @@ impl TextItem {
         if let Some(prev) = last_offset {
           if offset < prev {
             needs_sort = true;
+          }
+          if offset > prev {
+            monotonic_decreasing = false;
           }
         }
         last_offset = Some(offset);
@@ -1651,9 +1655,13 @@ impl TextItem {
     }
 
     if needs_sort {
-      clusters.sort_unstable_by_key(|c| c.offset);
-      #[cfg(test)]
-      APPLY_SPACING_SORT_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+      if monotonic_decreasing {
+        clusters.reverse();
+      } else {
+        clusters.sort_unstable_by_key(|c| c.offset);
+        #[cfg(test)]
+        APPLY_SPACING_SORT_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+      }
     }
 
     // Apply spacing to the last glyph of each cluster (except the final cluster).
