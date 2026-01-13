@@ -163,6 +163,20 @@ Additional (important) size limits that sit *on top* of framing:
 | Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
 | WebSocket message payload (renderer→network) | 4 MiB | `MAX_WEBSOCKET_MESSAGE_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 
+Network IPC (renderer↔network process) also enforces per-field caps via
+`NetworkMessageLimits` in [`src/net/transport.rs`](../src/net/transport.rs) (defaults today):
+
+- `max_url_bytes`: 1 MiB
+- `max_header_count`: 1024
+- `max_total_header_bytes`: 256 KiB
+- `max_request_body_bytes`: 10 MiB
+- `max_response_body_bytes`: 50 MiB
+- `max_event_bytes`: 4 MiB
+
+Important: these are **semantic** limits; the outer `MAX_IPC_MESSAGE_BYTES` framing cap still applies
+(8 MiB today). If a field-level limit exceeds the frame cap, the data must be chunked or moved to
+shared memory; do not “just raise the frame cap” without security review.
+
 ### Framing with `SOCK_SEQPACKET` (target)
 
 With `SOCK_SEQPACKET` the kernel already gives us frames:
