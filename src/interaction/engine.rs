@@ -769,6 +769,121 @@ mod tests {
   }
 
   #[test]
+  fn document_word_selection_range_does_not_span_across_line_break_boxes() {
+    use crate::style::display::{Display, FormattingContextType};
+
+    let mut block_style = ComputedStyle::default();
+    block_style.display = Display::Block;
+    let block_style = Arc::new(block_style);
+
+    let text_style = Arc::new(ComputedStyle::default());
+
+    let mut first = BoxNode::new_text(text_style.clone(), "he".to_string());
+    first.styled_node_id = Some(1);
+    let br = BoxNode::new_line_break(text_style.clone());
+    let mut second = BoxNode::new_text(text_style, "llo".to_string());
+    second.styled_node_id = Some(2);
+
+    let root =
+      BoxNode::new_block(block_style, FormattingContextType::Block, vec![first, br, second]);
+    let tree = BoxTree::new(root);
+
+    let first_box_id = tree.root.children[0].id;
+    let second_box_id = tree.root.children[2].id;
+
+    let from_second = document_word_selection_range(
+      &tree,
+      second_box_id,
+      DocumentSelectionPoint {
+        node_id: 2,
+        char_offset: 1,
+      },
+    )
+    .expect("range from second text box");
+    assert_eq!(
+      from_second,
+      DocumentSelectionRange {
+        start: DocumentSelectionPoint {
+          node_id: 2,
+          char_offset: 0,
+        },
+        end: DocumentSelectionPoint {
+          node_id: 2,
+          char_offset: 3,
+        },
+      }
+    );
+
+    let from_first = document_word_selection_range(
+      &tree,
+      first_box_id,
+      DocumentSelectionPoint {
+        node_id: 1,
+        char_offset: 1,
+      },
+    )
+    .expect("range from first text box");
+    assert_eq!(
+      from_first,
+      DocumentSelectionRange {
+        start: DocumentSelectionPoint {
+          node_id: 1,
+          char_offset: 0,
+        },
+        end: DocumentSelectionPoint {
+          node_id: 1,
+          char_offset: 2,
+        },
+      }
+    );
+  }
+
+  #[test]
+  fn document_word_selection_range_does_not_span_across_replaced_boxes() {
+    use crate::style::display::{Display, FormattingContextType};
+
+    let mut block_style = ComputedStyle::default();
+    block_style.display = Display::Block;
+    let block_style = Arc::new(block_style);
+
+    let text_style = Arc::new(ComputedStyle::default());
+
+    let mut first = BoxNode::new_text(text_style.clone(), "he".to_string());
+    first.styled_node_id = Some(1);
+    let replaced = BoxNode::new_replaced(text_style.clone(), ReplacedType::Canvas, None, None);
+    let mut second = BoxNode::new_text(text_style, "llo".to_string());
+    second.styled_node_id = Some(2);
+
+    let root =
+      BoxNode::new_block(block_style, FormattingContextType::Block, vec![first, replaced, second]);
+    let tree = BoxTree::new(root);
+
+    let second_box_id = tree.root.children[2].id;
+    let range = document_word_selection_range(
+      &tree,
+      second_box_id,
+      DocumentSelectionPoint {
+        node_id: 2,
+        char_offset: 1,
+      },
+    )
+    .expect("range from second text box");
+    assert_eq!(
+      range,
+      DocumentSelectionRange {
+        start: DocumentSelectionPoint {
+          node_id: 2,
+          char_offset: 0,
+        },
+        end: DocumentSelectionPoint {
+          node_id: 2,
+          char_offset: 3,
+        },
+      }
+    );
+  }
+
+  #[test]
   fn style_for_styled_node_id_falls_back_to_pseudo_style() {
     let styled_node_id = 42;
 
@@ -3587,6 +3702,7 @@ fn document_word_selection_range(
     node_id: usize,
     text: &'a str,
     len: usize,
+    break_before: bool,
   }
 
   fn fallback_single_node(
@@ -3625,10 +3741,21 @@ fn document_word_selection_range(
   // Collect selectable text boxes within the nearest block-level container, matching the same
   // traversal order used by selection serialization.
   let mut boxes: Vec<SelectableTextBox<'_>> = Vec::new();
+  let mut pending_break = false;
   let mut stack: Vec<&BoxNode> = vec![block];
   while let Some(node) = stack.pop() {
     if !box_is_selectable_for_document_selection(node) {
       continue;
+    }
+
+    // Treat structural separators as hard boundaries so word selection doesn't span across them.
+    // This approximates native browser behaviour for `<br>` and table serialization.
+    if matches!(
+      node.style.display,
+      crate::style::display::Display::TableRow | crate::style::display::Display::TableCell
+    ) && !boxes.is_empty()
+    {
+      pending_break = true;
     }
 
     if let BoxType::Text(text_box) = &node.box_type {
@@ -3640,9 +3767,14 @@ fn document_word_selection_range(
             node_id,
             text: &text_box.text,
             len,
+            break_before: pending_break && !boxes.is_empty(),
           });
+          pending_break = false;
         }
       }
+    } else if matches!(node.box_type, BoxType::LineBreak(_) | BoxType::Replaced(_)) && !boxes.is_empty()
+    {
+      pending_break = true;
     }
 
     // Mirror selection serialization traversal ordering:
@@ -3674,16 +3806,31 @@ fn document_word_selection_range(
   }
   debug_assert_eq!(chars.len(), total_len);
 
+  let mut break_indices: FxHashSet<usize> = FxHashSet::default();
+  let mut acc = 0usize;
+  for entry in &boxes {
+    if entry.break_before {
+      break_indices.insert(acc);
+    }
+    acc = acc.saturating_add(entry.len);
+  }
+
   let caret = (prefix_len + local_caret).min(total_len);
   let hit = if caret == total_len { total_len - 1 } else { caret };
   let target_class = word_selection_class(*chars.get(hit)?);
 
   let mut start = hit;
-  while start > 0 && word_selection_class(chars[start - 1]) == target_class {
+  while start > 0
+    && !break_indices.contains(&start)
+    && word_selection_class(chars[start - 1]) == target_class
+  {
     start -= 1;
   }
   let mut end = hit + 1;
-  while end < total_len && word_selection_class(chars[end]) == target_class {
+  while end < total_len
+    && !break_indices.contains(&end)
+    && word_selection_class(chars[end]) == target_class
+  {
     end += 1;
   }
   if start >= end {
