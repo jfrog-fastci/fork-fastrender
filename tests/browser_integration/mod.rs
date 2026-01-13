@@ -43,6 +43,7 @@ mod browser_worker_percent_encoded_fragment;
 mod browser_worker_target_pseudoclass;
 mod browser_worker_thread;
 mod click_events;
+mod html_element_click;
 mod file_input_accept_filters_drop_files;
 mod file_input_accept_filters_file_picker_choose;
 mod file_input_label_drop;

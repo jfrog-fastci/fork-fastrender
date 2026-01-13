@@ -36175,6 +36175,479 @@ fn html_element_handle_from_this(
   Ok((handle, dom_ptr))
 }
 
+fn html_element_click_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  }
+
+  fn is_html_element_tag(dom: &dom2::Document, node: NodeId, tag: &str) -> bool {
+    let NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } = &dom.node(node).kind
+    else {
+      return false;
+    };
+    dom.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case(tag)
+  }
+
+  fn input_type(dom: &dom2::Document, node: NodeId) -> Option<&str> {
+    if !is_html_element_tag(dom, node, "input") {
+      return None;
+    }
+    Some(dom.get_attribute(node, "type").ok().flatten().unwrap_or("text"))
+  }
+
+  fn button_type(dom: &dom2::Document, node: NodeId) -> Option<&str> {
+    if !is_html_element_tag(dom, node, "button") {
+      return None;
+    }
+    // HTML: <button> defaults to type="submit".
+    Some(dom.get_attribute(node, "type").ok().flatten().unwrap_or("submit"))
+  }
+
+  fn resolve_form_owner(dom: &dom2::Document, control: NodeId) -> Option<NodeId> {
+    // HTML: form owner can be set by `form` attribute when present, otherwise nearest ancestor form.
+    if let Ok(Some(form_id)) = dom.get_attribute(control, "form") {
+      let form_id = trim_ascii_whitespace(form_id);
+      if !form_id.is_empty() {
+        if let Some(form_node) = dom.get_element_by_id(form_id) {
+          if is_html_element_tag(dom, form_node, "form") {
+            return Some(form_node);
+          }
+        }
+      }
+    }
+
+    let mut current = control;
+    while let Some(parent) = dom.node(current).parent {
+      current = parent;
+      if is_html_element_tag(dom, current, "form") {
+        return Some(current);
+      }
+    }
+    None
+  }
+
+  fn link_href_for_click(dom: &dom2::Document, mut current: NodeId) -> Option<String> {
+    fn is_javascript_url(href: &str) -> bool {
+      href
+        .as_bytes()
+        .get(.."javascript:".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+    }
+
+    loop {
+      let node = dom.node(current);
+      if let NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } = &node.kind
+      {
+        if tag_name.eq_ignore_ascii_case("a") && dom.is_html_case_insensitive_namespace(namespace) {
+          if let Ok(Some(href)) = dom.get_attribute(current, "href") {
+            let href = trim_ascii_whitespace(href);
+            if !href.is_empty() && !is_javascript_url(href) {
+              return Some(href.to_string());
+            }
+          }
+        }
+      }
+
+      match node.parent {
+        Some(parent) => current = parent,
+        None => return None,
+      }
+    }
+  }
+
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  scope.push_root(Value::Object(wrapper_obj))?;
+  let (handle, dom_ptr) = html_element_handle_from_this(vm, scope, host, this)?;
+
+  // Construct a synthetic (untrusted) click MouseEvent and dispatch it at the element.
+  let window_obj = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.window_obj);
+  let Some(window_obj) = window_obj else {
+    return Err(VmError::InvariantViolation(
+      "window realm missing cached window object for HTMLElement.click()",
+    ));
+  };
+  scope.push_root(Value::Object(window_obj))?;
+
+  let mouse_event_ctor_key = alloc_key(scope, "MouseEvent")?;
+  let mouse_event_ctor = vm.get_with_host_and_hooks(host, scope, hooks, window_obj, mouse_event_ctor_key)?;
+  scope.push_root(mouse_event_ctor)?;
+
+  let type_s = scope.alloc_string("click")?;
+  scope.push_root(Value::String(type_s))?;
+  let init_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(init_obj))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(init_obj, bubbles_key, data_desc(Value::Bool(true)))?;
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(init_obj, composed_key, data_desc(Value::Bool(false)))?;
+  // Match the host-driven click helpers: expose a stable `detail=1` for common handlers.
+  let detail_key = alloc_key(scope, "detail")?;
+  scope.define_property(init_obj, detail_key, data_desc(Value::Number(1.0)))?;
+
+  let event_value = if scope.heap().is_constructor(mouse_event_ctor).unwrap_or(false) {
+    vm.construct_with_host_and_hooks(
+      host,
+      scope,
+      hooks,
+      mouse_event_ctor,
+      &[Value::String(type_s), Value::Object(init_obj)],
+      mouse_event_ctor,
+    )?
+  } else {
+    return Err(VmError::TypeError("MouseEvent is not a constructor"));
+  };
+  scope.push_root(event_value)?;
+
+  let dispatched = event_target_dispatch_event_dom2(
+    vm,
+    scope,
+    host,
+    hooks,
+    wrapper_obj,
+    &[event_value],
+  )?;
+  let default_allowed = matches!(dispatched, Value::Bool(true));
+  if !default_allowed {
+    return Ok(Value::Undefined);
+  }
+
+  // Default actions (minimal). These run after event dispatch when default is not prevented.
+  let action = {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+
+    // 1) Choice controls.
+    if let Some(ty) = input_type(dom, handle.node_id) {
+      if ty.eq_ignore_ascii_case("checkbox") {
+        Some(("toggle_checkbox", None::<NodeId>))
+      } else if ty.eq_ignore_ascii_case("radio") {
+        Some(("activate_radio", None::<NodeId>))
+      } else if ty.eq_ignore_ascii_case("reset") {
+        resolve_form_owner(dom, handle.node_id).map(|form| ("reset_form", Some(form)))
+      } else if ty.eq_ignore_ascii_case("submit") {
+        resolve_form_owner(dom, handle.node_id).map(|form| ("submit_form", Some(form)))
+      } else {
+        None
+      }
+    } else if let Some(ty) = button_type(dom, handle.node_id) {
+      if ty.eq_ignore_ascii_case("reset") {
+        resolve_form_owner(dom, handle.node_id).map(|form| ("reset_form", Some(form)))
+      } else if ty.eq_ignore_ascii_case("submit") {
+        resolve_form_owner(dom, handle.node_id).map(|form| ("submit_form", Some(form)))
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  };
+
+  match action {
+    Some(("toggle_checkbox", _)) => {
+      let needs_microtask = if is_host_document_id(vm, handle.document_id) {
+        let (_, needs_microtask) = mutate_dom_for_vm_host(host, |dom| {
+          let before = dom.input_checked(handle.node_id).unwrap_or(false);
+          let _ = dom.set_input_checked(handle.node_id, !before);
+          let needs_microtask = dom.take_mutation_observer_microtask_needed();
+          (((), needs_microtask), true)
+        })
+        .ok_or(VmError::TypeError("HTMLElement.click requires a DOM-backed document"))?;
+        needs_microtask
+      } else {
+        let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+          return Ok(Value::Undefined);
+        };
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        let dom = unsafe { dom_ptr.as_mut() };
+        let before = dom.input_checked(handle.node_id).unwrap_or(false);
+        let _ = dom.set_input_checked(handle.node_id, !before);
+        dom.take_mutation_observer_microtask_needed()
+      };
+      if is_host_document_id(vm, handle.document_id) {
+        maybe_queue_mutation_observer_microtask(
+          vm,
+          scope,
+          host,
+          hooks,
+          handle.document_obj,
+          needs_microtask,
+        )?;
+      }
+    }
+    Some(("activate_radio", _)) => {
+      let needs_microtask = if is_host_document_id(vm, handle.document_id) {
+        let (_, needs_microtask) = mutate_dom_for_vm_host(host, |dom| {
+          let group_name = dom
+            .get_attribute(handle.node_id, "name")
+            .ok()
+            .flatten()
+            .map(trim_ascii_whitespace)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+          let form_owner = resolve_form_owner(dom, handle.node_id);
+          let _ = dom.set_input_checked(handle.node_id, true);
+          if let Some(group_name) = group_name.as_deref() {
+            for idx in 0..dom.nodes_len() {
+              let candidate = match dom.node_id_from_index(idx) {
+                Ok(id) => id,
+                Err(_) => continue,
+              };
+              if candidate == handle.node_id {
+                continue;
+              }
+              let Some(candidate_ty) = input_type(dom, candidate) else {
+                continue;
+              };
+              if !candidate_ty.eq_ignore_ascii_case("radio") {
+                continue;
+              }
+              let candidate_name = dom
+                .get_attribute(candidate, "name")
+                .ok()
+                .flatten()
+                .map(trim_ascii_whitespace)
+                .unwrap_or("");
+              if candidate_name != group_name {
+                continue;
+              }
+              if resolve_form_owner(dom, candidate) != form_owner {
+                continue;
+              }
+              let _ = dom.set_input_checked(candidate, false);
+            }
+          }
+          let needs_microtask = dom.take_mutation_observer_microtask_needed();
+          (((), needs_microtask), true)
+        })
+        .ok_or(VmError::TypeError("HTMLElement.click requires a DOM-backed document"))?;
+        needs_microtask
+      } else {
+        let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+          return Ok(Value::Undefined);
+        };
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        let dom = unsafe { dom_ptr.as_mut() };
+        let group_name = dom
+          .get_attribute(handle.node_id, "name")
+          .ok()
+          .flatten()
+          .map(trim_ascii_whitespace)
+          .filter(|v| !v.is_empty())
+          .map(|v| v.to_string());
+        let form_owner = resolve_form_owner(dom, handle.node_id);
+        let _ = dom.set_input_checked(handle.node_id, true);
+        if let Some(group_name) = group_name.as_deref() {
+          for idx in 0..dom.nodes_len() {
+            let candidate = match dom.node_id_from_index(idx) {
+              Ok(id) => id,
+              Err(_) => continue,
+            };
+            if candidate == handle.node_id {
+              continue;
+            }
+            let Some(candidate_ty) = input_type(dom, candidate) else {
+              continue;
+            };
+            if !candidate_ty.eq_ignore_ascii_case("radio") {
+              continue;
+            }
+            let candidate_name = dom
+              .get_attribute(candidate, "name")
+              .ok()
+              .flatten()
+              .map(trim_ascii_whitespace)
+              .unwrap_or("");
+            if candidate_name != group_name {
+              continue;
+            }
+            if resolve_form_owner(dom, candidate) != form_owner {
+              continue;
+            }
+            let _ = dom.set_input_checked(candidate, false);
+          }
+        }
+        dom.take_mutation_observer_microtask_needed()
+      };
+      if is_host_document_id(vm, handle.document_id) {
+        maybe_queue_mutation_observer_microtask(
+          vm,
+          scope,
+          host,
+          hooks,
+          handle.document_obj,
+          needs_microtask,
+        )?;
+      }
+    }
+    Some(("reset_form", Some(form))) => {
+      let needs_microtask = if is_host_document_id(vm, handle.document_id) {
+        let (_, needs_microtask) = mutate_dom_for_vm_host(host, |dom| {
+          let before = dom.mutation_generation();
+          let _ = dom.form_reset(form);
+          let needs_microtask = dom.take_mutation_observer_microtask_needed();
+          let changed = dom.mutation_generation() != before;
+          (((), needs_microtask), changed)
+        })
+        .ok_or(VmError::TypeError("HTMLElement.click requires a DOM-backed document"))?;
+        needs_microtask
+      } else {
+        let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+          return Ok(Value::Undefined);
+        };
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        let dom = unsafe { dom_ptr.as_mut() };
+        let _ = dom.form_reset(form);
+        dom.take_mutation_observer_microtask_needed()
+      };
+      if is_host_document_id(vm, handle.document_id) {
+        maybe_queue_mutation_observer_microtask(
+          vm,
+          scope,
+          host,
+          hooks,
+          handle.document_obj,
+          needs_microtask,
+        )?;
+      }
+    }
+    Some(("submit_form", Some(form))) => {
+      // Dispatch a `submit` event on the form owner and, if not canceled, navigate.
+      let form_wrapper = {
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        let dom = unsafe { dom_ptr.as_ref() };
+        get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), form)?
+      };
+      scope.push_root(form_wrapper)?;
+      let Value::Object(form_wrapper_obj) = form_wrapper else {
+        return Err(VmError::TypeError("submit target is not an object"));
+      };
+
+      let submit_event = {
+        let Some(window_obj) = vm.user_data::<WindowRealmUserData>().and_then(|data| data.window_obj) else {
+          return Err(VmError::InvariantViolation(
+            "window realm missing cached window object for form submission",
+          ));
+        };
+        scope.push_root(Value::Object(window_obj))?;
+        let event_ctor_key = alloc_key(scope, "Event")?;
+        let event_ctor = vm.get_with_host_and_hooks(host, scope, hooks, window_obj, event_ctor_key)?;
+        scope.push_root(event_ctor)?;
+        let submit_s = scope.alloc_string("submit")?;
+        scope.push_root(Value::String(submit_s))?;
+        let init_obj = scope.alloc_object()?;
+        scope.push_root(Value::Object(init_obj))?;
+        let bubbles_key = alloc_key(scope, "bubbles")?;
+        scope.define_property(init_obj, bubbles_key, data_desc(Value::Bool(true)))?;
+        let cancelable_key = alloc_key(scope, "cancelable")?;
+        scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
+        let composed_key = alloc_key(scope, "composed")?;
+        scope.define_property(init_obj, composed_key, data_desc(Value::Bool(false)))?;
+        if scope.heap().is_constructor(event_ctor).unwrap_or(false) {
+          vm.construct_with_host_and_hooks(
+            host,
+            scope,
+            hooks,
+            event_ctor,
+            &[Value::String(submit_s), Value::Object(init_obj)],
+            event_ctor,
+          )?
+        } else {
+          return Err(VmError::TypeError("Event is not a constructor"));
+        }
+      };
+      scope.push_root(submit_event)?;
+      let submit_allowed = matches!(
+        event_target_dispatch_event_dom2(
+          vm,
+          scope,
+          host,
+          hooks,
+          form_wrapper_obj,
+          &[submit_event],
+        )?,
+        Value::Bool(true)
+      );
+      if !submit_allowed {
+        return Ok(Value::Undefined);
+      }
+
+      // Resolve the form action URL (minimal: ignore form data and method) and request navigation.
+      let action_url = {
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        let dom = unsafe { dom_ptr.as_ref() };
+        dom
+          .get_attribute(form, "action")
+          .ok()
+          .flatten()
+          .map(trim_ascii_whitespace)
+          .filter(|v| !v.is_empty())
+          .map(|v| v.to_string())
+          .unwrap_or_else(|| {
+            vm.user_data::<WindowRealmUserData>()
+              .map(|data| data.document_url.clone())
+              .unwrap_or_else(|| "about:blank".to_string())
+          })
+      };
+      let action_s = scope.alloc_string(&action_url)?;
+      scope.push_root(Value::String(action_s))?;
+      let location_obj = vm.user_data::<WindowRealmUserData>().and_then(|data| data.location_obj);
+      request_location_navigation(
+        vm,
+        scope,
+        host,
+        hooks,
+        location_obj,
+        Value::String(action_s),
+        false,
+      )?;
+    }
+    _ => {
+      // Fall back to link navigation default action when clicking inside an <a href>.
+      // SAFETY: `dom_ptr` is valid for the duration of this native call.
+      let dom = unsafe { dom_ptr.as_ref() };
+      if let Some(href) = link_href_for_click(dom, handle.node_id) {
+        let href_s = scope.alloc_string(&href)?;
+        scope.push_root(Value::String(href_s))?;
+        let location_obj = vm.user_data::<WindowRealmUserData>().and_then(|data| data.location_obj);
+        request_location_navigation(
+          vm,
+          scope,
+          host,
+          hooks,
+          location_obj,
+          Value::String(href_s),
+          false,
+        )?;
+      }
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn html_element_title_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -53193,6 +53666,30 @@ fn init_window_globals(
         },
       },
     )?;
+
+    // `HTMLElement.prototype.click()`: frequently used by real pages to trigger UI behavior.
+    // WebIDL generation does not currently cover HTMLElement, so install a minimal native binding.
+    let click_call_id = vm.register_native_call(html_element_click_native)?;
+    let click_name = scope.alloc_string("click")?;
+    scope.push_root(Value::String(click_name))?;
+    let click_func = scope.alloc_native_function(click_call_id, None, click_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      click_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(click_func))?;
+    let click_key = alloc_key(&mut scope, "click")?;
+    if scope
+      .heap()
+      .object_get_own_property(html_element_proto, &click_key)?
+      .is_none()
+    {
+      scope.define_property(
+        html_element_proto,
+        click_key,
+        data_desc(Value::Object(click_func)),
+      )?;
+    }
   }
 
   let has_attribute_call_id = vm.register_native_call(element_has_attribute_native)?;
