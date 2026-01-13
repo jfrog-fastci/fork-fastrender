@@ -11567,6 +11567,22 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     }
   }
 
+  fn render_media_controls(&mut self, _ctx: &egui::Context) {
+    let Some(tab_id) = self.open_media_controls.as_ref().map(|overlay| overlay.tab_id) else {
+      // Defensive: ensure stale rect/pointer-capture state cannot linger if some code path drops the
+      // overlay without calling `close_media_controls`.
+      if self.open_media_controls_rect.is_some() || self.media_controls_overlay_pointer_capture {
+        self.close_media_controls();
+      }
+      return;
+    };
+
+    if self.browser_state.active_tab_id() != Some(tab_id) {
+      self.close_media_controls();
+      self.window.request_redraw();
+      return;
+    }
+  }
   fn sync_hover_after_tab_change(&mut self, ctx: &egui::Context) {
     use fastrender::ui::PointerButton;
     use fastrender::ui::UiToWorker;
@@ -11638,6 +11654,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
   fn focus_address_bar_select_all(&mut self) {
     self.page_has_focus = false;
+    self.close_media_controls();
     self.browser_state.chrome.request_focus_address_bar = true;
     self.browser_state.chrome.request_select_all_address_bar = true;
   }
@@ -13292,6 +13309,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
             if fastrender::ui::shortcuts::shortcut_preempts_page_focus(action) {
               self.page_has_focus = false;
+              self.close_media_controls();
             }
 
             match action {
@@ -13699,6 +13717,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       self.cancel_select_dropdown();
       self.cancel_date_time_picker();
       self.cancel_file_picker();
+      self.close_media_controls();
       self.cancel_pointer_capture();
       self.close_context_menu();
     }
@@ -14738,6 +14757,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     // never take keyboard focus (e.g. via `response.request_focus()` on the central page image).
     if self.clear_browsing_data_dialog_open {
       self.page_has_focus = false;
+      self.close_media_controls();
     }
 
     // When using a full-size content view on macOS (transparent titlebar / unified toolbar),
@@ -15362,6 +15382,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             if self.open_file_picker.is_some() {
               self.cancel_file_picker();
             }
+            if self.open_media_controls.is_some() {
+              self.close_media_controls();
+            }
             if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
               self.close_context_menu();
             }
@@ -15879,6 +15902,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       &self.browser_state,
       central_response.response.rect,
     );
+    self.render_media_controls(&ctx);
     self.render_select_dropdown(&ctx);
     self.render_date_time_picker(&ctx);
     self.render_color_picker(&ctx);
