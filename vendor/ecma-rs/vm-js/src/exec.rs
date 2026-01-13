@@ -21791,6 +21791,7 @@ fn async_eval_expr_chain(
         binary.stx.operator,
         OperatorName::Assignment
           | OperatorName::AssignmentAddition
+          | OperatorName::AssignmentExponentiation
           | OperatorName::AssignmentBitwiseAnd
           | OperatorName::AssignmentBitwiseLeftShift
           | OperatorName::AssignmentBitwiseOr
@@ -22738,6 +22739,7 @@ fn async_eval_assignment_expr(
   match expr.operator {
     OperatorName::Assignment => async_eval_assignment_simple(evaluator, scope, expr),
     OperatorName::AssignmentAddition => async_eval_assignment_addition(evaluator, scope, expr),
+    OperatorName::AssignmentExponentiation => async_eval_assignment_exponentiation(evaluator, scope, expr),
     OperatorName::AssignmentSubtraction
     | OperatorName::AssignmentMultiplication
     | OperatorName::AssignmentDivision
@@ -22940,6 +22942,34 @@ fn async_eval_assignment_addition(
     }
     Expr::ComputedMember(member) => {
       async_eval_assignment_add_to_computed_member(evaluator, scope, expr, &member.stx)
+    }
+    _ => Err(VmError::Unimplemented("expression is not a reference")),
+  }
+}
+
+fn async_eval_assignment_exponentiation(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+) -> Result<AsyncEval<Value>, VmError> {
+  if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
+    return Err(VmError::Unimplemented(
+      "assignment exponentiation to destructuring patterns",
+    ));
+  }
+
+  match &*expr.left.stx {
+    Expr::Id(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      async_eval_assignment_apply_reference(evaluator, scope, expr, reference)
+    }
+    Expr::IdPat(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      async_eval_assignment_apply_reference(evaluator, scope, expr, reference)
+    }
+    Expr::Member(member) => async_eval_assignment_to_member(evaluator, scope, expr, &member.stx),
+    Expr::ComputedMember(member) => {
+      async_eval_assignment_to_computed_member(evaluator, scope, expr, &member.stx)
     }
     _ => Err(VmError::Unimplemented("expression is not a reference")),
   }
@@ -23271,6 +23301,7 @@ fn async_eval_assignment_apply_reference(
       }
     }
     OperatorName::AssignmentAddition
+    | OperatorName::AssignmentExponentiation
     | OperatorName::AssignmentSubtraction
     | OperatorName::AssignmentMultiplication
     | OperatorName::AssignmentDivision
@@ -23292,6 +23323,13 @@ fn async_eval_assignment_apply_reference(
             OperatorName::AssignmentAddition => evaluator
               .addition_operator(&mut compound_scope, left, right)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?,
+            OperatorName::AssignmentExponentiation => async_apply_binary_operator(
+              evaluator,
+              &mut compound_scope,
+              OperatorName::Exponentiation,
+              left,
+              right,
+            )?,
             OperatorName::AssignmentSubtraction
             | OperatorName::AssignmentMultiplication
             | OperatorName::AssignmentDivision
@@ -28493,6 +28531,13 @@ fn async_resume_from_frames(
                     .map_err(|err| {
                       coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
                     })?,
+                  OperatorName::AssignmentExponentiation => async_apply_binary_operator(
+                    evaluator,
+                    &mut compound_scope,
+                    OperatorName::Exponentiation,
+                    left,
+                    right,
+                  )?,
                   OperatorName::AssignmentSubtraction
                   | OperatorName::AssignmentMultiplication
                   | OperatorName::AssignmentDivision

@@ -93,6 +93,35 @@ fn async_await_compound_assignment_mul_div_mod_equals_number_and_bigint() -> Res
 }
 
 #[test]
+fn async_await_compound_assignment_exponentiation_equals_number_and_bigint() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let a = 2;
+        a **= await Promise.resolve(3);
+
+        let b = 2n;
+        b **= await Promise.resolve(3n);
+
+        return [a, typeof a, b, typeof b].join("|");
+      }
+      f().then(v => out = v);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "8|number|8|bigint");
+  Ok(())
+}
+
+#[test]
 fn async_await_shift_and_bitwise_assignment_ops_number_and_bigint() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
