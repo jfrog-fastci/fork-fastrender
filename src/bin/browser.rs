@@ -5641,7 +5641,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.home_url = home_url.clone();
     app.browser_state.appearance = startup_appearance.clone();
     app.startup(session_window);
-    app.crash_recovery_infobar_open = show_crash_recovery_infobar;
+    // Show crash recovery UI once at process startup; prefer the active window when multiple
+    // session windows are restored.
+    app.crash_recovery_infobar_open = show_crash_recovery_infobar && idx == active_idx;
 
     let window_id = app.window.id();
     window_ids_by_index[idx] = Some(window_id);
