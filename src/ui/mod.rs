@@ -227,8 +227,8 @@ pub use zoom::{
 };
 
 pub use bookmarks::{
-  BookmarkError, BookmarkFolder, BookmarkId, BookmarkNode, BookmarkStore, BookmarkStoreMigration,
-  BOOKMARK_STORE_VERSION,
+  BookmarkDelta, BookmarkError, BookmarkFolder, BookmarkId, BookmarkNode, BookmarkStore,
+  BookmarkStoreMigration, BOOKMARK_STORE_VERSION,
 };
 pub use notifications::{
   classify_warning_toast, Toast, ToastKind, ToastState, WarningToast, WarningToastIcon,

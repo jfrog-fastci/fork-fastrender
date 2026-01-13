@@ -12,7 +12,7 @@ use crate::ui::motion::UiMotion;
 
 use super::{
   icon_button, icon_tinted, panel_empty_state, panel_header, panel_search_field, BookmarkId,
-  BookmarkNode, BookmarkStore, BrowserIcon,
+  BookmarkDelta, BookmarkNode, BookmarkStore, BrowserIcon,
 };
 
 #[derive(Debug, Clone)]
@@ -69,6 +69,7 @@ struct EditBookmarkState {
 pub struct BookmarksManagerOutput {
   pub actions: Vec<BookmarksManagerAction>,
   pub changed: bool,
+  pub bookmark_deltas: Vec<BookmarkDelta>,
   /// Whether this change is destructive enough to justify a best-effort immediate flush.
   pub request_flush: bool,
   pub close_requested: bool,
@@ -288,6 +289,9 @@ pub fn bookmarks_manager_side_panel(
                 match std::fs::read_to_string(raw) {
                   Ok(json) => match BookmarkStore::from_json_str_migrating(&json) {
                     Ok((imported, migration)) => {
+                      out
+                        .bookmark_deltas
+                        .push(BookmarkDelta::ReplaceAll(imported.clone()));
                       *store = imported;
                       out.changed = true;
                       out.request_flush = true;
@@ -329,6 +333,9 @@ pub fn bookmarks_manager_side_panel(
             if ui.button("Import").clicked() {
               match BookmarkStore::from_json_str_migrating(&state.import_json) {
                 Ok((imported, migration)) => {
+                  out
+                    .bookmark_deltas
+                    .push(BookmarkDelta::ReplaceAll(imported.clone()));
                   *store = imported;
                   out.changed = true;
                   out.request_flush = true;
@@ -560,9 +567,11 @@ fn create_folder_card(
   if cancel_clicked {
     state.creating_folder = None;
   } else if create_clicked {
-    match store.create_folder(create.title.clone(), create.parent) {
+    let mut deltas = Vec::new();
+    match store.create_folder_with_deltas(create.title.clone(), create.parent, &mut deltas) {
       Ok(_) => {
         out.changed = true;
+        out.bookmark_deltas.extend(deltas);
         state.error = None;
         state.message = Some("Folder created.".to_string());
         state.creating_folder = None;
@@ -669,9 +678,11 @@ fn edit_bookmark_card(
 
   if save_clicked {
     let title = normalize_optional_string(&edit.title);
-    match store.update(edit.id, title, edit.url.clone(), edit.parent) {
+    let mut deltas = Vec::new();
+    match store.update_with_deltas(edit.id, title, edit.url.clone(), edit.parent, &mut deltas) {
       Ok(()) => {
         out.changed = true;
+        out.bookmark_deltas.extend(deltas);
         state.editing_bookmark = None;
         state.error = None;
         state.message = Some("Bookmark updated.".to_string());
@@ -856,8 +867,10 @@ fn render_nodes(
         });
 
         if delete_clicked {
-          if store.remove_by_id(folder_id) {
+          let mut deltas = Vec::new();
+          if store.remove_by_id_with_deltas(folder_id, &mut deltas) {
             out.changed = true;
+            out.bookmark_deltas.extend(deltas);
             out.request_flush = true;
             state.clear_transient();
           }
@@ -1009,8 +1022,10 @@ fn render_bookmark_row(
   }
 
   if delete_clicked {
-    if store.remove_by_id(entry.id) {
+    let mut deltas = Vec::new();
+    if store.remove_by_id_with_deltas(entry.id, &mut deltas) {
       out.changed = true;
+      out.bookmark_deltas.extend(deltas);
       out.request_flush = true;
       state.clear_transient();
     }

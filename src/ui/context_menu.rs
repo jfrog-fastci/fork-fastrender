@@ -394,10 +394,11 @@ mod a11y_label_tests {
 }
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ApplyPageContextMenuActionResult {
   pub bookmarks_changed: bool,
   pub ui_changed: bool,
+  pub bookmark_deltas: Vec<super::BookmarkDelta>,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -414,10 +415,12 @@ pub fn apply_page_context_menu_action(
         return ApplyPageContextMenuActionResult::default();
       }
       let before = bookmarks.contains_url(url);
-      let after = bookmarks.toggle(url, None);
+      let mut deltas = Vec::new();
+      let after = bookmarks.toggle_with_deltas(url, None, &mut deltas);
       ApplyPageContextMenuActionResult {
         bookmarks_changed: before != after,
         ui_changed: false,
+        bookmark_deltas: deltas,
       }
     }
     PageContextMenuAction::ToggleHistoryPanel => {
@@ -430,6 +433,7 @@ pub fn apply_page_context_menu_action(
       ApplyPageContextMenuActionResult {
         bookmarks_changed: false,
         ui_changed: prev_history != *history_panel_open || prev_bookmarks != *bookmarks_panel_open,
+        bookmark_deltas: Vec::new(),
       }
     }
     PageContextMenuAction::ToggleBookmarksPanel => {
@@ -442,6 +446,7 @@ pub fn apply_page_context_menu_action(
       ApplyPageContextMenuActionResult {
         bookmarks_changed: false,
         ui_changed: prev_history != *history_panel_open || prev_bookmarks != *bookmarks_panel_open,
+        bookmark_deltas: Vec::new(),
       }
     }
     PageContextMenuAction::OpenLinkInNewTab(_)

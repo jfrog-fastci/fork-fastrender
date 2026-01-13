@@ -120,6 +120,39 @@ pub enum BookmarkError {
   InvalidStore(String),
 }
 
+/// Incremental bookmark change operations for synchronizing stores across windows.
+///
+/// These deltas are intended to be:
+/// - **O(delta)** to apply (no full-store cloning required).
+/// - **Deterministic**: they include generated ids and timestamps so applying them later yields the
+///   exact same persisted store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BookmarkDelta {
+  /// Insert a new node (bookmark or folder).
+  ///
+  /// The node's `parent` determines which ordering list (`roots` vs folder `children`) it is
+  /// appended to.
+  AddNode(BookmarkNode),
+  /// Remove a node and its full subtree.
+  RemoveSubtree(BookmarkId),
+  /// Update bookmark fields (and optionally move it to a new parent).
+  UpdateBookmark {
+    id: BookmarkId,
+    title: Option<String>,
+    url: String,
+    parent: Option<BookmarkId>,
+  },
+  /// Move an existing node to a new parent (appended to the destination ordering list).
+  MoveNode {
+    id: BookmarkId,
+    parent: Option<BookmarkId>,
+  },
+  /// Replace the root ordering list (bookmarks bar ordering).
+  ReorderRoot(Vec<BookmarkId>),
+  /// Replace the entire store (used for imports).
+  ReplaceAll(BookmarkStore),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BookmarkStoreMigration {
   None,
@@ -128,6 +161,227 @@ pub enum BookmarkStoreMigration {
 }
 
 impl BookmarkStore {
+  /// Apply an incremental update to the store.
+  ///
+  /// This is used by the windowed browser to synchronize bookmark updates across windows without
+  /// cloning the entire [`BookmarkStore`].
+  pub fn apply_delta(&mut self, delta: &BookmarkDelta) -> Result<(), BookmarkError> {
+    match delta {
+      BookmarkDelta::AddNode(node) => {
+        let id = node.id();
+        if let Some(existing) = self.nodes.get(&id) {
+          if existing == node {
+            return Ok(());
+          }
+          return Err(BookmarkError::InvalidStore(format!(
+            "apply delta: duplicate bookmark id {id:?}"
+          )));
+        }
+
+        self.insert_new_node(node.clone())?;
+
+        // Keep `next_id` monotonic without scanning the whole store.
+        let next = id.checked_next().ok_or(BookmarkError::IdExhausted)?;
+        if self.next_id.0 < next.0 {
+          self.next_id = next;
+        }
+
+        Ok(())
+      }
+      BookmarkDelta::RemoveSubtree(id) => {
+        if self.remove_by_id(*id) {
+          Ok(())
+        } else {
+          Err(BookmarkError::NotFound(*id))
+        }
+      }
+      BookmarkDelta::UpdateBookmark {
+        id,
+        title,
+        url,
+        parent,
+      } => self.update(*id, title.clone(), url.clone(), *parent),
+      BookmarkDelta::MoveNode { id, parent } => self.move_node(*id, *parent),
+      BookmarkDelta::ReorderRoot(order) => self.reorder_root(order),
+      BookmarkDelta::ReplaceAll(store) => {
+        *self = store.clone();
+        Ok(())
+      }
+    }
+  }
+
+  pub fn apply_deltas(&mut self, deltas: &[BookmarkDelta]) -> Result<(), BookmarkError> {
+    for delta in deltas {
+      self.apply_delta(delta)?;
+    }
+    Ok(())
+  }
+
+  /// [`Self::toggle`] but also records the mutation as deltas.
+  pub fn toggle_with_deltas(
+    &mut self,
+    url: &str,
+    title: Option<&str>,
+    deltas: &mut Vec<BookmarkDelta>,
+  ) -> bool {
+    let url = url.trim();
+    if url.is_empty() {
+      return false;
+    }
+
+    if self.contains_url(url) {
+      let _removed = self.remove_by_url_with_deltas(url, deltas);
+      false
+    } else {
+      // Root-level bookmark by default.
+      self
+        .add_with_deltas(
+          url.to_string(),
+          title.map(|s| s.to_string()),
+          None,
+          deltas,
+        )
+        .is_ok()
+    }
+  }
+
+  /// [`Self::add`] but also records the mutation as deltas.
+  pub fn add_with_deltas(
+    &mut self,
+    url: String,
+    title: Option<String>,
+    parent: Option<BookmarkId>,
+    deltas: &mut Vec<BookmarkDelta>,
+  ) -> Result<BookmarkId, BookmarkError> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+      return Err(BookmarkError::InvalidStore("bookmark URL is empty".to_string()));
+    }
+    validate_user_navigation_url_scheme(&url).map_err(BookmarkError::InvalidStore)?;
+    let title = normalize_optional_string(title);
+    let added_at_ms = now_unix_ms();
+    self.add_with_timestamp_and_deltas(url, title, parent, added_at_ms, deltas)
+  }
+
+  /// [`Self::create_folder`] but also records the mutation as deltas.
+  pub fn create_folder_with_deltas(
+    &mut self,
+    title: String,
+    parent: Option<BookmarkId>,
+    deltas: &mut Vec<BookmarkDelta>,
+  ) -> Result<BookmarkId, BookmarkError> {
+    let title = title.trim();
+    if title.is_empty() {
+      return Err(BookmarkError::InvalidFolderTitle);
+    }
+
+    let id = self.alloc_id()?;
+    let folder = BookmarkFolder {
+      id,
+      title: title.to_string(),
+      added_at_ms: now_unix_ms(),
+      parent,
+      children: Vec::new(),
+    };
+    let node = BookmarkNode::Folder(folder);
+    self.insert_new_node(node.clone())?;
+    deltas.push(BookmarkDelta::AddNode(node));
+    Ok(id)
+  }
+
+  /// [`Self::remove_by_id`] but also records the mutation as deltas.
+  pub fn remove_by_id_with_deltas(
+    &mut self,
+    id: BookmarkId,
+    deltas: &mut Vec<BookmarkDelta>,
+  ) -> bool {
+    if self.remove_by_id(id) {
+      deltas.push(BookmarkDelta::RemoveSubtree(id));
+      true
+    } else {
+      false
+    }
+  }
+
+  /// [`Self::remove_by_url`] but also records the mutation as deltas.
+  pub fn remove_by_url_with_deltas(&mut self, url: &str, deltas: &mut Vec<BookmarkDelta>) -> usize {
+    let ids: Vec<BookmarkId> = self
+      .nodes
+      .iter()
+      .filter_map(|(&id, node)| match node {
+        BookmarkNode::Bookmark(bookmark) if bookmark.url == url => Some(id),
+        _ => None,
+      })
+      .collect();
+    let mut removed = 0;
+    for id in ids {
+      if self.remove_by_id(id) {
+        removed += 1;
+        deltas.push(BookmarkDelta::RemoveSubtree(id));
+      }
+    }
+    removed
+  }
+
+  /// [`Self::update`] but also records the mutation as deltas.
+  pub fn update_with_deltas(
+    &mut self,
+    id: BookmarkId,
+    new_title: Option<String>,
+    new_url: String,
+    new_parent: Option<BookmarkId>,
+    deltas: &mut Vec<BookmarkDelta>,
+  ) -> Result<(), BookmarkError> {
+    // Mirror `update`'s normalization so applying deltas is deterministic.
+    let new_url = new_url.trim().to_string();
+    let new_title = normalize_optional_string(new_title);
+
+    self.update(id, new_title.clone(), new_url.clone(), new_parent)?;
+    deltas.push(BookmarkDelta::UpdateBookmark {
+      id,
+      title: new_title,
+      url: new_url,
+      parent: new_parent,
+    });
+    Ok(())
+  }
+
+  /// [`Self::move_node`] but also records the mutation as deltas.
+  pub fn move_node_with_deltas(
+    &mut self,
+    id: BookmarkId,
+    new_parent: Option<BookmarkId>,
+    deltas: &mut Vec<BookmarkDelta>,
+  ) -> Result<(), BookmarkError> {
+    let old_parent = self
+      .nodes
+      .get(&id)
+      .map(BookmarkNode::parent)
+      .ok_or(BookmarkError::NotFound(id))?;
+    self.move_node(id, new_parent)?;
+    if old_parent != new_parent {
+      deltas.push(BookmarkDelta::MoveNode {
+        id,
+        parent: new_parent,
+      });
+    }
+    Ok(())
+  }
+
+  /// [`Self::reorder_root`] but also records the mutation as deltas.
+  pub fn reorder_root_with_deltas(
+    &mut self,
+    ids_in_new_order: &[BookmarkId],
+    deltas: &mut Vec<BookmarkDelta>,
+  ) -> Result<(), BookmarkError> {
+    if self.roots == ids_in_new_order {
+      return Ok(());
+    }
+    self.reorder_root(ids_in_new_order)?;
+    deltas.push(BookmarkDelta::ReorderRoot(ids_in_new_order.to_vec()));
+    Ok(())
+  }
+
   pub fn contains_url(&self, url: &str) -> bool {
     self
       .nodes
@@ -686,6 +940,28 @@ impl BookmarkStore {
     };
     let node = BookmarkNode::Bookmark(entry);
     self.insert_new_node(node)?;
+    Ok(id)
+  }
+
+  fn add_with_timestamp_and_deltas(
+    &mut self,
+    url: String,
+    title: Option<String>,
+    parent: Option<BookmarkId>,
+    added_at_ms: u64,
+    deltas: &mut Vec<BookmarkDelta>,
+  ) -> Result<BookmarkId, BookmarkError> {
+    let id = self.alloc_id()?;
+    let entry = BookmarkEntry {
+      id,
+      url,
+      title,
+      added_at_ms,
+      parent,
+    };
+    let node = BookmarkNode::Bookmark(entry);
+    self.insert_new_node(node.clone())?;
+    deltas.push(BookmarkDelta::AddNode(node));
     Ok(id)
   }
 
@@ -1579,5 +1855,96 @@ mod tests {
       !folder_node.children.contains(&bookmark),
       "bookmark should not have been moved when update failed"
     );
+  }
+
+  #[test]
+  fn deltas_replay_to_same_store_state() {
+    let mut mutated = BookmarkStore::default();
+    let mut deltas = Vec::<BookmarkDelta>::new();
+
+    let folder = mutated
+      .create_folder_with_deltas("Folder".to_string(), None, &mut deltas)
+      .unwrap();
+    let a = mutated
+      .add_with_deltas(
+        "https://a.example/".to_string(),
+        Some("A".to_string()),
+        None,
+        &mut deltas,
+      )
+      .unwrap();
+    let b = mutated
+      .add_with_deltas(
+        "https://b.example/".to_string(),
+        Some("B".to_string()),
+        Some(folder),
+        &mut deltas,
+      )
+      .unwrap();
+
+    mutated
+      .update_with_deltas(
+        a,
+        Some("A+".to_string()),
+        "https://a.example/new".to_string(),
+        Some(folder),
+        &mut deltas,
+      )
+      .unwrap();
+    mutated
+      .move_node_with_deltas(b, None, &mut deltas)
+      .unwrap();
+    mutated
+      .reorder_root_with_deltas(&[b, folder], &mut deltas)
+      .unwrap();
+    // Toggle an existing bookmark (removes it).
+    assert!(!mutated.toggle_with_deltas("https://b.example/", None, &mut deltas));
+    // Toggle a new URL (adds it).
+    assert!(mutated.toggle_with_deltas(
+      "https://c.example/",
+      Some("C"),
+      &mut deltas
+    ));
+    // Remove the folder subtree.
+    assert!(mutated.remove_by_id_with_deltas(folder, &mut deltas));
+
+    let mut applied = BookmarkStore::default();
+    applied.apply_deltas(&deltas).unwrap();
+
+    assert_eq!(applied, mutated);
+  }
+
+  #[test]
+  fn deltas_keep_multiple_stores_in_sync() {
+    let mut global = BookmarkStore::default();
+    let mut win_a = BookmarkStore::default();
+    let mut win_b = BookmarkStore::default();
+
+    let mut deltas = Vec::<BookmarkDelta>::new();
+
+    let _folder = win_a
+      .create_folder_with_deltas("Folder".to_string(), None, &mut deltas)
+      .unwrap();
+    assert!(win_a.toggle_with_deltas(
+      "https://example.com/",
+      Some("Example"),
+      &mut deltas
+    ));
+
+    global.apply_deltas(&deltas).unwrap();
+    win_b.apply_deltas(&deltas).unwrap();
+
+    assert_eq!(global, win_a);
+    assert_eq!(win_b, win_a);
+
+    deltas.clear();
+    // Window B toggles the same URL (removes it).
+    assert!(!win_b.toggle_with_deltas("https://example.com/", None, &mut deltas));
+
+    global.apply_deltas(&deltas).unwrap();
+    win_a.apply_deltas(&deltas).unwrap();
+
+    assert_eq!(global, win_a);
+    assert_eq!(win_b, win_a);
   }
 }

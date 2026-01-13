@@ -3759,15 +3759,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Synchronize profile state (bookmarks/history) across all windows.
-    let mut bookmarks_update: Option<(fastrender::ui::BookmarkStore, bool)> = None;
     let mut history_update: Option<(fastrender::ui::GlobalHistoryStore, bool)> = None;
-    for win in windows.values_mut() {
-      if win.app.profile_bookmarks_dirty {
-        win.app.profile_bookmarks_dirty = false;
-        let flush = win.app.profile_bookmarks_flush_requested;
-        win.app.profile_bookmarks_flush_requested = false;
-        bookmarks_update = Some((win.app.bookmarks.clone(), flush));
+
+    // Collect pending bookmark deltas. Most of the time only one window mutates bookmarks at a
+    // time; in that case we can propagate deltas across windows without cloning the full store.
+    //
+    // If multiple windows concurrently mutate bookmarks before this sync point, we fall back to a
+    // full-store sync to preserve cross-window consistency (matching the previous "last writer
+    // wins" behaviour).
+    let mut dirty_bookmark_windows: Vec<WindowId> = Vec::new();
+    for id in &window_order {
+      if windows
+        .get(id)
+        .is_some_and(|win| !win.app.pending_bookmark_deltas.is_empty())
+      {
+        dirty_bookmark_windows.push(*id);
       }
+    }
+
+    for win in windows.values_mut() {
       if win.app.profile_history_dirty {
         win.app.profile_history_dirty = false;
         let flush = win.app.profile_history_flush_requested;
@@ -3776,11 +3786,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
-    if let Some((new_bookmarks, flush)) = bookmarks_update {
-      global_bookmarks = new_bookmarks;
+    if !dirty_bookmark_windows.is_empty() {
+      let source_window_id = *dirty_bookmark_windows
+        .last()
+        .expect("non-empty bookmark dirty list");
+
+      let (deltas, flush) = match windows.get_mut(&source_window_id) {
+        Some(win) => {
+          let flush = win.app.profile_bookmarks_flush_requested;
+          win.app.profile_bookmarks_flush_requested = false;
+          (std::mem::take(&mut win.app.pending_bookmark_deltas), flush)
+        }
+        None => (Vec::new(), false),
+      };
+
+      // Clear pending deltas from other windows; their local changes are discarded if they raced
+      // with the authoritative window.
+      if dirty_bookmark_windows.len() > 1 {
+        for id in &dirty_bookmark_windows {
+          if *id == source_window_id {
+            continue;
+          }
+          if let Some(win) = windows.get_mut(id) {
+            win.app.pending_bookmark_deltas.clear();
+            win.app.profile_bookmarks_flush_requested = false;
+          }
+        }
+      }
+
+      let apply_outcome = global_bookmarks.apply_deltas(&deltas);
+      let mut force_full_sync = apply_outcome.is_err() || dirty_bookmark_windows.len() > 1;
+      if let Err(err) = apply_outcome {
+        eprintln!(
+          "failed to apply bookmark deltas to global store ({source_window_id:?}): {err:?}"
+        );
+      }
+
+      if force_full_sync {
+        if let Some(source) = windows.get(&source_window_id) {
+          global_bookmarks = source.app.bookmarks.clone();
+        }
+      }
+
+      // Refresh about-page snapshots once per batch of deltas (or full sync), not per mutation.
       fastrender::ui::about_pages::sync_about_page_snapshot_bookmarks_from_bookmark_store(
         &global_bookmarks,
       );
+
       if let Some(tx) = profile_autosave_tx.as_ref() {
         let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
           global_bookmarks.clone(),
@@ -3791,8 +3843,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           let _ = done_rx.recv_timeout(std::time::Duration::from_millis(200));
         }
       }
-      for win in windows.values_mut() {
-        win.app.bookmarks = global_bookmarks.clone();
+
+      for (id, win) in windows.iter_mut() {
+        if *id == source_window_id && !force_full_sync {
+          win.app.window.request_redraw();
+          continue;
+        }
+
+        if force_full_sync || dirty_bookmark_windows.contains(id) {
+          win.app.bookmarks = global_bookmarks.clone();
+        } else if let Err(err) = win.app.bookmarks.apply_deltas(&deltas) {
+          eprintln!("failed to apply bookmark deltas to window {id:?}: {err:?}");
+          win.app.bookmarks = global_bookmarks.clone();
+        }
+
         win.app.window.request_redraw();
       }
     }
@@ -5457,8 +5521,8 @@ struct App {
   bookmarks_path: std::path::PathBuf,
   history_path: std::path::PathBuf,
   bookmarks: fastrender::ui::BookmarkStore,
+  pending_bookmark_deltas: Vec<fastrender::ui::BookmarkDelta>,
   profile_autosave_tx: Option<std::sync::mpsc::Sender<fastrender::ui::AutosaveMsg>>,
-  profile_bookmarks_dirty: bool,
   profile_bookmarks_flush_requested: bool,
   profile_history_dirty: bool,
   profile_history_flush_requested: bool,
@@ -6181,8 +6245,8 @@ impl App {
       bookmarks_path,
       history_path,
       bookmarks,
+      pending_bookmark_deltas: Vec::new(),
       profile_autosave_tx: None,
-      profile_bookmarks_dirty: false,
       profile_bookmarks_flush_requested: false,
       profile_history_dirty: false,
       profile_history_flush_requested: false,
@@ -10127,8 +10191,7 @@ impl App {
           &action,
         );
         if result.bookmarks_changed {
-          self.autosave_bookmarks();
-          self.sync_about_newtab_bookmarks_snapshot();
+          self.record_bookmark_deltas(result.bookmark_deltas, false);
         }
       }
     }
@@ -11145,14 +11208,18 @@ impl App {
     }
   }
 
-  fn autosave_bookmarks(&mut self) {
-    self.profile_bookmarks_dirty = true;
-  }
-
-  fn sync_about_newtab_bookmarks_snapshot(&self) {
-    fastrender::ui::about_pages::sync_about_page_snapshot_bookmarks_from_bookmark_store(
-      &self.bookmarks,
-    );
+  fn record_bookmark_deltas(
+    &mut self,
+    deltas: Vec<fastrender::ui::BookmarkDelta>,
+    request_flush: bool,
+  ) {
+    if deltas.is_empty() {
+      return;
+    }
+    self.pending_bookmark_deltas.extend(deltas);
+    if request_flush {
+      self.profile_bookmarks_flush_requested = true;
+    }
   }
 
   fn toggle_bookmark_for_active_tab(&mut self) {
@@ -11172,9 +11239,14 @@ impl App {
       return;
     };
 
-    self.bookmarks.toggle(&url, title.as_deref());
-    self.autosave_bookmarks();
-    self.sync_about_newtab_bookmarks_snapshot();
+    let before = self.bookmarks.contains_url(&url);
+    let mut deltas = Vec::new();
+    let after = self
+      .bookmarks
+      .toggle_with_deltas(&url, title.as_deref(), &mut deltas);
+    if before != after {
+      self.record_bookmark_deltas(deltas, false);
+    }
   }
 
   fn sync_history_after_mutation(&mut self, flush: bool) {
@@ -13255,12 +13327,12 @@ impl App {
           self.window.request_redraw();
         }
         ChromeAction::ReorderBookmarksBar(order) => {
-          if let Err(err) = self.bookmarks.reorder_root(&order) {
+          let mut deltas = Vec::new();
+          if let Err(err) = self.bookmarks.reorder_root_with_deltas(&order, &mut deltas) {
             eprintln!("failed to reorder bookmarks: {err:?}");
             continue;
           }
-          self.autosave_bookmarks();
-          self.sync_about_newtab_bookmarks_snapshot();
+          self.record_bookmark_deltas(deltas, false);
           self.window.request_redraw();
         }
         ChromeAction::ToggleHistoryPanel => {
@@ -14475,7 +14547,7 @@ impl App {
     }
 
     if self.bookmarks_panel_open && !close_bookmarks_panel {
-      let output = fastrender::ui::panels::bookmarks_manager_side_panel(
+      let mut output = fastrender::ui::panels::bookmarks_manager_side_panel(
         &ctx,
         fastrender::ui::panels::BookmarksManagerInput {
           state: &mut self.bookmarks_manager,
@@ -14488,13 +14560,9 @@ impl App {
       if output.unfocus_page {
         self.page_has_focus = false;
       }
-      if output.changed {
-        self.autosave_bookmarks();
-        self.sync_about_newtab_bookmarks_snapshot();
-
-        if output.request_flush {
-          self.profile_bookmarks_flush_requested = true;
-        }
+      if !output.bookmark_deltas.is_empty() || output.changed {
+        let deltas = std::mem::take(&mut output.bookmark_deltas);
+        self.record_bookmark_deltas(deltas, output.request_flush);
       }
 
       for action in output.actions {
