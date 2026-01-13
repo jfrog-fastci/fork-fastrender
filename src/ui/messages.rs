@@ -1191,6 +1191,8 @@ impl WorkerToUi {
       | WorkerToUi::ColorPickerClosed { tab_id }
       | WorkerToUi::FilePickerOpened { tab_id, .. }
       | WorkerToUi::FilePickerClosed { tab_id }
+      | WorkerToUi::DatalistOpened { tab_id, .. }
+      | WorkerToUi::DatalistClosed { tab_id }
       | WorkerToUi::MediaControlsOpened { tab_id, .. }
       | WorkerToUi::MediaControlsClosed { tab_id }
       | WorkerToUi::ContextMenu { tab_id, .. }

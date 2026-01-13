@@ -36,7 +36,8 @@ fn handle_client(stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) -> i
   };
 
   match req {
-    ipc::NetworkRequest::Hello { .. } => Ok(()),
+    // Protocol violation: `Hello` must only be sent once at the start of the connection.
+    ipc::NetworkRequest::Hello { .. } => {}
     ipc::NetworkRequest::Fetch { url } => {
       if url.len() > ipc::MAX_URL_BYTES {
         let _ = conn.send_response(

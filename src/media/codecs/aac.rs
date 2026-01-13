@@ -107,13 +107,14 @@ mod tests {
     let mut format =
       IsoMp4Reader::try_new(mss, &FormatOptions::default()).expect("open mp4 demuxer");
 
+    // Extract track metadata up-front so we don't hold an immutable borrow of `format` while
+    // iterating packets (the demuxer API requires `&mut self` for `next_packet`).
     let (track_id, asc, sample_rate, channels) = {
       let track = format
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec == CODEC_TYPE_AAC)
         .expect("aac track");
-
       let asc = track
         .codec_params
         .extra_data
