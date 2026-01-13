@@ -1,3 +1,5 @@
+#![cfg(feature = "direct_websocket")]
+
 //! WebSocket IPC integration test.
 
 use fastrender::dom2;
@@ -307,6 +309,7 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
       realm,
       heap,
       WindowWebSocketIpcEnv {
+        fetcher: Arc::new(NoFetchResourceFetcher),
         document_url: Some("https://example.invalid/".to_string()),
         cmd_tx,
         event_rx,
@@ -458,6 +461,7 @@ fn websocket_ipc_rejects_unrequested_protocol_selected_by_server() -> Result<()>
       realm,
       heap,
       WindowWebSocketIpcEnv {
+        fetcher: Arc::new(NoFetchResourceFetcher),
         document_url: Some("https://example.invalid/".to_string()),
         cmd_tx,
         event_rx,
@@ -623,6 +627,7 @@ fn websocket_ipc_protocol_is_set_from_server_handshake_response() -> Result<()> 
       realm,
       heap,
       WindowWebSocketIpcEnv {
+        fetcher: Arc::new(NoFetchResourceFetcher),
         document_url: Some("https://example.invalid/".to_string()),
         cmd_tx,
         event_rx,
@@ -762,6 +767,7 @@ fn websocket_ipc_rejects_protocol_when_none_were_requested() -> Result<()> {
       realm,
       heap,
       WindowWebSocketIpcEnv {
+        fetcher: Arc::new(NoFetchResourceFetcher),
         document_url: Some("https://example.invalid/".to_string()),
         cmd_tx,
         event_rx,
@@ -858,6 +864,7 @@ fn websocket_ipc_send_queue_full_does_not_increase_buffered_amount() -> Result<(
       realm,
       heap,
       WindowWebSocketIpcEnv {
+        fetcher: Arc::new(NoFetchResourceFetcher),
         document_url: Some("https://example.invalid/".to_string()),
         cmd_tx,
         event_rx,

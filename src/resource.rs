@@ -13323,7 +13323,13 @@ pub(crate) fn decode_data_url(url: &str) -> Result<FetchedResource> {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+// The bulk of `resource`'s unit tests exercise the in-process HTTP(S) implementation, which is
+// intentionally compiled out when `direct_network` is disabled (renderer-minimal builds proxy
+// network I/O over IPC instead).
+//
+// Keep these tests behind the feature gate so `cargo test -p fastrender --no-default-features --lib`
+// (used by the macOS/Windows sandbox CI jobs) still compiles cleanly.
+#[cfg(all(test, feature = "direct_network"))]
 mod tests {
   use super::data_url;
   use super::*;
