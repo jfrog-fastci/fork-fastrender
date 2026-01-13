@@ -1542,6 +1542,29 @@ fn compiled_member_call_uses_primitive_this_for_strict_functions() -> Result<(),
 }
 
 #[test]
+fn compiled_member_get_uses_primitive_this_for_strict_getters() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // For member gets on primitive bases, accessors should be invoked with Receiver = base. In strict
+  // mode, the getter observes the unboxed primitive `this` value.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      Object.defineProperty(String.prototype, "g", {
+        get: function() { "use strict"; return this === "abc"; },
+      });
+      "abc".g
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_member_assignment_to_primitive_throws_in_strict_mode() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
