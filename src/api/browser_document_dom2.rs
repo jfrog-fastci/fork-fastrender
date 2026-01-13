@@ -2484,6 +2484,13 @@ impl BrowserDocumentDom2 {
       }
     }
 
+    for node in mutations.form_state_changed {
+      if self.dom.is_connected_for_scripting(node) {
+        render_affecting = true;
+        self.dirty_style_nodes.insert(node);
+      }
+    }
+
     for parent in mutations.child_list_changed {
       if self.dom.is_connected_for_scripting(parent) {
         render_affecting = true;
@@ -3731,6 +3738,56 @@ mod tests {
     None
   }
 
+  fn find_first_text_input_value(root: &BoxNode) -> Option<String> {
+    let mut stack: Vec<&BoxNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if let BoxType::Replaced(replaced) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+          if let FormControlKind::Text { value, .. } = &control.control {
+            return Some(value.clone());
+          }
+        }
+      }
+      if let Some(control) = node.form_control.as_ref() {
+        if let FormControlKind::Text { value, .. } = &control.control {
+          return Some(value.clone());
+        }
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  fn find_first_checkbox_checked(root: &BoxNode) -> Option<bool> {
+    let mut stack: Vec<&BoxNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if let BoxType::Replaced(replaced) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+          if let FormControlKind::Checkbox { checked, .. } = &control.control {
+            return Some(*checked);
+          }
+        }
+      }
+      if let Some(control) = node.form_control.as_ref() {
+        if let FormControlKind::Checkbox { checked, .. } = &control.control {
+          return Some(*checked);
+        }
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
   fn find_first_select_control(root: &BoxNode) -> Option<crate::tree::box_tree::SelectControl> {
     let mut stack: Vec<&BoxNode> = vec![root];
     while let Some(node) = stack.pop() {
@@ -4230,6 +4287,79 @@ mod tests {
       after_hit_flush,
       "DOM-query flush should not redo layout when hit-testing already flushed layout"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn form_state_mutation_triggers_rerender_and_updates_form_controls() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = "<!doctype html><html><body>\
+      <input id=\"i\" value=\"initial\">\
+      <input id=\"c\" type=\"checkbox\">\
+      <textarea id=\"t\">default</textarea>\
+      <select id=\"s\">\
+        <option value=\"a\">A</option>\
+        <option value=\"b\">B</option>\
+      </select>\
+    </body></html>";
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(128, 64))?;
+    doc.render_frame()?;
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "expected document to be clean after initial render"
+    );
+
+    let input = doc.dom().get_element_by_id("i").expect("<input id=i>");
+    let checkbox = doc.dom().get_element_by_id("c").expect("<input id=c>");
+    let textarea = doc.dom().get_element_by_id("t").expect("<textarea id=t>");
+    let select = doc.dom().get_element_by_id("s").expect("<select id=s>");
+
+    let changed = doc.mutate_dom(|dom| {
+      dom.set_input_value(input, "updated").expect("set input value");
+      dom
+        .set_input_checked(checkbox, true)
+        .expect("set checkbox checked");
+      dom
+        .set_textarea_value(textarea, "edited")
+        .expect("set textarea value");
+      dom
+        .set_select_selected_index(select, 1)
+        .expect("set select selected index");
+      true
+    });
+    assert!(changed);
+
+    assert!(
+      doc.render_if_needed()?.is_some(),
+      "expected form state mutation to invalidate the renderer"
+    );
+
+    let prepared = doc.prepared().expect("prepared");
+    assert_eq!(
+      find_first_text_input_value(&prepared.box_tree().root).expect("text input value"),
+      "updated"
+    );
+    assert_eq!(
+      find_first_checkbox_checked(&prepared.box_tree().root).expect("checkbox checkedness"),
+      true
+    );
+    assert_eq!(
+      find_first_textarea_control_value(&prepared.box_tree().root).expect("textarea value"),
+      "edited"
+    );
+
+    let select_control =
+      find_first_select_control(&prepared.box_tree().root).expect("select control");
+    assert_eq!(select_control.selected.len(), 1);
+    let selected_idx = select_control.selected[0];
+    match select_control.items.get(selected_idx) {
+      Some(SelectItem::Option { value, selected, .. }) => {
+        assert_eq!(value, "b");
+        assert!(*selected);
+      }
+      other => panic!("expected selected option at index {selected_idx}, got {other:?}"),
+    }
 
     Ok(())
   }
