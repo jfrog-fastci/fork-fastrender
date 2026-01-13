@@ -13,6 +13,9 @@ use super::{audio_engine_config, AudioBackend, AudioEngineConfig, AudioSink, Aud
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AudioGroupId(u64);
 
+/// Group id used for sinks that aren't explicitly assigned to a group.
+const DEFAULT_GROUP: AudioGroupId = AudioGroupId(0);
+
 #[derive(Debug)]
 struct AudioGroupState {
   volume_bits: AtomicU32,
@@ -56,11 +59,13 @@ struct GroupingState {
 
 impl GroupingState {
   fn new() -> Self {
+    let mut groups = HashMap::new();
+    groups.insert(DEFAULT_GROUP, Arc::new(AudioGroupState::new()));
     Self {
       master_volume_bits: AtomicU32::new(1.0f32.to_bits()),
       master_muted: AtomicBool::new(false),
       next_group_id: AtomicU64::new(1),
-      groups: Mutex::new(HashMap::new()),
+      groups: Mutex::new(groups),
       sinks: Mutex::new(Vec::new()),
     }
   }
@@ -193,6 +198,14 @@ impl AudioEngine {
     id
   }
 
+  /// Create a new sink in the default group.
+  ///
+  /// This is intended for callers that do not care about grouping semantics.
+  #[must_use]
+  pub fn create_sink(&self) -> AudioEngineSink {
+    self.create_sink_in_group(DEFAULT_GROUP)
+  }
+
   /// Create a new sink within an existing group.
   #[must_use]
   pub fn create_sink_in_group(&self, group: AudioGroupId) -> AudioEngineSink {
@@ -201,7 +214,7 @@ impl AudioEngine {
       groups
         .get(&group)
         .cloned()
-        .expect("AudioGroupId must be created by AudioEngine::create_group") // fastrender-allow-unwrap
+        .expect("AudioGroupId must be created by AudioEngine::create_group (or be the engine default)") // fastrender-allow-unwrap
     };
 
     let backend_sink = self.backend.create_sink();
@@ -367,5 +380,51 @@ mod tests {
     engine.set_group_muted(group, false);
     let out1 = backend.render(frames);
     assert!(all_near(&out1, 0.0));
+  }
+
+  #[test]
+  fn audio_groups_master_mute_outputs_silence_but_still_drains_and_advances_clock() {
+    let backend = Arc::new(NullAudioBackend::new_deterministic_with_defaults(48_000, 1));
+    let engine = AudioEngine::new_with_backend(audio_engine_config(), backend.clone());
+
+    let sink = engine.create_sink();
+
+    let frames = 256;
+    let samples = vec![1.0f32; frames];
+    assert_eq!(sink.push_interleaved_f32(&samples), samples.len());
+
+    let frames_before = backend.clock().frames();
+
+    engine.set_master_muted(true);
+    let out0 = backend.render(frames);
+    assert!(all_near(&out0, 0.0));
+
+    let frames_after = backend.clock().frames();
+    assert_eq!(frames_after - frames_before, frames as u64);
+
+    // Unmute: previously queued audio should have been drained while muted.
+    engine.set_master_muted(false);
+    let out1 = backend.render(frames);
+    assert!(all_near(&out1, 0.0));
+  }
+
+  #[test]
+  fn audio_groups_volume_is_master_times_group_times_sink() {
+    let backend = Arc::new(NullAudioBackend::new_deterministic_with_defaults(48_000, 1));
+    let engine = AudioEngine::new_with_backend(audio_engine_config(), backend.clone());
+
+    let group = engine.create_group();
+    let sink = engine.create_sink_in_group(group);
+
+    engine.set_master_volume(0.5);
+    engine.set_group_volume(group, 0.5);
+    sink.set_volume(0.5);
+
+    let frames = 32;
+    let samples = vec![1.0f32; frames];
+    assert_eq!(sink.push_interleaved_f32(&samples), samples.len());
+
+    let out = backend.render(frames);
+    assert!(all_near(&out, 0.125));
   }
 }
