@@ -25,6 +25,10 @@ so that changes to the vendored source reliably trigger a rebuild.
 `build.rs` runs libvpx's `configure` + `make` inside `OUT_DIR`, using a configuration intended for
 VP8/VP9 decoding without extra tools/tests.
 
+Note: libvpx's build system requires **GNU make**. On macOS, the system `make` is typically BSD
+make, so `build.rs` will prefer `gmake` when available (or you can override via the `MAKE` / scoped
+`MAKE_<TARGET>` environment variables).
+
 Target selection:
 
 - Linux x86_64: `--target=generic-gnu`

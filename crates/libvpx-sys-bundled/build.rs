@@ -14,7 +14,7 @@ fn main() {
 
     // Re-run if the toolchain environment changes. These vars are honored by libvpx's configure
     // script and affect the produced `libvpx.a`.
-    for var in ["CC", "CXX", "CFLAGS", "AR", "AS", "CROSS"] {
+    for var in ["CC", "CXX", "CFLAGS", "AR", "AS", "CROSS", "MAKE"] {
         println!("cargo:rerun-if-env-changed={var}");
         println!("cargo:rerun-if-env-changed={var}_{target_key}");
     }
@@ -156,6 +156,7 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
     let mut cxx = get_scoped_env("CXX", &target_key);
     let cflags = get_scoped_env("CFLAGS", &target_key);
     let mut ar = get_scoped_env("AR", &target_key);
+    let make_env = get_scoped_env("MAKE", &target_key);
     let as_env = get_scoped_env("AS", &target_key);
     let cross_env = get_scoped_env("CROSS", &target_key);
 
@@ -208,9 +209,21 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         as_env
     };
 
+    let effective_make = if make_env.is_empty() {
+        // macOS ships BSD make as `make`; libvpx's build requires GNU make. Prefer `gmake` if
+        // present, otherwise fall back to `make`.
+        if tool_in_path("gmake") {
+            "gmake".to_string()
+        } else {
+            "make".to_string()
+        }
+    } else {
+        make_env.clone()
+    };
+
     let source_tree_hash = hash_dir_contents(&src_dir);
     let build_fingerprint = format!(
-        "target={target}\nhost={host}\ncc={cc}\ncxx={cxx}\ncflags={cflags}\nar={ar}\nas={effective_as}\ncross={effective_cross}\nlibvpx_source_tree_hash={source_tree_hash}\nconfigure_args={}\n",
+        "target={target}\nhost={host}\ncc={cc}\ncxx={cxx}\ncflags={cflags}\nar={ar}\nmake={effective_make}\nas={effective_as}\ncross={effective_cross}\nlibvpx_source_tree_hash={source_tree_hash}\nconfigure_args={}\n",
         configure_args.join(" ")
     );
 
@@ -275,7 +288,7 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
             // 2) Build only the Release|x64 configuration via the generated makefile target (which
             //    calls `msbuild.exe`).
             // 3) Copy the produced `.lib` to `vpx.lib` for consistent downstream linking.
-            let mut make_gen_cmd = Command::new("make");
+            let mut make_gen_cmd = Command::new(&effective_make);
             make_gen_cmd
                 .current_dir(&build_dir)
                 .arg(format!("-j{jobs}"))
@@ -283,7 +296,7 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
             run(make_gen_cmd, "libvpx make (msvc generate projects)");
 
             // Now build Release|x64 only.
-            let mut make_build_cmd = Command::new("make");
+            let mut make_build_cmd = Command::new(&effective_make);
             make_build_cmd
                 .current_dir(&build_dir)
                 .arg(format!("-j{jobs}"))
@@ -291,14 +304,13 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
                 .arg("Release_x64");
             run(make_build_cmd, "libvpx make (msvc build Release_x64)");
 
-            let produced = find_msvc_static_lib(&build_dir)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "libvpx MSVC build finished, but no static .lib was found under {}. \
+            let produced = find_msvc_static_lib(&build_dir).unwrap_or_else(|| {
+                panic!(
+                    "libvpx MSVC build finished, but no static .lib was found under {}. \
 Ensure MSYS2/Cygwin `make` is installed and `msbuild.exe` is available in PATH (Visual Studio Build Tools / Developer Command Prompt).",
-                        build_dir.display()
-                    )
-                });
+                    build_dir.display()
+                )
+            });
             fs::copy(&produced, &lib_path).unwrap_or_else(|e| {
                 panic!(
                     "failed to copy built libvpx MSVC library from {} to {}: {e}",
@@ -307,7 +319,7 @@ Ensure MSYS2/Cygwin `make` is installed and `msbuild.exe` is available in PATH (
                 )
             });
         } else {
-            let mut make_cmd = Command::new("make");
+            let mut make_cmd = Command::new(&effective_make);
             make_cmd
                 .current_dir(&build_dir)
                 .arg(format!("-j{jobs}"))
