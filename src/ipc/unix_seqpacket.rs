@@ -234,6 +234,10 @@ impl UnixSeqpacket {
     let read_len: usize;
     let mut need_manual_cloexec = false;
     loop {
+      // `recvmsg` mutates `msg_controllen` on success. Ensure retries start with the full buffer.
+      hdr.msg_controllen = control_len;
+      hdr.msg_flags = 0;
+
       // SAFETY: `hdr` points to valid iov/control buffers for the duration of the call.
       let flags = flags_override.unwrap_or(libc::MSG_CMSG_CLOEXEC);
       let rc = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, flags) };
@@ -252,16 +256,27 @@ impl UnixSeqpacket {
 
       // Runtime fallback: some environments reject MSG_CMSG_CLOEXEC with EINVAL.
       if err.raw_os_error() == Some(libc::EINVAL) && (flags & libc::MSG_CMSG_CLOEXEC) != 0 {
-        let rc = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, flags & !libc::MSG_CMSG_CLOEXEC) };
-        if rc < 0 {
+        need_manual_cloexec = true;
+        let rc = loop {
+          hdr.msg_controllen = control_len;
+          hdr.msg_flags = 0;
+          let rc = unsafe {
+            libc::recvmsg(
+              self.fd.as_raw_fd(),
+              &mut hdr,
+              flags & !libc::MSG_CMSG_CLOEXEC,
+            )
+          };
+          if rc >= 0 {
+            break rc;
+          }
           let err = io::Error::last_os_error();
           if err.kind() == io::ErrorKind::Interrupted {
             continue;
           }
           return Err(FdPassingError::RecvmsgFailed { source: err });
-        }
+        };
         read_len = rc as usize;
-        need_manual_cloexec = true;
         break;
       }
 
