@@ -3155,6 +3155,8 @@ pub fn chrome_ui_with_bookmarks(
 const HOVER_STATUS_OVERLAY_MAX_WIDTH: f32 = 600.0;
 const HOVER_STATUS_OVERLAY_MARGIN: f32 = 10.0;
 const HOVER_STATUS_OVERLAY_SLIDE_PX: f32 = 6.0;
+const HOVER_STATUS_OVERLAY_PADDING_X: f32 = 10.0;
+const HOVER_STATUS_OVERLAY_PADDING_Y: f32 = 6.0;
 
 fn hover_status_overlay_anchor_offset(
   screen_rect: egui::Rect,
@@ -3244,6 +3246,18 @@ pub fn hover_status_overlay_ui(
       let high_contrast = theme::high_contrast_enabled();
       let visuals = ui.visuals().clone();
 
+      // Prefer a "bubble" that hugs the URL text instead of spanning the max width.
+      let desired_outer_width = ui
+        .fonts(|f| {
+          let font_id = egui::TextStyle::Small.resolve(ui.style());
+          f.layout_no_wrap(url.clone(), font_id, ui.visuals().text_color())
+        })
+        .size()
+        .x
+        .min((max_width - HOVER_STATUS_OVERLAY_PADDING_X * 2.0).max(0.0))
+        + HOVER_STATUS_OVERLAY_PADDING_X * 2.0;
+      ui.set_max_width(desired_outer_width.min(max_width));
+
       let fill = {
         let base = visuals.widgets.inactive.bg_fill;
         let alpha = if high_contrast { 255 } else { 240 };
@@ -3271,7 +3285,10 @@ pub fn hover_status_overlay_ui(
         .fill(fill)
         .stroke(stroke)
         .rounding(rounding)
-        .inner_margin(egui::Margin::symmetric(10.0, 6.0));
+        .inner_margin(egui::Margin::symmetric(
+          HOVER_STATUS_OVERLAY_PADDING_X,
+          HOVER_STATUS_OVERLAY_PADDING_Y,
+        ));
 
       if !high_contrast {
         let mut shadow = visuals.popup_shadow;
@@ -3279,7 +3296,6 @@ pub fn hover_status_overlay_ui(
         frame.shadow = shadow;
       }
 
-      ui.set_max_width(max_width);
       frame.show(ui, |ui| {
         ui.add(
           egui::Label::new(egui::RichText::new(url.as_str()).small())
