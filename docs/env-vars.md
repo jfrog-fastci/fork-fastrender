@@ -167,6 +167,9 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - Default: `0`.
 - `FASTR_BROWSER_DEBUG_LOG=0|1` – enable browser/worker debug logging UI.
   - Default: enabled in debug builds; disabled in release builds unless set to `1`.
+- `FASTR_BROWSER_LOG_SURFACE_CONFIGURE=0|1` – log `wgpu::Surface::configure` calls to stderr.
+  - Default: `0`.
+  - Useful when debugging interactive resize performance (should configure at most once per rendered frame).
 - `FASTR_BROWSER_SHOW_MENU_BAR=0|1` – override whether the in-window menu bar is shown.
   - When set, this takes precedence over the persisted session setting (useful for CI).
 
