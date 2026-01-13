@@ -9671,6 +9671,19 @@ impl FormattingContext for TableFormattingContext {
       return Ok(wrapper_fragment);
     }
 
+    // FastRender models scrollbars as overlay by default: scrollbars do not affect layout unless the
+    // author opts into reserving space via `scrollbar-gutter: stable`.
+    //
+    // Table layout historically implemented an `overflow:auto` convergence loop that relaid out the
+    // table after "forcing" scrollbars when content overflowed. Under the overlay scrollbar model
+    // this is unnecessary and wastes work (it can trigger multiple full table layout passes).
+    //
+    // Keep the legacy behavior behind the same runtime gate used by block layout for classic
+    // scrollbar experiments.
+    if !crate::debug::runtime::runtime_toggles().truthy("FASTR_CLASSIC_SCROLLBARS") {
+      return crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints));
+    }
+
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
     let base_style = style_override.unwrap_or_else(|| box_node.style.clone());
     let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
