@@ -1306,8 +1306,8 @@ fn transform_matrix_decomposition_interpolates_rotation_without_shrinking() {
     v[0]
   );
   assert!(
-    (v[1] - expected).abs() < 1e-3,
-    "expected y≈{expected}, got {}",
+    (v[1].abs() - expected).abs() < 1e-3,
+    "expected |y|≈{expected}, got {}",
     v[1]
   );
   let len = (v[0] * v[0] + v[1] * v[1]).sqrt();

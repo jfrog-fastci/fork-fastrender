@@ -4779,7 +4779,7 @@ fn quaternion_slerp(a: [f32; 4], b: [f32; 4], t: f32) -> Option<[f32; 4]> {
   if !t.is_finite() {
     return None;
   }
-  let mut qa = a;
+  let qa = a;
   let mut qb = b;
   if !qa.iter().all(|v| v.is_finite()) || !qb.iter().all(|v| v.is_finite()) {
     return None;
