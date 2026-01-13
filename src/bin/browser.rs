@@ -286,12 +286,23 @@ fn remap_wheel_delta_for_shift(delta: (f32, f32), shift: bool) -> (f32, f32) {
     return delta;
   }
 
-  // Only reinterpret the scroll when the device is otherwise reporting a "pure" vertical delta.
-  // Many platforms report classic mouse wheels as vertical-only even with Shift held. Trackpads and
-  // high-resolution wheels can report true horizontal deltas; preserve those.
+  // Only reinterpret the scroll when the wheel delta is primarily vertical.
+  //
+  // Many platforms report classic mouse wheels as vertical-only even with Shift held, while
+  // trackpads can report true horizontal deltas. Preserve explicit horizontal deltas, while still
+  // allowing "mostly vertical" deltas to be reinterpreted as horizontal scrolling.
   const DX_EPSILON: f32 = 1e-3;
-  if delta.0.abs() < DX_EPSILON && delta.1 != 0.0 {
-    (delta.0 + delta.1, 0.0)
+  let (dx, dy) = delta;
+  if !dx.is_finite() || !dy.is_finite() || dy == 0.0 {
+    return delta;
+  }
+
+  let abs_dx = dx.abs();
+  let abs_dy = dy.abs();
+  if abs_dx < DX_EPSILON || abs_dy > abs_dx {
+    // Preserve any existing horizontal delta (e.g. from a trackpad) while reinterpreting vertical
+    // scrolling as horizontal.
+    (dx + dy, 0.0)
   } else {
     delta
   }
@@ -3038,7 +3049,9 @@ mod wheel_delta_shift_mapping_tests {
   #[test]
   fn shift_wheel_preserves_existing_horizontal_delta() {
     assert_eq!(remap_wheel_delta_for_shift((3.0, 0.0), true), (3.0, 0.0));
-    assert_eq!(remap_wheel_delta_for_shift((3.0, 7.0), true), (3.0, 7.0));
+    assert_eq!(remap_wheel_delta_for_shift((3.0, 7.0), true), (10.0, 0.0));
+    // If the delta is primarily horizontal already, leave it unchanged.
+    assert_eq!(remap_wheel_delta_for_shift((7.0, 3.0), true), (7.0, 3.0));
   }
 }
 #[cfg(feature = "browser_ui")]
