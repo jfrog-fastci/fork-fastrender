@@ -1,6 +1,6 @@
 #![cfg(windows)]
 
-use win_sandbox::{AppContainerProfile, SandboxSupport, WinSandboxError};
+use win_sandbox::{AppContainerProfile, WinSandboxError};
 
 const APPCONTAINER_NAME: &str = "FastRender.Renderer";
 const APPCONTAINER_DISPLAY_NAME: &str = "FastRender Renderer";
@@ -26,9 +26,8 @@ fn win32_code_from_error(err: &WinSandboxError) -> Option<u32> {
 }
 
 fn should_skip_appcontainer_error(err: &WinSandboxError) -> bool {
-  const ERROR_ACCESS_DENIED: u32 = 5;
-  const ERROR_PROC_NOT_FOUND: u32 = 127;
-  const ERROR_NOT_SUPPORTED: u32 = 50;
+  use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_NOT_SUPPORTED, ERROR_PROC_NOT_FOUND};
+
   const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
 
   match win32_code_from_error(err) {
@@ -40,18 +39,14 @@ fn should_skip_appcontainer_error(err: &WinSandboxError) -> bool {
   }
 }
 
-/// Returns `true` when the host appears able to run the full Windows renderer sandbox (AppContainer
-/// + nested jobs).
+/// Returns `true` when AppContainer profile APIs appear usable on this host.
 ///
-/// Some Windows environments expose the AppContainer APIs but still block creating/using profiles
-/// (for example, hardened CI images). In that case, sandbox tests that require AppContainer should
-/// skip with a clear message rather than failing the entire suite.
-pub(crate) fn require_full_windows_sandbox(test_name: &str) -> bool {
-  let support = SandboxSupport::detect();
-  if support != SandboxSupport::Full {
-    eprintln!(
-      "skipping {test_name}: Windows sandbox is unavailable ({support})"
-    );
+/// GitHub-hosted Windows runners generally support AppContainer, but some hardened environments may
+/// expose the APIs while still denying profile creation. In that case, AppContainer-dependent tests
+/// should skip with a clear message rather than failing the entire suite.
+pub(crate) fn require_appcontainer_profile(test_name: &str) -> bool {
+  if !win_sandbox::is_appcontainer_supported() {
+    eprintln!("skipping {test_name}: AppContainer APIs are unavailable on this OS");
     return false;
   }
 
@@ -65,18 +60,18 @@ pub(crate) fn require_full_windows_sandbox(test_name: &str) -> bool {
         eprintln!("skipping {test_name}: AppContainer profile is disabled");
         return false;
       }
+      true
     }
     Err(err) if should_skip_appcontainer_error(&err) => {
       eprintln!(
         "skipping {test_name}: AppContainer profile could not be ensured ({err})"
       );
-      return false;
+      false
     }
     Err(err) => panic!(
       "{test_name}: AppContainer profile ensure failed unexpectedly: {err}\n\
 This likely indicates a regression in the AppContainer support code, not missing OS support."
     ),
   }
-
-  true
 }
+

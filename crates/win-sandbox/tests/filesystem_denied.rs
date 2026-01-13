@@ -1,12 +1,14 @@
 #![cfg(windows)]
 
+mod common;
+
 use std::ffi::{c_void, OsString};
 use std::fs;
 use std::os::windows::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 
 use win_sandbox::mitigations;
-use win_sandbox::{is_appcontainer_supported, RendererSandbox};
+use win_sandbox::RendererSandbox;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::{
   CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
@@ -70,10 +72,7 @@ fn appcontainer_blocks_userprofile_filesystem_access() {
   static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
   let _env_guard = ENV_LOCK.lock().unwrap();
 
-  if !is_appcontainer_supported() {
-    eprintln!(
-      "skipping win-sandbox AppContainer filesystem denial test: AppContainer APIs are unavailable on this OS"
-    );
+  if !common::require_appcontainer_profile("win-sandbox AppContainer filesystem denial test") {
     return;
   }
 

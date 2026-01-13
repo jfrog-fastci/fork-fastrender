@@ -1,5 +1,7 @@
 #![cfg(windows)]
 
+mod common;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
@@ -41,6 +43,9 @@ fn renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren() {
     eprintln!(
       "skipping win-sandbox renderer sandbox integration test: full sandbox support unavailable ({support})"
     );
+    return;
+  }
+  if !common::require_appcontainer_profile("win-sandbox renderer sandbox integration test") {
     return;
   }
 

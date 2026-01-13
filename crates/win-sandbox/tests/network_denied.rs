@@ -1,5 +1,7 @@
 #![cfg(windows)]
 
+mod common;
+
 use std::ffi::c_void;
 use std::ffi::OsString;
 use std::io;
@@ -8,7 +10,7 @@ use std::os::windows::process::ExitStatusExt;
 use std::time::Duration;
 
 use win_sandbox::mitigations;
-use win_sandbox::{is_appcontainer_supported, RendererSandbox};
+use win_sandbox::RendererSandbox;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
 use windows_sys::Win32::Security::{
   GetTokenInformation, TokenCapabilities, TokenIsAppContainer, TOKEN_QUERY,
@@ -194,10 +196,7 @@ fn appcontainer_denies_network() {
   // ---------------------------------------------------------------------------
   // Parent path: spawn this test under the win-sandbox renderer AppContainer sandbox.
   // ---------------------------------------------------------------------------
-  if !is_appcontainer_supported() {
-    eprintln!(
-      "skipping win-sandbox AppContainer network denial test: AppContainer APIs are unavailable on this OS"
-    );
+  if !common::require_appcontainer_profile("win-sandbox AppContainer network denial test") {
     return;
   }
 
