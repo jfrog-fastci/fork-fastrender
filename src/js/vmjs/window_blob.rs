@@ -37,6 +37,13 @@ pub(crate) const MAX_BLOB_BYTES: usize = 10 * 1024 * 1024;
 /// extremely large `type`/`contentType` values.
 const MAX_BLOB_TYPE_BYTES: usize = 4096;
 
+/// Hard upper bound on the number of Blob parts accepted by the constructor when given an array.
+///
+/// This bounds worst-case CPU work (iterating array indices) and stack rooting growth. Real-world
+/// Blob construction typically uses a small number of parts (often a handful of strings/typed
+/// arrays), so this limit is intentionally generous while still preventing pathological behavior.
+const MAX_BLOB_PARTS: usize = 64 * 1024;
+
 #[derive(Clone, Debug)]
 pub(crate) struct BlobData {
   pub(crate) bytes: Vec<u8>,
@@ -380,6 +387,9 @@ fn blob_ctor_construct(
           return Err(VmError::TypeError("Blob parts array has invalid length"));
         }
         let len = n as usize;
+        if len > MAX_BLOB_PARTS {
+          return Err(VmError::TypeError("Blob parts array exceeds maximum length"));
+        }
         parts
           .try_reserve_exact(len)
           .map_err(|_| VmError::OutOfMemory)?;
@@ -396,6 +406,11 @@ fn blob_ctor_construct(
       parts.push(parts_val);
     }
   }
+
+  // GC safety: parts can be produced by getters/accessors and become unreachable in JS immediately
+  // after property access. We must root any stored Values across subsequent allocations (e.g.
+  // parsing `options.type`) so they cannot be collected before we consume them.
+  scope.push_roots(&parts)?;
 
   // Parse options: { type }.
   let mut type_string = String::new();
@@ -1023,7 +1038,7 @@ pub fn teardown_window_blob_bindings_for_realm(realm_id: RealmId) {
 mod tests {
   use super::*;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
-  use vm_js::PromiseState;
+  use vm_js::{HeapLimits, PromiseState};
 
   fn get_string(heap: &Heap, value: Value) -> String {
     let Value::String(s) = value else {
@@ -1442,16 +1457,16 @@ mod tests {
 
     let result = realm.exec_script(
       r#"
-(() => {
-  class X extends Blob {}
+ (() => {
+   class X extends Blob {}
   const b = new X(["hi"]);
   if (!(b instanceof X)) return "instanceof X failed";
   if (!(b instanceof Blob)) return "instanceof Blob failed";
   if (Object.getPrototypeOf(b) !== X.prototype) return "prototype mismatch";
   if (b.size !== 2) return "size mismatch: " + b.size;
   return "ok";
-})()
-"#,
+ })()
+ "#,
     )?;
     assert_eq!(get_string(realm.heap(), result), "ok");
 
@@ -1500,6 +1515,34 @@ mod tests {
     )?;
 
     assert_eq!(get_string(realm.heap(), result), "ok");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn blob_ctor_is_gc_safe_for_getter_returned_parts() -> Result<(), VmError> {
+    // Force a GC before (almost) every allocation so we catch missing roots in native code paths.
+    let heap_limits = HeapLimits::new(8 * 1024 * 1024, 4 * 1024);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_heap_limits(heap_limits),
+    )?;
+
+    let v = realm.exec_script(
+      r#"
+(() => {
+  const parts = [];
+  Object.defineProperty(parts, 0, {
+    get() { return new Uint8Array([65]); },
+    configurable: true,
+  });
+  parts.length = 1;
+  return new Blob(parts, { type: 'text/plain' }).size;
+})()
+"#,
+    )?;
+    assert_eq!(v, Value::Number(1.0));
+
     realm.teardown();
     Ok(())
   }
