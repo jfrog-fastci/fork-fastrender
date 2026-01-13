@@ -220,6 +220,111 @@ impl ProcessAssignmentState {
     }
   }
 
+  /// Return the renderer process for a navigation, potentially reassigning the tab.
+  ///
+  /// In `PerSiteKey` mode, cross-site navigations reassign the tab to the process for the target
+  /// site key (spawning it if needed).
+  ///
+  /// In `PerTab` mode, navigations never swap processes (MVP behaviour).
+  pub fn process_for_navigation(
+    &mut self,
+    tab_id: TabId,
+    target_url: &str,
+  ) -> Result<(RendererProcessId, Vec<ProcessAssignmentEvent>), String> {
+    let current_process = self
+      .tab_to_process
+      .get(&tab_id)
+      .copied()
+      .ok_or_else(|| format!("tab not attached: {:?}", tab_id))?;
+
+    Url::parse(target_url).map_err(|err| format!("invalid URL {target_url:?}: {err}"))?;
+
+    let current_site = self
+      .process_to_site
+      .get(&current_process)
+      .ok_or_else(|| format!("unknown renderer process: {:?}", current_process))?
+      .clone();
+    let target_site = site_key_for_navigation(target_url, Some(&current_site));
+
+    match self.process_model {
+      ProcessModel::PerTab => Ok((current_process, Vec::new())),
+      ProcessModel::PerSiteKey => {
+        let mut events = Vec::new();
+
+        let desired_process = match self.site_to_process.get(&target_site).copied() {
+          Some(process) => {
+            // Invariant: site_to_process must always point to a process whose site matches.
+            match self.process_to_site.get(&process) {
+              Some(actual_site) if actual_site == &target_site => {}
+              Some(actual_site) => {
+                return Err(format!(
+                  "process assignment invariant violated: site_to_process[{target_site:?}] points to {process:?}, but process_to_site has {actual_site:?}"
+                ));
+              }
+              None => {
+                return Err(format!(
+                  "process assignment invariant violated: site_to_process[{target_site:?}] points to {process:?}, but process_to_site has no entry"
+                ));
+              }
+            }
+            process
+          }
+          None => {
+            let process = self.alloc_process_id();
+            self.site_to_process.insert(target_site.clone(), process);
+            self.set_site_lock(process, target_site.clone());
+            events.push(ProcessAssignmentEvent::SpawnProcess {
+              process,
+              site: target_site.clone(),
+            });
+            process
+          }
+        };
+
+        if desired_process == current_process {
+          return Ok((desired_process, events));
+        }
+
+        self.tab_to_process.insert(tab_id, desired_process);
+
+        // Update the refcount for the new process based on the authoritative tab→process mapping.
+        let desired_tabs = self
+          .tab_to_process
+          .values()
+          .filter(|&&p| p == desired_process)
+          .count();
+        self.process_refcount.insert(desired_process, desired_tabs);
+
+        // Recompute old process refcount and shut it down if it becomes unused.
+        let remaining_tabs = self
+          .tab_to_process
+          .values()
+          .filter(|&&p| p == current_process)
+          .count();
+
+        if remaining_tabs == 0 {
+          self.process_refcount.remove(&current_process);
+
+          if let Some(site) = self.process_to_site.remove(&current_process) {
+            if self.site_to_process.get(&site).copied() == Some(current_process) {
+              self.site_to_process.remove(&site);
+            }
+          } else {
+            self.site_to_process.retain(|_, &mut p| p != current_process);
+          }
+
+          events.push(ProcessAssignmentEvent::ShutdownProcess {
+            process: current_process,
+          });
+        } else {
+          self.process_refcount.insert(current_process, remaining_tabs);
+        }
+
+        Ok((desired_process, events))
+      }
+    }
+  }
+
   pub fn detach_tab(&mut self, tab_id: TabId) -> Vec<ProcessAssignmentEvent> {
     let mut events = Vec::new();
 
@@ -528,5 +633,70 @@ mod tests {
     // Detaching after a crash should be safe/no-op.
     assert!(state.detach_tab(tab_a).is_empty());
     assert!(state.detach_tab(tab_b).is_empty());
+  }
+
+  #[test]
+  fn per_site_key_cross_site_navigation_swaps_process_and_shuts_down_old() {
+    let mut state = ProcessAssignmentState::new(ProcessModel::PerSiteKey);
+
+    let tab = TabId(1);
+    let (p1, _events) = state.attach_tab(tab, "https://example.com/").unwrap();
+
+    let (p2, events) = state
+      .process_for_navigation(tab, "https://evil.com/")
+      .unwrap();
+    assert_ne!(p1, p2);
+    assert_eq!(
+      events,
+      vec![
+        ProcessAssignmentEvent::SpawnProcess {
+          process: p2,
+          site: site("https://evil.com/"),
+        },
+        ProcessAssignmentEvent::ShutdownProcess { process: p1 }
+      ]
+    );
+    assert_eq!(state.process_for_tab(tab), Some(p2));
+  }
+
+  #[test]
+  fn per_site_key_cross_site_navigation_preserves_old_process_when_shared() {
+    let mut state = ProcessAssignmentState::new(ProcessModel::PerSiteKey);
+
+    let tab1 = TabId(1);
+    let tab2 = TabId(2);
+    let (p1, _events) = state.attach_tab(tab1, "https://example.com/").unwrap();
+    let (p1_again, events2) = state.attach_tab(tab2, "https://example.com/").unwrap();
+    assert_eq!(p1_again, p1);
+    assert!(events2.is_empty());
+
+    let (p2, events) = state
+      .process_for_navigation(tab1, "https://evil.com/path")
+      .unwrap();
+    assert_ne!(p2, p1);
+    assert_eq!(
+      events,
+      vec![ProcessAssignmentEvent::SpawnProcess {
+        process: p2,
+        site: site("https://evil.com/path"),
+      }]
+    );
+
+    assert_eq!(state.process_for_tab(tab1), Some(p2));
+    assert_eq!(state.process_for_tab(tab2), Some(p1));
+  }
+
+  #[test]
+  fn per_site_key_same_site_navigation_keeps_process_and_emits_no_events() {
+    let mut state = ProcessAssignmentState::new(ProcessModel::PerSiteKey);
+
+    let tab = TabId(1);
+    let (p1, _events) = state.attach_tab(tab, "https://example.com/").unwrap();
+
+    let (p2, events) = state
+      .process_for_navigation(tab, "https://example.com/other")
+      .unwrap();
+    assert_eq!(p2, p1);
+    assert!(events.is_empty());
   }
 }

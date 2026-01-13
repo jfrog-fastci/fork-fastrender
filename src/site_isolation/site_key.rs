@@ -63,7 +63,6 @@ impl fmt::Display for SiteKey {
 /// evolve `SiteKey` toward "site" grouping (e.g. eTLD+1) while leaving origin partitioning logic
 /// explicit.
 pub type OriginKey = SiteKey;
-
 /// Generator for [`SiteKey::Opaque`] values.
 ///
 /// A factory can be injected for deterministic tests (each test can start from a fixed seed

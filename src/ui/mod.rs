@@ -185,6 +185,8 @@ pub use messages::{
 };
 pub use renderer_process_id::RendererProcessId;
 
+pub use process_assignment::{ProcessAssignmentEvent, ProcessAssignmentState, ProcessModel};
+
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the
 // `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
