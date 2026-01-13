@@ -226,11 +226,6 @@ impl WebUrlSearchParams {
 
         let mut inserted = false;
         let mut new_value = try_clone_str(value)?;
-        let mut new_key = if pairs.iter().any(|(n, _)| n == name) {
-          None
-        } else {
-          Some(try_clone_str(name)?)
-        };
 
         for (n, v) in pairs.iter() {
           if n == name {
@@ -243,14 +238,7 @@ impl WebUrlSearchParams {
           }
         }
         if !inserted {
-          let key = match new_key.take() {
-            Some(key) => key,
-            None => {
-              debug_assert!(false, "new_key set when !inserted");
-              try_clone_str(name)?
-            }
-          };
-          out.push((key, new_value));
+          out.push((try_clone_str(name)?, new_value));
         }
 
         // Ensure the new list remains serializable within output limits before committing the
@@ -269,11 +257,6 @@ impl WebUrlSearchParams {
 
         let mut inserted = false;
         let mut new_value = try_clone_str(value)?;
-        let mut new_key = if pairs.iter().any(|(n, _)| n == name) {
-          None
-        } else {
-          Some(try_clone_str(name)?)
-        };
 
         let old = std::mem::take(pairs);
         for (n, v) in old.into_iter() {
@@ -287,14 +270,7 @@ impl WebUrlSearchParams {
           }
         }
         if !inserted {
-          let key = match new_key.take() {
-            Some(key) => key,
-            None => {
-              debug_assert!(false, "new_key set when !inserted");
-              try_clone_str(name)?
-            }
-          };
-          out.push((key, new_value));
+          out.push((try_clone_str(name)?, new_value));
         }
 
         *pairs = out;

@@ -46,9 +46,10 @@ fn style_uses_scroll_linked_animation_timeline(style: &ComputedStyle) -> bool {
       continue;
     }
 
-    let timeline = timelines
-      .get(idx)
-      .unwrap_or_else(|| timelines.last().expect("timelines list is non-empty"));
+    let Some(timeline) = timelines.get(idx).or_else(|| timelines.last()) else {
+      // Defensive: an empty timeline list would mean no scroll-linked timelines.
+      continue;
+    };
     if animation_timeline_is_scroll_linked(timeline) {
       return true;
     }

@@ -215,6 +215,26 @@ mod tests {
   }
 
   #[test]
+  fn url_serializes_host_and_port() {
+    let limits = WebUrlLimits::default();
+    let url = WebUrl::parse("https://example.com:8080/path", None, &limits).unwrap();
+    assert_eq!(url.host().unwrap(), "example.com:8080");
+    assert_eq!(url.port().unwrap(), "8080");
+    assert_eq!(url.href().unwrap(), "https://example.com:8080/path");
+  }
+
+  #[test]
+  fn urlsearchparams_parses_missing_name_before_equals() {
+    let limits = WebUrlLimits::default();
+    let params = WebUrlSearchParams::parse("=b&c=d", &limits).unwrap();
+    assert_eq!(
+      params.pairs().unwrap(),
+      vec![("".to_string(), "b".to_string()), ("c".to_string(), "d".to_string())]
+    );
+    assert_eq!(params.serialize().unwrap(), "=b&c=d");
+  }
+
+  #[test]
   fn limit_exceeded_on_input_bytes() {
     let limits = WebUrlLimits {
       max_input_bytes: 4,

@@ -217,9 +217,8 @@ impl AddressBarDisplayGalleyCache {
   fn galley(&self) -> std::sync::Arc<egui::Galley> {
     self
       .galley
-      .as_ref()
-      .expect("AddressBarDisplayGalleyCache::update must be called before galley()")
       .clone()
+      .unwrap_or_else(|| std::sync::Arc::new(egui::Galley::default()))
   }
 }
 
@@ -264,9 +263,8 @@ impl AddressBarPlaceholderGalleyCache {
   fn galley(&self) -> std::sync::Arc<egui::Galley> {
     self
       .galley
-      .as_ref()
-      .expect("AddressBarPlaceholderGalleyCache::update must be called before galley()")
       .clone()
+      .unwrap_or_else(|| std::sync::Arc::new(egui::Galley::default()))
   }
 }
 

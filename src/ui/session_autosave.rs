@@ -716,12 +716,13 @@ impl SessionAutosave {
       if let Some(tx) = self.tx.as_ref() {
         match tx.send(Command::Save(session)) {
           Ok(()) => return,
-          Err(mpsc::SendError(Command::Save(session))) => {
+          Err(mpsc::SendError(cmd)) => {
             self.disable_worker("session autosave thread disconnected");
-            self.save_sync(session);
+            if let Command::Save(session) = cmd {
+              self.save_sync(session);
+            }
             return;
           }
-          Err(mpsc::SendError(_)) => unreachable!("request_save only sends Save commands"),
         }
       }
       self.disable_worker("session autosave thread is not running");

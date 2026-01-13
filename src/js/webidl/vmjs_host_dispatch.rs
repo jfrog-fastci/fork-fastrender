@@ -11120,13 +11120,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 Value::Null => BindingValue::Null,
                 other => BindingValue::Object(other),
               };
-              match kind {
-                IterableKind::Values => out.push(value),
-                IterableKind::Entries => out.push(BindingValue::Sequence(vec![
+              if matches!(kind, IterableKind::Values) {
+                out.push(value);
+              } else {
+                // `kind` is either Values or Entries in this branch. Avoid `unreachable!()` so this
+                // helper cannot panic even if future refactors widen the match above.
+                out.push(BindingValue::Sequence(vec![
                   BindingValue::Number(idx as f64),
                   value,
-                ])),
-                IterableKind::Keys => unreachable!(),
+                ]));
               }
             }
           }

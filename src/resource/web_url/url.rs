@@ -276,8 +276,9 @@ impl WebUrl {
     if let Some(port) = port {
       use std::fmt::Write as _;
       out.push(':');
-      let res = write!(&mut out, "{port}");
-      debug_assert!(res.is_ok(), "writing to String should not fail");
+      // `String` implements `fmt::Write` infallibly. Ignore the `fmt::Error` to keep this
+      // path panic-free even if a future refactor changes the underlying writer type.
+      let _ = write!(&mut out, "{port}");
     }
     Ok(out)
   }
@@ -379,8 +380,9 @@ impl WebUrl {
     let mut out = String::new();
     out.try_reserve_exact(5)?;
     use std::fmt::Write as _;
-    let res = write!(&mut out, "{port}");
-    debug_assert!(res.is_ok(), "writing to String should not fail");
+    // `String` implements `fmt::Write` infallibly. Ignore the `fmt::Error` to keep this
+    // path panic-free even if a future refactor changes the underlying writer type.
+    let _ = write!(&mut out, "{port}");
     Ok(out)
   }
 
