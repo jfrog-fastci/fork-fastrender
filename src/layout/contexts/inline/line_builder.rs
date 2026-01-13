@@ -1525,19 +1525,24 @@ impl TextItem {
           if extra != 0.0 {
             if let Some(run) = runs.get_mut(pending_run_idx) {
               if !run.glyphs.is_empty() {
-                debug_assert!(glyph_end > 0 && glyph_end <= run.glyphs.len());
-                let glyph = &mut run.glyphs[glyph_end - 1];
-                match axis {
-                  InlineAxis::Horizontal => {
-                    glyph.x_advance += extra;
-                    run.advance += extra;
+                let glyph_idx = glyph_end
+                  .saturating_sub(1)
+                  .min(run.glyphs.len().saturating_sub(1));
+                if let Some(glyph) = run.glyphs.get_mut(glyph_idx) {
+                  match axis {
+                    InlineAxis::Horizontal => {
+                      glyph.x_advance += extra;
+                      run.advance += extra;
+                    }
+                    InlineAxis::Vertical => {
+                      let before = glyph_inline_advance(glyph, axis);
+                      add_inline_advance(glyph, axis, extra);
+                      let after = glyph_inline_advance(glyph, axis);
+                      run.advance += after - before;
+                    }
                   }
-                  InlineAxis::Vertical => {
-                    let before = glyph_inline_advance(glyph, axis);
-                    add_inline_advance(glyph, axis, extra);
-                    let after = glyph_inline_advance(glyph, axis);
-                    run.advance += after - before;
-                  }
+                } else {
+                  run.advance += extra;
                 }
               }
             }
@@ -1569,19 +1574,24 @@ impl TextItem {
           if let Some((prev_end, prev_is_space)) = prev_cluster.take() {
             let extra = letter_spacing + if prev_is_space { word_spacing } else { 0.0 };
             if extra != 0.0 {
-              debug_assert!(prev_end > 0 && prev_end <= run.glyphs.len());
-              let glyph = &mut run.glyphs[prev_end - 1];
-              match axis {
-                InlineAxis::Horizontal => {
-                  glyph.x_advance += extra;
-                  run.advance += extra;
+              let glyph_idx = prev_end
+                .saturating_sub(1)
+                .min(run.glyphs.len().saturating_sub(1));
+              if let Some(glyph) = run.glyphs.get_mut(glyph_idx) {
+                match axis {
+                  InlineAxis::Horizontal => {
+                    glyph.x_advance += extra;
+                    run.advance += extra;
+                  }
+                  InlineAxis::Vertical => {
+                    let before = glyph_inline_advance(glyph, axis);
+                    add_inline_advance(glyph, axis, extra);
+                    let after = glyph_inline_advance(glyph, axis);
+                    run.advance += after - before;
+                  }
                 }
-                InlineAxis::Vertical => {
-                  let before = glyph_inline_advance(glyph, axis);
-                  add_inline_advance(glyph, axis, extra);
-                  let after = glyph_inline_advance(glyph, axis);
-                  run.advance += after - before;
-                }
+              } else {
+                run.advance += extra;
               }
             }
           }
