@@ -2400,7 +2400,6 @@ fn crawl_document(
     images: html_image_urls,
     media: html_media_urls,
     documents: html_documents,
-    media: html_media_urls,
   } =
     fastrender::html::asset_discovery::discover_html_asset_urls(&document.html, &document.base_url);
   if matches!(mode, CrawlMode::BestEffort) {
