@@ -23,23 +23,26 @@ pub struct AccessKitSnapshot {
   pub nodes: Vec<AccessKitNodeSnapshot>,
 }
 
-fn accesskit_update_from_output(output: &egui::FullOutput) -> &accesskit::TreeUpdate {
-  output
-    .platform_output
-    .accesskit_update
-    .as_ref()
-    .expect(
-      "egui did not emit an AccessKit update. \
-      Ensure `ctx.enable_accesskit()` was called for the frame under test, \
-      and that `egui-winit` is built with its `accesskit` feature.",
-    )
+/// A stable (ID-free) view of the named nodes emitted by egui/AccessKit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AccessKitNamedRoleSnapshot {
+  pub role: String,
+  pub name: String,
+}
+
+fn accesskit_update_from_platform_output(output: &egui::PlatformOutput) -> &accesskit::TreeUpdate {
+  output.accesskit_update.as_ref().expect(
+    "egui did not emit an AccessKit update. \
+    Ensure `ctx.enable_accesskit()` was called for the frame under test, \
+    and that `egui-winit` is built with its `accesskit` feature.",
+  )
 }
 
 /// Extract a deterministic, JSON-serializable snapshot of the AccessKit tree update emitted by egui.
 ///
 /// The output is intentionally lossy: it records only `id`, `role`, and the accessible `name`.
-pub fn accesskit_snapshot_from_full_output(output: &egui::FullOutput) -> AccessKitSnapshot {
-  let update = accesskit_update_from_output(output);
+pub fn accesskit_snapshot_from_platform_output(output: &egui::PlatformOutput) -> AccessKitSnapshot {
+  let update = accesskit_update_from_platform_output(output);
 
   let root_id = update.tree.as_ref().map(|t| t.root.0.get().to_string());
   let focus_id = update.focus.map(|id| id.0.get().to_string());
@@ -64,9 +67,13 @@ pub fn accesskit_snapshot_from_full_output(output: &egui::FullOutput) -> AccessK
   }
 }
 
+pub fn accesskit_snapshot_from_full_output(output: &egui::FullOutput) -> AccessKitSnapshot {
+  accesskit_snapshot_from_platform_output(&output.platform_output)
+}
+
 /// Returns a sorted list of all non-empty accessible names emitted by egui/AccessKit for the frame.
-pub fn accesskit_names_from_full_output(output: &egui::FullOutput) -> Vec<String> {
-  let snapshot = accesskit_snapshot_from_full_output(output);
+pub fn accesskit_names_from_platform_output(output: &egui::PlatformOutput) -> Vec<String> {
+  let snapshot = accesskit_snapshot_from_platform_output(output);
 
   let mut names: Vec<String> = snapshot
     .nodes
@@ -79,8 +86,54 @@ pub fn accesskit_names_from_full_output(output: &egui::FullOutput) -> Vec<String
   names
 }
 
+/// Returns a sorted list of all non-empty accessible names emitted by egui/AccessKit for the frame.
+pub fn accesskit_names_from_full_output(output: &egui::FullOutput) -> Vec<String> {
+  accesskit_names_from_platform_output(&output.platform_output)
+}
+
 /// Convenience helper for `assert_eq!` / snapshot-style tests.
-pub fn accesskit_pretty_json_from_full_output(output: &egui::FullOutput) -> String {
-  let snapshot = accesskit_snapshot_from_full_output(output);
+pub fn accesskit_pretty_json_from_platform_output(output: &egui::PlatformOutput) -> String {
+  let snapshot = accesskit_snapshot_from_platform_output(output);
   serde_json::to_string_pretty(&snapshot).expect("accesskit snapshot must serialize to JSON")
+}
+
+pub fn accesskit_pretty_json_from_full_output(output: &egui::FullOutput) -> String {
+  accesskit_pretty_json_from_platform_output(&output.platform_output)
+}
+
+/// Returns a stable (ID-free) snapshot of all non-empty accessible `(role, name)` pairs in the frame.
+pub fn accesskit_named_roles_from_platform_output(
+  output: &egui::PlatformOutput,
+) -> Vec<AccessKitNamedRoleSnapshot> {
+  let update = accesskit_update_from_platform_output(output);
+
+  let mut out: Vec<AccessKitNamedRoleSnapshot> = update
+    .nodes
+    .iter()
+    .filter_map(|(_id, node)| {
+      let name = node.name().unwrap_or("").trim().to_string();
+      if name.is_empty() {
+        return None;
+      }
+      Some(AccessKitNamedRoleSnapshot {
+        role: format!("{:?}", node.role()),
+        name,
+      })
+    })
+    .collect();
+  out.sort_by(|a, b| (&a.role, &a.name).cmp(&(&b.role, &b.name)));
+  out.dedup();
+  out
+}
+
+pub fn accesskit_named_roles_from_full_output(
+  output: &egui::FullOutput,
+) -> Vec<AccessKitNamedRoleSnapshot> {
+  accesskit_named_roles_from_platform_output(&output.platform_output)
+}
+
+pub fn accesskit_named_roles_pretty_json_from_full_output(output: &egui::FullOutput) -> String {
+  let snapshot = accesskit_named_roles_from_full_output(output);
+  serde_json::to_string_pretty(&snapshot)
+    .expect("accesskit named role snapshot must serialize to JSON")
 }

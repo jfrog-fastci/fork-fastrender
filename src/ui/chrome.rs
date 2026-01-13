@@ -3823,6 +3823,55 @@ mod tests {
   }
 
   #[test]
+  fn chrome_accesskit_roles_for_core_navigation_controls_are_buttons() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let output = ctx.end_frame();
+
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+
+    for expected in ["Back", "Forward", "Reload"] {
+      assert!(
+        nodes
+          .iter()
+          .any(|n| n.name == expected && n.role == "Button"),
+        "expected {expected:?} to appear as a Button in AccessKit output.\n\nsnapshot:\n{snapshot}"
+      );
+    }
+  }
+
+  #[test]
+  fn chrome_accesskit_exposes_address_bar_as_text_field_when_editing() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.chrome.request_focus_address_bar = true;
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let output = ctx.end_frame();
+
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+
+    assert!(
+      nodes
+        .iter()
+        .any(|n| n.name == crate::ui::a11y::ADDRESS_BAR_LABEL && n.role == "TextField"),
+      "expected address bar to appear as a TextField when editing.\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  #[test]
   fn omnibox_suggests_bookmarked_urls() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
