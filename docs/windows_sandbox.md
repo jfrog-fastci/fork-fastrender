@@ -583,6 +583,7 @@ Windows-only tests that encode the intended boundary:
 - AppContainer blocks user profile file reads (end-to-end spawn helper): `crates/win-sandbox/tests/filesystem_denied.rs`
 - AppContainer blocks outbound network (no capabilities): `crates/win-sandbox/tests/network_denied.rs`
 - Job object invariants (kill-on-close, process count): `crates/win-sandbox/tests/job_limits.rs`
+- `win_sandbox::spawn_sandboxed` handle allowlist enforcement: `crates/win-sandbox/tests/handle_inheritance.rs`
 - `win_sandbox::renderer::RendererSandbox` smoke (AppContainer + Job + no grandchildren): `crates/win-sandbox/tests/renderer_sandbox.rs`
 - Restricted-token fallback invariants (low integrity, reduced filesystem access): `crates/win-sandbox/tests/restricted_token_mode.rs`
 - Restricted-token spawn does not inherit an inaccessible parent CWD: `crates/win-sandbox/tests/restricted_token_cwd.rs`
