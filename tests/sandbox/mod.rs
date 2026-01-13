@@ -14,3 +14,6 @@ mod windows_no_child_process;
 
 #[cfg(windows)]
 mod windows_renderer_smoke;
+
+#[cfg(windows)]
+mod windows_handle_inheritance;

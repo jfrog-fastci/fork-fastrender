@@ -1,25 +1,17 @@
-#[cfg(windows)]
+#![cfg(windows)]
+
 use fastrender::sandbox::windows::spawn_sandboxed;
-#[cfg(windows)]
 use std::ffi::OsString;
-#[cfg(windows)]
 use std::mem;
-#[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, RawHandle};
-#[cfg(windows)]
 use std::path::Path;
-#[cfg(windows)]
 use std::ptr;
-#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
-#[cfg(windows)]
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
   CreateEventW, GetExitCodeProcess, WaitForSingleObject, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 
-#[cfg(windows)]
 fn assert_child_exited_successfully(child: &fastrender::sandbox::windows::SandboxedChild) {
   unsafe {
     let proc_handle = child.process.as_raw_handle() as HANDLE;
@@ -47,10 +39,8 @@ fn assert_child_exited_successfully(child: &fastrender::sandbox::windows::Sandbo
   }
 }
 
-#[cfg(windows)]
 struct HandleGuard(HANDLE);
 
-#[cfg(windows)]
 impl Drop for HandleGuard {
   fn drop(&mut self) {
     unsafe {
@@ -61,7 +51,6 @@ impl Drop for HandleGuard {
   }
 }
 
-#[cfg(windows)]
 fn create_event(inheritable: bool) -> HandleGuard {
   unsafe {
     let mut attrs = SECURITY_ATTRIBUTES {
@@ -84,7 +73,6 @@ fn create_event(inheritable: bool) -> HandleGuard {
   }
 }
 
-#[cfg(windows)]
 #[test]
 fn sandbox_spawn_selective_handle_inheritance_proc_thread_attribute_handle_list() {
   // Assert that Windows sandboxed spawning uses `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` to inherit only
@@ -126,7 +114,6 @@ fn sandbox_spawn_selective_handle_inheritance_proc_thread_attribute_handle_list(
   let _ = (allowed, denied);
 }
 
-#[cfg(windows)]
 #[test]
 fn sandbox_spawn_empty_inherit_handle_list_does_not_leak_inheritable_handles() {
   // When no handles are requested, the spawn helper must not enable blanket inheritance.
@@ -156,3 +143,4 @@ fn sandbox_spawn_empty_inherit_handle_list_does_not_leak_inheritable_handles() {
 
   let _ = denied;
 }
+

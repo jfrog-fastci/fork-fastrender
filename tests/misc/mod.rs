@@ -36,7 +36,6 @@ mod rayon_global_pool_test;
 mod readable_stream_start_throw;
 mod replaced_element_max_width_toggle;
 mod readable_stream_desired_size;
-mod sandbox_spawn_handle_inheritance_windows;
 mod streams_tee_uninitialized;
 mod transform_stream_async_transform_rejection;
 mod text_decoder_stream;
