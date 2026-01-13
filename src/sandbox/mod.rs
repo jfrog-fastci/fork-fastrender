@@ -610,7 +610,6 @@ pub fn apply_renderer_seccomp_denylist_with_report(
 
 #[cfg(target_os = "linux")]
 mod linux_hardening;
-
 #[cfg(target_os = "linux")]
 mod linux_seccomp;
 

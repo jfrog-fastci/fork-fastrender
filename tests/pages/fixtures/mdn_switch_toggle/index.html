@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MDN switch toggle (appearance:none checkbox)</title>
+    <style>
+      :root {
+        /* Hardcoded theme vars required by the MDN `mdn-switch` styles. */
+        --color-text-secondary: #6b7280;
+        --color-background-primary: #ffffff;
+        --color-link-normal: #2563eb;
+      }
+
+      body {
+        margin: 32px;
+        background: white;
+        color: black;
+        font-size: 16px;
+      }
+
+      /* Exact MDN `mdn-switch` pattern: @property + var() + calc() + gradient. */
+      @property --switch-position {
+        syntax: "<percentage>";
+        inherits: false;
+        initial-value: 0;
+      }
+
+      .switch__input {
+        --switch-size: 1.25em;
+        appearance: none;
+        background-color: var(--color-text-secondary);
+        background-image: radial-gradient(
+          circle at calc(var(--switch-size) / 2),
+          var(--color-background-primary) calc((var(--switch-size) / 2) * 0.8),
+          #0000 calc((var(--switch-size) / 2) * 0.8 + 1px)
+        );
+        background-position: var(--switch-position) 0;
+        background-repeat: no-repeat;
+        background-size: var(--switch-size);
+        width: calc(var(--switch-size) * 1.6);
+        height: var(--switch-size);
+        margin: 0;
+        display: inline-block;
+        border-radius: 9999px;
+        transition: --switch-position 0.2s;
+      }
+
+      .switch__input:checked {
+        --switch-position: 100%;
+        background-color: var(--color-link-normal);
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Run (Chrome vs FastRender):
+        bash scripts/cargo_agent.sh xtask page-loop --fixture mdn_switch_toggle --chrome --overlay
+    -->
+    <input type="checkbox" class="switch__input" checked />
+  </body>
+</html>

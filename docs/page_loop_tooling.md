@@ -78,6 +78,16 @@ bash scripts/cargo_agent.sh xtask page-loop \
   --chrome
 ```
 
+Minimal form-control reproduction fixtures can be run the same way. For example, the MDN `mdn-switch`
+toggle (an `appearance:none` checkbox using `@property` + `var()` + `calc()` + `radial-gradient`):
+
+```bash
+bash scripts/cargo_agent.sh xtask page-loop \
+  --fixture mdn_switch_toggle \
+  --chrome \
+  --overlay
+```
+
 Tip: `--debug` skips `--release` for the FastRender + diff steps, which is much faster to compile
 for tight iteration loops (but slower at runtime).
 
