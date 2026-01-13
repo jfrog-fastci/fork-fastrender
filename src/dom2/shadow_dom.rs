@@ -102,7 +102,11 @@ fn promote_template_to_shadow_root(
   doc.live_mutation.pre_remove(template, host, template_idx);
   doc.live_range_pre_remove_steps(template, host, template_idx);
   doc.nodes[host.index()].children.remove(template_idx);
+  // Record the removed node id before it becomes disconnected so hosts can map it back to the
+  // previous renderer snapshot for damage tracking.
+  doc.record_node_removed(template);
   doc.nodes[template.index()].parent = None;
+  doc.record_child_list_mutation(host);
 
   // Create a new shadow root node (detached for now so we can insert at index 0).
   let shadow_root = doc.push_node(
@@ -157,6 +161,9 @@ fn promote_template_to_shadow_root(
   );
   doc.nodes[host.index()].children.insert(0, shadow_root);
   doc.nodes[shadow_root.index()].parent = Some(host);
+  doc.record_node_inserted(shadow_root);
+  doc.record_child_list_mutation(host);
+  doc.bump_mutation_generation_classified();
 }
 
 impl Document {
@@ -331,8 +338,8 @@ mod tests {
     match kind {
       NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
         .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("id"))
-        .map(|(_, v)| v.as_str()),
+        .find(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case("id"))
+        .map(|attr| attr.value.as_str()),
       _ => None,
     }
   }
@@ -464,7 +471,7 @@ mod tests {
         tag_name: "div".to_string(),
         namespace: "".to_string(),
         prefix: None,
-        attributes: vec![("id".to_string(), "host".to_string())],
+        attributes: vec![Attribute::new_no_namespace("id", "host")],
       },
       Some(root),
       /* inert_subtree */ false,
@@ -474,7 +481,7 @@ mod tests {
         tag_name: "template".to_string(),
         namespace: "".to_string(),
         prefix: None,
-        attributes: vec![("shadowroot".to_string(), "open".to_string())],
+        attributes: vec![Attribute::new_no_namespace("shadowroot", "open")],
       },
       Some(host),
       /* inert_subtree */ false,
@@ -484,7 +491,7 @@ mod tests {
         tag_name: "span".to_string(),
         namespace: "".to_string(),
         prefix: None,
-        attributes: vec![("id".to_string(), "shadow".to_string())],
+        attributes: vec![Attribute::new_no_namespace("id", "shadow")],
       },
       Some(template),
       /* inert_subtree */ false,
@@ -524,6 +531,65 @@ mod tests {
           count: 1
         },
       ]
+    );
+  }
+
+  #[test]
+  fn attach_shadow_roots_records_structural_mutation_log() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+
+    let root = doc.root();
+    let host = doc.push_node(
+      NodeKind::Element {
+        tag_name: "div".to_string(),
+        namespace: "".to_string(),
+        prefix: None,
+        attributes: vec![Attribute::new_no_namespace("id", "host")],
+      },
+      Some(root),
+      /* inert_subtree */ false,
+    );
+    let template = doc.push_node(
+      NodeKind::Element {
+        tag_name: "template".to_string(),
+        namespace: "".to_string(),
+        prefix: None,
+        attributes: vec![Attribute::new_no_namespace("shadowroot", "open")],
+      },
+      Some(host),
+      /* inert_subtree */ false,
+    );
+    let _span = doc.push_node(
+      NodeKind::Element {
+        tag_name: "span".to_string(),
+        namespace: "".to_string(),
+        prefix: None,
+        attributes: vec![Attribute::new_no_namespace("id", "shadow")],
+      },
+      Some(template),
+      /* inert_subtree */ false,
+    );
+
+    let _ = doc.take_mutations();
+    doc.attach_shadow_roots();
+
+    let shadow_root = doc.node(host).children[0];
+    let mutations = doc.take_mutations();
+    assert!(
+      mutations.nodes_removed.contains(&template),
+      "expected promoted template to be recorded as removed"
+    );
+    assert!(
+      mutations.nodes_inserted.contains(&shadow_root),
+      "expected new shadow root to be recorded as inserted"
+    );
+    assert!(
+      mutations.child_list_changed.contains(&host),
+      "expected host child list to be recorded as changed"
+    );
+    assert!(
+      mutations.nodes_moved.is_empty(),
+      "expected declarative shadow root promotion to be tracked as remove+insert, not move"
     );
   }
 
@@ -653,7 +719,7 @@ mod tests {
         tag_name: "div".to_string(),
         namespace: "".to_string(),
         prefix: None,
-        attributes: vec![("id".to_string(), "host".to_string())],
+        attributes: vec![Attribute::new_no_namespace("id", "host")],
       },
       Some(root),
       /* inert_subtree */ false,
@@ -663,7 +729,7 @@ mod tests {
         tag_name: "template".to_string(),
         namespace: "".to_string(),
         prefix: None,
-        attributes: vec![("shadowroot".to_string(), "open".to_string())],
+        attributes: vec![Attribute::new_no_namespace("shadowroot", "open")],
       },
       Some(host),
       /* inert_subtree */ false,
