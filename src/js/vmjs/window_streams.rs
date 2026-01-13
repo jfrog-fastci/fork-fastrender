@@ -106,6 +106,7 @@ const READABLE_STREAM_READER_PENDING_RESOLVE_KEY: &str =
   "__fastrender_readable_stream_pending_read_resolve";
 const READABLE_STREAM_READER_PENDING_REJECT_KEY: &str =
   "__fastrender_readable_stream_pending_read_reject";
+const READABLE_STREAM_STORED_ERROR_KEY: &str = "__fastrender_readable_stream_stored_error";
 
 const READABLE_STREAM_CONTROLLER_BRAND_KEY: &str =
   "__fastrender_readable_stream_default_controller";
@@ -628,6 +629,15 @@ fn get_data_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<Val
       .object_get_own_data_property_value(obj, &key)?
       .unwrap_or(Value::Undefined),
   )
+}
+
+fn get_data_prop_opt(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  name: &str,
+) -> Result<Option<Value>, VmError> {
+  let key = alloc_key(scope, name)?;
+  Ok(scope.heap().object_get_own_data_property_value(obj, &key)?)
 }
 
 fn set_data_prop(
@@ -1178,6 +1188,11 @@ fn readable_stream_cancel_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  enum CancelAction {
+    Resolve { value_roots: Vec<RootId> },
+    Reject { error_message: Option<String> },
+  }
+
   let stream_obj = require_host_tag(
     scope,
     this,
@@ -1189,16 +1204,28 @@ fn readable_stream_cancel_native(
   let cap: PromiseCapability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
   let promise = scope.push_root(cap.promise)?;
   let resolve = scope.push_root(cap.resolve)?;
-  scope.push_root(cap.reject)?;
+  let reject = scope.push_root(cap.reject)?;
 
-  // Perform the cancel synchronously, but reject if the stream is locked.
-  let cancel_result = with_realm_state_mut(vm, scope, callee, |state, _heap| {
+  // Determine the cancel behavior from the stream state. For errored streams we must reject with
+  // the stored error reason (and MUST NOT close/reset the stream), even if the stream is locked.
+  let cancel_action = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
       .streams
       .get_mut(&WeakGcObject::from(stream_obj))
       .ok_or(VmError::TypeError(
         "ReadableStream.cancel: illegal invocation",
       ))?;
+
+    match stream_state.state {
+      StreamLifecycleState::Closed => return Ok(CancelAction::Resolve { value_roots: Vec::new() }),
+      StreamLifecycleState::Errored => {
+        return Ok(CancelAction::Reject {
+          error_message: stream_state.error_message.clone(),
+        })
+      }
+      StreamLifecycleState::Readable => {}
+    }
+
     if stream_state.locked {
       return Err(VmError::TypeError("ReadableStream is locked"));
     }
@@ -1221,22 +1248,29 @@ fn readable_stream_cancel_native(
     stream_state.init = None;
     stream_state.pending_reader = None;
     stream_state.pending_read_roots = None;
-    Ok(value_roots)
-  });
+    Ok(CancelAction::Resolve { value_roots })
+  })?;
 
-  match cancel_result {
-    Ok(value_roots) => {
+  match cancel_action {
+    CancelAction::Resolve { value_roots } => {
       for root_id in value_roots {
         scope.heap_mut().remove_root(root_id);
       }
       vm.call_with_host_and_hooks(host, scope, hooks, resolve, Value::Undefined, &[])?;
     }
-    Err(err) => {
-      // `ReadableStream.cancel()` should throw if locked; preserve that behavior even though we
-      // already created a Promise capability.
-      return Err(err);
+    CancelAction::Reject { error_message } => {
+      // Prefer the stored JS error reason (set by controller.error or internal error paths).
+      let reason = match get_data_prop_opt(scope, stream_obj, READABLE_STREAM_STORED_ERROR_KEY)? {
+        Some(v) => v,
+        None => match error_message {
+          Some(msg) => Value::String(scope.alloc_string(&msg)?),
+          None => Value::Undefined,
+        },
+      };
+      scope.push_root(reason)?;
+      vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
     }
-  }
+  };
 
   Ok(promise)
 }
@@ -4070,6 +4104,15 @@ fn readable_stream_controller_error_native(
   let stream_obj = readable_stream_controller_stream(scope, controller_obj)?;
 
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  // Preserve the JS error reason for spec-compliant consumption by `cancel()` / `read()` paths.
+  // (This is also required so cancel rejects with the same value, not a stringified message.)
+  set_data_prop(
+    scope,
+    stream_obj,
+    READABLE_STREAM_STORED_ERROR_KEY,
+    reason,
+    true,
+  )?;
   let msg = best_effort_reason_string(scope, reason, "ReadableStream errored")?;
 
   let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
@@ -4730,6 +4773,14 @@ fn reader_cancel_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  enum CancelAction {
+    Resolve { value_roots: Vec<RootId> },
+    Reject {
+      stream: WeakGcObject,
+      error_message: Option<String>,
+    },
+  }
+
   let reader_obj = require_host_tag(
     scope,
     this,
@@ -4742,12 +4793,7 @@ fn reader_cancel_native(
   let resolve = scope.push_root(cap.resolve)?;
   let reject = scope.push_root(cap.reject)?;
 
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("ReadableStream requires intrinsics"))?;
-
-  let (outcome, pending_read, value_roots) =
-    with_realm_state_mut(vm, scope, callee, |state, _heap| {
+  let (action, pending_read) = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let reader_state = state
       .readers
       .get(&WeakGcObject::from(reader_obj))
@@ -4755,10 +4801,26 @@ fn reader_cancel_native(
         "ReadableStreamDefaultReader.cancel: illegal invocation",
       ))?;
     let Some(stream_weak) = reader_state.stream else {
-      return Ok((ReadOutcome::Done, None, Vec::new()));
+      return Ok((CancelAction::Resolve { value_roots: Vec::new() }, None));
     };
     let Some(stream_state) = state.streams.get_mut(&stream_weak) else {
-      return Ok((ReadOutcome::Done, None, Vec::new()));
+      return Ok((CancelAction::Resolve { value_roots: Vec::new() }, None));
+    };
+
+    match stream_state.state {
+      StreamLifecycleState::Closed => {
+        return Ok((CancelAction::Resolve { value_roots: Vec::new() }, None))
+      }
+      StreamLifecycleState::Errored => {
+        return Ok((
+          CancelAction::Reject {
+            stream: stream_weak,
+            error_message: stream_state.error_message.clone(),
+          },
+          None,
+        ))
+      }
+      StreamLifecycleState::Readable => {}
     };
 
     if let Some(init) = stream_state.init.take() {
@@ -4785,24 +4847,35 @@ fn reader_cancel_native(
       debug_assert!(stream_state.pending_read_roots.is_none());
     }
 
-    Ok((ReadOutcome::Done, pending_read, value_roots))
+    Ok((CancelAction::Resolve { value_roots }, pending_read))
   })?;
 
-  for root_id in value_roots {
-    scope.heap_mut().remove_root(root_id);
-  }
-
-  match outcome {
-    ReadOutcome::Done | ReadOutcome::Chunk(_) => {
+  match action {
+    CancelAction::Resolve { value_roots } => {
+      for root_id in value_roots {
+        scope.heap_mut().remove_root(root_id);
+      }
       vm.call_with_host_and_hooks(host, scope, hooks, resolve, Value::Undefined, &[])?;
     }
-    ReadOutcome::Error(msg) => {
-      let err = new_type_error_object(scope, &intr, &msg)?;
-      scope.push_root(err)?;
-      vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[err])?;
-    }
-    ReadOutcome::Pending => {
-      vm.call_with_host_and_hooks(host, scope, hooks, resolve, Value::Undefined, &[])?;
+    CancelAction::Reject {
+      stream,
+      error_message,
+    } => {
+      let Some(stream_obj) = stream.upgrade(scope.heap()) else {
+        return Err(VmError::InvariantViolation(
+          "ReadableStreamDefaultReader.cancel: stream has been garbage collected",
+        ));
+      };
+      // Prefer the stored JS error reason (set by controller.error or internal error paths).
+      let reason = match get_data_prop_opt(scope, stream_obj, READABLE_STREAM_STORED_ERROR_KEY)? {
+        Some(v) => v,
+        None => match error_message {
+          Some(msg) => Value::String(scope.alloc_string(&msg)?),
+          None => Value::Undefined,
+        },
+      };
+      scope.push_root(reason)?;
+      vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
     }
   }
 
@@ -9426,6 +9499,75 @@ mod tests {
       ));
     };
     assert_eq!(realm.heap().promise_state(p_obj)?, PromiseState::Rejected);
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_cancel_rejects_with_stored_error_reason_when_errored() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let _ = realm.exec_script(
+      r#"
+        globalThis.rs = new ReadableStream({ start(c){ globalThis.c=c; } });
+        globalThis.r = rs.getReader();
+        globalThis.err = {x: 1};
+        c.error(err);
+        globalThis.p = rs.cancel('ignored');
+      "#,
+    )?;
+
+    let p = realm.exec_script("p")?;
+    let Value::Object(p_obj) = p else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream.cancel must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(p_obj)?, PromiseState::Rejected);
+
+    let Some(reason) = realm.heap().promise_result(p_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream.cancel promise missing rejection reason",
+      ));
+    };
+    let err = realm.exec_script("err")?;
+    assert_eq!(reason, err);
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_default_reader_cancel_rejects_with_stored_error_reason_when_errored(
+  ) -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let _ = realm.exec_script(
+      r#"
+        globalThis.rs = new ReadableStream({ start(c){ globalThis.c=c; } });
+        globalThis.r = rs.getReader();
+        globalThis.err = {x: 1};
+        c.error(err);
+        globalThis.p = r.cancel('ignored');
+      "#,
+    )?;
+
+    let p = realm.exec_script("p")?;
+    let Value::Object(p_obj) = p else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.cancel must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(p_obj)?, PromiseState::Rejected);
+
+    let Some(reason) = realm.heap().promise_result(p_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.cancel promise missing rejection reason",
+      ));
+    };
+    let err = realm.exec_script("err")?;
+    assert_eq!(reason, err);
 
     realm.teardown();
     Ok(())
