@@ -226,6 +226,60 @@ fn generator_for_body_preserves_inner_let_across_yield() -> Result<(), VmError> 
 }
 
 #[test]
+fn async_for_body_restores_env_on_break_after_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var log = [];
+      async function f(x) {
+        for (var i = 0; i < 2; ++i) {
+          let x = "inner" + i;
+          await 0;
+          log.push(x);
+          break;
+        }
+        out = x;
+      }
+      f("outer").catch(e => { out = "err:" + (e && e.name); });
+      out === "" && log.length === 0
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script(r#"out === "outer" && log.length === 1 && log[0] === "inner0""#)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_for_body_restores_env_on_break_after_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen(x) {
+        for (var i of [0, 1]) {
+          let x = "inner" + i;
+          yield x;
+          break;
+        }
+        return x;
+      }
+      var g = gen("outer");
+      var a = g.next().value;
+      var b = g.next().value;
+      a === "inner0" && b === "outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn for_body_restores_lex_env_on_break() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
