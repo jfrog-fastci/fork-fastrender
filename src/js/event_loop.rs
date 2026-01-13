@@ -1992,7 +1992,6 @@ impl<Host: 'static> EventLoop<Host> {
   pub(crate) fn pending_task_count(&self) -> usize {
     self.pending_tasks
   }
-
   fn maybe_compact_animation_frame_queue(&mut self) {
     let live = self.animation_frame_callbacks.len();
     if live == 0 {
@@ -2019,7 +2018,6 @@ impl<Host: 'static> EventLoop<Host> {
       .animation_frame_queue
       .retain(|id| callbacks.contains_key(id));
   }
-
   fn maybe_compact_timer_queue(&mut self) {
     // `timer_queue` can contain stale entries for cleared timers (and for interval timers that have
     // since been rescheduled). Since `BinaryHeap` does not support removal-by-key, those stale
