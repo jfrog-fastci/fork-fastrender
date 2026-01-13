@@ -210,11 +210,6 @@ pub struct RegExpFlags {
 }
 
 impl RegExpFlags {
-  #[inline]
-  pub(crate) fn has_either_unicode_flag(&self) -> bool {
-    self.unicode || self.unicode_sets
-  }
-
   pub(crate) fn parse(
     units: &[u16],
     tick: &mut dyn FnMut() -> Result<(), VmError>,
@@ -341,11 +336,10 @@ impl RegExpFlags {
   /// True when either the Unicode (`u`) or Unicode sets (`v`) flags are enabled.
   ///
   /// The RegExp parser has a handful of early-error restrictions that apply in "UnicodeMode",
-  /// which is defined as either `u` or `v` being present. `vm-js` does not yet implement `v`, so
-  /// today this is equivalent to `self.unicode`.
+  /// which is defined as either `u` or `v` being present.
   #[inline]
   pub(crate) fn has_either_unicode_flag(self) -> bool {
-    self.unicode
+    self.unicode || self.unicode_sets
   }
 }
 
