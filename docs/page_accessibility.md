@@ -153,6 +153,24 @@ If you just need to **inspect layout rectangles** for a particular node, `inspec
 the quickest route (it can dump fragment bounds and render overlay PNGs). See [cli.md](cli.md) for
 `inspect_frag` usage.
 
+### Library API: capture accessibility output while rendering
+
+If you’re writing tests/tools in Rust and want the page accessibility tree alongside a rendered
+pixmap, use `RenderOptions::with_accessibility(true)`:
+
+```rust,no_run
+use fastrender::api::{FastRender, RenderOptions};
+
+let mut renderer = FastRender::new()?;
+let options = RenderOptions::new()
+  .with_viewport(800, 600)
+  .with_accessibility(true);
+
+let (_pixmap, a11y_tree) = renderer.render_html_with_accessibility("<button>OK</button>", options)?;
+println!("{}", serde_json::to_string_pretty(&a11y_tree)?);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ### `dump_accesskit` (browser chrome / OS-facing a11y)
 
 To inspect what the **windowed browser chrome UI** is exposing to the OS via AccessKit (separate
