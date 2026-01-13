@@ -6480,50 +6480,23 @@ impl BrowserRuntime {
           return changed;
         };
 
-        let list_id = input
-          .get_attribute_ref("list")
-          .map(trim_ascii_whitespace)
-          .unwrap_or("");
-        if list_id.is_empty() {
-          return changed;
-        }
-
-        let Some(&datalist_node_id) = index.id_by_element_id.get(list_id) else {
-          return changed;
-        };
-        let Some(datalist) = index.node(datalist_node_id) else {
-          return changed;
-        };
-        if !datalist
-          .tag_name()
-          .is_some_and(|t| t.eq_ignore_ascii_case("datalist"))
-        {
-          return changed;
-        }
-
         let query = input.get_attribute_ref("value").unwrap_or("");
+        let Some(datalist_node_id) =
+          crate::interaction::engine::resolve_associated_datalist(dom, input_node_id)
+        else {
+          return changed;
+        };
 
         let mut options = Vec::new();
-        for node_id in 1..=index.len() {
-          if !is_ancestor_or_self(&index, datalist_node_id, node_id) {
+        for entry in crate::interaction::engine::collect_datalist_option_entries(dom, datalist_node_id)
+        {
+          if !crate::interaction::engine::datalist_option_matches_input_value(&entry.option, query) {
             continue;
           }
-          let Some(node) = index.node(node_id) else {
-            continue;
-          };
-          if !node.tag_name().is_some_and(|t| t.eq_ignore_ascii_case("option")) {
-            continue;
-          }
-
-          let value = node.get_attribute_ref("value").unwrap_or("").to_string();
-          if !query.is_empty() && !value.starts_with(query) {
-            continue;
-          }
-
           options.push(DatalistOption {
-            option_node_id: node_id,
-            value,
-            disabled: node.get_attribute_ref("disabled").is_some(),
+            option_node_id: entry.node_id,
+            value: entry.option.value,
+            disabled: entry.option.disabled,
           });
         }
 
