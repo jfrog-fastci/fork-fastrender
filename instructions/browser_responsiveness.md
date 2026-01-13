@@ -54,9 +54,9 @@ A change counts if it lands at least one of:
 
 | Metric | Target | Current | How to measure |
 |--------|--------|---------|----------------|
-| Resize frame time | <16ms | ? | `capture_browser_perf_log.sh` + `browser_perf_log_summary` (`resize_to_present_ms`) |
-| Scroll frame time | <16ms | ? | `capture_browser_perf_log.sh` + `browser_perf_log_summary` (`ui_frame_ms`/fps while scrolling) |
-| Input latency | <50ms | ? | `capture_browser_perf_log.sh` + `browser_perf_log_summary` (`input_to_present_ms`) |
+| Resize frame time | <16ms | ? | `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`resize_to_present_ms`) |
+| Scroll frame time | <16ms | ? | `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`ui_frame_ms`/fps while scrolling) |
+| Input latency | <50ms | ? | `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`input_to_present_ms`) |
 | Time to first paint (TTFP) | <100ms | ? | `ui_perf_smoke` (navigate→first frame) or perf log summary (`ttfp_ms`) |
 | Idle CPU | ~0% | ? | perf log summary (`idle_summary`) + OS profiler while idle |
 
