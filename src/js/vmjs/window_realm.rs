@@ -41505,6 +41505,63 @@ mod tests {
     WindowRealm::new_with_js_execution_options(config, js_execution_options)
   }
 
+  struct WebIdlTestHost {
+    document: crate::js::HostDocumentState,
+    window: WindowRealm,
+    webidl_bindings_host: crate::js::webidl::VmJsWebIdlBindingsHostDispatch<WebIdlTestHost>,
+  }
+
+  impl WebIdlTestHost {
+    fn new(document: crate::js::HostDocumentState, window: WindowRealm) -> Self {
+      let global = window.global_object();
+      let webidl_bindings_host =
+        crate::js::webidl::VmJsWebIdlBindingsHostDispatch::<WebIdlTestHost>::new(global);
+      Self {
+        document,
+        window,
+        webidl_bindings_host,
+      }
+    }
+
+    fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
+      let dataset_ctx = self.window.dataset_exotic_context();
+      let mut hooks = DomShimHostHooks::new(&mut self.document, dataset_ctx);
+      hooks.set_webidl_bindings_host(&mut self.webidl_bindings_host);
+      hooks.any.set_embedder_state(self);
+      self
+        .window
+        .exec_script_with_host_and_hooks(&mut self.document, &mut hooks, source)
+    }
+  }
+
+  impl crate::js::DomHost for WebIdlTestHost {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&crate::dom2::Document) -> R,
+    {
+      self.document.with_dom(f)
+    }
+
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut crate::dom2::Document) -> (R, bool),
+    {
+      self.document.mutate_dom(f)
+    }
+  }
+
+  impl WindowRealmHost for WebIdlTestHost {
+    fn vm_host_and_window_realm(
+      &mut self,
+    ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+      Ok((&mut self.document, &mut self.window))
+    }
+
+    fn webidl_bindings_host(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
+      Some(&mut self.webidl_bindings_host)
+    }
+  }
+
   fn new_host_document_state() -> crate::js::HostDocumentState {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
@@ -48469,6 +48526,44 @@ mod tests {
       })()",
     )?;
     assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_traversal_accessors_hide_shadow_root_from_host_element_webidl() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body>\
+        <div id=host1><template shadowroot=open><span>shadow</span></template></div>\
+        <div id=host2><template shadowroot=open><span>shadow</span></template>\
+          <span id=a></span><span id=b></span>\
+        </div>\
+      </body></html>",
+    )
+    .unwrap();
+    let document = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let window = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut host = WebIdlTestHost::new(document, window);
+
+    let ok = host.exec_script(
+      "(() => {\n\
+        const host1 = document.getElementById('host1');\n\
+        const host2 = document.getElementById('host2');\n\
+        const a = document.getElementById('a');\n\
+        const b = document.getElementById('b');\n\
+        return host1.firstChild === null\n\
+          && host1.lastChild === null\n\
+          && host2.firstChild === a\n\
+          && host2.lastChild === b\n\
+          && a.previousSibling === null\n\
+          && a.nextSibling === b\n\
+          && b.previousSibling === a\n\
+          && b.nextSibling === null;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
