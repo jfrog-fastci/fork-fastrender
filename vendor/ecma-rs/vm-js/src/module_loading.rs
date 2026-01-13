@@ -939,6 +939,8 @@ fn try_clone_module_requests(vm: &mut Vm, values: &[ModuleRequest]) -> Result<Ve
 /// This starts the module graph loading state machine and returns a Promise that is fulfilled once
 /// all modules in the static import graph have been loaded.
 ///
+/// For an end-to-end embedder guide, see [`crate::docs::modules`].
+///
 /// ## ⚠️ Dummy `VmHost` context
 ///
 /// This hook-only API passes a **dummy host context** (`()`) to any native call/construct handlers
@@ -1753,6 +1755,8 @@ fn first_unsupported_import_attribute_key<'a>(
 }
 
 /// Spec-shaped dynamic import entry point (EvaluateImportCall).
+///
+/// For an end-to-end embedder guide, see [`crate::docs::modules`].
 ///
 /// ## ⚠️ Dummy `VmHost` context
 ///

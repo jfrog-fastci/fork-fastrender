@@ -1068,6 +1068,9 @@ pub trait VmHostHooks {
   /// complete with the **same Module Record** each time.
   ///
   /// The `payload` argument is an opaque token owned by the engine; the host must not inspect it.
+  ///
+  /// For an end-to-end embedder guide (static graph loading, dynamic `import()`, top-level `await`,
+  /// and `vm.module_graph_ptr` lifetime), see [`crate::docs::modules`].
   fn host_load_imported_module(
     &mut self,
     vm: &mut Vm,
