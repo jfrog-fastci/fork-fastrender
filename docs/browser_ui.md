@@ -152,7 +152,7 @@ as overrides (useful for scripting/CI); see [env-vars.md](env-vars.md).
 
 ### Theme mode selection
 
-`FASTR_BROWSER_THEME=system|light|dark` is intended to control the browser chrome theme:
+`FASTR_BROWSER_THEME=system|light|dark` controls the browser chrome theme:
 
 - `system` (default): follow the OS light/dark preference when available.
 - `light` / `dark`: force a specific theme.
@@ -178,17 +178,17 @@ The browser chrome uses an accent color for links, focus rings, and selection.
 
 ### High contrast / reduced motion
 
-- `FASTR_BROWSER_HIGH_CONTRAST=1` is intended to enable a higher-contrast chrome theme and stronger
+- `FASTR_BROWSER_HIGH_CONTRAST=1` enables a higher-contrast chrome theme and stronger
   focus indicators.
   - Pages see `prefers-contrast: more` by default unless explicitly overridden via
     `FASTR_PREFERS_CONTRAST=...`.
-- `FASTR_BROWSER_REDUCED_MOTION=1` is intended to reduce/disable non-essential UI animations.
+- `FASTR_BROWSER_REDUCED_MOTION=1` reduces/disables non-essential UI animations.
   - Pages see `prefers-reduced-motion: reduce` by default unless explicitly overridden via
     `FASTR_PREFERS_REDUCED_MOTION=...`.
 
 ### UI scale vs page zoom
 
-- **UI scale** (`FASTR_BROWSER_UI_SCALE=<float>`) is intended to scale the browser chrome UI (tabs,
+- **UI scale** (`FASTR_BROWSER_UI_SCALE=<float>`) scales the browser chrome UI (tabs,
   toolbar, fonts) without changing the page zoom level.
 - **Page zoom** is currently implemented as a per-tab setting:
   - shortcuts: Ctrl/Cmd +/-/0, and Ctrl/Cmd + mouse wheel.
