@@ -22,6 +22,7 @@
 //! using the system's default font.
 
 use crate::api::ResourceContext;
+#[cfg(test)]
 use crate::css;
 use crate::css::types::ColorStop;
 use crate::css::types::RadialGradientShape;
@@ -152,6 +153,7 @@ use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
 #[cfg(test)]
 use crate::FontDatabase;
+#[cfg(test)]
 use encoding_rs::Encoding;
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -186,6 +188,7 @@ use tiny_skia::Rect as SkiaRect;
 use tiny_skia::SpreadMode;
 use tiny_skia::Stroke;
 use tiny_skia::Transform;
+#[cfg(test)]
 use url::Url;
 
 type RenderResult<T> = std::result::Result<T, RenderError>;
@@ -15932,8 +15935,10 @@ fn approx_same_rect(a: Rect, b: Rect) -> bool {
     && (a.height() - b.height()).abs() <= eps
 }
 
+#[cfg(test)]
 const MAX_IMPORTED_CSS_BYTES: usize = 2 * 1024 * 1024;
 
+#[cfg(test)]
 fn decode_data_url_to_string(data_url: &str) -> Result<String> {
   let decoded = crate::resource::data_url::decode_data_url_prefix(
     data_url,
@@ -15968,6 +15973,7 @@ fn decode_data_url_to_string(data_url: &str) -> Result<String> {
   Ok(String::from_utf8_lossy(&decoded).into_owned())
 }
 
+#[cfg(test)]
 struct EmbeddedImportFetcher {
   base_url: Option<String>,
   fetcher: Arc<dyn crate::resource::ResourceFetcher>,
@@ -15975,6 +15981,7 @@ struct EmbeddedImportFetcher {
   imported_stylesheet_policies: RefCell<HashMap<String, crate::resource::ReferrerPolicy>>,
 }
 
+#[cfg(test)]
 impl EmbeddedImportFetcher {
   fn new(
     base_url: Option<String>,
@@ -16034,6 +16041,7 @@ impl EmbeddedImportFetcher {
   }
 }
 
+#[cfg(test)]
 impl css::types::CssImportLoader for EmbeddedImportFetcher {
   fn load(&self, url: &str) -> Result<String> {
     Ok(self.load_with_importer(url, self.base_url.as_deref())?.css)
