@@ -300,7 +300,7 @@ there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / trac
 
 - `FASTR_PERF_LOG=1` enables **windowed JSONL performance logging**.
   - Intended to make UI regressions measurable (e.g. per-frame time, input/resize→present latency,
-    navigation TTFP, and idle/busy-loop behavior).
+    navigation TTFP, and idle CPU usage / busy-loop behavior).
   - Use this when investigating “the UI feels laggy” problems (dropped frames, slow resize, slow
     typing/click feedback), and prefer `--release` builds for realistic numbers.
   - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` can be used to write events to a file instead of stdout.

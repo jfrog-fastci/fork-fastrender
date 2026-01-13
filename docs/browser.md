@@ -157,7 +157,9 @@ binary)”). Notably:
 - `FASTR_BROWSER_WGPU_BACKENDS=...` / `browser --wgpu-backends ...` (alias: `--wgpu-backend`) – restrict
   the `wgpu` backend set (for example `gl`) when the default backend selection fails.
 - `FASTR_PERF_LOG=1` – enable JSONL responsiveness logging for the windowed UI (frame times, input
-  latency, TTFP). See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness).
+  latency, TTFP, CPU usage). See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness).
+- `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` – optional output path for `FASTR_PERF_LOG` events (when unset,
+  logs are written to stdout so they can be piped/tee'd).
 
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).
@@ -206,6 +208,15 @@ FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 ```
+
+Summarize a captured log with:
+
+```bash
+bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input target/browser_perf.jsonl
+```
+
+(`scripts/capture_browser_perf_log.sh --summary ...` runs the summary tool automatically after the
+browser exits.)
 
 For automated, headless measurements (JSON summary):
 
