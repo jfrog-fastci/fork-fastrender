@@ -3,10 +3,9 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::ExitStatusExt;
 
-use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
+use win_sandbox::RendererSandbox;
 use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
@@ -18,8 +17,6 @@ const WAIT_OBJECT_0: u32 = 0x0000_0000;
 const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
 struct EnvRestore {
-  prev_disable: Option<OsString>,
-  prev_legacy: Option<OsString>,
   prev_child: Option<OsString>,
   prev_path: Option<OsString>,
   prev_threads: Option<OsString>,
@@ -27,21 +24,15 @@ struct EnvRestore {
 
 impl EnvRestore {
   fn install(file_path: &Path) -> Self {
-    let prev_disable = std::env::var_os("FASTR_DISABLE_RENDERER_SANDBOX");
-    let prev_legacy = std::env::var_os("FASTR_WINDOWS_RENDERER_SANDBOX");
     let prev_child = std::env::var_os(CHILD_ENV);
     let prev_path = std::env::var_os(PATH_ENV);
     let prev_threads = std::env::var_os("RUST_TEST_THREADS");
 
-    std::env::remove_var("FASTR_DISABLE_RENDERER_SANDBOX");
-    std::env::remove_var("FASTR_WINDOWS_RENDERER_SANDBOX");
     std::env::set_var(CHILD_ENV, "1");
     std::env::set_var(PATH_ENV, file_path);
     std::env::set_var("RUST_TEST_THREADS", "1");
 
     Self {
-      prev_disable,
-      prev_legacy,
       prev_child,
       prev_path,
       prev_threads,
@@ -51,8 +42,6 @@ impl EnvRestore {
 
 impl Drop for EnvRestore {
   fn drop(&mut self) {
-    restore_var("FASTR_DISABLE_RENDERER_SANDBOX", self.prev_disable.take());
-    restore_var("FASTR_WINDOWS_RENDERER_SANDBOX", self.prev_legacy.take());
     restore_var(CHILD_ENV, self.prev_child.take());
     restore_var(PATH_ENV, self.prev_path.take());
     restore_var("RUST_TEST_THREADS", self.prev_threads.take());
@@ -115,14 +104,10 @@ fn appcontainer_blocks_userprofile_filesystem_access() {
     OsString::from("--nocapture"),
   ];
 
-  let child = spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child process");
-  assert_eq!(
-    child.level,
-    WindowsSandboxLevel::AppContainer,
-    "expected AppContainer sandboxing to be used (not fallback)"
-  );
+  let sandbox = RendererSandbox::appcontainer_no_capabilities();
+  let child = sandbox.spawn(&exe, &args).expect("spawn sandboxed child process");
 
-  let handle = child.process.as_raw_handle() as HANDLE;
+  let handle = child.process.as_raw();
   let status = wait_process(handle, 20_000).expect("wait for sandboxed child");
 
   assert!(
