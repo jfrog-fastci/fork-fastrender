@@ -2340,7 +2340,6 @@ impl JsRuntime {
           let res: Result<Value, VmError> = (|| {
             // In classic scripts, top-level `this` is the global object (even in strict mode).
             let global_this = Value::Object(global_object);
-
             if !has_await {
               let mut evaluator = Evaluator {
                 vm: &mut *vm_frame,
@@ -2385,7 +2384,6 @@ impl JsRuntime {
               &mut hooks,
             )?;
             let promise = cap.promise;
-
             // Use a distinct `RuntimeEnv` for async script evaluation. Async continuations tear down
             // their env roots on completion; classic scripts must not tear down the runtime's global
             // env.
@@ -27999,7 +27997,13 @@ fn async_resume_from_frames(
                       }
                       _ => unreachable!(),
                     };
-                    async_apply_binary_operator(evaluator, &mut compound_scope, shift_op, left, right)?
+                    async_apply_binary_operator(
+                      evaluator,
+                      &mut compound_scope,
+                      shift_op,
+                      left,
+                      right,
+                    )?
                   }
                   _ => {
                     return Err(VmError::InvariantViolation(
