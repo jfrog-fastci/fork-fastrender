@@ -5347,6 +5347,69 @@ fn forced_break_inside_tall_float_does_not_block_main_flow() {
 }
 
 #[test]
+fn forced_break_inside_table_cell_does_not_create_early_page_break() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          body { margin: 0; }
+          table { border-collapse: collapse; width: 100%; }
+          td { padding: 0; vertical-align: top; }
+          .blk { height: 18px; margin: 0; }
+          .breaker { break-after: page; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr>
+            <td>
+              <div class="blk breaker">CELL_START</div>
+              <div class="blk">CELL_CONTINUATION</div>
+            </td>
+            <td>
+              <div class="blk">OTHER_1</div>
+              <div class="blk">OTHER_2</div>
+              <div class="blk">OTHER_3</div>
+              <div class="blk">OTHER_4</div>
+              <div class="blk">OTHER_5</div>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected forced break inside table cell to create a continuation page"
+  );
+  assert!(
+    find_text(page_roots[0], "CELL_CONTINUATION").is_none(),
+    "CELL_CONTINUATION should not appear on the first page"
+  );
+  assert!(
+    find_text(page_roots[1], "CELL_CONTINUATION").is_some(),
+    "CELL_CONTINUATION should appear on the second page"
+  );
+  assert!(
+    find_text(page_roots[0], "OTHER_5").is_some(),
+    "content in sibling table cells should not be pushed to the continuation page"
+  );
+  assert!(
+    find_text(page_roots[1], "OTHER_5").is_none(),
+    "sibling table cell content should remain on the first page"
+  );
+}
+
+#[test]
 fn rtl_direction_flips_first_page_side() {
   let html = r#"
     <html>

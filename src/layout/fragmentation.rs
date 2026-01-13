@@ -3991,11 +3991,13 @@ fn collect_break_opportunities(
     ));
 
   // Parallel fragmentation flows (CSS Break 3 §3) must not contribute their internal break
-  // opportunities to the parent flow. Floats, absolutely-positioned elements, and table cells all
-  // establish parallel flows, so suppress them when requested.
-  let is_parallel_flow = style.float.is_floating()
-    || style.position.is_absolutely_positioned()
-    || matches!(style.display, Display::TableCell);
+  // opportunities to the parent flow. Floats and absolutely-positioned elements establish parallel
+  // flows, so suppress them when requested.
+  //
+  // Note: Table cells are handled separately: their *forced* breaks must not propagate, but
+  // non-forced break opportunities (e.g. line boundaries) still matter when fragmenting oversized
+  // rows. See `child_suppress_forced_breaks` below.
+  let is_parallel_flow = style.float.is_floating() || style.position.is_absolutely_positioned();
   if suppress_parallel_flow_descendants && !parallel_flow_root && is_parallel_flow {
     return;
   }
@@ -4458,7 +4460,10 @@ fn collect_break_opportunities(
       // those spanning multiple tracks), but still collect non-forced opportunities.
       let child_suppress_forced_breaks = suppress_forced_breaks
         || (is_row_flex_container_in_context && child_style.position.is_in_flow())
-        || (idx < grid_item_count_parallel_flow && child_style.position.is_in_flow());
+        || (idx < grid_item_count_parallel_flow && child_style.position.is_in_flow())
+        || ((matches!(style.display, Display::Table | Display::InlineTable)
+          || matches!(style.display, Display::TableRow))
+          && matches!(child_style.display, Display::TableCell));
       collect_break_opportunities(
         child,
         child_abs_start,
