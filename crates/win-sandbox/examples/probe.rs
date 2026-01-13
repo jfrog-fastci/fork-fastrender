@@ -1609,6 +1609,37 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
   // Probes
   // -----------------------------------------------------------------------------
 
+  fn describe_win32_error(code: i32) -> Option<&'static str> {
+    match code as u32 {
+      ERROR_ACCESS_DENIED => Some("ERROR_ACCESS_DENIED"),
+      2 => Some("ERROR_FILE_NOT_FOUND"),
+      3 => Some("ERROR_PATH_NOT_FOUND"),
+      32 => Some("ERROR_SHARING_VIOLATION"),
+      _ => None,
+    }
+  }
+
+  fn describe_wsa_error(code: i32) -> Option<&'static str> {
+    match code {
+      10013 => Some("WSAEACCES"),
+      10051 => Some("WSAENETUNREACH"),
+      10060 => Some("WSAETIMEDOUT"),
+      10061 => Some("WSAECONNREFUSED"),
+      10065 => Some("WSAEHOSTUNREACH"),
+      _ => None,
+    }
+  }
+
+  fn format_os_error(raw: Option<i32>, describe: fn(i32) -> Option<&'static str>) -> String {
+    match raw {
+      Some(code) => match describe(code) {
+        Some(name) => format!("Some({code}) ({name})"),
+        None => format!("Some({code})"),
+      },
+      None => "None".to_string(),
+    }
+  }
+
   fn probe_read(path: &PathBuf) {
     match std::fs::read(path) {
       Ok(bytes) => println!(
@@ -1617,11 +1648,12 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
         path.display()
       ),
       Err(err) => {
+        let raw = err.raw_os_error();
         println!(
-          "fs: read {} (FAILED): {} (raw_os_error={:?})",
+          "fs: read {} (FAILED): {} (raw_os_error={})",
           path.display(),
           err,
-          err.raw_os_error()
+          format_os_error(raw, describe_win32_error)
         );
       }
     }
@@ -1639,11 +1671,14 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
     let timeout = Duration::from_millis(500);
     match TcpStream::connect_timeout(&addr, timeout) {
       Ok(_stream) => println!("net: connect {addr} (SUCCESS)"),
-      Err(err) => println!(
-        "net: connect {addr} (FAILED): {} (raw_os_error={:?})",
-        err,
-        err.raw_os_error()
-      ),
+      Err(err) => {
+        let raw = err.raw_os_error();
+        println!(
+          "net: connect {addr} (FAILED): {} (raw_os_error={})",
+          err,
+          format_os_error(raw, describe_wsa_error)
+        );
+      }
     }
   }
 }

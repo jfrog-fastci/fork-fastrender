@@ -10,6 +10,13 @@
 //! `docs/windows_sandbox.md` and the main spawner implementation in
 //! `src/sandbox/windows.rs` (in the root `fastrender` crate).
 //!
+//! For a lightweight manual debugging / repro tool that spawns itself under the sandbox and prints
+//! observed token/job/mitigation state, see `examples/probe.rs`:
+//!
+//! ```text
+//! cargo run -p win-sandbox --example probe -- --connect-localhost
+//! ```
+//!
 //! The public API is intentionally safe; internal Win32 calls are wrapped so
 //! callers never need to use `unsafe` directly.
 //!
