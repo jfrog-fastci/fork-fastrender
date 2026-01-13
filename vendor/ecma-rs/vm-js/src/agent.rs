@@ -169,10 +169,20 @@ fn clone_stack_best_effort(stack: &[StackFrame]) -> Vec<StackFrame> {
   }
 
   let mut out: Vec<StackFrame> = Vec::new();
-  if out.try_reserve_exact(stack.len()).is_err() {
-    return Vec::new();
+  // Prefer an exact reserve so we don't repeatedly reallocate in the common case, but fall back to
+  // incremental best-effort cloning when we cannot allocate the full capacity up-front.
+  if out.try_reserve_exact(stack.len()).is_ok() {
+    for frame in stack {
+      out.push(frame.clone());
+    }
+    return out;
   }
+
+  // Incrementally extend until we hit OOM; return a partial stack rather than dropping it entirely.
   for frame in stack {
+    if out.try_reserve(1).is_err() {
+      break;
+    }
     out.push(frame.clone());
   }
   out
