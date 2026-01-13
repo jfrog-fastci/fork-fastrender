@@ -394,35 +394,6 @@ pub(super) fn apply_renderer_sandbox_prelude_linux() -> Result<(), SandboxError>
   super::linux_set_parent_death_signal().map_err(|source| SandboxError::SetParentDeathSignalFailed {
     source,
   })?;
-  set_dumpable_0()?;
-  disable_core_dumps()?;
-  Ok(())
-}
-
-fn set_dumpable_0() -> Result<(), SandboxError> {
-  // SAFETY: `prctl` is a process-global syscall. `PR_SET_DUMPABLE` expects a single integer
-  // argument (0/1) followed by unused zeroes.
-  let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
-  if rc != 0 {
-    return Err(SandboxError::SetDumpableFailed {
-      source: io::Error::last_os_error(),
-    });
-  }
-  Ok(())
-}
-
-fn disable_core_dumps() -> Result<(), SandboxError> {
-  let new = libc::rlimit {
-    rlim_cur: 0,
-    rlim_max: 0,
-  };
-  // SAFETY: `setrlimit` reads from a valid `rlimit` pointer for the duration of the syscall.
-  let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &new) };
-  if rc != 0 {
-    return Err(SandboxError::DisableCoreDumpsFailed {
-      source: io::Error::last_os_error(),
-    });
-  }
   Ok(())
 }
 

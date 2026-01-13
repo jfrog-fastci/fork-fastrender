@@ -145,6 +145,13 @@ pub struct RendererSandboxConfig {
   /// Renderer subprocesses should generally set this to `Some(0)` to ensure no coredumps are
   /// produced from untrusted content.
   pub core_limit_bytes: Option<u64>,
+  /// Optional clamp for `RLIMIT_NPROC` (processes/threads per user).
+  ///
+  /// This is intentionally opt-in: the renderer uses threading internally (rayon, font shaping,
+  /// image decode), and `RLIMIT_NPROC` is a per-user limit that can interact poorly with other
+  /// processes running under the same uid. Callers that run the renderer under a dedicated uid can
+  /// set this to a small value, but it is not applied by default.
+  pub nproc_limit: Option<u64>,
   /// Landlock filesystem policy.
   pub landlock: RendererLandlockPolicy,
   /// Seccomp policy.
@@ -157,10 +164,55 @@ impl Default for RendererSandboxConfig {
       network_policy: NetworkPolicy::DenyAllSockets,
       linux_namespaces: linux_namespaces::LinuxNamespacesConfig::default(),
       address_space_limit_bytes: None,
-      nofile_limit: None,
+      // Keep this higher than typical library/userspace needs while still dramatically smaller than
+      // the default `ulimit -n` (often 1024+).
+      nofile_limit: Some(256),
       core_limit_bytes: Some(0),
+      nproc_limit: None,
       landlock: RendererLandlockPolicy::Disabled,
       seccomp: RendererSeccompPolicy::RendererDefault,
+    }
+  }
+}
+
+/// Report produced while applying sandbox hardening.
+#[derive(Debug, Default, Clone)]
+pub struct RendererSandboxReport {
+  /// Non-fatal failures while applying sandbox knobs.
+  pub warnings: Vec<SandboxWarning>,
+
+  /// `true` when `PR_SET_DUMPABLE=0` was applied successfully.
+  pub dumpable_disabled: Option<bool>,
+
+  /// (soft, hard) values observed after applying `RLIMIT_CORE`.
+  pub rlimit_core: Option<(u64, u64)>,
+
+  /// (soft, hard) values observed after applying `RLIMIT_NOFILE`.
+  pub rlimit_nofile: Option<(u64, u64)>,
+
+  /// (soft, hard) values observed after applying `RLIMIT_NPROC`.
+  pub rlimit_nproc: Option<(u64, u64)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxWarningKind {
+  PrctlDumpable,
+  RlimitCore,
+  RlimitNofile,
+  RlimitNproc,
+}
+
+#[derive(Debug, Clone)]
+pub struct SandboxWarning {
+  pub kind: SandboxWarningKind,
+  pub message: String,
+}
+
+impl SandboxWarning {
+  pub(crate) fn new(kind: SandboxWarningKind, message: impl Into<String>) -> Self {
+    Self {
+      kind,
+      message: message.into(),
     }
   }
 }
@@ -344,7 +396,12 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
 /// renderer does not leak sensitive data via core files.
 #[cfg(target_os = "linux")]
 pub fn apply_renderer_sandbox_prelude() -> Result<(), SandboxError> {
-  linux_seccomp::apply_renderer_sandbox_prelude_linux()
+  linux_set_parent_death_signal().map_err(|source| SandboxError::SetParentDeathSignalFailed {
+    source,
+  })?;
+  let mut report = RendererSandboxReport::default();
+  linux_hardening::apply_linux_hardening(&RendererSandboxConfig::default(), &mut report);
+  Ok(())
 }
 
 /// On Linux, set `PR_SET_PDEATHSIG` so the current process is killed if its parent dies.
@@ -371,11 +428,26 @@ pub fn linux_set_parent_death_signal() -> io::Result<()> {
 pub fn apply_renderer_sandbox(
   config: RendererSandboxConfig,
 ) -> Result<SandboxStatus, SandboxError> {
+  Ok(apply_renderer_sandbox_with_report(config)?.0)
+}
+
+/// Apply the renderer sandbox for the current process, returning a report of best-effort hardening
+/// steps.
+///
+/// This is identical to [`apply_renderer_sandbox`] but preserves non-fatal hardening failures (e.g.
+/// rlimit clamps) in the returned report.
+pub fn apply_renderer_sandbox_with_report(
+  config: RendererSandboxConfig,
+) -> Result<(SandboxStatus, RendererSandboxReport), SandboxError> {
+  let mut report = RendererSandboxReport::default();
+
   #[cfg(target_os = "linux")]
   {
     // Best-effort defense-in-depth: isolate networking via a new network namespace when permitted.
     // This must run before seccomp, since the seccomp filter may block `unshare(2)`.
     let _ = linux_namespaces::apply_namespaces(config.linux_namespaces);
+
+    linux_hardening::apply_linux_hardening(&config, &mut report);
 
     // Apply Landlock as defense-in-depth. This doesn't affect already-open FDs (pipes, sockets,
     // memfd, etc.) because Landlock mediates path-based filesystem operations.
@@ -385,13 +457,14 @@ pub fn apply_renderer_sandbox(
       Err(source) => return Err(SandboxError::LandlockFailed { source }),
     }
 
-    return linux_seccomp::apply_renderer_sandbox_linux(config);
+    let status = linux_seccomp::apply_renderer_sandbox_linux(config)?;
+    return Ok((status, report));
   }
 
   #[cfg(not(target_os = "linux"))]
   {
     let _ = config;
-    Ok(SandboxStatus::Unsupported)
+    Ok((SandboxStatus::Unsupported, report))
   }
 }
 
@@ -400,20 +473,35 @@ pub fn apply_renderer_sandbox(
 /// This is primarily useful for unit tests and early bring-up of renderer processes where only
 /// syscall filtering is desired.
 pub fn apply_renderer_seccomp_denylist() -> Result<SandboxStatus, SandboxError> {
+  Ok(apply_renderer_seccomp_denylist_with_report(RendererSandboxConfig::default())?.0)
+}
+
+/// Applies the Linux renderer seccomp denylist without additional sandbox layers, returning a
+/// report of best-effort hardening steps.
+pub fn apply_renderer_seccomp_denylist_with_report(
+  config: RendererSandboxConfig,
+) -> Result<(SandboxStatus, RendererSandboxReport), SandboxError> {
+  let mut report = RendererSandboxReport::default();
+
   #[cfg(target_os = "linux")]
   {
-    return linux_seccomp::apply_renderer_sandbox_linux(RendererSandboxConfig::default());
+    linux_hardening::apply_linux_hardening(&config, &mut report);
+    let status = linux_seccomp::apply_renderer_sandbox_linux(config)?;
+    return Ok((status, report));
   }
 
   #[cfg(not(target_os = "linux"))]
   {
-    Ok(SandboxStatus::Unsupported)
+    let _ = config;
+    Ok((SandboxStatus::Unsupported, report))
   }
 }
 
 #[cfg(target_os = "linux")]
-mod linux_seccomp;
+mod linux_hardening;
 
+#[cfg(target_os = "linux")]
+mod linux_seccomp;
 #[cfg(target_os = "macos")]
 pub mod macos_spawn;
 #[cfg(target_os = "windows")]
@@ -593,6 +681,72 @@ mod tests {
       _ => None,
     };
     matches!(errno, Some(code) if code == libc::ENOSYS || code == libc::EINVAL)
+  }
+
+  fn get_rlimit(resource: libc::__rlimit_resource_t) -> (u64, u64) {
+    let mut current = libc::rlimit {
+      rlim_cur: 0,
+      rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` writes to `current` for a valid pointer.
+    let rc = unsafe { libc::getrlimit(resource, &mut current) };
+    assert_eq!(rc, 0, "getrlimit({resource}) failed");
+    (current.rlim_cur as u64, current.rlim_max as u64)
+  }
+
+  #[test]
+  fn renderer_hardening_sets_rlimits() {
+    const CHILD_ENV: &str = "FASTR_TEST_RENDERER_HARDENING_CHILD";
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+
+    if is_child {
+      const NOFILE_CAP: u64 = 256;
+      let config = RendererSandboxConfig {
+        nofile_limit: Some(NOFILE_CAP),
+        core_limit_bytes: Some(0),
+        ..Default::default()
+      };
+      let mut report = RendererSandboxReport::default();
+      linux_hardening::apply_linux_hardening(&config, &mut report);
+
+      let (core_cur, core_max) = get_rlimit(libc::RLIMIT_CORE);
+      assert_eq!(
+        core_cur, 0,
+        "expected RLIMIT_CORE.cur to be 0 after sandbox hardening"
+      );
+      assert_eq!(
+        core_max, 0,
+        "expected RLIMIT_CORE.max to be 0 after sandbox hardening"
+      );
+
+      let (nofile_cur, nofile_max) = get_rlimit(libc::RLIMIT_NOFILE);
+      assert!(
+        nofile_cur <= NOFILE_CAP,
+        "expected RLIMIT_NOFILE.cur ({nofile_cur}) <= configured cap ({NOFILE_CAP})"
+      );
+      assert!(
+        nofile_max <= NOFILE_CAP,
+        "expected RLIMIT_NOFILE.max ({nofile_max}) <= configured cap ({NOFILE_CAP})"
+      );
+      return;
+    }
+
+    // Run the hardening assertions in a child process so the parent test runner is unaffected.
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name = "sandbox::tests::renderer_hardening_sets_rlimits";
+    let output = Command::new(exe)
+      .env(CHILD_ENV, "1")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn child test process");
+    assert!(
+      output.status.success(),
+      "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
   }
 
   #[test]
