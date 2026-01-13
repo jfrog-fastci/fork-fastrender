@@ -7516,18 +7516,21 @@ impl BrowserTab {
   /// - The document is dirty and needs a new frame rendered.
   /// - The JavaScript event loop has runnable work (tasks/microtasks/external tasks/idle callbacks).
   /// - The JavaScript event loop has any scheduled timers (even if none are due yet).
-  /// - The JavaScript event loop has pending `requestAnimationFrame` callbacks.
+  /// - The JavaScript event loop has pending `requestAnimationFrame` callbacks **and the document is visible**.
   pub fn wants_ticks(&self) -> bool {
     let document_wants_ticks = self.host.document.prepared().is_some_and(|prepared| {
       let tree = prepared.fragment_tree();
       !tree.keyframes.is_empty() || tree.transition_state.is_some()
     });
 
+    let raf_wants_ticks = !self.host.document.visibility_state().hidden()
+      && self.event_loop.has_pending_animation_frame_callbacks();
+
     document_wants_ticks
       || self.host.document.is_dirty()
       || !self.event_loop.is_idle()
       || self.event_loop.has_pending_timers()
-      || self.event_loop.has_pending_animation_frame_callbacks()
+      || raf_wants_ticks
   }
 
   /// Returns a scheduler hint for when the tab should be "ticked" next.
@@ -11685,6 +11688,161 @@ mod tests {
       matches!(unhandled, Value::Bool(true)),
       "expected unhandledrejection listener to run, got {unhandled:?}"
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_wants_ticks_considers_pending_timers_even_when_event_loop_is_idle() -> Result<()> {
+    use crate::js::clock::VirtualClock;
+
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::with_clock(clock);
+    let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
+      "",
+      RenderOptions::default(),
+      VmJsBrowserTabExecutor::default(),
+      event_loop,
+      JsExecutionOptions::default(),
+    )?;
+
+    // Start from a fully rendered/clean document with no other queued work so we can isolate timer
+    // bookkeeping.
+    let _ = tab.render_frame()?;
+    tab.event_loop.clear_all_pending_work();
+
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      let spec = ScriptElementSpec {
+        base_url: host.base_url.clone(),
+        src: None,
+        src_attr_present: false,
+        inline_text: String::new(),
+        async_attr: false,
+        force_async: false,
+        defer_attr: false,
+        nomodule_attr: false,
+        crossorigin: None,
+        integrity_attr_present: false,
+        integrity: None,
+        referrer_policy: None,
+        fetch_priority: None,
+        parser_inserted: false,
+        node_id: None,
+        script_type: ScriptType::Classic,
+      };
+      host.executor.execute_classic_script(
+        "globalThis.__timeoutId = setTimeout(() => {}, 60000);",
+        &spec,
+        None,
+        host.document.as_mut(),
+        event_loop,
+      )?;
+    }
+
+    tab
+      .event_loop
+      .run_until_idle(&mut tab.host, RunLimits::unbounded())?;
+
+    assert!(
+      !tab.host.document.is_dirty(),
+      "expected document to be clean so wants_ticks reflects timer state"
+    );
+    assert!(
+      tab.event_loop.is_idle(),
+      "expected EventLoop::is_idle to ignore future timers"
+    );
+    assert!(
+      tab.wants_ticks(),
+      "expected BrowserTab::wants_ticks to keep ticking when timers are scheduled"
+    );
+
+    // Clearing the timeout should return the tab to a quiescent state.
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      let spec = ScriptElementSpec {
+        base_url: host.base_url.clone(),
+        src: None,
+        src_attr_present: false,
+        inline_text: String::new(),
+        async_attr: false,
+        force_async: false,
+        defer_attr: false,
+        nomodule_attr: false,
+        crossorigin: None,
+        integrity_attr_present: false,
+        integrity: None,
+        referrer_policy: None,
+        fetch_priority: None,
+        parser_inserted: false,
+        node_id: None,
+        script_type: ScriptType::Classic,
+      };
+      host.executor.execute_classic_script(
+        "clearTimeout(globalThis.__timeoutId);",
+        &spec,
+        None,
+        host.document.as_mut(),
+        event_loop,
+      )?;
+    }
+
+    tab
+      .event_loop
+      .run_until_idle(&mut tab.host, RunLimits::unbounded())?;
+
+    assert!(
+      tab.event_loop.is_idle(),
+      "expected EventLoop to remain idle after clearing the timeout"
+    );
+    assert!(
+      !tab.wants_ticks(),
+      "expected BrowserTab::wants_ticks to return false after clearing the last timer"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_wants_ticks_considers_queued_microtasks_and_tasks() -> Result<()> {
+    use crate::js::clock::VirtualClock;
+
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::with_clock(clock);
+    let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
+      "",
+      RenderOptions::default(),
+      VmJsBrowserTabExecutor::default(),
+      event_loop,
+      JsExecutionOptions::default(),
+    )?;
+
+    let _ = tab.render_frame()?;
+    tab.event_loop.clear_all_pending_work();
+
+    // Microtask should make the tab want ticks even when no render invalidation exists.
+    tab
+      .event_loop
+      .queue_microtask(|_host, _event_loop| Ok(()))?;
+    assert!(!tab.event_loop.is_idle());
+    assert!(tab.wants_ticks());
+    tab
+      .event_loop
+      .run_until_idle(&mut tab.host, RunLimits::unbounded())?;
+    assert!(tab.event_loop.is_idle());
+    assert!(!tab.wants_ticks());
+
+    // Normal task should also make the tab want ticks.
+    tab
+      .event_loop
+      .queue_task(TaskSource::DOMManipulation, |_host, _event_loop| Ok(()))?;
+    assert!(!tab.event_loop.is_idle());
+    assert!(tab.wants_ticks());
+    tab
+      .event_loop
+      .run_until_idle(&mut tab.host, RunLimits::unbounded())?;
+    assert!(tab.event_loop.is_idle());
+    assert!(!tab.wants_ticks());
 
     Ok(())
   }
