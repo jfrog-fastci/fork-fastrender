@@ -1019,6 +1019,8 @@ fn processes_html() -> String {
     crate::ui::process_assignment::ProcessModel::PerTab => "tab",
     crate::ui::process_assignment::ProcessModel::PerSiteKey => "site",
   };
+  let site_isolation_enabled =
+    matches!(process_model, crate::ui::process_assignment::ProcessModel::PerSiteKey);
   let process_model_env_html = {
     let raw = std::env::var(crate::ui::process_assignment_config::ENV_PROCESS_MODEL)
       .ok()
@@ -1220,6 +1222,11 @@ fn processes_html() -> String {
     );
   } else {
     for (process_id, group) in renderer_processes.iter() {
+      let row_class = if site_isolation_enabled && group.sites.len() > 1 {
+        " class=\"warn\""
+      } else {
+        ""
+      };
       let mut tabs_cell = String::new();
       for (idx, (window_id, tab_id)) in group.tabs.iter().enumerate() {
         if idx > 0 {
@@ -1246,7 +1253,7 @@ fn processes_html() -> String {
       };
 
       process_rows.push_str(&format!(
-        "<tr>
+        "<tr{row_class}>
           <td><code>{process_id}</code></td>
           <td>{tabs_cell}</td>
           <td>{sites_cell}</td>
@@ -1268,6 +1275,14 @@ fn processes_html() -> String {
     site_rows.push_str("<tr><td colspan=\"3\" class=\"empty\">No site snapshot is available.</td></tr>");
   } else {
     for (site, group) in site_groups.iter() {
+      let row_class = if site_isolation_enabled
+        && site != "unknown"
+        && group.renderer_processes.len() + usize::from(group.has_unassigned) > 1
+      {
+        " class=\"warn\""
+      } else {
+        ""
+      };
       let site_cell = if site == "unknown" {
         "<span class=\"muted\">unknown</span>".to_string()
       } else {
@@ -1305,7 +1320,7 @@ fn processes_html() -> String {
       }
 
       site_rows.push_str(&format!(
-        "<tr>
+        "<tr{row_class}>
           <td>{site_cell}</td>
           <td>{renderer_cell}</td>
           <td>{tabs_cell}</td>
@@ -1343,6 +1358,11 @@ fn processes_html() -> String {
         · Tabs missing window id: <code>{unknown_windows}</code>
         · Tabs missing site key: <code>{unknown_sites}</code>
         {registry_stats_html}
+      </p>
+
+      <p class=\"sub\">
+        Rows highlighted in red indicate potential site-isolation mismatches (best-effort; only
+        highlighted when the process model is <code>site</code>).
       </p>
 
       <h2>Renderer processes</h2>
@@ -1412,6 +1432,9 @@ fn processes_html() -> String {
 }
 .proc-table code {
   word-break: break-all;
+}
+.proc-table tr.warn td {
+  background: rgba(239, 68, 68, 0.10);
 }
 .detail { margin-top: 4px; font-size: 12px; }
 .muted { color: var(--about-muted); }
