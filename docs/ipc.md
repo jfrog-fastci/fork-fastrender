@@ -202,6 +202,7 @@ Additional (important) size limits that sit *on top* of framing:
 | Browser↔network URL string max | 1 MiB | `MAX_URL_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
 | Browser↔network cookie string max | 4 KiB | `MAX_COOKIE_STRING_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
 | Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
+| Default max un-acked frames in flight (renderer-side flow control) | 2 | `DEFAULT_MAX_FRAMES_IN_FLIGHT` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | WebSocket URL bytes (renderer→network) | 8 KiB | `MAX_WEBSOCKET_URL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket protocol count (renderer→network) | 32 | `MAX_WEBSOCKET_PROTOCOLS` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket protocol string bytes (renderer→network) | 1 KiB | `MAX_WEBSOCKET_PROTOCOL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
@@ -406,6 +407,8 @@ prevents the renderer from blocking indefinitely when the browser/UI is slow).
 
 See also: `RendererToBrowser::FrameReady { frame_seq, .. }` ↔ `BrowserToRenderer::FrameAck { frame_seq }`
 in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs).
+The protocol module also provides a small renderer-side helper (`FrameInFlightCounter`) with a
+conservative default limit `DEFAULT_MAX_FRAMES_IN_FLIGHT = 2`.
 
 Security invariants that must remain true (even before we migrate to `memfd`):
 
