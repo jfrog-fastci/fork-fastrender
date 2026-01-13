@@ -80,15 +80,21 @@ What `BrowserTab` does today:
 
 - for `BrowserTab::from_html(...)` / `BrowserTab::navigate_to_html(...)` / `BrowserTab::navigate_to_url(...)`,
   drives a script-aware streaming parser so **parser-inserted** classic `<script>` elements execute
-  at parse time (scripts observe a partially-built DOM),
+  at parse time (scripts observe a partially-built DOM). Parsing runs in bounded slices and yields
+  back to the event loop based on `JsExecutionOptions.dom_parse_budget`, which lets “as soon as
+  possible” scripts (`async` / ordered-asap modules) interleave ahead of later parser work,
 - fetches external scripts through the document’s `ResourceFetcher`,
+- executes classic scripts plus module/import-map scripts when `JsExecutionOptions.supports_module_scripts`
+  is enabled (including dynamic `import()` and top-level `await`),
 - runs microtask checkpoints after script execution,
 - rerenders when DOM mutations invalidate layout/paint (`render_if_needed` / `render_frame`).
 
 What it does **not** do yet (important gaps):
 
-- fully spec-correct parser/event-loop interleaving in all edge cases (though `BrowserTab` now parses
-  under a per-task `ParseBudget` so async-ready work can interleave with parsing),
+- fully spec-correct HTML script processing in all edge cases (task-source partitioning, preload
+  scanning, full Fetch/CORS/SRI nuance, etc.), though `BrowserTab` now parses under a per-task
+  `ParseBudget` (`JsExecutionOptions.dom_parse_budget`) so async-ready work can interleave with
+  parsing,
 - full Web platform coverage: the DOM/WebIDL/Web API surface exposed to JS is still a subset.
 
 Module support status:
@@ -177,7 +183,10 @@ Key modules:
 - `src/js/html_script_scheduler.rs`
   - `HtmlScriptScheduler` → produces `HtmlScriptSchedulerAction` values (start classic fetch / start module graph fetch /
     block parser / execute now / queue task / queue script event task)
-  - Supports classic scripts, module scripts, and import maps (host integration via `BrowserTabHost` and `HtmlScriptPipeline`).
+  - Supports classic scripts, module scripts, and import maps. In production, `BrowserTabHost`
+    (`src/api/browser_tab.rs`) drives the scheduler by interpreting actions in
+    `BrowserTabHost::apply_scheduler_actions(...)` (start fetches, block/resume parsing, execute
+    scripts, queue event-loop tasks, dispatch `load`/`error` events, etc).
 - `src/js/html_script_pipeline.rs`
   - test harness / lightweight orchestrator that connects `StreamingHtmlParser` yields to `HtmlScriptScheduler` actions
 - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`
@@ -196,7 +205,8 @@ Key modules:
 
 #### Promise jobs and microtasks (`vm-js` host hooks)
 
-`vm-js` models ECMAScript host hooks (e.g. `HostEnqueuePromiseJob`) via the `VmHostHooks` trait.
+`vm-js` models ECMAScript host hooks (e.g. `HostEnqueuePromiseJob`) via the `VmHostHooks` trait
+(`vendor/ecma-rs/vm-js/src/jobs.rs`).
 FastRender implements these hooks by routing Promise jobs into the host-owned HTML-like
 `EventLoop` microtask queue:
 
@@ -251,6 +261,29 @@ instead of the hook-only `exec_script_*_with_hooks(...)` path.
 
 This keeps Promise jobs and `queueMicrotask(...)` in the same FIFO-ordered microtask queue, and
 ensures Promise jobs enqueued by other Promise jobs run in the same microtask checkpoint.
+
+#### Module scripts, top-level `await`, and completion callbacks
+
+Module evaluation can be **asynchronous** because of top-level `await`. To model this, the HTML
+integration (`BrowserTabHost`) treats module `<script>` execution as a two-phase operation:
+
+- `BrowserTabJsExecutor::execute_module_script(...)` returns
+  `ModuleScriptExecutionStatus::{Completed, Pending}` (defined in `src/api/browser_tab.rs`).
+- If `Pending` is returned, the host keeps ordered module queues blocked until the executor later
+  reports completion.
+
+Completion is reported back into the HTML-like event loop via an explicit task:
+`BrowserTabHost::on_module_script_evaluation_complete(...)` (`src/api/browser_tab.rs`).
+
+The production `vm-js` executor wires this up in `src/api/browser_tab_vm_js_executor.rs` by:
+
+1. Storing the module’s evaluation Promise when evaluation returns `Pending`.
+2. Polling pending evaluation promises from `BrowserTabJsExecutor::after_microtask_checkpoint(...)`
+   (which `BrowserTabHost` calls after draining microtasks).
+3. When a promise settles, queueing a `TaskSource::Script` task that invokes
+   `on_module_script_evaluation_complete(...)` so the host can:
+   - dispatch `<script>` `load`/`error` events, and
+   - unblock ordered module execution (including dynamic `async=false` insertion ordering).
 
 ### DOM for bindings (`src/dom2/*`)
 
@@ -416,7 +449,7 @@ Current behavior (still experimental / not fully spec-correct):
 - Drives the script-aware streaming parser so **parser-inserted** scripts run at `</script>`
   boundaries against a partially-built DOM.
 - Fetches and executes external classic scripts (`<script src=...>`) and module scripts (including
-  dynamic `import()` and top-level await).
+  static import graphs, dynamic `import()`, and top-level `await`).
 - Supports **inline** `<script type="importmap">` and applies import maps for module specifier
   resolution.
 - Runs scripts under the renderer’s JS execution budgets (`JsExecutionArgs`) and cooperative render
@@ -443,6 +476,8 @@ The JS workstream is intentionally staged. Today, important missing/unsupported 
 - module scripts/import maps/dynamic `import()`/top-level await are opt-in (disabled in
   `JsExecutionOptions::default` for hostile-input safety). Enable module loading via
   `JsExecutionOptions { supports_module_scripts: true, .. }` when you want modern module behavior.
+- external import maps (`<script type="importmap" src=...>`) are intentionally unsupported; only
+  inline `<script type="importmap">` is supported (see [`docs/import_maps.md`](import_maps.md))
 - `document.write()` support is limited:
   - it can inject into an active streaming parse (parser re-entry) for parser-blocking scripts
     executed during `BrowserTab`'s streaming HTML parse,

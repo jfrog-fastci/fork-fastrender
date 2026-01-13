@@ -35,6 +35,13 @@ boundaries against a partially-built DOM. URL navigations (`BrowserTab::navigate
 same streaming parser driver so parser-inserted classic scripts execute during parsing (instead of
 best-effort post-parse `<script>` discovery).
 
+In production, parsing is driven from the HTML-like `EventLoop` in **bounded slices**:
+`BrowserTabHost::parse_until_blocked(...)` pumps the `StreamingHtmlParser` a limited number of times
+per task (configured by `JsExecutionOptions.dom_parse_budget`). When the budget is exhausted it
+snapshots the current parser DOM into the host document and yields back to the event loop. This is
+how “as soon as possible” scripts (`async` / ordered-asap modules) can run before parsing continues
+in a single-threaded integration.
+
 What exists today (in-tree):
 
 - **HTML parsing hooks (pause at `</script>`):**
@@ -180,6 +187,12 @@ In code, this maps to `src/js/event_loop.rs`:
 - Parser-driven synchronous execution must explicitly call
   `EventLoop::perform_microtask_checkpoint()` after running a script.
 
+In the `vm-js` execution path, Promise jobs enter the host microtask queue via `vm_js::VmHostHooks`
+(`vendor/ecma-rs/vm-js/src/jobs.rs`). FastRender implements these hooks in
+`src/js/vmjs/window_timers.rs` (`VmJsEventLoopHooks`), which enqueues each `vm_js::Job` into the
+host-owned `EventLoop` microtask queue. This keeps `Promise.then(...)` reactions and
+`queueMicrotask(...)` callbacks in the same FIFO microtask checkpoint.
+
 ### 5) Base URL timing (script preparation time)
 Relative script URLs must be resolved using the document base URL **as of the moment the script is
 prepared**, not “whatever the final `<base href>` was after parsing”.
@@ -192,28 +205,28 @@ This requires tracking the base URL while parsing (see `BaseUrlTracker` below).
 These features exist in the HTML/FETCH/CSP specs and matter for web-compat, but FastRender is still
 intentionally conservative in some areas:
 
- - **Module scripts are opt-in:** `<script type="module">`, dynamic `import()`, and import maps work
-   when `JsExecutionOptions::supports_module_scripts` is enabled and the executor provides module
-   loading (e.g. `VmJsBrowserTabExecutor`). The default options disable module loading for
-   hostile-input safety.
- - **Content Security Policy (CSP):** partially implemented for scripts in `api::BrowserTab`
-   - Enforces `script-src` / `default-src` for external `<script src=...>` URL allowlisting.
-   - Enforces nonce/hash-based allowlisting for inline scripts (`nonce=` + `'nonce-...'`, and
-     `'sha256-...'`).
-   - `strict-dynamic` is recognized but handled conservatively (no trust propagation).
- - **`document.write()` is a bounded subset**, not full HTML semantics:
-   - FastRender implements a limited streaming-parse re-entry subset (`src/html/document_write.rs`):
-     `document.write()`/`writeln()` inject into the active streaming parser input stream during
-     parser-blocking script execution.
-   - When no streaming parser is active, `document.write()` is treated as a no-op (deterministic
-     subset; no implicit `document.open()` / destructive post-load writes).
- - **Fetch integration remains incomplete:** `BrowserTab` enforces key script checks (MIME sanity,
-   basic CORS gating, SRI for classic/module scripts, referrer policy propagation), but does not yet
-   model the full Fetch/HTML surface (streaming network, full credentials/mode nuance, service
-   workers, CORP/COEP, etc.).
- - **DOM/Web APIs are still a subset:** script ordering/lifecycle is now largely spec-shaped, but the
-   JS-visible platform surface is still being built out, so many real pages will fail due to missing
-   WebIDL bindings or Web APIs rather than incorrect `<script>` ordering.
+- **Module scripts are opt-in:** `<script type="module">`, dynamic `import()`, and import maps work
+  when `JsExecutionOptions::supports_module_scripts` is enabled and the executor provides module
+  loading (e.g. `VmJsBrowserTabExecutor`). The default options disable module loading for
+  hostile-input safety.
+- **Content Security Policy (CSP):** partially implemented for scripts in `api::BrowserTab`
+  - Enforces `script-src` / `default-src` for external `<script src=...>` URL allowlisting.
+  - Enforces nonce/hash-based allowlisting for inline scripts (`nonce=` + `'nonce-...'`, and
+    `'sha256-...'`).
+  - `strict-dynamic` is recognized but handled conservatively (no trust propagation).
+- **`document.write()` is a bounded subset**, not full HTML semantics:
+  - FastRender implements a limited streaming-parse re-entry subset (`src/html/document_write.rs`):
+    `document.write()`/`writeln()` inject into the active streaming parser input stream during
+    parser-blocking script execution.
+  - When no streaming parser is active, `document.write()` is treated as a no-op (deterministic
+    subset; no implicit `document.open()` / destructive post-load writes).
+- **Fetch integration remains incomplete:** `BrowserTab` enforces key script checks (MIME sanity,
+  basic CORS gating, SRI for classic/module scripts, referrer policy propagation), but does not yet
+  model the full Fetch/HTML surface (streaming network, full credentials/mode nuance, service
+  workers, CORP/COEP, etc.).
+- **DOM/Web APIs are still a subset:** script ordering/lifecycle is now largely spec-shaped, but the
+  JS-visible platform surface is still being built out, so many real pages will fail due to missing
+  WebIDL bindings or Web APIs rather than incorrect `<script>` ordering.
 
 When adding any of the above later, treat the HTML Standard as the source of truth and extend the
 state machine; do not “patch in” ad-hoc behavior.
@@ -280,9 +293,16 @@ Keeping these boundaries crisp is what makes later module/import map work tracta
 - After handling a yielded `Script`, call `pump()` again to resume parsing (there is no separate
   `resume()` API).
 
-**Important integration point:** for `async` scripts, the parser must periodically yield to the
-script scheduler (so “async-ready” scripts can interrupt parsing, as browsers do). In a
-single-threaded model this can be “check after each chunk/token”.
+**Important integration point:** async/ordered-asap scripts can become ready *while parsing is still
+in progress*. The production `BrowserTab` integration handles this by parsing in event-loop-driven
+**slices**:
+
+- `JsExecutionOptions.dom_parse_budget` bounds how many `StreamingHtmlParser::pump()` iterations are
+  performed per parse task.
+- When the budget is exhausted, `BrowserTabHost` snapshots the parser DOM into the host document and
+  yields back to the event loop, giving any queued script-execution tasks a chance to run.
+- `BrowserTabHost` also detects already-ready “as soon as possible” scripts and yields immediately
+  so their tasks run *before* parsing continues (“still blocks at its execution point” in HTML).
 
 ### 2) `dom2` TreeSink + mutable DOM invariants
 **Responsibility:** build a mutable document tree *as the parser runs*, so scripts can observe and
@@ -348,6 +368,9 @@ that needs explicit "block parser" signals.
 - `src/js/html_script_pipeline.rs`: lightweight harness/orchestrator used by unit tests.
 - `src/api/browser_tab.rs`: production “tab” integration (streaming parsing + script scheduling +
   DOM mutation + rendering).
+  - `BrowserTabHost::apply_scheduler_actions(...)` is the main “action interpreter”: it starts
+    fetches, queues execution tasks, performs synchronous `ExecuteNow` work, and dispatches
+    `<script>` load/error element tasks.
 
 **Inputs:**
 
@@ -511,11 +534,39 @@ resolution:
 - **Resolved module set (per global object):** cache specifier resolution results in the global
   object’s **resolved module set** so repeated resolution for the same `(referrer, specifier)` pair
   is stable.
-  - When registering an import map, the spec merges it into the global import map *while ensuring it
-    does not retroactively affect already-resolved modules* (rules that would impact them are
-    ignored).
+   - When registering an import map, the spec merges it into the global import map *while ensuring it
+     does not retroactively affect already-resolved modules* (rules that would impact them are
+     ignored).
 
-### 6) Code map (where this lives)
+### 6) Dynamic `import()` and import maps
+When module scripts are enabled, dynamic `import(specifier)` is supported from both classic scripts
+and module scripts (see `tests/js/js_html_integration.rs` P2 tests).
+
+At a high level:
+
+- Module specifier resolution goes through the same per-document import map state used for static
+  `import` declarations.
+- The embedder module loader is host-owned and lives in `src/js/realm_module_loader.rs`.
+
+### 7) Module evaluation and top-level `await` (`Pending` completion)
+ECMAScript module evaluation returns a Promise (to model top-level `await`). HTML therefore treats
+module script execution as potentially asynchronous.
+
+FastRender models this explicitly in the `BrowserTab` integration:
+
+- `BrowserTabJsExecutor::execute_module_script(...)` returns
+  `ModuleScriptExecutionStatus::{Completed, Pending}` (`src/api/browser_tab.rs`).
+- If `Pending` is returned, the host must *not* finalize the `<script>` yet; it waits for the module
+  evaluation promise to settle before:
+  - dispatching `<script>` `load`/`error` events, and
+  - unblocking ordered module execution queues (dynamic `async=false` ordering and post-parse modules).
+- Completion is reported by queueing an event-loop task that calls
+  `BrowserTabHost::on_module_script_evaluation_complete(...)` (`src/api/browser_tab.rs`).
+  The production `vm-js` executor (`src/api/browser_tab_vm_js_executor.rs`) does this by polling
+  pending evaluation promises from `BrowserTabJsExecutor::after_microtask_checkpoint(...)` and
+  queueing a `TaskSource::Script` task when a promise settles.
+
+### 8) Code map (where this lives)
 The integrated module-script/import-map pipeline lives in:
 
 - **Streaming parser driver:** `src/html/streaming_parser.rs` (pause/resume at `</script>`)

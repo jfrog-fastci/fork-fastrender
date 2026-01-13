@@ -40,7 +40,7 @@ Incremental invalidation can come later; correctness comes first.
 FastRender’s role is to provide the **host environment** that ECMAScript expects:
 
 - a realm + global object (`Window`-shaped global),
-- host hooks for module loading (later),
+- host hooks for module loading (static imports + dynamic `import()`),
 - task scheduling (timers, async scripts, networking integration),
 - Web IDL-backed DOM and web APIs.
 
@@ -55,8 +55,12 @@ The most important early behaviors to preserve:
 - **`defer` classic scripts**: run after parsing completes (before “document ready” milestones).
 - **`async` classic scripts**: run when ready, independent of parser progress (scheduled as tasks).
 - **Module scripts**: supported (`type="module"`) when `JsExecutionOptions.supports_module_scripts`
-  is enabled (opt-in for hostile-input safety), including dynamic `import()` and top-level await in
-  the production `BrowserTab` + `VmJsBrowserTabExecutor` embedding.
+  is enabled (opt-in for hostile-input safety; implemented by the production `BrowserTab` +
+  `VmJsBrowserTabExecutor` embedding):
+  - static import graphs,
+  - dynamic `import()` from both classic and module scripts (honors import maps),
+  - top-level `await` (module evaluation may complete asynchronously; completion is surfaced back into
+    the HTML event loop to unblock ordered module queues).
 - **Import maps**: parsing + merge/register/resolve algorithms exist in `src/js/import_maps/`.
   Inline `<script type="importmap">` is supported in both `BrowserTab` and `fetch_and_render --js`,
   and module specifier resolution goes through the active `ImportMapState`; see
@@ -75,6 +79,11 @@ FastRender needs an HTML-shaped event loop model:
 - one or more **task queues** (start with a single queue; split by “task source” later),
 - a **microtask queue** for Promise jobs / `queueMicrotask`,
 - explicit microtask checkpoint points (not “whenever convenient”).
+
+In the `vm-js` embedding, Promise jobs enter the host through `vm_js::VmHostHooks`
+(`vendor/ecma-rs/vm-js/src/jobs.rs`). FastRender’s `VmJsEventLoopHooks` implementation
+(`src/js/vmjs/window_timers.rs`) routes each `vm_js::Job` into the host-owned
+`EventLoop` microtask queue so Promise reactions run during HTML microtask checkpoints.
 
 Minimum semantics to preserve early:
 
