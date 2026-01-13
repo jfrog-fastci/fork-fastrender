@@ -38,11 +38,17 @@ Code map (repo reality):
         when using this low-level helper.
       - Supports handle inheritance allowlisting (`inherit_handles` /
         `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`).
+      - When `SpawnConfig.job` is set and the parent process is already inside a Job, the spawner
+        attempts `CREATE_BREAKAWAY_FROM_JOB` first, then retries without breakaway on
+        `ERROR_ACCESS_DENIED` (best-effort). It does **not** provide an automatic “jobless” mode.
       - Can apply a mitigation policy bitmask (`mitigation_policy`) via
         `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` (escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1`).
     - Restricted-token `CreateProcessAsUserW` spawner (`restricted_token::spawn_with_token`)
       - Uses a low-integrity restricted primary token (from `RestrictedToken`).
       - Also supports job/handle allowlisting and mitigation policies via `STARTUPINFOEX`.
+      - When `SpawnConfig.job` is set and the parent process is already inside a Job, the spawner
+        attempts `CREATE_BREAKAWAY_FROM_JOB` first, then retries without breakaway on
+        `ERROR_ACCESS_DENIED` (best-effort). It does **not** provide an automatic “jobless” mode.
     - High-level renderer sandbox wrapper (`win_sandbox::renderer::RendererSandbox`)
       - Sets up a Job object (kill-on-close + active-process limit; optional memory cap) and (when
         supported) an AppContainer profile with zero capabilities, then spawns the child suspended,
@@ -293,10 +299,12 @@ If the parent process is already running inside a Windows Job (common in CI/supe
     (`SandboxedChild.job == None`) and prints a warning: **kill-on-close + active process limit are
     not enforced**.
 
-Note: the “jobless” fallback mode is only implemented by the higher-level spawners
-(`src/sandbox/windows.rs` and `win_sandbox::renderer::RendererSandbox`) when explicitly opted in. The
-low-level `win_sandbox::{spawn_sandboxed, restricted_token::spawn_with_token}` helpers return an
-error if the process cannot be created/assigned under the requested job.
+Note: the low-level `win_sandbox::{spawn_sandboxed, restricted_token::spawn_with_token}` helpers
+implement the same `CREATE_BREAKAWAY_FROM_JOB` retry strategy as the higher-level spawners *when*
+`SpawnConfig.job` is set (try breakaway first, retry without on `ERROR_ACCESS_DENIED`). They still do
+**not** provide a “jobless” fallback mode: only the higher-level spawners (`src/sandbox/windows.rs`
+and `win_sandbox::renderer::RendererSandbox`) allow continuing without job containment when
+explicitly opted in via `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`.
 
 ## Handle inheritance allowlisting (critical)
 
