@@ -37,6 +37,7 @@ fn role_from_fastrender(role: &str) -> Role {
     "radio" => Role::RadioButton,
     // AccessKit uses "TextField" for text input controls.
     "textbox" => Role::TextField,
+    "searchbox" => Role::SearchBox,
     "link" => Role::Link,
     "img" | "image" => Role::Image,
     "heading" => Role::Heading,
@@ -50,7 +51,9 @@ fn role_from_fastrender(role: &str) -> Role {
     "separator" => Role::GenericContainer,
     "progressbar" => Role::ProgressIndicator,
     "slider" => Role::Slider,
-    "combobox" => Role::GenericContainer,
+    // AccessKit 0.11 does not have a dedicated combobox role; treat comboboxes as text fields for
+    // now so screen readers can still query their value.
+    "combobox" => Role::TextField,
     "menu" => Role::Menu,
     "menuitem" => Role::MenuItem,
     "tab" => Role::Tab,
@@ -86,13 +89,25 @@ fn build_subtree_nodes(
   let role = role_from_fastrender(&node.role);
   let mut builder = NodeBuilder::new(role);
 
-  if let Some(name) = node
-    .name
-    .as_deref()
-    .map(str::trim)
-    .filter(|s| !s.is_empty())
-  {
-    builder.set_name(name.to_string());
+  if let Some(name) = normalize_optional_name(node.name.as_deref()) {
+    builder.set_name(name);
+  }
+
+  if let Some(role_description) = normalize_optional_name(node.role_description.as_deref()) {
+    builder.set_role_description(role_description);
+  }
+
+  if let Some(desc) = normalize_optional_name(node.description.as_deref()) {
+    builder.set_description(desc);
+  }
+
+  // For text inputs, preserve empty-string values (screen readers expect to query current value even
+  // when empty). The JSON accessibility tree omits empty `value`s, so treat `None` as empty for
+  // editable controls.
+  if matches!(node.role.as_str(), "textbox" | "searchbox" | "combobox") {
+    builder.set_value(node.value.clone().unwrap_or_default());
+  } else if let Some(value) = normalize_optional_name(node.value.as_deref()) {
+    builder.set_value(value);
   }
 
   // We currently do not have per-node bounds available in the exported `AccessibilityNode` tree.
@@ -165,6 +180,7 @@ mod tests {
   #[test]
   fn accesskit_root_is_window_or_application_and_contains_document_child() {
     let doc = AccessibilityNode {
+      node_id: 1,
       role: "document".to_string(),
       role_description: None,
       name: Some("Document title".to_string()),
@@ -208,5 +224,88 @@ mod tests {
 
     let document_node = find_node(&update, document_id);
     assert_eq!(document_node.role(), Role::Document);
+  }
+
+  #[test]
+  fn accesskit_node_exposes_text_input_value() {
+    let mut renderer = crate::FastRender::new().expect("renderer");
+    let html = r##"
+      <html>
+        <body>
+          <input value="abc" />
+        </body>
+      </html>
+    "##;
+    let dom = renderer.parse_html(html).expect("parse");
+    let tree = renderer
+      .accessibility_tree(&dom, 800, 600)
+      .expect("accessibility tree");
+
+    let update = build_accesskit_tree_update(
+      &tree,
+      Some("Window title"),
+      Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 800.0,
+        y1: 600.0,
+      },
+    );
+
+    let text_fields: Vec<&Node> = update
+      .nodes
+      .iter()
+      .filter_map(|(_id, node)| (node.role() == Role::TextField).then_some(node))
+      .collect();
+
+    assert_eq!(
+      text_fields.len(),
+      1,
+      "expected exactly one text field node, got {}",
+      text_fields.len()
+    );
+    assert_eq!(text_fields[0].value(), Some("abc"));
+  }
+
+  #[test]
+  fn accesskit_node_exposes_aria_describedby_as_description() {
+    let mut renderer = crate::FastRender::new().expect("renderer");
+    let html = r##"
+      <html>
+        <body>
+          <div id="d">Helpful hint</div>
+          <input aria-describedby="d" />
+        </body>
+      </html>
+    "##;
+    let dom = renderer.parse_html(html).expect("parse");
+    let tree = renderer
+      .accessibility_tree(&dom, 800, 600)
+      .expect("accessibility tree");
+
+    let update = build_accesskit_tree_update(
+      &tree,
+      Some("Window title"),
+      Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 800.0,
+        y1: 600.0,
+      },
+    );
+
+    let text_fields: Vec<&Node> = update
+      .nodes
+      .iter()
+      .filter_map(|(_id, node)| (node.role() == Role::TextField).then_some(node))
+      .collect();
+
+    assert_eq!(
+      text_fields.len(),
+      1,
+      "expected exactly one text field node, got {}",
+      text_fields.len()
+    );
+    assert_eq!(text_fields[0].description(), Some("Helpful hint"));
   }
 }

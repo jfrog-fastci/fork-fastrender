@@ -48,6 +48,14 @@ fn build_accesskit_node_recursive(
   if let Some(name) = node.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
     builder.set_name(name.to_string());
   }
+  if let Some(role_desc) = node
+    .role_description
+    .as_deref()
+    .map(str::trim)
+    .filter(|s| !s.is_empty())
+  {
+    builder.set_role_description(role_desc.to_string());
+  }
   if let Some(desc) = node
     .description
     .as_deref()
