@@ -449,7 +449,6 @@ mod tests {
       String::from_utf8_lossy(&output.stderr)
     );
   }
-
   #[test]
   fn renderer_seccomp_allow_unix_sockets_only_allows_unix_ipc_but_denies_tcp() {
     const CHILD_ENV: &str = "FASTR_TEST_RENDERER_SECCOMP_UNIX_ONLY_CHILD";

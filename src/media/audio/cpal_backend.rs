@@ -4,7 +4,10 @@ use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 
-use super::{frames_to_duration, AudioBackend, AudioClock, AudioError, AudioOutputInfo, AudioSink, AudioStreamConfig};
+use super::{
+  frames_to_duration, AudioBackend, AudioClock, AudioEngineConfig, AudioError, AudioOutputInfo,
+  AudioSink, AudioStreamConfig,
+};
 use crate::media::audio::ring_buffer::AudioRingBuffer;
 use cpal::traits::{HostTrait, StreamTrait};
 
@@ -20,6 +23,7 @@ use cpal::traits::{HostTrait, StreamTrait};
 /// wake-up only).
 pub struct CpalAudioBackend {
   config: AudioStreamConfig,
+  max_buffered_duration: Duration,
   fixed_callback_frames: Option<u32>,
   last_callback_frames: Arc<AtomicU32>,
   estimated_latency_nanos: Arc<AtomicU64>,
@@ -32,6 +36,10 @@ pub struct CpalAudioBackend {
 
 impl CpalAudioBackend {
   pub fn new() -> Result<Self, AudioError> {
+    Self::new_with_config(&super::audio_engine_config())
+  }
+
+  pub fn new_with_config(engine_cfg: &AudioEngineConfig) -> Result<Self, AudioError> {
     let host = cpal::default_host();
     let device = host
       .default_output_device()
@@ -39,6 +47,7 @@ impl CpalAudioBackend {
 
     let (stream_config, sample_format) = select_output_stream_config(&device)?;
     let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
+    let max_buffered_duration = engine_cfg.per_stream_max_buffered_duration;
     let fixed_callback_frames = match stream_config.buffer_size {
       cpal::BufferSize::Fixed(frames) => Some(frames),
       cpal::BufferSize::Default => None,
@@ -72,6 +81,7 @@ impl CpalAudioBackend {
 
     Ok(Self {
       config,
+      max_buffered_duration,
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
@@ -112,7 +122,7 @@ impl AudioBackend for CpalAudioBackend {
   }
 
   fn create_sink(&self) -> Box<dyn AudioSink> {
-    let sink = Arc::new(SinkState::new(self.config));
+    let sink = Arc::new(SinkState::new(self.config, self.max_buffered_duration));
     self.mixer.register_sink(&sink);
     Box::new(CpalAudioSink { state: sink })
   }
@@ -161,10 +171,11 @@ struct SinkState {
 }
 
 impl SinkState {
-  fn new(config: AudioStreamConfig) -> Self {
-    let capacity = (config.sample_rate_hz as usize)
-      .saturating_mul(usize::from(config.channels.max(1)))
-      .saturating_mul(2); // ~2 seconds of audio.
+  fn new(config: AudioStreamConfig, max_buffered: Duration) -> Self {
+    let channels = usize::from(config.channels.max(1));
+    let frames = super::duration_to_frames_ceil(config.sample_rate_hz, max_buffered);
+    let frames = usize::try_from(frames).unwrap_or(usize::MAX);
+    let capacity = frames.saturating_mul(channels).max(1);
     Self {
       config,
       buffer: AudioRingBuffer::new(capacity),

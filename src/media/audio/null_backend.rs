@@ -20,8 +20,15 @@ pub struct NullAudioBackend {
 impl NullAudioBackend {
   #[must_use]
   pub fn new() -> Self {
+    Self::new_with_defaults(48_000, 2)
+  }
+
+  #[must_use]
+  pub fn new_with_defaults(sample_rate_hz: u32, channels: u16) -> Self {
+    let sample_rate_hz = sample_rate_hz.max(1);
+    let channels = channels.max(1);
     Self {
-      config: AudioStreamConfig::new(48_000, 2),
+      config: AudioStreamConfig::new(sample_rate_hz, channels),
       start: Instant::now(),
       frames_played: Arc::new(AtomicU64::new(0)),
     }

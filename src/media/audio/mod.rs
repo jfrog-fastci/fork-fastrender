@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+mod config;
 #[cfg(feature = "audio_cpal")]
 mod cpal_backend;
 mod latency;
@@ -36,6 +37,10 @@ pub mod queue;
 pub mod timed_queue;
 pub mod types;
 
+pub use config::{
+  audio_engine_config, set_audio_engine_config, with_audio_engine_config, AudioEngineConfig,
+  AudioEngineConfigGuard,
+};
 #[cfg(feature = "audio_cpal")]
 pub use cpal_backend::CpalAudioBackend;
 pub use convert::convert_to_f32_interleaved;
@@ -255,12 +260,19 @@ impl dyn AudioBackend {
   /// headless/CI runs stable.
   #[must_use]
   pub fn new_best_effort() -> Box<dyn AudioBackend> {
+    Self::new_best_effort_with_config(&audio_engine_config())
+  }
+
+  /// Like [`Self::new_best_effort`], but uses the provided configuration instead of reading
+  /// process-wide defaults.
+  #[must_use]
+  pub fn new_best_effort_with_config(cfg: &AudioEngineConfig) -> Box<dyn AudioBackend> {
     #[cfg(feature = "audio_cpal")]
     {
       use std::sync::Once;
       static WARN_ONCE: Once = Once::new();
 
-      match CpalAudioBackend::new() {
+      match CpalAudioBackend::new_with_config(cfg) {
         Ok(backend) => return Box::new(backend),
         Err(err) => {
           WARN_ONCE.call_once(|| {
@@ -272,7 +284,44 @@ impl dyn AudioBackend {
       }
     }
 
-    Box::new(NullAudioBackend::new())
+    Box::new(NullAudioBackend::new_with_defaults(cfg.default_sample_rate_hz, cfg.default_channels))
+  }
+}
+
+/// High-level audio engine that owns an output backend and its configuration.
+///
+/// This is the intended entry point for media playback code. It centralizes all tunables and
+/// provides a consistent configuration surface across different backends.
+pub struct AudioEngine {
+  config: Arc<AudioEngineConfig>,
+  backend: Box<dyn AudioBackend>,
+}
+
+impl AudioEngine {
+  /// Create an [`AudioEngine`] using a "best effort" backend selection policy.
+  #[must_use]
+  pub fn new_best_effort(config: Arc<AudioEngineConfig>) -> Self {
+    let backend = <dyn AudioBackend>::new_best_effort_with_config(&config);
+    Self { config, backend }
+  }
+
+  /// Convenience constructor that uses the currently active configuration.
+  ///
+  /// By default this parses `FASTR_AUDIO_*` environment variables, but unit tests can install an
+  /// override via [`set_audio_engine_config`].
+  #[must_use]
+  pub fn init_from_env() -> Self {
+    Self::new_best_effort(audio_engine_config())
+  }
+
+  #[must_use]
+  pub fn config(&self) -> &AudioEngineConfig {
+    &self.config
+  }
+
+  #[must_use]
+  pub fn backend(&self) -> &dyn AudioBackend {
+    &*self.backend
   }
 }
 
