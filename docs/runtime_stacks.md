@@ -101,6 +101,8 @@ It also uses **coarser invalidation**: any `dom2` mutation reported as “change
 entire render pipeline (style/layout/paint), rather than consuming `dom2` mutation logs and tracking
 dirty sets.
 
+`BrowserTab` is built on `BrowserDocumentDom2` (not `BrowserDocument2`).
+
 
 ## `api::BrowserTab` (dom2 + JS + event loop + navigation)
 
