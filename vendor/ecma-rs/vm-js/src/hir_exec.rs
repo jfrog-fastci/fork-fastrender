@@ -2754,10 +2754,63 @@ impl<'vm> HirEvaluator<'vm> {
             &[],
           )?;
         }
-        hir_js::ObjectProperty::Getter { .. } | hir_js::ObjectProperty::Setter { .. } => {
-          return Err(VmError::Unimplemented(
-            "object accessors (hir-js compiled path)",
-          ));
+        hir_js::ObjectProperty::Getter { key, body: getter_body } => {
+          let key = self.eval_object_key(&mut scope, body, key)?;
+          root_property_key(&mut scope, key)?;
+
+          // If a setter was already defined earlier in the literal, preserve it.
+          let mut existing_set = Value::Undefined;
+          if let Some(desc) = scope.heap().get_own_property(obj_val, key)? {
+            if let PropertyKind::Accessor { set, .. } = desc.kind {
+              existing_set = set;
+            }
+          }
+
+          let func_obj =
+            self.alloc_user_function_object(&mut scope, *getter_body, /* name */ "", /* is_arrow */ false)?;
+          scope.push_root(Value::Object(func_obj))?;
+
+          scope.define_property(
+            obj_val,
+            key,
+            PropertyDescriptor {
+              enumerable: true,
+              configurable: true,
+              kind: PropertyKind::Accessor {
+                get: Value::Object(func_obj),
+                set: existing_set,
+              },
+            },
+          )?;
+        }
+        hir_js::ObjectProperty::Setter { key, body: setter_body } => {
+          let key = self.eval_object_key(&mut scope, body, key)?;
+          root_property_key(&mut scope, key)?;
+
+          // If a getter was already defined earlier in the literal, preserve it.
+          let mut existing_get = Value::Undefined;
+          if let Some(desc) = scope.heap().get_own_property(obj_val, key)? {
+            if let PropertyKind::Accessor { get, .. } = desc.kind {
+              existing_get = get;
+            }
+          }
+
+          let func_obj =
+            self.alloc_user_function_object(&mut scope, *setter_body, /* name */ "", /* is_arrow */ false)?;
+          scope.push_root(Value::Object(func_obj))?;
+
+          scope.define_property(
+            obj_val,
+            key,
+            PropertyDescriptor {
+              enumerable: true,
+              configurable: true,
+              kind: PropertyKind::Accessor {
+                get: existing_get,
+                set: Value::Object(func_obj),
+              },
+            },
+          )?;
         }
       }
     }
