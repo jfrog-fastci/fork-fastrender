@@ -142,8 +142,11 @@ Implementation: `src/sandbox/linux_seccomp.rs`.
 Key properties:
 
 - Uses `PR_SET_NO_NEW_PRIVS` (required for unprivileged seccomp).
-- Installs `SECCOMP_MODE_FILTER` via the `seccomp()` syscall with `SECCOMP_FILTER_FLAG_TSYNC` so the
-  filter applies to all threads.
+- Installs `SECCOMP_MODE_FILTER` via the `seccomp()` syscall, attempting to use
+  `SECCOMP_FILTER_FLAG_TSYNC` so the filter applies to all threads.
+  - When TSYNC is unavailable, we fall back to installing without it and return
+    `SandboxStatus::AppliedWithoutTsync` — callers must apply the sandbox **before** spawning any
+    additional threads.
 - Default action is **kill the process** for unexpected syscalls.
 
 #### Why a hybrid policy?
@@ -171,8 +174,12 @@ includes (non-exhaustive):
 - **High-risk kernel APIs**: `ptrace`, `bpf`, `perf_event_open`, `kexec_load`,
   `process_vm_{readv,writev}`, `userfaultfd`, `keyctl`/`add_key`/`request_key`
 
-Additionally, `socket(2)` is special-cased: `socket(AF_UNIX, ...)` is allowed for local IPC, while
-other domains (`AF_INET`, `AF_INET6`, …) return `EPERM`.
+Additionally, `socket(2)` / `socketpair(2)` are special-cased via `NetworkPolicy`:
+
+- Default (`NetworkPolicy::DenyAllSockets`): deny all socket creation (including `AF_UNIX`) with
+  `EPERM`. This forces the renderer to use **inherited IPC endpoints** only (preferred).
+- Optional (`NetworkPolicy::AllowUnixSocketsOnly`): allow `socket(AF_UNIX, ...)` and
+  `socketpair(AF_UNIX, ...)` while denying other domains (`AF_INET`, `AF_INET6`, …) with `EPERM`.
 
 For allowlist maintenance workflow (when the renderer legitimately needs more syscalls), see:
 [seccomp_allowlist.md](../seccomp_allowlist.md) and `scripts/trace_renderer_syscalls.sh`.
