@@ -8557,10 +8557,34 @@ impl<'a> Evaluator<'a> {
             let init_value = match initializer_expr {
               Some(expr_node) => {
                 // Root the initializer expression node span inputs across registration/allocation.
-                let rel_start = expr_node
-                  .loc
-                  .start_u32()
-                  .saturating_sub(self.env.prefix_len());
+                let mut start_u32 = expr_node.loc.start_u32();
+                // `parse-js` expression node spans intentionally exclude parentheses.
+                //
+                // For class field initializers we later reparse the expression as a standalone
+                // snippet (wrapped in a synthetic class method body) so it can execute with the
+                // correct lexical `this`/`super`/`new.target` bindings.
+                //
+                // When the initializer is a *call* whose callee was parenthesized (e.g.
+                // `x = (() => super.m())();`), excluding the opening paren produces an invalid
+                // snippet like `() => super.m())()` (the closing paren is still included via the
+                // call expression span). Expand the snippet start to include the opening paren so
+                // lazy parsing succeeds.
+                if let Expr::Call(call) = expr_node.stx.as_ref() {
+                  if call.stx.callee.assoc.get::<ParenthesizedExpr>().is_some() {
+                    let src = self.env.source();
+                    let text = src.text.as_ref();
+                    let mut i = (start_u32 as usize).min(text.len());
+                    // Skip whitespace between the parenthesis and the callee token.
+                    while i > 0 && text.as_bytes()[i.saturating_sub(1)].is_ascii_whitespace() {
+                      i = i.saturating_sub(1);
+                    }
+                    if i > 0 && text.as_bytes()[i.saturating_sub(1)] == b'(' {
+                      start_u32 = u32::try_from(i.saturating_sub(1)).unwrap_or(start_u32);
+                    }
+                  }
+                }
+
+                let rel_start = start_u32.saturating_sub(self.env.prefix_len());
                 let rel_end = expr_node
                   .loc
                   .end_u32()

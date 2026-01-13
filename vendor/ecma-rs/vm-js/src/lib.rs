@@ -291,6 +291,10 @@ mod object_literal_super_tests;
 #[path = "../tests/unit/class_field_initializers_super.rs"]
 mod class_field_initializers_super_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/compiled_derived_constructor.rs"]
+mod compiled_derived_constructor_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;

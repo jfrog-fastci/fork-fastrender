@@ -888,9 +888,9 @@ impl<'vm> HirEvaluator<'vm> {
       ThisMode::Global
     };
 
-    // HIR execution supports async functions, but generator / async-generator bodies are not yet
-    // implemented (yield is unimplemented). Keep generator functions on the AST-backed path for now
-    // so they can continue to execute via the interpreter.
+    // The compiled (HIR) executor does not yet support generator / async-generator bodies
+    // (`yield`, `yield*`). Allocate generator functions as interpreter-backed ECMAScript functions
+    // so calling them can still execute via the AST interpreter.
     let func_obj = if is_generator {
       let code_id = self.vm.register_ecma_function(
         self.env.source(),
@@ -9140,9 +9140,18 @@ impl<'vm> HirEvaluator<'vm> {
           }
         }
 
-        // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
-        // object so `[[Construct]]` can implement derived `super()` semantics (and, in particular, so
-        // derived constructors that never initialize `this` throw the correct ReferenceError).
+        // If the class has an explicit `constructor(...) { ... }` body, annotate the hidden body
+        // function (and its wrapper, if one was created) so `[[Construct]]` can implement derived
+        // `super()` semantics (and, in particular, so derived constructors that never initialize
+        // `this` throw the correct ReferenceError).
+        if let Some(body_func) = ctor_body_inner_func {
+          scope.heap_mut().set_function_data(
+            body_func,
+            FunctionData::ClassConstructorBody {
+              class_constructor: func_obj,
+            },
+          )?;
+        }
         if let Some(body_func) = ctor_body_func {
           scope.heap_mut().set_function_data(
             body_func,
@@ -11075,6 +11084,27 @@ pub(crate) fn run_compiled_function(
 
   evaluator.instantiate_function_body(scope, body, args)?;
 
+  // Base class instance fields are initialized immediately after `this` is created (before running
+  // the user-defined constructor body). Derived constructors initialize instance fields after
+  // `super()` returns (handled by the `super(...args)` call path).
+  if let Some(class_ctor) = evaluator.class_constructor {
+    if !evaluator.derived_constructor {
+      let Value::Object(this_obj) = evaluator.this else {
+        return Err(VmError::InvariantViolation(
+          "base class constructor `this` is not an object",
+        ));
+      };
+      crate::class_fields::initialize_instance_fields_with_host_and_hooks(
+        evaluator.vm,
+        scope,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        this_obj,
+        class_ctor,
+      )?;
+    }
+  }
+
   match &func_meta.body {
     hir_js::FunctionBody::Expr(expr_id) => evaluator.eval_expr(scope, body, *expr_id),
     hir_js::FunctionBody::Block(stmts) => match evaluator.eval_root_stmt_list(scope, body, stmts.as_slice())? {
@@ -11377,7 +11407,6 @@ mod async_function_ast_fallback_tests {
         f;
       "#,
     )?;
-
     assert!(script.contains_async_functions);
     assert!(!script.contains_generators);
     assert!(!script.contains_async_generators);
@@ -11385,7 +11414,6 @@ mod async_function_ast_fallback_tests {
       !script.requires_ast_fallback,
       "compiled scripts should only require full AST fallback for generators or top-level await"
     );
-
     let result = rt.exec_compiled_script(script)?;
     let Value::Object(func_obj) = result else {
       panic!("expected async function object, got {result:?}");
