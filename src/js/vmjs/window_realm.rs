@@ -14170,6 +14170,7 @@ fn document_create_element_native(
   let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
+
 fn value_to_rust_utf16_string(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
