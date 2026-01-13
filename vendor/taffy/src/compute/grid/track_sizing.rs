@@ -641,15 +641,6 @@ pub(super) fn resolve_item_baselines(
   items: &mut [GridItem],
   inner_node_size: Size<Option<f32>>,
 ) {
-  // Clear any stale shims for the axis we are computing. The track sizing algorithm can rerun, so
-  // we must ensure we don't carry baseline shims forward when baseline participation changes.
-  match axis {
-    // Column sizing pass shims `align-self: baseline` items (physical vertical baseline alignment).
-    AbstractAxis::Inline => items.iter_mut().for_each(|item| item.baseline_shim.y = 0.0),
-    // Row sizing pass shims `justify-self: baseline` items (physical horizontal baseline alignment).
-    AbstractAxis::Block => items.iter_mut().for_each(|item| item.baseline_shim.x = 0.0),
-  }
-
   if items.is_empty() {
     return;
   }
@@ -679,8 +670,16 @@ pub(super) fn resolve_item_baselines(
   // grids.
   let mut group_stats: Vec<BaselineGroupStats> = Vec::new();
   let mut baseline_entries_capacity: usize = 0;
-  for item in items.iter() {
+  for item in items.iter_mut() {
     check_layout_abort();
+    // Clear any stale shims for the axis we are computing. The track sizing algorithm can rerun, so
+    // we must ensure we don't carry baseline shims forward when baseline participation changes.
+    match axis {
+      // Column sizing pass shims `align-self: baseline` items (physical vertical baseline alignment).
+      AbstractAxis::Inline => item.baseline_shim.y = 0.0,
+      // Row sizing pass shims `justify-self: baseline` items (physical horizontal baseline alignment).
+      AbstractAxis::Block => item.baseline_shim.x = 0.0,
+    }
     let key = match other_axis {
       AbstractAxis::Inline => item.column_indexes.start,
       AbstractAxis::Block => item.row_indexes.start,
