@@ -168,6 +168,9 @@ include = [
   "built-ins/String/prototype/replaceAll/**/*.js",
   "built-ins/String/prototype/slice/**/*.js",
   "built-ins/String/prototype/substring/**/*.js",
+  # RegExp surface (EscapeRegExpPattern: used by RegExp.prototype.source / toString).
+  "built-ins/RegExp/prototype/source/**/*.js",
+  "built-ins/RegExp/prototype/toString/**/*.js",
   "built-ins/Number/isFinite/**/*.js",
   "built-ins/Number/isInteger/**/*.js",
   "built-ins/Number/isNaN/**/*.js",

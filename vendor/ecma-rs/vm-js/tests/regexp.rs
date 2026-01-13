@@ -164,6 +164,23 @@ fn regexp_prototype_unicode_accessor_basics() {
 }
 
 #[test]
+fn regexp_prototype_source_escape_regexp_pattern() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          new RegExp("a/b").source,
+          /a\//.source,
+          RegExp("a", "").source,
+        ].join("|")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"a\/b|a\/|a"#);
+}
+
+#[test]
 fn regexp_legacy_octal_escape_without_captures() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"new RegExp("\\1").exec("\u0001")[0]"#).unwrap();
