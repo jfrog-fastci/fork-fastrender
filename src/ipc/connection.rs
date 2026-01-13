@@ -41,12 +41,12 @@ impl<R, W> IpcConnection<R, W> {
 
 impl<R: Read, W: Write> IpcConnection<R, W> {
   pub fn send_json<T: Serialize>(&mut self, msg: &T) -> Result<(), IpcError> {
-    let payload = serde_json::to_vec(msg).map_err(IpcError::Serialize)?;
+    let payload = serde_json::to_vec(msg).map_err(|source| IpcError::Serialize { source })?;
 
     if payload.len() > MAX_IPC_MESSAGE_BYTES {
-      return Err(IpcError::FrameTooLarge {
-        len: payload.len(),
-        max: MAX_IPC_MESSAGE_BYTES,
+      return Err(IpcError::MessageTooLarge {
+        len: u32::try_from(payload.len()).unwrap_or(u32::MAX),
+        max: MAX_IPC_MESSAGE_BYTES as u32,
       });
     }
 
@@ -63,8 +63,9 @@ impl<R: Read, W: Write> IpcConnection<R, W> {
     // IPC protocol structs are also annotated with `#[serde(deny_unknown_fields)]` so we fail
     // closed if an unexpected field appears.
     let payload = read_frame(&mut self.reader)?;
-    let value: serde_json::Value = serde_json::from_slice(&payload).map_err(IpcError::Deserialize)?;
-    serde_json::from_value(value).map_err(IpcError::Deserialize)
+    let value: serde_json::Value =
+      serde_json::from_slice(&payload).map_err(|source| IpcError::Deserialize { source })?;
+    serde_json::from_value(value).map_err(|source| IpcError::Deserialize { source })
   }
 }
 
@@ -144,7 +145,7 @@ mod tests {
 
     let mut sender = IpcConnection::new(std::io::empty(), Vec::<u8>::new());
     let err = sender.send_json(&msg).unwrap_err();
-    assert!(matches!(err, IpcError::FrameTooLarge { .. }));
+    assert!(matches!(err, IpcError::MessageTooLarge { .. }));
   }
 
   #[test]
@@ -160,7 +161,7 @@ mod tests {
       .recv_json::<serde_json::Value>()
       .expect_err("invalid JSON must error");
 
-    assert!(matches!(err, IpcError::Deserialize(_)));
+    assert!(matches!(err, IpcError::Deserialize { .. }));
   }
 
   #[test]
@@ -194,7 +195,7 @@ mod tests {
     let err = receiver
       .recv_json::<crate::ipc::RendererToNetwork>()
       .expect_err("unknown fields must be rejected");
-    assert!(matches!(err, IpcError::Deserialize(_)));
+    assert!(matches!(err, IpcError::Deserialize { .. }));
   }
 
   #[test]
@@ -238,7 +239,7 @@ mod tests {
       .unwrap_err();
 
     match err {
-      IpcError::Deserialize(inner) => {
+      IpcError::Deserialize { source: inner } => {
         // Be robust to minor wording changes across serde_json versions.
         assert!(
           inner.to_string().to_ascii_lowercase().contains("recursion"),

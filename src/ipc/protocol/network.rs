@@ -105,7 +105,9 @@ pub enum FetchResult {
 
 fn validate_request_id(request_id: u64) -> Result<(), IpcError> {
   if request_id == 0 {
-    return Err(IpcError::RequestIdZero);
+    return Err(IpcError::ProtocolViolation {
+      msg: "request_id must be non-zero".to_string(),
+    });
   }
   Ok(())
 }
@@ -113,9 +115,8 @@ fn validate_request_id(request_id: u64) -> Result<(), IpcError> {
 fn validate_url(url: &str) -> Result<(), IpcError> {
   let len = url.len();
   if len > MAX_URL_BYTES {
-    return Err(IpcError::UrlTooLong {
-      len,
-      max: MAX_URL_BYTES,
+    return Err(IpcError::ProtocolViolation {
+      msg: format!("url too long: {len} bytes (max {MAX_URL_BYTES})"),
     });
   }
   Ok(())
@@ -124,9 +125,10 @@ fn validate_url(url: &str) -> Result<(), IpcError> {
 fn validate_cookie_string(cookie_string: &str) -> Result<(), IpcError> {
   let len = cookie_string.len();
   if len > MAX_COOKIE_STRING_BYTES {
-    return Err(IpcError::CookieStringTooLong {
-      len,
-      max: MAX_COOKIE_STRING_BYTES,
+    return Err(IpcError::ProtocolViolation {
+      msg: format!(
+        "cookie string too long: {len} bytes (max {MAX_COOKIE_STRING_BYTES})"
+      ),
     });
   }
   Ok(())
@@ -248,12 +250,12 @@ mod cancel {
     let err = BrowserToNetwork::Cancel { request_id: 0 }
       .validate()
       .expect_err("request_id=0 should be rejected");
-    assert!(matches!(err, IpcError::RequestIdZero));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
 
     let err = NetworkToBrowser::Cancelled { request_id: 0 }
       .validate()
       .expect_err("request_id=0 should be rejected");
-    assert!(matches!(err, IpcError::RequestIdZero));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 
   #[test]
@@ -376,6 +378,6 @@ mod cookies {
     let err = msg
       .validate()
       .expect_err("expected oversized cookie_string to be rejected");
-    assert!(matches!(err, IpcError::CookieStringTooLong { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 }

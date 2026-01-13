@@ -61,18 +61,18 @@ impl<R: Read, W: Write> Transport<R, W> {
 
 fn validate_len_prefix(bytes_len: u32) -> Result<usize, IpcError> {
   if bytes_len == 0 {
-    return Err(IpcError::ZeroLength);
+    return Err(IpcError::ProtocolViolation {
+      msg: "IPC frame length was zero".to_string(),
+    });
   }
   let max_u32: u32 = MAX_IPC_MESSAGE_BYTES
     .try_into()
-    .map_err(|_| IpcError::ArithmeticOverflow)?;
+    .unwrap_or(u32::MAX);
   if bytes_len > max_u32 {
-    return Err(IpcError::FrameTooLarge {
-      len: bytes_len as usize,
-      max: MAX_IPC_MESSAGE_BYTES,
-    });
+    return Err(IpcError::MessageTooLarge { len: bytes_len, max: max_u32 });
   }
-  usize::try_from(bytes_len).map_err(|_| IpcError::ArithmeticOverflow)
+  // `u32` always fits in `usize` on supported targets (>= 32-bit).
+  Ok(bytes_len as usize)
 }
 
 fn read_frame_unchecked<R: Read>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
@@ -93,10 +93,8 @@ fn read_frame_unchecked<R: Read>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
 }
 
 fn write_frame_unchecked<W: Write>(writer: &mut W, payload: &[u8]) -> Result<(), IpcError> {
-  let bytes_len = u32::try_from(payload.len()).map_err(|_| IpcError::FrameTooLarge {
-    len: payload.len(),
-    max: MAX_IPC_MESSAGE_BYTES,
-  })?;
+  let bytes_len =
+    u32::try_from(payload.len()).unwrap_or(u32::MAX);
   // Validate (and ensure it can be converted to `usize` if needed by downstream code).
   let _ = validate_len_prefix(bytes_len)?;
   writer.write_all(&bytes_len.to_le_bytes())?;
@@ -168,7 +166,7 @@ mod unix_deadlines {
     while filled < buf.len() {
       poll_ready(reader.as_raw_fd(), libc::POLLIN, deadline)?;
       match reader.read(&mut buf[filled..]) {
-        Ok(0) => return Err(IpcError::UnexpectedEof),
+        Ok(0) => return Err(IpcError::Disconnected),
         Ok(n) => filled += n,
         Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
         Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -233,10 +231,7 @@ mod unix_deadlines {
     let deadline = Instant::now() + timeout;
  
     let payload = encode_bincode_payload(msg)?;
-    let bytes_len = u32::try_from(payload.len()).map_err(|_| IpcError::FrameTooLarge {
-      len: payload.len(),
-      max: MAX_IPC_MESSAGE_BYTES,
-    })?;
+    let bytes_len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
     let _ = validate_len_prefix(bytes_len)?;
  
     write_all_with_deadline(writer, &bytes_len.to_le_bytes(), deadline)?;
@@ -280,7 +275,7 @@ impl<R: Read, W: Write> Transport<R, W> {
     _timeout: Duration,
   ) -> Result<T, IpcError> {
     Err(IpcError::Unsupported {
-      message: "recv_with_timeout is not supported on this platform".to_string(),
+      msg: "recv_with_timeout is not supported on this platform".to_string(),
     })
   }
 
@@ -290,7 +285,7 @@ impl<R: Read, W: Write> Transport<R, W> {
     _timeout: Duration,
   ) -> Result<(), IpcError> {
     Err(IpcError::Unsupported {
-      message: "send_with_timeout is not supported on this platform".to_string(),
+      msg: "send_with_timeout is not supported on this platform".to_string(),
     })
   }
 }

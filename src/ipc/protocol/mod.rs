@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use super::IpcError;
 
+fn protocol_violation(msg: impl Into<String>) -> IpcError {
+  IpcError::ProtocolViolation { msg: msg.into() }
+}
+
 /// Current IPC protocol version.
 ///
 /// Bumped when message shapes or semantics change in an incompatible way.
@@ -70,45 +74,49 @@ impl FrameBufferDesc {
   /// This is primarily used by the renderer when receiving `SetFrameBuffers`, and by unit tests.
   pub fn validate(&self) -> Result<(), IpcError> {
     if self.shmem_id.is_empty() {
-      return Err(IpcError::EmptyId);
+      return Err(protocol_violation("shared memory id is empty"));
     }
     if self.shmem_id.len() > MAX_ID_LEN {
-      return Err(IpcError::IdTooLong {
-        len: self.shmem_id.len(),
-        max: MAX_ID_LEN,
-      });
+      return Err(protocol_violation(format!(
+        "shared memory id too long: {} (max {MAX_ID_LEN})",
+        self.shmem_id.len()
+      )));
     }
     if self.byte_len == 0 {
-      return Err(IpcError::FrameBufferByteLenZero);
+      return Err(protocol_violation("frame buffer byte_len must be non-zero"));
     }
     if self.max_width_px == 0 || self.max_height_px == 0 {
-      return Err(IpcError::FrameBufferMaxDimensionsZero);
+      return Err(protocol_violation(
+        "frame buffer max_width_px/max_height_px must be non-zero",
+      ));
     }
     if self.stride_bytes == 0 {
-      return Err(IpcError::FrameBufferStrideZero);
+      return Err(protocol_violation("frame buffer stride_bytes must be non-zero"));
     }
 
-    let max_width_usize = usize::try_from(self.max_width_px).map_err(|_| IpcError::ArithmeticOverflow)?;
+    let max_width_usize = usize::try_from(self.max_width_px)
+      .map_err(|_| protocol_violation("max_width_px does not fit in usize"))?;
     let min_row_bytes = max_width_usize
       .checked_mul(BYTES_PER_PIXEL)
-      .ok_or(IpcError::ArithmeticOverflow)?;
+      .ok_or_else(|| protocol_violation("arithmetic overflow while computing min_row_bytes"))?;
     if self.stride_bytes < min_row_bytes {
-      return Err(IpcError::FrameBufferStrideTooSmall {
-        stride_bytes: self.stride_bytes,
-        min_row_bytes,
-      });
+      return Err(protocol_violation(format!(
+        "frame buffer stride_bytes={} is smaller than min_row_bytes={min_row_bytes}",
+        self.stride_bytes
+      )));
     }
 
-    let max_height_usize = usize::try_from(self.max_height_px).map_err(|_| IpcError::ArithmeticOverflow)?;
+    let max_height_usize = usize::try_from(self.max_height_px)
+      .map_err(|_| protocol_violation("max_height_px does not fit in usize"))?;
     let required_bytes = self
       .stride_bytes
       .checked_mul(max_height_usize)
-      .ok_or(IpcError::ArithmeticOverflow)?;
+      .ok_or_else(|| protocol_violation("arithmetic overflow while computing required_bytes"))?;
     if required_bytes > self.byte_len {
-      return Err(IpcError::FrameBufferTooSmall {
-        required_bytes,
-        byte_len: self.byte_len,
-      });
+      return Err(protocol_violation(format!(
+        "frame buffer backing store too small: required={required_bytes} available={}",
+        self.byte_len
+      )));
     }
 
     Ok(())
@@ -208,28 +216,28 @@ impl BrowserToRenderer {
     match self {
       BrowserToRenderer::Hello { protocol_version } => {
         if *protocol_version != IPC_PROTOCOL_VERSION {
-          return Err(IpcError::ProtocolVersionMismatch {
-            got: *protocol_version,
-            expected: IPC_PROTOCOL_VERSION,
-          });
+          return Err(protocol_violation(format!(
+            "protocol version mismatch: got {protocol_version}, expected {IPC_PROTOCOL_VERSION}"
+          )));
         }
         Ok(())
       }
 
       BrowserToRenderer::SetFrameBuffers { buffers, .. } => {
         if buffers.len() > MAX_FRAME_BUFFERS {
-          return Err(IpcError::TooManyFrameBuffers {
-            len: buffers.len(),
-            max: MAX_FRAME_BUFFERS,
-          });
+          return Err(protocol_violation(format!(
+            "too many frame buffers: len {} (max {MAX_FRAME_BUFFERS})",
+            buffers.len()
+          )));
         }
         for (idx, desc) in buffers.iter().enumerate() {
           desc.validate()?;
           if desc.buffer_index != idx as u32 {
-            return Err(IpcError::InvalidBufferIndex {
-              buffer_index: desc.buffer_index,
-              buffer_count: buffers.len(),
-            });
+            return Err(protocol_violation(format!(
+              "buffer_index {} out of range (buffer_count={})",
+              desc.buffer_index,
+              buffers.len()
+            )));
           }
         }
         Ok(())
@@ -240,10 +248,10 @@ impl BrowserToRenderer {
       BrowserToRenderer::Shutdown { reason } => {
         if let Some(reason) = reason {
           if reason.len() > MAX_IPC_STRING_BYTES {
-            return Err(IpcError::ShutdownReasonTooLong {
-              len: reason.len(),
-              max: MAX_IPC_STRING_BYTES,
-            });
+            return Err(protocol_violation(format!(
+              "shutdown reason too long: {} (max {MAX_IPC_STRING_BYTES})",
+              reason.len()
+            )));
           }
         }
         Ok(())
@@ -262,29 +270,33 @@ pub struct FrameBufferSet {
 impl FrameBufferSet {
   pub fn validate(&self) -> Result<(), IpcError> {
     if self.buffers.len() > MAX_FRAME_BUFFERS {
-      return Err(IpcError::TooManyFrameBuffers {
-        len: self.buffers.len(),
-        max: MAX_FRAME_BUFFERS,
-      });
+      return Err(protocol_violation(format!(
+        "frame buffer list too large: len {} (max {MAX_FRAME_BUFFERS})",
+        self.buffers.len()
+      )));
     }
     for (idx, desc) in self.buffers.iter().enumerate() {
       desc.validate()?;
       // Keep the mapping indexable without a HashMap.
       if desc.buffer_index != idx as u32 {
-        return Err(IpcError::InvalidBufferIndex {
-          buffer_index: desc.buffer_index,
-          buffer_count: self.buffers.len(),
-        });
+        return Err(protocol_violation(format!(
+          "buffer_index {} out of range (buffer_count={})",
+          desc.buffer_index,
+          self.buffers.len()
+        )));
       }
     }
     Ok(())
   }
 
   pub fn get(&self, buffer_index: u32) -> Result<&FrameBufferDesc, IpcError> {
-    let idx = usize::try_from(buffer_index).map_err(|_| IpcError::ArithmeticOverflow)?;
-    self.buffers.get(idx).ok_or(IpcError::InvalidBufferIndex {
-      buffer_index,
-      buffer_count: self.buffers.len(),
+    let idx =
+      usize::try_from(buffer_index).map_err(|_| protocol_violation("buffer_index does not fit in usize"))?;
+    self.buffers.get(idx).ok_or_else(|| {
+      protocol_violation(format!(
+        "buffer_index {buffer_index} out of range (buffer_count={})",
+        self.buffers.len()
+      ))
     })
   }
 }
@@ -318,10 +330,10 @@ impl RendererToBrowser {
     match self {
       RendererToBrowser::HelloAck { protocol_version } => {
         if *protocol_version != ctx.expected_protocol_version {
-          return Err(IpcError::ProtocolVersionMismatch {
-            got: *protocol_version,
-            expected: ctx.expected_protocol_version,
-          });
+          return Err(protocol_violation(format!(
+            "protocol version mismatch: got {protocol_version}, expected {}",
+            ctx.expected_protocol_version
+          )));
         }
         Ok(())
       }
@@ -337,61 +349,59 @@ impl RendererToBrowser {
         wants_ticks: _,
       } => {
         let Some(frame_buffers) = ctx.frame_buffers else {
-          return Err(IpcError::GenerationMismatch {
-            got: *generation,
-            expected: 0,
-          });
+          return Err(protocol_violation(format!(
+            "generation mismatch: got {generation}, expected 0"
+          )));
         };
         if *generation != frame_buffers.generation {
-          return Err(IpcError::GenerationMismatch {
-            got: *generation,
-            expected: frame_buffers.generation,
-          });
+          return Err(protocol_violation(format!(
+            "generation mismatch: got {generation}, expected {}",
+            frame_buffers.generation
+          )));
         }
 
         if *width_px == 0 || *height_px == 0 {
-          return Err(IpcError::FrameDimensionsZero {
-            width_px: *width_px,
-            height_px: *height_px,
-          });
+          return Err(protocol_violation(format!(
+            "frame dimensions must be non-zero (width_px={width_px}, height_px={height_px})"
+          )));
         }
 
         if !dpr.is_finite() || *dpr < MIN_DPR || *dpr > MAX_DPR {
-          return Err(IpcError::InvalidDpr { dpr: *dpr });
+          return Err(protocol_violation(format!("invalid device pixel ratio {dpr}")));
         }
 
         let desc = frame_buffers.get(*buffer_index)?;
 
         if *width_px > desc.max_width_px || *height_px > desc.max_height_px {
-          return Err(IpcError::FrameDimensionsExceedMax {
-            width_px: *width_px,
-            height_px: *height_px,
-            max_width_px: desc.max_width_px,
-            max_height_px: desc.max_height_px,
-          });
+          return Err(protocol_violation(format!(
+            "frame dimensions exceed negotiated maximums: {width_px}x{height_px} > {}x{}",
+            desc.max_width_px, desc.max_height_px
+          )));
         }
 
-        let width_usize = usize::try_from(*width_px).map_err(|_| IpcError::ArithmeticOverflow)?;
-        let height_usize = usize::try_from(*height_px).map_err(|_| IpcError::ArithmeticOverflow)?;
+        let width_usize =
+          usize::try_from(*width_px).map_err(|_| protocol_violation("width_px does not fit in usize"))?;
+        let height_usize =
+          usize::try_from(*height_px).map_err(|_| protocol_violation("height_px does not fit in usize"))?;
         let row_bytes = width_usize
           .checked_mul(BYTES_PER_PIXEL)
-          .ok_or(IpcError::ArithmeticOverflow)?;
+          .ok_or_else(|| protocol_violation("arithmetic overflow while computing row_bytes"))?;
         if row_bytes > desc.stride_bytes {
-          return Err(IpcError::FrameRowBytesExceedStride {
-            row_bytes,
-            stride_bytes: desc.stride_bytes,
-          });
+          return Err(protocol_violation(format!(
+            "frame row bytes {row_bytes} exceed stride_bytes {}",
+            desc.stride_bytes
+          )));
         }
 
         let required_bytes = desc
           .stride_bytes
           .checked_mul(height_usize)
-          .ok_or(IpcError::ArithmeticOverflow)?;
+          .ok_or_else(|| protocol_violation("arithmetic overflow while computing required_bytes"))?;
         if required_bytes > desc.byte_len {
-          return Err(IpcError::FrameExceedsBufferLen {
-            required_bytes,
-            byte_len: desc.byte_len,
-          });
+          return Err(protocol_violation(format!(
+            "frame exceeds shared memory buffer: required={required_bytes} available={}",
+            desc.byte_len
+          )));
         }
 
         Ok(())
@@ -399,10 +409,10 @@ impl RendererToBrowser {
 
       RendererToBrowser::Crashed { reason } => {
         if reason.len() > MAX_CRASH_REASON_LEN {
-          return Err(IpcError::CrashReasonTooLong {
-            len: reason.len(),
-            max: MAX_CRASH_REASON_LEN,
-          });
+          return Err(protocol_violation(format!(
+            "crash reason too long: {} (max {MAX_CRASH_REASON_LEN})",
+            reason.len()
+          )));
         }
         Ok(())
       }
@@ -477,7 +487,7 @@ mod tests {
     let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
     let err = RendererToBrowser::decode_and_validate_payload(&payload, &ctx)
       .expect_err("expected invalid buffer index");
-    assert!(matches!(err, IpcError::InvalidBufferIndex { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 
   #[test]
@@ -500,7 +510,7 @@ mod tests {
     let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
     let err = RendererToBrowser::decode_and_validate_payload(&payload, &ctx)
       .expect_err("expected oversized dimensions to be rejected");
-    assert!(matches!(err, IpcError::FrameDimensionsExceedMax { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 
   #[test]
@@ -523,7 +533,7 @@ mod tests {
     let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
     let err = RendererToBrowser::decode_and_validate_payload(&payload, &ctx)
       .expect_err("expected dpr to be rejected");
-    assert!(matches!(err, IpcError::InvalidDpr { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 
   #[test]
@@ -534,6 +544,6 @@ mod tests {
     let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
     let err =
       BrowserToRenderer::decode_and_validate_payload(&payload).expect_err("expected shutdown to fail");
-    assert!(matches!(err, IpcError::ShutdownReasonTooLong { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 }

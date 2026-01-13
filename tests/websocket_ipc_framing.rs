@@ -48,7 +48,7 @@ fn websocket_ipc_rejects_frame_len_over_cap_without_allocating_payload() {
   let mut cursor = Cursor::new(buf);
   let err = read_websocket_ipc_command_frame(&mut cursor).unwrap_err();
   assert!(
-    matches!(err, IpcError::FrameTooLarge { .. }),
+    matches!(err, IpcError::MessageTooLarge { .. }),
     "unexpected error: {err:?}"
   );
 }

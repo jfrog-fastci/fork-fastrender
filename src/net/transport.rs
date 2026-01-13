@@ -204,14 +204,16 @@ impl From<TransportError> for NetworkError {
 impl From<IpcError> for TransportError {
   fn from(err: IpcError) -> Self {
     match err {
+      IpcError::Disconnected => Self::Closed,
       IpcError::Timeout => Self::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),
       IpcError::Unsupported { .. } => {
         Self::Io(std::io::Error::from(std::io::ErrorKind::Unsupported))
       }
-      IpcError::UnexpectedEof => Self::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
       IpcError::Io(err) => Self::Io(err),
-      IpcError::FrameTooLarge { len, max } => Self::FrameTooLarge { len, max },
-      IpcError::ZeroLength => Self::Decode(DecodeError::Malformed("zero-length IPC frame")),
+      IpcError::MessageTooLarge { len, max } => Self::FrameTooLarge {
+        len: len as usize,
+        max: max as usize,
+      },
       other => Self::Io(std::io::Error::new(
         std::io::ErrorKind::Other,
         other.to_string(),

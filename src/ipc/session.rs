@@ -104,7 +104,7 @@ impl RendererSession {
       BrowserToRenderer::Hello { .. } => {
         if self.state != RendererSessionState::Init {
           return Err(IpcError::InvalidParameters {
-            message: format!("Hello sent in state {:?}", self.state),
+            msg: format!("Hello sent in state {:?}", self.state),
           });
         }
         self.state = RendererSessionState::AwaitHelloAck;
@@ -119,7 +119,7 @@ impl RendererSession {
           RendererSessionState::AwaitFrameBuffers | RendererSessionState::Running => {}
           other => {
             return Err(IpcError::InvalidParameters {
-              message: format!("SetFrameBuffers sent in state {other:?}"),
+              msg: format!("SetFrameBuffers sent in state {other:?}"),
             });
           }
         }
@@ -141,7 +141,7 @@ impl RendererSession {
       } => {
         if self.state != RendererSessionState::Running {
           return Err(IpcError::InvalidParameters {
-            message: format!("ReleaseFrameBuffer sent in state {:?}", self.state),
+            msg: format!("ReleaseFrameBuffer sent in state {:?}", self.state),
           });
         }
         Ok(Some(BrowserToRenderer::ReleaseFrameBuffer {
@@ -180,7 +180,7 @@ impl RendererSession {
       RendererToBrowser::HelloAck { .. } => {
         if self.state != RendererSessionState::AwaitHelloAck {
           return Err(IpcError::ProtocolViolation {
-            message: format!("unexpected HelloAck in state {:?}", self.state),
+            msg: format!("unexpected HelloAck in state {:?}", self.state),
           });
         }
         self.state = RendererSessionState::AwaitFrameBuffers;
@@ -190,7 +190,7 @@ impl RendererSession {
       RendererToBrowser::FrameReady { .. } => {
         if self.state != RendererSessionState::Running {
           return Err(IpcError::ProtocolViolation {
-            message: format!("unexpected FrameReady in state {:?}", self.state),
+            msg: format!("unexpected FrameReady in state {:?}", self.state),
           });
         }
         Ok(Some(msg))
@@ -202,7 +202,7 @@ impl RendererSession {
       }
 
       RendererToBrowser::ShutdownAck => Err(IpcError::ProtocolViolation {
-        message: "unexpected ShutdownAck before browser shutdown".to_string(),
+        msg: "unexpected ShutdownAck before browser shutdown".to_string(),
       }),
     }
   }

@@ -157,16 +157,20 @@ impl FileMeta {
   fn validate(&self) -> Result<(), IpcError> {
     let name_len = self.name.as_bytes().len();
     if name_len > FILE_INPUT_MAX_NAME_BYTES {
-      return Err(IpcError::FileNameTooLong {
-        len: name_len,
-        max: FILE_INPUT_MAX_NAME_BYTES,
+      return Err(IpcError::ProtocolViolation {
+        msg: format!(
+          "file name too long: {name_len} bytes (max {FILE_INPUT_MAX_NAME_BYTES})"
+        ),
       });
     }
 
     // Enforce "basename only" so the browser can't leak host paths to the renderer.
     if self.name.contains('/') || self.name.contains('\\') {
-      return Err(IpcError::FileNameNotBasename {
-        name: self.name.clone(),
+      return Err(IpcError::ProtocolViolation {
+        msg: format!(
+          "file name must be a basename (no path separators): {:?}",
+          self.name
+        ),
       });
     }
 
@@ -176,9 +180,11 @@ impl FileMeta {
 
 fn validate_files(files: &[FileMeta]) -> Result<(), IpcError> {
   if files.len() > FILE_INPUT_MAX_FILES {
-    return Err(IpcError::TooManyFiles {
-      len: files.len(),
-      max: FILE_INPUT_MAX_FILES,
+    return Err(IpcError::ProtocolViolation {
+      msg: format!(
+        "too many files: len {} (max {FILE_INPUT_MAX_FILES})",
+        files.len()
+      ),
     });
   }
 
@@ -190,9 +196,10 @@ fn validate_files(files: &[FileMeta]) -> Result<(), IpcError> {
 
   if total > u128::from(FILE_INPUT_MAX_TOTAL_BYTES_META) {
     let total_u64 = u64::try_from(total).unwrap_or(u64::MAX);
-    return Err(IpcError::TotalFileSizeTooLarge {
-      total: total_u64,
-      max: FILE_INPUT_MAX_TOTAL_BYTES_META,
+    return Err(IpcError::ProtocolViolation {
+      msg: format!(
+        "total file size metadata too large: {total_u64} bytes (max {FILE_INPUT_MAX_TOTAL_BYTES_META})"
+      ),
     });
   }
 
@@ -229,29 +236,34 @@ impl SharedFrameDescriptor {
 
   pub fn validate(&self) -> Result<(), IpcError> {
     if self.width_px == 0 || self.height_px == 0 {
-      return Err(IpcError::FrameDimensionsZero {
-        width_px: self.width_px,
-        height_px: self.height_px,
+      return Err(IpcError::ProtocolViolation {
+        msg: format!(
+          "frame dimensions must be non-zero (width_px={}, height_px={})",
+          self.width_px, self.height_px
+        ),
       });
     }
     if self.stride_bytes == 0 {
-      return Err(IpcError::FrameBufferStrideZero);
+      return Err(IpcError::ProtocolViolation {
+        msg: "frame stride_bytes must be non-zero".to_string(),
+      });
     }
     if self.byte_len == 0 {
-      return Err(IpcError::FrameBufferByteLenZero);
+      return Err(IpcError::ProtocolViolation {
+        msg: "frame byte_len must be non-zero".to_string(),
+      });
     }
 
     // Compute row length in bytes (RGBA8) with checked arithmetic.
     let row_bytes_u64 = u64::from(self.width_px)
       .checked_mul(u64::from(Self::BYTES_PER_PIXEL_RGBA8))
-      .ok_or(IpcError::ArithmeticOverflow)?;
+      .ok_or_else(|| IpcError::ProtocolViolation {
+        msg: "arithmetic overflow while computing row_bytes".to_string(),
+      })?;
     let stride_u64 = u64::from(self.stride_bytes);
     if stride_u64 < row_bytes_u64 {
-      let row_bytes = usize::try_from(row_bytes_u64).map_err(|_| IpcError::ArithmeticOverflow)?;
-      let stride_bytes = usize::try_from(stride_u64).map_err(|_| IpcError::ArithmeticOverflow)?;
-      return Err(IpcError::FrameRowBytesExceedStride {
-        row_bytes,
-        stride_bytes,
+      return Err(IpcError::ProtocolViolation {
+        msg: format!("frame row bytes {row_bytes_u64} exceed stride_bytes {stride_u64}"),
       });
     }
 
@@ -262,15 +274,16 @@ impl SharedFrameDescriptor {
       .checked_sub(1)
       .and_then(|h_minus_1| h_minus_1.checked_mul(stride_u64))
       .and_then(|prefix| prefix.checked_add(row_bytes_u64))
-      .ok_or(IpcError::ArithmeticOverflow)?;
+      .ok_or_else(|| IpcError::ProtocolViolation {
+        msg: "arithmetic overflow while computing required_bytes".to_string(),
+      })?;
 
     if required_bytes_u64 > self.byte_len {
-      let required_bytes =
-        usize::try_from(required_bytes_u64).map_err(|_| IpcError::ArithmeticOverflow)?;
-      let byte_len = usize::try_from(self.byte_len).map_err(|_| IpcError::ArithmeticOverflow)?;
-      return Err(IpcError::FrameExceedsBufferLen {
-        required_bytes,
-        byte_len,
+      return Err(IpcError::ProtocolViolation {
+        msg: format!(
+          "frame exceeds buffer length: required={required_bytes_u64} available={}",
+          self.byte_len
+        ),
       });
     }
 
@@ -278,10 +291,7 @@ impl SharedFrameDescriptor {
     let max = crate::paint::pixmap::MAX_PIXMAP_BYTES;
     if self.byte_len > max {
       return Err(IpcError::ProtocolViolation {
-        message: format!(
-          "frame buffer byte_len {} exceeds max {}",
-          self.byte_len, max
-        ),
+        msg: format!("frame buffer byte_len {} exceeds max {}", self.byte_len, max),
       });
     }
 
@@ -307,12 +317,12 @@ impl ScrollBoundsMinimal {
       && self.max_y.is_finite();
     if !all_finite {
       return Err(IpcError::ProtocolViolation {
-        message: "scroll bounds contain non-finite floats".to_string(),
+        msg: "scroll bounds contain non-finite floats".to_string(),
       });
     }
     if self.min_x > self.max_x || self.min_y > self.max_y {
       return Err(IpcError::ProtocolViolation {
-        message: "scroll bounds min > max".to_string(),
+        msg: "scroll bounds min > max".to_string(),
       });
     }
     Ok(())
@@ -334,7 +344,7 @@ impl ScrollStateMinimal {
     let (x, y) = self.viewport_scroll_css;
     if !x.is_finite() || !y.is_finite() {
       return Err(IpcError::ProtocolViolation {
-        message: "viewport_scroll_css contains non-finite floats".to_string(),
+        msg: "viewport_scroll_css contains non-finite floats".to_string(),
       });
     }
     self.bounds_css.validate()
@@ -343,7 +353,9 @@ impl ScrollStateMinimal {
 
 fn validate_dpr(dpr: f32) -> Result<(), IpcError> {
   if !dpr.is_finite() || dpr < MIN_DPR || dpr > MAX_DPR {
-    return Err(IpcError::InvalidDpr { dpr });
+    return Err(IpcError::ProtocolViolation {
+      msg: format!("invalid device pixel ratio {dpr}"),
+    });
   }
   Ok(())
 }
@@ -634,7 +646,7 @@ impl RendererToBrowser {
       } => {
         if *frame_seq == 0 {
           return Err(IpcError::ProtocolViolation {
-            message: "frame_seq must be non-zero".to_string(),
+            msg: "frame_seq must be non-zero".to_string(),
           });
         }
         frame.validate()?;
@@ -971,7 +983,7 @@ mod file_inputs {
     };
 
     let err = msg.validate().expect_err("expected validation failure");
-    assert!(matches!(err, IpcError::TooManyFiles { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 
   #[test]
@@ -984,7 +996,7 @@ mod file_inputs {
     };
 
     let err = msg.validate().expect_err("expected validation failure");
-    assert!(matches!(err, IpcError::FileNameTooLong { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 }
 
@@ -1030,7 +1042,7 @@ mod renderer_to_browser_validation {
       scroll_state_minimal: valid_scroll_state(),
     };
     let err = msg.validate().unwrap_err();
-    assert!(matches!(err, IpcError::InvalidDpr { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 
   #[test]
@@ -1057,7 +1069,7 @@ mod renderer_to_browser_validation {
       byte_len: 1,
     };
     let err = desc.validate().unwrap_err();
-    assert!(matches!(err, IpcError::FrameRowBytesExceedStride { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 
   #[test]
@@ -1069,7 +1081,7 @@ mod renderer_to_browser_validation {
       byte_len: 4,
     };
     let err = desc.validate().unwrap_err();
-    assert!(matches!(err, IpcError::FrameExceedsBufferLen { .. }));
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 
   #[test]
