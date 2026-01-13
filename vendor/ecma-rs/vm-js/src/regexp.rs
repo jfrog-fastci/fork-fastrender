@@ -176,6 +176,7 @@ impl<'a> CompileCtx<'a> {
   fn box_try_new<T>(&mut self, value: T) -> Result<Box<T>, RegExpCompileError> {
     let size = mem::size_of::<T>();
     if size == 0 {
+      // `Box::new` does not allocate for ZSTs, so this cannot fail with OOM.
       return Ok(Box::new(value));
     }
     self.charge(size)?;

@@ -1784,7 +1784,11 @@ impl Vm {
   ///
   /// The stored value can be downcast via [`Vm::user_data`] / [`Vm::user_data_mut`].
   pub fn set_user_data<T: Any>(&mut self, data: T) {
-    self.user_data = Some(Box::new(data));
+    // Avoid aborting the process on allocator OOM. `set_user_data` cannot surface an error, so
+    // treat allocation failure as a best-effort no-op and leave any existing user data in place.
+    if let Ok(boxed) = crate::fallible_alloc::box_try_new_vm(data) {
+      self.user_data = Some(boxed);
+    }
   }
 
   /// Borrow the embedded user data if it is of type `T`.

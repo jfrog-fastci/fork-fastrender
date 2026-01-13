@@ -1794,9 +1794,11 @@ impl JsRuntime {
   pub fn new(vm: Vm, heap: Heap) -> Result<Self, VmError> {
     let mut vm = vm;
     let mut heap = heap;
+    // Allocate the module graph before other runtime initialization so we can deterministically
+    // simulate allocator failures for this box allocation in unit tests.
+    let mut modules = crate::fallible_alloc::box_try_new_vm(ModuleGraph::new())?;
     let realm = Realm::new(&mut vm, &mut heap)?;
     let env = RuntimeEnv::new(&mut heap, realm.global_object(), realm.global_lexical_env())?;
-    let mut modules = Box::new(ModuleGraph::new());
     modules.set_global_lexical_env(env.lexical_env());
     // Make the runtime-owned module graph available to nested ECMAScript function calls (and other
     // VM entry points that do not naturally thread an explicit `&mut ModuleGraph` parameter).
@@ -36293,7 +36295,24 @@ fn strict_equal(heap: &Heap, a: Value, b: Value) -> Result<bool, VmError> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::test_alloc::FailNextMatchingAllocGuard;
   use crate::{HeapLimits, VmOptions};
+  use std::alloc::Layout;
+
+  #[test]
+  fn jsruntime_new_module_graph_alloc_failure_surfaces_out_of_memory() {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let layout = Layout::new::<ModuleGraph>();
+    let _guard = FailNextMatchingAllocGuard::new(layout.size(), layout.align());
+
+    let err = match JsRuntime::new(vm, heap) {
+      Ok(_) => panic!("expected JsRuntime::new to fail with OOM"),
+      Err(err) => err,
+    };
+    assert!(matches!(err, VmError::OutOfMemory));
+  }
 
   fn assert_module_instantiate_syntax_error(stmts: Vec<Node<Stmt>>) -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
