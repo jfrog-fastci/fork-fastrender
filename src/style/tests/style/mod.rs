@@ -83,6 +83,7 @@ mod justify_content_normal_test;
 mod layer_important_test;
 mod list_border_outline_case_insensitive_test;
 mod logical_properties_test;
+mod legacy_offset_logical_positioning_alias_test;
 mod logical_shorthand_parsing_test;
 mod margin_invalid_values_ignored_test;
 mod mask_properties_test;

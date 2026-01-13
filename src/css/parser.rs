@@ -8,6 +8,7 @@
 
 use super::properties::known_page_property_set;
 use super::properties::known_style_property_set;
+use super::properties::legacy_logical_offset_inset_property_alias;
 use super::properties::parse_property_value_in_context_known_property;
 use super::properties::vendor_prefixed_property_alias;
 use super::properties::DeclarationContext;
@@ -2101,6 +2102,8 @@ fn style_range_value_from_text(text: &str) -> StyleRangeValue {
   let lowered = trimmed.to_ascii_lowercase();
   let canonical = if known_style_property_set().contains(lowered.as_str()) {
     Some(lowered.as_str())
+  } else if let Some(alias) = legacy_logical_offset_inset_property_alias(lowered.as_str()) {
+    Some(alias)
   } else if lowered.starts_with("-webkit-") {
     vendor_prefixed_property_alias(lowered.as_str())
   } else {
@@ -6201,11 +6204,13 @@ fn lookup_known_property(property: &str, context: DeclarationContext) -> Option<
     DeclarationContext::Style => known_style_property_set()
       .get(property)
       .copied()
+      .or_else(|| legacy_logical_offset_inset_property_alias(property))
       .or_else(|| vendor_prefixed_property_alias(property)),
     DeclarationContext::Page => known_page_property_set()
       .get(property)
       .copied()
       .or_else(|| known_style_property_set().get(property).copied())
+      .or_else(|| legacy_logical_offset_inset_property_alias(property))
       .or_else(|| vendor_prefixed_property_alias(property)),
   }
 }

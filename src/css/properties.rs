@@ -739,6 +739,26 @@ pub(crate) fn vendor_prefixed_property_alias(property: &str) -> Option<&'static 
   known_style_property_set().get(stripped).copied()
 }
 
+/// Maps legacy logical positioning property names (`offset-*`) to their modern `inset-*`
+/// equivalents.
+///
+/// Some real-world stylesheets (notably Apple/iCloud) still ship the early `offset-{inline,block}-*`
+/// names for logical positioning. Modern engines treat these as aliases for the corresponding
+/// `inset-*` properties.
+///
+/// This function expects `property` to already be ASCII-lowercased.
+pub(crate) fn legacy_logical_offset_inset_property_alias(
+  property: &str,
+) -> Option<&'static str> {
+  match property {
+    "offset-inline-start" => Some("inset-inline-start"),
+    "offset-inline-end" => Some("inset-inline-end"),
+    "offset-block-start" => Some("inset-block-start"),
+    "offset-block-end" => Some("inset-block-end"),
+    _ => None,
+  }
+}
+
 fn tokenize_property_value<'a>(value_str: &'a str, allow_commas: bool) -> SmallVec<[&'a str; 8]> {
   #[cfg(test)]
   TOKENIZE_PROPERTY_VALUE_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -1453,7 +1473,9 @@ fn parse_property_value_in_context_internal(
 
   // Unknown properties are ignored per the CSS error-handling rules.
   if !skip_allowed_check && !property_allowed_in_context(context, property) {
-    if let Some(alias) = vendor_prefixed_property_alias(property) {
+    if let Some(alias) = legacy_logical_offset_inset_property_alias(property) {
+      property = alias;
+    } else if let Some(alias) = vendor_prefixed_property_alias(property) {
       property = alias;
     } else {
       return None;
@@ -3162,6 +3184,23 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       return value.is_some_and(|n| n >= 1 && n <= i32::MAX as i64);
     }
     "position" => return keyword_parse(parsed, |kw| Position::parse(kw).ok()),
+    "inset-inline-start" | "inset-inline-end" | "inset-block-start" | "inset-block-end" => {
+      return match parsed {
+        PropertyValue::Length(_) => true,
+        PropertyValue::Percentage(_) => true,
+        // Unitless zero is valid for `<length-percentage>`.
+        PropertyValue::Number(n) if *n == 0.0 => true,
+        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => true,
+        PropertyValue::Keyword(kw) => {
+          let trimmed = trim_css_whitespace(kw);
+          // Anchor positioning (CSS Anchor Positioning) allows `anchor()` in inset properties.
+          // Even though FastRender does not parse the function here, treat the syntax as supported
+          // so `@supports` queries remain consistent with computed-value handling.
+          is_single_function_call(trimmed, "anchor") || parse_length(trimmed).is_some()
+        }
+        _ => false,
+      };
+    }
     "float" => return keyword_parse(parsed, |kw| Float::parse(kw).ok()),
     "clear" => return keyword_parse(parsed, |kw| Clear::parse(kw).ok()),
     "overflow-x" | "overflow-y" => {

@@ -1,6 +1,7 @@
 use super::properties::{
   is_global_keyword_str, is_known_style_property, parse_property_value,
-  supports_parsed_declaration_is_valid, vendor_prefixed_property_alias,
+  legacy_logical_offset_inset_property_alias, supports_parsed_declaration_is_valid,
+  vendor_prefixed_property_alias,
 };
 use crate::style::var_resolution::contains_arbitrary_substitution_function;
 use cssparser::Parser;
@@ -133,6 +134,8 @@ pub fn supports_declaration(property: &str, value: &str) -> bool {
 
   let canonical_property = if is_known_style_property(normalized_property) {
     normalized_property
+  } else if let Some(alias) = legacy_logical_offset_inset_property_alias(normalized_property) {
+    alias
   } else if normalized_property.starts_with("-webkit-")
     || normalized_property.starts_with("-moz-")
     || normalized_property.starts_with("-ms-")
@@ -291,6 +294,19 @@ mod tests {
   fn supports_vendor_prefixed_grid_display_values() {
     assert!(!supports_declaration("display", "-ms-grid"));
     assert!(!supports_declaration("display", "-ms-inline-grid"));
+  }
+
+  #[test]
+  fn supports_legacy_offset_logical_inset_alias_properties() {
+    assert!(supports_declaration("offset-inline-start", "0"));
+    assert!(supports_declaration("offset-inline-end", "0"));
+    assert!(supports_declaration("offset-block-start", "0"));
+    assert!(supports_declaration("offset-block-end", "0"));
+
+    assert!(
+      !supports_declaration("offset-inline-start", "bogus"),
+      "invalid values should make the support query false"
+    );
   }
 
   #[test]
