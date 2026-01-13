@@ -515,21 +515,25 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     }
 
     fn get_line(lines: &[u16], explicit_track_count: i16, idx: i16) -> i16 {
-      let abs_idx = idx.abs();
-      let enough_lines = abs_idx <= lines.len() as i16;
+      let abs_idx_u16 = idx.unsigned_abs();
+      let enough_lines = abs_idx_u16 as usize <= lines.len();
       if enough_lines {
         if idx > 0 {
-          lines[(abs_idx - 1) as usize] as i16
+          (lines[(abs_idx_u16 - 1) as usize] as i32)
+            .clamp(i16::MIN as i32, i16::MAX as i32) as i16
         } else {
-          lines[lines.len() - (abs_idx) as usize] as i16
+          (lines[lines.len() - (abs_idx_u16 as usize)] as i32)
+            .clamp(i16::MIN as i32, i16::MAX as i32) as i16
         }
       } else {
-        let remaining_lines = (abs_idx - lines.len() as i16) * idx.signum();
-        if idx > 0 {
-          (explicit_track_count + 1) + remaining_lines
+        let remaining_lines = (abs_idx_u16 as i32 - lines.len() as i32) * idx.signum() as i32;
+        let base = explicit_track_count as i32 + 1;
+        let line = if idx > 0 {
+          base + remaining_lines
         } else {
-          -((explicit_track_count + 1) + remaining_lines)
-        }
+          -(base + remaining_lines)
+        };
+        line.clamp(i16::MIN as i32, i16::MAX as i32) as i16
       }
     }
 
@@ -567,11 +571,13 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     // grid line than it has tracks. And the fallback line is the line *after* that.
     //
     // See: <https://github.com/w3c/csswg-drafts/issues/966#issuecomment-277042153>
+    let base = explicit_track_count as i32 + 1;
     let line = if idx > 0 {
-      (explicit_track_count + 1) + idx
+      base + idx as i32
     } else {
-      -((explicit_track_count + 1) + idx)
-    };
+      -(base + idx as i32)
+    }
+    .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
 
     GridLine::from(line)
   }

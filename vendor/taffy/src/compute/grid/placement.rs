@@ -1557,6 +1557,45 @@ mod tests {
     }
 
     #[test]
+    fn test_overlarge_grid_named_line_index_does_not_wrap_on_overflow() {
+      // Regression: very large named-line indices should not overflow i16 arithmetic and wrap
+      // to the opposite side of the grid.
+      let flow = GridAutoFlow::Row;
+      let explicit_col_count = 2;
+      let explicit_row_count = 2;
+      let children = vec![(
+        1,
+        (
+          GridPlacement::NamedLine("foo".to_string(), i16::MAX),
+          auto(),
+          auto(),
+          auto(),
+        )
+          .into_grid_child(),
+        // Extremely large positive indices clamp to the last column track (positive side).
+        (33, 34, 0, 1),
+      )];
+      let expected_cols = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 32,
+      };
+      let expected_rows = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 0,
+      };
+      placement_test_runner(
+        explicit_col_count,
+        explicit_row_count,
+        children,
+        expected_cols,
+        expected_rows,
+        flow,
+      );
+    }
+
+    #[test]
     fn test_overlarge_grid_does_not_spin_forever_when_limited_grid_is_full() {
       // When the UA-defined implicit grid clamp is reached and the remaining cells are occupied,
       // the placement algorithm must not loop forever trying to find new implicit tracks. Instead,
