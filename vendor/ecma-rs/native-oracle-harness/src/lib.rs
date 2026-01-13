@@ -428,11 +428,11 @@ fn take_captured_console(vm: &mut Vm) -> (String, String) {
 fn install_native_builtins(rt: &mut JsRuntime) -> Result<(), VmError> {
   rt.register_global_native_function(NATIVE_PRINT_NAME, native_print, 0)?;
   rt.register_global_native_function(NATIVE_EPRINT_NAME, native_eprint, 0)?;
-  let source = Arc::new(SourceText::new_charged(
+  let source = SourceText::new_charged_arc(
     &mut rt.heap,
     NATIVE_BUILTINS_PRELUDE_SOURCE_NAME,
     NATIVE_BUILTINS_PRELUDE_SCRIPT,
-  )?);
+  )?;
   rt.exec_script_source(source)?;
   Ok(())
 }
@@ -2384,7 +2384,7 @@ impl VmHostHooks for FixtureModuleLoader {
     };
 
     let name = self.stable_source_name(&canonical)?;
-    let source_text = Arc::new(SourceText::new_charged(scope.heap_mut(), name, js)?);
+    let source_text = SourceText::new_charged_arc(scope.heap_mut(), name, js)?;
 
     let record = match SourceTextModuleRecord::parse_source_with_vm(vm, source_text) {
       Ok(record) => record,

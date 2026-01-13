@@ -1169,7 +1169,7 @@ impl WindowRealm {
   ) -> Result<Value, VmError> {
     let source = {
       let (_vm, _realm, heap) = self.runtime.vm_realm_and_heap_mut();
-      Arc::new(SourceText::new_charged(heap, "<inline>", source)?)
+      SourceText::new_charged_arc(heap, "<inline>", source)?
     };
     self.exec_script_source_with_host_and_hooks(host, hooks, source)
   }
@@ -1189,7 +1189,7 @@ impl WindowRealm {
   ) -> Result<Value, VmError> {
     let source = {
       let (_vm, _realm, heap) = self.runtime.vm_realm_and_heap_mut();
-      Arc::new(SourceText::new_charged(heap, source_name, source_text)?)
+      SourceText::new_charged_arc(heap, source_name, source_text)?
     };
     self.exec_script_source_with_host_and_hooks(host, hooks, source)
   }
@@ -1206,7 +1206,7 @@ impl WindowRealm {
   ) -> Result<Value, VmError> {
     let source = {
       let (_vm, _realm, heap) = self.runtime.vm_realm_and_heap_mut();
-      Arc::new(SourceText::new_charged(heap, "<inline>", source)?)
+      SourceText::new_charged_arc(heap, "<inline>", source)?
     };
     self.exec_script_source_with_hooks(hooks, source)
   }
@@ -1529,11 +1529,7 @@ impl WindowRealm {
     }
 
     self.with_vm_budget(move |rt| {
-      let source = Arc::new(SourceText::new_charged(
-        &mut rt.heap,
-        source_name,
-        source_text,
-      )?);
+      let source = SourceText::new_charged_arc(&mut rt.heap, source_name, source_text)?;
 
       // Temporarily move the VM-owned microtask queue out so we can both:
       // - expose DOM shim exotic hooks to the evaluator, and

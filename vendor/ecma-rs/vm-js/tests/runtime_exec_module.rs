@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use vm_js::{
   Heap, HeapLimits, HostDefined, Job, JsRuntime, MicrotaskQueue, ModuleGraph, ModuleId,
@@ -149,11 +148,8 @@ impl VmHostHooks for TestHostHooks {
           .sources
           .get(&specifier)
           .ok_or_else(|| VmError::InvariantViolation("no source registered for module specifier"))?;
-        let source = Arc::new(SourceText::new_charged(
-          scope.heap_mut(),
-          specifier.as_str(),
-          src.as_str(),
-        )?);
+        let source =
+          SourceText::new_charged_arc(scope.heap_mut(), specifier.as_str(), src.as_str())?;
         let record = SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
         let id = modules.add_module_with_specifier(&specifier, record)?;
         self.modules.insert(specifier.clone(), id);

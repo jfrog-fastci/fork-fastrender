@@ -267,6 +267,18 @@ impl SourceText {
     Ok(source)
   }
 
+  /// Convenience wrapper around [`SourceText::new_charged`] that returns an `Arc<SourceText>`.
+  ///
+  /// This is preferred over `Arc::new(SourceText::new_charged(..)?)` because `Arc::new` aborts the
+  /// process on allocator OOM.
+  pub fn new_charged_arc<'a>(
+    heap: &mut Heap,
+    name: impl Into<SourceTextInput<'a>>,
+    text: impl Into<SourceTextInput<'a>>,
+  ) -> Result<Arc<Self>, VmError> {
+    arc_try_new_vm(Self::new_charged(heap, name, text)?)
+  }
+
   /// Returns a stable identity pointer for this source text.
   ///
   /// This is intended for internal caching tables keyed by source identity (e.g. function snippet

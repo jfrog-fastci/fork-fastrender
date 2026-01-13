@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use vm_js::{
   Budget, Heap, HeapLimits, ModuleGraph, Realm, SourceText, SourceTextModuleRecord, TerminationReason, Vm,
   VmError, VmOptions,
@@ -25,9 +23,8 @@ fn module_graph_link_respects_fuel_budget_even_for_empty_modules() -> Result<(),
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut graph = ModuleGraph::new();
-  let record = SourceTextModuleRecord::parse_source(Arc::new(SourceText::new_charged(
-    &mut heap, "m", "",
-  )?))?;
+  let record =
+    SourceTextModuleRecord::parse_source(SourceText::new_charged_arc(&mut heap, "m", "")?)?;
   let module = graph.add_module(record)?;
 
   let err = graph
@@ -53,11 +50,11 @@ fn module_graph_namespace_creation_respects_fuel_budget() -> Result<(), VmError>
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut graph = ModuleGraph::new();
-  let record = SourceTextModuleRecord::parse_source(Arc::new(SourceText::new_charged(
+  let record = SourceTextModuleRecord::parse_source(SourceText::new_charged_arc(
     &mut heap,
     "m",
     "export const x = 1;",
-  )?))?;
+  )?)?;
   let module = graph.add_module(record)?;
 
   {

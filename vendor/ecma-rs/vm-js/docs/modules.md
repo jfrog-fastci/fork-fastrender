@@ -179,7 +179,6 @@ constructors, `globalThis`, host APIs installed as properties, …).
 Parse source text into a `SourceTextModuleRecord` and add it to the graph:
 
 ```rust,ignore
-use std::sync::Arc;
 use vm_js::{Heap, HeapLimits, ModuleGraph, Realm, SourceText, SourceTextModuleRecord, Vm, VmOptions};
 
 let mut vm = Vm::new(VmOptions::default());
@@ -193,7 +192,7 @@ let global_object = realm.global_object();
 let mut modules = ModuleGraph::new();
 // Optional (if you have a global lexical env): modules.set_global_lexical_env(...);
 
-let source = Arc::new(SourceText::new_charged(&mut heap, "file:///main.js", "import './dep.js';")?);
+let source = SourceText::new_charged_arc(&mut heap, "file:///main.js", "import './dep.js';")?;
 let record = SourceTextModuleRecord::parse_source_with_vm(&mut vm, source)?;
 let root = modules.add_module(record)?;
 ```
@@ -246,7 +245,7 @@ fn host_load_imported_module(
   let src = self.fetch_as_string(&request.specifier)?;
 
   // 2) Parse.
-  let source = Arc::new(SourceText::new_charged(scope.heap_mut(), &request.specifier, &src)?);
+  let source = SourceText::new_charged_arc(scope.heap_mut(), &request.specifier, &src)?;
   let record = SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
 
   // 3) Insert into graph.

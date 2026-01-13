@@ -141,7 +141,7 @@ fn exec_script_source_with_host_and_hooks_threads_host_context_into_native_calls
   let mut host = Host::default();
   let mut hooks = MicrotaskQueue::new();
 
-  let source = Arc::new(SourceText::new_charged(&mut rt.heap, "<inline>", "inc();")?);
+  let source = SourceText::new_charged_arc(&mut rt.heap, "<inline>", "inc();")?;
   rt.exec_script_source_with_host_and_hooks(
     &mut host,
     &mut hooks,
@@ -204,7 +204,7 @@ fn exec_script_with_hooks_passes_dummy_vmhost_context_for_native_calls() -> Resu
     .expect_err("expected dummy host context to fail Host downcast");
   assert!(matches!(err, VmError::Unimplemented(_)));
 
-  let source = Arc::new(SourceText::new_charged(&mut rt.heap, "<inline>", "inc();")?);
+  let source = SourceText::new_charged_arc(&mut rt.heap, "<inline>", "inc();")?;
   let err = rt
     .exec_script_source_with_hooks(&mut hooks, source)
     .expect_err("expected dummy host context to fail Host downcast");
@@ -230,7 +230,7 @@ fn exec_script_source_with_host_and_hooks_drains_vm_microtask_queue_into_host_ho
   let mut host = ();
   let mut hooks = RecordingHooks::default();
 
-  let source = Arc::new(SourceText::new_charged(&mut rt.heap, "<inline>", "enqueue();")?);
+  let source = SourceText::new_charged_arc(&mut rt.heap, "<inline>", "enqueue();")?;
   rt.exec_script_source_with_host_and_hooks(
     &mut host,
     &mut hooks,
@@ -260,11 +260,7 @@ fn exec_script_source_with_host_and_hooks_drains_vm_microtask_queue_even_on_erro
   let mut host = ();
   let mut hooks = RecordingHooks::default();
 
-  let source = Arc::new(SourceText::new_charged(
-    &mut rt.heap,
-    "<inline>",
-    "enqueue(); throw 1;",
-  )?);
+  let source = SourceText::new_charged_arc(&mut rt.heap, "<inline>", "enqueue(); throw 1;")?;
   let err = rt
     .exec_script_source_with_host_and_hooks(
       &mut host,
@@ -474,11 +470,8 @@ fn promise_jobs_can_access_host_context_when_job_context_calls_with_host_and_hoo
   let mut host = Host::default();
   let mut hooks = MicrotaskQueue::new();
 
-  let source = Arc::new(SourceText::new_charged(
-    &mut rt.heap,
-    "<inline>",
-    "Promise.resolve().then(inc);",
-  )?);
+  let source =
+    SourceText::new_charged_arc(&mut rt.heap, "<inline>", "Promise.resolve().then(inc);")?;
   rt.exec_script_source_with_host_and_hooks(
     &mut host,
     &mut hooks,

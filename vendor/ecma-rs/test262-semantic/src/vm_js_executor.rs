@@ -586,11 +586,9 @@ impl VmHostHooks for Test262ModuleHooks {
 
     let source_name: Arc<str> = Arc::from(canonical.to_string_lossy().into_owned());
     let source_text = match kind {
-      RequestedModuleKind::JavaScript => Arc::new(SourceText::new_charged(
-        scope.heap_mut(),
-        source_name.clone(),
-        source,
-      )?),
+      RequestedModuleKind::JavaScript => {
+        SourceText::new_charged_arc(scope.heap_mut(), source_name.clone(), source)?
+      }
       RequestedModuleKind::Json => {
         let json: JsonValue = match serde_json::from_str(&source) {
           Ok(v) => v,
@@ -636,11 +634,7 @@ impl VmHostHooks for Test262ModuleHooks {
           }
         };
         let synthesized = format!("export default {json_expr};\n");
-        Arc::new(SourceText::new_charged(
-          scope.heap_mut(),
-          source_name.clone(),
-          synthesized,
-        )?)
+        SourceText::new_charged_arc(scope.heap_mut(), source_name.clone(), synthesized)?
       }
     };
 
@@ -2018,11 +2012,8 @@ assert.sameValue(realm2.global.Object !== other.Object, true, 'createRealm is re
         realm.evalScript("function tag(s) { return s; } tag`hello`;");
       })();
     "#;
-    let source_text = Arc::new(SourceText::new_charged(
-      &mut runtime.heap,
-      "create_realm_teardown.js",
-      source,
-    )?);
+    let source_text =
+      SourceText::new_charged_arc(&mut runtime.heap, "create_realm_teardown.js", source)?;
     runtime.exec_script_source_with_hooks(&mut hooks, source_text)?;
 
     assert!(
