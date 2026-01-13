@@ -16,6 +16,7 @@ use crate::spawn::{
 };
 use crate::{OwnedHandle, OwnedSid, Result, WinSandboxError};
 
+use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 use windows_sys::Win32::Foundation::{FALSE, HANDLE, TRUE};
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
 use windows_sys::Win32::Security::{
@@ -96,36 +97,40 @@ pub fn create_restricted_token_low_integrity() -> Result<OwnedHandle> {
   let power_users_sid = sid_from_sddl("S-1-5-32-547")?;
   let users_sid = sid_from_sddl("S-1-5-32-545")?;
 
-  // Keep the SIDs alive for the duration of the CreateRestrictedToken call.
-  let disabled_sids = [admin_sid, power_users_sid, users_sid];
-  let disabled: Vec<SID_AND_ATTRIBUTES> = disabled_sids
-    .iter()
-    .map(|sid| SID_AND_ATTRIBUTES {
-      Sid: sid.as_ptr(),
-      Attributes: 0,
-    })
-    .collect();
+  // `CreateRestrictedToken` requires disabled SIDs to be present in the existing token on some
+  // Windows builds/configurations. To keep this reliable across user accounts (for example a
+  // standard user that is not in `BUILTIN\\Administrators` or `BUILTIN\\Power Users`), we attempt a
+  // conservative sequence.
+  //
+  // This still satisfies the intent: if the current token contains any of these well-known groups,
+  // we disable them; otherwise there is nothing to disable.
+  let attempts: [&[&OwnedSid]; 3] = [
+    &[&admin_sid, &power_users_sid, &users_sid],
+    &[&admin_sid, &users_sid],
+    &[&users_sid],
+  ];
 
-  let mut restricted: HANDLE = std::ptr::null_mut();
-  win32_bool("CreateRestrictedToken", unsafe {
-    CreateRestrictedToken(
-      token.as_raw(),
-      DISABLE_MAX_PRIVILEGE,
-      disabled.len() as u32,
-      disabled.as_ptr(),
-      0,
-      std::ptr::null(),
-      0,
-      std::ptr::null(),
-      &mut restricted,
-    )
-  })?;
-  if restricted.is_null() {
-    return Err(WinSandboxError::NullPointer {
-      func: "CreateRestrictedToken",
-    });
+  let mut last_err: Option<WinSandboxError> = None;
+  let mut restricted: Option<OwnedHandle> = None;
+  for disabled in attempts {
+    match create_restricted_token_disable_sids(token.as_raw(), disabled) {
+      Ok(tok) => {
+        restricted = Some(tok);
+        break;
+      }
+      Err(err) => {
+        if !should_retry_disabled_sids(&err) {
+          return Err(err);
+        }
+        last_err = Some(err);
+      }
+    }
   }
-  let restricted = OwnedHandle::from_raw(restricted);
+
+  let restricted = match restricted {
+    Some(tok) => tok,
+    None => return Err(last_err.unwrap_or_else(|| WinSandboxError::from_code("CreateRestrictedToken", 0))),
+  };
 
   set_low_integrity(restricted.as_raw())?;
   Ok(restricted)
@@ -256,6 +261,48 @@ fn sid_from_sddl(sddl: &str) -> Result<OwnedSid> {
   Ok(OwnedSid::from_local_free(sid as _))
 }
 
+fn create_restricted_token_disable_sids(existing_token: HANDLE, disabled: &[&OwnedSid]) -> Result<OwnedHandle> {
+  let disabled: Vec<SID_AND_ATTRIBUTES> = disabled
+    .iter()
+    .map(|sid| SID_AND_ATTRIBUTES {
+      Sid: sid.as_ptr(),
+      Attributes: 0,
+    })
+    .collect();
+
+  let mut restricted: HANDLE = std::ptr::null_mut();
+  let ok = unsafe {
+    CreateRestrictedToken(
+      existing_token,
+      DISABLE_MAX_PRIVILEGE,
+      disabled.len() as u32,
+      disabled.as_ptr(),
+      0,
+      std::ptr::null(),
+      0,
+      std::ptr::null(),
+      &mut restricted,
+    )
+  };
+  if ok == 0 {
+    return Err(WinSandboxError::last("CreateRestrictedToken"));
+  }
+  if restricted.is_null() {
+    return Err(WinSandboxError::NullPointer {
+      func: "CreateRestrictedToken",
+    });
+  }
+  Ok(OwnedHandle::from_raw(restricted))
+}
+
+fn should_retry_disabled_sids(err: &WinSandboxError) -> bool {
+  const ERROR_INVALID_SID: u32 = 1337;
+  match err {
+    WinSandboxError::Win32 { code, .. } => *code == ERROR_INVALID_PARAMETER || *code == ERROR_INVALID_SID,
+    _ => false,
+  }
+}
+
 fn wide_from_str(value: &str) -> Vec<u16> {
   let mut wide: Vec<u16> = value.encode_utf16().collect();
   wide.push(0);
@@ -269,4 +316,3 @@ fn win32_bool(func: &'static str, value: i32) -> Result<()> {
     Ok(())
   }
 }
-
