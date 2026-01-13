@@ -167,8 +167,15 @@ renderer, you would instead intercept `chrome-action:` before attempting navigat
 
 **Integration tests (content rejection):**
 
-- Extend `tests/browser_integration/ui_worker_unsupported_scheme.rs` to cover
-  `chrome://…` and `chrome-action:…` URLs once they are introduced in fixtures or test harnesses.
-  The expected behavior for untrusted content is:
+- `tests/browser_integration/ui_worker_unsupported_scheme.rs` asserts the untrusted content worker
+  rejects `chrome://…` and `chrome-action:…` (as well as other unsupported schemes like
+  `javascript:`). The expected behavior for untrusted content is:
   - `WorkerToUi::NavigationFailed { .. }`
   - no `WorkerToUi::FrameReady { .. }` for the failed navigation.
+
+  To run just this check:
+
+  ```bash
+  bash scripts/cargo_agent.sh test --features browser_ui --test browser_integration \
+    ui_worker_rejects_unsupported_schemes_without_rendering_error_page
+  ```
