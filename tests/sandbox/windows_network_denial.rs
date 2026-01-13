@@ -16,21 +16,22 @@ use std::os::windows::io::{AsRawHandle, RawHandle};
 use std::time::Duration;
 
 use fastrender::sandbox::windows::spawn_sandboxed;
+use win_sandbox::SandboxSupport;
 use windows_sys::Win32::Foundation::{
   CloseHandle, GetHandleInformation, SetHandleInformation, ERROR_INSUFFICIENT_BUFFER, HANDLE,
   HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{
-  GetTokenInformation, OpenProcessToken, TokenCapabilities, TokenIntegrityLevel, TokenIsAppContainer,
-  TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+  GetTokenInformation, OpenProcessToken, TokenCapabilities, TokenIntegrityLevel,
+  TokenIsAppContainer, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
 use windows_sys::Win32::System::Console::{
   GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Memory::LocalFree;
 use windows_sys::Win32::System::Threading::{
-  GetExitCodeProcess, GetCurrentProcess, TerminateProcess, WaitForSingleObject,
+  GetCurrentProcess, GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
 };
 
 const ENV_PORT: &str = "FASTR_TEST_WIN_SANDBOX_NETWORK_PORT";
@@ -196,7 +197,9 @@ fn get_token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Resul
     ));
   }
   if needed == 0 {
-    return Err("GetTokenInformation returned ERROR_INSUFFICIENT_BUFFER but length was 0".to_string());
+    return Err(
+      "GetTokenInformation returned ERROR_INSUFFICIENT_BUFFER but length was 0".to_string(),
+    );
   }
 
   let mut buf = vec![0u8; needed as usize];
@@ -303,6 +306,14 @@ fn collect_stdio_handles_for_inheritance() -> (Vec<RawHandle>, HandleInheritGuar
 
 #[test]
 fn appcontainer_denies_outbound_tcp_connect() {
+  let support = SandboxSupport::detect();
+  if support != SandboxSupport::Full {
+    eprintln!(
+      "skipping AppContainer network denial test: Windows sandbox is unavailable ({support})"
+    );
+    return;
+  }
+
   // Serialize network-heavy tests to keep CI deterministic.
   let _net_guard = crate::common::net_test_lock();
 
@@ -312,10 +323,7 @@ fn appcontainer_denies_outbound_tcp_connect() {
       Some(listener) => listener,
       None => return,
     };
-  let port = listener
-    .local_addr()
-    .map(|addr| addr.port())
-    .unwrap_or(0);
+  let port = listener.local_addr().map(|addr| addr.port()).unwrap_or(0);
   assert!(port != 0, "expected listener to have a non-zero port");
 
   // Ensure developer environment overrides don't silently change test semantics.
@@ -411,7 +419,10 @@ fn appcontainer_network_denied_child() {
       panic!("SECURITY BUG: AppContainer sandbox allowed TCP connect to {addr}");
     }
     Err(err) => {
-      eprintln!("connect to {addr} denied as expected: {err} (kind={:?})", err.kind());
+      eprintln!(
+        "connect to {addr} denied as expected: {err} (kind={:?})",
+        err.kind()
+      );
     }
   }
 }
