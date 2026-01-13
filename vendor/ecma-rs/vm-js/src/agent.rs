@@ -1,4 +1,5 @@
 use crate::source::format_stack_trace;
+use crate::property::{PropertyKey, PropertyKind};
 use crate::{Budget, Heap, HeapLimits, JsRuntime, Realm, SourceText, Termination, Value, Vm, VmError, VmOptions};
 use std::sync::Arc;
 
@@ -177,9 +178,9 @@ impl Agent {
   /// Formats a VM error into a host-visible string.
   pub fn format_vm_error(&mut self, err: &VmError) -> String {
     match err {
-      VmError::Throw(value) => self.value_to_error_string(*value),
+      VmError::Throw(value) => self.format_thrown_value(*value),
       VmError::ThrowWithStack { value, stack } => {
-        let msg = self.value_to_error_string(*value);
+        let msg = self.format_thrown_value(*value);
         if stack.is_empty() {
           msg
         } else {
@@ -198,6 +199,88 @@ impl Agent {
         out
       }
     }
+  }
+
+  fn format_thrown_value(&mut self, value: Value) -> String {
+    match value {
+      Value::Object(obj) if self.heap().is_error_object(obj) => self
+        .try_format_error_object_message(obj)
+        .unwrap_or_else(|| self.value_to_error_string(value)),
+      _ => self.value_to_error_string(value),
+    }
+  }
+
+  /// Best-effort, host-friendly formatting for native Error objects.
+  ///
+  /// This avoids invoking user code by reading only data properties from the object/prototype
+  /// chain (no accessors, no Proxy traps).
+  fn try_format_error_object_message(&mut self, obj: crate::GcObject) -> Option<String> {
+    // Root the thrown object while we allocate the key strings used for descriptor lookup.
+    let mut scope = self.heap_mut().scope();
+    scope.push_root(Value::Object(obj)).ok()?;
+
+    let name_key = PropertyKey::from_string(scope.common_key_name().ok()?);
+    let message_key = PropertyKey::from_string(scope.common_key_message().ok()?);
+
+    let heap = scope.heap();
+
+    let name = Self::get_data_string_property_from_chain(heap, obj, &name_key)
+      .and_then(|s| heap.get_string(s).ok())
+      .and_then(|js| crate::string::utf16_to_utf8_lossy(js.as_code_units()).ok());
+    let message = Self::get_data_string_property_from_chain(heap, obj, &message_key)
+      .and_then(|s| heap.get_string(s).ok())
+      .and_then(|js| crate::string::utf16_to_utf8_lossy(js.as_code_units()).ok());
+
+    let (name, message) = match (name, message) {
+      (Some(name), Some(message)) => (name, message),
+      (None, Some(message)) => {
+        // If we can extract only a string `message`, prefer it over a Rust debug dump.
+        return Some(message);
+      }
+      _ => return None,
+    };
+
+    if message.is_empty() {
+      return Some(name);
+    }
+
+    let mut out = String::new();
+    let needed = name.len().saturating_add(2).saturating_add(message.len());
+    out.try_reserve_exact(needed).ok()?;
+    out.push_str(&name);
+    out.push_str(": ");
+    out.push_str(&message);
+    Some(out)
+  }
+
+  fn get_data_string_property_from_chain(
+    heap: &Heap,
+    start: crate::GcObject,
+    key: &PropertyKey,
+  ) -> Option<crate::GcString> {
+    let mut current = Some(start);
+    let mut steps = 0usize;
+    while let Some(obj) = current {
+      if steps >= crate::heap::MAX_PROTOTYPE_CHAIN {
+        return None;
+      }
+      steps += 1;
+
+      match heap.object_get_own_property(obj, key) {
+        Ok(Some(desc)) => match desc.kind {
+          PropertyKind::Data {
+            value: Value::String(s),
+            ..
+          } => return Some(s),
+          // If an accessor is present, or a non-string data property shadows the prototype chain,
+          // we can't format without invoking user code (or implementing full ToString), so bail.
+          PropertyKind::Accessor { .. } | PropertyKind::Data { .. } => return None,
+        },
+        Ok(None) => current = heap.object_prototype(obj).ok().flatten(),
+        Err(_) => return None,
+      }
+    }
+    None
   }
 }
 

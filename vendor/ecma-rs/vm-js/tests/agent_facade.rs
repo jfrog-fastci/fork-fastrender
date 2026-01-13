@@ -101,3 +101,60 @@ fn prototype_cycle_throws_type_error_with_stack() {
     other => panic!("expected ThrowWithStack, got {other:?}"),
   }
 }
+
+#[test]
+fn format_vm_error_formats_native_error_objects() {
+  let mut agent = new_agent();
+
+  let err = agent
+    .run_script(
+      "throw_type_error.js",
+      "throw new TypeError('boom');",
+      Budget::unlimited(1),
+      None,
+    )
+    .unwrap_err();
+
+  let formatted = agent.format_vm_error(&err);
+  assert!(
+    formatted.contains("TypeError: boom"),
+    "expected formatted message to contain 'TypeError: boom', got:\n{formatted}"
+  );
+}
+
+#[test]
+fn format_vm_error_formats_thrown_string_values() {
+  let mut agent = new_agent();
+
+  let err = agent
+    .run_script("throw_string.js", "throw 'boom';", Budget::unlimited(1), None)
+    .unwrap_err();
+
+  let formatted = agent.format_vm_error(&err);
+  let first_line = formatted.lines().next().unwrap_or_default();
+  assert_eq!(first_line, "boom", "got:\n{formatted}");
+}
+
+#[test]
+fn format_vm_error_appends_stack_trace_for_throw_with_stack() {
+  let mut agent = new_agent();
+
+  let err = agent
+    .run_script(
+      "stack.js",
+      "const a = {}; Object.setPrototypeOf(a, a);",
+      Budget::unlimited(1),
+      None,
+    )
+    .unwrap_err();
+
+  let VmError::ThrowWithStack { .. } = &err else {
+    panic!("expected ThrowWithStack, got {err:?}");
+  };
+
+  let formatted = agent.format_vm_error(&err);
+  assert!(
+    formatted.contains("\nat "),
+    "expected formatted error to include a stack trace, got:\n{formatted}"
+  );
+}

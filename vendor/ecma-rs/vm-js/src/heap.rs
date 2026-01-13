@@ -264,6 +264,7 @@ pub struct Heap {
 
   // Commonly-used property key strings (interned for memory efficiency).
   common_key_name: Option<GcString>,
+  common_key_message: Option<GcString>,
   common_key_length: Option<GcString>,
   common_key_constructor: Option<GcString>,
   common_key_prototype: Option<GcString>,
@@ -361,6 +362,7 @@ impl Heap {
       symbol_registry: Vec::new(),
       internal_symbols: InternalSymbols::default(),
       common_key_name: None,
+      common_key_message: None,
       common_key_length: None,
       common_key_constructor: None,
       common_key_prototype: None,
@@ -7397,6 +7399,17 @@ impl<'a> Scope<'a> {
     }
     let s = self.alloc_string("name")?;
     self.heap.common_key_name = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_message(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_message {
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
+    }
+    let s = self.alloc_string("message")?;
+    self.heap.common_key_message = Some(s);
     Ok(s)
   }
 
