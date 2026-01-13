@@ -1877,3 +1877,51 @@ fn compiled_function_default_initializer_can_read_arguments() -> Result<(), VmEr
   assert_eq!(result, Value::Number(1.0));
   Ok(())
 }
+
+#[test]
+fn compiled_for_of_assigns_to_member_target() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let o = {x: ''};
+      for (o.x of 'ab') {}
+      o.x
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "b");
+  Ok(())
+}
+
+#[test]
+fn compiled_for_in_assigns_to_member_target() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let o = {x: ''};
+      for (o.x in ({a:1, b:2})) {}
+      o.x
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "b");
+  Ok(())
+}

@@ -1574,22 +1574,10 @@ impl<'vm> HirEvaluator<'vm> {
   ) -> Result<(), VmError> {
     match head {
       hir_js::ForHead::Pat(pat_id) => {
-        let pat = self.get_pat(body, *pat_id)?;
-        let hir_js::PatKind::Ident(name_id) = pat.kind else {
-          return Err(VmError::Unimplemented(
-            "for-in/of assignment pattern (hir-js compiled path)",
-          ));
-        };
-        let name = self.resolve_name(name_id)?;
-        self.env.set(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          scope,
-          name.as_str(),
-          value,
-          self.strict,
-        )
+        // Reuse `assign_to_pat` so assignment targets like `for (obj.x of iterable) {}` work.
+        //
+        // Note: destructuring patterns are still unimplemented in the compiled path.
+        self.assign_to_pat(scope, body, *pat_id, value)
       }
       hir_js::ForHead::Var(var_decl) => {
         if !matches!(
