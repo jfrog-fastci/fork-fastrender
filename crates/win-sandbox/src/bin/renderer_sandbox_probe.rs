@@ -17,9 +17,8 @@ fn main() {
 #[cfg(windows)]
 fn run_probe() -> Result<(), i32> {
   use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER,
+    CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER,
   };
-  use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
   use windows_sys::Win32::Security::{
     GetTokenInformation, SID_AND_ATTRIBUTES, TokenGroups, TokenIsAppContainer, TOKEN_GROUPS,
     TOKEN_INFORMATION_CLASS, TOKEN_QUERY,
@@ -29,7 +28,7 @@ fn run_probe() -> Result<(), i32> {
     DeleteProcThreadAttributeList, GetCurrentProcess, InitializeProcThreadAttributeList,
     UpdateProcThreadAttribute, LPPROC_THREAD_ATTRIBUTE_LIST,
   };
-  use win_sandbox::mitigations;
+  use win_sandbox::{mitigations, sid_to_string};
 
   // ProcThreadAttributeValue(15, FALSE, TRUE, FALSE) → 0x0002_000F.
   const PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: usize = 0x0002_000F;
@@ -156,32 +155,6 @@ fn run_probe() -> Result<(), i32> {
     Ok(buf)
   }
 
-  fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> Result<String, String> {
-    let mut wide: *mut u16 = core::ptr::null_mut();
-    let ok = unsafe { ConvertSidToStringSidW(sid, core::ptr::addr_of_mut!(wide)) };
-    if ok == 0 {
-      return Err(format!(
-        "ConvertSidToStringSidW failed: {}",
-        std::io::Error::last_os_error()
-      ));
-    }
-    if wide.is_null() {
-      return Err("ConvertSidToStringSidW returned null pointer".to_string());
-    }
-
-    // SAFETY: pointer is NUL-terminated per Win32 contract.
-    let mut len = 0usize;
-    unsafe {
-      while *wide.add(len) != 0 {
-        len += 1;
-      }
-      let slice = core::slice::from_raw_parts(wide, len);
-      let s = String::from_utf16_lossy(slice);
-      LocalFree(wide.cast());
-      Ok(s)
-    }
-  }
-
   fn token_group_sids(token: windows_sys::Win32::Foundation::HANDLE) -> Result<Vec<String>, String> {
     let buf = get_token_information(token, TokenGroups as TOKEN_INFORMATION_CLASS)?;
     if buf.is_empty() {
@@ -205,7 +178,7 @@ fn run_probe() -> Result<(), i32> {
       if entry.Sid.is_null() {
         continue;
       }
-      out.push(sid_to_string(entry.Sid)?);
+      out.push(sid_to_string(entry.Sid).map_err(|err| err.to_string())?);
     }
     Ok(out)
   }

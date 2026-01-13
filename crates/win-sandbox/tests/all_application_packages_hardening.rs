@@ -5,12 +5,11 @@ mod common;
 use std::ffi::OsString;
 use std::time::Duration;
 
-use win_sandbox::{spawn_sandboxed, AppContainerProfile, SpawnConfig};
+use win_sandbox::{sid_to_string, spawn_sandboxed, AppContainerProfile, SpawnConfig};
 
 use windows_sys::Win32::Foundation::{
-  CloseHandle, GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER, HANDLE,
+  CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, HANDLE,
 };
-use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{
   GetTokenInformation, TokenGroups, TokenIsAppContainer, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
   TOKEN_QUERY,
@@ -80,32 +79,6 @@ fn get_token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Resul
   Ok(buf)
 }
 
-fn sid_to_string(sid: *mut std::ffi::c_void) -> Result<String, String> {
-  let mut wide: *mut u16 = std::ptr::null_mut();
-  let ok = unsafe { ConvertSidToStringSidW(sid, std::ptr::addr_of_mut!(wide)) };
-  if ok == 0 {
-    return Err(format!(
-      "ConvertSidToStringSidW failed: {}",
-      std::io::Error::last_os_error()
-    ));
-  }
-  if wide.is_null() {
-    return Err("ConvertSidToStringSidW succeeded but returned null pointer".to_string());
-  }
-
-  // SAFETY: pointer is NUL-terminated per Win32 contract.
-  let mut len = 0usize;
-  unsafe {
-    while *wide.add(len) != 0 {
-      len += 1;
-    }
-    let slice = std::slice::from_raw_parts(wide, len);
-    let s = String::from_utf16_lossy(slice);
-    LocalFree(wide.cast());
-    Ok(s)
-  }
-}
-
 fn query_token_groups(token: HANDLE) -> Result<Vec<String>, String> {
   let buf = get_token_information(token, TokenGroups as TOKEN_INFORMATION_CLASS)?;
   if buf.is_empty() {
@@ -132,7 +105,7 @@ fn query_token_groups(token: HANDLE) -> Result<Vec<String>, String> {
     if entry.Sid.is_null() {
       continue;
     }
-    out.push(sid_to_string(entry.Sid)?);
+    out.push(sid_to_string(entry.Sid).map_err(|err| err.to_string())?);
   }
   Ok(out)
 }

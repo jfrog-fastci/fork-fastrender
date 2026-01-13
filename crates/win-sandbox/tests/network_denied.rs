@@ -9,8 +9,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::windows::process::ExitStatusExt;
 use std::time::Duration;
 
-use win_sandbox::mitigations;
-use win_sandbox::RendererSandbox;
+use win_sandbox::{mitigations, sid_to_string, RendererSandbox};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
 use windows_sys::Win32::Security::{
   GetTokenInformation, TokenCapabilities, TokenIsAppContainer, TOKEN_QUERY,
@@ -125,15 +124,6 @@ struct TokenGroups {
   groups: [SidAndAttributes; 1],
 }
 
-unsafe fn wide_ptr_len(mut ptr: *const u16) -> usize {
-  let mut len = 0;
-  while !ptr.is_null() && *ptr != 0 {
-    len += 1;
-    ptr = ptr.add(1);
-  }
-  len
-}
-
 unsafe fn token_capability_sids(token: HANDLE) -> io::Result<Vec<String>> {
   let mut required: u32 = 0;
   let ok = GetTokenInformation(
@@ -167,16 +157,9 @@ unsafe fn token_capability_sids(token: HANDLE) -> io::Result<Vec<String>> {
 
   let mut out = Vec::with_capacity(count);
   for entry in slice {
-    let mut sid_str: *mut u16 = std::ptr::null_mut();
-    let ok =
-      windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW(entry.sid, &mut sid_str);
-    if ok == 0 || sid_str.is_null() {
-      return Err(io::Error::last_os_error());
-    }
-    let len = wide_ptr_len(sid_str);
-    let wide = std::slice::from_raw_parts(sid_str, len);
-    out.push(String::from_utf16_lossy(wide));
-    windows_sys::Win32::Foundation::LocalFree(sid_str.cast());
+    out.push(
+      sid_to_string(entry.sid).map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?,
+    );
   }
   Ok(out)
 }

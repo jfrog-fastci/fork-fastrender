@@ -52,7 +52,7 @@ mod windows {
     SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
+    GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
     EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID,
     TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
   };
@@ -72,7 +72,7 @@ mod windows {
     STARTUPINFOEXW, STARTUPINFOW, LPPROC_THREAD_ATTRIBUTE_LIST,
   };
 
-  use win_sandbox::{mitigations, AppContainerProfile, Job, RestrictedToken, WinSandboxError};
+  use win_sandbox::{mitigations, sid_to_string, AppContainerProfile, Job, RestrictedToken, WinSandboxError};
 
   // WaitForSingleObject return codes.
   const WAIT_OBJECT_0: u32 = 0;
@@ -1317,7 +1317,7 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
 
     let rid = unsafe { integrity_rid_from_sid(sid)? };
     let name = integrity_level_name(rid);
-    let sid_str = unsafe { sid_to_string(sid)? };
+    let sid_str = sid_to_string(sid).map_err(win_err)?;
 
     Ok(IntegrityLevel {
       name,
@@ -1372,22 +1372,6 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
     }
   }
 
-  unsafe fn sid_to_string(sid: PSID) -> io::Result<String> {
-    let mut sid_str: *mut u16 = std::ptr::null_mut();
-    let ok = ConvertSidToStringSidW(sid, &mut sid_str);
-    if ok == 0 || sid_str.is_null() {
-      return Err(io::Error::last_os_error());
-    }
-    let mut len = 0usize;
-    while *sid_str.add(len) != 0 {
-      len += 1;
-    }
-    let wide = std::slice::from_raw_parts(sid_str, len);
-    let out = String::from_utf16_lossy(wide);
-    windows_sys::Win32::Foundation::LocalFree(sid_str as _);
-    Ok(out)
-  }
-
   fn token_has_group_sid(
     token: windows_sys::Win32::Foundation::HANDLE,
     want_sid: &str,
@@ -1426,7 +1410,7 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
       if sid.is_null() {
         continue;
       }
-      let sid_str = unsafe { sid_to_string(sid)? };
+      let sid_str = sid_to_string(sid).map_err(win_err)?;
       if sid_str == want_sid {
         return Ok(true);
       }
