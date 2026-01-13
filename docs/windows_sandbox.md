@@ -8,6 +8,9 @@ Code map (repo reality):
 - High-level renderer spawn sandboxing:
   - `src/sandbox/windows.rs` (`fastrender::sandbox::windows::spawn_sandboxed(...)`)
   - `src/sandbox/windows/appcontainer.rs` (dynamic loader for AppContainer APIs in `userenv.dll`)
+    - We resolve AppContainer APIs at runtime (via `LoadLibraryW`/`GetProcAddress`) so the binary can
+      still load on Windows versions that lack these exports; missing symbols are treated as “no
+      AppContainer support” → fallback mode.
 - Reusable Win32 wrappers + tests (not yet fully wired into the renderer spawner):
   - `crates/win-sandbox/`
     - `Job` (job object wrapper + limits)
@@ -122,6 +125,14 @@ If something “needs filesystem access”, the correct design is generally:
 
 Even with AppContainer, we apply a Job object so the broker can reliably control the renderer’s
 lifetime and resource usage.
+
+### Spawn sequencing: create suspended → assign to Job → resume
+
+For stronger “starts sandboxed” semantics, `src/sandbox/windows.rs` creates the child process with
+`CREATE_SUSPENDED`, assigns it to the Job, then resumes the main thread via `ResumeThread`.
+
+If `ResumeThread` fails, the code terminates the child process to avoid leaving a partially
+configured process around.
 
 ### Limits we set
 
@@ -253,6 +264,22 @@ for compatibility, record:
 - why it’s safe
 - what compensating controls exist
 
+### Mitigation policy bitmask (exact flags)
+
+In `crates/win-sandbox/src/mitigations.rs` we build a `u64` mask consumed by
+`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` using `PROCESS_CREATION_MITIGATION_POLICY_*` values from
+the Windows SDK headers (`winbase.h`). `windows-sys` does not currently export these macro values,
+so the crate defines the ones we use:
+
+- `PROCESS_CREATION_MITIGATION_POLICY_STRICT_HANDLE_CHECKS_ALWAYS_ON`
+- `PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON`
+- `PROCESS_CREATION_MITIGATION_POLICY_EXTENSION_POINT_DISABLE_ALWAYS_ON`
+- `PROCESS_CREATION_MITIGATION_POLICY_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON`
+- `PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON`
+- `PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON`
+
+The builder adds only flags supported by the current OS (best-effort compatibility).
+
 ## Fallback mode: restricted token + Low Integrity Level (weaker)
 
 If AppContainer is unavailable or fails to initialize, we fall back to a “best-effort” sandbox:
@@ -289,6 +316,9 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
   availability, `ERROR_ACCESS_DENIED` retries, breakaway/job assignment warnings).
 - `FASTR_DISABLE_RENDERER_SANDBOX=1` / `FASTR_WINDOWS_RENDERER_SANDBOX=off`: disable Windows
   renderer sandboxing entirely (**debug only; insecure**).
+  - Note: even with the token/AppContainer sandbox disabled, `spawn_sandboxed(...)` still uses the
+    **Job object** and the **handle allowlist**. This is not a security boundary (no network/FS
+    restrictions), but it keeps lifecycle/handle-leak invariants closer to the real configuration.
 
 From `crates/win-sandbox` (mitigation-only escape hatch):
 
