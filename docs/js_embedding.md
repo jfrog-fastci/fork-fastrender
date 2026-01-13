@@ -16,17 +16,19 @@ If you are looking for the spec-mapped `<script>` processing design, start with:
 
 FastRender runs on hostile inputs. Follow the repo-wide rules in [`AGENTS.md`](../AGENTS.md).
 
-- **All cargo commands:** use `bash scripts/cargo_agent.sh`
-- **Any renderer binary execution:** run under OS limits (`bash scripts/run_limited.sh --as 64G`)
+- **All cargo commands:** use `bash scripts/cargo_agent.sh`, and always wrap with `timeout -k`
+  (tests/builds can hang).
+- **Any renderer binary execution:** run under OS limits (`bash scripts/run_limited.sh --as 64G -- ...`)
+  and wrap with `timeout -k` (pages/scripts can hang).
 
 Examples:
 
 ```bash
 # Build (scoped) under a RAM cap:
-bash scripts/cargo_agent.sh build --release
+timeout -k 10 600 bash scripts/cargo_agent.sh build --release
 
 # Run a renderer binary under OS caps:
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- <args...>
 ```
 
@@ -34,10 +36,10 @@ Scoped test examples (don’t run unscoped `cargo test`):
 
 ```bash
 # Run only the library tests in the main crate, filtered to JS-related tests:
-bash scripts/cargo_agent.sh test -p fastrender --lib js::event_loop
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib js::event_loop
 
 # Run an xtask integration test (one test binary):
-bash scripts/cargo_agent.sh test -p xtask --test js_test262_smoke
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p xtask --test js_test262_smoke
 ```
 
 ---
@@ -49,7 +51,7 @@ FastRender’s JS embedding is designed around a **tab-like** host object that o
 1. a mutable DOM (`dom2::Document`),
 2. a JS runtime instance (used by WebIDL bindings and, later, page scripts),
 3. an HTML-shaped event loop (tasks + microtasks + timers),
-4. (eventually) a `<script>` scheduler that follows the HTML Standard.
+4. a `<script>` scheduler that follows the HTML Standard (classic + module + import maps).
 
 If you’re deciding between the various public “document/tab” containers (which ones have JS, event
 loop, navigation, etc), see [`docs/runtime_stacks.md`](runtime_stacks.md).
@@ -61,7 +63,9 @@ FastRender currently exposes **two** “tab-like” host containers:
 - `fastrender::BrowserTab` (implementation: `src/api/browser_tab.rs`)
   - owns a live `dom2` document via `BrowserDocumentDom2`,
   - owns an HTML-shaped `EventLoop` plus an HTML-like `<script>` scheduler (`HtmlScriptScheduler`),
-  - executes classic + module scripts through a host-supplied `BrowserTabJsExecutor` trait (engine-agnostic).
+  - executes classic + module scripts through a host-supplied `BrowserTabJsExecutor` trait (engine-agnostic),
+    with the production `vm-js` implementation in `src/api/browser_tab_vm_js_executor.rs`
+    (`VmJsBrowserTabExecutor`).
 
 - `fastrender::api::BrowserDocumentJs` (implementation: `src/api/browser_document_js.rs`)
   - couples `BrowserDocumentDom2` with the `vm-js`-backed `VmJsRuntime` used for WebIDL scaffolding,
@@ -83,11 +87,17 @@ What `BrowserTab` does today:
 
 What it does **not** do yet (important gaps):
 
-- fully spec-correct parser/event-loop interleaving (e.g. “async-ready” scripts interrupting parsing),
-- dynamic `import()` and asynchronous module loading/evaluation (e.g. top-level `await`) are not
-  implemented yet (only static module import graphs); see [`docs/import_maps.md`](import_maps.md)
-  for import map support.
-- a full DOM/Web API surface exposed to JS (bindings are still being built out).
+- fully spec-correct parser/event-loop interleaving in all edge cases (though `BrowserTab` now parses
+  under a per-task `ParseBudget` so async-ready work can interleave with parsing),
+- full Web platform coverage: the DOM/WebIDL/Web API surface exposed to JS is still a subset.
+
+Module support status:
+
+- `<script type="module">`, import maps, dynamic `import()`, and top-level await are supported by the
+  production `vm-js` executor when module loading is enabled via
+  `JsExecutionOptions { supports_module_scripts: true, .. }`.
+- When module loading is disabled (the default `JsExecutionOptions`), dynamic `import()` rejects with
+  a `TypeError` and module scripts are skipped/treated as non-executable.
 
 ### Privileged chrome UI realms (renderer-chrome)
 
@@ -153,6 +163,7 @@ The public API types that “own the embedding state” live in `src/api/`:
 
 - `src/api/browser_document_dom2.rs`: `BrowserDocumentDom2` (live `dom2` document + multi-frame rendering)
 - `src/api/browser_tab.rs`: `BrowserTab` (script scheduling + event loop + rendering integration)
+- `src/api/browser_tab_vm_js_executor.rs`: `VmJsBrowserTabExecutor` (production `vm-js` executor for `BrowserTab`)
 - `src/api/browser_document_js.rs`: `BrowserDocumentJs` (adds `VmJsRuntime` + `EventLoop` + `run_until_stable`)
 
 ### Host-side JS plumbing (`src/js/*`)
@@ -178,6 +189,8 @@ Key modules:
   - see [`docs/import_maps.md`](import_maps.md)
 - `src/js/orchestrator.rs`
   - host bookkeeping for `Document.currentScript` (spec-shaped, `dom2`-backed)
+- `src/js/document_lifecycle.rs`
+  - `DocumentLifecycle` state machine (`document.readyState`, `DOMContentLoaded`, `load`)
 - `src/js/vmjs/window_timers.rs`, `src/js/vmjs/window_animation_frame.rs`, `src/js/time.rs`, `src/js/url.rs`
   - early “web platform” primitives used by tests and eventual page execution
 
@@ -189,6 +202,11 @@ FastRender implements these hooks by routing Promise jobs into the host-owned HT
 
 - `src/js/vmjs/window_timers.rs`: `VmJsEventLoopHooks` implements `VmHostHooks::host_enqueue_promise_job`
   by queueing an `EventLoop` microtask that runs the `vm-js::Job`.
+
+`VmJsEventLoopHooks` is also where module loading hooks live. `vm-js` routes both static module
+loading and dynamic `import()` through the embedder’s `VmHostHooks`; FastRender’s implementation
+bridges those requests into the per-realm module loader (import maps + fetch) while preserving the
+HTML-like task/microtask model.
 
 Script execution that needs correct Promise/microtask behavior must ensure Promise jobs are routed
 through *host hooks* instead of the VM-owned microtask queue.
@@ -258,7 +276,7 @@ vs `src/js/`), see [`docs/webidl_stack.md`](webidl_stack.md).
   - `src/webidl/generated/mod.rs` is committed, deterministic IDL metadata (updated via xtask)
 - `xtask/src/webidl/*` + `xtask/src/webidl_codegen.rs`
   - extract/resolve/generate the committed snapshot
-- `xtask/src/webidl_bindings_codegen.rs` (`bash scripts/cargo_agent.sh xtask webidl-bindings`)
+- `xtask/src/webidl_bindings_codegen.rs` (`timeout -k 10 600 bash scripts/cargo_agent.sh xtask webidl-bindings`)
   - generates committed Rust glue from the snapshot world:
     - `src/js/webidl/bindings/generated/mod.rs` (`vm-js` realm WebIDL bindings; default backend `vmjs`)
     - `src/js/webidl/bindings/generated_legacy.rs` (legacy heap-only runtime bindings wrappers; backend `legacy`)
@@ -302,7 +320,7 @@ Details and spec anchors: [`docs/html_script_processing.md`](html_script_process
 Use OS address-space caps when running renderer binaries:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- <args...>
 ```
 
@@ -345,7 +363,7 @@ budgeting story (alongside renderer stage budgets and OS caps).
 
 ## Running JS conformance suites
 
-### `bash scripts/cargo_agent.sh xtask js test262` (language semantics)
+### `timeout -k 10 600 bash scripts/cargo_agent.sh xtask js test262` (language semantics)
 
 1) Initialize submodules:
 
@@ -356,16 +374,17 @@ git submodule update --init vendor/ecma-rs/test262-semantic/data
 2) Run the curated suite (recommended wrapper):
 
 ```bash
-bash scripts/cargo_agent.sh xtask js test262
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask js test262
 ```
 
 Notes:
 
-- `bash scripts/cargo_agent.sh xtask ...` uses Cargo aliases (see `.cargo/config.toml`).
+- `scripts/cargo_agent.sh xtask ...` uses Cargo aliases (see `.cargo/config.toml`). Still wrap with
+  `timeout -k`.
 - The suite runner lives in the vendored `vendor/ecma-rs`; `xtask` just drives it.
 - See [`docs/js_test262.md`](js_test262.md) for flags and interpreting results.
 
-### `bash scripts/cargo_agent.sh xtask js wpt-dom` (Web API behavior)
+### `timeout -k 10 600 bash scripts/cargo_agent.sh xtask js wpt-dom` (Web API behavior)
 
 FastRender includes a minimal offline WPT (`testharness.js`) runner:
 
@@ -374,13 +393,13 @@ FastRender includes a minimal offline WPT (`testharness.js`) runner:
 Run the full curated corpus under `tests/wpt_dom/tests`:
 
 ```bash
-bash scripts/cargo_agent.sh xtask js wpt-dom
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask js wpt-dom
 ```
 
 Run only the smoke subset:
 
 ```bash
-bash scripts/cargo_agent.sh xtask js wpt-dom --suite smoke --fail-on none
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask js wpt-dom --suite smoke --fail-on none
 ```
 
 By default it writes a JSON report to `target/js/wpt_dom.json` and classifies known gaps via
@@ -397,7 +416,7 @@ Current behavior (still experimental / not fully spec-correct):
 - Drives the script-aware streaming parser so **parser-inserted** scripts run at `</script>`
   boundaries against a partially-built DOM.
 - Fetches and executes external classic scripts (`<script src=...>`) and module scripts (including
-  static import graphs).
+  dynamic `import()` and top-level await).
 - Supports **inline** `<script type="importmap">` and applies import maps for module specifier
   resolution.
 - Runs scripts under the renderer’s JS execution budgets (`JsExecutionArgs`) and cooperative render
@@ -406,7 +425,7 @@ Current behavior (still experimental / not fully spec-correct):
 Example:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- --js <url> out.png
 ```
 
@@ -421,15 +440,16 @@ The JS workstream is intentionally staged. Today, important missing/unsupported 
 
 - `BrowserDocumentDom2::from_html(...)` does not execute author `<script>` elements by itself (script
   execution is hosted by `BrowserTab`; see [`docs/html_script_processing.md`](html_script_processing.md))
-- module scripts (`type="module"`) and **inline** import maps (`type="importmap"`) are supported
-  (static import graphs). Dynamic `import()` is not implemented; see
-  [`docs/import_maps.md`](import_maps.md).
+- module scripts/import maps/dynamic `import()`/top-level await are opt-in (disabled in
+  `JsExecutionOptions::default` for hostile-input safety). Enable module loading via
+  `JsExecutionOptions { supports_module_scripts: true, .. }` when you want modern module behavior.
 - `document.write()` support is limited:
   - it can inject into an active streaming parse (parser re-entry) for parser-blocking scripts
     executed during `BrowserTab`'s streaming HTML parse,
   - it is treated as a no-op when no streaming parser is active (deterministic subset; no destructive
     post-load writes / implicit `document.open()`).
-- no CSP/SRI/CORS nuances for scripts
+- CSP/CORS/SRI support exists for common cases, but is still conservative/incomplete (notably CSP
+  `strict-dynamic` trust propagation, and full Fetch mode/credentials nuance).
 - no full DOM/Web API surface exposed to JS yet (bindings are still being built out)
 
 As you add new behavior, prefer spec-shaped plumbing (HTML/DOM/WebIDL) over ad-hoc shortcuts. The

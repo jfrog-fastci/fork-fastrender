@@ -54,8 +54,9 @@ The most important early behaviors to preserve:
 - **Parser-inserted classic scripts**: pause parsing, fetch/prepare the script, run it, then resume parsing.
 - **`defer` classic scripts**: run after parsing completes (before “document ready” milestones).
 - **`async` classic scripts**: run when ready, independent of parser progress (scheduled as tasks).
-- **Module scripts**: supported (`type="module"`) with static import graphs when
-  `JsExecutionOptions.supports_module_scripts` is enabled. Dynamic `import()` is not implemented yet.
+- **Module scripts**: supported (`type="module"`) when `JsExecutionOptions.supports_module_scripts`
+  is enabled (opt-in for hostile-input safety), including dynamic `import()` and top-level await in
+  the production `BrowserTab` + `VmJsBrowserTabExecutor` embedding.
 - **Import maps**: parsing + merge/register/resolve algorithms exist in `src/js/import_maps/`.
   Inline `<script type="importmap">` is supported in both `BrowserTab` and `fetch_and_render --js`,
   and module specifier resolution goes through the active `ImportMapState`; see

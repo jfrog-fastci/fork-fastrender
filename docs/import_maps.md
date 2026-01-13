@@ -56,9 +56,10 @@ What exists today:
 Import maps are integrated end-to-end for:
 
 * `BrowserTab` (production `vm-js` executor):
-  * Inline `<script type="importmap">` scripts are executed by the HTML script scheduler and
-    registered via `BrowserTabJsExecutor::execute_import_map_script` (implemented by
-    `VmJsBrowserTabExecutor` in `src/api/browser_tab_vm_js_executor.rs`).
+  * Inline `<script type="importmap">` scripts are executed by the HTML script scheduler
+    (`HtmlScriptScheduler`, `src/js/html_script_scheduler.rs`) and registered via
+    `BrowserTabJsExecutor::execute_import_map_script` (implemented by `VmJsBrowserTabExecutor` in
+    `src/api/browser_tab_vm_js_executor.rs`).
   * The active import map state is stored **per document/realm**: `WindowRealm` owns a per-realm
     `realm_module_loader::ModuleLoader` (`src/js/realm_module_loader.rs`), which in turn owns the
     `ImportMapState`.
@@ -66,6 +67,11 @@ Import maps are integrated end-to-end for:
     * `<script type="module">` static imports,
     * dynamic `import()` from both classic and module scripts, and
     * `import.meta.resolve(...)` (implemented via the realm module loader).
+  * `vm-js` host hooks for Promise jobs + module loading live in `src/js/vmjs/window_timers.rs`
+    (`VmJsEventLoopHooks`), which ensures module loading participates in FastRender’s task/microtask
+    model.
+  * Module script execution interacts with document lifecycle scheduling (`document.readyState`,
+    `DOMContentLoaded`, `load`) via `src/js/document_lifecycle.rs`.
   * See the integration test:
     `tests/js/js_html_integration.rs::p2_dynamic_import_works_from_classic_and_module_scripts_and_honors_import_maps`.
 * `vm-js` realm module loader (`src/js/realm_module_loader.rs`):
@@ -105,7 +111,7 @@ Run them (scoped) with:
 
 ```bash
 # Runs the fastrender crate's lib test binary, filtered to import_maps tests.
-bash scripts/cargo_agent.sh test -p fastrender --lib import_maps
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib import_maps
 ```
 
 ---

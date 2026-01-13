@@ -16,10 +16,15 @@ If you’re trying to pick the right public API container (document vs tab, JS v
 [`docs/runtime_stacks.md`](runtime_stacks.md).
 
 ## Status in this repository (reality check)
-FastRender has the **core building blocks** for a spec-shaped, streaming, parse-time classic
-`<script>` pipeline (pause/resume parsing at `</script>`, schedule parser-blocking/`async`/`defer`
-scripts, and keep observable document state like `Document.currentScript` correct). Some plumbing is
-still evolving, so treat this section as a “where is the real code?” map.
+FastRender has an end-to-end, spec-shaped, streaming `<script>` pipeline for **classic scripts**,
+**module scripts**, and **import maps**. In the production `vm-js` embedding (`api::BrowserTab` +
+`VmJsBrowserTabExecutor`), module scripts support **dynamic `import()`** and **top-level await**
+(`ModuleScriptExecutionStatus::Pending`), with evaluation progress integrated into FastRender’s
+HTML-like `EventLoop` + microtask checkpoints.
+
+Note: module scripts are opt-in for hostile-input safety. The default `JsExecutionOptions` disables
+module loading; enable it with `JsExecutionOptions { supports_module_scripts: true, .. }` when you
+want `<script type="module">` / `import()` / import maps.
 
 There is now an end-to-end “tab” integration point (`api::BrowserTab`) that ties together the live
 `dom2` document, classic script scheduling, an HTML-shaped event loop, script-blocking stylesheet
@@ -75,16 +80,24 @@ What exists today (in-tree):
     delay parser-blocking scripts until render-blocking stylesheets finish loading.
 - **Host-side execution bookkeeping:**
   - `src/js/orchestrator.rs`: host-side `Document.currentScript` bookkeeping around “execute the
-    script block” (classic scripts).
+     script block” (classic scripts).
   - (Legacy) `src/js/legacy/quickjs_dom.rs`: QuickJS-backed DOM bindings that expose host-maintained
-    state like `document.currentScript` via `CurrentScriptStateHandle`.
+     state like `document.currentScript` via `CurrentScriptStateHandle`.
 - **JS-enabled host container (early embedding surface):**
   - `src/api/browser_tab.rs`: `BrowserTab` couples `BrowserDocumentDom2` + `EventLoop` +
     `HtmlScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. For HTML-string
     loads and URL navigations, it drives `StreamingHtmlParser` so parser-inserted scripts execute
     during parsing.
+  - `src/api/browser_tab_vm_js_executor.rs`: `VmJsBrowserTabExecutor` implements
+    `BrowserTabJsExecutor` using `vm-js` and provides the real window/document environment used by
+    `BrowserTab::from_html_with_vmjs*` constructors (including module loading, Promise jobs, and
+    timers).
   - `src/api/browser_document_js.rs`: `BrowserDocumentJs` couples a live `dom2` document, a JS
     runtime adapter, an HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
+- **Document lifecycle (`readyState`, `DOMContentLoaded`, `load`):**
+  - `src/js/document_lifecycle.rs`: `DocumentLifecycle` state machine + scheduling helpers.
+  - `src/api/browser_tab.rs`: integrates lifecycle gates with deferred scripts + load blockers
+    (scripts + render-blocking stylesheets) and dispatches events via the active executor.
 - **Mutable DOM for bindings (`dom2`):**
   - `src/dom2/`: mutable DOM (`dom2::Document`) intended for JS bindings and script-visible
     mutations.
@@ -99,15 +112,19 @@ What exists today (in-tree):
 - **Legacy tooling (deprecated for execution):**
   - `src/js/dom_scripts.rs::extract_script_elements()`: post-parse DOM scanning for tooling only
     (not spec-correct for execution).
+- **`vm-js` host hooks (Promise jobs + module loading):**
+  - `src/js/vmjs/window_timers.rs`: `VmJsEventLoopHooks` implements `vm-js` host hooks by routing:
+    - Promise jobs into FastRender’s `EventLoop` microtask queue, and
+    - module loading / dynamic `import()` requests through the per-realm module loader.
 
 ### How to run tests
 The relevant unit tests live in the `fastrender` crate’s `--lib` test binary. Run them (scoped) with:
 
-`bash scripts/cargo_agent.sh test -p fastrender --lib`
+`timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib`
 
 Some end-to-end scheduling/currentScript coverage lives in integration tests (example):
 
-`bash scripts/cargo_agent.sh test -p fastrender --test integration js_current_script`
+`timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration js_current_script`
 
 ---
 
@@ -171,30 +188,32 @@ This requires tracking the base URL while parsing (see `BaseUrlTracker` below).
 
 ---
 
-## Explicitly NOT fully implemented yet (non-goals for v1)
-These features exist in the HTML spec and matter for web-compat, but are intentionally deferred so
-we can land a correct classic-script core first:
+## Known gaps / conservative behavior (still true)
+These features exist in the HTML/FETCH/CSP specs and matter for web-compat, but FastRender is still
+intentionally conservative in some areas:
 
- - **Dynamic `import()`** and asynchronous module evaluation (e.g. top-level `await`).
-- **Content Security Policy (CSP)**: partially implemented for classic scripts in `api::BrowserTab`
-  - Enforces `script-src` / `default-src` for external `<script src=...>` URL allowlisting.
-  - Enforces nonce/hash-based allowlisting for inline scripts (`nonce=` + `'nonce-...'`, and
-    `'sha256-...'`).
-  - `strict-dynamic` is recognized but handled conservatively (no trust propagation).
-- Full HTML `document.write()` / “ignore-destructive-writes counter” semantics
-  - FastRender implements a **limited streaming-parse re-entry subset** (`src/html/document_write.rs`):
-    `document.write()`/`writeln()` inject into the active streaming parser input stream during
-    parser-blocking script execution.
-  - When no streaming parser is active, `document.write()` is treated as a no-op (deterministic
-    subset; no implicit `document.open()` / destructive post-load writes).
-- CORS / SRI (`crossorigin`, `integrity`) and fetch mode nuances for scripts
-  - `api::BrowserTab` enforces basic classic-script CORS + Subresource Integrity (SRI) checks for
-    external scripts, but the full HTML+Fetch integration surface is still incomplete (especially
-    for module scripts and all edge cases).
-- End-to-end author-script execution with a production JS runtime + complete DOM/WebIDL bindings
-  - Host-side `currentScript` bookkeeping exists (`src/js/orchestrator.rs`) and is exposed in the
-    legacy QuickJS bindings (`src/js/legacy/quickjs_dom.rs`), but full page script execution is
-    still in progress.
+ - **Module scripts are opt-in:** `<script type="module">`, dynamic `import()`, and import maps work
+   when `JsExecutionOptions::supports_module_scripts` is enabled and the executor provides module
+   loading (e.g. `VmJsBrowserTabExecutor`). The default options disable module loading for
+   hostile-input safety.
+ - **Content Security Policy (CSP):** partially implemented for scripts in `api::BrowserTab`
+   - Enforces `script-src` / `default-src` for external `<script src=...>` URL allowlisting.
+   - Enforces nonce/hash-based allowlisting for inline scripts (`nonce=` + `'nonce-...'`, and
+     `'sha256-...'`).
+   - `strict-dynamic` is recognized but handled conservatively (no trust propagation).
+ - **`document.write()` is a bounded subset**, not full HTML semantics:
+   - FastRender implements a limited streaming-parse re-entry subset (`src/html/document_write.rs`):
+     `document.write()`/`writeln()` inject into the active streaming parser input stream during
+     parser-blocking script execution.
+   - When no streaming parser is active, `document.write()` is treated as a no-op (deterministic
+     subset; no implicit `document.open()` / destructive post-load writes).
+ - **Fetch integration remains incomplete:** `BrowserTab` enforces key script checks (MIME sanity,
+   basic CORS gating, SRI for classic/module scripts, referrer policy propagation), but does not yet
+   model the full Fetch/HTML surface (streaming network, full credentials/mode nuance, service
+   workers, CORP/COEP, etc.).
+ - **DOM/Web APIs are still a subset:** script ordering/lifecycle is now largely spec-shaped, but the
+   JS-visible platform surface is still being built out, so many real pages will fail due to missing
+   WebIDL bindings or Web APIs rather than incorrect `<script>` ordering.
 
 When adding any of the above later, treat the HTML Standard as the source of truth and extend the
 state machine; do not “patch in” ad-hoc behavior.
