@@ -359,8 +359,9 @@ fn scroll_with_negative_pointer_is_treated_as_viewport_scroll() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page_wide();
 
-  let (ui_tx, ui_rx, join) =
-    spawn_ui_worker("fastr-ui-worker-scroll-negative-pointer").expect("spawn ui worker").split();
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-scroll-negative-pointer")
+    .expect("spawn ui worker")
+    .split();
   let tab_id = TabId(1);
   ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
@@ -371,23 +372,25 @@ fn scroll_with_negative_pointer_is_treated_as_viewport_scroll() {
     .expect("Navigate");
 
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
-  // Drain initial scroll state update from navigation before asserting scroll behavior.
-  let _ = wait_for_scroll_update(&ui_rx, tab_id);
+  // Drain any follow-up navigation messages so subsequent waits only observe the scroll actions
+  // below. The worker does not guarantee a `ScrollStateUpdated` after navigation.
+  let _ = super::support::drain_for(&ui_rx, Duration::from_millis(200));
 
   // Move the viewport scroll away from the origin so a misbehaving `pointer_css: (-1,-1)` would
   // translate to an in-page point (scroll_x-1, scroll_y-1) and hit-test into the nested scroller.
   ui_tx
     .send(scroll_to_msg(tab_id, (11.0, 11.0)))
     .expect("ScrollTo");
-  let _ = wait_for_frame_ready(&ui_rx, tab_id);
-  let after_scroll_to = wait_for_scroll_update(&ui_rx, tab_id);
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let after_scroll_to = frame.scroll_state.clone();
   assert!(
     after_scroll_to.viewport.x > 0.0 && after_scroll_to.viewport.y > 0.0,
     "expected ScrollTo to move viewport away from origin, got {:?}",
     after_scroll_to.viewport
   );
   assert!(
-    (after_scroll_to.viewport.x - 11.0).abs() < 1e-3 && (after_scroll_to.viewport.y - 11.0).abs() < 1e-3,
+    (after_scroll_to.viewport.x - 11.0).abs() < 1e-3
+      && (after_scroll_to.viewport.y - 11.0).abs() < 1e-3,
     "expected ScrollTo to set viewport scroll to (11,11), got {:?}",
     after_scroll_to.viewport
   );
@@ -398,15 +401,11 @@ fn scroll_with_negative_pointer_is_treated_as_viewport_scroll() {
   );
 
   ui_tx
-    .send(scroll_msg(
-      tab_id,
-      (0.0, 40.0),
-      Some((-1.0_f32, -1.0_f32)),
-    ))
+    .send(scroll_msg(tab_id, (0.0, 40.0), Some((-1.0_f32, -1.0_f32))))
     .expect("Scroll with negative pointer");
 
-  let _ = wait_for_frame_ready(&ui_rx, tab_id);
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let updated = frame.scroll_state.clone();
 
   assert!(
     updated.elements.is_empty(),
