@@ -193,7 +193,7 @@ bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --in
 Filtering options (see `browser_perf_log_summary --help`):
 
 - `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
-- `--only-event frame|input|resize|ttfp|idle_summary`: summarize one event type (unknown events are ignored for forward compatibility).
+- `--only-event frame|input|resize|ttfp|idle_summary|cpu_summary`: summarize one event type (unknown events are ignored for forward compatibility).
 
 ## Interactive profiling (windowed browser UI)
 

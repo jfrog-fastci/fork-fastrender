@@ -16,6 +16,8 @@ enum OnlyEvent {
   Ttfp,
   #[value(name = "idle_summary", alias = "idle-summary")]
   IdleSummary,
+  #[value(name = "cpu_summary", alias = "cpu-summary")]
+  CpuSummary,
 }
 
 impl OnlyEvent {
@@ -26,6 +28,7 @@ impl OnlyEvent {
       OnlyEvent::Resize => "resize",
       OnlyEvent::Ttfp => "ttfp",
       OnlyEvent::IdleSummary => "idle_summary",
+      OnlyEvent::CpuSummary => "cpu_summary",
     }
   }
 }
@@ -129,6 +132,7 @@ struct Summary {
   resize: Option<ResizeSummary>,
   ttfp: Option<TtfpSummary>,
   idle_summary: Option<IdleSummary>,
+  cpu_summary: Option<CpuSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -165,6 +169,12 @@ struct IdleSummary {
   idle_frames: SeriesStats,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct CpuSummary {
+  cpu_percent_recent: SeriesStats,
+  cpu_time_ms_total: Option<SeriesStats>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct WindowFilter {
   from_ms: Option<f64>,
@@ -179,6 +189,16 @@ fn parse_required_u64(obj: &serde_json::Map<String, Value>, key: &str) -> Result
   value
     .as_u64()
     .ok_or_else(|| format!("expected {key:?} to be an integer, got {value}"))
+}
+
+fn parse_optional_u64(obj: &serde_json::Map<String, Value>, key: &str) -> Result<Option<u64>, String> {
+  let Some(value) = obj.get(key) else {
+    return Ok(None);
+  };
+  let Some(value) = value.as_u64() else {
+    return Err(format!("expected {key:?} to be an integer, got {value}"));
+  };
+  Ok(Some(value))
 }
 
 fn parse_required_str<'a>(
@@ -211,6 +231,12 @@ fn parse_value_as_f64(value: &Value) -> Option<f64> {
   value.as_u64().map(|v| v as f64)
 }
 
+fn parse_timestamp_ms(obj: &serde_json::Map<String, Value>) -> Option<f64> {
+  // Current browser perf log schema uses `ts_ms`.
+  // Older/auxiliary emitters used `t_ms`; accept it as a legacy alias for robustness.
+  parse_optional_ms(obj, "ts_ms").or_else(|| parse_optional_ms(obj, "t_ms"))
+}
+
 fn should_include_timestamp(t_ms: f64, filter: WindowFilter) -> bool {
   if let Some(from) = filter.from_ms {
     if t_ms < from {
@@ -233,6 +259,8 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
   let mut resize_ms = Series::default();
   let mut ttfp_ms = Series::default();
   let mut idle_frames = Series::default();
+  let mut cpu_percent_recent = Series::default();
+  let mut cpu_time_ms_total = Series::default();
 
   let mut schema_version_seen: Option<u64> = None;
 
@@ -250,17 +278,25 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
       return Err(format!("line {line_no}: expected JSON object per line"));
     };
 
-    let schema_version =
-      parse_required_u64(obj, "schema_version").map_err(|err| format!("line {line_no}: {err}"))?;
-    if schema_version != SUPPORTED_SCHEMA_VERSION {
-      return Err(format!(
-        "line {line_no}: unknown FASTR_PERF_LOG schema_version {schema_version} (supported: {SUPPORTED_SCHEMA_VERSION})"
-      ));
+    // `schema_version` is present on most structured events, but some auxiliary browser logs
+    // (historical/diagnostic) may omit it. Treat missing as "unknown but assumed supported" so the
+    // summary tool stays resilient to mixed streams.
+    let schema_version = parse_optional_u64(obj, "schema_version")
+      .map_err(|err| format!("line {line_no}: {err}"))?;
+    if let Some(schema_version) = schema_version {
+      if schema_version != SUPPORTED_SCHEMA_VERSION {
+        return Err(format!(
+          "line {line_no}: unknown FASTR_PERF_LOG schema_version {schema_version} (supported: {SUPPORTED_SCHEMA_VERSION})"
+        ));
+      }
+      schema_version_seen.get_or_insert(schema_version);
     }
-    schema_version_seen.get_or_insert(schema_version);
 
     let event = parse_required_str(obj, "event").map_err(|err| format!("line {line_no}: {err}"))?;
-    let t_ms = parse_required_ms(obj, "t_ms").map_err(|err| format!("line {line_no}: {err}"))?;
+    let Some(t_ms) = parse_timestamp_ms(obj) else {
+      // If we don't have a timestamp we can't apply filters; ignore the line.
+      continue;
+    };
 
     if !should_include_timestamp(t_ms, filter) {
       continue;
@@ -312,14 +348,24 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
         ttfp_ms.push(ttfp);
       }
       "idle_summary" => {
-        let value = parse_optional_ms(obj, "idle_frames")
+        let value = parse_optional_ms(obj, "idle_frames_per_sec")
+          .or_else(|| parse_optional_ms(obj, "idle_frames"))
           .or_else(|| parse_optional_ms(obj, "idle_frame_count"))
+          .or_else(|| parse_optional_ms(obj, "idle_frames_total"))
           .ok_or_else(|| {
             format!(
-              "line {line_no}: idle_summary event missing numeric field \"idle_frames\" (or \"idle_frame_count\")"
+              "line {line_no}: idle_summary event missing numeric field \"idle_frames_per_sec\" (or legacy \"idle_frames\"/\"idle_frame_count\"/\"idle_frames_total\")"
             )
           })?;
         idle_frames.push(value);
+      }
+      "cpu_summary" => {
+        let percent = parse_required_ms(obj, "cpu_percent_recent")
+          .map_err(|err| format!("line {line_no}: {err}"))?;
+        cpu_percent_recent.push(percent);
+        if let Some(total) = parse_optional_ms(obj, "cpu_time_ms_total") {
+          cpu_time_ms_total.push(total);
+        }
       }
       other => {
         // Unknown events are ignored so the tool stays forward-compatible with extra event types.
@@ -361,6 +407,14 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
     .stats()
     .map(|idle_frames| IdleSummary { idle_frames });
 
+  let cpu_summary = cpu_percent_recent.stats().map(|cpu_percent_recent| {
+    let cpu_time_ms_total = cpu_time_ms_total.stats();
+    CpuSummary {
+      cpu_percent_recent,
+      cpu_time_ms_total,
+    }
+  });
+
   Ok(Summary {
     source_schema_version: schema_version_seen,
     filters: Filters {
@@ -373,6 +427,7 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
     resize,
     ttfp,
     idle_summary,
+    cpu_summary,
   })
 }
 
@@ -390,10 +445,18 @@ fn fmt_fps(value: f64) -> String {
   format!("{value:.2}fps")
 }
 
+fn fmt_pct(value: f64) -> String {
+  if !value.is_finite() {
+    return "NaN".to_string();
+  }
+  format!("{value:.2}%")
+}
+
 fn print_series(label: &str, stats: &SeriesStats, unit: &str) {
   let fmt = |v| match unit {
     "ms" => fmt_ms(v),
     "fps" => fmt_fps(v),
+    "pct" => fmt_pct(v),
     _ => format!("{v:.2}"),
   };
 
@@ -466,6 +529,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // structure so p50/p95/max are available.
     print_series("idle_summary.idle_frames", &idle.idle_frames, "");
   }
+  if let Some(cpu) = summary.cpu_summary.as_ref() {
+    print_series(
+      "cpu_summary.cpu_percent_recent",
+      &cpu.cpu_percent_recent,
+      "pct",
+    );
+    if let Some(total) = cpu.cpu_time_ms_total.as_ref() {
+      print_series("cpu_summary.cpu_time_ms_total", total, "ms");
+    }
+  }
 
   // JSON summary to stdout.
   serde_json::to_writer_pretty(io::stdout(), &summary)?;
@@ -501,13 +574,14 @@ mod tests {
   #[test]
   fn summarize_synthetic_jsonl_log() {
     let log = r#"
-{"schema_version":1,"event":"frame","t_ms":0,"ui_frame_ms":10}
-{"schema_version":1,"event":"frame","t_ms":16,"ui_frame_ms":20}
-{"schema_version":1,"event":"input","t_ms":30,"input_kind":"keyboard","input_to_present_ms":40}
-{"schema_version":1,"event":"input","t_ms":40,"input_kind":"mouse","input_to_present_ms":50}
-{"schema_version":1,"event":"resize","t_ms":50,"resize_to_present_ms":60}
-{"schema_version":1,"event":"ttfp","t_ms":70,"ttfp_ms":80}
-{"schema_version":1,"event":"idle_summary","t_ms":90,"idle_frames":100}
+{"schema_version":1,"event":"frame","ts_ms":0,"window_id":"WindowId(1)","ui_frame_ms":10}
+{"schema_version":1,"event":"frame","ts_ms":16,"window_id":"WindowId(1)","ui_frame_ms":20}
+{"schema_version":1,"event":"input","ts_ms":30,"window_id":"WindowId(1)","input_kind":"keyboard","input_to_present_ms":40}
+{"schema_version":1,"event":"input","ts_ms":40,"window_id":"WindowId(1)","input_kind":"mouse","input_to_present_ms":50}
+{"schema_version":1,"event":"resize","ts_ms":50,"window_id":"WindowId(1)","resize_to_present_ms":60}
+{"schema_version":1,"event":"ttfp","ts_ms":70,"window_id":"WindowId(1)","ttfp_ms":80}
+{"event":"idle_summary","t_ms":90,"window_id":"WindowId(1)","idle_frames_per_sec":100}
+{"schema_version":1,"event":"cpu_summary","ts_ms":100,"window_id":"process","cpu_time_ms_total":1234,"cpu_percent_recent":1.5}
 "#;
 
     let summary = summarize_reader(
@@ -553,6 +627,13 @@ mod tests {
     let idle = summary.idle_summary.expect("expected idle stats");
     assert_eq!(idle.idle_frames.count, 1);
     assert_eq!(idle.idle_frames.mean, 100.0);
+
+    let cpu = summary.cpu_summary.expect("expected cpu stats");
+    assert_eq!(cpu.cpu_percent_recent.count, 1);
+    assert_eq!(cpu.cpu_percent_recent.mean, 1.5);
+    let total = cpu.cpu_time_ms_total.expect("expected cpu_time_ms_total stats");
+    assert_eq!(total.count, 1);
+    assert_eq!(total.mean, 1234.0);
   }
 
   #[test]
