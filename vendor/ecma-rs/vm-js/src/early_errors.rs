@@ -88,7 +88,7 @@ where
     labels: Vec::new(),
     private_names: Vec::new(),
   };
-  walker.visit_stmt_list(&mut ctx, stmts)?;
+  walker.visit_stmt_list(&mut ctx, StmtListKind::VarScope, stmts)?;
   Ok(walker.diags)
 }
 
@@ -167,6 +167,21 @@ struct EarlyErrorWalker<'a, F: FnMut() -> Result<(), VmError>> {
   tick: &'a mut F,
   steps: u32,
   diags: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StmtListKind {
+  /// A statement list that forms a var scope (ScriptBody / FunctionBody).
+  VarScope,
+  /// A statement list that forms a block-like lexical scope (Block / Catch / switch clause bodies).
+  BlockLike,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LexicalNameKind {
+  OrdinaryFunction,
+  NonOrdinaryFunction,
+  Other,
 }
 
 impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
@@ -297,8 +312,13 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.return_allowed = saved.return_allowed;
   }
 
-  fn visit_stmt_list(&mut self, ctx: &mut ControlContext, stmts: &[Node<Stmt>]) -> Result<(), VmError> {
-    self.check_declaration_early_errors_in_stmt_list(ctx, stmts)?;
+  fn visit_stmt_list(
+    &mut self,
+    ctx: &mut ControlContext,
+    kind: StmtListKind,
+    stmts: &[Node<Stmt>],
+  ) -> Result<(), VmError> {
+    self.check_declaration_early_errors_in_stmt_list(ctx, kind, stmts)?;
     for stmt in stmts {
       self.visit_stmt(ctx, stmt)?;
     }
@@ -308,6 +328,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn check_declaration_early_errors_in_stmt_list(
     &mut self,
     ctx: &ControlContext,
+    kind: StmtListKind,
     stmts: &[Node<Stmt>],
   ) -> Result<(), VmError> {
     // Mirror the minimal declaration early errors performed during instantiation:
@@ -321,44 +342,56 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     for stmt in stmts {
       self.collect_var_names(&stmt.stx, &mut var_names)?;
     }
- 
-    if ctx.strict {
-      // Strict mode: only top-level function declarations are var-scoped; block function
-      // declarations are instantiated at block entry.
-      for stmt in stmts {
-        self.step()?;
-        let Stmt::FunctionDecl(decl) = &*stmt.stx else {
-          continue;
-        };
-        let Some(name) = &decl.stx.name else {
-          // `export default function() {}` is parsed as an anonymous function declaration with an
-          // engine-internal `*default*` binding created during module linking. It does not
-          // participate in var-scoped name collision checks.
-          if decl.stx.export_default {
+
+    // `VarDeclaredNames` depends on the kind of statement list we're validating:
+    // - ScriptBody/FunctionBody: function declarations are var-scoped (and in non-strict code,
+    //   Annex B extends this to some nested block functions).
+    // - Block-like lists (Block/Catch/switch clause bodies): function declarations are lexically
+    //   scoped, so they must *not* be included here (otherwise they would always conflict with
+    //   themselves when we include them in `LexicallyDeclaredNames` below).
+    if kind == StmtListKind::VarScope {
+      if ctx.strict {
+        // Strict mode: only top-level function declarations are var-scoped; block function
+        // declarations are instantiated at block entry.
+        for stmt in stmts {
+          self.step()?;
+          let Stmt::FunctionDecl(decl) = &*stmt.stx else {
             continue;
-          }
-          self.push_error(stmt.loc, "anonymous function declaration")?;
-          continue;
-        };
-        var_names.insert(name.stx.name.clone());
-      }
-    } else {
-      // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
-      for stmt in stmts {
-        self.collect_sloppy_function_decl_names(&stmt.stx, &mut var_names)?;
+          };
+          let Some(name) = &decl.stx.name else {
+            // `export default function() {}` is parsed as an anonymous function declaration with an
+            // engine-internal `*default*` binding created during module linking. It does not
+            // participate in var-scoped name collision checks.
+            if decl.stx.export_default {
+              continue;
+            }
+            self.push_error(stmt.loc, "anonymous function declaration")?;
+            continue;
+          };
+          var_names.insert(name.stx.name.clone());
+        }
+      } else {
+        // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
+        for stmt in stmts {
+          self.collect_sloppy_function_decl_names(&stmt.stx, &mut var_names)?;
+        }
       }
     }
- 
-    let mut lexical_seen = HashSet::<String>::new();
+
+    let mut lexical_seen = HashMap::<String, LexicalNameKind>::new();
     for stmt in stmts {
       self.step()?;
       match &*stmt.stx {
         Stmt::VarDecl(var)
-          if var.stx.mode == VarDeclMode::Let || var.stx.mode == VarDeclMode::Const =>
+          if matches!(
+            var.stx.mode,
+            VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+          ) =>
         {
           for declarator in &var.stx.declarators {
             self.step()?;
             self.collect_lexical_decl_names_from_pat(
+              ctx,
               &declarator.pattern.stx.pat,
               stmt.loc,
               &mut lexical_seen,
@@ -370,17 +403,207 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           let Some(name) = class.stx.name.as_ref() else {
             continue;
           };
-          if !lexical_seen.insert(name.stx.name.clone()) {
-            self.push_error(stmt.loc, "Identifier has already been declared")?;
-          }
-          if var_names.contains(&name.stx.name) {
-            self.push_error(stmt.loc, "Identifier has already been declared")?;
-          }
+          self.insert_lexical_name(
+            ctx,
+            &name.stx.name,
+            LexicalNameKind::Other,
+            name.loc,
+            &mut lexical_seen,
+            &var_names,
+          )?;
+        }
+        Stmt::FunctionDecl(decl) if kind == StmtListKind::BlockLike => {
+          let Some(name) = decl.stx.name.as_ref() else {
+            if decl.stx.export_default {
+              continue;
+            }
+            self.push_error(stmt.loc, "anonymous function declaration")?;
+            continue;
+          };
+          let func = &decl.stx.function.stx;
+          let kind = if func.async_ || func.generator {
+            LexicalNameKind::NonOrdinaryFunction
+          } else {
+            LexicalNameKind::OrdinaryFunction
+          };
+          self.insert_lexical_name(ctx, &name.stx.name, kind, name.loc, &mut lexical_seen, &var_names)?;
         }
         _ => {}
       }
     }
- 
+
+    Ok(())
+  }
+
+  fn check_declaration_early_errors_in_switch_case_block(
+    &mut self,
+    ctx: &ControlContext,
+    branches: &[Node<SwitchBranch>],
+  ) -> Result<(), VmError> {
+    // `CaseBlock` forms a single lexical environment for all clause bodies, so declaration early
+    // errors must be checked across *all* branches (not per-branch).
+    let mut var_names = HashSet::<String>::new();
+    const BRANCH_STEP_EVERY: usize = 32;
+    for (i, branch) in branches.iter().enumerate() {
+      if i % BRANCH_STEP_EVERY == 0 {
+        self.step()?;
+      }
+      for stmt in &branch.stx.body {
+        self.collect_var_names(&stmt.stx, &mut var_names)?;
+      }
+    }
+
+    let mut lexical_seen = HashMap::<String, LexicalNameKind>::new();
+    for (i, branch) in branches.iter().enumerate() {
+      if i % BRANCH_STEP_EVERY == 0 {
+        self.step()?;
+      }
+      for stmt in &branch.stx.body {
+        self.step()?;
+        match &*stmt.stx {
+          Stmt::VarDecl(var)
+            if matches!(
+              var.stx.mode,
+              VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+            ) =>
+          {
+            for declarator in &var.stx.declarators {
+              self.step()?;
+              self.collect_lexical_decl_names_from_pat(
+                ctx,
+                &declarator.pattern.stx.pat,
+                stmt.loc,
+                &mut lexical_seen,
+                &var_names,
+              )?;
+            }
+          }
+          Stmt::ClassDecl(class) => {
+            let Some(name) = class.stx.name.as_ref() else {
+              continue;
+            };
+            self.insert_lexical_name(
+              ctx,
+              &name.stx.name,
+              LexicalNameKind::Other,
+              name.loc,
+              &mut lexical_seen,
+              &var_names,
+            )?;
+          }
+          Stmt::FunctionDecl(decl) => {
+            let Some(name) = decl.stx.name.as_ref() else {
+              if decl.stx.export_default {
+                continue;
+              }
+              self.push_error(stmt.loc, "anonymous function declaration")?;
+              continue;
+            };
+            let func = &decl.stx.function.stx;
+            let kind = if func.async_ || func.generator {
+              LexicalNameKind::NonOrdinaryFunction
+            } else {
+              LexicalNameKind::OrdinaryFunction
+            };
+            self.insert_lexical_name(ctx, &name.stx.name, kind, name.loc, &mut lexical_seen, &var_names)?;
+          }
+          _ => {}
+        }
+      }
+    }
+
+    Ok(())
+  }
+
+  fn check_for_in_of_decl_head_early_errors(
+    &mut self,
+    ctx: &ControlContext,
+    lhs: &ForInOfLhs,
+    body: &ForBody,
+  ) -> Result<(), VmError> {
+    let ForInOfLhs::Decl((mode, pat)) = lhs else {
+      return Ok(());
+    };
+    if *mode == VarDeclMode::Var {
+      return Ok(());
+    }
+
+    // BoundNames(ForDeclaration)
+    let mut bound_names: Vec<(String, Loc)> = Vec::new();
+    Self::collect_bound_names_from_pat(&pat.stx.pat, &mut bound_names);
+
+    // Duplicate BoundNames(ForDeclaration)
+    let mut seen: HashMap<String, Loc> = HashMap::new();
+    for (name, loc) in &bound_names {
+      self.step()?;
+      if let Some(_first) = seen.get(name) {
+        self.push_error(*loc, "duplicate binding name")?;
+      } else {
+        seen
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        seen.insert(name.clone(), *loc);
+      }
+    }
+
+    // In non-strict code, BoundNames(ForDeclaration) must not contain `"let"`.
+    if !ctx.strict {
+      for (name, loc) in &bound_names {
+        self.step()?;
+        if name == "let" {
+          self.push_error(*loc, "invalid binding name 'let'")?;
+        }
+      }
+    }
+
+    // VarDeclaredNames(Statement) of the loop body.
+    let mut body_var_names: HashSet<String> = HashSet::new();
+    for stmt in &body.body {
+      self.collect_var_declared_names_in_stmt(stmt, &mut body_var_names)?;
+    }
+
+    // BoundNames(ForDeclaration) must not collide with VarDeclaredNames(Statement).
+    for (name, loc) in bound_names {
+      self.step()?;
+      if body_var_names.contains(&name) {
+        self.push_error(loc, "Identifier has already been declared")?;
+      }
+    }
+
+    Ok(())
+  }
+
+  fn insert_lexical_name(
+    &mut self,
+    ctx: &ControlContext,
+    name: &str,
+    kind: LexicalNameKind,
+    loc: Loc,
+    seen: &mut HashMap<String, LexicalNameKind>,
+    var_names: &HashSet<String>,
+  ) -> Result<(), VmError> {
+    // `LexicallyDeclaredNames` must not collide with `VarDeclaredNames`.
+    if var_names.contains(name) {
+      self.push_error(loc, "Identifier has already been declared")?;
+    }
+
+    match seen.get(name) {
+      None => {
+        seen
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        seen.insert(name.to_string(), kind);
+      }
+      Some(prev) => {
+        let allow_duplicate = !ctx.strict
+          && *prev == LexicalNameKind::OrdinaryFunction
+          && kind == LexicalNameKind::OrdinaryFunction;
+        if !allow_duplicate {
+          self.push_error(loc, "Identifier has already been declared")?;
+        }
+      }
+    }
+
     Ok(())
   }
  
@@ -614,29 +837,25 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
  
   fn collect_lexical_decl_names_from_pat(
     &mut self,
+    ctx: &ControlContext,
     pat: &Node<Pat>,
     loc: Loc,
-    seen: &mut HashSet<String>,
+    seen: &mut HashMap<String, LexicalNameKind>,
     var_names: &HashSet<String>,
   ) -> Result<(), VmError> {
     match &*pat.stx {
       Pat::Id(id) => {
-        if !seen.insert(id.stx.name.clone()) {
-          self.push_error(loc, "Identifier has already been declared")?;
-        }
-        if var_names.contains(&id.stx.name) {
-          self.push_error(loc, "Identifier has already been declared")?;
-        }
+        self.insert_lexical_name(ctx, &id.stx.name, LexicalNameKind::Other, loc, seen, var_names)?;
         Ok(())
       }
       Pat::Obj(obj) => {
         for prop in &obj.stx.properties {
           self.step()?;
-          self.collect_lexical_decl_names_from_pat(&prop.stx.target, loc, seen, var_names)?;
+          self.collect_lexical_decl_names_from_pat(ctx, &prop.stx.target, loc, seen, var_names)?;
         }
         if let Some(rest) = &obj.stx.rest {
           self.step()?;
-          self.collect_lexical_decl_names_from_pat(rest, loc, seen, var_names)?;
+          self.collect_lexical_decl_names_from_pat(ctx, rest, loc, seen, var_names)?;
         }
         Ok(())
       }
@@ -644,11 +863,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         for elem in &arr.stx.elements {
           self.step()?;
           let Some(elem) = elem else { continue };
-          self.collect_lexical_decl_names_from_pat(&elem.target, loc, seen, var_names)?;
+          self.collect_lexical_decl_names_from_pat(ctx, &elem.target, loc, seen, var_names)?;
         }
         if let Some(rest) = &arr.stx.rest {
           self.step()?;
-          self.collect_lexical_decl_names_from_pat(rest, loc, seen, var_names)?;
+          self.collect_lexical_decl_names_from_pat(ctx, rest, loc, seen, var_names)?;
         }
         Ok(())
       }
@@ -702,7 +921,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_block(&mut self, ctx: &mut ControlContext, block: &BlockStmt) -> Result<(), VmError> {
-    self.visit_stmt_list(ctx, &block.body)
+    self.visit_stmt_list(ctx, StmtListKind::BlockLike, &block.body)
   }
 
   fn visit_if(&mut self, ctx: &mut ControlContext, stmt: &IfStmt) -> Result<(), VmError> {
@@ -715,12 +934,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_try(&mut self, ctx: &mut ControlContext, stmt: &TryStmt) -> Result<(), VmError> {
-    self.visit_stmt_list(ctx, &stmt.wrapped.stx.body)?;
+    self.visit_stmt_list(ctx, StmtListKind::BlockLike, &stmt.wrapped.stx.body)?;
     if let Some(catch) = &stmt.catch {
       self.visit_catch(ctx, &catch.stx)?;
     }
     if let Some(finally) = &stmt.finally {
-      self.visit_stmt_list(ctx, &finally.stx.body)?;
+      self.visit_stmt_list(ctx, StmtListKind::BlockLike, &finally.stx.body)?;
     }
     Ok(())
   }
@@ -731,7 +950,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if let Some(param) = &catch.parameter {
       self.visit_pat(ctx, &param.stx.pat, PatRole::Binding)?;
     }
-    self.visit_stmt_list(ctx, &catch.body)
+    self.visit_stmt_list(ctx, StmtListKind::BlockLike, &catch.body)
   }
 
   fn visit_while(&mut self, ctx: &mut ControlContext, stmt: &WhileStmt) -> Result<(), VmError> {
@@ -785,6 +1004,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn visit_for_in(&mut self, ctx: &mut ControlContext, stmt: &ForInStmt) -> Result<(), VmError> {
     self.visit_for_in_of_lhs(ctx, &stmt.lhs)?;
     self.visit_expr(ctx, &stmt.rhs)?;
+    self.check_for_in_of_decl_head_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
     ctx.loop_depth = ctx.loop_depth.saturating_add(1);
     ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
     let result = self.visit_for_body(ctx, &stmt.body.stx);
@@ -804,6 +1024,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     }
     self.visit_for_in_of_lhs(ctx, &stmt.lhs)?;
     self.visit_expr(ctx, &stmt.rhs)?;
+    self.check_for_in_of_decl_head_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
     ctx.loop_depth = ctx.loop_depth.saturating_add(1);
     ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
     let result = self.visit_for_body(ctx, &stmt.body.stx);
@@ -813,7 +1034,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_for_body(&mut self, ctx: &mut ControlContext, body: &ForBody) -> Result<(), VmError> {
-    self.visit_stmt_list(ctx, &body.body)
+    self.visit_stmt_list(ctx, StmtListKind::BlockLike, &body.body)
   }
 
   fn visit_for_in_of_lhs(
@@ -832,6 +1053,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
   fn visit_switch(&mut self, ctx: &mut ControlContext, stmt: &SwitchStmt) -> Result<(), VmError> {
     self.visit_expr(ctx, &stmt.test)?;
+    self.check_declaration_early_errors_in_switch_case_block(ctx, &stmt.branches)?;
     ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
     for branch in &stmt.branches {
       self.visit_switch_branch(ctx, &branch.stx)?;
@@ -848,7 +1070,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if let Some(case) = &branch.case {
       self.visit_expr(ctx, case)?;
     }
-    self.visit_stmt_list(ctx, &branch.body)
+    self.visit_stmt_list(ctx, StmtListKind::BlockLike, &branch.body)
   }
 
   fn visit_label(&mut self, ctx: &mut ControlContext, loc: Loc, stmt: &LabelStmt) -> Result<(), VmError> {
@@ -1149,7 +1371,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     );
     ctx.return_allowed = false;
     self.static_block_declared_name_early_errors(stmts)?;
-    let res = self.visit_stmt_list(ctx, stmts);
+    let res = self.visit_stmt_list(ctx, StmtListKind::BlockLike, stmts);
     self.restore_function(ctx, saved);
     res
   }
@@ -1514,7 +1736,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.yield_allowed = saved_param_yield_allowed;
 
     match &func.stx.body {
-      Some(FuncBody::Block(stmts)) => self.visit_stmt_list(ctx, stmts)?,
+      Some(FuncBody::Block(stmts)) => self.visit_stmt_list(ctx, StmtListKind::VarScope, stmts)?,
       Some(FuncBody::Expression(expr)) => self.visit_expr(ctx, expr)?,
       None => {}
     }
