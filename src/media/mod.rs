@@ -6,9 +6,12 @@
 //!
 //! For the intended A/V clocking model (audio master clock, UI tick as wake-up only), see
 //! `docs/media_clocking.md`.
+
 pub mod audio;
+pub mod clock;
 pub mod timebase;
 
+pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, RealAudioDeviceClock};
 pub use timebase::{duration_to_ticks, ticks_to_duration, Timebase};
 
 use crate::geometry::Size;
