@@ -135,6 +135,18 @@ pub fn fastrender_node_id_from_accesskit(node_id: accesskit::NodeId) -> Option<u
   Some(raw as usize)
 }
 
+fn text_control_len_chars(dom: &mut DomNode, node_id: usize) -> Option<usize> {
+  let node = crate::dom::find_node_mut_by_preorder_id(dom, node_id)?;
+  let tag = node.tag_name()?;
+  if tag.eq_ignore_ascii_case("textarea") {
+    Some(crate::dom::textarea_current_value(node).chars().count())
+  } else if tag.eq_ignore_ascii_case("input") {
+    Some(node.get_attribute_ref("value").unwrap_or("").chars().count())
+  } else {
+    None
+  }
+}
+
 /// Route a single AccessKit [`accesskit::ActionRequest`] into FastRender's [`InteractionEngine`].
 ///
 /// Returns `true` when the request was recognized and dispatched.
@@ -191,6 +203,43 @@ pub fn handle_accesskit_action_request(
         .interaction
         .set_text_control_value(ctx.dom, target_node_id, &value);
 
+      if focus_changed || changed {
+        ctx.mark_redraw();
+      }
+      true
+    }
+    accesskit::Action::SetTextSelection => {
+      let Some(data) = request.data else {
+        return false;
+      };
+      let selection = match data {
+        accesskit::ActionData::SetTextSelection(selection) => selection,
+        _ => return false,
+      };
+
+      // AccessKit positions should refer to the same text control node.
+      if selection.anchor.node != request.target || selection.focus.node != request.target {
+        return false;
+      }
+
+      let (focus_changed, focus_action) = ctx.focus_node_id(target_node_id);
+      ctx.push_action(focus_action);
+
+      let before = ctx.interaction.interaction_state().text_edit;
+
+      let max_len = text_control_len_chars(ctx.dom, target_node_id).unwrap_or(0);
+      let anchor = selection.anchor.character_index.min(max_len);
+      let focus = selection.focus.character_index.min(max_len);
+      if anchor == focus {
+        ctx.interaction.set_text_selection_caret(target_node_id, anchor);
+      } else {
+        // Preserve selection direction (caret should be at the requested focus offset).
+        ctx
+          .interaction
+          .set_text_selection_range(target_node_id, anchor, focus);
+      }
+
+      let changed = before != ctx.interaction.interaction_state().text_edit;
       if focus_changed || changed {
         ctx.mark_redraw();
       }
@@ -367,6 +416,130 @@ mod tests {
     assert!(handled);
     assert_eq!(engine.focused_node_id(), Some(input_id));
     assert_eq!(input_value(&mut dom, input_id), "hello");
+    assert!(needs_redraw);
+  }
+
+  #[test]
+  fn accesskit_set_text_selection_moves_caret_and_sets_range() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><input id=\"y\" value=\"abcdef\"></body></html>",
+    )
+    .expect("parse");
+    let input_id = find_node_id_by_id_attr(&mut dom, "y");
+    let target = accesskit_node_id_from_fastrender(input_id);
+
+    let mut engine = InteractionEngine::new();
+    let mut needs_redraw = false;
+
+    let caret_req = accesskit::ActionRequest {
+      action: accesskit::Action::SetTextSelection,
+      target,
+      data: Some(accesskit::ActionData::SetTextSelection(accesskit::TextSelection {
+        anchor: accesskit::TextPosition {
+          node: target,
+          character_index: 3,
+        },
+        focus: accesskit::TextPosition {
+          node: target,
+          character_index: 3,
+        },
+      })),
+    };
+
+    {
+      let mut ctx = ChromeDocumentContext {
+        dom: &mut dom,
+        interaction: &mut engine,
+        js_tab: None,
+        box_tree: None,
+        fragment_tree: None,
+        scroll_state: None,
+        document_url: "about:blank",
+        base_url: "about:blank",
+        needs_redraw: &mut needs_redraw,
+        emitted_actions: None,
+      };
+      assert!(handle_accesskit_action_request(&mut ctx, caret_req));
+    }
+    let edit = engine.interaction_state().text_edit.expect("expected edit state");
+    assert_eq!(edit.node_id, input_id);
+    assert_eq!(edit.caret, 3);
+    assert_eq!(edit.selection, None);
+    assert!(needs_redraw);
+
+    needs_redraw = false;
+    let range_req = accesskit::ActionRequest {
+      action: accesskit::Action::SetTextSelection,
+      target,
+      data: Some(accesskit::ActionData::SetTextSelection(accesskit::TextSelection {
+        anchor: accesskit::TextPosition {
+          node: target,
+          character_index: 1,
+        },
+        focus: accesskit::TextPosition {
+          node: target,
+          character_index: 4,
+        },
+      })),
+    };
+
+    {
+      let mut ctx = ChromeDocumentContext {
+        dom: &mut dom,
+        interaction: &mut engine,
+        js_tab: None,
+        box_tree: None,
+        fragment_tree: None,
+        scroll_state: None,
+        document_url: "about:blank",
+        base_url: "about:blank",
+        needs_redraw: &mut needs_redraw,
+        emitted_actions: None,
+      };
+      assert!(handle_accesskit_action_request(&mut ctx, range_req));
+    }
+    let edit = engine.interaction_state().text_edit.expect("expected edit state");
+    assert_eq!(edit.node_id, input_id);
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.selection, Some((1, 4)));
+    assert!(needs_redraw);
+
+    // Reverse selection (anchor after focus) should preserve focus as the caret.
+    needs_redraw = false;
+    let reverse_req = accesskit::ActionRequest {
+      action: accesskit::Action::SetTextSelection,
+      target,
+      data: Some(accesskit::ActionData::SetTextSelection(accesskit::TextSelection {
+        anchor: accesskit::TextPosition {
+          node: target,
+          character_index: 4,
+        },
+        focus: accesskit::TextPosition {
+          node: target,
+          character_index: 1,
+        },
+      })),
+    };
+
+    {
+      let mut ctx = ChromeDocumentContext {
+        dom: &mut dom,
+        interaction: &mut engine,
+        js_tab: None,
+        box_tree: None,
+        fragment_tree: None,
+        scroll_state: None,
+        document_url: "about:blank",
+        base_url: "about:blank",
+        needs_redraw: &mut needs_redraw,
+        emitted_actions: None,
+      };
+      assert!(handle_accesskit_action_request(&mut ctx, reverse_req));
+    }
+    let edit = engine.interaction_state().text_edit.expect("expected edit state");
+    assert_eq!(edit.node_id, input_id);
+    assert_eq!(edit.caret, 1);
+    assert_eq!(edit.selection, Some((1, 4)));
     assert!(needs_redraw);
   }
 

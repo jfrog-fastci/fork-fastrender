@@ -6317,11 +6317,6 @@ impl InteractionEngine {
       self.set_text_selection_caret(node_id, start);
       return;
     }
-    let (start, end) = if start <= end {
-      (start, end)
-    } else {
-      (end, start)
-    };
     self.text_drag = None;
     self.text_drag_drop = None;
     match self.text_edit.as_mut() {
