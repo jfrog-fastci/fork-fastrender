@@ -685,7 +685,6 @@ where
             let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
             last_callback_frames.store(frames_u32, Ordering::Relaxed);
             clock.on_callback_end_at(Instant::now(), frames_u32, None);
-
             if fixed_callback_frames.is_none() {
               let latency = frames_to_duration(sample_rate_hz, frames);
               estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
@@ -722,9 +721,16 @@ where
               let buffer_duration = frames_to_duration(sample_rate_hz, frames);
 
               match playback_origin.as_ref() {
-                Some(origin) => playback
-                  .duration_since(origin)
-                  .map(|since_origin| since_origin.saturating_add(buffer_duration)),
+                Some(origin) => match playback.duration_since(origin) {
+                  Some(since_origin) => Some(since_origin.saturating_add(buffer_duration)),
+                  None => {
+                    // Playback timestamps went backwards (device restart/glitch). Re-anchor so we
+                    // can resume timestamp-based clocking instead of permanently falling back to
+                    // the frame counter.
+                    playback_origin = Some(playback);
+                    Some(buffer_duration)
+                  }
+                },
                 None => {
                   playback_origin = Some(playback);
                   Some(buffer_duration)
