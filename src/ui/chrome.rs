@@ -3139,6 +3139,8 @@ pub fn chrome_ui_with_bookmarks(
         });
 
         let reset_accent = ui.button("Reset accent");
+        reset_accent
+          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reset accent"));
         popup_focus_ids.push(reset_accent.id);
         if reset_accent.clicked() {
           app.appearance.accent_color = None;
@@ -3154,6 +3156,9 @@ pub fn chrome_ui_with_bookmarks(
           .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, "UI scale"));
         popup_focus_ids.push(ui_scale_resp.id);
         let reset_scale = ui.button("Reset scale (1.0)");
+        reset_scale.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reset scale (1.0)")
+        });
         popup_focus_ids.push(reset_scale.id);
         if reset_scale.clicked() {
           app.appearance.ui_scale = DEFAULT_UI_SCALE;
@@ -3161,7 +3166,13 @@ pub fn chrome_ui_with_bookmarks(
 
         ui.add_space(8.0);
         let high_contrast = ui.checkbox(&mut app.appearance.high_contrast, "High contrast");
+        high_contrast.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, "High contrast")
+        });
         let reduced_motion = ui.checkbox(&mut app.appearance.reduced_motion, "Reduced motion");
+        reduced_motion.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, "Reduced motion")
+        });
         popup_focus_ids.push(high_contrast.id);
         popup_focus_ids.push(reduced_motion.id);
 
