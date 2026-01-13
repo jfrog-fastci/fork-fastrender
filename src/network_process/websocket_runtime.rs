@@ -13,7 +13,7 @@
 //! - Each worker thread performs the connect handshake and handles socket I/O.
 //! - All renderer-supplied commands are validated via [`crate::ipc::websocket::WebSocketCommand`].
 //! - Network → renderer events are queued per-socket with a hard cap to prevent unbounded memory
-//!   growth (backpressure). On overflow, the socket is closed and an error is sent.
+//!   growth (backpressure). On overflow (count or bytes), the socket is closed and an error is sent.
 
 use crate::ipc::network::{NetworkToRenderer, RendererToNetwork};
 use crate::ipc::websocket::{
@@ -35,6 +35,15 @@ const READ_TIMEOUT: Duration = Duration::from_millis(50);
 const MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET: usize = 1024;
 /// Matches `window_websocket.rs`'s `MAX_QUEUED_WEBSOCKET_SEND_COMMANDS`.
 const MAX_QUEUED_WEBSOCKET_SEND_COMMANDS: usize = 1024;
+/// Hard cap on total queued inbound WebSocket message payload bytes per socket.
+///
+/// This prevents a compromised renderer or hostile server from causing multi‑GiB accumulation in
+/// the network process when the renderer is not draining its IPC event stream.
+#[cfg(not(test))]
+const MAX_WEBSOCKET_PENDING_EVENT_BYTES: usize = 32 * 1024 * 1024;
+// Keep overflow tests deterministic with a much smaller limit.
+#[cfg(test)]
+const MAX_WEBSOCKET_PENDING_EVENT_BYTES: usize = 512 * 1024;
 
 const CLOSE_CODE_POLICY_VIOLATION: u16 = 1008;
 const CLOSE_CODE_MESSAGE_TOO_BIG: u16 = 1009;
@@ -61,6 +70,7 @@ struct SocketEntry {
   cmd_tx: Option<mpsc::SyncSender<WsCommand>>,
   join: Option<JoinHandle<()>>,
   pending_events: VecDeque<WebSocketEvent>,
+  pending_event_bytes: usize,
   overflowed: bool,
 }
 
@@ -239,6 +249,7 @@ fn handle_websocket_command(
           cmd_tx: Some(cmd_tx),
           join: Some(join),
           pending_events: VecDeque::new(),
+          pending_event_bytes: 0,
           overflowed: false,
         },
       );
@@ -256,6 +267,7 @@ fn handle_websocket_command(
               overflow_socket(
                 conn_id,
                 entry,
+                CLOSE_CODE_POLICY_VIOLATION,
                 "websocket send queue is full".to_string(),
               );
             }
@@ -278,6 +290,7 @@ fn handle_websocket_command(
               overflow_socket(
                 conn_id,
                 entry,
+                CLOSE_CODE_POLICY_VIOLATION,
                 "websocket send queue is full".to_string(),
               );
             }
@@ -310,12 +323,14 @@ fn queue_local_rejection(conn_id: u64, err: WebSocketValidationError, sockets: &
     cmd_tx: None,
     join: None,
     pending_events: VecDeque::new(),
+    pending_event_bytes: 0,
     overflowed: true,
   });
 
   // Don't let repeated invalid commands build up a queue.
   if entry.pending_events.len() >= MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET {
     entry.pending_events.clear();
+    entry.pending_event_bytes = 0;
   }
 
   entry.pending_events.push_back(WebSocketEvent::Error {
@@ -327,6 +342,14 @@ fn queue_local_rejection(conn_id: u64, err: WebSocketValidationError, sockets: &
   });
 }
 
+fn event_payload_bytes(ev: &WebSocketEvent) -> usize {
+  match ev {
+    WebSocketEvent::MessageText { text } => text.as_bytes().len(),
+    WebSocketEvent::MessageBinary { data } => data.len(),
+    _ => 0,
+  }
+}
+
 fn enqueue_ws_event(conn_id: u64, ev: WebSocketEvent, sockets: &mut HashMap<u64, SocketEntry>) {
   let Some(entry) = sockets.get_mut(&conn_id) else {
     return;
@@ -334,18 +357,34 @@ fn enqueue_ws_event(conn_id: u64, ev: WebSocketEvent, sockets: &mut HashMap<u64,
   if entry.overflowed {
     return;
   }
+
+  let payload_bytes = event_payload_bytes(&ev);
+  let next_bytes = entry.pending_event_bytes.saturating_add(payload_bytes);
+  if next_bytes > MAX_WEBSOCKET_PENDING_EVENT_BYTES {
+    overflow_socket(
+      conn_id,
+      entry,
+      CLOSE_CODE_MESSAGE_TOO_BIG,
+      "event queue overflow".to_string(),
+    );
+    return;
+  }
+
   if entry.pending_events.len() >= MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET {
     overflow_socket(
       conn_id,
       entry,
-      "websocket event queue overflow".to_string(),
+      CLOSE_CODE_MESSAGE_TOO_BIG,
+      "event queue overflow".to_string(),
     );
     return;
   }
+
+  entry.pending_event_bytes = next_bytes;
   entry.pending_events.push_back(ev);
 }
 
-fn overflow_socket(conn_id: u64, entry: &mut SocketEntry, reason: String) {
+fn overflow_socket(conn_id: u64, entry: &mut SocketEntry, close_code: u16, reason: String) {
   entry.overflowed = true;
   if let Some(cmd_tx) = entry.cmd_tx.as_ref() {
     let _ = cmd_tx.try_send(WsCommand::Shutdown);
@@ -357,11 +396,12 @@ fn overflow_socket(conn_id: u64, entry: &mut SocketEntry, reason: String) {
   }
 
   entry.pending_events.clear();
+  entry.pending_event_bytes = 0;
   entry.pending_events.push_back(WebSocketEvent::Error {
     message: Some(reason.clone()),
   });
   entry.pending_events.push_back(WebSocketEvent::Close {
-    code: CLOSE_CODE_POLICY_VIOLATION,
+    code: close_code,
     reason,
   });
 
@@ -385,6 +425,8 @@ fn flush_events(
       let Some(ev) = entry.pending_events.pop_front() else {
         continue;
       };
+      let payload_bytes = event_payload_bytes(&ev);
+      entry.pending_event_bytes = entry.pending_event_bytes.saturating_sub(payload_bytes);
       let is_close = matches!(ev, WebSocketEvent::Close { .. });
       match event_tx.try_send(NetworkToRenderer::WebSocket { conn_id, event: ev }) {
         Ok(()) => {
@@ -394,8 +436,16 @@ fn flush_events(
           }
         }
         Err(mpsc::TrySendError::Full(NetworkToRenderer::WebSocket { conn_id: _, event })) => {
-          // Put the event back and stop flushing until the renderer drains.
+          // Renderer is not draining the IPC channel: treat as backpressure and close this socket to
+          // keep memory bounded.
           entry.pending_events.push_front(event);
+          entry.pending_event_bytes = entry.pending_event_bytes.saturating_add(payload_bytes);
+          overflow_socket(
+            conn_id,
+            entry,
+            CLOSE_CODE_MESSAGE_TOO_BIG,
+            "renderer websocket event channel full".to_string(),
+          );
           return Ok(());
         }
         Err(mpsc::TrySendError::Disconnected(_)) => return Err(()),
@@ -808,6 +858,130 @@ mod tests {
     }
 
     assert!(saw_close, "timed out waiting for Close event");
+
+    net.shutdown();
+    server.join().expect("server thread panicked");
+  }
+
+  #[test]
+  fn websocket_network_process_closes_when_pending_event_bytes_overflow() {
+    let _net_guard = net_test_lock();
+    let Some(listener) =
+      try_bind_localhost("websocket_network_process_closes_when_pending_event_bytes_overflow")
+    else {
+      return;
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    // Ensure we exceed the pending-byte cap without requiring huge allocations.
+    let msg_len = (MAX_WEBSOCKET_PENDING_EVENT_BYTES / 4).saturating_add(1);
+    assert!(
+      msg_len <= MAX_WEBSOCKET_MESSAGE_BYTES as usize,
+      "test message length must be within MAX_WEBSOCKET_MESSAGE_BYTES"
+    );
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let mut ws = tungstenite::accept(stream).expect("accept websocket");
+
+            // Flood the client quickly. The network process runtime should cap queued inbound
+            // payload bytes and close the socket rather than accumulating unbounded memory.
+            let payload = vec![0u8; msg_len];
+            for _ in 0..64 {
+              if ws
+                .write_message(Message::Binary(payload.clone()))
+                .is_err()
+              {
+                break;
+              }
+            }
+
+            // Wait for the client to close.
+            let close_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+              match ws.read_message() {
+                Ok(Message::Close(_)) => break,
+                Ok(_) => {}
+                Err(tungstenite::Error::ConnectionClosed)
+                | Err(tungstenite::Error::AlreadyClosed)
+                | Err(tungstenite::Error::Protocol(_)) => break,
+                Err(tungstenite::Error::Io(ref err))
+                  if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                  ) =>
+                {
+                  if Instant::now() >= close_deadline {
+                    panic!("server did not observe client close");
+                  }
+                }
+                Err(err) => panic!("server read failed: {err}"),
+              }
+            }
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let net = WebSocketNetworkProcess::spawn();
+    let conn_id = 1u64;
+    net
+      .send(RendererToNetwork::WebSocket {
+        conn_id,
+        cmd: WebSocketCommand::Connect {
+          params: WebSocketConnectParams {
+            url: format!("ws://{addr}/"),
+            protocols: Vec::new(),
+            origin: None,
+            document_url: None,
+          },
+        },
+      })
+      .unwrap();
+
+    let mut saw_close = false;
+    let mut close_code = 0u16;
+    let mut close_reason = String::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !saw_close {
+      match net.recv_timeout(Duration::from_millis(50)) {
+        Ok(NetworkToRenderer::WebSocket { conn_id: id, event }) => {
+          assert_eq!(id, conn_id);
+          if let WebSocketEvent::Close { code, reason } = event {
+            saw_close = true;
+            close_code = code;
+            close_reason = reason;
+          }
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        Err(err) => panic!("network recv error: {err:?}"),
+      }
+    }
+
+    assert!(saw_close, "timed out waiting for Close event");
+    assert_eq!(
+      close_code, CLOSE_CODE_MESSAGE_TOO_BIG,
+      "expected close(1009) when the network process pending-byte cap is exceeded"
+    );
+    assert!(
+      close_reason.contains("overflow"),
+      "expected close reason to mention overflow, got {close_reason:?}"
+    );
 
     net.shutdown();
     server.join().expect("server thread panicked");
