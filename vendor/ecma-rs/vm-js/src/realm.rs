@@ -777,17 +777,19 @@ mod tests {
 
     let mut realm_a = Realm::new(&mut vm, &mut heap)?;
     let wks_a = *realm_a.well_known_symbols();
-    realm_a.teardown(&mut heap);
-
-    // Ensure nothing else is keeping the symbols alive besides the heap's agent-wide storage.
-    heap.collect_garbage();
-
     let mut realm_b = Realm::new(&mut vm, &mut heap)?;
     let wks_b = *realm_b.well_known_symbols();
-
     assert_eq!(wks_a, wks_b);
 
+    // Tear down both realms and ensure the symbols remain live solely due to heap-level storage.
     realm_b.teardown(&mut heap);
+    realm_a.teardown(&mut heap);
+    heap.collect_garbage();
+
+    let mut realm_c = Realm::new(&mut vm, &mut heap)?;
+    let wks_c = *realm_c.well_known_symbols();
+    assert_eq!(wks_a, wks_c);
+    realm_c.teardown(&mut heap);
     Ok(())
   }
 }
