@@ -1765,7 +1765,8 @@ pub fn paginate_fragment_tree(
             adjustment_footnotes.insert(
               0,
               FootnoteOccurrence {
-                pos: 0.0,
+                call_pos: 0.0,
+                defer_pos: 0.0,
                 snapshot: FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), Vec::new()),
                 policy: FootnotePolicy::Line,
               },
@@ -2793,7 +2794,17 @@ fn should_apply_string_set_event(
 
 #[derive(Debug, Clone)]
 struct FootnoteOccurrence {
-  pos: f32,
+  /// Flow position (relative to the clipped slice start) where the footnote reference line starts.
+  ///
+  /// Used to determine whether the footnote can fit above the reserved footnote area on the same
+  /// page.
+  call_pos: f32,
+  /// Flow position (relative to the clipped slice start) where pagination should break when this
+  /// footnote cannot be placed on the current page.
+  ///
+  /// For `footnote-policy: line`, this matches `call_pos`. For `footnote-policy: block`, it is the
+  /// start edge of the containing paragraph/block.
+  defer_pos: f32,
   snapshot: FragmentNode,
   policy: FootnotePolicy,
 }
@@ -2853,7 +2864,15 @@ fn collect_footnotes_for_page(
 ) -> Vec<FootnoteOccurrence> {
   let mut occurrences: Vec<FootnoteOccurrence> = Vec::new();
   let root_block_size = axis.block_size(&root.bounds);
-  collect_footnote_occurrences(root, 0.0, root_block_size, axis, None, &mut occurrences);
+  collect_footnote_occurrences(
+    root,
+    0.0,
+    root_block_size,
+    axis,
+    None,
+    None,
+    &mut occurrences,
+  );
   occurrences
 }
 
@@ -2863,6 +2882,7 @@ fn collect_footnote_occurrences(
   parent_block_size: f32,
   axis: &crate::layout::fragmentation::FragmentAxis,
   current_line_start: Option<f32>,
+  current_paragraph_start: Option<f32>,
   out: &mut Vec<FootnoteOccurrence>,
 ) {
   let node_block_size = axis.block_size(&node.bounds);
@@ -2875,12 +2895,29 @@ fn collect_footnote_occurrences(
     current_line_start
   };
 
+  // Track the start of the nearest block that establishes an inline formatting context (i.e. a
+  // block whose direct children include line boxes). This approximates the "containing paragraph"
+  // defined by CSS GCPM's `footnote-policy: block`.
+  let current_paragraph_start = if matches!(node.content, FragmentContent::Block { .. })
+    && node
+      .children
+      .iter()
+      .any(|child| matches!(child.content, FragmentContent::Line { .. }))
+  {
+    Some(abs_block)
+  } else {
+    current_paragraph_start
+  };
+
   if let FragmentContent::FootnoteAnchor { snapshot, policy } = &node.content {
+    let call_pos = current_line_start.unwrap_or(abs_block);
+    let defer_pos = match policy {
+      FootnotePolicy::Block => current_paragraph_start.unwrap_or(call_pos),
+      _ => call_pos,
+    };
     out.push(FootnoteOccurrence {
-      // Footnote calls are typically inside line boxes (which are indivisible during pagination).
-      // Use the line's flow-start as the call position so deferring a footnote moves the whole
-      // line, not just part of it.
-      pos: current_line_start.unwrap_or(abs_block),
+      call_pos,
+      defer_pos,
       snapshot: (**snapshot).clone(),
       policy: *policy,
     });
@@ -2893,6 +2930,7 @@ fn collect_footnote_occurrences(
       node_block_size,
       axis,
       current_line_start,
+      current_paragraph_start,
       out,
     );
   }
@@ -2923,7 +2961,7 @@ fn adjust_end_for_footnotes(
     let next_total = total_footnote_block + body_block;
     let next_with_separator = next_total + separator_block;
     let main_block = page_block - next_with_separator;
-    if next_with_separator <= page_block && occ.pos < main_block {
+    if next_with_separator <= page_block && occ.call_pos < main_block {
       included += 1;
       total_footnote_block = next_total;
       continue;
@@ -2935,7 +2973,7 @@ fn adjust_end_for_footnotes(
     let body_block = axis.block_size(&footnotes[0].snapshot.bounds).max(0.0);
     let footnote_overflows_page = body_block + separator_block > page_block + EPSILON;
     let footnote_consumes_page = body_block + separator_block >= page_block - EPSILON;
-    if (footnote_overflows_page || footnote_consumes_page) && footnotes[0].pos <= EPSILON {
+    if (footnote_overflows_page || footnote_consumes_page) && footnotes[0].defer_pos <= EPSILON {
       // If the call is already at the start of the page and the footnote would otherwise consume
       // the entire page, reserve some space so the footnote body can start and continue on
       // subsequent pages.
@@ -2946,20 +2984,20 @@ fn adjust_end_for_footnotes(
       // If there are additional footnote calls in this clipped slice, stop before the next call so
       // later footnotes are deferred until this overflowing footnote finishes. (When calls share
       // the same line box, we can't split them here.)
-      if footnotes.len() > 1 && footnotes[1].pos > EPSILON {
-        end = end.min(start + footnotes[1].pos);
+      if footnotes.len() > 1 && footnotes[1].call_pos > EPSILON {
+        end = end.min(start + footnotes[1].call_pos);
       }
       end
     } else {
       // No footnote calls fit alongside their bodies; defer the first call to the next page.
-      start + footnotes[0].pos
+      start + footnotes[0].defer_pos
     }
   } else {
     let footnote_block = separator_block + total_footnote_block;
     let main_block = (page_block - footnote_block).max(0.0);
     let mut end = start + main_block;
     if included < footnotes.len() {
-      end = end.min(start + footnotes[included].pos);
+      end = end.min(start + footnotes[included].defer_pos);
     }
     end
   }
@@ -4626,7 +4664,8 @@ mod tests {
 
   fn footnote_occurrence(pos: f32, block_size: f32) -> FootnoteOccurrence {
     FootnoteOccurrence {
-      pos,
+      call_pos: pos,
+      defer_pos: pos,
       snapshot: FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, block_size), vec![]),
       policy: FootnotePolicy::Line,
     }

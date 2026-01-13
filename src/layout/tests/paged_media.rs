@@ -6294,6 +6294,116 @@ fn footnote_policy_auto_defers_body_without_moving_call() {
 }
 
 #[test]
+fn footnote_policy_block_forces_break_before_paragraph() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 60px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 9px; }
+          p { margin: 0; }
+          .header { height: 20px; }
+          .note { float: footnote; footnote-policy: block; display: inline-block; height: 30px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">Header</div>
+        <p>L1<br>L2<br>L3 <span class="note">Footnote body</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 60, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected at least two pages for footnote-policy:block test"
+  );
+
+  let page1 = page_roots[0];
+  let content1 = page_content(page1);
+  assert!(find_text(content1, "Header").is_some());
+  assert!(
+    find_text(content1, "L1").is_none(),
+    "paragraph containing the footnote should be moved entirely to the next page"
+  );
+
+  let page2 = page_roots[1];
+  let wrapper2 = page_document_wrapper(page2);
+  let content2 = page_content(page2);
+  assert!(find_text(content2, "L1").is_some());
+  assert!(find_text(content2, "L2").is_some());
+  assert!(find_text(content2, "L3").is_some());
+  assert_eq!(
+    wrapper2.children.len(),
+    2,
+    "page 2 should have a footnote area"
+  );
+  let footnote_area2 = wrapper2.children.get(1).expect("page 2 footnote area");
+  assert!(find_text(footnote_area2, "Footnote body").is_some());
+}
+
+#[test]
+fn footnote_policy_line_forces_break_at_reference_line() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 60px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 9px; }
+          p { margin: 0; }
+          .header { height: 20px; }
+          .note { float: footnote; footnote-policy: line; display: inline-block; height: 30px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">Header</div>
+        <p>L1<br>L2<br>L3 <span class="note">Footnote body</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 60, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected at least two pages for footnote-policy:line test"
+  );
+
+  let page1 = page_roots[0];
+  let content1 = page_content(page1);
+  assert!(find_text(content1, "Header").is_some());
+  assert!(find_text(content1, "L1").is_some());
+  assert!(find_text(content1, "L2").is_some());
+  assert!(
+    find_text(content1, "L3").is_none(),
+    "line containing the footnote should be moved to the next page"
+  );
+
+  let page2 = page_roots[1];
+  let wrapper2 = page_document_wrapper(page2);
+  let content2 = page_content(page2);
+  assert!(find_text(content2, "L3").is_some());
+  assert_eq!(
+    wrapper2.children.len(),
+    2,
+    "page 2 should have a footnote area"
+  );
+  let footnote_area2 = wrapper2.children.get(1).expect("page 2 footnote area");
+  assert!(find_text(footnote_area2, "Footnote body").is_some());
+}
+
+#[test]
 fn footnote_float_does_not_detach_without_pagination() {
   let html = r#"
     <html>
