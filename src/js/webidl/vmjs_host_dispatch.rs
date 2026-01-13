@@ -2107,7 +2107,16 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let node_id = handle.node_id;
         let document_id = handle.document_id;
         let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
-          Ok(host.with_dom(|dom| dom.parent(node_id)))
+          Ok(host.with_dom(|dom| {
+            if node_id.index() >= dom.nodes_len() {
+              return Err(DomError::NotFoundError);
+            }
+            // ShadowRoot wrapper tree-facing semantics: `ShadowRoot.parentNode` is always null.
+            if matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. }) {
+              return Ok(None);
+            }
+            dom.parent(node_id)
+          }))
         })?;
         let parent = match parent {
           Ok(v) => v,
@@ -2178,7 +2187,30 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let node_id = handle.node_id;
         let document_id = handle.document_id;
         let children = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
-          Ok(host.with_dom(|dom| dom.children(node_id).map(|children| children.to_vec())))
+          Ok(host.with_dom(|dom| {
+            if node_id.index() >= dom.nodes_len() {
+              return Err(DomError::NotFoundError);
+            }
+
+            let node_kind = &dom.node(node_id).kind;
+            let mut out: Vec<NodeId> = Vec::new();
+            let children = dom.children(node_id)?;
+            // Light DOM traversal must not expose ShadowRoot nodes: for element-like parents,
+            // `childNodes` must skip `NodeKind::ShadowRoot` children (dom2 stores shadow roots as
+            // children of their host element).
+            let filter_shadow_root_children =
+              matches!(node_kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
+            for &child_id in children {
+              if filter_shadow_root_children
+                && child_id.index() < dom.nodes_len()
+                && matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. })
+              {
+                continue;
+              }
+              out.push(child_id);
+            }
+            Ok(out)
+          }))
         })?;
         let children = match children {
           Ok(v) => v,
@@ -2228,7 +2260,29 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
         let node_id = handle.node_id;
         let document_id = handle.document_id;
-        let first = with_embedder_state_from_hooks::<Host, _>(vm, |host| Ok(host.with_dom(|dom| dom.first_child(node_id))))?;
+        let first = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let nodes = dom.nodes();
+            let Some(node) = nodes.get(node_id.index()) else {
+              return None;
+            };
+            if matches!(node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. }) {
+              // Skip ShadowRoot children for element-like nodes (light DOM traversal).
+              for &child_id in &node.children {
+                let Some(child_node) = nodes.get(child_id.index()) else {
+                  // Match `dom2::Document::first_child` behaviour: ignore out-of-bounds IDs.
+                  continue;
+                };
+                if matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+                  continue;
+                }
+                return Some(child_id);
+              }
+              return None;
+            }
+            dom.first_child(node_id)
+          }))
+        })?;
         let Some(first_id) = first else {
           return Ok(Value::Null);
         };
@@ -2251,8 +2305,29 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
         let node_id = handle.node_id;
         let document_id = handle.document_id;
-        let last =
-          with_embedder_state_from_hooks::<Host, _>(vm, |host| Ok(host.with_dom(|dom| dom.last_child(node_id))))?;
+        let last = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let nodes = dom.nodes();
+            let Some(node) = nodes.get(node_id.index()) else {
+              return None;
+            };
+            if matches!(node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. }) {
+              // Skip ShadowRoot children for element-like nodes (light DOM traversal).
+              for &child_id in node.children.iter().rev() {
+                let Some(child_node) = nodes.get(child_id.index()) else {
+                  // Match `dom2::Document::last_child` behaviour: ignore out-of-bounds IDs.
+                  continue;
+                };
+                if matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+                  continue;
+                }
+                return Some(child_id);
+              }
+              return None;
+            }
+            dom.last_child(node_id)
+          }))
+        })?;
         let Some(last_id) = last else {
           return Ok(Value::Null);
         };
@@ -2275,8 +2350,45 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
         let node_id = handle.node_id;
         let document_id = handle.document_id;
-        let sib =
-          with_embedder_state_from_hooks::<Host, _>(vm, |host| Ok(host.with_dom(|dom| dom.next_sibling(node_id))))?;
+        let sib = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let nodes = dom.nodes();
+            let Some(node) = nodes.get(node_id.index()) else {
+              return None;
+            };
+            // ShadowRoot wrapper tree-facing semantics: `ShadowRoot.nextSibling` is always null.
+            if matches!(node.kind, NodeKind::ShadowRoot { .. }) {
+              return None;
+            }
+
+            let Some(parent_id) = node.parent else {
+              return None;
+            };
+            let Some(parent_node) = nodes.get(parent_id.index()) else {
+              return None;
+            };
+
+            if !matches!(
+              parent_node.kind,
+              NodeKind::Element { .. } | NodeKind::Slot { .. }
+            ) {
+              return dom.next_sibling(node_id);
+            }
+
+            // Light DOM sibling traversal must not step onto ShadowRoot siblings.
+            let pos = parent_node.children.iter().position(|&c| c == node_id)?;
+            for &sib_id in parent_node.children.iter().skip(pos + 1) {
+              let Some(sib_node) = nodes.get(sib_id.index()) else {
+                continue;
+              };
+              if matches!(sib_node.kind, NodeKind::ShadowRoot { .. }) {
+                continue;
+              }
+              return Some(sib_id);
+            }
+            None
+          }))
+        })?;
         let Some(sib_id) = sib else {
           return Ok(Value::Null);
         };
@@ -2300,7 +2412,43 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let node_id = handle.node_id;
         let document_id = handle.document_id;
         let sib = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
-          Ok(host.with_dom(|dom| dom.previous_sibling(node_id)))
+          Ok(host.with_dom(|dom| {
+            let nodes = dom.nodes();
+            let Some(node) = nodes.get(node_id.index()) else {
+              return None;
+            };
+            // ShadowRoot wrapper tree-facing semantics: `ShadowRoot.previousSibling` is always null.
+            if matches!(node.kind, NodeKind::ShadowRoot { .. }) {
+              return None;
+            }
+
+            let Some(parent_id) = node.parent else {
+              return None;
+            };
+            let Some(parent_node) = nodes.get(parent_id.index()) else {
+              return None;
+            };
+
+            if !matches!(
+              parent_node.kind,
+              NodeKind::Element { .. } | NodeKind::Slot { .. }
+            ) {
+              return dom.previous_sibling(node_id);
+            }
+
+            // Light DOM sibling traversal must not step onto ShadowRoot siblings.
+            let pos = parent_node.children.iter().position(|&c| c == node_id)?;
+            for &sib_id in parent_node.children.iter().take(pos).rev() {
+              let Some(sib_node) = nodes.get(sib_id.index()) else {
+                continue;
+              };
+              if matches!(sib_node.kind, NodeKind::ShadowRoot { .. }) {
+                continue;
+              }
+              return Some(sib_id);
+            }
+            None
+          }))
         })?;
         let Some(sib_id) = sib else {
           return Ok(Value::Null);

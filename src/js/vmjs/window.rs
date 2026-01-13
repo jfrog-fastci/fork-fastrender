@@ -1688,6 +1688,57 @@ mod tests {
   }
 
   #[test]
+  fn webidl_dom_backend_node_traversal_does_not_leak_closed_shadow_root() -> Result<()> {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+
+    let result = match realm.exec_script(
+      "(() => {\n\
+        const host = document.createElement('div');\n\
+        const sr = host.attachShadow({ mode: 'closed' });\n\
+\n\
+        if (host.childNodes.length !== 0) return `expected host.childNodes.length === 0, got ${host.childNodes.length}`;\n\
+        if (host.firstChild !== null) return 'expected host.firstChild === null';\n\
+\n\
+        const light = document.createElement('span');\n\
+        host.appendChild(light);\n\
+\n\
+        if (host.childNodes.length !== 1) return `expected host.childNodes.length === 1, got ${host.childNodes.length}`;\n\
+        if (host.childNodes[0] !== light) return 'expected host.childNodes[0] to be the light DOM child';\n\
+        if (host.firstChild !== light) return 'expected host.firstChild to be the light DOM child';\n\
+        if (light.previousSibling !== null) return 'expected light.previousSibling === null';\n\
+        if (light.nextSibling !== null) return 'expected light.nextSibling === null';\n\
+\n\
+        if (sr.parentNode !== null) return 'expected sr.parentNode === null';\n\
+        if (sr.previousSibling !== null) return 'expected sr.previousSibling === null';\n\
+        if (sr.nextSibling !== null) return 'expected sr.nextSibling === null';\n\
+        return true;\n\
+      })()",
+    ) {
+      Ok(value) => value,
+      Err(err) => return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
+    };
+
+    match result {
+      Value::Bool(true) => Ok(()),
+      Value::String(s) => {
+        let msg = realm
+          .heap()
+          .get_string(s)
+          .map(|s| s.to_utf8_lossy())
+          .unwrap_or_else(|_| "<failed to read error string>".to_string());
+        Err(Error::Other(msg))
+      }
+      other => Err(Error::Other(format!(
+        "expected test script to return true/string, got {other:?}"
+      ))),
+    }
+  }
+
+  #[test]
   fn window_host_state_can_boot_with_webidl_dom_backend_and_call_webidl_document_prototype_methods(
   ) -> Result<()> {
     // Build a tiny DOM with a single element so `Document.prototype.getElementById` can find it.
