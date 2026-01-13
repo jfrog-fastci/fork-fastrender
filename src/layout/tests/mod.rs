@@ -462,3 +462,4 @@ mod viewport_scrollbar_gutter;
 mod viewport_vw_units;
 mod web_font_swap_layout;
 mod word_break_auto_phrase;
+mod interactive_example_height_regression;
