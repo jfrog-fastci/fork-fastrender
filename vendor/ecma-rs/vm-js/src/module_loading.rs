@@ -28,11 +28,42 @@ use crate::{
   Scope, ScriptId, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use std::any::Any;
-use std::cell::RefCell;
+use std::alloc::{alloc, Layout};
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::mem;
+use std::ptr;
 use std::rc::Rc;
 use std::sync::Arc;
+
+fn rc_try_new_vm<T>(value: T) -> Result<Rc<T>, VmError> {
+  #[repr(C)]
+  struct RcBox<T> {
+    // Match the standard library's `RcBox` layout: strong and weak counts followed by `value`.
+    //
+    // We initialise both counts to 1, matching `Rc::new`'s semantics:
+    // - one strong reference (the returned `Rc`)
+    // - one implicit weak reference (keeps the allocation alive until all `Weak`s are dropped)
+    strong: Cell<usize>,
+    weak: Cell<usize>,
+    value: T,
+  }
+
+  let layout = Layout::new::<RcBox<T>>();
+  // SAFETY: We allocate enough space for the `RcBox<T>` header + `T`, initialise it, and then
+  // construct an `Rc<T>` using a pointer to the `value` field (as required by `Rc::from_raw`).
+  unsafe {
+    let raw = alloc(layout) as *mut RcBox<T>;
+    if raw.is_null() {
+      return Err(VmError::OutOfMemory);
+    }
+    ptr::addr_of_mut!((*raw).strong).write(Cell::new(1));
+    ptr::addr_of_mut!((*raw).weak).write(Cell::new(1));
+    ptr::addr_of_mut!((*raw).value).write(value);
+    let value_ptr = ptr::addr_of!((*raw).value);
+    Ok(Rc::from_raw(value_ptr))
+  }
+}
 
 /// The *identity* of the `referrer` passed to `HostLoadImportedModule`/`FinishLoadingImportedModule`.
 ///
@@ -173,18 +204,24 @@ impl GraphLoadingState {
       Ok((cap, promise_roots))
     }?;
 
-    Ok((
-      Self(Rc::new(RefCell::new(GraphLoadingStateInner {
-        promise_capability: cap,
-        promise_roots: Some(promise_roots),
-        dynamic_import: None,
-        is_loading: true,
-        pending_modules_count: 1,
-        visited: Vec::new(),
-        host_defined,
-      }))),
-      cap.promise,
-    ))
+    let state = match rc_try_new_vm(RefCell::new(GraphLoadingStateInner {
+      promise_capability: cap,
+      promise_roots: None,
+      dynamic_import: None,
+      is_loading: true,
+      pending_modules_count: 1,
+      visited: Vec::new(),
+      host_defined,
+    })) {
+      Ok(rc) => GraphLoadingState(rc),
+      Err(err) => {
+        promise_roots.teardown(scope.heap_mut());
+        return Err(err);
+      }
+    };
+    state.0.borrow_mut().promise_roots = Some(promise_roots);
+
+    Ok((state, cap.promise))
   }
 
   fn set_dynamic_import(&self, state: DynamicImportState, module: ModuleId) -> Result<(), VmError> {
@@ -623,12 +660,21 @@ impl DynamicImportState {
       let mut root_scope = scope.reborrow();
       PromiseCapabilityRoots::new(&mut root_scope, cap)?
     };
-    Ok(Self(Rc::new(RefCell::new(DynamicImportStateInner {
+
+    let state = match rc_try_new_vm(RefCell::new(DynamicImportStateInner {
       promise_capability: cap,
-      promise_roots: Some(roots),
+      promise_roots: None,
       realm_id,
       global_object,
-    }))))
+    })) {
+      Ok(rc) => DynamicImportState(rc),
+      Err(err) => {
+        roots.teardown(scope.heap_mut());
+        return Err(err);
+      }
+    };
+    state.0.borrow_mut().promise_roots = Some(roots);
+    Ok(state)
   }
 
   fn realm_id(&self) -> RealmId {
@@ -1872,8 +1918,22 @@ pub fn continue_dynamic_import_with_host_and_hooks(
       // Start `LoadRequestedModules` for the newly-loaded module. The dynamic import promise is
       // resolved once the graph-loading promise settles (via the `GraphLoadingState` continuation).
       let (graph_state, _promise) =
-        GraphLoadingState::new(vm, scope, host_ctx, host, HostDefined::default())?;
-      graph_state.set_dynamic_import(state, module)?;
+        match GraphLoadingState::new(vm, scope, host_ctx, host, HostDefined::default()) {
+          Ok(v) => v,
+          Err(err) => {
+            // We failed before handing off to `GraphLoadingState`, so ensure the dynamic import
+            // capability roots are not leaked.
+            state.teardown_roots(scope.heap_mut());
+            return Err(err);
+          }
+        };
+
+      let state_for_teardown = state.clone();
+      if let Err(err) = graph_state.set_dynamic_import(state, module) {
+        graph_state.teardown_roots(scope.heap_mut());
+        state_for_teardown.teardown_roots(scope.heap_mut());
+        return Err(err);
+      }
       if let Err(err) =
         inner_module_loading_with_host_and_hooks(vm, scope, modules, host_ctx, host, &graph_state, module)
       {
@@ -1893,6 +1953,7 @@ mod tests {
   use crate::property::PropertyDescriptor;
   use crate::property::PropertyKey as HeapPropertyKey;
   use crate::property::PropertyKind as HeapPropertyKind;
+  use crate::ExecutionContext;
   use crate::Heap;
   use crate::HeapLimits;
   use crate::MicrotaskQueue;
@@ -1900,8 +1961,16 @@ mod tests {
   use crate::Job;
   use crate::Realm;
   use crate::RealmId;
+  use crate::test_alloc::FailNextMatchingAllocGuard;
   use crate::VmHostHooks;
   use crate::VmOptions;
+
+  #[repr(C)]
+  struct TestRcBox<T> {
+    strong: Cell<usize>,
+    weak: Cell<usize>,
+    value: T,
+  }
 
   fn data_desc(value: Value, enumerable: bool) -> PropertyDescriptor {
     PropertyDescriptor {
@@ -2333,6 +2402,128 @@ mod tests {
       );
     }));
 
+    realm.teardown(&mut heap);
+    if let Err(panic) = result {
+      std::panic::resume_unwind(panic);
+    }
+  }
+
+  #[test]
+  fn graph_loading_state_rc_alloc_failure_surfaces_out_of_memory() {
+    struct Host;
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut host = Host;
+      let mut host_ctx = ();
+      let mut scope = heap.scope();
+      let mut modules = ModuleGraph::new();
+
+      // Capture the next root slot index so we can detect leaked persistent roots from
+      // `PromiseCapabilityRoots::new` even when `GraphLoadingState::new` fails before returning the
+      // continuation state.
+      let baseline_root = scope.heap_mut().add_root(Value::Undefined).unwrap();
+      let baseline_idx = baseline_root.index();
+      scope.heap_mut().remove_root(baseline_root);
+
+      let layout = Layout::new::<TestRcBox<RefCell<GraphLoadingStateInner>>>();
+      let _guard = FailNextMatchingAllocGuard::new(layout.size(), layout.align());
+
+      let err = load_requested_modules_with_host_and_hooks(
+        &mut vm,
+        &mut scope,
+        &mut modules,
+        &mut host_ctx,
+        &mut host,
+        ModuleId::from_raw(1),
+        HostDefined::default(),
+      )
+      .unwrap_err();
+
+      assert!(matches!(err, VmError::OutOfMemory));
+
+      // If the promise capability roots were released, the next root allocation should reuse one
+      // of the freed indices (baseline..baseline+2) rather than growing the root table.
+      let after_root = scope.heap_mut().add_root(Value::Undefined).unwrap();
+      let after_idx = after_root.index();
+      scope.heap_mut().remove_root(after_root);
+      assert!(
+        (after_idx as u64) < (baseline_idx as u64 + 3),
+        "expected root id reuse after GraphLoadingState::new OOM"
+      );
+    }));
+
+    realm.teardown(&mut heap);
+    if let Err(panic) = result {
+      std::panic::resume_unwind(panic);
+    }
+  }
+
+  #[test]
+  fn dynamic_import_state_rc_alloc_failure_surfaces_out_of_memory() {
+    struct Host;
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut host = Host;
+      let mut host_ctx = ();
+      let mut scope = heap.scope();
+      let mut modules = ModuleGraph::new();
+
+      // Ensure dynamic import sees an active Realm.
+      let mut ctx_guard = vm
+        .execution_context_guard(ExecutionContext {
+        realm: realm.id(),
+        script_or_module: None,
+      })
+        .unwrap();
+
+      let global_object = realm.global_object();
+      let specifier = scope.alloc_string("dep").unwrap();
+
+      let baseline_root = scope.heap_mut().add_root(Value::Undefined).unwrap();
+      let baseline_idx = baseline_root.index();
+      scope.heap_mut().remove_root(baseline_root);
+
+      let layout = Layout::new::<TestRcBox<RefCell<DynamicImportStateInner>>>();
+      let _guard = FailNextMatchingAllocGuard::new(layout.size(), layout.align());
+
+      let err = start_dynamic_import_with_host_and_hooks(
+        &mut ctx_guard,
+        &mut scope,
+        &mut modules,
+        &mut host_ctx,
+        &mut host,
+        global_object,
+        Value::String(specifier),
+        Value::Undefined,
+      )
+      .unwrap_err();
+
+      assert!(matches!(err, VmError::OutOfMemory));
+
+      let after_root = scope.heap_mut().add_root(Value::Undefined).unwrap();
+      let after_idx = after_root.index();
+      scope.heap_mut().remove_root(after_root);
+      assert!(
+        (after_idx as u64) < (baseline_idx as u64 + 3),
+        "expected root id reuse after DynamicImportState::new OOM"
+      );
+    }));
+
+    // Realm teardown unregisters its persistent roots.
     realm.teardown(&mut heap);
     if let Err(panic) = result {
       std::panic::resume_unwind(panic);
