@@ -183,6 +183,14 @@ pub fn create_list_from_array_like_with_host_and_hooks(
   let mut out: Vec<Value> = Vec::new();
   out.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
 
+  // Fast path for Arrays: most dense arrays store their indexed elements as ordinary data
+  // properties. Avoid allocating `ToString(idx)` keys and avoid `Get` when the value is available
+  // directly from the array's dense element table.
+  //
+  // This is particularly important for test262's `regExpUtils.js::buildString`, which uses
+  // `String.fromCodePoint.apply(null, codePoints)` with 10k-element arrays in tight loops.
+  let is_array = scope.heap().object_is_array(obj)?;
+
   // Budget the per-element work (string allocation + `Get`) more aggressively than the default
   // 1024-iteration cadence used in many native loops. `CreateListFromArrayLike` is often invoked by
   // `Function.prototype.apply` on attacker-controlled "array-like" objects and can otherwise
@@ -195,8 +203,25 @@ pub fn create_list_from_array_like_with_host_and_hooks(
     }
 
     // `Get(O, ToString(idx))`
-    let value = {
-      // Use a nested scope so per-element key roots do not accumulate.
+    let value = if is_array && idx <= u32::MAX as usize {
+      match scope
+        .heap()
+        .array_fast_own_data_element_value(obj, idx as u32)?
+      {
+        Some(v) => v,
+        None => {
+          // Fallback for holes / accessors / sparse indices: use spec-shaped `Get`.
+          let mut iter_scope = scope.reborrow();
+          iter_scope.push_root(Value::Object(obj))?;
+
+          let idx_s = alloc_u64_decimal_string(&mut iter_scope, idx as u64)?;
+          iter_scope.push_root(Value::String(idx_s))?;
+          let key = PropertyKey::from_string(idx_s);
+          iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?
+        }
+      }
+    } else {
+      // Generic array-like object: allocate the index key string and use `Get`.
       let mut iter_scope = scope.reborrow();
       iter_scope.push_root(Value::Object(obj))?;
 

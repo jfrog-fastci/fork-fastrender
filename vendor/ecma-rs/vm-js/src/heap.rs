@@ -96,6 +96,18 @@ struct InternalSymbols {
 /// about over-allocation.
 const MIN_VEC_CAPACITY: usize = 1;
 
+/// Size of the small-integer string cache (`"0".."9999"`).
+///
+/// This is tuned for test262's `regExpUtils.js::buildString`, which frequently uses indices in
+/// `[0, 10000)` when chunking Unicode code points for `String.fromCodePoint.apply(...)`.
+const SMALL_INT_STRING_CACHE_SIZE: usize = 10_000;
+
+/// Maximum array index stored in the fast elements table for Array exotic objects.
+///
+/// Larger indices are represented in the ordinary property table to avoid allocating enormous
+/// sparse vectors for hostile inputs like `a[2**32-2] = 1`.
+pub(crate) const MAX_FAST_ARRAY_INDEX: u32 = 100_000;
+
 /// Per-object host slots for embeddings (e.g. DOM/WebIDL bindings).
 ///
 /// This is deliberately:
@@ -283,6 +295,15 @@ pub struct Heap {
   common_key_constructor: Option<GcString>,
   common_key_prototype: Option<GcString>,
 
+  /// Cached decimal string representations for small non-negative integers.
+  ///
+  /// This is primarily a performance optimization for:
+  /// - `ToString` on small integer `Number` values used as array indices, and
+  /// - `[[OwnPropertyKeys]]` / other algorithms that need to allocate index strings.
+  ///
+  /// The cache is traced during GC so entries remain valid across collections.
+  small_int_strings: Vec<Option<GcString>>,
+
   /// True if at least one `FinalizationRegistry` has pending cleanup work.
   ///
   /// This is set during GC when an unreachable target is discovered and cleared from a registry's
@@ -381,6 +402,7 @@ impl Heap {
       common_key_length: None,
       common_key_constructor: None,
       common_key_prototype: None,
+      small_int_strings: vec![None; SMALL_INT_STRING_CACHE_SIZE],
       finalization_registry_cleanup_jobs_pending: false,
     }
   }
@@ -752,6 +774,14 @@ impl Heap {
       ];
       for sym in internal_syms.into_iter().flatten() {
         tracer.trace_value(Value::Symbol(sym));
+      }
+
+      // Cached small integer strings used for fast `Number` -> `String` conversions.
+      //
+      // These are treated as roots so cached entries remain valid across GC, which avoids repeated
+      // allocation churn in tight loops that repeatedly convert small indices to strings.
+      for s in self.small_int_strings.iter().flatten() {
+        tracer.trace_value(Value::String(*s));
       }
 
       while let Some(id) = tracer.pop_work() {
@@ -3853,6 +3883,18 @@ impl Heap {
     }
 
     let obj = self.get_object_base(obj)?;
+
+    // Array exotic objects store array-indexed properties in a separate dense table.
+    if let ObjectKind::Array(arr) = &obj.kind {
+      if let PropertyKey::String(s) = key {
+        if let Some(index) = self.string_to_array_index(*s) {
+          if let Some(desc) = arr.elements.get(index as usize).copied().flatten() {
+            return Ok(Some(desc));
+          }
+        }
+      }
+    }
+
     // Property lookups can scan very large property tables (especially for missing keys). Budget
     // the scan so deadline/interrupt checks can be observed inside a single `Get(O, P)` operation.
     //
@@ -3879,6 +3921,24 @@ impl Heap {
     let slot_idx = self
       .validate(obj.0)
       .ok_or_else(|| VmError::invalid_handle())?;
+
+    // Fast path for array-indexed properties stored in the array's dense elements table.
+    if let PropertyKey::String(s) = key {
+      if let Some(index) = self.string_to_array_index(*s) {
+        if index <= MAX_FAST_ARRAY_INDEX {
+          if let Some(HeapObject::Object(o)) = self.slots[slot_idx].value.as_mut() {
+            if let ObjectKind::Array(arr) = &mut o.base.kind {
+              if let Some(slot) = arr.elements.get_mut(index as usize) {
+                if slot.is_some() {
+                  *slot = None;
+                  return Ok(true);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
 
     // Two-phase borrow to avoid holding `&mut HeapObject` while calling back into `&self` for
     // string comparisons in `property_key_eq`.
@@ -4306,6 +4366,62 @@ impl Heap {
       .ok_or(VmError::InvariantViolation("expected array object"))
   }
 
+  /// Fast path: gets the value of an own *data* array index property from the array's element
+  /// storage (without allocating an index key string).
+  ///
+  /// Returns `None` when:
+  /// - the index is out of bounds for the fast element table,
+  /// - the element property is missing, or
+  /// - the element is an accessor property.
+  pub(crate) fn array_fast_own_data_element_value(
+    &self,
+    obj: GcObject,
+    index: u32,
+  ) -> Result<Option<Value>, VmError> {
+    let base = self.get_object_base(obj)?;
+    let ObjectKind::Array(arr) = &base.kind else {
+      return Err(VmError::InvariantViolation("expected array object"));
+    };
+    let Some(desc) = arr.elements.get(index as usize).copied().flatten() else {
+      return Ok(None);
+    };
+    match desc.kind {
+      PropertyKind::Data { value, .. } => Ok(Some(value)),
+      PropertyKind::Accessor { .. } => Ok(None),
+    }
+  }
+
+  pub(crate) fn array_fast_own_element_descriptor(
+    &self,
+    obj: GcObject,
+    index: u32,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
+    let base = self.get_object_base(obj)?;
+    let ObjectKind::Array(arr) = &base.kind else {
+      return Err(VmError::InvariantViolation("expected array object"));
+    };
+    Ok(arr.elements.get(index as usize).copied().flatten())
+  }
+
+  pub(crate) fn array_fast_elements_len(&self, obj: GcObject) -> Result<usize, VmError> {
+    let base = self.get_object_base(obj)?;
+    let ObjectKind::Array(arr) = &base.kind else {
+      return Err(VmError::InvariantViolation("expected array object"));
+    };
+    Ok(arr.elements.len())
+  }
+
+  pub(crate) fn array_fast_elements_mut(
+    &mut self,
+    obj: GcObject,
+  ) -> Result<&mut Vec<Option<PropertyDescriptor>>, VmError> {
+    let base = self.get_object_base_mut(obj)?;
+    let ObjectKind::Array(arr) = &mut base.kind else {
+      return Err(VmError::InvariantViolation("expected array object"));
+    };
+    Ok(&mut arr.elements)
+  }
+
   pub(crate) fn array_length_key(&self, obj: GcObject) -> Result<PropertyKey, VmError> {
     let base = self.get_object_base(obj)?;
     if base.array_length().is_none() {
@@ -4435,6 +4551,44 @@ impl Heap {
       PropertyKey::String(s) => self.string_to_array_index(*s),
       PropertyKey::Symbol(_) => None,
     };
+
+    // Fast path for array-indexed properties stored in the array's dense elements table.
+    if let Some(index) = key_array_index {
+      if index <= MAX_FAST_ARRAY_INDEX {
+        let base = self.get_object_base_mut(obj)?;
+        if let ObjectKind::Array(arr) = &mut base.kind {
+          if let Some(slot) = arr.elements.get_mut(index as usize) {
+            if let Some(desc) = slot.as_mut() {
+              // Array exotic `length` handling.
+              if key_is_length {
+                // `length` is not a numeric index, but keep the check robust.
+                let Value::Number(n) = value else {
+                  return Err(VmError::TypeError("Invalid array length"));
+                };
+                let new_len =
+                  array_length_from_f64(n).ok_or(VmError::TypeError("Invalid array length"))?;
+                base.set_array_length(new_len);
+                return Ok(());
+              }
+
+              match &mut desc.kind {
+                PropertyKind::Data { value: slot, .. } => {
+                  *slot = value;
+                }
+                PropertyKind::Accessor { .. } => return Err(VmError::PropertyNotData),
+              }
+
+              // Array exotic index semantics: writing an array index extends `length`.
+              let new_len = index.wrapping_add(1);
+              if new_len > arr.length {
+                base.set_array_length(new_len);
+              }
+              return Ok(());
+            }
+          }
+        }
+      }
+    }
 
     // Two-phase borrow to avoid holding `&mut ObjectBase` while calling back into `&self` for
     // string comparisons in `property_key_eq`.
@@ -6475,6 +6629,40 @@ impl Heap {
       }
     }
 
+    // Array exotic object fast path: store small array-index properties in the array's dense
+    // elements table instead of the ordinary property table.
+    if let Some(index) = key_array_index {
+      if index <= MAX_FAST_ARRAY_INDEX {
+        if let Some(HeapObject::Object(obj)) = self.slots[idx].value.as_mut() {
+          if obj.array_length().is_some() {
+            let ObjectKind::Array(arr) = &mut obj.base.kind else {
+              return Err(VmError::InvariantViolation("expected array object kind"));
+            };
+
+            let needed_len = index as usize + 1;
+            if arr.elements.len() < needed_len {
+              // Avoid panicking on OOM: reserve fallibly.
+              arr
+                .elements
+                .try_reserve(needed_len - arr.elements.len())
+                .map_err(|_| VmError::OutOfMemory)?;
+              arr.elements.resize(needed_len, None);
+            }
+            arr.elements[index as usize] = Some(desc);
+
+            // Array exotic index semantics: writing an array index extends `length`.
+            let new_len = index.wrapping_add(1);
+            if let Some(current_len) = obj.array_length() {
+              if new_len > current_len {
+                obj.set_array_length(new_len);
+              }
+            }
+            return Ok(());
+          }
+        }
+      }
+    }
+
     #[derive(Clone, Copy)]
     enum TargetKind {
       OrdinaryObject,
@@ -7785,6 +7973,12 @@ impl<'a> Scope<'a> {
   /// This avoids an intermediate Rust `String` allocation (e.g. formatting via `ToString`), which is
   /// infallible and can abort the host process under allocator OOM.
   pub fn alloc_u32_index_string(&mut self, idx: u32) -> Result<GcString, VmError> {
+    if (idx as usize) < SMALL_INT_STRING_CACHE_SIZE {
+      if let Some(s) = self.heap.small_int_strings[idx as usize] {
+        return Ok(s);
+      }
+    }
+
     // `u32::MAX` has 10 decimal digits.
     let mut buf = [0u8; 10];
     let mut n = idx;
@@ -7804,7 +7998,11 @@ impl<'a> Scope<'a> {
     let s = std::str::from_utf8(&buf[pos..]).map_err(|_| {
       VmError::InvariantViolation("invalid UTF-8 in array index formatting buffer")
     })?;
-    self.alloc_string_from_utf8(s)
+    let out = self.alloc_string_from_utf8(s)?;
+    if (idx as usize) < SMALL_INT_STRING_CACHE_SIZE {
+      self.heap.small_int_strings[idx as usize] = Some(out);
+    }
+    Ok(out)
   }
 
   /// Allocates a canonical array-index property key for `idx` (decimal digits).
@@ -7853,13 +8051,18 @@ impl<'a> Scope<'a> {
     }
     if n == 0.0 {
       // Covers both +0 and -0.
-      return self.alloc_string("0");
+      return self.alloc_u32_index_string(0);
     }
     if n.is_infinite() {
       if n.is_sign_negative() {
         return self.alloc_string("-Infinity");
       }
       return self.alloc_string("Infinity");
+    }
+
+    // Common case: small non-negative integers (frequently used as array indices).
+    if n.is_finite() && n.fract() == 0.0 && n >= 0.0 && n < SMALL_INT_STRING_CACHE_SIZE as f64 {
+      return self.alloc_u32_index_string(n as u32);
     }
 
     // `ryu` is used only for digit/exponent decomposition; the final formatting rules match
@@ -8405,7 +8608,10 @@ impl<'a> Scope<'a> {
         prototype: None,
         extensible: true,
         properties,
-        kind: ObjectKind::Array(ArrayObject { length: len_u32 }),
+        kind: ObjectKind::Array(ArrayObject {
+          length: len_u32,
+          elements: Vec::new(),
+        }),
       },
     };
     Ok(GcObject(
@@ -9788,11 +9994,12 @@ impl Trace for ObjectBase {
       prop.trace(tracer);
     }
     match &self.kind {
-      ObjectKind::Ordinary
-      | ObjectKind::Array(_)
-      | ObjectKind::Date(_)
-      | ObjectKind::Error
-      | ObjectKind::Arguments => {}
+      ObjectKind::Ordinary | ObjectKind::Date(_) | ObjectKind::Error | ObjectKind::Arguments => {}
+      ObjectKind::Array(a) => {
+        for elem in a.elements.iter().flatten() {
+          elem.trace(tracer);
+        }
+      }
       ObjectKind::ModuleNamespace(ns) => ns.trace(tracer),
     }
   }
@@ -10515,6 +10722,14 @@ enum ObjectKind {
 #[derive(Debug)]
 struct ArrayObject {
   length: u32,
+  /// Fast storage for array-indexed own properties.
+  ///
+  /// Array index properties (`"0"`, `"1"`, ...) are extremely common and can appear in tight loops.
+  /// Storing them separately avoids `O(N^2)` behaviour from repeatedly reallocating and scanning
+  /// the ordinary property table.
+  ///
+  /// Indices greater than `MAX_FAST_ARRAY_INDEX` are stored in the ordinary property table.
+  elements: Vec<Option<PropertyDescriptor>>,
 }
 
 #[derive(Debug)]

@@ -143,6 +143,9 @@ impl Heap {
   pub fn property_key_eq(&self, a: &PropertyKey, b: &PropertyKey) -> bool {
     match (a, b) {
       (PropertyKey::String(a), PropertyKey::String(b)) => {
+        if a == b {
+          return true;
+        }
         let Ok(a) = self.get_string(*a) else {
           return false;
         };

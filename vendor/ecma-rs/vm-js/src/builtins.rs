@@ -8969,42 +8969,32 @@ fn regexp_exec_raw(
 
   let program = scope.heap().regexp_program(rx)?;
 
-  let mut k = start;
-  loop {
-    if k > s_len {
-      break;
-    }
-    // Run the VM at this candidate index (anchored).
-    let m = {
-      let s = scope.heap().get_string(input)?;
-      let mut tick = || vm.tick();
-      let exec_mem = {
-        let heap = scope.heap();
-        let headroom = heap.limits().max_bytes.saturating_sub(heap.estimated_total_bytes());
-        RegExpExecMemoryBudget::new(headroom)
-      };
-      program.exec_at(s.as_code_units(), k, flags, &mut tick, &exec_mem, None)?
-    };
-    if let Some(m) = m {
-      let end = m.end;
-      if global_or_sticky {
-        regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(end as f64))?;
-      }
-      return Ok(Some(RegExpExecRaw { m, index: k }));
-    }
+  // Compute a single execution budget for the entire search so we don't pay allocator/Cell setup
+  // costs per candidate start index.
+  let exec_mem = {
+    let heap = scope.heap();
+    let headroom = heap.limits().max_bytes.saturating_sub(heap.estimated_total_bytes());
+    RegExpExecMemoryBudget::new(headroom)
+  };
+
+  // Search for a match (or, in sticky mode, try only at `start`).
+  let m = {
+    let s = scope.heap().get_string(input)?;
+    let mut tick = || vm.tick();
     if flags.sticky {
-      break;
+      program.exec_at(s.as_code_units(), start, flags, &mut tick, &exec_mem, None)?
+    } else {
+      program.exec_search(s.as_code_units(), start, flags, &mut tick, &exec_mem)?
     }
-    k = {
-      let js = scope.heap().get_string(input)?;
-      advance_string_index(js.as_code_units(), k, flags.has_either_unicode_flag())
-    };
-    if k > s_len {
-      break;
+  };
+
+  if let Some(m) = m {
+    let index = m.captures.get(0).copied().unwrap_or(start);
+    let end = m.end;
+    if global_or_sticky {
+      regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(end as f64))?;
     }
-    if k % 1024 == 0 {
-      vm.tick()?;
-    }
+    return Ok(Some(RegExpExecRaw { m, index }));
   }
 
   if global_or_sticky {
@@ -15332,6 +15322,7 @@ pub fn regexp_prototype_source_get(
           needs_escape = true;
           escaped_len = escaped_len.saturating_add(2);
         }
+        SLASH => escaped_len = escaped_len.saturating_add(1),
         0x000A | 0x000D => {
           needs_escape = true;
           escaped_len = escaped_len.saturating_add(2);

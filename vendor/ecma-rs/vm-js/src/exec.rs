@@ -8190,16 +8190,18 @@ impl<'a> Evaluator<'a> {
       return Ok(Completion::empty());
     }
 
-    // For-body `{ ... }` is block-scoped, but `parse-js` does not represent it as a `Stmt::Block`.
-    // Mirror `eval_block_stmt` so lexical declarations inside the body are instantiated in a fresh
-    // lexical environment each time the body is evaluated (i.e. per loop iteration).
+    // `ForBody` is a statement-list wrapper used by `parse-js` for loop bodies. When the original
+    // source used braces (`for (...) { ... }`), these statements must behave like a block:
+    // - lexical declarations are scoped to the body, and
+    // - they must not "leak" into the per-iteration environment used for `for (let ...)` loops.
     //
-    // If the body declares no lexical bindings, evaluating the statement list in the existing
-    // lexical environment is equivalent to creating a fresh empty environment.
+    // If we were to execute the statement list directly in the current lexical environment,
+    // `let`/`const` declarations would attempt to re-initialize bindings on subsequent iterations
+    // and trip `env_initialize_binding`'s "already initialized" invariant.
     let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
       Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
       Stmt::ClassDecl(_) => true,
-      Stmt::FunctionDecl(_) => self.strict,
+      Stmt::FunctionDecl(decl) => self.strict || Self::is_non_annex_b_hoistable_decl(decl),
       _ => false,
     });
     if !needs_lexical_env {
@@ -8207,11 +8209,11 @@ impl<'a> Evaluator<'a> {
     }
 
     let outer = self.env.lexical_env;
-    let block_env = scope.env_create(Some(outer))?;
-    self.env.set_lexical_env(scope.heap_mut(), block_env);
+    let body_env = scope.env_create(Some(outer))?;
+    self.env.set_lexical_env(scope.heap_mut(), body_env);
 
     let result = self
-      .instantiate_block_decls_in_stmt_list(scope, block_env, &body.body)
+      .instantiate_block_decls_in_stmt_list(scope, body_env, &body.body)
       .and_then(|_| self.eval_stmt_list(scope, &body.body));
 
     self.env.set_lexical_env(scope.heap_mut(), outer);
@@ -17264,13 +17266,12 @@ fn async_eval_for_body(
     return Ok(AsyncEval::Complete(Completion::empty()));
   }
 
-  // `parse-js` represents `for (...) { ... }` bodies as `ForBody` instead of `Stmt::Block`. Mirror
-  // `async_eval_block_stmt` so block-scoped declarations are instantiated in a fresh lexical
-  // environment for each evaluation of the body (i.e. per loop iteration).
+  // See `Evaluator::eval_for_body` for why we sometimes need an explicit lexical environment for
+  // `ForBody` statement lists.
   let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(_) => evaluator.strict,
+    Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
     _ => false,
   });
   if !needs_lexical_env {
@@ -17278,10 +17279,10 @@ fn async_eval_for_body(
   }
 
   let outer = evaluator.env.lexical_env;
-  let block_env = scope.env_create(Some(outer))?;
-  evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
+  let body_env = scope.env_create(Some(outer))?;
+  evaluator.env.set_lexical_env(scope.heap_mut(), body_env);
 
-  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &body.body) {
+  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, body_env, &body.body) {
     evaluator.env.set_lexical_env(scope.heap_mut(), outer);
     return Err(err);
   }

@@ -2163,6 +2163,131 @@ impl RegExpProgram {
     Ok(None)
   }
 
+  /// Search for the first match at or after `start` (unanchored).
+  ///
+  /// This is primarily used by `RegExpBuiltinExec` for non-sticky regexes.
+  ///
+  /// For common patterns like `/\\s/`, calling `exec_at` at every candidate index is extremely
+  /// expensive (it allocates per-attempt backtracking state and ticks once per instruction). This
+  /// helper provides a fast-path for "single atom" programs that can be evaluated with a simple
+  /// linear scan.
+  pub(crate) fn exec_search<'a>(
+    &self,
+    input: &[u16],
+    start: usize,
+    flags: RegExpFlags,
+    tick: &mut dyn FnMut() -> Result<(), VmError>,
+    exec_mem: &'a RegExpExecMemoryBudget,
+  ) -> Result<Option<RegExpMatch>, VmError> {
+    // Fast path: program is a single instruction followed by `Match`, with no captures/repeats.
+    if self.capture_count == 1
+      && self.repeat_count == 0
+      && self.named_capture_groups.is_empty()
+      && self.insts.len() == 2
+      && matches!(self.insts[1], Inst::Match)
+    {
+      let unicode = flags.has_either_unicode_flag();
+
+      let try_return_match = |start: usize, end: usize| -> Result<Option<RegExpMatch>, VmError> {
+        let mut captures: Vec<usize> = Vec::new();
+        captures
+          .try_reserve_exact(2)
+          .map_err(|_| VmError::OutOfMemory)?;
+        captures.push(start);
+        captures.push(end);
+        Ok(Some(RegExpMatch { end, captures }))
+      };
+
+      match &self.insts[0] {
+        Inst::Char(ch) => {
+          let target = canonicalize(flags, *ch);
+          let mut k = start;
+          let mut i: usize = 0;
+          while k < input.len() {
+            if i != 0 {
+              tick_every(i, DEFAULT_TICK_EVERY, tick)?;
+            }
+            let Some((cp, len)) = decode_code_point(input, k, unicode) else {
+              break;
+            };
+            if canonicalize(flags, cp) == target {
+              let end = k.saturating_add(len);
+              return try_return_match(k, end);
+            }
+            k = advance_string_index(input, k, unicode);
+            i = i.wrapping_add(1);
+          }
+          return Ok(None);
+        }
+        Inst::Any => {
+          let mut k = start;
+          let mut i: usize = 0;
+          while k < input.len() {
+            if i != 0 {
+              tick_every(i, DEFAULT_TICK_EVERY, tick)?;
+            }
+            let Some((cp, len)) = decode_code_point(input, k, unicode) else {
+              break;
+            };
+            if flags.dot_all || !(cp <= 0xFFFF && is_line_terminator_unit(cp as u16)) {
+              let end = k.saturating_add(len);
+              return try_return_match(k, end);
+            }
+            k = advance_string_index(input, k, unicode);
+            i = i.wrapping_add(1);
+          }
+          return Ok(None);
+        }
+        Inst::Class(cls) => {
+          let mut k = start;
+          let mut i: usize = 0;
+          while k < input.len() {
+            if i != 0 {
+              tick_every(i, DEFAULT_TICK_EVERY, tick)?;
+            }
+            let Some((cp, len)) = decode_code_point(input, k, unicode) else {
+              break;
+            };
+            if cls.matches(cp, flags) {
+              let end = k.saturating_add(len);
+              return try_return_match(k, end);
+            }
+            k = advance_string_index(input, k, unicode);
+            i = i.wrapping_add(1);
+          }
+          return Ok(None);
+        }
+        _ => {
+          // Not eligible for the fast path.
+        }
+      }
+    }
+
+    // Fallback: try to match at each candidate index.
+    let mut k = start;
+    let s_len = input.len();
+    loop {
+      if k > s_len {
+        break;
+      }
+      // Run the VM at this candidate index (anchored).
+      let m = self.exec_at(input, k, flags, tick, exec_mem, None)?;
+      if m.is_some() {
+        return Ok(m);
+      }
+      k = advance_string_index(input, k, flags.has_either_unicode_flag());
+      if k > s_len {
+        break;
+      }
+      // Ensure long scans still observe termination budgets even for patterns that fail quickly.
+      if k % DEFAULT_TICK_EVERY == 0 {
+        tick()?;
+      }
+    }
+
+    Ok(None)
+  }
+
   /// Fallibly clones this program.
   ///
   /// Note: `RegExpProgram` also implements `Clone`, but the derived `Clone` implementation may
@@ -4738,7 +4863,7 @@ impl<'a> Parser<'a> {
 
             if self.peek().is_some_and(is_octal_digit) {
               let v = self.parse_legacy_octal_escape_after_first(x)?;
-              return Ok(CharClassItem::Char(v as u32));
+              return Ok(CharClassItem::Char(v));
             }
             Ok(CharClassItem::Char(0x0000))
             }
@@ -4751,7 +4876,7 @@ impl<'a> Parser<'a> {
               .into());
             }
             let v = self.parse_legacy_octal_escape_after_first(x)?;
-            Ok(CharClassItem::Char(v as u32))
+            Ok(CharClassItem::Char(v))
           }
           x if x == (b'8' as u16) || x == (b'9' as u16) => {
             // `\8` / `\9` are identity escapes in non-unicode mode.
@@ -4906,7 +5031,7 @@ impl<'a> Parser<'a> {
 
         if self.peek().is_some_and(is_octal_digit) {
           let v = self.parse_legacy_octal_escape_after_first(x)?;
-          return Ok(Atom::Literal(v as u32));
+          return Ok(Atom::Literal(v));
         }
         Ok(Atom::Literal(0x0000))
       }
@@ -5006,7 +5131,7 @@ impl<'a> Parser<'a> {
         }
         self.idx = digit_start.saturating_add(1);
         let v = self.parse_legacy_octal_escape_after_first(x)?;
-        Ok(Atom::Literal(v as u32))
+        Ok(Atom::Literal(v))
       }
       x if x == (b'x' as u16) => Ok(Atom::Literal(self.parse_hex_escape_2(ctx)?)),
       x if x == (b'u' as u16) => Ok(Atom::Literal(self.parse_unicode_escape(ctx)?)),

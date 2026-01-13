@@ -3955,6 +3955,79 @@ impl<'a> Scope<'a> {
       return Ok(out);
     }
 
+    // Array exotic objects store many array-indexed properties in a dense table (see `heap.rs`).
+    // `[[OwnPropertyKeys]]` must include those indices even though they are not present in the
+    // ordinary property table.
+    if self.heap().object_is_array(obj)? {
+      // Root `obj` so any allocations for generated index key strings can't collect it.
+      self.push_root(Value::Object(obj))?;
+
+      // Keys stored in the ordinary property table (includes `"length"` and any sparse indices that
+      // exceed the fast-elements limit).
+      let own_keys = self
+        .heap()
+        .ordinary_own_property_keys_with_tick(obj, &mut tick)?;
+
+      let mut index_keys: Vec<(u32, PropertyKey)> = Vec::new();
+      let mut other_keys: Vec<PropertyKey> = Vec::new();
+
+      // Split property-table keys into indices and non-indices.
+      for (i, key) in own_keys.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          tick()?;
+        }
+        if let Some(idx) = self.heap().array_index(&key) {
+          index_keys.push((idx, key));
+        } else {
+          other_keys.push(key);
+        }
+      }
+
+      // Add index keys from the fast element table.
+      let fast_len = self.heap().array_fast_elements_len(obj)?;
+      for i in 0..fast_len {
+        if i % 1024 == 0 {
+          tick()?;
+        }
+        let idx_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+        if self
+          .heap()
+          .array_fast_own_element_descriptor(obj, idx_u32)?
+          .is_none()
+        {
+          continue;
+        }
+        let key_s = self.alloc_u32_index_string(idx_u32)?;
+        self.push_root(Value::String(key_s))?;
+        index_keys.push((idx_u32, PropertyKey::from_string(key_s)));
+      }
+
+      if !index_keys.is_empty() {
+        tick()?;
+      }
+      index_keys.sort_by_key(|(idx, _)| *idx);
+      if !index_keys.is_empty() {
+        tick()?;
+      }
+
+      let out_len = index_keys
+        .len()
+        .checked_add(other_keys.len())
+        .ok_or(VmError::OutOfMemory)?;
+      let mut out: Vec<PropertyKey> = Vec::new();
+      out
+        .try_reserve_exact(out_len)
+        .map_err(|_| VmError::OutOfMemory)?;
+      for (i, (_, key)) in index_keys.into_iter().enumerate() {
+        if i % 1024 == 0 {
+          tick()?;
+        }
+        out.push(key);
+      }
+      out.extend(other_keys);
+      return Ok(out);
+    }
+
     if self.heap().is_typed_array_object(obj) {
       self.push_root(Value::Object(obj))?;
 
@@ -4186,53 +4259,170 @@ impl<'a> Scope<'a> {
       return Ok(false);
     }
 
-    // Delete existing array index properties >= newLen, in descending order.
+    // Fast path: delete array index properties stored in the array's dense elements table without
+    // enumerating all keys and allocating per-index key strings.
     //
-    // `OrdinaryOwnPropertyKeys` already sorts indices numerically, so iterating the resulting list
-    // in reverse deletes indices from high to low.
-    let keys = self.ordinary_own_property_keys_with_tick(obj, &mut *tick)?;
-    for (i, key) in keys.into_iter().rev().enumerate() {
-      if i % 1024 == 0 {
-        tick()?;
+    // This matters for test262's `regExpUtils.js::buildString`, which repeatedly sets
+    // `codePoints.length = 0` on a temporary array with ~10k elements.
+    //
+    // We only take this path when the ordinary property table does not itself contain any
+    // "small" array index keys, since those would need to be interleaved with dense elements in
+    // descending numeric order.
+    let property_table_keys = self
+      .heap()
+      .ordinary_own_property_keys_with_tick(obj, &mut *tick)?;
+    let has_small_index_in_properties = property_table_keys.iter().any(|k| {
+      self
+        .heap()
+        .array_index(k)
+        .is_some_and(|idx| idx <= crate::heap::MAX_FAST_ARRAY_INDEX)
+    });
+
+    if has_small_index_in_properties {
+      // Fallback: generic spec-shaped deletion through `[[OwnPropertyKeys]]`.
+      //
+      // This is slower because it needs to allocate index key strings, but should be rare.
+      let keys = self.ordinary_own_property_keys_with_tick(obj, &mut *tick)?;
+      for (i, key) in keys.into_iter().rev().enumerate() {
+        if i % 1024 == 0 {
+          tick()?;
+        }
+        let Some(index) = self.heap().array_index(&key) else {
+          continue;
+        };
+        if index < new_len {
+          break;
+        }
+        if index >= old_len {
+          continue;
+        }
+
+        let delete_ok = self.ordinary_delete(obj, key)?;
+        if delete_ok {
+          continue;
+        }
+
+        // Failed to delete a non-configurable element: restore `length` to `index + 1` and (if
+        // requested) make it non-writable.
+        let restore_len = index
+          .checked_add(1)
+          .ok_or(VmError::InvariantViolation("array index overflow"))?;
+
+        let ok = self.ordinary_define_own_property(
+          obj,
+          length_key,
+          PropertyDescriptorPatch {
+            value: Some(Value::Number(restore_len as f64)),
+            ..Default::default()
+          },
+        )?;
+        if !ok {
+          return Err(VmError::InvariantViolation(
+            "array length restoration via OrdinaryDefineOwnProperty failed",
+          ));
+        }
+        if !new_writable {
+          self.heap_mut().array_set_length_writable(obj, false)?;
+        }
+        return Ok(false);
       }
-      let Some(index) = self.heap().array_index(&key) else {
-        continue;
-      };
-      if index < new_len {
-        break;
-      }
-      if index >= old_len {
-        continue;
+    } else {
+      // 1) Delete sparse index properties stored in the ordinary property table (these are either
+      //    > MAX_FAST_ARRAY_INDEX or otherwise not represented in the dense elements table).
+      for (i, key) in property_table_keys.into_iter().rev().enumerate() {
+        if i % 1024 == 0 {
+          tick()?;
+        }
+        let Some(index) = self.heap().array_index(&key) else {
+          continue;
+        };
+        if index < new_len {
+          break;
+        }
+        if index >= old_len {
+          continue;
+        }
+
+        let delete_ok = self.ordinary_delete(obj, key)?;
+        if delete_ok {
+          continue;
+        }
+
+        let restore_len = index
+          .checked_add(1)
+          .ok_or(VmError::InvariantViolation("array index overflow"))?;
+        let ok = self.ordinary_define_own_property(
+          obj,
+          length_key,
+          PropertyDescriptorPatch {
+            value: Some(Value::Number(restore_len as f64)),
+            ..Default::default()
+          },
+        )?;
+        if !ok {
+          return Err(VmError::InvariantViolation(
+            "array length restoration via OrdinaryDefineOwnProperty failed",
+          ));
+        }
+        if !new_writable {
+          self.heap_mut().array_set_length_writable(obj, false)?;
+        }
+        return Ok(false);
       }
 
-      let delete_ok = self.ordinary_delete(obj, key)?;
-      if delete_ok {
-        continue;
+      // 2) Delete dense-element indices in descending order.
+      let mut fail_index: Option<u32> = None;
+      {
+        let elements = self.heap_mut().array_fast_elements_mut(obj)?;
+        let end = old_len.min(elements.len() as u32);
+
+        // Iterate from `end - 1` down to `new_len`.
+        let mut idx = end;
+        let mut steps = 0usize;
+        while idx > new_len {
+          idx -= 1;
+          if steps % 1024 == 0 {
+            tick()?;
+          }
+          steps = steps.saturating_add(1);
+
+          let Some(slot) = elements.get_mut(idx as usize) else {
+            continue;
+          };
+          let Some(existing) = *slot else {
+            continue;
+          };
+          if !existing.configurable {
+            fail_index = Some(idx);
+            break;
+          }
+          // Deleting an element does not affect `length`.
+          *slot = None;
+        }
       }
 
-      // Failed to delete a non-configurable element: restore `length` to `index + 1` and (if
-      // requested) make it non-writable.
-      let restore_len = index
-        .checked_add(1)
-        .ok_or(VmError::InvariantViolation("array index overflow"))?;
-
-      let ok = self.ordinary_define_own_property(
-        obj,
-        length_key,
-        PropertyDescriptorPatch {
-          value: Some(Value::Number(restore_len as f64)),
-          ..Default::default()
-        },
-      )?;
-      if !ok {
-        return Err(VmError::InvariantViolation(
-          "array length restoration via OrdinaryDefineOwnProperty failed",
-        ));
+      if let Some(index) = fail_index {
+        let restore_len = index
+          .checked_add(1)
+          .ok_or(VmError::InvariantViolation("array index overflow"))?;
+        let ok = self.ordinary_define_own_property(
+          obj,
+          length_key,
+          PropertyDescriptorPatch {
+            value: Some(Value::Number(restore_len as f64)),
+            ..Default::default()
+          },
+        )?;
+        if !ok {
+          return Err(VmError::InvariantViolation(
+            "array length restoration via OrdinaryDefineOwnProperty failed",
+          ));
+        }
+        if !new_writable {
+          self.heap_mut().array_set_length_writable(obj, false)?;
+        }
+        return Ok(false);
       }
-      if !new_writable {
-        self.heap_mut().array_set_length_writable(obj, false)?;
-      }
-      return Ok(false);
     }
 
     if !new_writable {
