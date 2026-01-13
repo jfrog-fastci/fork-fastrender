@@ -2165,47 +2165,88 @@ pub(super) fn tab_strip_ui(
   }
 
   // Detect pin/unpin transitions by diffing against the previous frame's layout snapshot.
+  //
+  // NOTE: this used to scan the full tab list and do an O(pinned_count) search for each tab id to
+  // determine whether it was pinned in the previous frame. With hundreds of tabs this becomes a
+  // noticeable per-frame CPU cost even when no pin/unpin is happening.
+  //
+  // Because pinned tabs are always a contiguous prefix of `BrowserAppState::tabs`, we can detect a
+  // single-tab pin/unpin transition by comparing `pinned_count` and the pinned-id prefixes between
+  // frames.
   if pin_anim.is_none() && motion_enabled {
     if let Some(prev) = prev_snapshot.as_ref() {
-      let mut changed: Option<(TabId, bool, bool)> = None;
-      let mut changed_count = 0usize;
-      for tab in &app.tabs {
-        let was_pinned = prev.pinned_tabs.iter().any(|id| *id == tab.id);
-        if was_pinned != tab.pinned {
-          changed_count += 1;
-          changed = Some((tab.id, was_pinned, tab.pinned));
-        }
-      }
-
-      if changed_count == 1 {
-        if let Some((tab_id, _was_pinned, now_pinned)) = changed {
-          if let Some(from_rect) = prev.tab_rects.get(&tab_id).copied() {
-            let kind = if now_pinned {
-              TabPinAnimKind::Pin
+      let prev_tab_count = prev.pinned_count + prev.unpinned_count;
+      if prev_tab_count == tab_count {
+        let prev_pinned_count = prev.pinned_count;
+        let pinned_delta = pinned_count as isize - prev_pinned_count as isize;
+        let (tab_id, kind, source_index): (TabId, TabPinAnimKind, Option<usize>) = match pinned_delta
+        {
+          1 => {
+            // One tab was pinned: find the id present in the current pinned prefix that wasn't in
+            // the previous pinned set.
+            let mut added: Option<TabId> = None;
+            let mut added_count = 0usize;
+            for tab in app.tabs.iter().take(pinned_count) {
+              if !prev.pinned_tabs.iter().any(|id| *id == tab.id) {
+                added = Some(tab.id);
+                added_count += 1;
+                if added_count > 1 {
+                  break;
+                }
+              }
+            }
+            if added_count != 1 {
+              // Either no new pinned id (unexpected) or multiple changes: don't animate.
+              (TabId(0), TabPinAnimKind::Pin, None)
             } else {
-              TabPinAnimKind::Unpin
-            };
-            let source_index = match kind {
-              TabPinAnimKind::Pin => prev.unpinned_items.iter().position(|item| match item {
+              let tab_id = added.unwrap_or(TabId(0));
+              let source_index = prev.unpinned_items.iter().position(|item| match item {
                 TabStripItemKey::Tab(id) => *id == tab_id,
                 _ => false,
-              }),
-              TabPinAnimKind::Unpin => prev.pinned_tabs.iter().position(|id| *id == tab_id),
-            };
-
-            if let Some(source_index) = source_index {
-              pin_anim = Some(TabPinAnim {
-                tab_id,
-                kind,
-                start_time: now,
-                duration: motion.durations.tab_pin,
-                from_rect,
-                source_index,
-                from_pinned_count: prev.pinned_count,
-                from_unpinned_count: prev.unpinned_count,
-                from_unpinned_tab_width: prev.unpinned_tab_width,
               });
+              (tab_id, TabPinAnimKind::Pin, source_index)
             }
+          }
+          -1 => {
+            // One tab was unpinned: find the id present in the previous pinned set that is no
+            // longer in the current pinned prefix.
+            let mut removed: Option<TabId> = None;
+            let mut removed_count = 0usize;
+            for id in &prev.pinned_tabs {
+              if !app.tabs.iter().take(pinned_count).any(|t| t.id == *id) {
+                removed = Some(*id);
+                removed_count += 1;
+                if removed_count > 1 {
+                  break;
+                }
+              }
+            }
+            if removed_count != 1 {
+              (TabId(0), TabPinAnimKind::Unpin, None)
+            } else {
+              let tab_id = removed.unwrap_or(TabId(0));
+              let source_index = prev.pinned_tabs.iter().position(|id| *id == tab_id);
+              (tab_id, TabPinAnimKind::Unpin, source_index)
+            }
+          }
+          _ => (TabId(0), TabPinAnimKind::Pin, None),
+        };
+
+        if tab_id != TabId(0) {
+          if let (Some(from_rect), Some(source_index)) =
+            (prev.tab_rects.get(&tab_id).copied(), source_index)
+          {
+            pin_anim = Some(TabPinAnim {
+              tab_id,
+              kind,
+              start_time: now,
+              duration: motion.durations.tab_pin,
+              from_rect,
+              source_index,
+              from_pinned_count: prev.pinned_count,
+              from_unpinned_count: prev.unpinned_count,
+              from_unpinned_tab_width: prev.unpinned_tab_width,
+            });
           }
         }
       }
