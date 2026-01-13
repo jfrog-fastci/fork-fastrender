@@ -3357,6 +3357,50 @@ fn compiled_numeric_ops_root_lhs_across_rhs_eval_under_gc_stress() -> Result<(),
 }
 
 #[test]
+fn compiled_var_is_hoisted_in_script() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        return x;
+      }
+      f();
+      var x = 1;
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_global_var_declaration_without_initializer_is_noop() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var x = 1;
+      var x;
+      x
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_var_is_hoisted_in_function_body() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
