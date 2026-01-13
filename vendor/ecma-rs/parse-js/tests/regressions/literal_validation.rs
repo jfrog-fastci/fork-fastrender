@@ -209,6 +209,20 @@ fn regex_duplicate_named_captures_are_rejected() {
 }
 
 #[test]
+fn regex_duplicate_named_captures_in_disjoint_alternatives_are_allowed() {
+  for src in [
+    "/(?:(?<a>a)|(?<a>b))/",
+    "/(?:(?<a>a)|(?<a>b))/u",
+    "/(?:(?<a>a)|(?<a>b))/v",
+    "/(?:(?<a>a)|(?<a>b))*/",
+    "/(?:(?<a>a)|(?<a>b))*/u",
+    "/(?:(?<a>a)|(?<a>b))*/v",
+  ] {
+    parse(src).unwrap();
+  }
+}
+
+#[test]
 fn regex_lookbehind_assertions_are_not_quantifiable() {
   for src in [
     "/(?<=a)+/",
