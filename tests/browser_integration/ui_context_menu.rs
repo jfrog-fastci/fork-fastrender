@@ -92,11 +92,16 @@ fn context_menu_request_resolves_link_url() {
     WorkerToUi::ContextMenu {
       tab_id: got_tab,
       pos_css: got_pos,
+      default_prevented,
       link_url,
       ..
     } => {
       assert_eq!(got_tab, tab_id);
       assert_eq!(got_pos, pos_css);
+      assert!(
+        !default_prevented,
+        "expected default context menu not to be suppressed"
+      );
       assert_eq!(link_url.as_deref(), Some(expected_link_url.as_str()));
     }
     other => panic!("unexpected WorkerToUi message: {other:?}"),

@@ -4721,6 +4721,7 @@ impl App {
     if let fastrender::ui::WorkerToUi::ContextMenu {
       tab_id,
       pos_css,
+      default_prevented,
       link_url,
       image_url,
       can_copy,
@@ -4729,13 +4730,21 @@ impl App {
       can_select_all,
     } = &msg
     {
-      if self.browser_state.active_tab_id() == Some(*tab_id) {
-        if self
-          .pending_context_menu_request
-          .as_ref()
-          .is_some_and(|pending| pending.tab_id == *tab_id && pending.pos_css == *pos_css)
-        {
-          if let Some(pending) = self.pending_context_menu_request.take() {
+      // Always clear the matching pending request so the UI doesn't get stuck in a
+      // "context menu pending" state when page JS suppresses the default menu via
+      // `preventDefault()`.
+      let matches_pending = self
+        .pending_context_menu_request
+        .as_ref()
+        .is_some_and(|pending| pending.tab_id == *tab_id && pending.pos_css == *pos_css);
+
+      if matches_pending {
+        let pending = self.pending_context_menu_request.take();
+
+        // Only open the egui menu when the default `contextmenu` was not suppressed and the tab
+        // is still active.
+        if !*default_prevented && self.browser_state.active_tab_id() == Some(*tab_id) {
+          if let Some(pending) = pending {
             self.open_context_menu = Some(OpenContextMenu {
               tab_id: *tab_id,
               pos_css: *pos_css,

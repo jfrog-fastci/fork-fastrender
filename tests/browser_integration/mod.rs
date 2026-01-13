@@ -68,6 +68,7 @@ mod ui_context_menu;
 mod ui_context_menu_entries;
 mod ui_context_menu_text_caret_right_click;
 mod ui_context_menu_bookmarks;
+mod ui_context_menu_prevent_default;
 mod ui_fragment_navigation;
 mod ui_frame_upload_coalescing;
 mod ui_input_routing;

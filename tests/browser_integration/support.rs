@@ -652,6 +652,7 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
     if let WorkerToUi::ContextMenu {
       tab_id,
       pos_css,
+      default_prevented,
       link_url,
       image_url,
       can_copy,
@@ -662,7 +663,7 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
     {
       let _ = writeln!(
         &mut out,
-        "ContextMenu(tab={}, pos_css={pos_css:?}, link_url={link_url:?}, image_url={image_url:?}, can_copy={can_copy}, can_cut={can_cut}, can_paste={can_paste}, can_select_all={can_select_all})",
+        "ContextMenu(tab={}, pos_css={pos_css:?}, default_prevented={default_prevented}, link_url={link_url:?}, image_url={image_url:?}, can_copy={can_copy}, can_cut={can_cut}, can_paste={can_paste}, can_select_all={can_select_all})",
         tab_id.0
       );
       continue;

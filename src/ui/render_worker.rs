@@ -3779,6 +3779,7 @@ impl BrowserRuntime {
       let _ = self.ui_tx.send(WorkerToUi::ContextMenu {
         tab_id,
         pos_css,
+        default_prevented: false,
         link_url: None,
         image_url: None,
         can_copy: false,
@@ -3923,8 +3924,9 @@ impl BrowserRuntime {
 
     // Dispatch a cancelable `contextmenu` event before opening the default UI context menu.
     //
-    // If JS calls `preventDefault()`, suppress the UI menu (matching browser behavior).
-    let mut suppress_menu = false;
+    // If JS calls `preventDefault()`, report `default_prevented=true` so UIs can suppress the
+    // default menu (matching browser behavior) while still clearing any pending context-menu state.
+    let mut default_prevented = false;
     if let Some(target_id) = hit_info.target_id {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let target =
@@ -3954,7 +3956,7 @@ impl BrowserRuntime {
           ) {
             Ok(allowed) => {
               if !allowed {
-                suppress_menu = true;
+                default_prevented = true;
               }
             }
             Err(err) => {
@@ -3966,10 +3968,6 @@ impl BrowserRuntime {
           }
         }
       }
-    }
-
-    if suppress_menu {
-      return;
     }
 
     let state = tab.interaction.interaction_state();
@@ -3995,10 +3993,10 @@ impl BrowserRuntime {
     let can_select_all =
       hit_info.text_control_target.is_some_and(|_| !hit_info.text_control_disabled)
         || has_document_selection;
-
     let _ = self.ui_tx.send(WorkerToUi::ContextMenu {
       tab_id,
       pos_css,
+      default_prevented,
       link_url,
       image_url,
       can_copy,

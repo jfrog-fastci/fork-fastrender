@@ -720,6 +720,12 @@ pub enum WorkerToUi {
     tab_id: TabId,
     /// Pointer position in viewport-local CSS pixels as provided by the UI request.
     pos_css: (f32, f32),
+    /// True when page JS called `preventDefault()` on the dispatched cancelable `contextmenu`
+    /// event.
+    ///
+    /// The worker always responds to [`UiToWorker::ContextMenuRequest`] so UIs can clear any
+    /// pending context menu state even when the default menu is suppressed.
+    default_prevented: bool,
     /// Fully-resolved link URL under the cursor, if any.
     link_url: Option<String>,
     /// Fully-resolved image URL under the cursor, if any.
