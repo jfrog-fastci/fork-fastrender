@@ -362,68 +362,49 @@ fn map_demux_error(err: DemuxError) -> MediaError {
 }
 
 fn vp9_is_keyframe(frame: &[u8]) -> MediaResult<bool> {
-  let mut bits = BitReader::new(frame);
-  let frame_marker = bits.read_bits_u8(2)?;
+  let byte0 = *frame
+    .first()
+    .ok_or_else(|| MediaError::Demux("VP9 header truncated".to_string()))?;
+
+  // VP9 uncompressed header bit layout (byte 0):
+  // - frame_marker: 2 bits (must be 0b10)
+  // - profile_low_bit: 1 bit
+  // - profile_high_bit: 1 bit
+  // - if profile == 3: reserved_zero_bit: 1 bit
+  // - show_existing_frame: 1 bit
+  // - if show_existing_frame == 0: frame_type: 1 bit (0 keyframe, 1 inter)
+  let frame_marker = byte0 >> 6;
   if frame_marker != 0b10 {
     return Err(MediaError::Demux(format!(
       "invalid VP9 frame marker: {frame_marker:#b}"
     )));
   }
 
-  let profile_low = bits.read_bits_u8(1)?;
-  let profile_high = bits.read_bits_u8(1)?;
+  // Note: VP9 stores the profile bits in low/high order (low bit first).
+  let profile_low = (byte0 >> 5) & 1;
+  let profile_high = (byte0 >> 4) & 1;
   let profile = profile_low | (profile_high << 1);
+
   if profile == 3 {
-    let reserved = bits.read_bits_u8(1)?;
+    let reserved = (byte0 >> 3) & 1;
     if reserved != 0 {
       return Err(MediaError::Demux("invalid VP9 reserved profile bit".to_string()));
     }
+
+    let show_existing_frame = (byte0 >> 2) & 1;
+    if show_existing_frame == 1 {
+      return Ok(false);
+    }
+    let frame_type = (byte0 >> 1) & 1;
+    return Ok(frame_type == 0);
   }
 
-  let show_existing_frame = bits.read_bits_u8(1)?;
+  let show_existing_frame = (byte0 >> 3) & 1;
   if show_existing_frame == 1 {
     return Ok(false);
   }
-
-  let frame_type = bits.read_bits_u8(1)?;
+  let frame_type = (byte0 >> 2) & 1;
   Ok(frame_type == 0)
-}
-
-struct BitReader<'a> {
-  data: &'a [u8],
-  byte: usize,
-  bit: u8,
-}
-
-impl<'a> BitReader<'a> {
-  fn new(data: &'a [u8]) -> Self {
-    Self { data, byte: 0, bit: 0 }
-  }
-
-  fn read_bits_u8(&mut self, bits: u8) -> MediaResult<u8> {
-    let mut value = 0_u8;
-    for _ in 0..bits {
-      value <<= 1;
-      value |= self.read_bit()?;
-    }
-    Ok(value)
-  }
-
-  fn read_bit(&mut self) -> MediaResult<u8> {
-    let byte = self
-      .data
-      .get(self.byte)
-      .copied()
-      .ok_or(MediaError::Demux("VP9 header truncated".to_string()))?;
-    let shift = 7_u8.saturating_sub(self.bit);
-    let bit = (byte >> shift) & 1;
-    self.bit += 1;
-    if self.bit >= 8 {
-      self.bit = 0;
-      self.byte += 1;
-    }
-    Ok(bit)
-  }
 }
 
 #[cfg(test)]
