@@ -2,6 +2,7 @@ use crate::code::{CompiledFunctionRef, CompiledScript};
 use crate::conversion_ops::ToPrimitiveHint;
 use crate::exec::{perform_direct_eval_with_host_and_hooks, ResolvedBinding, RuntimeEnv, VarEnv};
 use crate::fallible_format;
+use crate::function::FunctionData;
 use crate::function::ThisMode;
 use crate::for_in::ForInEnumerator;
 use crate::iterator;
@@ -24,6 +25,22 @@ fn compiled_constructor_body_construct(
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
+  // Determine whether this is a derived class constructor body.
+  //
+  // The wrapper function is annotated by `eval_class` so we can consult its containing class
+  // constructor's `extends` value.
+  let is_derived = {
+    let func = scope.heap().get_function(callee)?;
+    match func.data {
+      FunctionData::ClassConstructorBody { class_constructor } => {
+        let super_value =
+          crate::class_fields::class_constructor_super_value(scope, class_constructor)?;
+        !matches!(super_value, Value::Undefined)
+      }
+      _ => false,
+    }
+  };
+
   // Extract the hidden compiled body function from the wrapper's native slots.
   let body_func = {
     let func = scope.heap().get_function(callee)?;
@@ -70,46 +87,86 @@ fn compiled_constructor_body_construct(
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
-  // Allocate the instance using `OrdinaryCreateFromConstructor(newTarget, %Object.prototype%)`.
+  // Base/ordinary constructor: allocate `this` up-front.
   //
-  // Root inputs across allocation in case it triggers GC.
-  let mut scope = scope.reborrow();
-  scope.push_roots(&[Value::Object(body_func), new_target])?;
-  let this_obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    new_target,
-    intr.object_prototype(),
-    &[],
-    |scope| scope.alloc_object(),
-  )?;
+  // Derived class constructors do not allocate `this` up-front; `this` is initialized by `super()`.
+  // The compiled path does not yet support `super`, so derived constructor bodies can only succeed
+  // by explicitly returning an object.
+  if !is_derived {
+    // Allocate the instance using `OrdinaryCreateFromConstructor(newTarget, %Object.prototype%)`.
+    //
+    // Root inputs across allocation in case it triggers GC.
+    let mut scope = scope.reborrow();
+    scope.push_roots(&[Value::Object(body_func), new_target])?;
+    let this_obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      new_target,
+      intr.object_prototype(),
+      &[],
+      |scope| scope.alloc_object(),
+    )?;
 
-  // Root the newly-created `this` across environment creation and body execution.
-  scope.push_root(Value::Object(this_obj))?;
+    // Root the newly-created `this` across environment creation and body execution.
+    scope.push_root(Value::Object(this_obj))?;
 
-  let func_env = scope.env_create(outer)?;
-  let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+    let func_env = scope.env_create(outer)?;
+    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
 
-  let result = run_compiled_function(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    &mut env,
-    func_ref,
-    is_strict,
-    Value::Object(this_obj),
-    new_target,
-    args,
-  );
+    let result = run_compiled_function(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      &mut env,
+      func_ref,
+      is_strict,
+      Value::Object(this_obj),
+      new_target,
+      args,
+    );
 
-  env.teardown(scope.heap_mut());
+    env.teardown(scope.heap_mut());
 
-  match result? {
-    Value::Object(o) => Ok(Value::Object(o)),
-    _ => Ok(Value::Object(this_obj)),
+    match result? {
+      Value::Object(o) => Ok(Value::Object(o)),
+      _ => Ok(Value::Object(this_obj)),
+    }
+  } else {
+    // Derived ctor: run body with an uninitialized `this` value.
+    //
+    // Root inputs across env creation and body execution in case either triggers GC.
+    let mut scope = scope.reborrow();
+    scope.push_roots(&[Value::Object(body_func), new_target])?;
+
+    let func_env = scope.env_create(outer)?;
+    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+
+    let result = run_compiled_function(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      &mut env,
+      func_ref,
+      is_strict,
+      Value::Undefined,
+      new_target,
+      args,
+    );
+
+    env.teardown(scope.heap_mut());
+
+    match result? {
+      Value::Object(o) => Ok(Value::Object(o)),
+      _ => Err(throw_reference_error(
+        vm,
+        &mut scope,
+        "Derived constructor did not initialize `this` via super()",
+      )?),
+    }
   }
 }
 
@@ -7445,25 +7502,37 @@ impl<'vm> HirEvaluator<'vm> {
           /* instance_field_count */ 0,
         )?;
 
-       // `NamedEvaluation` assigns inferred names to anonymous class expressions in specific syntactic
+        // `NamedEvaluation` assigns inferred names to anonymous class expressions in specific syntactic
        // positions (e.g. `{ key: class {} }`).
        //
        // This must happen *before* defining class elements: a class can define a `static name() {}`
        // method which should override the constructor's initial `"name"` property. Setting the name
        // after class evaluation would overwrite the method.
-       if func_name.is_empty() {
-         if let Some(name_key) = inferred_name {
-           let mut name_scope = scope.reborrow();
-           name_scope.push_root(Value::Object(func_obj))?;
-           root_property_key(&mut name_scope, name_key)?;
-           crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)?;
-         }
-       }
+        if func_name.is_empty() {
+          if let Some(name_key) = inferred_name {
+            let mut name_scope = scope.reborrow();
+            name_scope.push_root(Value::Object(func_obj))?;
+            root_property_key(&mut name_scope, name_key)?;
+            crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)?;
+          }
+        }
 
-      // Initialize the requested binding now that the class constructor object exists.
-      if let Some(name) = binding_name {
-        let mut init_scope = scope.reborrow();
-        init_scope.push_root(Value::Object(func_obj))?;
+        // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
+        // object so `[[Construct]]` can implement derived `super()` semantics (and, in particular, so
+        // derived constructors that never initialize `this` throw the correct ReferenceError).
+        if let Some(body_func) = ctor_body_func {
+          scope.heap_mut().set_function_data(
+            body_func,
+            FunctionData::ClassConstructorBody {
+              class_constructor: func_obj,
+            },
+          )?;
+        }
+
+       // Initialize the requested binding now that the class constructor object exists.
+       if let Some(name) = binding_name {
+         let mut init_scope = scope.reborrow();
+         init_scope.push_root(Value::Object(func_obj))?;
         init_scope
           .heap_mut()
           .env_initialize_binding(class_env, name, Value::Object(func_obj))?;

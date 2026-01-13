@@ -88,4 +88,3 @@ fn derived_constructor_without_super_can_return_object_compiled() -> Result<(), 
   assert_value_is_utf8(&rt, value, "ok");
   Ok(())
 }
-
