@@ -562,3 +562,31 @@ fn compiled_dynamic_import_evaluates_specifier_then_options() -> Result<(), VmEr
   hooks.teardown_jobs(&mut rt);
   Ok(())
 }
+
+#[test]
+fn compiled_dynamic_import_requires_module_graph() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // Simulate an embedding that did not install a module graph pointer.
+  rt.vm.clear_module_graph();
+
+  let script = CompiledScript::compile_script(&mut rt.heap, "test.js", "import('m.js')")?;
+
+  let mut hooks = SyncImportHooks::new();
+  let mut dummy_host = ();
+  let err = rt
+    .exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)
+    .unwrap_err();
+  match err {
+    VmError::Unimplemented(msg) => assert_eq!(msg, "dynamic import requires a module graph"),
+    other => panic!("expected Unimplemented error, got {other:?}"),
+  }
+
+  // Restore the module graph pointer so runtime teardown behaves like normal.
+  {
+    let (vm, modules, _heap) = rt.vm_modules_and_heap_mut();
+    vm.set_module_graph(modules);
+  }
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
