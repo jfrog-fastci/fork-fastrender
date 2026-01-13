@@ -297,6 +297,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
     - `example.com` → `https://example.com/`
     - filesystem paths like `/tmp/a.html` → `file://...`
   - Non-URL queries (e.g. `cats`) are treated as searches using the default search engine.
+  - Alt+Enter (Win/Linux) / Option+Enter (macOS) opens the resolved navigation in a **new tab**.
 - While typing, the omnibox shows a suggestions dropdown (from history and open tabs).
   - Use ArrowUp/ArrowDown to select a suggestion, Enter to accept, Escape to close the dropdown.
 - Right-clicking in the rendered page opens a basic context menu (for example: open link in new tab,
@@ -312,6 +313,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Ctrl/Cmd+K | Focus address bar (select all) |
 | F6 | Focus address bar (select all) |
 | Alt+D (Win/Linux) | Focus address bar (select all) |
+| Alt+Enter (address bar, Win/Linux); Option+Enter (address bar, macOS) | Open omnibox input in a new tab |
 | Ctrl/Cmd+N | New window |
 | F11 (Win/Linux); Ctrl+Cmd+F (macOS) | Toggle full screen |
 | Ctrl/Cmd+F | Find in page |
@@ -331,6 +333,8 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Cmd+[ (macOS) | Back |
 | Cmd+] (macOS) | Forward |
 | Ctrl/Cmd+R / F5 | Reload |
+| Ctrl/Cmd+S | Save page (reserved; not implemented yet) |
+| Ctrl/Cmd+P | Print page (reserved; not implemented yet) |
 | Esc (while loading) | Stop loading |
 | Alt+Home (Win/Linux); Cmd+Shift+H (macOS) | Home page |
 | Ctrl+D (Win/Linux); Cmd+D (macOS) | Toggle bookmark for current page |
