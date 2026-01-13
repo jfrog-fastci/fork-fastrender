@@ -5207,7 +5207,9 @@ impl App {
               );
 
               ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let retry_resp = ui.button("Retry");
+                let retry_resp = ui
+                  .push_id(infobar_id.with("retry"), |ui| ui.button("Retry"))
+                  .inner;
                 retry_resp.widget_info(|| {
                   egui::WidgetInfo::labeled(egui::WidgetType::Button, "Retry navigation")
                 });
@@ -5216,7 +5218,9 @@ impl App {
                 }
 
                 let details_label = if details_open { "Hide details" } else { "Details" };
-                let details_resp = ui.button(details_label);
+                let details_resp = ui
+                  .push_id(infobar_id.with("toggle_details"), |ui| ui.button(details_label))
+                  .inner;
 
                 // AccessKit may request explicit expand/collapse actions when the node exposes an
                 // expanded state.
