@@ -1464,63 +1464,50 @@ impl BookmarkStore {
     }
 
     let moved_is_folder = matches!(self.nodes.get(&id), Some(BookmarkNode::Folder(_)));
+    let mut crossed: Vec<BookmarkId> = Vec::new();
 
-    let folder_order_changed = if moved_is_folder {
-      // Only bump `folder_revision` if the relative ordering of folder siblings changed.
-      let (old_order, new_order) = {
-        let list = self.parent_list_mut(parent)?;
-        let old_idx = list
-          .iter()
-          .position(|x| *x == id)
-          .ok_or(BookmarkError::InvalidReorder)?;
-        let before_idx = list
-          .iter()
-          .position(|x| *x == before_id)
-          .ok_or(BookmarkError::InvalidReorder)?;
+    {
+      let list = self.parent_list_mut(parent)?;
+      let old_idx = list
+        .iter()
+        .position(|x| *x == id)
+        .ok_or(BookmarkError::InvalidReorder)?;
+      let before_idx = list
+        .iter()
+        .position(|x| *x == before_id)
+        .ok_or(BookmarkError::InvalidReorder)?;
 
-        // Already immediately before the target.
-        if old_idx + 1 == before_idx {
-          return Ok(());
-        }
-
-        let old_order = list.clone();
-        list.remove(old_idx);
-        let mut insert_idx = before_idx;
-        if old_idx < before_idx {
-          insert_idx = insert_idx.saturating_sub(1);
-        }
-        list.insert(insert_idx, id);
-        let new_order = list.clone();
-        (old_order, new_order)
-      };
-
-      self.folder_subsequence(&old_order) != self.folder_subsequence(&new_order)
-    } else {
-      {
-        let list = self.parent_list_mut(parent)?;
-        let old_idx = list
-          .iter()
-          .position(|x| *x == id)
-          .ok_or(BookmarkError::InvalidReorder)?;
-        let before_idx = list
-          .iter()
-          .position(|x| *x == before_id)
-          .ok_or(BookmarkError::InvalidReorder)?;
-
-        // Already immediately before the target.
-        if old_idx + 1 == before_idx {
-          return Ok(());
-        }
-
-        list.remove(old_idx);
-        let mut insert_idx = before_idx;
-        if old_idx < before_idx {
-          insert_idx = insert_idx.saturating_sub(1);
-        }
-        list.insert(insert_idx, id);
+      // Already immediately before the target.
+      if old_idx + 1 == before_idx {
+        return Ok(());
       }
-      false
-    };
+
+      if moved_is_folder {
+        // Bump `folder_revision` only if we cross at least one other folder sibling.
+        if old_idx < before_idx {
+          // Moving later: crossed IDs are the items between `id` and `before_id` (excluding
+          // `before_id`, since `id` stays before it).
+          let start = old_idx.saturating_add(1);
+          let end = before_idx;
+          crossed.extend(list[start..end].iter().copied());
+        } else {
+          // Moving earlier: crossed IDs include `before_id` (we end up before it).
+          crossed.extend(list[before_idx..old_idx].iter().copied());
+        }
+      }
+
+      list.remove(old_idx);
+      let mut insert_idx = before_idx;
+      if old_idx < before_idx {
+        insert_idx = insert_idx.saturating_sub(1);
+      }
+      list.insert(insert_idx, id);
+    }
+
+    let folder_order_changed = moved_is_folder
+      && crossed
+        .iter()
+        .any(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))));
 
     if folder_order_changed {
       self.touch_folders();
@@ -1558,62 +1545,52 @@ impl BookmarkStore {
     }
 
     let moved_is_folder = matches!(self.nodes.get(&id), Some(BookmarkNode::Folder(_)));
+    let mut crossed: Vec<BookmarkId> = Vec::new();
 
-    let folder_order_changed = if moved_is_folder {
-      let (old_order, new_order) = {
-        let list = self.parent_list_mut(parent)?;
-        let old_idx = list
-          .iter()
-          .position(|x| *x == id)
-          .ok_or(BookmarkError::InvalidReorder)?;
-        let after_idx = list
-          .iter()
-          .position(|x| *x == after_id)
-          .ok_or(BookmarkError::InvalidReorder)?;
+    {
+      let list = self.parent_list_mut(parent)?;
+      let old_idx = list
+        .iter()
+        .position(|x| *x == id)
+        .ok_or(BookmarkError::InvalidReorder)?;
+      let after_idx = list
+        .iter()
+        .position(|x| *x == after_id)
+        .ok_or(BookmarkError::InvalidReorder)?;
 
-        // Already immediately after the target.
-        if after_idx + 1 == old_idx {
-          return Ok(());
-        }
-
-        let old_order = list.clone();
-        list.remove(old_idx);
-        let mut insert_idx = after_idx;
-        if old_idx < after_idx {
-          insert_idx = insert_idx.saturating_sub(1);
-        }
-        list.insert(insert_idx + 1, id);
-        let new_order = list.clone();
-        (old_order, new_order)
-      };
-
-      self.folder_subsequence(&old_order) != self.folder_subsequence(&new_order)
-    } else {
-      {
-        let list = self.parent_list_mut(parent)?;
-        let old_idx = list
-          .iter()
-          .position(|x| *x == id)
-          .ok_or(BookmarkError::InvalidReorder)?;
-        let after_idx = list
-          .iter()
-          .position(|x| *x == after_id)
-          .ok_or(BookmarkError::InvalidReorder)?;
-
-        // Already immediately after the target.
-        if after_idx + 1 == old_idx {
-          return Ok(());
-        }
-
-        list.remove(old_idx);
-        let mut insert_idx = after_idx;
-        if old_idx < after_idx {
-          insert_idx = insert_idx.saturating_sub(1);
-        }
-        list.insert(insert_idx + 1, id);
+      // Already immediately after the target.
+      if after_idx + 1 == old_idx {
+        return Ok(());
       }
-      false
-    };
+
+      if moved_is_folder {
+        // Bump `folder_revision` only if we cross at least one other folder sibling.
+        if old_idx < after_idx {
+          // Moving later: crossed IDs include `after_id` (we end up after it).
+          let start = old_idx.saturating_add(1);
+          let end = after_idx.saturating_add(1);
+          crossed.extend(list[start..end].iter().copied());
+        } else {
+          // Moving earlier: crossed IDs are between `after_id` and `id` (excluding `after_id`, since
+          // `id` stays after it).
+          let start = after_idx.saturating_add(1);
+          let end = old_idx;
+          crossed.extend(list[start..end].iter().copied());
+        }
+      }
+
+      list.remove(old_idx);
+      let mut insert_idx = after_idx;
+      if old_idx < after_idx {
+        insert_idx = insert_idx.saturating_sub(1);
+      }
+      list.insert(insert_idx + 1, id);
+    }
+
+    let folder_order_changed = moved_is_folder
+      && crossed
+        .iter()
+        .any(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))));
 
     if folder_order_changed {
       self.touch_folders();
