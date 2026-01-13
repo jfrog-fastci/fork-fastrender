@@ -6204,6 +6204,8 @@ fn history_state_change_native(
   Ok(Value::Undefined)
 }
 
+}
+
 #[derive(Debug, Clone)]
 struct HistoryTraversalOutcome {
   old_url: String,
