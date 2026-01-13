@@ -8,8 +8,7 @@ use fastrender_ipc::{
 use std::time::{Duration, Instant};
 
 fn drive_hover_until(
-  parent: &RendererProc,
-  child: &RendererProc,
+  procs: &[&RendererProc],
   router: &mut HoverRouter,
   ui_state: &mut fastrender_ipc::HoverState,
   expected: CursorKind,
@@ -20,18 +19,13 @@ fn drive_hover_until(
       return;
     }
 
-    if let Some((frame_id, seq, hovered_url, cursor)) =
-      parent.recv_hover_changed(Duration::from_millis(50))
-    {
-      if let Some(effective) = router.on_hover_changed(frame_id, seq, hovered_url, cursor) {
-        *ui_state = effective;
-      }
-    }
-    if let Some((frame_id, seq, hovered_url, cursor)) =
-      child.recv_hover_changed(Duration::from_millis(50))
-    {
-      if let Some(effective) = router.on_hover_changed(frame_id, seq, hovered_url, cursor) {
-        *ui_state = effective;
+    for proc in procs {
+      if let Some((frame_id, seq, hovered_url, cursor)) =
+        proc.recv_hover_changed(Duration::from_millis(10))
+      {
+        if let Some(effective) = router.on_hover_changed(frame_id, seq, hovered_url, cursor) {
+          *ui_state = effective;
+        }
       }
     }
   }
@@ -158,19 +152,19 @@ fn oopif_cursor_uses_deepest_frame_hover_state() {
     if let Some(state) = emit {
       ui_state = state;
     }
+    let event_seq = seq;
+    seq += 1;
     for (frame_id, x_css, y_css) in targets {
       let msg = BrowserToRenderer::PointerMove {
         frame_id,
         x_css,
         y_css,
-        seq,
+        seq: event_seq,
       };
-      seq += 1;
       parent_renderer.send(&msg);
     }
     drive_hover_until(
-      &parent_renderer,
-      &child_renderer,
+      &[&parent_renderer, &child_renderer],
       &mut router,
       &mut ui_state,
       CursorKind::Default,
@@ -184,14 +178,15 @@ fn oopif_cursor_uses_deepest_frame_hover_state() {
     if let Some(state) = emit {
       ui_state = state;
     }
+    let event_seq = seq;
+    seq += 1;
     for (frame_id, x_css, y_css) in targets {
       let msg = BrowserToRenderer::PointerMove {
         frame_id,
         x_css,
         y_css,
-        seq,
+        seq: event_seq,
       };
-      seq += 1;
       if frame_id == parent_frame {
         parent_renderer.send(&msg);
       } else if frame_id == child_frame {
@@ -201,8 +196,7 @@ fn oopif_cursor_uses_deepest_frame_hover_state() {
       }
     }
     drive_hover_until(
-      &parent_renderer,
-      &child_renderer,
+      &[&parent_renderer, &child_renderer],
       &mut router,
       &mut ui_state,
       CursorKind::Text,
@@ -215,19 +209,19 @@ fn oopif_cursor_uses_deepest_frame_hover_state() {
     if let Some(state) = emit {
       ui_state = state;
     }
+    let event_seq = seq;
+    seq += 1;
     for (frame_id, x_css, y_css) in targets {
       let msg = BrowserToRenderer::PointerMove {
         frame_id,
         x_css,
         y_css,
-        seq,
+        seq: event_seq,
       };
-      seq += 1;
       parent_renderer.send(&msg);
     }
     drive_hover_until(
-      &parent_renderer,
-      &child_renderer,
+      &[&parent_renderer, &child_renderer],
       &mut router,
       &mut ui_state,
       CursorKind::Default,
@@ -235,6 +229,7 @@ fn oopif_cursor_uses_deepest_frame_hover_state() {
   }
 
   // Stop renderers and servers.
+  let _ = seq;
   parent_renderer.shutdown();
   child_renderer.shutdown();
   let _ = parent_server.shutdown_and_join();
@@ -361,14 +356,15 @@ fn oopif_hovered_url_uses_deepest_frame() {
   if let Some(state) = emit {
     ui_state = state;
   }
+  let event_seq = seq;
+  seq += 1;
   for (frame_id, x_css, y_css) in targets {
     let msg = BrowserToRenderer::PointerMove {
       frame_id,
       x_css,
       y_css,
-      seq,
+      seq: event_seq,
     };
-    seq += 1;
     if frame_id == parent_frame {
       parent_renderer.send(&msg);
     } else if frame_id == child_frame {
@@ -376,8 +372,7 @@ fn oopif_hovered_url_uses_deepest_frame() {
     }
   }
   drive_hover_until(
-    &parent_renderer,
-    &child_renderer,
+    &[&parent_renderer, &child_renderer],
     &mut router,
     &mut ui_state,
     CursorKind::Pointer,
@@ -390,6 +385,235 @@ fn oopif_hovered_url_uses_deepest_frame() {
 
   parent_renderer.shutdown();
   child_renderer.shutdown();
+  let _ = seq;
   let _ = parent_server.shutdown_and_join();
   let _ = child_server.shutdown_and_join();
+}
+
+#[test]
+fn oopif_cursor_uses_deepest_frame_in_nested_iframes() {
+  let _net_guard = net_test_lock();
+
+  let Some(grandchild_server) = TestServer::start(
+    "oopif_cursor_uses_deepest_frame_in_nested_iframes_grandchild",
+    |path| match path {
+      "/frame.html" => Some((b"<!doctype html><html><body><input></body></html>".to_vec(), "text/html")),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+  let grandchild_url = grandchild_server.url("frame.html");
+
+  let grandchild_url_for_child = grandchild_url.clone();
+  let Some(child_server) = TestServer::start(
+    "oopif_cursor_uses_deepest_frame_in_nested_iframes_child",
+    move |path| match path {
+      "/frame.html" => Some((
+        format!("<!doctype html><html><body><iframe src=\"{grandchild_url_for_child}\"></iframe></body></html>").into_bytes(),
+        "text/html",
+      )),
+      _ => None,
+    },
+  ) else {
+    let _ = grandchild_server.shutdown_and_join();
+    return;
+  };
+  let child_url = child_server.url("frame.html");
+
+  let child_url_for_parent = child_url.clone();
+  let Some(parent_server) = TestServer::start(
+    "oopif_cursor_uses_deepest_frame_in_nested_iframes_parent",
+    move |path| match path {
+      "/index.html" => Some((
+        format!("<!doctype html><html><body><iframe src=\"{child_url_for_parent}\"></iframe></body></html>").into_bytes(),
+        "text/html",
+      )),
+      _ => None,
+    },
+  ) else {
+    let _ = child_server.shutdown_and_join();
+    let _ = grandchild_server.shutdown_and_join();
+    return;
+  };
+  let parent_url = parent_server.url("index.html");
+
+  let site_keys = SiteKeyFactory::new_with_seed(1);
+  let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
+
+  let mut parent_renderer = RendererProc::spawn();
+  let parent_frame = FrameId(1);
+  parent_renderer.send(&BrowserToRenderer::CreateFrame { frame_id: parent_frame });
+  parent_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: parent_frame,
+    width: 100,
+    height: 100,
+    dpr: 1.0,
+  });
+  parent_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: parent_frame,
+    navigation: IframeNavigation::Url(parent_url.clone()),
+    context: NavigationContext {
+      referrer_url: None,
+      referrer_policy: ReferrerPolicy::default(),
+      site_key: parent_site_key.clone(),
+      ..Default::default()
+    },
+  });
+  parent_renderer.send(&BrowserToRenderer::RequestRepaint { frame_id: parent_frame });
+
+  let parent_ready = parent_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(parent_ready.frame_id, parent_frame);
+  assert!(
+    !parent_ready.subframes.is_empty(),
+    "expected parent to report a child iframe (err={:?})",
+    parent_ready.last_error
+  );
+  let child_info = parent_ready.subframes[0].clone();
+  let child_frame = child_info.child;
+
+  let child_site_key = site_keys.site_key_for_navigation(&child_url, Some(&parent_site_key));
+  let child_ctx = NavigationContext::for_subframe_navigation_from_info(
+    &site_keys,
+    &child_url,
+    Some(&parent_site_key),
+    parent_url.clone(),
+    ReferrerPolicy::default(),
+    &child_info,
+  );
+
+  let mut child_renderer = RendererProc::spawn();
+  child_renderer.send(&BrowserToRenderer::CreateFrame { frame_id: child_frame });
+  child_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: child_frame,
+    width: 50,
+    height: 50,
+    dpr: 1.0,
+  });
+  child_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: child_frame,
+    navigation: IframeNavigation::Url(child_url.clone()),
+    context: child_ctx,
+  });
+  child_renderer.send(&BrowserToRenderer::RequestRepaint { frame_id: child_frame });
+
+  let child_ready = child_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(child_ready.frame_id, child_frame);
+  assert!(
+    !child_ready.subframes.is_empty(),
+    "expected child to report a grandchild iframe (err={:?})",
+    child_ready.last_error
+  );
+  let grandchild_info = child_ready.subframes[0].clone();
+  let grandchild_frame = grandchild_info.child;
+
+  let grandchild_ctx = NavigationContext::for_subframe_navigation_from_info(
+    &site_keys,
+    &grandchild_url,
+    Some(&child_site_key),
+    child_url.clone(),
+    ReferrerPolicy::default(),
+    &grandchild_info,
+  );
+
+  let mut grandchild_renderer = RendererProc::spawn();
+  grandchild_renderer.send(&BrowserToRenderer::CreateFrame {
+    frame_id: grandchild_frame,
+  });
+  grandchild_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: grandchild_frame,
+    width: 20,
+    height: 20,
+    dpr: 1.0,
+  });
+  grandchild_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: grandchild_frame,
+    navigation: IframeNavigation::Url(grandchild_url.clone()),
+    context: grandchild_ctx,
+  });
+  grandchild_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: grandchild_frame,
+  });
+  let _ = grandchild_renderer.recv_frame_ready(Duration::from_secs(10));
+
+  let mut hit_tester = FrameHitTester::new(parent_frame);
+  hit_tester.set_frame_size(parent_frame, 100, 100);
+  hit_tester.set_frame_size(child_frame, 50, 50);
+  hit_tester.set_frame_size(grandchild_frame, 20, 20);
+  hit_tester.set_subframes(parent_frame, vec![child_info]);
+  hit_tester.set_subframes(child_frame, vec![grandchild_info]);
+
+  let mut router = HoverRouter::new(parent_frame);
+  let mut ui_state = fastrender_ipc::HoverState::default();
+  let mut seq: u64 = 1;
+
+  // Inside child but outside grandchild => child is deepest => default cursor.
+  {
+    let (targets, emit) = router.on_pointer_move(&hit_tester, 30.0, 30.0);
+    if let Some(state) = emit {
+      ui_state = state;
+    }
+    let event_seq = seq;
+    seq += 1;
+    for (frame_id, x_css, y_css) in targets {
+      let msg = BrowserToRenderer::PointerMove {
+        frame_id,
+        x_css,
+        y_css,
+        seq: event_seq,
+      };
+      if frame_id == parent_frame {
+        parent_renderer.send(&msg);
+      } else if frame_id == child_frame {
+        child_renderer.send(&msg);
+      } else {
+        panic!("unexpected pointer target frame: {frame_id:?}");
+      }
+    }
+    drive_hover_until(
+      &[&parent_renderer, &child_renderer, &grandchild_renderer],
+      &mut router,
+      &mut ui_state,
+      CursorKind::Default,
+    );
+  }
+
+  // Inside grandchild => grandchild wins => text cursor.
+  {
+    let (targets, emit) = router.on_pointer_move(&hit_tester, 10.0, 10.0);
+    if let Some(state) = emit {
+      ui_state = state;
+    }
+    let event_seq = seq;
+    seq += 1;
+    for (frame_id, x_css, y_css) in targets {
+      let msg = BrowserToRenderer::PointerMove {
+        frame_id,
+        x_css,
+        y_css,
+        seq: event_seq,
+      };
+      if frame_id == parent_frame {
+        parent_renderer.send(&msg);
+      } else if frame_id == grandchild_frame {
+        grandchild_renderer.send(&msg);
+      } else {
+        panic!("unexpected pointer target frame: {frame_id:?}");
+      }
+    }
+    drive_hover_until(
+      &[&parent_renderer, &child_renderer, &grandchild_renderer],
+      &mut router,
+      &mut ui_state,
+      CursorKind::Text,
+    );
+  }
+
+  parent_renderer.shutdown();
+  child_renderer.shutdown();
+  grandchild_renderer.shutdown();
+  let _ = seq;
+  let _ = parent_server.shutdown_and_join();
+  let _ = child_server.shutdown_and_join();
+  let _ = grandchild_server.shutdown_and_join();
 }
