@@ -143,11 +143,10 @@ impl Mp4Demuxer {
   /// Seeks all tracks to the first sample with `pts_ns >= time_ns`.
   ///
   /// For tracks where PTS is monotonic in sample (decode) order, this is O(log n) via binary search
-  /// on a prebuilt `Vec<u64>` PTS index.
+  /// on the per-track `pts_ns_by_sample: Vec<u64>`.
   ///
   /// When `ctts` reorders composition times (PTS becomes non-monotonic in decode order), the track
-  /// uses a sorted `(pts, sample_index)` index (still O(log n)). If index construction failed for
-  /// any reason, this falls back to a linear scan.
+  /// uses a sorted sample-index table keyed by PTS (still O(log n)).
   pub fn seek(&mut self, time_ns: u64) {
     for track in &mut self.tracks {
       track.seek(time_ns);
