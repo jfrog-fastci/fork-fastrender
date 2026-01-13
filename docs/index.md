@@ -38,7 +38,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Linux IPC (shared memory + FD passing checklist): [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md)
 - Sandboxing overview (renderer process): [sandboxing.md](sandboxing.md)
 - Linux seccomp allowlist maintenance: [seccomp_allowlist.md](seccomp_allowlist.md)
-- macOS sandbox probe tool: [macos_sandbox.md](macos_sandbox.md)
+- macOS Seatbelt sandboxing (overview + probe tool): [macos_sandbox.md](macos_sandbox.md)
 - IPC transport invariants (framing, `SCM_RIGHTS`, `memfd`): [ipc.md](ipc.md)
 - Renderer chrome (future): [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)
 - Renderer-chrome internal schemes (`chrome://` assets, `chrome-action:` actions): [renderer_chrome_schemes.md](renderer_chrome_schemes.md)
