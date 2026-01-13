@@ -1066,3 +1066,29 @@ fn regexp_unicode_mode_rejects_legacy_octal_and_oob_backrefs() {
     "SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError"
   );
 }
+
+#[test]
+fn regexp_lookbehind_misc_anchor_interactions() {
+  let mut rt = new_runtime();
+
+  // Ported from test262 `built-ins/RegExp/lookBehind/misc.js`.
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          "abcdef".match(/(?<=$abc)def/) === null,
+          "fno".match(/^f.o(?<=foo)$/) === null,
+          "foo".match(/^foo(?<!foo)$/) === null,
+          "foo".match(/^f.o(?<!foo)$/) === null,
+          "foo".match(/^foo(?<=foo)$/)[0] === "foo",
+          "foo".match(/^f.o(?<=foo)$/)[0] === "foo",
+          "fno".match(/^f.o(?<!foo)$/)[0] === "fno",
+          "foooo".match(/^foooo(?<=fo+)$/)[0] === "foooo",
+          "foooo".match(/^foooo(?<=fo*)$/)[0] === "foooo",
+        ].every((x) => x === true)
+      "#,
+    )
+    .unwrap();
+
+  assert_eq!(value, Value::Bool(true));
+}
