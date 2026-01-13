@@ -2276,8 +2276,10 @@ pub fn chrome_ui_with_bookmarks(
         } else {
           active_url
         };
-        bar_response = bar_response.on_hover_text(tooltip);
-        show_tooltip_on_focus(ui, &bar_response, tooltip);
+        // Avoid `on_hover_text`: it forces the tooltip text to be owned (`'static`) and allocates
+        // every frame even when the address bar isn't hovered. We only need the tooltip when the
+        // pill is hovered or focused.
+        show_tooltip_on_hover_or_focus(ui, &bar_response, tooltip);
 
         // Address bar display-mode context menu (right click / context-menu key).
         bar_response.context_menu(|ui| {
