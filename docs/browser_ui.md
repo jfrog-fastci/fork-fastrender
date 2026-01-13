@@ -311,10 +311,10 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Cmd+] (macOS) | Forward |
 | Ctrl/Cmd+R / F5 | Reload |
 | Alt+Home (Win/Linux); Cmd+Shift+H (macOS) | Home page |
-| Ctrl/Cmd+D | Toggle bookmark for current page |
+| Ctrl+D (Win/Linux); Cmd+D (macOS) | Toggle bookmark for current page |
 | Ctrl+H (Win/Linux); Cmd+Y (macOS) | Toggle history panel |
 | Ctrl/Cmd+Shift+Delete | Open “Clear browsing data” dialog |
-| Ctrl/Cmd+Shift+O | Toggle bookmarks manager |
+| Ctrl+Shift+O (Win/Linux); Cmd+Shift+O (macOS) | Toggle bookmarks manager |
 | Ctrl/Cmd+Shift+B | Toggle bookmarks bar |
 | Ctrl/Cmd+Plus / Ctrl/Cmd+Equals | Zoom in |
 | Ctrl/Cmd+Minus | Zoom out |
@@ -375,12 +375,12 @@ Help/About items open `about:help` / `about:version` in a new tab.
 FastRender’s experimental desktop browser UI supports **bookmarks** and a basic **history** panel.
 
 - **Bookmarking**:
-  - Click the **star** button in the toolbar (or press <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd>) to
-    toggle a bookmark for the current page.
+  - Click the **star** button in the toolbar (or press <kbd>Ctrl</kbd>+<kbd>D</kbd> on Win/Linux, or
+    <kbd>Cmd</kbd>+<kbd>D</kbd> on macOS) to toggle a bookmark for the current page.
   - Bookmarks appear in the **bookmarks bar** for quick access.
   - Drag bookmarks in the bar to **reorder** them (or use the per-bookmark menu to move left/right).
-  - Use the **bookmarks manager** (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>) to
-    browse/remove bookmarks.
+  - Use the **bookmarks manager** (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> on Win/Linux, or
+    <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> on macOS) to browse/remove bookmarks.
 - **History**:
   - Open the history panel with <kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux) or <kbd>Cmd</kbd>+<kbd>Y</kbd>
     (macOS).
