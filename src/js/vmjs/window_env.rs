@@ -458,24 +458,35 @@ fn get_or_create_mql_listeners(
   Ok(arr)
 }
 
-fn mql_event_type_is_change(scope: &mut Scope<'_>, value: Value) -> bool {
+fn mql_event_type_is_change(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<bool, VmError> {
   // Most real-world usage passes the literal string `"change"`. Avoid allocations for that fast
   // path by comparing UTF-16 code units.
   const CHANGE: [u16; 6] = [99, 104, 97, 110, 103, 101]; // "change"
   match value {
-    Value::String(s) => scope
-      .heap()
-      .get_string(s)
-      .ok()
-      .is_some_and(|js| js.as_code_units() == CHANGE),
-    Value::Null | Value::Undefined => false,
-    other => match scope.heap_mut().to_string(other) {
-      Ok(s) => scope
+    Value::String(s) => Ok(
+      scope
         .heap()
         .get_string(s)
         .ok()
         .is_some_and(|js| js.as_code_units() == CHANGE),
-      Err(_) => false,
+    ),
+    Value::Null | Value::Undefined => Ok(false),
+    other => match scope.to_string(vm, host, hooks, other) {
+      Ok(s) => Ok(
+        scope
+          .heap()
+          .get_string(s)
+          .ok()
+          .is_some_and(|js| js.as_code_units() == CHANGE),
+      ),
+      Err(e @ VmError::Termination(_)) => Err(e),
+      Err(_) => Ok(false),
     },
   }
 }
@@ -606,8 +617,8 @@ fn mql_remove_listener_value(
 fn mql_add_event_listener_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -616,7 +627,7 @@ fn mql_add_event_listener_native(
     return Ok(Value::Undefined);
   };
   let type_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !mql_event_type_is_change(scope, type_value) {
+  if !mql_event_type_is_change(vm, scope, host, hooks, type_value)? {
     return Ok(Value::Undefined);
   }
   let listener = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -630,8 +641,8 @@ fn mql_add_event_listener_native(
 fn mql_remove_event_listener_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -640,7 +651,7 @@ fn mql_remove_event_listener_native(
     return Ok(Value::Undefined);
   };
   let type_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !mql_event_type_is_change(scope, type_value) {
+  if !mql_event_type_is_change(vm, scope, host, hooks, type_value)? {
     return Ok(Value::Undefined);
   }
   let listener = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -796,8 +807,8 @@ fn mql_matches_get_native(
 fn match_media_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -853,10 +864,20 @@ fn match_media_native(
   let func_proto = intrinsics.function_prototype();
 
   let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  // Per WebIDL, `matchMedia(query)` runs `ToString` on its argument.
+  //
+  // In `vm-js`, coercing objects (`new String(..)`, `URL`, etc) requires the host-aware
+  // `Scope::to_string` conversion so we can invoke `ToPrimitive` / user-defined `toString`.
+  //
+  // Root the argument + resulting string: `ToString` may allocate, and subsequent allocations in
+  // this function must not allow a GC to collect the newly created string before we install it on
+  // the returned `MediaQueryList`.
+  scope.push_root(query_value)?;
   let s = match query_value {
     Value::String(s) => s,
-    other => scope.heap_mut().to_string(other)?,
+    other => scope.to_string(vm, host, hooks, other)?,
   };
+  scope.push_root(Value::String(s))?;
 
   let js_string = scope.heap().get_string(s)?;
   let units = js_string.as_code_units();
@@ -874,6 +895,9 @@ fn match_media_native(
   } else {
     Value::String(s)
   };
+  // Root the query string that will be exposed via `MediaQueryList.media` and stored in native
+  // slots. Subsequent allocations (object/function creation) can trigger GC.
+  scope.push_root(media_value)?;
 
   let parsed_queries = if too_long {
     None
@@ -2702,6 +2726,52 @@ mod tests {
       host.exec_script(r#"matchMedia("(min-width: 700px)").matches"#).unwrap(),
       Value::Bool(true)
     );
+
+    host
+      .set_media_context(MediaContext::screen(600.0, 600.0))
+      .unwrap();
+
+    assert_eq!(
+      host
+        .run_until_idle(RunLimits {
+          max_tasks: 10,
+          max_microtasks: 100,
+          max_wall_time: Some(Duration::from_secs(5)),
+        })
+        .unwrap(),
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(host.exec_script("globalThis.__calls").unwrap(), Value::Number(1.0));
+    assert_eq!(host.exec_script("globalThis.__last").unwrap(), Value::Bool(false));
+  }
+
+  #[test]
+  fn match_media_accepts_object_query_string_via_to_string() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    assert_eq!(
+      host
+        .exec_script(r#"matchMedia(new String("(min-width: 700px)")).matches"#)
+        .unwrap(),
+      Value::Bool(true)
+    );
+  }
+
+  #[test]
+  fn match_media_add_event_listener_accepts_object_event_type_via_to_string() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    host
+      .exec_script(
+        r#"
+        globalThis.__calls = 0;
+        globalThis.__last = null;
+        const mql = matchMedia("(min-width: 700px)");
+        mql.addEventListener(new String("change"), e => { globalThis.__calls++; globalThis.__last = e.matches; });
+        "#,
+      )
+      .unwrap();
 
     host
       .set_media_context(MediaContext::screen(600.0, 600.0))
