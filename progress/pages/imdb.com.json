@@ -14,7 +14,7 @@
     "layout": 142.22499674327628,
     "paint": 33.05228797555012
   },
-  "notes": "",
+  "notes": "High diff% but low perceptual. Most diffs vs Chrome are not structural/layout issues: the offline fixture contains hundreds of intentionally empty `assets/missing_*.bin` subresources (0-byte images/fonts/etc), so Chrome paints UA-specific broken-image placeholders/alt text where fastrender currently paints nothing. The rest is dominated by small pixel-level differences from text rasterization (font fallback/hinting) and subtle gradient/shadow rounding.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 292981,
