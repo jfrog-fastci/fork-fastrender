@@ -21,6 +21,7 @@ use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Output};
+use std::process::Stdio;
 
 /// Standard Seatbelt parameters passed to sandbox profiles.
 ///
@@ -28,12 +29,16 @@ use std::process::{Child, Command, ExitStatus, Output};
 /// "KEY")`. Keeping them out of the profile string avoids string-interpolation and escaping bugs
 /// (especially when values contain spaces or quotes).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SeatbeltParameters {
+pub(crate) struct SeatbeltParameters {
   home: String,
   tmpdir: String,
 }
 
 impl SeatbeltParameters {
+  pub(crate) fn new(home: String, tmpdir: String) -> Self {
+    Self { home, tmpdir }
+  }
+
   fn from_env() -> Self {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
     let tmpdir =
@@ -99,6 +104,21 @@ impl SandboxedCommand {
     program: impl AsRef<OsStr>,
     args: impl IntoIterator<Item = impl AsRef<OsStr>>,
   ) -> io::Result<Self> {
+    Self::new_with_parameters(profile, SeatbeltParameters::from_env(), program, args)
+  }
+
+  /// Build a new command that runs `program` (with `args`) under `sandbox-exec`, using explicitly
+  /// provided Seatbelt parameters.
+  ///
+  /// This is primarily used by higher-level wrappers that first construct a `Command` (with env
+  /// overrides) and then wrap it. The Seatbelt params should match the environment that the
+  /// sandboxed child will observe.
+  pub(crate) fn new_with_parameters(
+    profile: SandboxExecProfile,
+    params: SeatbeltParameters,
+    program: impl AsRef<OsStr>,
+    args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+  ) -> io::Result<Self> {
     let sandbox_exec = Path::new(Self::SANDBOX_EXEC);
     if !sandbox_exec.exists() {
       return Err(io::Error::new(
@@ -121,7 +141,7 @@ impl SandboxedCommand {
         // Make common Seatbelt parameters available to the profile via `(param "HOME")`, etc.
         // Do this before `-f` so the resulting argv is:
         // `sandbox-exec -D HOME=... -D TMPDIR=... -f <profile> -- <program> ...`.
-        push_sandbox_exec_parameters(&mut cmd, &SeatbeltParameters::from_env());
+        push_sandbox_exec_parameters(&mut cmd, &params);
 
         let mut tmp = tempfile::Builder::new()
           .prefix("fastr-sandbox-profile-")
@@ -160,6 +180,9 @@ impl SandboxedCommand {
   ///
   /// When a temporary profile file is used, it is dropped (and therefore deleted) immediately
   /// after the child process has been created.
+  ///
+  /// If spawning fails, the temp file is kept alive until this command is dropped, at which point
+  /// it is removed best-effort.
   pub fn spawn(&mut self) -> io::Result<Child> {
     if self.used_temp_profile && self._profile_file.is_none() {
       return Err(io::Error::new(
@@ -181,6 +204,15 @@ impl SandboxedCommand {
 
   /// Run the command to completion and capture its output.
   pub fn output(&mut self) -> io::Result<Output> {
+    // Mirror `Command::output()` semantics: capture stdout/stderr regardless of prior stdio config.
+    //
+    // Without this, `wait_with_output()` errors if the caller did not explicitly request piped
+    // output.
+    self
+      .cmd
+      .stdin(Stdio::null())
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped());
     let mut child = self.spawn()?;
     child.wait_with_output()
   }

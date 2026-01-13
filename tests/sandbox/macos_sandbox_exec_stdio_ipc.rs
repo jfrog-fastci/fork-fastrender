@@ -24,9 +24,11 @@ fn sandbox_exec_spawn_preserves_stdio_pipes_for_ipc() {
     return;
   }
 
-  let mut cmd = Command::new(child_exe);
+  let cmd = Command::new(child_exe);
   let sbpl = "(version 1)\n(allow default)\n";
-  wrap_command_with_sandbox_exec(&mut cmd, sbpl).expect("wrap command with sandbox-exec");
+  let mut cmd = wrap_command_with_sandbox_exec(&cmd, sbpl)
+    .expect("wrap command with sandbox-exec")
+    .expect("expected sandbox-exec wrapper");
 
   let stdin_sentinel = "fastrender-stdio-ipc-in";
   let stdout_sentinel = "fastrender-stdio-ipc-out";

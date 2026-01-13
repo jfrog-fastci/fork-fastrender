@@ -53,6 +53,8 @@ use std::{fs, io};
 use crate::sandbox::config;
 #[cfg(target_os = "macos")]
 use crate::sandbox::macos::{ENV_DISABLE_RENDERER_SANDBOX, ENV_MACOS_RENDERER_SANDBOX};
+#[cfg(target_os = "macos")]
+use crate::sandbox_exec::{SandboxExecCommand, SandboxExecProfile, SeatbeltParameters};
 
 #[cfg(target_os = "macos")]
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
@@ -133,36 +135,47 @@ pub fn macos_use_sandbox_exec_from_env() -> bool {
 
 /// Conditionally wrap `cmd` under `sandbox-exec` when `FASTR_MACOS_USE_SANDBOX_EXEC` is enabled.
 #[cfg(target_os = "macos")]
-pub fn maybe_wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Result<()> {
+pub fn maybe_wrap_command_with_sandbox_exec(
+  cmd: &Command,
+  sbpl: &str,
+) -> io::Result<Option<SandboxExecCommand>> {
   if renderer_sandbox_disabled_via_env() {
     log_sandbox_disabled_once();
-    return Ok(());
+    return Ok(None);
   }
-  if macos_use_sandbox_exec_from_env() {
-    wrap_command_with_sandbox_exec(cmd, sbpl)?;
+  if !macos_use_sandbox_exec_from_env() {
+    return Ok(None);
   }
-  Ok(())
+  wrap_command_with_sandbox_exec(cmd, sbpl)
 }
 
-/// Rewrite `cmd` so it executes under `sandbox-exec`.
+/// Wrap `cmd` so it executes under `sandbox-exec`.
 ///
 /// Specifically, the command is transformed to:
-/// `sandbox-exec -p <sbpl> -- <original-exe> <args...>`
+/// `sandbox-exec -f <temp_profile_file> -- <original-exe> <args...>`
+///
+/// The profile string is written to a temporary file (mode `0600`). The file is removed
+/// immediately after spawning the sandboxed child process (best-effort).
 ///
 /// The wrapper also defines a small set of common Seatbelt parameters via `sandbox-exec -D`, so SBPL
 /// profiles can use `(param "HOME")` / `(param "TMPDIR")` consistently:
-/// `sandbox-exec -D HOME=... -D TMPDIR=... -p <sbpl> -- <original-exe> <args...>`
+/// `sandbox-exec -D HOME=... -D TMPDIR=... -f <profile_file> -- <original-exe> <args...>`
 ///
 /// This helper does **not** invoke a shell; all arguments are forwarded as separate argv entries.
 ///
-/// Note: The rewrite constructs a new [`Command`] internally. Environment overrides and
-/// `current_dir` are preserved, but other configuration (notably stdio) should be applied after
-/// calling this helper.
+/// Note: The wrapper constructs a new `sandbox-exec` command internally. Environment overrides and
+/// `current_dir` are preserved, but other configuration (notably stdio) should be applied to the
+/// returned command after calling this helper.
+///
+/// Returns `Ok(None)` when the renderer sandbox is disabled via the debug escape-hatch env vars.
 #[cfg(target_os = "macos")]
-pub fn wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Result<()> {
+pub fn wrap_command_with_sandbox_exec(
+  cmd: &Command,
+  sbpl: &str,
+) -> io::Result<Option<SandboxExecCommand>> {
   if renderer_sandbox_disabled_via_env() {
     log_sandbox_disabled_once();
-    return Ok(());
+    return Ok(None);
   }
   if !Path::new(SANDBOX_EXEC_PATH).is_file() {
     return Err(io::Error::new(
@@ -212,7 +225,7 @@ pub fn wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Resu
     }
   }
 
-  let original_program = cmd.get_program().to_os_string();
+  let original_program = cmd.get_program();
   if original_program.is_empty() {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
@@ -221,41 +234,34 @@ pub fn wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Resu
   }
   let current_dir: Option<PathBuf> = cmd.get_current_dir().map(PathBuf::from);
 
-  let mut wrapped = Command::new(SANDBOX_EXEC_PATH);
-  let mut home_def = OsString::from("HOME=");
-  home_def.push(&home);
-  let mut tmpdir_def = OsString::from("TMPDIR=");
-  tmpdir_def.push(&tmpdir);
-  wrapped
-    .arg("-D")
-    .arg(home_def)
-    .arg("-D")
-    .arg(tmpdir_def)
-    .arg("-p")
-    .arg(sbpl)
-    .arg("--")
-    .arg(&original_program)
-    .args(cmd.get_args());
+  let params = SeatbeltParameters::new(
+    home.to_string_lossy().into_owned(),
+    tmpdir.to_string_lossy().into_owned(),
+  );
+  let mut wrapped = SandboxExecCommand::new_with_parameters(
+    SandboxExecProfile::Custom(sbpl.to_string()),
+    params,
+    original_program,
+    cmd.get_args(),
+  )?;
 
   if let Some(dir) = current_dir {
-    wrapped.current_dir(dir);
+    wrapped.command_mut().current_dir(dir);
   }
   for (key, value) in cmd.get_envs() {
     match value {
       Some(value) => {
-        wrapped.env(key, value);
+        wrapped.command_mut().env(key, value);
       }
       None => {
-        wrapped.env_remove(key);
+        wrapped.command_mut().env_remove(key);
       }
     }
   }
-
-  *cmd = wrapped;
-  Ok(())
+  Ok(Some(wrapped))
 }
 
-/// Fallback sandbox profile used with `sandbox-exec -p ...` when `sandbox-exec -n` is unavailable.
+/// Fallback sandbox profile used with `sandbox-exec -f ...` when `sandbox-exec -n` is unavailable.
 ///
 /// The goal is to be "equivalent enough" to the built-in `pure-computation` profile for our use
 /// case: deny filesystem access (outside of system dynamic-loader locations) and deny all network.
@@ -283,6 +289,11 @@ pub enum SandboxExecError {
   MissingSandboxExec { path: PathBuf },
   #[error("failed to probe sandbox-exec named profile support (-n)")]
   ProbeFailed {
+    #[source]
+    source: io::Error,
+  },
+  #[error("failed to build sandbox-exec command")]
+  BuildCommandFailed {
     #[source]
     source: io::Error,
   },
@@ -327,7 +338,7 @@ fn probe_sandbox_exec_invocation() -> Result<SandboxExecInvocation, SandboxExecE
 
   // Probe whether `-n pure-computation` is supported.
   // `sandbox-exec` returns non-zero when `-n` is unsupported, or when the profile name is unknown.
-  // In either case, fall back to `-p` with an inline profile.
+  // In either case, fall back to a custom profile string written to a temp file (`-f`).
   let probe = Command::new(SANDBOX_EXEC_PATH)
     .arg("-n")
     .arg(PURE_COMPUTATION_PROFILE_NAME)
@@ -365,40 +376,35 @@ fn probe_sandbox_exec_invocation() -> Result<SandboxExecInvocation, SandboxExecE
   })
 }
 
-/// Build a [`Command`] that launches `renderer_path` through `/usr/bin/sandbox-exec`.
+/// Build a [`SandboxExecCommand`] that launches `renderer_path` through `/usr/bin/sandbox-exec`.
 ///
 /// This is intended for the "browser" (trusted) process to spawn the "renderer" (untrusted)
 /// process already sandboxed **without** relying on `CommandExt::pre_exec`.
 ///
-/// The returned `Command` can be further configured by the caller (environment variables, stdio,
+/// The returned command wrapper can be further configured by the caller (environment variables, stdio,
 /// working directory, etc). Those settings apply to `sandbox-exec` and are inherited by the
 /// renderer it `exec`s.
 #[cfg(target_os = "macos")]
 pub fn sandbox_exec_command(
   renderer_path: &Path,
   args: &[OsString],
-) -> Result<Command, SandboxExecError> {
+) -> Result<Option<SandboxExecCommand>, SandboxExecError> {
   if renderer_sandbox_disabled_via_env() {
     log_sandbox_disabled_once();
-    let mut cmd = Command::new(renderer_path);
-    cmd.args(args);
-    return Ok(cmd);
+    return Ok(None);
   }
   let invocation = sandbox_exec_invocation()?;
 
-  let mut cmd = Command::new(SANDBOX_EXEC_PATH);
-  match invocation {
+  let profile = match invocation {
     SandboxExecInvocation::NamedProfile => {
-      cmd.arg("-n").arg(PURE_COMPUTATION_PROFILE_NAME);
+      SandboxExecProfile::Named(OsString::from(PURE_COMPUTATION_PROFILE_NAME))
     }
-    SandboxExecInvocation::InlineProfile { profile } => {
-      cmd.arg("-p").arg(profile);
-    }
-  }
+    SandboxExecInvocation::InlineProfile { profile } => SandboxExecProfile::Custom(profile.clone()),
+  };
 
-  cmd.arg("--").arg(renderer_path);
-  cmd.args(args);
-  Ok(cmd)
+  SandboxExecCommand::new(profile, renderer_path.as_os_str(), args.iter())
+    .map(Some)
+    .map_err(|source| SandboxExecError::BuildCommandFailed { source })
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -424,7 +430,9 @@ mod tests {
     cmd.arg("--hello");
 
     // Even though the SBPL is invalid, the escape hatch should bypass rewriting entirely.
-    wrap_command_with_sandbox_exec(&mut cmd, "").expect("wrap should be a no-op when disabled");
+    let wrapped = wrap_command_with_sandbox_exec(&cmd, "")
+      .expect("wrap should not error when disabled");
+    assert!(wrapped.is_none(), "wrap should be a no-op when disabled");
 
     assert_eq!(cmd.get_program(), OsStr::new("/usr/bin/true"));
     let args: Vec<_> = cmd.get_args().collect();
@@ -449,8 +457,9 @@ mod tests {
 
     // Even though the env gate is enabled, disabling the renderer sandbox should bypass wrapping.
     // The SBPL is intentionally invalid; if wrapping happened we would get an error.
-    maybe_wrap_command_with_sandbox_exec(&mut cmd, "")
+    let wrapped = maybe_wrap_command_with_sandbox_exec(&cmd, "")
       .expect("maybe_wrap should be a no-op when sandbox is disabled");
+    assert!(wrapped.is_none(), "maybe_wrap should not wrap when sandbox is disabled");
     assert_eq!(cmd.get_program(), OsStr::new("/usr/bin/true"));
     let args: Vec<_> = cmd.get_args().collect();
     assert_eq!(args, vec![OsStr::new("--hello")]);
@@ -466,14 +475,14 @@ mod tests {
   }
 
   #[test]
-  fn sandbox_exec_command_is_unsandboxed_when_renderer_sandbox_disabled() {
+  fn sandbox_exec_command_is_none_when_renderer_sandbox_disabled() {
     let _guard = env_lock().lock().unwrap();
     let prev = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
     std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, "1");
 
     let cmd = sandbox_exec_command(Path::new("/usr/bin/true"), &[])
       .expect("sandbox_exec_command should be a no-op when disabled");
-    assert_eq!(cmd.get_program(), OsStr::new("/usr/bin/true"));
+    assert!(cmd.is_none(), "expected no sandbox-exec command when disabled");
 
     match prev {
       Some(value) => std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, value),
@@ -516,16 +525,18 @@ mod tests {
 
     let mut cmd = Command::new("/usr/bin/true");
     cmd.env("HOME", home).env("TMPDIR", tmpdir);
-    wrap_command_with_sandbox_exec(&mut cmd, sbpl).expect("wrap command");
+    let wrapped = wrap_command_with_sandbox_exec(&cmd, sbpl)
+      .expect("wrap command")
+      .expect("expected wrapper");
 
-    assert_eq!(cmd.get_program(), OsStr::new(SANDBOX_EXEC_PATH));
-    let args: Vec<String> = cmd
+    assert_eq!(wrapped.get_program(), OsStr::new(SANDBOX_EXEC_PATH));
+    let args: Vec<String> = wrapped
       .get_args()
       .map(|arg| arg.to_string_lossy().into_owned())
       .collect();
 
     // argv should be:
-    // sandbox-exec -D HOME=... -D TMPDIR=... -p <sbpl> -- /usr/bin/true
+    // sandbox-exec -D HOME=... -D TMPDIR=... -f <profile_file> -- /usr/bin/true
     assert!(
       args.len() >= 8,
       "expected at least 8 argv entries, got {args:?}"
@@ -534,7 +545,15 @@ mod tests {
     assert_eq!(args[1], format!("HOME={home}"));
     assert_eq!(args[2], "-D");
     assert_eq!(args[3], format!("TMPDIR={tmpdir}"));
-    assert_eq!(args[4], "-p");
+    assert_eq!(args[4], "-f");
+    assert!(
+      Path::new(&args[5]).is_file(),
+      "expected profile path to exist, got {:?}",
+      args[5]
+    );
+    let profile_contents =
+      std::fs::read_to_string(&args[5]).expect("read temp profile file");
+    assert_eq!(profile_contents, sbpl);
     assert_eq!(args[6], "--");
     assert_eq!(args[7], "/usr/bin/true");
   }
@@ -605,8 +624,10 @@ mod tests {
       .arg("--exact")
       .arg(test_name)
       .arg("--nocapture");
-    wrap_command_with_sandbox_exec(&mut cmd, sbpl).expect("wrap command with sandbox-exec");
-    let output = cmd.output().expect("spawn sandboxed child process");
+    let mut wrapped = wrap_command_with_sandbox_exec(&cmd, sbpl)
+      .expect("wrap command with sandbox-exec")
+      .expect("expected wrapper");
+    let output = wrapped.output().expect("spawn sandboxed child process");
     assert!(
       output.status.success(),
       "sandboxed child should exit successfully (stdout={}, stderr={})",

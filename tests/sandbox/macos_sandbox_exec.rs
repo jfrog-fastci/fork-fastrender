@@ -4,6 +4,7 @@
 //! launches a child test process wrapped in `/usr/bin/sandbox-exec` so the sandbox is applied
 //! *before* the Rust test harness starts.
 
+use fastrender::sandbox::macos_spawn::wrap_command_with_sandbox_exec;
 use std::io;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -37,12 +38,6 @@ fn sandbox_profile(read_path: &Path, write_path: &Path) -> String {
      (deny network-outbound)\n\
      (deny network-inbound)\n"
   )
-}
-
-fn sandbox_exec_command(program: &Path, profile: &str) -> Command {
-  let mut cmd = Command::new(sandbox_exec_path());
-  cmd.arg("-p").arg(profile).arg("--").arg(program);
-  cmd
 }
 
 fn is_permission_denied(err: &io::Error) -> bool {
@@ -121,14 +116,25 @@ fn sandbox_exec_wrapper_enforces_sandbox() {
   let test_name =
     crate::common::libtest::exact_test_name(module_path!(), stringify!(sandbox_exec_wrapper_enforces_sandbox));
 
-  let output = sandbox_exec_command(&exe, &profile)
+  let mut child_cmd = Command::new(&exe);
+  child_cmd
+    .arg("--exact")
+    .arg(&test_name)
+    .arg("--nocapture");
+  let Some(mut wrapped) = wrap_command_with_sandbox_exec(&child_cmd, &profile)
+    .expect("wrap command with sandbox-exec")
+  else {
+    eprintln!("skipping: renderer sandbox disabled via env vars");
+    return;
+  };
+  wrapped
+    .command_mut()
     .env(CHILD_ENV, "1")
     .env(PORT_ENV, port.to_string())
     .env(READ_PATH_ENV, &read_probe_path)
-    .env(WRITE_PATH_ENV, &write_probe_path)
-    .arg("--exact")
-    .arg(&test_name)
-    .arg("--nocapture")
+    .env(WRITE_PATH_ENV, &write_probe_path);
+
+  let output = wrapped
     .output()
     .expect("spawn sandbox-exec child test process");
 
