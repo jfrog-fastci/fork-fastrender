@@ -59,6 +59,15 @@ pub mod chrome;
 #[cfg(feature = "browser_ui")]
 pub mod bookmarks_manager;
 
+#[cfg(feature = "browser_ui")]
+pub mod history_panel;
+
+#[cfg(feature = "browser_ui")]
+pub mod downloads_panel;
+
+#[cfg(feature = "browser_ui")]
+pub mod clear_browsing_data_dialog;
+
 // `menu_bar` depends on egui and is only used by the windowed browser UI.
 #[cfg(feature = "browser_ui")]
 pub mod menu_bar;

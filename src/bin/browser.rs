@@ -5240,348 +5240,27 @@ impl App {
   }
 
   fn render_downloads_panel(&mut self, ctx: &egui::Context) {
-    use fastrender::ui::browser_app::DownloadStatus;
     use fastrender::ui::UiToWorker;
-
-    fn format_bytes(bytes: u64) -> String {
-      const KB: f64 = 1024.0;
-      const MB: f64 = KB * 1024.0;
-      const GB: f64 = MB * 1024.0;
-
-      let b = bytes as f64;
-      if b >= GB {
-        format!("{:.1} GiB", b / GB)
-      } else if b >= MB {
-        format!("{:.1} MiB", b / MB)
-      } else if b >= KB {
-        format!("{:.1} KiB", b / KB)
-      } else {
-        format!("{bytes} B")
-      }
-    }
-
-    fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-      (a as f32 + (b as f32 - a as f32) * t)
-        .round()
-        .clamp(0.0, 255.0) as u8
-    }
-
-    fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
-      let [ar, ag, ab, aa] = a.to_array();
-      let [br, bg, bb, ba] = b.to_array();
-      egui::Color32::from_rgba_unmultiplied(
-        lerp_u8(ar, br, t),
-        lerp_u8(ag, bg, t),
-        lerp_u8(ab, bb, t),
-        lerp_u8(aa, ba, t),
-      )
-    }
-
-    fn lerp_stroke(a: egui::Stroke, b: egui::Stroke, t: f32) -> egui::Stroke {
-      egui::Stroke::new(a.width + (b.width - a.width) * t, lerp_color(a.color, b.color, t))
-    }
-
-    fn with_scaled_alpha(color: egui::Color32, alpha_mul: f32) -> egui::Color32 {
-      let [r, g, b, a] = color.to_array();
-      let a = (a as f32 * alpha_mul).round().clamp(0.0, 255.0) as u8;
-      egui::Color32::from_rgba_unmultiplied(r, g, b, a)
-    }
 
     let request_initial_focus = self.downloads_panel_request_focus && !ctx.wants_keyboard_input();
     self.downloads_panel_request_focus = false;
 
-    let mut close_panel = false;
-    let mut cancel_requests: Vec<(fastrender::ui::TabId, fastrender::ui::messages::DownloadId)> = Vec::new();
-    let mut retry_requests: Vec<(fastrender::ui::TabId, String)> = Vec::new();
-    let mut open_requests: Vec<std::path::PathBuf> = Vec::new();
-    let mut reveal_requests: Vec<std::path::PathBuf> = Vec::new();
-    let motion = fastrender::ui::motion::UiMotion::from_ctx(ctx);
+    let output = fastrender::ui::downloads_panel::downloads_panel_ui(
+      ctx,
+      &self.browser_state.downloads.downloads,
+      &self.theme,
+      request_initial_focus,
+    );
 
-    egui::SidePanel::right("downloads_panel")
-      .resizable(true)
-      .default_width(360.0)
-      .show(ctx, |ui| {
-        ui.horizontal(|ui| {
-          ui.spacing_mut().item_spacing.x = 8.0;
-          fastrender::ui::icon(
-            ui,
-            fastrender::ui::BrowserIcon::Download,
-            ui.spacing().icon_width,
-          );
-          ui.heading("Downloads");
-          ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let close_resp = fastrender::ui::icon_button(
-              ui,
-              fastrender::ui::BrowserIcon::Close,
-              "Close (Esc)",
-              true,
-            );
-            close_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close downloads panel")
-            });
-            if request_initial_focus {
-              close_resp.request_focus();
-            }
-            if close_resp.clicked() {
-              close_panel = true;
-            }
-
-            if ui.small_button("Show downloads folder").clicked() {
-              open_requests.push(fastrender::ui::downloads::default_download_dir());
-            }
-          });
-        });
-        ui.separator();
-
-        if self.browser_state.downloads.downloads.is_empty() {
-          ui.centered_and_justified(|ui| {
-            ui.vertical_centered(|ui| {
-              let tint = ui.visuals().weak_text_color();
-              fastrender::ui::icon_tinted(ui, fastrender::ui::BrowserIcon::Download, 28.0, tint);
-              ui.add_space(10.0);
-              ui.label(egui::RichText::new("No downloads yet").strong());
-            });
-          });
-          return;
-        }
-
-        let visuals = ui.visuals().clone();
-        let row_rounding = egui::Rounding::same(self.theme.sizing.corner_radius);
-        let row_padding = self.theme.sizing.padding * 0.75;
-        let row_gap = self.theme.sizing.padding * 0.75;
-        let hover_overlay = if visuals.dark_mode {
-          egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24)
-        } else {
-          egui::Color32::from_rgba_unmultiplied(0, 0, 0, 14)
-        };
-
-        egui::ScrollArea::vertical()
-          .auto_shrink([false, false])
-          .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = row_gap;
-
-            let body_h = ui.text_style_height(&egui::TextStyle::Body);
-            let small_h = ui.text_style_height(&egui::TextStyle::Small);
-            // Conservatively estimate the progress bar height so rows look consistent even if egui's
-            // internal widget sizing changes slightly between versions.
-            let progress_h = (ui.spacing().interact_size.y * 0.42).clamp(8.0, 12.0);
-            let line_gap = (self.theme.sizing.padding * 0.25).clamp(2.0, 4.0);
-
-            for entry in self.browser_state.downloads.downloads.iter().rev() {
-              let has_progress = matches!(entry.status, DownloadStatus::InProgress { .. });
-              let has_error = matches!(
-                entry.status,
-                DownloadStatus::Failed { ref error } if !error.trim().is_empty()
-              );
-
-              let mut content_h = body_h + line_gap + small_h + line_gap + small_h;
-              if has_error {
-                content_h += line_gap + small_h;
-              }
-              if has_progress {
-                content_h += line_gap + progress_h;
-              }
-              let row_height = (content_h + row_padding * 2.0).ceil();
-
-              let row_id = egui::Id::new(("fastr_download_row", entry.download_id.0));
-              let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), row_height),
-                egui::Sense::hover(),
-              );
-
-              let hover_t = motion.animate_bool(
-                ui.ctx(),
-                row_id.with("hover"),
-                response.hovered(),
-                motion.durations.hover_fade,
-              );
-
-              let base_fill = visuals.widgets.inactive.bg_fill;
-              let base_stroke = visuals.widgets.noninteractive.bg_stroke;
-              let hover_stroke = visuals.widgets.hovered.bg_stroke;
-
-              ui.painter().rect_filled(rect, row_rounding, base_fill);
-              if hover_t > 0.0 {
-                ui
-                  .painter()
-                  .rect_filled(rect, row_rounding, with_scaled_alpha(hover_overlay, hover_t));
-              }
-              ui.painter().rect_stroke(
-                rect,
-                row_rounding,
-                lerp_stroke(base_stroke, hover_stroke, hover_t),
-              );
-
-              let inner_rect = rect.shrink(row_padding);
-              ui.allocate_ui_at_rect(inner_rect, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, line_gap);
-                ui.set_min_width(inner_rect.width());
-
-                ui.add(
-                  egui::Label::new(egui::RichText::new(&entry.file_name).strong())
-                    .wrap(false)
-                    .truncate(true),
-                );
-
-                ui.add(
-                  egui::Label::new(
-                    egui::RichText::new(entry.path.display().to_string())
-                      .small()
-                      .color(ui.visuals().weak_text_color()),
-                  )
-                  .wrap(false)
-                  .truncate(true),
-                );
-
-                let (status_text, status_color, show_progress) = match &entry.status {
-                  DownloadStatus::InProgress {
-                    received_bytes,
-                    total_bytes,
-                  } => {
-                    let status = if let Some(total) = total_bytes.filter(|t| *t > 0) {
-                      format!(
-                        "Downloading… {} / {}",
-                        format_bytes(*received_bytes),
-                        format_bytes(total)
-                      )
-                    } else {
-                      format!("Downloading… {}", format_bytes(*received_bytes))
-                    };
-                    (status, ui.visuals().weak_text_color(), true)
-                  }
-                  DownloadStatus::Completed => ("Completed".to_string(), ui.visuals().weak_text_color(), false),
-                  DownloadStatus::Cancelled => ("Cancelled".to_string(), ui.visuals().weak_text_color(), false),
-                  DownloadStatus::Failed { .. } => ("Failed".to_string(), ui.visuals().error_fg_color, false),
-                };
-
-                ui.horizontal(|ui| {
-                  ui.add(
-                    egui::Label::new(
-                      egui::RichText::new(status_text)
-                        .small()
-                        .color(status_color),
-                    )
-                    .wrap(false)
-                    .truncate(true),
-                  );
-
-                  ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    match &entry.status {
-                      DownloadStatus::InProgress { .. } => {
-                        let cancel_resp = ui.small_button("Cancel");
-                        cancel_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            format!("Cancel download: {}", entry.file_name),
-                          )
-                        });
-                        if cancel_resp.clicked() {
-                          cancel_requests.push((entry.tab_id, entry.download_id));
-                        }
-                      }
-                      DownloadStatus::Completed => {
-                        let reveal_resp = ui.small_button("Show in Folder");
-                        reveal_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            format!("Show downloaded file in folder: {}", entry.file_name),
-                          )
-                        });
-                        if reveal_resp.clicked() {
-                          reveal_requests.push(entry.path.clone());
-                        }
-                        let open_resp = ui.small_button("Open");
-                        open_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            format!("Open downloaded file: {}", entry.file_name),
-                          )
-                        });
-                        if open_resp.clicked() {
-                          open_requests.push(entry.path.clone());
-                        }
-                      }
-                      DownloadStatus::Cancelled => {
-                        let retry_resp = ui.small_button("Retry");
-                        retry_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            format!("Retry download: {}", entry.file_name),
-                          )
-                        });
-                        if retry_resp.clicked() {
-                          retry_requests.push((entry.tab_id, entry.url.clone()));
-                        }
-                      }
-                      DownloadStatus::Failed { .. } => {
-                        let retry_resp = ui.small_button("Retry");
-                        retry_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            format!("Retry download: {}", entry.file_name),
-                          )
-                        });
-                        if retry_resp.clicked() {
-                          retry_requests.push((entry.tab_id, entry.url.clone()));
-                        }
-                      }
-                    }
-                  });
-                });
-
-                if let DownloadStatus::Failed { error } = &entry.status {
-                  let err = error.trim();
-                  if !err.is_empty() {
-                    ui.add(
-                      egui::Label::new(
-                        egui::RichText::new(err)
-                          .small()
-                          .color(ui.visuals().error_fg_color),
-                      )
-                      .wrap(false)
-                      .truncate(true),
-                    )
-                    .on_hover_text(err.to_string());
-                  }
-                }
-
-                if show_progress {
-                  if let DownloadStatus::InProgress {
-                    received_bytes,
-                    total_bytes,
-                  } = &entry.status
-                  {
-                    if let Some(total) = total_bytes.filter(|t| *t > 0) {
-                      let frac = (*received_bytes as f32 / total as f32).clamp(0.0, 1.0);
-                      ui.add(
-                        egui::ProgressBar::new(frac)
-                          .desired_width(f32::INFINITY)
-                          .text(""),
-                      );
-                    } else {
-                      ui.add(
-                        egui::ProgressBar::new(0.0)
-                          .desired_width(f32::INFINITY)
-                          .animate(motion.enabled)
-                          .text(""),
-                      );
-                    }
-                  }
-                }
-              });
-            }
-          });
-      });
-
-    if close_panel {
+    if output.close_requested {
       self.downloads_panel_open = false;
       self.downloads_panel_request_focus = false;
     }
 
-    for (tab_id, download_id) in cancel_requests {
+    for (tab_id, download_id) in output.cancel_requests {
       self.send_worker_msg(UiToWorker::CancelDownload { tab_id, download_id });
     }
-    for (tab_id, url) in retry_requests {
+    for (tab_id, url) in output.retry_requests {
       self.send_worker_msg(UiToWorker::StartDownload {
         tab_id,
         url,
@@ -5589,10 +5268,10 @@ impl App {
       });
     }
 
-    for path in open_requests {
+    for path in output.open_requests {
       open_file_with_os_default(&path);
     }
-    for path in reveal_requests {
+    for path in output.reveal_requests {
       reveal_file_in_os_file_manager(&path);
     }
   }
@@ -6449,23 +6128,6 @@ impl App {
     self.bookmarks.toggle(&url, title.as_deref());
     self.autosave_bookmarks();
     self.sync_about_newtab_bookmarks_snapshot();
-  }
-
-  fn format_history_timestamp_ms(visited_at_ms: u64) -> Option<String> {
-    use chrono::{DateTime, Local, Utc};
-    use std::time::{Duration, UNIX_EPOCH};
-
-    if visited_at_ms == 0 {
-      return None;
-    }
-    let time = UNIX_EPOCH.checked_add(Duration::from_millis(visited_at_ms))?;
-    let utc: DateTime<Utc> = time.into();
-    Some(
-      utc
-        .with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M")
-        .to_string(),
-    )
   }
 
   fn sync_history_after_mutation(&mut self, flush: bool) {
@@ -8608,325 +8270,30 @@ impl App {
         }
       }
     } else if self.history_panel_open && !close_history_panel {
-      egui::SidePanel::right("fastr_history_panel")
-        .resizable(true)
-        .default_width(360.0)
-        .show(&ctx, |ui| {
-          // Simple lerp helpers for subtle hover transitions (honors reduced motion via UiMotion).
-          fn lerp(a: f32, b: f32, t: f32) -> f32 {
-            a + (b - a) * t
-          }
-          fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-            lerp(a as f32, b as f32, t).round().clamp(0.0, 255.0) as u8
-          }
-          fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
-            let [ar, ag, ab, aa] = a.to_array();
-            let [br, bg, bb, ba] = b.to_array();
-            egui::Color32::from_rgba_unmultiplied(
-              lerp_u8(ar, br, t),
-              lerp_u8(ag, bg, t),
-              lerp_u8(ab, bb, t),
-              lerp_u8(aa, ba, t),
-            )
-          }
-          fn lerp_stroke(a: egui::Stroke, b: egui::Stroke, t: f32) -> egui::Stroke {
-            egui::Stroke::new(lerp(a.width, b.width, t), lerp_color(a.color, b.color, t))
-          }
-
-          let motion = fastrender::ui::motion::UiMotion::from_ctx(ui.ctx());
-
-          // -------------------------------------------------------------------
-          // Header
-          // -------------------------------------------------------------------
-          ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            fastrender::ui::icon_tinted(
-              ui,
-              fastrender::ui::BrowserIcon::History,
-              18.0,
-              ui.visuals().text_color(),
-            );
-            ui.heading("History");
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-              let close_resp = fastrender::ui::icon_button(
-                ui,
-                fastrender::ui::BrowserIcon::Close,
-                "Close (Esc)",
-                true,
-              );
-              close_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close history panel")
-              });
-              if close_resp.clicked() {
-                close_history_panel = true;
-              }
-
-              let clear_resp = ui.add(
-                egui::Button::new(
-                  egui::RichText::new("Clear browsing data")
-                    .small()
-                    .color(ui.visuals().hyperlink_color),
-                )
-                .frame(false),
-              );
-              clear_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear browsing data")
-              });
-              let clear_resp = clear_resp.on_hover_text("Clear browsing data…");
-              if clear_resp.clicked() {
-                panel_actions.push(fastrender::ui::ChromeAction::OpenClearBrowsingDataDialog);
-              }
-            });
-          });
-
-          ui.add_space(6.0);
-
-          // -------------------------------------------------------------------
-          // Search pill
-          // -------------------------------------------------------------------
-          let search_id = ui.make_persistent_id("history_panel_search");
-          let mut search_has_focus = false;
-          let pill_rounding = egui::Rounding::same(999.0);
-          let pill_margin = egui::Margin::symmetric(ui.spacing().button_padding.x, ui.spacing().button_padding.y * 0.6);
-          let pill_inner = egui::Frame::none()
-            .fill(ui.visuals().widgets.inactive.bg_fill)
-            .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-            .rounding(pill_rounding)
-            .inner_margin(pill_margin)
-            .show(ui, |ui| {
-              ui.set_width(ui.available_width());
-              ui.horizontal(|ui| {
-                fastrender::ui::icon_tinted(
-                  ui,
-                  fastrender::ui::BrowserIcon::Search,
-                  16.0,
-                  ui.visuals().weak_text_color(),
-                );
-
-                let search = ui.add(
-                  egui::TextEdit::singleline(&mut self.browser_state.chrome.history_search_text)
-                    .id(search_id)
-                    .hint_text("Search history…")
-                    .desired_width(f32::INFINITY)
-                    .frame(false),
-                );
-                search.widget_info(|| {
-                  egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search history")
-                });
-                if self.history_panel_request_focus_search {
-                  search.request_focus();
-                  self.history_panel_request_focus_search = false;
-                  self.page_has_focus = false;
-                }
-                if search.has_focus() || search.clicked() {
-                  self.page_has_focus = false;
-                }
-                search_has_focus = search.has_focus();
-              });
-            });
-
-          // Custom focus ring for the pill when the embedded TextEdit has focus.
-          if search_has_focus {
-            let focus_stroke = ui.visuals().selection.stroke;
-            let expand = 1.0 + focus_stroke.width * 0.5;
-            let rect = pill_inner.response.rect.expand(expand);
-            let rounding = egui::Rounding::same(pill_rounding.nw + expand);
-            ui.painter().rect_stroke(rect, rounding, focus_stroke);
-          }
-
-          ui.add_space(8.0);
-          ui.separator();
-          ui.add_space(4.0);
-
-          // -------------------------------------------------------------------
-          // Results list
-          // -------------------------------------------------------------------
-          const HISTORY_PANEL_LIMIT: usize = 500;
-          let query = self.browser_state.chrome.history_search_text.trim().to_string();
-          let results: Vec<(usize, &fastrender::ui::GlobalHistoryEntry)> = if query.is_empty() {
-            self
-              .browser_state
-              .history
-              .iter_recent()
-              .take(HISTORY_PANEL_LIMIT)
-              .collect()
-          } else {
-            self.browser_state.history.search(&query, HISTORY_PANEL_LIMIT)
-          };
-
-          if results.is_empty() {
-            ui.add_space(32.0);
-            ui.vertical_centered(|ui| {
-              ui.add_space(6.0);
-
-              let (title, hint, icon) = if self.browser_state.history.entries.is_empty() {
-                (
-                  "No history yet",
-                  "Pages you visit will appear here.",
-                  fastrender::ui::BrowserIcon::History,
-                )
-              } else {
-                (
-                  "No results",
-                  "Try a different search query.",
-                  fastrender::ui::BrowserIcon::Search,
-                )
-              };
-
-              fastrender::ui::icon_tinted(ui, icon, 34.0, ui.visuals().weak_text_color());
-              ui.add_space(10.0);
-              ui.label(egui::RichText::new(title).strong());
-              ui.label(egui::RichText::new(hint).small().color(ui.visuals().weak_text_color()));
-
-              if !self.browser_state.history.entries.is_empty() && !query.is_empty() {
-                ui.add_space(10.0);
-                if ui.button("Clear search").clicked() {
-                  self.browser_state.chrome.history_search_text.clear();
-                  self.history_panel_request_focus_search = true;
-                  self.page_has_focus = false;
-                }
-              }
-            });
-            return;
-          }
-
-          let row_padding = egui::vec2(ui.spacing().button_padding.x, ui.spacing().button_padding.y);
-          let title_h = ui.text_style_height(&egui::TextStyle::Body);
-          let small_h = ui.text_style_height(&egui::TextStyle::Small);
-          let row_h = (row_padding.y * 2.0) + title_h + (small_h * 2.0) + 6.0;
-          let rounding = ui.visuals().widgets.inactive.rounding;
-          let base_fill = ui.visuals().widgets.inactive.bg_fill;
-          let hover_fill = ui.visuals().widgets.hovered.bg_fill;
-          let base_stroke = ui.visuals().widgets.inactive.bg_stroke;
-          let hover_stroke = ui.visuals().widgets.hovered.bg_stroke;
-
-          egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-              for (idx, entry) in results {
-                let title = entry
-                  .title
-                  .as_deref()
-                  .map(str::trim)
-                  .filter(|t| !t.is_empty())
-                  .unwrap_or(entry.url.as_str());
-                let url = &entry.url;
-                let entry_label = if title == url.as_str() {
-                  title.to_string()
-                } else {
-                  format!("{title} ({url})")
-                };
-
-                let ts = Self::format_history_timestamp_ms(entry.visited_at_ms)
-                  .unwrap_or_else(|| "Unknown time".to_string());
-
-                let (_, row_rect) = ui.allocate_space(egui::vec2(ui.available_width(), row_h));
-                let row_id = ui.make_persistent_id(("history_row", idx));
-                let mut row_resp = ui.interact(row_rect, row_id, egui::Sense::click());
-
-                let hover_t = motion.animate_bool(
-                  ui.ctx(),
-                  row_id.with("hover"),
-                  row_resp.hovered(),
-                  motion.durations.hover_fade,
-                );
-                let fill = lerp_color(base_fill, hover_fill, hover_t);
-                let stroke = lerp_stroke(base_stroke, hover_stroke, hover_t);
-                ui.painter().rect(row_rect, rounding, fill, stroke);
-
-                if row_resp.has_focus() {
-                  let focus_stroke = ui.visuals().selection.stroke;
-                  let expand = 1.0 + focus_stroke.width * 0.5;
-                  let focus_rect = row_rect.expand(expand);
-                  let focus_rounding = egui::Rounding::same(rounding.nw + expand);
-                  ui.painter().rect_stroke(focus_rect, focus_rounding, focus_stroke);
-                }
-
-                row_resp.widget_info({
-                  let label = format!("Open history entry: {entry_label}");
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                });
-
-                let mut action_clicked = false;
-                ui.allocate_ui_at_rect(row_rect.shrink2(row_padding), |ui| {
-                  ui.spacing_mut().item_spacing.x = 6.0;
-
-                  ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let delete_resp = fastrender::ui::icon_button(
-                      ui,
-                      fastrender::ui::BrowserIcon::Close,
-                      "Delete",
-                      true,
-                    );
-                    delete_resp.widget_info({
-                      let label = format!("Delete history entry: {entry_label}");
-                      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                    });
-                    if delete_resp.clicked() {
-                      history_delete_index = Some(idx);
-                      action_clicked = true;
-                    }
-
-                    let new_tab_resp = fastrender::ui::icon_button(
-                      ui,
-                      fastrender::ui::BrowserIcon::OpenInNewTab,
-                      "Open in new tab",
-                      true,
-                    );
-                    new_tab_resp.widget_info({
-                      let label = format!("Open history entry in new tab: {entry_label}");
-                      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                    });
-                    if new_tab_resp.clicked() {
-                      history_open_in_new_tab = Some(url.clone());
-                      action_clicked = true;
-                    }
-
-                    let open_resp = ui.small_button("Open");
-                    open_resp.widget_info({
-                      let label = format!("Open history entry: {entry_label}");
-                      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                    });
-                    if open_resp.clicked() {
-                      panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url.clone()));
-                      action_clicked = true;
-                    }
-
-                    // Main text block (fills remaining width).
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                      ui.set_width(ui.available_width());
-                      ui.add(egui::Label::new(egui::RichText::new(title).strong()).wrap(false).truncate(true));
-                      ui.add(
-                        egui::Label::new(
-                          egui::RichText::new(url)
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                        )
-                        .wrap(false)
-                        .truncate(true),
-                      );
-                      ui.add(
-                        egui::Label::new(
-                          egui::RichText::new(ts)
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                        )
-                        .wrap(false)
-                        .truncate(true),
-                      );
-                    });
-                  });
-                });
-
-                if row_resp.clicked() && !action_clicked {
-                  panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url.clone()));
-                }
-
-                ui.add_space(6.0);
-              }
-            });
-        });
+      let output = fastrender::ui::history_panel::history_panel_ui(
+        &ctx,
+        &self.browser_state.history,
+        &mut self.browser_state.chrome.history_search_text,
+        &mut self.history_panel_request_focus_search,
+      );
+      if output.close_requested {
+        close_history_panel = true;
+      }
+      if output.unfocus_page {
+        self.page_has_focus = false;
+      }
+      if output.open_clear_browsing_data_dialog {
+        panel_actions.push(fastrender::ui::ChromeAction::OpenClearBrowsingDataDialog);
+      }
+      if let Some(url) = output.open_url {
+        panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url));
+      }
+      if let Some(url) = output.open_in_new_tab {
+        history_open_in_new_tab = Some(url);
+      }
+      if let Some(idx) = output.delete_index {
+        history_delete_index = Some(idx);
+      }
     }
 
     if close_bookmarks_panel {
@@ -8955,111 +8322,12 @@ impl App {
     }
 
     if self.clear_browsing_data_dialog_open {
-      let mut open = self.clear_browsing_data_dialog_open;
-      let mut clear_now = false;
-      let mut close_dialog = false;
-      if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        open = false;
-      }
-
-      egui::Window::new("Clear browsing data")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .open(&mut open)
-        .show(&ctx, |ui| {
-          use fastrender::ui::ClearBrowsingDataRange;
-
-          fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
-            let [r, g, b, _] = color.to_array();
-            egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
-          }
-
-          // Header
-          ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            fastrender::ui::icon_tinted(
-              ui,
-              fastrender::ui::BrowserIcon::History,
-              20.0,
-              ui.visuals().warn_fg_color,
-            );
-            ui.heading("Clear browsing data");
-          });
-          ui.add_space(6.0);
-          ui.label(
-            egui::RichText::new("Clear browsing data for this profile.")
-              .color(ui.visuals().weak_text_color()),
-          );
-
-          ui.add_space(14.0);
-
-          // Time range selection.
-          ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Time range").strong());
-            ui.add_space(8.0);
-            egui::ComboBox::from_id_source("clear_browsing_data_range_combo")
-              .selected_text(self.clear_browsing_data_range.label())
-              .width(ui.available_width().min(220.0))
-              .show_ui(ui, |ui| {
-                ui.selectable_value(
-                  &mut self.clear_browsing_data_range,
-                  ClearBrowsingDataRange::LastHour,
-                  ClearBrowsingDataRange::LastHour.label(),
-                );
-                ui.selectable_value(
-                  &mut self.clear_browsing_data_range,
-                  ClearBrowsingDataRange::Last24Hours,
-                  ClearBrowsingDataRange::Last24Hours.label(),
-                );
-                ui.selectable_value(
-                  &mut self.clear_browsing_data_range,
-                  ClearBrowsingDataRange::Last7Days,
-                  ClearBrowsingDataRange::Last7Days.label(),
-                );
-                ui.selectable_value(
-                  &mut self.clear_browsing_data_range,
-                  ClearBrowsingDataRange::AllTime,
-                  ClearBrowsingDataRange::AllTime.label(),
-                );
-              });
-          });
-
-          ui.add_space(12.0);
-          ui.group(|ui| {
-            ui.label(egui::RichText::new("This will remove:").strong());
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("• History panel entries").small());
-            ui.label(egui::RichText::new("• Recently visited suggestions").small());
-          });
-
-          ui.add_space(14.0);
-          ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let danger = ui.visuals().error_fg_color;
-            let clear_button = egui::Button::new(
-              egui::RichText::new("Clear")
-                .strong()
-                .color(danger),
-            )
-            .fill(with_alpha(danger, 24))
-            .stroke(egui::Stroke::new(ui.visuals().widgets.inactive.bg_stroke.width, danger));
-
-            if ui.add(clear_button).clicked() {
-              clear_now = true;
-              close_dialog = true;
-            }
-
-            if ui.button("Cancel").clicked() {
-              close_dialog = true;
-            }
-          });
-        });
-
-      if close_dialog {
-        open = false;
-      }
-      self.clear_browsing_data_dialog_open = open;
-      if clear_now {
+      let output = fastrender::ui::clear_browsing_data_dialog::clear_browsing_data_dialog_ui(
+        &ctx,
+        &mut self.clear_browsing_data_dialog_open,
+        &mut self.clear_browsing_data_range,
+      );
+      if output.clear_now {
         self.clear_browsing_data(self.clear_browsing_data_range);
       }
     }
