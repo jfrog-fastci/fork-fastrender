@@ -1,5 +1,6 @@
 use crate::regexp_unicode_property_strings::{
-  match_property_at, UnicodeStringProperty, MAX_MATCHES_PER_POSITION,
+  for_each_match_len, is_string_property_name, longest_match_len, match_property_at,
+  UnicodeStringProperty, MAX_MATCHES_PER_POSITION,
 };
 
 fn utf16(s: &str) -> Vec<u16> {
@@ -21,6 +22,15 @@ fn prefix_matches_basic_vs_modifier_sequence() {
   let n =
     match_property_at(UnicodeStringProperty::RgiEmojiModifierSequence, &haystack, 0, &mut out);
   assert_eq!(&out[..n], &[4]);
+
+  // Wrapper helpers.
+  let mut lens = Vec::new();
+  for_each_match_len(UnicodeStringProperty::RgiEmoji, &haystack, 0, |len| lens.push(len));
+  assert_eq!(lens, vec![2, 4]);
+  assert_eq!(
+    longest_match_len(UnicodeStringProperty::RgiEmoji, &haystack, 0),
+    Some(4)
+  );
 }
 
 #[test]
@@ -72,3 +82,20 @@ fn non_matches() {
   assert_eq!(&out[..n], &[2, 4]);
 }
 
+#[test]
+fn name_lookup_is_exact_and_keycap_sequences_match() {
+  assert_eq!(
+    is_string_property_name("Emoji_Keycap_Sequence"),
+    Some(UnicodeStringProperty::EmojiKeycapSequence)
+  );
+  assert_eq!(is_string_property_name("emoji_keycap_sequence"), None);
+  assert_eq!(is_string_property_name("BasicEmoji"), None);
+
+  // "#️⃣" is an Emoji_Keycap_Sequence and an RGI_Emoji.
+  let haystack = utf16("#\u{FE0F}\u{20E3}");
+  let mut out = [0usize; MAX_MATCHES_PER_POSITION];
+  let n = match_property_at(UnicodeStringProperty::EmojiKeycapSequence, &haystack, 0, &mut out);
+  assert_eq!(&out[..n], &[3]);
+  let n = match_property_at(UnicodeStringProperty::RgiEmoji, &haystack, 0, &mut out);
+  assert_eq!(&out[..n], &[3]);
+}

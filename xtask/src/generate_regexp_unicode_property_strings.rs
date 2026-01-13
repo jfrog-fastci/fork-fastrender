@@ -221,9 +221,29 @@ fn generate(input_dir: &Path) -> Result<String> {
   out.push_str("  RgiEmoji,\n");
   out.push_str("}\n\n");
 
+  out.push_str(
+    r#"/// Lookup a RegExp `v` flag Unicode property of strings by exact name (no aliases).
+///
+/// Note: Unicode string properties cannot be negated (`\P{...}` / `[^...]`) per ECMA-262.
+pub(crate) fn is_string_property_name(name: &str) -> Option<UnicodeStringProperty> {
+  match name {
+    "Basic_Emoji" => Some(UnicodeStringProperty::BasicEmoji),
+    "Emoji_Keycap_Sequence" => Some(UnicodeStringProperty::EmojiKeycapSequence),
+    "RGI_Emoji_Flag_Sequence" => Some(UnicodeStringProperty::RgiEmojiFlagSequence),
+    "RGI_Emoji_Modifier_Sequence" => Some(UnicodeStringProperty::RgiEmojiModifierSequence),
+    "RGI_Emoji_Tag_Sequence" => Some(UnicodeStringProperty::RgiEmojiTagSequence),
+    "RGI_Emoji_ZWJ_Sequence" => Some(UnicodeStringProperty::RgiEmojiZwjSequence),
+    "RGI_Emoji" => Some(UnicodeStringProperty::RgiEmoji),
+    _ => None,
+  }
+}
+
+"#,
+  );
+
   out.push_str(&format!(
     "/// Maximum number of terminal matches possible at a single input position (prefix matches).\n\
-pub(crate) const MAX_MATCHES_PER_POSITION: usize = {max_matches_per_start};\n\n"
+ pub(crate) const MAX_MATCHES_PER_POSITION: usize = {max_matches_per_start};\n\n"
   ));
 
   out.push_str("const PROP_BASIC_EMOJI: u8 = 1 << 0;\n");
@@ -303,6 +323,37 @@ fn edge_lookup(node: usize, cu: u16) -> Option<usize> {
     }
   }
   None
+}
+
+"#,
+  );
+
+  out.push_str(
+    r#"/// Call `f(len)` for each possible UTF-16 match length of `prop` starting at `start`.
+///
+/// This is allocation-free: match lengths are computed into a fixed-size stack array.
+pub(crate) fn for_each_match_len(
+  prop: UnicodeStringProperty,
+  haystack: &[u16],
+  start: usize,
+  mut f: impl FnMut(usize),
+) {
+  let mut out = [0usize; MAX_MATCHES_PER_POSITION];
+  let n = match_property_at(prop, haystack, start, &mut out);
+  for &len in &out[..n] {
+    f(len);
+  }
+}
+
+/// Return the longest UTF-16 match length of `prop` at `start` (if any).
+pub(crate) fn longest_match_len(
+  prop: UnicodeStringProperty,
+  haystack: &[u16],
+  start: usize,
+) -> Option<usize> {
+  let mut out = [0usize; MAX_MATCHES_PER_POSITION];
+  let n = match_property_at(prop, haystack, start, &mut out);
+  if n == 0 { None } else { Some(out[n - 1]) }
 }
 
 "#,
