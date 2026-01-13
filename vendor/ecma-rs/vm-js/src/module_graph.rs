@@ -306,8 +306,8 @@ impl ModuleGraph {
     Self::default()
   }
 
-  /// Marks the cached SCC (cycle) structure as dirty so it will be recomputed on the next
-  /// evaluation.
+  /// Marks the cached SCC (cycle) structure as dirty so it will be recomputed before the next
+  /// module evaluation.
   ///
   /// SCC membership and dependency edges are computed over the resolved `[[LoadedModules]]` graph
   /// (stored in each module record's `loaded_modules` list), not just the static
