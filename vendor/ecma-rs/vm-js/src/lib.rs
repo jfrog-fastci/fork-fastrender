@@ -358,6 +358,9 @@ mod direct_eval_super_hir_exec_tests;
 #[cfg(test)]
 #[path = "../tests/unit/module_ast_memory.rs"]
 mod module_ast_memory_tests;
+#[cfg(test)]
+#[path = "../tests/unit/generator_yield_private_names.rs"]
+mod generator_yield_private_names_tests;
 
 pub use crate::handle::EnvRootId;
 

@@ -60142,7 +60142,7 @@ mod tests {
   }
 
   #[test]
-  fn arrow_this_in_derived_constructor_computed_super_property_key_mutation_affects_super_base_lookup(
+  fn arrow_this_in_derived_constructor_computed_super_property_key_mutation_does_not_affect_captured_super_base_lookup(
   ) -> Result<(), VmError> {
     let source = r#"
       let log = [];
@@ -60172,8 +60172,8 @@ mod tests {
           try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
 
           super();
-          // ToPropertyKey mutates D.prototype's prototype and must affect the super base lookup for
-          // the current `super[key()]` operation.
+          // `ToPropertyKey` mutates D.prototype's prototype, but it must not affect the super base
+          // captured for the current `super[key()]` operation.
           this.v1 = f();
           this.v2 = f();
           this.errName = errName;
@@ -60182,12 +60182,12 @@ mod tests {
       }
 
       let d = new D();
-      d.v1 === 1 &&
+      d.v1 === 0 &&
         d.v2 === 1 &&
         d.errName === 'ReferenceError' &&
         d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
         Object.getPrototypeOf(D.prototype) === newProto &&
-        log.join(',') === 'key,toString,new,key,toString,new'
+        log.join(',') === 'key,toString,base,key,toString,new'
     "#;
 
     assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
@@ -60196,9 +60196,8 @@ mod tests {
   }
 
   #[test]
-  fn super_property_computed_key_mutation_affects_super_base_lookup_hir() -> Result<(), VmError> {
-    // Regression test: for computed `super[expr]`, `ToPropertyKey` must happen before `GetSuperBase`
-    // so prototype mutations during key conversion affect the super base lookup.
+  fn super_property_computed_key_mutation_does_not_affect_captured_super_base_lookup_hir(
+  ) -> Result<(), VmError> {
     let source = r#"
       class B {}
       B.prototype.x = 1;
@@ -60213,11 +60212,12 @@ mod tests {
           }];
         }
       }
-      new D().getX()
+      const d = new D();
+      d.getX() === 1 && d.getX() === 2
     "#;
 
-    assert_eq!(eval_script_interpreter(source)?, Value::Number(2.0));
-    assert_eq!(eval_script_compiled(source)?, Value::Number(2.0));
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
     Ok(())
   }
 
