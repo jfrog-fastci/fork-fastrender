@@ -1785,10 +1785,7 @@ pub(super) fn tab_strip_ui(
           ui.input(|i| i.pointer.interact_pos()),
         ) {
           let dragging_is_pinned = app.tab(dragging_tab_id).is_some_and(|tab| tab.pinned);
-          if dragging_is_pinned
-            && pointer_pos.y >= pinned_scroll_rect.top()
-            && pointer_pos.y <= pinned_scroll_rect.bottom()
-          {
+          if dragging_is_pinned {
             let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.0, 0.1);
             let delta_x = drag_autoscroll_delta_x(pointer_pos, pinned_scroll_rect, dt);
             if delta_x != 0.0 {
@@ -1850,7 +1847,11 @@ pub(super) fn tab_strip_ui(
         .ctx()
         .data(|d| d.get_temp::<egui::Id>(scroll_state_id_key));
       let mut current_offset_x = stored_scroll_state_id
-        .map(|id| egui::scroll_area::ScrollAreaState::load(unpinned_ui.ctx(), id).offset.x)
+        .map(|id| {
+          egui::scroll_area::ScrollAreaState::load(unpinned_ui.ctx(), id)
+            .offset
+            .x
+        })
         .unwrap_or(0.0);
       if !current_offset_x.is_finite() {
         current_offset_x = 0.0;
@@ -1897,7 +1898,9 @@ pub(super) fn tab_strip_ui(
             anim.active = false;
           }
 
-          unpinned_ui.ctx().data_mut(|d| d.insert_temp(clamp_anim_id, anim));
+          unpinned_ui
+            .ctx()
+            .data_mut(|d| d.insert_temp(clamp_anim_id, anim));
         } else {
           // Reduced motion: snap immediately (no continuous repaint).
           desired_scroll_offset_x = unpinned_max_scroll_x;
@@ -2150,10 +2153,7 @@ pub(super) fn tab_strip_ui(
           ui.input(|i| i.pointer.interact_pos()),
         ) {
           let dragging_is_unpinned = app.tab(dragging_tab_id).is_some_and(|tab| !tab.pinned);
-          if dragging_is_unpinned
-            && pointer_pos.y >= unpinned_scroll_rect.top()
-            && pointer_pos.y <= unpinned_scroll_rect.bottom()
-          {
+          if dragging_is_unpinned {
             let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.0, 0.1);
             let delta_x = drag_autoscroll_delta_x(pointer_pos, unpinned_scroll_rect, dt);
             if delta_x != 0.0 {
@@ -2201,12 +2201,7 @@ pub(super) fn tab_strip_ui(
   }
   if unpinned_viewport_rect.width() > 0.0 {
     let viewport_rect = unpinned_scroll_viewport_rect.unwrap_or(unpinned_viewport_rect);
-    paint_scroll_edge_fades(
-      ui,
-      viewport_rect,
-      scroll_offset_x,
-      unpinned_max_scroll_x,
-    );
+    paint_scroll_edge_fades(ui, viewport_rect, scroll_offset_x, unpinned_max_scroll_x);
   }
 
   // Micro-interaction: animate the active tab underline position/width.
@@ -2583,7 +2578,10 @@ mod tests {
   #[test]
   fn drag_autoscroll_delta_x_is_zero_outside_edge_zone() {
     let rect = Rect::from_min_max(Pos2::new(100.0, 0.0), Pos2::new(200.0, 10.0));
-    assert_eq!(drag_autoscroll_delta_x(Pos2::new(150.0, 5.0), rect, 0.016), 0.0);
+    assert_eq!(
+      drag_autoscroll_delta_x(Pos2::new(150.0, 5.0), rect, 0.016),
+      0.0
+    );
   }
 
   #[test]
@@ -2720,7 +2718,10 @@ mod tests {
         pinned <= total + 1e-3,
         "pinned viewport ({pinned}) should not exceed total ({total})"
       );
-      assert!(unpinned >= -1e-3, "unpinned viewport should never be negative");
+      assert!(
+        unpinned >= -1e-3,
+        "unpinned viewport should never be negative"
+      );
       assert!(
         pinned + unpinned <= total + 1e-3,
         "sum of viewports should not exceed total width"
