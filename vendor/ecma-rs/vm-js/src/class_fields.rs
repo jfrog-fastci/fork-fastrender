@@ -126,8 +126,11 @@ pub(crate) fn class_constructor_instance_field_pairs<'a>(
 
 /// Initialize per-instance elements for `class_ctor` on the already-constructed `receiver`.
 ///
-/// This implements instance field initialization plus private methods/accessors represented as
-/// internal-symbol-keyed properties.
+/// This implements:
+/// - public instance fields (`x = <expr>` / `x;`), and
+/// - private instance elements defined on the class prototype (private methods / accessors), which
+///   are modeled as internal symbol-keyed properties on the prototype and must be copied onto each
+///   instance so private brand checks use own-property lookups.
 ///
 /// Field records are stored as `(key, initializer)` pairs in the class constructor's native slots.
 /// - `key` is stored as `Value::String` or `Value::Symbol`.
@@ -221,18 +224,20 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
 
   // Copy the native-slot slice into an owned Vec so we can mutably borrow `init_scope` while
   // evaluating initializers and defining properties.
-  let pairs: Vec<Value> = {
-    let pairs = class_constructor_instance_field_pairs(&init_scope, class_ctor)?;
-    if pairs.len() % 2 != 0 {
+  let pairs_slice = class_constructor_instance_field_pairs(&init_scope, class_ctor)?;
+  let pairs: Vec<Value> = if pairs_slice.is_empty() {
+    Vec::new()
+  } else {
+    if pairs_slice.len() % 2 != 0 {
       return Err(VmError::InvariantViolation(
         "class constructor instance field list has odd length",
       ));
     }
     let mut out: Vec<Value> = Vec::new();
     out
-      .try_reserve_exact(pairs.len())
+      .try_reserve_exact(pairs_slice.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    out.extend_from_slice(pairs);
+    out.extend_from_slice(pairs_slice);
     out
   };
 
@@ -393,6 +398,77 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
         key,
         value,
       )?;
+    }
+  }
+
+  // Private instance methods/accessors are defined as internal symbol-keyed properties on the class
+  // prototype during `ClassDefinitionEvaluation`.
+  //
+  // The runtime brand check for private member access uses `GetOwnProperty` on the receiver, so we
+  // must copy these prototype properties onto each instance at construction time.
+  //
+  // Note: we intentionally use `GetOwnProperty`/`OwnPropertyKeys` rather than the JS-visible
+  // `[[OwnPropertyKeys]]` (`ordinary_own_property_keys`) so internal symbols remain observable to
+  // the engine while still being hidden from JS reflection (`Object.getOwnPropertySymbols`,
+  // `Reflect.ownKeys`, ...).
+  let prototype_key = PropertyKey::from_string(init_scope.alloc_string("prototype")?);
+  if let Some(proto_desc) = init_scope.heap().get_own_property(class_ctor, prototype_key)? {
+    let proto_obj = match proto_desc.kind {
+      crate::PropertyKind::Data { value: Value::Object(o), .. } => Some(o),
+      _ => None,
+    };
+
+    if let Some(proto_obj) = proto_obj {
+      init_scope.push_root(Value::Object(proto_obj))?;
+      let keys = init_scope.heap().own_property_keys(proto_obj)?;
+
+      for key in keys {
+        let PropertyKey::Symbol(sym) = key else {
+          continue;
+        };
+        if !init_scope.heap().is_internal_symbol(sym) {
+          continue;
+        }
+
+        // Root the descriptor payload across property definition, which may allocate and GC.
+        let Some(desc) = init_scope.heap().get_own_property(proto_obj, key)? else {
+          continue;
+        };
+
+        let mut define_scope = init_scope.reborrow();
+        define_scope.push_roots(&[Value::Object(receiver), Value::Object(proto_obj)])?;
+
+        match desc.kind {
+          crate::PropertyKind::Data { value, writable } => {
+            define_scope.push_root(value)?;
+            define_scope.define_property_or_throw(
+              receiver,
+              key,
+              crate::PropertyDescriptorPatch {
+                value: Some(value),
+                writable: Some(writable),
+                enumerable: Some(desc.enumerable),
+                configurable: Some(desc.configurable),
+                ..Default::default()
+              },
+            )?;
+          }
+          crate::PropertyKind::Accessor { get, set } => {
+            define_scope.push_roots(&[get, set])?;
+            define_scope.define_property_or_throw(
+              receiver,
+              key,
+              crate::PropertyDescriptorPatch {
+                get: Some(get),
+                set: Some(set),
+                enumerable: Some(desc.enumerable),
+                configurable: Some(desc.configurable),
+                ..Default::default()
+              },
+            )?;
+          }
+        }
+      }
     }
   }
 

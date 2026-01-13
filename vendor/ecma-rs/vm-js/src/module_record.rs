@@ -257,8 +257,8 @@ pub struct SourceTextModuleRecord {
   pub(crate) ast_external_memory: Option<Arc<ExternalMemoryToken>>,
   /// Compiled module code (source text + lowered HIR).
   ///
-  /// When present, module bodies may be executed via the compiled (HIR) executor instead of the
-  /// AST interpreter.
+  /// When present, `ModuleGraph` can execute the module body via the compiled (HIR) evaluator
+  /// instead of the AST interpreter.
   ///
   /// Note: async module evaluation (top-level await) is supported by the compiled executor only
   /// for a conservative subset of `await` shapes. When unsupported patterns are present,

@@ -8356,7 +8356,7 @@ impl<'a> Evaluator<'a> {
         heap: heap_ptr,
         len: super_root_len,
       };
- 
+  
       // Count instance elements stored in the class constructor's native slots so the wrapper can
       // preallocate its hidden storage.
       //
@@ -30617,13 +30617,13 @@ fn async_call_member_after_base(
         name: &member.right,
       }
     } else {
-      let key_s = key_scope.alloc_string(&member.right)?;
-      Reference::Property {
-        base,
-        receiver: base,
-        key: PropertyKey::from_string(key_s),
-      }
-    };
+       let key_s = key_scope.alloc_string(&member.right)?;
+       Reference::Property {
+         base,
+         receiver: base,
+         key: PropertyKey::from_string(key_s),
+       }
+     };
     evaluator
       .get_value_from_reference(&mut key_scope, &reference)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
@@ -50252,6 +50252,24 @@ pub(crate) fn instantiate_module_decls(
   result
 }
 
+pub(crate) fn instantiate_compiled_module_decls(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  global_object: GcObject,
+  module_id: ModuleId,
+  module_env: GcEnv,
+  script: Arc<crate::CompiledScript>,
+) -> Result<(), VmError> {
+  crate::hir_exec::instantiate_compiled_module_decls(
+    vm,
+    scope,
+    global_object,
+    module_id,
+    module_env,
+    script,
+  )
+}
+
 pub(crate) fn run_module(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -50341,6 +50359,30 @@ pub(crate) fn run_module(
     (Ok(_), Err(err)) => Err(err),
     (Err(err), Err(_)) => Err(err),
   }
+}
+
+pub(crate) fn run_compiled_module(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_object: GcObject,
+  realm_id: RealmId,
+  module_id: ModuleId,
+  module_env: GcEnv,
+  script: Arc<crate::CompiledScript>,
+) -> Result<(), VmError> {
+  crate::hir_exec::run_compiled_module(
+    vm,
+    scope,
+    host,
+    hooks,
+    global_object,
+    realm_id,
+    module_id,
+    module_env,
+    script,
+  )
 }
 
 /// Result of executing a module statement list until a supported top-level `await` boundary.

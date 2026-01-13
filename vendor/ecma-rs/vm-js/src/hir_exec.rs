@@ -17570,7 +17570,192 @@ pub(crate) fn run_compiled_module(
         .body(hir.root_body())
         .ok_or(VmError::InvariantViolation("compiled module root body not found"))?;
 
-      let eval_res = evaluator.eval_stmt_list(scope, body, body.root_stmts.as_slice());
+      #[derive(Clone, Copy, Debug)]
+      struct DefaultExportExpr {
+        export_start: u32,
+        expr: hir_js::ExprId,
+        body: hir_js::BodyId,
+      }
+
+      // `hir-js` may represent `export default <expr>;` out-of-band (in `hir.exports`) rather than as
+      // a root-level statement. If so, we must execute the exported expression in source order and
+      // initialize the module's `*default*` binding.
+      let mut default_export_expr: Option<DefaultExportExpr> =
+        script.hir.hir.exports.iter().find_map(|export| {
+          let hir_js::ExportKind::Default(default) = &export.kind else {
+            return None;
+          };
+          match &default.value {
+            hir_js::ExportDefaultValue::Expr { expr, body } => Some(DefaultExportExpr {
+              export_start: export.span.start,
+              expr: *expr,
+              body: *body,
+            }),
+            _ => None,
+          }
+        });
+
+      // Avoid double-executing the default-export expression if `hir-js` has already lowered it into
+      // the module statement list as a synthetic `Decl` with a top-level body.
+      if default_export_expr.is_some() {
+        let mut has_synthetic_default_export_expr_stmt = false;
+        for (i, stmt_id) in body.root_stmts.iter().copied().enumerate() {
+          if i % 32 == 0 && i != 0 {
+            evaluator.vm.tick()?;
+          }
+          let stmt = body
+            .stmts
+            .get(stmt_id.0 as usize)
+            .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?;
+          let hir_js::StmtKind::Decl(def_id) = &stmt.kind else {
+            continue;
+          };
+          let def = hir
+            .def(*def_id)
+            .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+          if !def.is_default_export {
+            continue;
+          }
+          let Some(def_body_id) = def.body else {
+            continue;
+          };
+          let decl_body = hir
+            .body(def_body_id)
+            .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+          if decl_body.kind == hir_js::BodyKind::TopLevel {
+            has_synthetic_default_export_expr_stmt = true;
+            break;
+          }
+        }
+        if has_synthetic_default_export_expr_stmt {
+          default_export_expr = None;
+        }
+      }
+
+      let eval_res = match default_export_expr {
+        None => evaluator.eval_stmt_list(scope, body, body.root_stmts.as_slice()),
+        Some(default_export_expr) => (|| -> Result<Flow, VmError> {
+          // Determine where to insert evaluation of `export default <expr>` relative to root-level
+          // statements using span ordering.
+          let mut insert_at = body.root_stmts.len();
+          for (i, stmt_id) in body.root_stmts.iter().copied().enumerate() {
+            let start = body
+              .stmts
+              .get(stmt_id.0 as usize)
+              .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?
+              .span
+              .start;
+            if default_export_expr.export_start <= start {
+              insert_at = i;
+              break;
+            }
+          }
+
+          // Helper to map top-level Flow completions to the invariants expected by module evaluation.
+          let ensure_normal = |flow: Flow| -> Result<(), VmError> {
+            match flow {
+              Flow::Normal(_) => Ok(()),
+              Flow::Return(_) => Err(VmError::InvariantViolation(
+                "module evaluation produced Return completion (early errors should prevent this)",
+              )),
+              Flow::Break(..) => Err(VmError::InvariantViolation(
+                "module evaluation produced Break completion (early errors should prevent this)",
+              )),
+              Flow::Continue(..) => Err(VmError::InvariantViolation(
+                "module evaluation produced Continue completion (early errors should prevent this)",
+              )),
+            }
+          };
+
+          // Execute root statements before the `export default` expression.
+          if insert_at != 0 {
+            ensure_normal(evaluator.eval_stmt_list(scope, body, &body.root_stmts[..insert_at])?)?;
+          }
+
+          // Execute `export default <expr>` and initialize the module's `*default*` binding.
+          //
+          // `ModuleGraph::link` pre-creates the immutable `*default*` binding so we only need to
+          // evaluate+initialize here.
+          let export_body = hir
+            .body(default_export_expr.body)
+            .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+
+          let expr_stmt_id = export_body
+            .root_stmts
+            .last()
+            .copied()
+            .ok_or(VmError::InvariantViolation(
+              "export default expression missing statement list",
+            ))?;
+          let export_expr_id = match &export_body
+            .stmts
+            .get(expr_stmt_id.0 as usize)
+            .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?
+            .kind
+          {
+            hir_js::StmtKind::Expr(expr_id) => *expr_id,
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "export default expression missing expression statement",
+              ))
+            }
+          };
+          if export_expr_id != default_export_expr.expr {
+            return Err(VmError::InvariantViolation(
+              "export default expression expr id mismatch",
+            ));
+          }
+
+          // Evaluate any synthetic prefix statements inside the export body in source order before
+          // evaluating the exported expression.
+          if export_body.root_stmts.len() > 1 {
+            let prefix = &export_body.root_stmts[..export_body.root_stmts.len().saturating_sub(1)];
+            ensure_normal(evaluator.eval_stmt_list(scope, export_body, prefix)?)?;
+          }
+
+          // Implement the observable behaviour of `ExportDefaultDeclaration` `SetFunctionName`.
+          evaluator.vm.tick()?;
+          let is_anonymous_function_or_class =
+            match &evaluator.get_expr(export_body, export_expr_id)?.kind {
+              hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
+              hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
+              _ => false,
+            };
+          let value = if is_anonymous_function_or_class {
+            let mut name_scope = scope.reborrow();
+            let default_s = name_scope.alloc_string("default")?;
+            name_scope.push_root(Value::String(default_s))?;
+            evaluator.eval_expr_named(
+              &mut name_scope,
+              export_body,
+              export_expr_id,
+              PropertyKey::String(default_s),
+            )?
+          } else {
+            evaluator.eval_expr(scope, export_body, export_expr_id)?
+          };
+
+          {
+            let mut init_scope = scope.reborrow();
+            init_scope.push_root(value)?;
+            if !init_scope.heap().env_has_binding(module_env, "*default*")? {
+              return Err(VmError::InvariantViolation(
+                "export default expression missing *default* binding",
+              ));
+            }
+            init_scope
+              .heap_mut()
+              .env_initialize_binding(module_env, "*default*", value)?;
+          }
+
+          // Execute root statements after the `export default` expression.
+          if insert_at < body.root_stmts.len() {
+            ensure_normal(evaluator.eval_stmt_list(scope, body, &body.root_stmts[insert_at..])?)?;
+          }
+
+          Ok(Flow::empty())
+        })(),
+      };
       match eval_res {
         Ok(Flow::Normal(_)) => Ok(()),
         Ok(Flow::Return(_)) => Err(VmError::InvariantViolation(

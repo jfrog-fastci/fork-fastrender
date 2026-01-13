@@ -1,10 +1,14 @@
 use crate::exec::{
-  instantiate_module_decls, resume_module_tla_evaluation, run_module, start_module_tla_evaluation,
+  instantiate_compiled_module_decls,
+  instantiate_module_decls,
+  run_compiled_module,
+  run_module,
+  resume_module_tla_evaluation,
+  start_module_tla_evaluation,
   ModuleTlaStepResult,
 };
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
-use crate::hir_exec::instantiate_compiled_module_decls;
 use crate::import_meta::{create_import_meta_object, VmImportMetaHostHooks};
 use crate::module_loading::DynamicImportState;
 use crate::module_record::ModuleNamespaceCache;
@@ -1815,6 +1819,12 @@ impl ModuleGraph {
         .iter()
         .any(|e| e.local_name == "*default*");
       let has_tla = self.modules[idx].has_tla;
+      // Module records can be backed by either:
+      // - an AST (`source` + `ast`) for the interpreter path, or
+      // - a compiled HIR representation (`compiled`) for the compiled execution path.
+      //
+      // When `compiled` is present, the module record's `source`/`ast` fields may be `None` as the
+      // compiled script already owns its own `SourceText`.
       let compiled = self.modules[idx].compiled.clone();
       let source = self.modules[idx]
         .source
@@ -2985,9 +2995,9 @@ impl ModuleGraph {
         // Non-TLA modules can execute via either:
         // - the compiled executor (HIR), if present and safe, or
         // - the AST interpreter (fallback).
-        if let Some(compiled) = compiled.clone() {
-          if !compiled.contains_async_generators && !compiled.requires_ast_fallback {
-            match crate::hir_exec::run_compiled_module(
+        if let Some(script) = compiled.clone() {
+          if !script.contains_async_generators && !script.requires_ast_fallback {
+            match run_compiled_module(
               vm,
               scope,
               host,
@@ -2996,7 +3006,7 @@ impl ModuleGraph {
               state.realm_id,
               module,
               module_env,
-              compiled,
+              script,
             ) {
               Ok(()) => {
                 state.next_member_index = state.next_member_index.saturating_add(1);
@@ -3491,7 +3501,7 @@ impl ModuleGraph {
         Some(script)
           if !script.requires_ast_fallback && !script.contains_async_generators && !has_tla =>
         {
-          crate::hir_exec::run_compiled_module(
+          run_compiled_module(
             vm,
             scope,
             host,
