@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+# When enabled, a `SiteLock` violation will hard-abort the renderer process after reporting
+# `NavigationFailed`. This is intended as a defense-in-depth fail-closed option.
+site_lock_violation_abort = []
+
 [dependencies]
 bincode = "1.3"
 fastrender-ipc = { path = "../fastrender-ipc" }

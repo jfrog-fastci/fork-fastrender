@@ -1899,6 +1899,7 @@ dependencies = [
 name = "fastrender-ipc"
 version = "0.1.0"
 dependencies = [
+ "publicsuffix",
  "serde",
  "sha2",
  "tempfile",

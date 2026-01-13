@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use publicsuffix::{List, Psl};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -198,6 +199,99 @@ impl Default for SiteKey {
   fn default() -> Self {
     // Keep `0` reserved as an "invalid/unspecified" opaque key.
     Self::Opaque(0)
+  }
+}
+
+/// How renderer processes are locked to sites/origins.
+///
+/// This is used to derive a [`SiteLock`] from a [`SiteKey`] when spawning a renderer process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SiteIsolationMode {
+  /// Lock a renderer process to a full origin (scheme + host + port).
+  PerOrigin,
+  /// Lock a renderer process to a schemeful site (scheme + registrable domain).
+  PerSite,
+}
+
+/// Defense-in-depth lock enforced by a renderer process.
+///
+/// The browser assigns one `SiteLock` per renderer process and the renderer must reject any
+/// navigation whose [`SiteKey`] does not match this lock.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SiteLock {
+  /// Full origin lock (scheme/host/port).
+  Origin(DocumentOrigin),
+  /// Schemeful site lock: scheme + registrable domain (eTLD+1).
+  SchemefulSite { scheme: String, registrable_domain: String },
+  /// Opaque lock for documents with opaque origins.
+  Opaque(u64),
+}
+
+impl SiteLock {
+  fn registrable_domain_fallback(host: &str) -> String {
+    // Fallback for hosts not covered by the public suffix list (e.g. `*.test`) and for
+    // non-DNS hosts like `localhost`.
+    let host = host.to_ascii_lowercase();
+    let mut labels = host.split('.').filter(|part| !part.is_empty());
+    let mut last = None::<&str>;
+    let mut second_last = None::<&str>;
+    for label in labels.by_ref() {
+      second_last = last;
+      last = Some(label);
+    }
+    match (second_last, last) {
+      (Some(a), Some(b)) => format!("{a}.{b}"),
+      _ => host,
+    }
+  }
+
+  fn registrable_domain(host: &str) -> String {
+    static PSL: OnceLock<List> = OnceLock::new();
+    let list = PSL.get_or_init(List::default);
+    let host = host.to_ascii_lowercase();
+    match list.domain(host.as_bytes()) {
+      Some(domain) => String::from_utf8_lossy(domain.as_bytes()).into_owned(),
+      None => Self::registrable_domain_fallback(&host),
+    }
+  }
+
+  /// Derive a renderer `SiteLock` from the browser-assigned [`SiteKey`].
+  pub fn from_site_key(site_key: &SiteKey, mode: SiteIsolationMode) -> Self {
+    match site_key {
+      SiteKey::Opaque(id) => SiteLock::Opaque(*id),
+      SiteKey::Origin(origin) => match mode {
+        SiteIsolationMode::PerOrigin => SiteLock::Origin(origin.clone()),
+        SiteIsolationMode::PerSite => match origin.host.as_deref() {
+          Some(host) => SiteLock::SchemefulSite {
+            scheme: origin.scheme.clone(),
+            registrable_domain: Self::registrable_domain(host),
+          },
+          None => SiteLock::Origin(origin.clone()),
+        },
+      },
+    }
+  }
+
+  /// True when `site_key` is permitted to commit inside this locked renderer process.
+  pub fn matches_site_key(&self, site_key: &SiteKey) -> bool {
+    match (self, site_key) {
+      (SiteLock::Opaque(a), SiteKey::Opaque(b)) => a == b,
+      (SiteLock::Origin(a), SiteKey::Origin(b)) => a == b,
+      (
+        SiteLock::SchemefulSite {
+          scheme,
+          registrable_domain,
+        },
+        SiteKey::Origin(origin),
+      ) => {
+        origin.scheme == *scheme
+          && origin
+            .host
+            .as_deref()
+            .is_some_and(|host| Self::registrable_domain(host) == *registrable_domain)
+      }
+      _ => false,
+    }
   }
 }
 
@@ -680,6 +774,13 @@ pub struct FrameBuffer {
 /// Messages sent from the browser process to a renderer process.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BrowserToRenderer {
+  /// Configure the renderer process with a per-process [`SiteLock`].
+  ///
+  /// This is a defense-in-depth measure: once a renderer is locked, it must reject any navigation
+  /// that would commit a different [`SiteKey`].
+  ///
+  /// The browser should send this once when the renderer process starts (before any navigations).
+  SetSiteLock { lock: SiteLock },
   /// Create per-frame state for `frame_id`.
   ///
   /// The browser is responsible for choosing a unique `FrameId` within the target renderer

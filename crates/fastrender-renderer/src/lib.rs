@@ -2,7 +2,7 @@
 
 use fastrender_ipc::{
   AffineTransform, BrowserToRenderer, ClipItem, FrameBuffer, FrameId, IpcTransport,
-  NavigationContext, ReferrerPolicy, RendererToBrowser, SandboxFlags, SubframeInfo,
+  NavigationContext, ReferrerPolicy, RendererToBrowser, SandboxFlags, SiteLock, SubframeInfo,
 };
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -644,6 +644,7 @@ fn image_urls_from_html(base: &Url, html: &str) -> Vec<Url> {
 pub struct RendererMainLoop<T: IpcTransport> {
   transport: T,
   frames: HashMap<FrameId, FrameState>,
+  site_lock: Option<SiteLock>,
 }
 
 impl<T: IpcTransport> RendererMainLoop<T> {
@@ -651,12 +652,25 @@ impl<T: IpcTransport> RendererMainLoop<T> {
     Self {
       transport,
       frames: HashMap::new(),
+      site_lock: None,
     }
   }
 
   pub fn run(mut self) -> Result<(), T::Error> {
     while let Some(msg) = self.transport.recv()? {
       match msg {
+        BrowserToRenderer::SetSiteLock { lock } => {
+          // Only allow setting the process lock once. The browser should send this during renderer
+          // initialization; changing the lock would defeat the purpose of defense-in-depth.
+          if self.site_lock.is_some() {
+            let _ = self.transport.send(RendererToBrowser::Error {
+              frame_id: None,
+              message: "SetSiteLock received after lock already set".to_string(),
+            });
+            continue;
+          }
+          self.site_lock = Some(lock);
+        }
         BrowserToRenderer::CreateFrame { frame_id } => {
           if self.frames.contains_key(&frame_id) {
             let _ = self.transport.send(RendererToBrowser::Error {
@@ -675,15 +689,34 @@ impl<T: IpcTransport> RendererMainLoop<T> {
           url,
           context,
         } => {
-          if let Some(frame) = self.frames.get_mut(&frame_id) {
-            frame.url = Some(url);
-            frame.navigation_context = context;
-          } else {
+          let Some(frame) = self.frames.get_mut(&frame_id) else {
             let _ = self.transport.send(RendererToBrowser::Error {
               frame_id: Some(frame_id),
               message: "Navigate for unknown frame".to_string(),
             });
+            continue;
+          };
+
+          if self
+            .site_lock
+            .as_ref()
+            .is_some_and(|lock| !lock.matches_site_key(&context.site_key))
+          {
+            let _ = self.transport.send(RendererToBrowser::NavigationFailed {
+              frame_id,
+              url: url.clone(),
+              error: "site lock violation".to_string(),
+            });
+
+            if cfg!(feature = "site_lock_violation_abort") {
+              std::process::abort();
+            }
+
+            continue;
           }
+
+          frame.url = Some(url);
+          frame.navigation_context = context;
         }
         BrowserToRenderer::Resize {
           frame_id,
@@ -789,6 +822,7 @@ impl<T: IpcTransport> RendererMainLoop<T> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use fastrender_ipc::{site_key_for_navigation, SiteIsolationMode};
   use std::sync::mpsc;
   use std::time::Duration;
 
@@ -1127,5 +1161,101 @@ mod tests {
       !subframes[1].opaque_origin,
       "allow-same-origin should disable opaque-origin forcing"
     );
+  }
+
+  #[test]
+  fn site_lock_rejects_cross_site_navigation() {
+    let (to_renderer_tx, to_renderer_rx) = mpsc::channel();
+    let (to_browser_tx, to_browser_rx) = mpsc::channel();
+
+    let join = std::thread::spawn(move || {
+      let transport = ChannelTransport {
+        rx: to_renderer_rx,
+        tx: to_browser_tx,
+      };
+      RendererMainLoop::new(transport).run().unwrap();
+    });
+
+    let lock_site_key = site_key_for_navigation("https://a.test/", None);
+    let lock = SiteLock::from_site_key(&lock_site_key, SiteIsolationMode::PerOrigin);
+    to_renderer_tx
+      .send(BrowserToRenderer::SetSiteLock { lock })
+      .unwrap();
+
+    let frame = FrameId(1);
+    to_renderer_tx
+      .send(BrowserToRenderer::CreateFrame { frame_id: frame })
+      .unwrap();
+    to_renderer_tx
+      .send(BrowserToRenderer::Resize {
+        frame_id: frame,
+        width: 1,
+        height: 1,
+        dpr: 1.0,
+      })
+      .unwrap();
+
+    to_renderer_tx
+      .send(BrowserToRenderer::RequestRepaint { frame_id: frame })
+      .unwrap();
+    let baseline = match to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+      RendererToBrowser::FrameReady {
+        frame_id,
+        buffer,
+        subframes,
+      } => {
+        assert_eq!(frame_id, frame);
+        assert!(subframes.is_empty());
+        buffer
+      }
+      other => panic!("unexpected message: {other:?}"),
+    };
+
+    let disallowed_url = "https://b.test/".to_string();
+    let disallowed_site_key = site_key_for_navigation(&disallowed_url, None);
+    to_renderer_tx
+      .send(BrowserToRenderer::Navigate {
+        frame_id: frame,
+        url: disallowed_url.clone(),
+        context: NavigationContext {
+          site_key: disallowed_site_key,
+          ..Default::default()
+        },
+      })
+      .unwrap();
+
+    let msg = to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    match msg {
+      RendererToBrowser::NavigationFailed { frame_id, url, error } => {
+        assert_eq!(frame_id, frame);
+        assert_eq!(url, disallowed_url);
+        assert!(error.contains("site lock"));
+      }
+      other => panic!("expected NavigationFailed, got {other:?}"),
+    }
+
+    // Repaint should still succeed, but should not reflect the rejected URL.
+    to_renderer_tx
+      .send(BrowserToRenderer::RequestRepaint { frame_id: frame })
+      .unwrap();
+    let after = match to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+      RendererToBrowser::FrameReady {
+        frame_id,
+        buffer,
+        subframes,
+      } => {
+        assert_eq!(frame_id, frame);
+        assert!(subframes.is_empty());
+        buffer
+      }
+      other => panic!("unexpected message: {other:?}"),
+    };
+    assert_eq!(
+      baseline.rgba8, after.rgba8,
+      "rejected navigation must not affect render output"
+    );
+
+    to_renderer_tx.send(BrowserToRenderer::Shutdown).unwrap();
+    join.join().unwrap();
   }
 }
