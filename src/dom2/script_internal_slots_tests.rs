@@ -125,3 +125,29 @@ fn clone_preserves_async_attribute_and_keeps_force_async_cleared() {
   assert!(!doc.has_attribute(cloned, "async").unwrap());
   assert!(!doc.node(cloned).script_force_async);
 }
+
+#[test]
+fn script_internal_slot_setters_do_not_bump_generation_or_mark_unclassified() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let script = doc.create_element("script", HTML_NAMESPACE);
+
+  // Ensure we start from a clean mutation log.
+  let _ = doc.take_mutations();
+  let gen0 = doc.mutation_generation();
+
+  doc.set_script_already_started(script, true).unwrap();
+  doc.set_script_force_async(script, false).unwrap();
+  doc.set_script_parser_document(script, true).unwrap();
+
+  assert_eq!(
+    doc.mutation_generation(),
+    gen0,
+    "per-script-element internal slot setters must not bump the render-affecting mutation generation"
+  );
+
+  let mutations = doc.take_mutations();
+  assert!(
+    mutations.is_empty() && !mutations.unclassified,
+    "per-script-element internal slot setters must not record render-affecting mutation metadata"
+  );
+}

@@ -4549,6 +4549,102 @@ mod tests {
   }
 
   #[test]
+  fn unclassified_dom2_mutation_forces_full_invalidation() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><template>hello</template><div id=\"visible\">visible</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+
+    // Mutating the inert template subtree should not invalidate by itself (see
+    // `mutate_dom_template_text_change_does_not_invalidate`).
+    let template_text = first_text_node_in_inert_template(doc.dom()).expect("template text node");
+    assert!(!doc.dom().is_connected_for_scripting(template_text));
+
+    // Perform an unclassified render-affecting mutation via `node_mut()`. This must prevent the
+    // "disconnected/inert-only" generation sync optimization from incorrectly treating the document
+    // as clean.
+    let visible = doc.dom().get_element_by_id("visible").expect("visible div");
+    let visible_text = first_text_child(doc.dom(), visible).expect("visible text node");
+
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_text_data(template_text, "updated")
+        .expect("set template text");
+
+      let node = dom.node_mut(visible_text);
+      let crate::dom2::NodeKind::Text { content } = &mut node.kind else {
+        panic!("expected visible text node");
+      };
+      content.clear();
+      content.push_str("changed");
+      true
+    });
+    assert!(changed);
+
+    assert!(
+      doc.render_if_needed()?.is_some(),
+      "unclassified mutations must invalidate even when only inert-only structured mutations are present"
+    );
+
+    let after = doc.invalidation_counters();
+    assert_eq!(
+      after.incremental_relayouts, before.incremental_relayouts,
+      "unclassified mutations should fall back to a full pipeline run (no incremental relayout)"
+    );
+    assert_eq!(after.full_restyles, before.full_restyles + 1);
+    assert_eq!(after.full_relayouts, before.full_relayouts + 1);
+    Ok(())
+  }
+
+  #[test]
+  fn unclassified_dom2_mutation_forces_full_invalidation_via_dom_host() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><template>hello</template><div id=\"visible\">visible</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+
+    let template_text = first_text_node_in_inert_template(doc.dom()).expect("template text node");
+    let visible = doc.dom().get_element_by_id("visible").expect("visible div");
+    let visible_text = first_text_child(doc.dom(), visible).expect("visible text node");
+
+    <BrowserDocumentDom2 as crate::js::DomHost>::mutate_dom(&mut doc, |dom| {
+      dom
+        .set_text_data(template_text, "updated")
+        .expect("set template text");
+
+      let node = dom.node_mut(visible_text);
+      let crate::dom2::NodeKind::Text { content } = &mut node.kind else {
+        panic!("expected visible text node");
+      };
+      content.clear();
+      content.push_str("changed");
+      ((), true)
+    });
+
+    assert!(
+      doc.render_if_needed()?.is_some(),
+      "DomHost::mutate_dom should treat unclassified mutations as full invalidations"
+    );
+
+    let after = doc.invalidation_counters();
+    assert_eq!(
+      after.incremental_relayouts, before.incremental_relayouts,
+      "unclassified mutations should fall back to a full pipeline run (no incremental relayout)"
+    );
+    assert_eq!(after.full_restyles, before.full_restyles + 1);
+    assert_eq!(after.full_relayouts, before.full_relayouts + 1);
+    Ok(())
+  }
+
+  #[test]
   fn mutation_observer_bookkeeping_does_not_invalidate_renderer() {
     let renderer = renderer_for_tests();
     let mut doc = BrowserDocumentDom2::new(
