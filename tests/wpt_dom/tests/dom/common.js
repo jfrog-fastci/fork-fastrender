@@ -1064,10 +1064,11 @@ function assertNodesEqual(actual, expected, msg) {
  * Given a DOMException, return the name (e.g., "HIERARCHY_REQUEST_ERR").
  */
 function getDomExceptionName(e) {
-    // Modern DOMException instances expose a string `name` (e.g.
-    // "HierarchyRequestError"). FastRender's DOMException objects also only
-    // expose {name, message}, so prefer this when available.
-    if (e && typeof e.name === "string") {
+    // Some DOMException implementations (e.g. FastRender's offline DOM runner)
+    // expose the standard `.name` string but do not implement legacy numeric
+    // `.code` + `*_ERR` constants. Prefer `.name` only in those environments so
+    // browsers with legacy support keep returning the same `*_ERR` strings.
+    if (e && typeof e.name === "string" && typeof e.code !== "number") {
         return e.name;
     }
 
@@ -1076,6 +1077,12 @@ function getDomExceptionName(e) {
         if (/^[A-Z_]+_ERR$/.test(prop) && e[prop] == e.code) {
             return prop;
         }
+    }
+
+    // Fall back to `.name` if legacy mapping failed for any reason (e.g. when
+    // constants are non-enumerable).
+    if (e && typeof e.name === "string") {
+        return e.name;
     }
 
     throw "Exception seems to not be a DOMException?  " + e;
