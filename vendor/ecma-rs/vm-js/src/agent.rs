@@ -988,6 +988,35 @@ mod error_report_tests {
   }
 
   #[test]
+  fn agent_error_report_termination_includes_stack_frames() {
+    let mut agent = new_agent();
+
+    let err = agent
+      .run_script(
+        "fuel_stack.js",
+        "1",
+        Budget {
+          // Parsing consumes at least one tick; use a budget that allows parsing to complete but
+          // terminates at script entry so the termination captures the script frame.
+          fuel: Some(1),
+          deadline: None,
+          check_time_every: 1,
+        },
+        None,
+      )
+      .unwrap_err();
+
+    let report = agent.error_report(&err);
+    assert_eq!(report.kind, "termination");
+    assert_eq!(report.termination_reason, Some(TerminationReason::OutOfFuel));
+    assert!(
+      !report.stack.is_empty(),
+      "expected termination report to include captured stack frames"
+    );
+    assert_eq!(&*report.stack[0].source, "fuel_stack.js");
+  }
+
+  #[test]
   fn agent_error_report_internal_error_kinds() {
     let mut agent = new_agent();
 
