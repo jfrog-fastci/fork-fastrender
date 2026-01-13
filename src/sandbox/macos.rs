@@ -114,7 +114,7 @@ fn sandbox_mode_override_from_env() -> io::Result<Option<MacosSandboxMode>> {
 
 fn apply_renderer_sandbox_inner(mode: MacosSandboxMode) -> io::Result<()> {
   match mode {
-    MacosSandboxMode::PureComputation => apply_strict_sandbox_named_first("pure-computation").map(|_| ()),
+    MacosSandboxMode::PureComputation => apply_strict_sandbox_hardened_profile(),
     MacosSandboxMode::RendererSystemFonts => {
       apply_profile_source_with_home_param(RENDERER_SYSTEM_FONTS_PROFILE)
     }
@@ -176,6 +176,11 @@ const RENDERER_SYSTEM_FONTS_PROFILE: &str = r#"(version 1)
 
 ;; Block all networking.
 (deny network*)
+
+;; Defense in depth: prevent "no network" bypasses by talking to system daemons over XPC/mach.
+;; `com.apple.nsurlsessiond` is a common NSURLSession helper that can perform network on behalf of
+;; the client.
+(deny mach-lookup (global-name "com.apple.nsurlsessiond"))
 
 ;; Block writes everywhere.
 (deny file-write*)
@@ -279,8 +284,20 @@ const STRICT_FALLBACK_PROFILE: &str = r#"(version 1)
 (allow file-ioctl (vnode-type CHAR-DEVICE))
 (allow sysctl-read)
 (allow mach-lookup)
+(deny mach-lookup (global-name "com.apple.nsurlsessiond"))
 (allow ipc-posix-shm)
 (allow ipc-posix-sem)
+"#;
+
+// Strict sandbox profile used when the system ships `pure-computation` as an importable SBPL file.
+//
+// We prefer this over `SANDBOX_NAMED` so we can layer additional defense-in-depth denies while still
+// inheriting Apple's upstream `pure-computation` profile semantics.
+const PURE_COMPUTATION_HARDENED_PROFILE: &str = r#"(version 1)
+(import "pure-computation.sb")
+
+;; Defense in depth: prevent "no network" bypasses via system XPC daemons.
+(deny mach-lookup (global-name "com.apple.nsurlsessiond"))
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,9 +309,11 @@ enum StrictSandboxBackend {
 // `sandbox_check` filters are not exposed in `libc` either. These values match `<sandbox.h>`.
 const SANDBOX_FILTER_NONE: libc::c_int = 0;
 const SANDBOX_FILTER_PATH: libc::c_int = 1;
+const SANDBOX_FILTER_GLOBAL_NAME: libc::c_int = 2;
 
 const OP_FILE_READ_DATA: &[u8] = b"file-read-data\0";
 const OP_FILE_READ_METADATA: &[u8] = b"file-read-metadata\0";
+const OP_MACH_LOOKUP: &[u8] = b"mach-lookup\0";
 const OP_NETWORK_OUTBOUND: &[u8] = b"network-outbound\0";
 
 fn cstr_from_bytes(bytes: &'static [u8]) -> &'static CStr {
@@ -364,6 +383,26 @@ pub fn sandbox_check_network_outbound() -> io::Result<bool> {
     cstr_from_bytes(OP_NETWORK_OUTBOUND),
     SANDBOX_FILTER_NONE,
     None,
+  )
+}
+
+/// Query whether the current process' Seatbelt sandbox would allow `mach-lookup` for a given
+/// Mach/XPC service name.
+///
+/// This is defense-in-depth against system daemons that can proxy privileged work (e.g. networking)
+/// over XPC. Callers can use this to assert that a "no network" sandbox also blocks access to
+/// `com.apple.nsurlsessiond` and similar services.
+pub fn sandbox_check_mach_lookup(service: &str) -> io::Result<bool> {
+  let service = CString::new(service).map_err(|_| {
+    io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "sandbox_check mach service contains NUL byte",
+    )
+  })?;
+  sandbox_check_inner(
+    cstr_from_bytes(OP_MACH_LOOKUP),
+    SANDBOX_FILTER_GLOBAL_NAME,
+    Some(service.as_c_str()),
   )
 }
 
@@ -481,6 +520,12 @@ fn error_indicates_unknown_profile(message: &str) -> bool {
     || lower.contains("no such profile")
     || lower.contains("profile not found")
     || lower.contains("invalid profile")
+    // `sandbox_init` can also fail while resolving `import` directives (e.g. if the target SBPL
+    // file is missing). Treat these as "missing profile" signals so we can fall back to the
+    // embedded strict profile.
+    || lower.contains("could not open")
+    || lower.contains("cannot open")
+    || lower.contains("failed to open")
 }
 
 fn apply_strict_sandbox_named_first(profile_name: &str) -> io::Result<StrictSandboxBackend> {
@@ -504,11 +549,25 @@ fn apply_strict_sandbox_named_first(profile_name: &str) -> io::Result<StrictSand
   }
 }
 
+fn apply_strict_sandbox_hardened_profile() -> io::Result<()> {
+  match apply_profile_source(PURE_COMPUTATION_HARDENED_PROFILE) {
+    Ok(()) => Ok(()),
+    Err(err) => {
+      if error_indicates_unknown_profile(&err.to_string()) {
+        apply_profile_source(STRICT_FALLBACK_PROFILE)
+      } else {
+        Err(err)
+      }
+    }
+  }
+}
+
 /// Apply a strict Seatbelt sandbox profile to the current process.
 ///
-/// This first attempts macOS's built-in `pure-computation` profile via
-/// `sandbox_init("pure-computation", SANDBOX_NAMED, ...)`. If that profile is unavailable or
-/// rejected as invalid, it retries using an embedded SBPL profile string via `SANDBOX_PROFILE`.
+/// This first attempts to apply a hardened SBPL profile that imports macOS's built-in
+/// `pure-computation` profile (`pure-computation.sb`) and layers additional defense-in-depth denies
+/// (for example, blocking `mach-lookup` to `com.apple.nsurlsessiond`). If the system profile is
+/// unavailable (or rejected as invalid), it falls back to an embedded strict SBPL profile string.
 ///
 /// ⚠️ This is irreversible for the lifetime of the process; tests must apply it in a dedicated
 /// child process.
@@ -522,7 +581,7 @@ pub fn apply_strict_sandbox() -> io::Result<()> {
     return apply_renderer_sandbox_inner(mode);
   }
 
-  apply_strict_sandbox_named_first("pure-computation").map(|_| ())
+  apply_strict_sandbox_hardened_profile()
 }
 
 /// Apply the macOS Seatbelt "pure-computation" sandbox profile to the current process.

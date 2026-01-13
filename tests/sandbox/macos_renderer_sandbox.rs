@@ -3,8 +3,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode};
 use fastrender::sandbox as sandbox_mod;
+use fastrender::sandbox::macos::{
+  apply_renderer_sandbox, sandbox_check_mach_lookup, MacosSandboxMode,
+};
 
 const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_CHILD";
 const MODE_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_MODE";
@@ -179,6 +181,15 @@ fn run_child() {
   let font_path = find_system_font_file();
 
   apply_renderer_sandbox(mode).expect("apply renderer sandbox");
+
+  // Defense-in-depth: "no network" should not be bypassable by talking to system daemons over
+  // mach/XPC (e.g. `nsurlsessiond` can perform network on behalf of the client).
+  assert_eq!(
+    sandbox_check_mach_lookup("com.apple.nsurlsessiond")
+      .expect("sandbox_check mach-lookup com.apple.nsurlsessiond"),
+    false,
+    "expected sandbox to deny mach-lookup to com.apple.nsurlsessiond",
+  );
 
   // HOME should never be readable/writable, even in the relaxed profile (system fonts only).
   assert_permission_denied(

@@ -36,14 +36,16 @@ Why Seatbelt is the current baseline:
 
 ## Default renderer profile (Seatbelt)
 
-FastRender’s strict baseline is the system-provided named profile:
+FastRender’s strict baseline is macOS’s `pure-computation` Seatbelt profile.
 
-- **`pure-computation`**
+Implementation detail: FastRender applies a small SBPL wrapper that **imports**
+`pure-computation.sb` and layers extra defense-in-depth denies (for example, blocking `mach-lookup`
+to `com.apple.nsurlsessiond` so “no network” cannot be bypassed via system XPC daemons).
 
-Repo reality detail: some macOS versions do not ship `pure-computation` (or treat it as invalid), so
-FastRender falls back to an embedded SBPL profile string. See:
+Repo reality detail: some macOS versions do not ship `pure-computation.sb` (or reject it as invalid),
+so FastRender falls back to an embedded SBPL profile string. See:
 
-- `src/sandbox/macos.rs` (`apply_strict_sandbox` / `STRICT_FALLBACK_PROFILE`)
+- `src/sandbox/macos.rs` (`apply_strict_sandbox` / `PURE_COMPUTATION_HARDENED_PROFILE` / `STRICT_FALLBACK_PROFILE`)
 
 There is also a renderer-friendly bring-up mode:
 
