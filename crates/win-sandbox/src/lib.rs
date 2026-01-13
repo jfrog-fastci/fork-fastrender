@@ -33,6 +33,12 @@
 //! implementation loads `userenv.dll` dynamically so binaries remain loadable on Windows builds
 //! that do not ship the AppContainer exports.
 //!
+//! Defense in depth:
+//! - When spawning AppContainer children, the spawners can optionally remove the broad
+//!   `ALL APPLICATION PACKAGES` group (SID `S-1-15-2-1`) from the created token via
+//!   `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (best-effort; older Windows builds may
+//!   reject this attribute).
+//!
 //! ## Restricted tokens (fallback)
 //!
 //! [`RestrictedToken`] builds the "fallback" sandbox token used when AppContainer is unavailable:
