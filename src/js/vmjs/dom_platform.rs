@@ -65,6 +65,9 @@ pub enum DomInterface {
   ProcessingInstruction,
   Element,
   HTMLElement,
+  HTMLMediaElement,
+  HTMLVideoElement,
+  HTMLAudioElement,
   HTMLInputElement,
   HTMLSelectElement,
   HTMLTextAreaElement,
@@ -136,6 +139,12 @@ impl DomInterface {
         if tag_name.eq_ignore_ascii_case("script") {
           return Self::HTMLScriptElement;
         }
+        if tag_name.eq_ignore_ascii_case("video") {
+          return Self::HTMLVideoElement;
+        }
+        if tag_name.eq_ignore_ascii_case("audio") {
+          return Self::HTMLAudioElement;
+        }
 
         Self::HTMLElement
       }
@@ -158,6 +167,8 @@ impl DomInterface {
       | Self::DocumentType => Some(Self::Node),
       Self::ShadowRoot => Some(Self::DocumentFragment),
       Self::HTMLElement => Some(Self::Element),
+      Self::HTMLMediaElement => Some(Self::HTMLElement),
+      Self::HTMLVideoElement | Self::HTMLAudioElement => Some(Self::HTMLMediaElement),
       Self::HTMLInputElement
       | Self::HTMLSelectElement
       | Self::HTMLTextAreaElement
@@ -203,6 +214,9 @@ pub struct DomPlatformPrototypes {
   pub processing_instruction: GcObject,
   pub element: GcObject,
   pub html_element: GcObject,
+  pub html_media_element: GcObject,
+  pub html_video_element: GcObject,
+  pub html_audio_element: GcObject,
   pub html_input_element: GcObject,
   pub html_select_element: GcObject,
   pub html_text_area_element: GcObject,
@@ -300,7 +314,7 @@ impl DomPlatform {
     // Root each object immediately after acquiring it. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(23);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(26);
     for proto in [
       prototypes.event_target,
       prototypes.node,
@@ -310,6 +324,9 @@ impl DomPlatform {
       prototypes.processing_instruction,
       prototypes.element,
       prototypes.html_element,
+      prototypes.html_media_element,
+      prototypes.html_video_element,
+      prototypes.html_audio_element,
       prototypes.html_input_element,
       prototypes.html_select_element,
       prototypes.html_text_area_element,
@@ -351,7 +368,7 @@ impl DomPlatform {
     // Root each object immediately after lookup. Under a tight heap limit, subsequent allocations
     // can trigger GC, and unrooted prototypes would be collected (turning their handles into stale
     // values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(23);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(26);
 
     macro_rules! lookup_proto {
       ($name:literal) => {{
@@ -378,6 +395,9 @@ impl DomPlatform {
     let proto_processing_instruction = lookup_proto!("ProcessingInstruction");
     let proto_element = lookup_proto!("Element");
     let proto_html_element = lookup_proto!("HTMLElement");
+    let proto_html_media_element = lookup_proto!("HTMLMediaElement");
+    let proto_html_video_element = lookup_proto!("HTMLVideoElement");
+    let proto_html_audio_element = lookup_proto!("HTMLAudioElement");
     let proto_html_input_element = lookup_proto!("HTMLInputElement");
     let proto_html_select_element = lookup_proto!("HTMLSelectElement");
     let proto_html_text_area_element = lookup_proto!("HTMLTextAreaElement");
@@ -405,6 +425,9 @@ impl DomPlatform {
         processing_instruction: proto_processing_instruction,
         element: proto_element,
         html_element: proto_html_element,
+        html_media_element: proto_html_media_element,
+        html_video_element: proto_html_video_element,
+        html_audio_element: proto_html_audio_element,
         html_input_element: proto_html_input_element,
         html_select_element: proto_html_select_element,
         html_text_area_element: proto_html_text_area_element,
@@ -436,7 +459,7 @@ impl DomPlatform {
     // Root each object immediately after allocation. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(23);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(26);
 
     // Prototype objects.
     let proto_event_target = scope.alloc_object()?;
@@ -459,6 +482,12 @@ impl DomPlatform {
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_element))?);
     let proto_html_element = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_element))?);
+    let proto_html_media_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_media_element))?);
+    let proto_html_video_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_video_element))?);
+    let proto_html_audio_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_audio_element))?);
     let proto_html_input_element = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_input_element))?);
     let proto_html_select_element = scope.alloc_object()?;
@@ -532,6 +561,15 @@ impl DomPlatform {
     scope
       .heap_mut()
       .object_set_prototype(proto_html_element, Some(proto_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_media_element, Some(proto_html_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_video_element, Some(proto_html_media_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_audio_element, Some(proto_html_media_element))?;
     for proto in [
       proto_html_input_element,
       proto_html_select_element,
@@ -571,6 +609,9 @@ impl DomPlatform {
         processing_instruction: proto_processing_instruction,
         element: proto_element,
         html_element: proto_html_element,
+        html_media_element: proto_html_media_element,
+        html_video_element: proto_html_video_element,
+        html_audio_element: proto_html_audio_element,
         html_input_element: proto_html_input_element,
         html_select_element: proto_html_select_element,
         html_text_area_element: proto_html_text_area_element,
@@ -688,6 +729,24 @@ impl DomPlatform {
       .heap_mut()
       .object_set_prototype(proto_html_element, Some(proto_element))?;
 
+    let proto_html_media_element = scope.alloc_object()?;
+    scope.push_root(Value::Object(proto_html_media_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_media_element, Some(proto_html_element))?;
+
+    let proto_html_video_element = scope.alloc_object()?;
+    scope.push_root(Value::Object(proto_html_video_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_video_element, Some(proto_html_media_element))?;
+
+    let proto_html_audio_element = scope.alloc_object()?;
+    scope.push_root(Value::Object(proto_html_audio_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_audio_element, Some(proto_html_media_element))?;
+
     let proto_html_input_element = scope.alloc_object()?;
     scope.push_root(Value::Object(proto_html_input_element))?;
     let proto_html_select_element = scope.alloc_object()?;
@@ -762,6 +821,9 @@ impl DomPlatform {
         processing_instruction: proto_processing_instruction,
         element: proto_element,
         html_element: proto_html_element,
+        html_media_element: proto_html_media_element,
+        html_video_element: proto_html_video_element,
+        html_audio_element: proto_html_audio_element,
         html_input_element: proto_html_input_element,
         html_select_element: proto_html_select_element,
         html_text_area_element: proto_html_text_area_element,
@@ -802,6 +864,9 @@ impl DomPlatform {
       DomInterface::ProcessingInstruction => self.prototypes.processing_instruction,
       DomInterface::Element => self.prototypes.element,
       DomInterface::HTMLElement => self.prototypes.html_element,
+      DomInterface::HTMLMediaElement => self.prototypes.html_media_element,
+      DomInterface::HTMLVideoElement => self.prototypes.html_video_element,
+      DomInterface::HTMLAudioElement => self.prototypes.html_audio_element,
       DomInterface::HTMLInputElement => self.prototypes.html_input_element,
       DomInterface::HTMLSelectElement => self.prototypes.html_select_element,
       DomInterface::HTMLTextAreaElement => self.prototypes.html_text_area_element,
@@ -1498,6 +1563,30 @@ impl DomPlatform {
     Ok(DomNodeKey::new(meta.document_id, meta.node_id))
   }
 
+  pub fn require_html_media_element_handle(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<DomNodeKey, VmError> {
+    self.require_interface_node_handle(heap, value, DomInterface::HTMLMediaElement)
+  }
+
+  pub fn require_html_video_element_handle(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<DomNodeKey, VmError> {
+    self.require_interface_node_handle(heap, value, DomInterface::HTMLVideoElement)
+  }
+
+  pub fn require_html_audio_element_handle(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<DomNodeKey, VmError> {
+    self.require_interface_node_handle(heap, value, DomInterface::HTMLAudioElement)
+  }
+
   pub fn require_text_handle(&mut self, heap: &Heap, value: Value) -> Result<DomNodeKey, VmError> {
     self.require_interface_node_handle(heap, value, DomInterface::Text)
   }
@@ -1558,6 +1647,30 @@ impl DomPlatform {
     Ok(self
       .require_html_text_area_element_handle(heap, value)?
       .node_id)
+  }
+
+  pub fn require_html_media_element_id(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<NodeId, VmError> {
+    self.require_interface_node_id(heap, value, DomInterface::HTMLMediaElement)
+  }
+
+  pub fn require_html_video_element_id(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<NodeId, VmError> {
+    self.require_interface_node_id(heap, value, DomInterface::HTMLVideoElement)
+  }
+
+  pub fn require_html_audio_element_id(
+    &mut self,
+    heap: &Heap,
+    value: Value,
+  ) -> Result<NodeId, VmError> {
+    self.require_interface_node_id(heap, value, DomInterface::HTMLAudioElement)
   }
 
   pub fn require_text_id(&mut self, heap: &Heap, value: Value) -> Result<NodeId, VmError> {
@@ -1733,6 +1846,13 @@ mod tests {
     // Element + HTMLElement + HTML*Element chain.
     let element_proto = install_stub_interface(scope, global, "Element", node_proto)?;
     let html_element_proto = install_stub_interface(scope, global, "HTMLElement", element_proto)?;
+
+    // HTMLMediaElement inherits from HTMLElement, and video/audio inherit from HTMLMediaElement.
+    let html_media_element_proto =
+      install_stub_interface(scope, global, "HTMLMediaElement", html_element_proto)?;
+    let _ = install_stub_interface(scope, global, "HTMLVideoElement", html_media_element_proto)?;
+    let _ = install_stub_interface(scope, global, "HTMLAudioElement", html_media_element_proto)?;
+
     for name in [
       "HTMLInputElement",
       "HTMLSelectElement",
@@ -1917,6 +2037,98 @@ mod tests {
     assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
 
     let err = platform.require_node_handle(scope.heap(), Value::Undefined);
+    assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
+    Ok(())
+  }
+
+  #[test]
+  fn media_element_brand_checks_allow_video_and_audio() -> Result<(), VmError> {
+    let mut runtime = make_runtime()?;
+    let (realm, heap) = split_runtime_realm(&mut runtime);
+    let mut scope = heap.scope();
+    let mut platform = DomPlatform::new(&mut scope, realm)?;
+
+    let document_obj = scope.alloc_object()?;
+    let document_key = WeakGcObject::from(document_obj);
+    let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      document_key,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
+    let document_id = super::document_id_from_key(document_key);
+
+    // HTMLVideoElement implements HTMLMediaElement.
+    let video_id = NodeId::from_index(1);
+    let video_key = DomNodeKey::new(document_id, video_id);
+    let video_wrapper = platform.get_or_create_wrapper(
+      &mut scope,
+      document_key,
+      video_id,
+      DomInterface::HTMLVideoElement,
+    )?;
+    let _video_root = scope.heap_mut().add_root(Value::Object(video_wrapper))?;
+
+    assert_eq!(
+      platform.require_html_media_element_handle(scope.heap(), Value::Object(video_wrapper))?,
+      video_key
+    );
+    assert_eq!(
+      platform.require_html_video_element_handle(scope.heap(), Value::Object(video_wrapper))?,
+      video_key
+    );
+    assert_eq!(
+      platform.require_html_media_element_id(scope.heap(), Value::Object(video_wrapper))?,
+      video_id
+    );
+    assert_eq!(
+      platform.require_html_video_element_id(scope.heap(), Value::Object(video_wrapper))?,
+      video_id
+    );
+    let err = platform.require_html_audio_element_handle(scope.heap(), Value::Object(video_wrapper));
+    assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
+
+    // HTMLAudioElement implements HTMLMediaElement.
+    let audio_id = NodeId::from_index(2);
+    let audio_key = DomNodeKey::new(document_id, audio_id);
+    let audio_wrapper = platform.get_or_create_wrapper(
+      &mut scope,
+      document_key,
+      audio_id,
+      DomInterface::HTMLAudioElement,
+    )?;
+    let _audio_root = scope.heap_mut().add_root(Value::Object(audio_wrapper))?;
+
+    assert_eq!(
+      platform.require_html_media_element_handle(scope.heap(), Value::Object(audio_wrapper))?,
+      audio_key
+    );
+    assert_eq!(
+      platform.require_html_audio_element_handle(scope.heap(), Value::Object(audio_wrapper))?,
+      audio_key
+    );
+    assert_eq!(
+      platform.require_html_media_element_id(scope.heap(), Value::Object(audio_wrapper))?,
+      audio_id
+    );
+    assert_eq!(
+      platform.require_html_audio_element_id(scope.heap(), Value::Object(audio_wrapper))?,
+      audio_id
+    );
+    let err = platform.require_html_video_element_handle(scope.heap(), Value::Object(audio_wrapper));
+    assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
+
+    // Non-media elements fail the HTMLMediaElement check.
+    let div_wrapper = platform.get_or_create_wrapper(
+      &mut scope,
+      document_key,
+      NodeId::from_index(3),
+      DomInterface::HTMLDivElement,
+    )?;
+    let _div_root = scope.heap_mut().add_root(Value::Object(div_wrapper))?;
+    let err = platform.require_html_media_element_handle(scope.heap(), Value::Object(div_wrapper));
     assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
     Ok(())
   }
@@ -2445,6 +2657,11 @@ mod tests {
     assert!(DomInterface::HTMLElement.implements(DomInterface::Node));
     assert!(DomInterface::HTMLElement.implements(DomInterface::EventTarget));
 
+    assert!(DomInterface::HTMLMediaElement.implements(DomInterface::HTMLElement));
+    assert!(DomInterface::HTMLMediaElement.implements(DomInterface::Element));
+    assert!(DomInterface::HTMLVideoElement.implements(DomInterface::HTMLMediaElement));
+    assert!(DomInterface::HTMLAudioElement.implements(DomInterface::HTMLMediaElement));
+
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::HTMLElement));
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::Element));
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::Node));
@@ -2452,6 +2669,7 @@ mod tests {
 
     assert!(!DomInterface::HTMLElement.implements(DomInterface::HTMLInputElement));
     assert!(!DomInterface::Element.implements(DomInterface::HTMLElement));
+    assert!(!DomInterface::HTMLMediaElement.implements(DomInterface::HTMLVideoElement));
   }
 
   #[test]
@@ -2553,6 +2771,28 @@ mod tests {
     assert_eq!(
       DomInterface::primary_for_node_kind(&kind),
       DomInterface::HTMLScriptElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "video".into(),
+      namespace: "".into(),
+      prefix: None,
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLVideoElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "audio".into(),
+      namespace: HTML_NAMESPACE.into(),
+      prefix: None,
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLAudioElement
     );
 
     let kind = NodeKind::Element {
