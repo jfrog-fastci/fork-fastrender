@@ -35,6 +35,8 @@ and others are scaffolding. A few important “don’t get surprised” points:
       see [`docs/ipc.md`](ipc.md) for the normative framing/cap invariants.
 - There are additional (more complete) IPC protocols already defined, even if not yet wired up
   end-to-end:
+  - Browser ↔ network protocol schema (serde messages + validation + `expected_fds()` planning):
+    [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs)
   - Full `ResourceFetcher` proxy protocol (JSON over TCP): [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs)
   - Bounded binary network transport with explicit per-field limits (request/response/events):
     [`src/net/transport.rs`](../src/net/transport.rs)
