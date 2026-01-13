@@ -2479,6 +2479,22 @@ pub fn install_window_url_bindings(
     let iter_proto = scope.alloc_object_with_prototype(Some(object_proto))?;
     scope.push_root(Value::Object(iter_proto))?;
 
+    // @@toStringTag branding for `Object.prototype.toString.call(params.entries())`.
+    let iter_tag = scope.alloc_string("URLSearchParams Iterator")?;
+    scope.push_root(Value::String(iter_tag))?;
+    scope.define_property(
+      iter_proto,
+      PropertyKey::from_symbol(to_string_tag),
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(iter_tag),
+          writable: false,
+        },
+      },
+    )?;
+
     let next_id = vm.register_native_call(urlsp_iterator_next_native)?;
     let next_name = scope.alloc_string("next")?;
     scope.push_root(Value::String(next_name))?;
@@ -2706,6 +2722,37 @@ mod tests {
     let params =
       realm.exec_script("Object.prototype.toString.call(new URLSearchParams('a=1&b=2'))")?;
     assert_eq!(get_string(realm.heap(), params), "[object URLSearchParams]");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn object_prototype_to_string_uses_url_search_params_iterator_to_string_tag() -> Result<(), VmError>
+  {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let entries = realm.exec_script(
+      "Object.prototype.toString.call(new URLSearchParams('a=1').entries())",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), entries),
+      "[object URLSearchParams Iterator]"
+    );
+
+    let keys =
+      realm.exec_script("Object.prototype.toString.call(new URLSearchParams('a=1').keys())")?;
+    assert_eq!(
+      get_string(realm.heap(), keys),
+      "[object URLSearchParams Iterator]"
+    );
+
+    let values =
+      realm.exec_script("Object.prototype.toString.call(new URLSearchParams('a=1').values())")?;
+    assert_eq!(
+      get_string(realm.heap(), values),
+      "[object URLSearchParams Iterator]"
+    );
 
     realm.teardown();
     Ok(())
