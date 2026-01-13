@@ -61,6 +61,10 @@ const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_ARCHITECTURE: usize = 5;
 const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_BITNESS: usize = 6;
 const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_MODEL: usize = 7;
 
+const UA_DATA_TO_JSON_SLOT_BRANDS: usize = 0;
+const UA_DATA_TO_JSON_SLOT_MOBILE: usize = 1;
+const UA_DATA_TO_JSON_SLOT_PLATFORM: usize = 2;
+
 const MAX_UA_DATA_STRING_CHARS: usize = 64;
 const MAX_UA_DATA_VERSION_CHARS: usize = 32;
 const MAX_UA_DATA_HINTS: usize = 32;
@@ -108,6 +112,11 @@ fn chrome_version_from_user_agent(user_agent: &str) -> Option<&str> {
   } else {
     Some(token)
   }
+}
+
+fn app_version_from_user_agent(user_agent: &str) -> &str {
+  // Historically `navigator.appVersion` is the UA string without the leading `Mozilla/`.
+  user_agent.strip_prefix("Mozilla/").unwrap_or(user_agent)
 }
 
 fn ua_data_info_from_env(env: &WindowEnv) -> UaDataInfo {
@@ -1361,6 +1370,46 @@ fn navigator_send_beacon_native(
   Ok(Value::Bool(true))
 }
 
+fn navigator_ua_data_to_json_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("NavigatorUAData.toJSON requires intrinsics"))?;
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let brands = slots
+    .get(UA_DATA_TO_JSON_SLOT_BRANDS)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let mobile = slots
+    .get(UA_DATA_TO_JSON_SLOT_MOBILE)
+    .copied()
+    .unwrap_or(Value::Bool(false));
+  let platform = slots
+    .get(UA_DATA_TO_JSON_SLOT_PLATFORM)
+    .copied()
+    .unwrap_or(Value::Undefined);
+
+  let result = scope.alloc_object()?;
+  scope.push_root(Value::Object(result))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(result, Some(intr.object_prototype()))?;
+
+  define_enumerable_read_only_vm_js(scope, result, "brands", brands)?;
+  define_enumerable_read_only_vm_js(scope, result, "mobile", mobile)?;
+  define_enumerable_read_only_vm_js(scope, result, "platform", platform)?;
+
+  Ok(Value::Object(result))
+}
+
 fn navigator_ua_data_get_high_entropy_values_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1779,6 +1828,9 @@ pub(crate) fn install_window_shims_vm_js(
       b: 0,
     },
   )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(navigator, Some(realm.intrinsics().object_prototype()))?;
   let user_agent_s = scope.alloc_string(env.user_agent)?;
   scope.push_root(Value::String(user_agent_s))?;
   define_read_only_vm_js(scope, navigator, "userAgent", Value::String(user_agent_s))?;
@@ -1796,6 +1848,46 @@ pub(crate) fn install_window_shims_vm_js(
   define_read_only_vm_js(scope, navigator, "cookieEnabled", Value::Bool(true))?;
   define_read_only_vm_js(scope, navigator, "hardwareConcurrency", Value::Number(4.0))?;
   define_read_only_vm_js(scope, navigator, "deviceMemory", Value::Number(8.0))?;
+
+  // Common `Navigator` identity fields that sites probe for Chromium compatibility.
+  // Keep deterministic and independent from the host machine.
+  let app_code_name_s = scope.alloc_string("Mozilla")?;
+  scope.push_root(Value::String(app_code_name_s))?;
+  define_read_only_vm_js(scope, navigator, "appCodeName", Value::String(app_code_name_s))?;
+
+  let app_name_s = scope.alloc_string("Netscape")?;
+  scope.push_root(Value::String(app_name_s))?;
+  define_read_only_vm_js(scope, navigator, "appName", Value::String(app_name_s))?;
+
+  let app_version = app_version_from_user_agent(env.user_agent);
+  let app_version_s = scope.alloc_string(app_version)?;
+  scope.push_root(Value::String(app_version_s))?;
+  define_read_only_vm_js(scope, navigator, "appVersion", Value::String(app_version_s))?;
+
+  let vendor_s = scope.alloc_string("Google Inc.")?;
+  scope.push_root(Value::String(vendor_s))?;
+  define_read_only_vm_js(scope, navigator, "vendor", Value::String(vendor_s))?;
+
+  let vendor_sub_s = scope.alloc_string("")?;
+  scope.push_root(Value::String(vendor_sub_s))?;
+  define_read_only_vm_js(scope, navigator, "vendorSub", Value::String(vendor_sub_s))?;
+
+  let product_s = scope.alloc_string("Gecko")?;
+  scope.push_root(Value::String(product_s))?;
+  define_read_only_vm_js(scope, navigator, "product", Value::String(product_s))?;
+
+  let product_sub_s = scope.alloc_string("20030107")?;
+  scope.push_root(Value::String(product_sub_s))?;
+  define_read_only_vm_js(scope, navigator, "productSub", Value::String(product_sub_s))?;
+
+  let max_touch_points = if ua_data_info.mobile { 5.0 } else { 0.0 };
+  define_read_only_vm_js(
+    scope,
+    navigator,
+    "maxTouchPoints",
+    Value::Number(max_touch_points),
+  )?;
+  define_read_only_vm_js(scope, navigator, "webdriver", Value::Bool(false))?;
 
   // `navigator.languages` is a `FrozenArray<DOMString>` in browsers. Model it as a real JS Array so
   // feature detection (`Array.isArray`) and common methods (`includes`, `join`) work as expected.
@@ -1911,6 +2003,28 @@ pub(crate) fn install_window_shims_vm_js(
   }
 
   define_read_only_vm_js(scope, user_agent_data, "brands", Value::Object(brands))?;
+
+  // `NavigatorUAData.toJSON()` should return a plain object suitable for JSON.stringify.
+  let to_json_call_id = vm.register_native_call(navigator_ua_data_to_json_native)?;
+  let to_json_name = scope.alloc_string("toJSON")?;
+  scope.push_root(Value::String(to_json_name))?;
+  let to_json_func = scope.alloc_native_function_with_slots(
+    to_json_call_id,
+    None,
+    to_json_name,
+    0,
+    &[
+      Value::Object(brands),
+      Value::Bool(ua_data_info.mobile),
+      Value::String(ua_platform_s),
+    ],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    to_json_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(to_json_func))?;
+  define_read_only_vm_js(scope, user_agent_data, "toJSON", Value::Object(to_json_func))?;
 
   let ghev_call_id = vm.register_native_call(navigator_ua_data_get_high_entropy_values_native)?;
   let ghev_name = scope.alloc_string("getHighEntropyValues")?;
@@ -2054,6 +2168,23 @@ pub fn install_window_shims(
   define_read_only_number(rt, navigator, "hardwareConcurrency", 4.0)?;
   define_read_only_number(rt, navigator, "deviceMemory", 8.0)?;
 
+  // Common `Navigator` identity fields expected by Chromium-oriented sniffing code.
+  define_read_only_string(rt, navigator, "appCodeName", "Mozilla")?;
+  define_read_only_string(rt, navigator, "appName", "Netscape")?;
+  define_read_only_string(
+    rt,
+    navigator,
+    "appVersion",
+    app_version_from_user_agent(env.user_agent),
+  )?;
+  define_read_only_string(rt, navigator, "vendor", "Google Inc.")?;
+  define_read_only_string(rt, navigator, "vendorSub", "")?;
+  define_read_only_string(rt, navigator, "product", "Gecko")?;
+  define_read_only_string(rt, navigator, "productSub", "20030107")?;
+  let max_touch_points = if ua_data_info.mobile { 5.0 } else { 0.0 };
+  define_read_only_number(rt, navigator, "maxTouchPoints", max_touch_points)?;
+  define_read_only_bool(rt, navigator, "webdriver", false)?;
+
   // UA Client Hints: `navigator.userAgentData` (NavigatorUAData).
   //
   // The legacy `VmJsRuntime` shim does not provide a full JS execution environment, but we still
@@ -2095,6 +2226,24 @@ pub fn install_window_shims(
   }
   let brands_key = prop_key(rt, "brands")?;
   rt.define_data_property(user_agent_data, brands_key, brands, false)?;
+
+  // `NavigatorUAData.toJSON()` should return a plain object suitable for JSON.stringify.
+  let to_json_brands = brands;
+  let to_json_mobile = ua_data_info.mobile;
+  let to_json_platform = ua_data_info.platform.clone();
+  let to_json = rt.alloc_function_value(move |rt, _this, _args| {
+    let result = rt.alloc_object_value()?;
+    let brands_key = prop_key(rt, "brands")?;
+    rt.define_data_property(result, brands_key, to_json_brands, true)?;
+    let mobile_key = prop_key(rt, "mobile")?;
+    rt.define_data_property(result, mobile_key, Value::Bool(to_json_mobile), true)?;
+    let platform_key = prop_key(rt, "platform")?;
+    let platform_value = rt.alloc_string_value(&to_json_platform)?;
+    rt.define_data_property(result, platform_key, platform_value, true)?;
+    Ok(result)
+  })?;
+  let to_json_key = prop_key(rt, "toJSON")?;
+  rt.define_data_property(user_agent_data, to_json_key, to_json, false)?;
 
   // `getHighEntropyValues(hints)`: return a thenable that resolves immediately.
   // (We cannot create a real `%Promise%` without a Realm.)
@@ -2299,14 +2448,14 @@ pub fn install_window_shims(
   let send_beacon_key = prop_key(rt, "sendBeacon")?;
   rt.define_data_property(navigator, send_beacon_key, send_beacon, false)?;
 
-  // `navigator.languages` is an array in browsers; represent it as a tiny array-like object.
-  let languages = rt.alloc_object_value()?;
+  // `navigator.languages` is an array in browsers; use a real JS Array so callers can use
+  // `Array.isArray` and the `length` property behaves as expected.
+  let languages = rt.alloc_array()?;
   for (idx, lang) in env.languages.iter().enumerate() {
     let idx_key = prop_key(rt, &idx.to_string())?;
     let lang_value = rt.alloc_string_value(lang)?;
     rt.define_data_property(languages, idx_key, lang_value, true)?;
   }
-  define_read_only_number(rt, languages, "length", env.languages.len() as f64)?;
   let languages_key = prop_key(rt, "languages")?;
   rt.define_data_property(navigator, languages_key, languages, false)?;
 
@@ -2373,6 +2522,7 @@ mod tests {
   use crate::dom2;
   use crate::js::{RunLimits, RunUntilIdleOutcome, WindowHost};
   use crate::style::media::MediaContext;
+  use serde_json;
   use selectors::context::QuirksMode;
   use std::time::Duration;
 
@@ -2427,6 +2577,27 @@ mod tests {
 
     let ua_data = get_prop(&mut rt, navigator, "userAgentData");
     assert!(matches!(ua_data, Value::Object(_)));
+  }
+
+  #[test]
+  fn legacy_navigator_languages_is_array_and_ua_data_to_json_is_present() {
+    let mut rt = VmJsRuntime::new();
+    let window = rt.alloc_object_value().unwrap();
+    let media = MediaContext::screen(800.0, 600.0);
+    install_window_shims(&mut rt, window, WindowEnv::from_media(media)).unwrap();
+
+    let navigator = get_prop(&mut rt, window, "navigator");
+    let languages = get_prop(&mut rt, navigator, "languages");
+    let Value::Object(languages_obj) = languages else {
+      panic!("expected navigator.languages to be an object");
+    };
+    assert_eq!(rt.heap().object_is_array(languages_obj).unwrap(), true);
+    assert_eq!(get_prop(&mut rt, languages, "length"), Value::Number(2.0));
+
+    let ua_data = get_prop(&mut rt, navigator, "userAgentData");
+    let to_json = get_prop(&mut rt, ua_data, "toJSON");
+    let json = rt.call_function(to_json, ua_data, &[]).unwrap();
+    assert!(matches!(json, Value::Object(_)));
   }
 
   #[test]
@@ -2862,5 +3033,84 @@ mod tests {
 
     let includes_en = host.exec_script("navigator.languages.includes('en')").unwrap();
     assert_eq!(includes_en, Value::Bool(true));
+  }
+
+  #[test]
+  fn navigator_common_identity_fields_and_ua_data_to_json_are_present() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+
+    assert_eq!(
+      host.exec_script("navigator.appCodeName === 'Mozilla'").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("navigator.appName === 'Netscape'").unwrap(),
+      Value::Bool(true)
+    );
+    let app_version = serde_json::to_string(app_version_from_user_agent(FASTRENDER_USER_AGENT)).unwrap();
+    assert_eq!(
+      host
+        .exec_script(&format!("navigator.appVersion === {app_version}"))
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("navigator.vendor === 'Google Inc.'").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("navigator.vendorSub === ''").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("navigator.product === 'Gecko'").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("navigator.productSub === '20030107'").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("navigator.maxTouchPoints === 0").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("navigator.webdriver === false").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host.exec_script("navigator.propertyIsEnumerable('appCodeName')").unwrap(),
+      Value::Bool(false)
+    );
+    assert_eq!(
+      host.exec_script("navigator.webdriver = true; navigator.webdriver").unwrap(),
+      Value::Bool(false)
+    );
+
+    assert_eq!(
+      host
+        .exec_script("typeof navigator.userAgentData.toJSON === 'function'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("navigator.userAgentData.toJSON().platform === 'Windows'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("Array.isArray(navigator.userAgentData.toJSON().brands)")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("navigator.userAgentData.toJSON().brands === navigator.userAgentData.brands")
+        .unwrap(),
+      Value::Bool(true)
+    );
   }
 }
