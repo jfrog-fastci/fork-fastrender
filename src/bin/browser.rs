@@ -1667,7 +1667,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           worker_join,
           &gpu,
           appearance_env,
-          applied_appearance,
+          applied_appearance.clone(),
           theme_accent,
           bookmarks_path.clone(),
           history_path.clone(),
@@ -1682,7 +1682,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         app.profile_autosave_tx = profile_autosave_tx.clone();
         app.home_url = home_url.clone();
-        app.browser_state.appearance = startup_appearance;
+        app.browser_state.appearance = startup_appearance.clone();
 
         app.startup(session_window);
 
@@ -8497,9 +8497,7 @@ impl App {
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
-          if let Some(tex) = self.tab_favicons.remove(&tab_id) {
-            tex.destroy(&mut self.egui_renderer);
-          }
+          self.move_tab_favicon_into_delayed_destroy(tab_id);
 
           let was_active = self.browser_state.active_tab_id() == Some(tab_id);
           if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
