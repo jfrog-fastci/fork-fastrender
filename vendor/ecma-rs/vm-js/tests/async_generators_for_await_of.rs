@@ -1,5 +1,7 @@
 use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
+mod _async_generator_support;
+
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
   // `for await...of` in async generators exercises async iteration + generator request queues +
@@ -17,58 +19,46 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 }
 
 fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
+  // First, ensure core async generator execution support exists. This checks `.next()` semantics and
+  // also drains any microtasks queued by the probe.
+  if !_async_generator_support::supports_async_generators(rt)? {
+    return Ok(false);
+  }
+
   let result: Result<bool, VmError> = (|| {
-    // vm-js historically parsed `async function*` but deliberately rejected it at runtime (via a
-    // throwable SyntaxError) while async generator semantics were unimplemented. These tests should
-    // start running automatically once that support lands.
-    let value = match rt.exec_script(
+    // Now probe `for await..of` specifically inside async generators.
+    match rt.exec_script(
       r#"
-        var supported = true;
-        try {
-          async function* __probe() {
-            for await (const x of [Promise.resolve(1)]) {
-              yield x;
-            }
-          }
-          // Trigger execution (and therefore `for await..of` evaluation) by enqueueing a `.next()`
-          // request. Any unimplemented async-generator or for-await-of machinery will surface to the
-          // host as a `VmError::Unimplemented`.
-          __probe().next();
-        } catch (e) {
-          // Only treat the known feature-detection SyntaxError as "unsupported". Any other exception
-          // should fail the test so we don't accidentally mask bugs once async generators exist.
-          if (e && e.name === "SyntaxError" && String(e.message).includes("async generator")) {
-            supported = false;
-          } else {
-            throw e;
+        async function* __probe() {
+          for await (const x of [Promise.resolve(1)]) {
+            yield x;
           }
         }
-        supported
+        __probe().next();
       "#,
     ) {
-      Ok(v) => v,
-      Err(VmError::Unimplemented(msg))
-        if msg.contains("async generator functions") || msg.contains("for await..of") =>
+      Ok(_) => {}
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(rt, &err)?
+          || matches!(err, VmError::Unimplemented(msg) if msg.contains("for await..of")) =>
       {
         return Ok(false);
       }
       Err(err) => return Err(err),
-    };
-    let supported = value == Value::Bool(true);
-    if supported {
-      // Running the microtask queue is required to surface host-level errors during async generator
-      // execution (including the `for await..of` unimplemented path).
-      match rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
-        Ok(()) => {}
-        Err(VmError::Unimplemented(msg))
-          if msg.contains("for await..of") || msg.contains("async generator functions") =>
-        {
-          return Ok(false);
-        }
-        Err(err) => return Err(err),
-      }
     }
-    Ok(supported)
+
+    // Running the microtask queue is required to surface host-level errors during async generator
+    // execution (including the `for await..of` unimplemented path).
+    match rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+      Ok(()) => Ok(true),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(rt, &err)?
+          || matches!(err, VmError::Unimplemented(msg) if msg.contains("for await..of")) =>
+      {
+        Ok(false)
+      }
+      Err(err) => Err(err),
+    }
   })();
 
   // Always clear the microtask/job queue after feature detection so we don't leak work into later

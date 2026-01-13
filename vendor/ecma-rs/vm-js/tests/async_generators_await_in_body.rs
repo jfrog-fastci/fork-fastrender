@@ -1,4 +1,6 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+mod _async_generator_support;
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -14,42 +16,6 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
     panic!("expected string, got {value:?}");
   };
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
-}
-
-fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
-  match err {
-    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
-    _ => {}
-  }
-
-  let Some(thrown) = err.thrown_value() else {
-    return Ok(false);
-  };
-  let Value::Object(err_obj) = thrown else {
-    return Ok(false);
-  };
-
-  // vm-js historically feature-detects async generator functions by throwing a SyntaxError at runtime
-  // (instead of returning a host-level `VmError::Unimplemented`), so test harnesses can use
-  // try/catch. Treat that specific error as "feature not implemented" so this test can land before
-  // async generators are supported.
-  let syntax_error_proto = rt.realm().intrinsics().syntax_error_prototype();
-  if rt.heap.object_prototype(err_obj)? != Some(syntax_error_proto) {
-    return Ok(false);
-  }
-
-  let mut scope = rt.heap_mut().scope();
-  scope.push_root(Value::Object(err_obj))?;
-
-  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
-  let Some(Value::String(message_s)) = scope
-    .heap()
-    .object_get_own_data_property_value(err_obj, &message_key)?
-  else {
-    return Ok(false);
-  };
-  let message = scope.heap().get_string(message_s)?.to_utf8_lossy();
-  Ok(message == "async generator functions")
 }
 
 #[test]
@@ -75,7 +41,11 @@ fn internal_await_delays_first_yield() -> Result<(), VmError> {
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     // The generator starts running synchronously until it hits `await`. At this point it is
@@ -125,7 +95,11 @@ fn next_requests_are_queued_across_internal_await() -> Result<(), VmError> {
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -170,7 +144,11 @@ fn next_requests_queue_across_internal_await_after_first_yield() -> Result<(), V
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -214,7 +192,11 @@ fn return_request_is_queued_across_internal_await_before_first_yield() -> Result
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "s");
@@ -261,7 +243,11 @@ fn throw_request_is_queued_across_internal_await_before_first_yield() -> Result<
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "s");
@@ -307,7 +293,11 @@ fn return_request_is_queued_across_internal_await_after_first_yield() -> Result<
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -319,7 +309,10 @@ fn return_request_is_queued_across_internal_await_after_first_yield() -> Result<
     );
 
     let value = rt.exec_script("log")?;
-    assert_eq!(value_to_string(&rt, value), "a|n1:1:falseb|n2:2:false|r:x:true");
+    assert_eq!(
+      value_to_string(&rt, value),
+      "a|n1:1:falseb|n2:2:false|r:x:true"
+    );
     Ok(())
   })();
 
@@ -356,7 +349,11 @@ fn throw_request_is_queued_across_internal_await_after_first_yield() -> Result<(
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -368,7 +365,10 @@ fn throw_request_is_queued_across_internal_await_after_first_yield() -> Result<(
     );
 
     let value = rt.exec_script("log")?;
-    assert_eq!(value_to_string(&rt, value), "a|n1:1:falseb|n2:2:false|t:boom");
+    assert_eq!(
+      value_to_string(&rt, value),
+      "a|n1:1:falseb|n2:2:false|t:boom"
+    );
     Ok(())
   })();
 

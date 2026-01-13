@@ -1,4 +1,6 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+mod _async_generator_support;
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -16,50 +18,10 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
-fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
-  match err {
-    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
-    _ => {}
-  }
-
-  let Some(thrown) = err.thrown_value() else {
-    return Ok(false);
-  };
-  let Value::Object(err_obj) = thrown else {
-    return Ok(false);
-  };
-
-  let syntax_error_proto = rt.realm().intrinsics().syntax_error_prototype();
-  if rt.heap().object_prototype(err_obj)? != Some(syntax_error_proto) {
-    return Ok(false);
-  }
-
-  let mut scope = rt.heap_mut().scope();
-  scope.push_root(Value::Object(err_obj))?;
-
-  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
-  let Some(Value::String(message_s)) =
-    scope.heap().object_get_own_data_property_value(err_obj, &message_key)?
-  else {
-    return Ok(false);
-  };
-
-  Ok(scope.heap().get_string(message_s)?.to_utf8_lossy() == "async generator functions")
-}
-
-fn supports_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  // Detect runtime support (call semantics), not just parsing/prototype wiring.
-  match rt.exec_script("async function* __ag_support() {} void __ag_support();") {
-    Ok(_) => Ok(true),
-    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
-    Err(err) => Err(err),
-  }
-}
-
 #[test]
 fn yield_star_prefers_async_iterator_method() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  if !supports_async_generators(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
@@ -98,7 +60,7 @@ fn yield_star_prefers_async_iterator_method() -> Result<(), VmError> {
 #[test]
 fn yield_star_uses_sync_iterator_protocol_for_arrays() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  if !supports_async_generators(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 

@@ -1,5 +1,7 @@
 use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
+mod _async_generator_support;
+
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
   // `for await...of` over async generator objects exercises async iteration + Promise/job queuing.
@@ -16,46 +18,11 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
-fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  // vm-js historically parsed `async function*` but deliberately rejected it at runtime (via a
-  // throwable SyntaxError) while async generator semantics were unimplemented. These tests should
-  // start running automatically once that support lands.
-  let value = match rt.exec_script(
-    r#"
-      try {
-        var f = (async function* () { yield 1; });
-        // Call `.next()` to ensure async generator execution is implemented, not just syntax.
-        f().next();
-        true;
-      } catch (e) {
-        // Only treat the known feature-detection SyntaxError as "unsupported". Any other exception
-        // should fail the test so we don't accidentally mask bugs once async generators exist.
-        if (e && e.name === "SyntaxError" && String(e.message).includes("async generator functions")) {
-          false;
-        } else {
-          throw e;
-        }
-      }
-    "#,
-  ) {
-    Ok(v) => v,
-    Err(VmError::Unimplemented(msg)) if msg.contains("async generator functions") => {
-      return Ok(false);
-    }
-    Err(err) => return Err(err),
-  };
-  let supported = value == Value::Bool(true);
-  if supported {
-    rt.teardown_microtasks();
-  }
-  Ok(supported)
-}
-
 #[test]
 fn for_await_break_closes_async_generator() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  if !async_generators_supported(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
@@ -97,7 +64,7 @@ fn for_await_break_closes_async_generator() -> Result<(), VmError> {
 fn for_await_throw_closes_async_generator_before_catch() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  if !async_generators_supported(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
@@ -145,7 +112,7 @@ fn for_await_throw_closes_async_generator_before_catch() -> Result<(), VmError> 
 fn for_await_return_closes_async_generator() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  if !async_generators_supported(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
@@ -187,7 +154,7 @@ fn for_await_return_closes_async_generator() -> Result<(), VmError> {
 fn for_await_break_awaits_async_generator_finally_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  if !async_generators_supported(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
@@ -268,7 +235,7 @@ fn for_await_break_awaits_async_generator_finally_await() -> Result<(), VmError>
 fn for_await_return_awaits_async_generator_finally_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  if !async_generators_supported(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
@@ -348,7 +315,7 @@ fn for_await_return_awaits_async_generator_finally_await() -> Result<(), VmError
 fn for_await_throw_awaits_async_generator_finally_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  if !async_generators_supported(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
@@ -426,7 +393,7 @@ fn for_await_throw_awaits_async_generator_finally_await() -> Result<(), VmError>
 fn for_await_break_rejects_if_async_generator_finally_await_rejects() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  if !async_generators_supported(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
@@ -505,7 +472,7 @@ fn for_await_break_rejects_if_async_generator_finally_await_rejects() -> Result<
 fn for_await_return_rejects_if_async_generator_finally_await_rejects() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  if !async_generators_supported(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
@@ -582,7 +549,7 @@ fn for_await_return_rejects_if_async_generator_finally_await_rejects() -> Result
 fn for_await_throw_rejects_if_async_generator_finally_await_rejects() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  if !async_generators_supported(&mut rt)? {
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 

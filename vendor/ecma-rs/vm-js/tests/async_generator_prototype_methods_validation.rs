@@ -3,6 +3,8 @@ use vm_js::{
   VmError, VmOptions,
 };
 
+mod _async_generator_support;
+
 fn get_own_data_property(
   scope: &mut Scope<'_>,
   obj: GcObject,
@@ -49,42 +51,14 @@ fn assert_function_name_and_length(
   let Value::String(name_s) = name else {
     panic!("expected function name to be a string, got {name:?}");
   };
-  assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), expected_name);
+  assert_eq!(
+    scope.heap().get_string(name_s)?.to_utf8_lossy(),
+    expected_name
+  );
 
   let length = get_own_data_property(scope, func, "length")?.expect("missing function length");
   assert_eq!(length, Value::Number(expected_length));
   Ok(())
-}
-
-fn is_async_generator_syntax_unsupported(
-  scope: &mut Scope<'_>,
-  intr: &vm_js::Intrinsics,
-  err: &VmError,
-) -> Result<bool, VmError> {
-  if let VmError::Unimplemented(msg) = err {
-    return Ok(msg.contains("async generator functions"));
-  }
-
-  let Some(thrown) = err.thrown_value() else {
-    return Ok(false);
-  };
-  let Value::Object(obj) = thrown else {
-    return Ok(false);
-  };
-
-  // Root the error object across message property access.
-  let mut scope = scope.reborrow();
-  scope.push_root(thrown)?;
-
-  if scope.heap().object_prototype(obj)? != Some(intr.syntax_error_prototype()) {
-    return Ok(false);
-  }
-
-  let message = get_own_data_property(&mut scope, obj, "message")?;
-  let Some(Value::String(message_s)) = message else {
-    return Ok(false);
-  };
-  Ok(scope.heap().get_string(message_s)?.to_utf8_lossy() == "async generator functions")
 }
 
 #[test]
@@ -106,8 +80,7 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
       rt.teardown_microtasks();
     }
     Err(err) => {
-      let mut scope = rt.heap.scope();
-      if is_async_generator_syntax_unsupported(&mut scope, &intr, &err)? {
+      if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? {
         return Ok(());
       }
       return Err(err);
@@ -119,8 +92,7 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
   match rt.exec_script("var it = g();") {
     Ok(_) => {}
     Err(err) => {
-      let mut scope = rt.heap.scope();
-      if is_async_generator_syntax_unsupported(&mut scope, &intr, &err)? {
+      if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? {
         return Ok(());
       }
       return Err(err);
@@ -204,7 +176,12 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
 
       let err = rt
         .vm
-        .call_without_host(&mut scope, Value::Object(return_), this, &[Value::Undefined])
+        .call_without_host(
+          &mut scope,
+          Value::Object(return_),
+          this,
+          &[Value::Undefined],
+        )
         .unwrap_err();
       assert_is_type_error(&mut scope, &intr, err)?;
 
@@ -221,7 +198,12 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
 
     let err = rt
       .vm
-      .call_without_host(&mut scope, Value::Object(next), Value::Object(obj), &[Value::Undefined])
+      .call_without_host(
+        &mut scope,
+        Value::Object(next),
+        Value::Object(obj),
+        &[Value::Undefined],
+      )
       .unwrap_err();
     assert_is_type_error(&mut scope, &intr, err)?;
 

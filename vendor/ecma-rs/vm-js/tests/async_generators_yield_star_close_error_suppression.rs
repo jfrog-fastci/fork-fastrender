@@ -1,4 +1,6 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+mod _async_generator_support;
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -14,37 +16,6 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
     panic!("expected string, got {value:?}");
   };
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
-}
-
-fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
-  match err {
-    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
-    _ => {}
-  }
-
-  let Some(thrown) = err.thrown_value() else {
-    return Ok(false);
-  };
-  let Value::Object(err_obj) = thrown else {
-    return Ok(false);
-  };
-
-  let syntax_error_proto = rt.realm().intrinsics().syntax_error_prototype();
-  if rt.heap().object_prototype(err_obj)? != Some(syntax_error_proto) {
-    return Ok(false);
-  }
-
-  let mut scope = rt.heap_mut().scope();
-  scope.push_root(Value::Object(err_obj))?;
-
-  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
-  let Some(Value::String(message_s)) =
-    scope.heap().object_get_own_data_property_value(err_obj, &message_key)?
-  else {
-    return Ok(false);
-  };
-
-  Ok(scope.heap().get_string(message_s)?.to_utf8_lossy() == "async generator functions")
 }
 
 #[test]
@@ -98,7 +69,11 @@ fn yield_star_throw_suppresses_close_error_from_return_getter() -> Result<(), Vm
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -171,7 +146,11 @@ fn yield_star_return_does_not_suppress_close_error_from_return_getter() -> Resul
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -245,7 +224,11 @@ fn yield_star_throw_suppresses_close_error_from_return_non_callable() -> Result<
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -276,7 +259,8 @@ fn yield_star_throw_suppresses_close_error_from_return_non_callable() -> Result<
 }
 
 #[test]
-fn yield_star_return_does_not_suppress_close_error_from_return_non_callable() -> Result<(), VmError> {
+fn yield_star_return_does_not_suppress_close_error_from_return_non_callable() -> Result<(), VmError>
+{
   let mut rt = new_runtime();
 
   let result: Result<(), VmError> = (|| {
@@ -317,7 +301,11 @@ fn yield_star_return_does_not_suppress_close_error_from_return_non_callable() ->
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err)
+        if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? =>
+      {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
