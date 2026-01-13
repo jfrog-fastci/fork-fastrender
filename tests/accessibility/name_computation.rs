@@ -92,6 +92,34 @@ fn control_value_and_placeholder_fallbacks() {
 }
 
 #[test]
+fn input_button_value_empty_falls_back_to_default_label() {
+  let html = r#"
+    <html>
+      <body>
+        <input id="submit-empty" type="submit" value="" />
+        <input id="reset-ws" type="reset" value="   " />
+        <input id="button-empty" type="button" value="" />
+        <input id="submit-nonempty" type="submit" value="Send" />
+      </body>
+    </html>
+  "#;
+
+  let tree = render_accessibility_tree(html);
+
+  let submit_empty = find_by_id(&tree, "submit-empty").expect("submit-empty node");
+  assert_eq!(submit_empty.name.as_deref(), Some("Submit"));
+
+  let reset_ws = find_by_id(&tree, "reset-ws").expect("reset-ws node");
+  assert_eq!(reset_ws.name.as_deref(), Some("Reset"));
+
+  let button_empty = find_by_id(&tree, "button-empty").expect("button-empty node");
+  assert_eq!(button_empty.name.as_deref(), Some("Button"));
+
+  let submit_nonempty = find_by_id(&tree, "submit-nonempty").expect("submit-nonempty node");
+  assert_eq!(submit_nonempty.name.as_deref(), Some("Send"));
+}
+
+#[test]
 fn select_selected_option_is_value_not_name() {
   let html = r#"
     <html>

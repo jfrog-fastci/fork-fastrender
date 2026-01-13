@@ -1,7 +1,7 @@
 use fastrender::accessibility::{AccessibilityNode, CheckState};
 use fastrender::api::FastRender;
 use fastrender::dom::{enumerate_dom_ids, DomNode};
-use fastrender::interaction::state::TextEditPaintState;
+use fastrender::interaction::state::{DocumentSelectionState, TextEditPaintState};
 use fastrender::interaction::InteractionState;
 use fastrender::text::caret::CaretAffinity;
 use rustc_hash::FxHashSet;
@@ -131,7 +131,7 @@ fn accessibility_exports_selection_debug_fields() {
     focused: Some(text_id),
     focus_visible: true,
     focus_chain: vec![text_id],
-    document_has_selection: true,
+    document_selection: Some(DocumentSelectionState::All),
     ..InteractionState::default()
   };
   state.text_edit = Some(TextEditPaintState {
@@ -205,10 +205,22 @@ fn interaction_engine_document_selection_flag_is_synced() {
   let scroll = ScrollState::default();
 
   let mut engine = InteractionEngine::new();
-  assert!(!engine.interaction_state().document_has_selection);
+  assert!(
+    !engine
+      .interaction_state()
+      .document_selection
+      .as_ref()
+      .is_some_and(|sel| sel.has_highlight())
+  );
 
   assert!(engine.clipboard_select_all(&mut dom));
-  assert!(engine.interaction_state().document_has_selection);
+  assert!(
+    engine
+      .interaction_state()
+      .document_selection
+      .as_ref()
+      .is_some_and(|sel| sel.has_highlight())
+  );
 
   assert!(engine.pointer_down(
     &mut dom,
@@ -217,5 +229,11 @@ fn interaction_engine_document_selection_flag_is_synced() {
     &scroll,
     Point::new(1.0, 1.0),
   ));
-  assert!(!engine.interaction_state().document_has_selection);
+  assert!(
+    !engine
+      .interaction_state()
+      .document_selection
+      .as_ref()
+      .is_some_and(|sel| sel.has_highlight())
+  );
 }

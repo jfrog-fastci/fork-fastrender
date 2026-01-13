@@ -957,6 +957,7 @@ impl<'a, 'state> BuildContext<'a, 'state> {
                           .node
                           .get_attribute_ref("value")
                           .map(normalize_whitespace)
+                          .filter(|value| !value.is_empty())
                           .or_else(|| default_button_label(&input_type).map(|s| s.to_string()));
                         if let Some(label) = label {
                           if !label.is_empty() {
