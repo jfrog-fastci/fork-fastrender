@@ -189,6 +189,9 @@ The session file format is versioned (currently v2) and includes:
 
 - One or more windows (each with tabs + active tab index)
 - Per-tab zoom
+- Best-effort per-tab scroll restoration
+- Pinned tabs and tab groups (when used)
+- The configured home page URL
 - Best-effort window geometry (position/size/maximized) when available
 - A crash marker (`did_exit_cleanly`) for detecting unclean exits
 - Appearance settings (theme mode, high contrast, reduced motion, UI scale)
