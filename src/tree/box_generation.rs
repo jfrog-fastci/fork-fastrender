@@ -4467,6 +4467,30 @@ fn generate_boxes_for_styled_into(
     owned.display = display;
     Arc::new(owned)
   }
+
+  fn html_represents_nothing_element(tag: &str) -> bool {
+    // HTML defines a set of elements that "represent nothing" and must never generate boxes,
+    // regardless of any authored `display` overrides (unlike `[hidden]`, which is overrideable).
+    //
+    // This list mirrors the subset of HTML elements that FastRender can encounter in real pages
+    // and that browsers suppress unconditionally during box generation.
+    tag.eq_ignore_ascii_case("head")
+      || tag.eq_ignore_ascii_case("style")
+      || tag.eq_ignore_ascii_case("script")
+      || tag.eq_ignore_ascii_case("meta")
+      || tag.eq_ignore_ascii_case("link")
+      || tag.eq_ignore_ascii_case("title")
+      || tag.eq_ignore_ascii_case("base")
+      || tag.eq_ignore_ascii_case("basefont")
+      || tag.eq_ignore_ascii_case("datalist")
+      || tag.eq_ignore_ascii_case("noembed")
+      || tag.eq_ignore_ascii_case("noframes")
+      || tag.eq_ignore_ascii_case("param")
+      || tag.eq_ignore_ascii_case("area")
+      || tag.eq_ignore_ascii_case("map")
+      || tag.eq_ignore_ascii_case("source")
+      || tag.eq_ignore_ascii_case("track")
+  }
   let mut stack: Vec<Frame<'_>> = Vec::new();
   stack.push(Frame::new(styled, false));
 
@@ -4558,6 +4582,22 @@ fn generate_boxes_for_styled_into(
             } else {
               out.push(box_node);
             }
+            continue;
+          }
+        }
+
+        // HTML "represents nothing" elements must never generate boxes, even if author CSS tries
+        // to force them visible with `display:block !important`.
+        if let DomNodeType::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &styled.node.node_type
+        {
+          if (namespace.is_empty() || namespace == HTML_NAMESPACE)
+            && html_represents_nothing_element(tag_name)
+          {
+            stack.pop();
             continue;
           }
         }

@@ -964,6 +964,33 @@ fn generate_box_tree_includes_marker_from_marker_styles() {
 }
 
 #[test]
+fn html_represents_nothing_elements_do_not_render_even_with_authored_display() {
+  let html = "<html><head><style>script{display:block}script::before{content:'X'}</style></head><body><script>SHOULD_NOT_RENDER</script><p>OK</p></body></html>";
+  let dom = dom::parse_html(html).expect("parse html");
+  let stylesheet = extract_css(&dom).expect("extract css");
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+  let box_tree = generate_box_tree(&styled);
+
+  let mut texts = Vec::new();
+  collect_text(&box_tree.root, &mut texts);
+  let rendered = texts.join("");
+
+  assert!(
+    rendered.contains("OK"),
+    "expected normal content to render, got: {rendered:?}"
+  );
+  assert!(
+    !rendered.contains("SHOULD_NOT_RENDER"),
+    "script contents must not render, got: {rendered:?}"
+  );
+  assert!(
+    !rendered.contains('X'),
+    "script pseudo-elements must not render, got: {rendered:?}"
+  );
+}
+
+#[test]
 fn audio_generates_replaced_box_with_fallback_size() {
   let html = "<html><body><audio controls src=\"sound.mp3\"></audio></body></html>";
   let dom = crate::dom::parse_html(html).expect("parse");
