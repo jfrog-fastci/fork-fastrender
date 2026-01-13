@@ -58,6 +58,10 @@ pub struct UiMotionDurations {
   pub focus_ring: f32,
   /// Fade in/out duration for the loading progress indicator (seconds).
   pub progress_fade: f32,
+  /// Lift/glow duration for the tab drag ghost (seconds).
+  pub tab_drag_lift: f32,
+  /// Glide duration for the tab-strip drop indicator line while dragging (seconds).
+  pub tab_drag_indicator: f32,
 }
 
 impl Default for UiMotionDurations {
@@ -69,6 +73,8 @@ impl Default for UiMotionDurations {
       popup_open: 0.14,
       focus_ring: 0.14,
       progress_fade: 0.18,
+      tab_drag_lift: 0.10,
+      tab_drag_indicator: 0.10,
     }
   }
 }

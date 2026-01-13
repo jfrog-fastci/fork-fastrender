@@ -270,6 +270,30 @@ fn group_color_fill(color: TabGroupColor) -> Color32 {
   Color32::from_rgba_unmultiplied(r, g, b, 48)
 }
 
+fn compute_tab_insertion_index(
+  pointer_x: f32,
+  tab_rects: &[(TabId, Rect)],
+  dragged_id: TabId,
+) -> usize {
+  if !pointer_x.is_finite() {
+    return 0;
+  }
+
+  // Compare against tab centers (ignoring the dragged tab itself). We intentionally treat equality
+  // as being on the "after" side so the boundary is deterministic.
+  let mut insertion_index: usize = 0;
+  for (tab_id, rect) in tab_rects {
+    if *tab_id == dragged_id {
+      continue;
+    }
+    if pointer_x < rect.center().x {
+      break;
+    }
+    insertion_index += 1;
+  }
+  insertion_index
+}
+
 #[cfg(feature = "browser_ui")]
 fn drag_offset_id() -> egui::Id {
   egui::Id::new("tab_strip_drag_offset")
@@ -2320,16 +2344,7 @@ pub(super) fn tab_strip_ui(
     if tab_rects_for_drag.len() >= 2 {
       // Determine the insertion point by comparing the pointer x coordinate against the centers of
       // each *other* tab.
-      let mut idx: usize = 0;
-      for (tab_id, rect) in tab_rects_for_drag {
-        if *tab_id == dragging_tab_id {
-          continue;
-        }
-        if pos.x < rect.center().x {
-          break;
-        }
-        idx += 1;
-      }
+      let idx = compute_tab_insertion_index(pos.x, tab_rects_for_drag, dragging_tab_id);
       insertion_index = Some(idx);
 
       // Map the insertion point (computed from visible tab rects) back to an index into
@@ -2433,7 +2448,7 @@ pub(super) fn tab_strip_ui(
         ui.ctx(),
         drop_id.with("x"),
         drop_x,
-        motion.durations.hover_fade,
+        motion.durations.tab_drag_indicator,
       );
       let target_alpha = if motion.enabled && insertion_changed {
         1.0
@@ -2446,7 +2461,7 @@ pub(super) fn tab_strip_ui(
         ui.ctx(),
         drop_id.with("a"),
         target_alpha,
-        motion.durations.hover_fade,
+        motion.durations.tab_drag_indicator,
       );
 
       let stroke = Stroke::new(
@@ -2526,9 +2541,13 @@ pub(super) fn tab_strip_ui(
     }
 
     if let Some(target_index) = target_index {
-      app.chrome.drag_target_index = Some(target_index);
-      // Apply the reorder immediately while dragging (standard browser behaviour).
-      app.drag_reorder_tab(dragging_tab_id, target_index);
+      // Only apply the reorder when the inferred target index changes, to avoid unnecessary churn
+      // (and to keep group inference stable) while the pointer is stationary.
+      if insertion_changed {
+        app.chrome.drag_target_index = Some(target_index);
+        // Apply the reorder immediately while dragging (standard browser behaviour).
+        app.drag_reorder_tab(dragging_tab_id, target_index);
+      }
     }
   }
 
@@ -2788,5 +2807,74 @@ mod tests {
       group_chip_a11y_label("Reading list", false),
       "Collapse tab group: Reading list"
     );
+  }
+
+  #[test]
+  fn insertion_index_beginning_middle_end() {
+    let rects = vec![
+      (
+        TabId(1),
+        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(10.0, 10.0)),
+      ),
+      (
+        TabId(2),
+        Rect::from_min_max(Pos2::new(20.0, 0.0), Pos2::new(30.0, 10.0)),
+      ),
+      (
+        TabId(3),
+        Rect::from_min_max(Pos2::new(40.0, 0.0), Pos2::new(50.0, 10.0)),
+      ),
+    ];
+
+    let dragged = TabId(2);
+    assert_eq!(compute_tab_insertion_index(-5.0, &rects, dragged), 0);
+    assert_eq!(compute_tab_insertion_index(25.0, &rects, dragged), 1);
+    assert_eq!(compute_tab_insertion_index(100.0, &rects, dragged), 2);
+  }
+
+  #[test]
+  fn insertion_index_ignores_dragged_tab() {
+    let rects = vec![
+      (
+        TabId(1),
+        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(10.0, 10.0)),
+      ),
+      (
+        TabId(2),
+        Rect::from_min_max(Pos2::new(20.0, 0.0), Pos2::new(30.0, 10.0)),
+      ),
+      (
+        TabId(3),
+        Rect::from_min_max(Pos2::new(40.0, 0.0), Pos2::new(50.0, 10.0)),
+      ),
+    ];
+
+    let dragged = TabId(2);
+    // Pointer over the dragged tab's center should still compute an insertion index based on the
+    // other tabs only.
+    assert_eq!(compute_tab_insertion_index(25.0, &rects, dragged), 1);
+  }
+
+  #[test]
+  fn insertion_index_center_boundary_is_stable() {
+    let rects = vec![
+      (
+        TabId(1),
+        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(10.0, 10.0)),
+      ),
+      (
+        TabId(2),
+        Rect::from_min_max(Pos2::new(20.0, 0.0), Pos2::new(30.0, 10.0)),
+      ),
+      (
+        TabId(3),
+        Rect::from_min_max(Pos2::new(40.0, 0.0), Pos2::new(50.0, 10.0)),
+      ),
+    ];
+
+    let dragged = TabId(2);
+    let center = rects[0].1.center().x;
+    // Exact equality should deterministically pick the "after" side.
+    assert_eq!(compute_tab_insertion_index(center, &rects, dragged), 1);
   }
 }

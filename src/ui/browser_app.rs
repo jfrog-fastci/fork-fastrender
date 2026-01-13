@@ -1,15 +1,15 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
+use crate::ui::appearance::AppearanceSettings;
 use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
   CursorKind, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame, ScrollMetrics, TabId,
   UiToWorker, WorkerToUi,
 };
-use crate::ui::appearance::AppearanceSettings;
 use crate::ui::{
-  resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore, OmniboxSuggestion,
-  VisitedUrlStore,
+  resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore,
+  OmniboxSuggestion, VisitedUrlStore,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -240,7 +240,10 @@ impl DownloadsState {
   }
 
   fn get_mut(&mut self, download_id: DownloadId) -> Option<&mut DownloadEntry> {
-    self.downloads.iter_mut().find(|d| d.download_id == download_id)
+    self
+      .downloads
+      .iter_mut()
+      .find(|d| d.download_id == download_id)
   }
 
   fn insert_or_update(&mut self, entry: DownloadEntry) {
@@ -701,6 +704,9 @@ pub struct ChromeState {
   pub dragging_tab_id: Option<TabId>,
   #[cfg(feature = "browser_ui")]
   pub drag_start_pointer_pos: Option<egui::Pos2>,
+  /// Screen-space rect of the tab when the drag started (used for rendering a floating drag ghost).
+  #[cfg(feature = "browser_ui")]
+  pub drag_start_tab_rect: Option<egui::Rect>,
   #[cfg(feature = "browser_ui")]
   pub drag_target_index: Option<usize>,
   /// Transient "drag a hovered link to the address bar" state.
@@ -724,6 +730,7 @@ impl ChromeState {
   pub fn clear_tab_drag(&mut self) {
     self.dragging_tab_id = None;
     self.drag_start_pointer_pos = None;
+    self.drag_start_tab_rect = None;
     self.drag_target_index = None;
   }
 
@@ -1418,7 +1425,10 @@ impl BrowserAppState {
         .clone()
         .or_else(|| closed.current_url.clone())
         .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string()),
-      title: closed.committed_title.clone().or_else(|| closed.title.clone()),
+      title: closed
+        .committed_title
+        .clone()
+        .or_else(|| closed.title.clone()),
       pinned: closed.pinned,
     });
 
@@ -1479,7 +1489,10 @@ impl BrowserAppState {
           .clone()
           .or_else(|| closed.current_url.clone())
           .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string()),
-        title: closed.committed_title.clone().or_else(|| closed.title.clone()),
+        title: closed
+          .committed_title
+          .clone()
+          .or_else(|| closed.title.clone()),
         pinned: closed.pinned,
       });
     }
@@ -1519,7 +1532,10 @@ impl BrowserAppState {
           .clone()
           .or_else(|| closed.current_url.clone())
           .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string()),
-        title: closed.committed_title.clone().or_else(|| closed.title.clone()),
+        title: closed
+          .committed_title
+          .clone()
+          .or_else(|| closed.title.clone()),
         pinned: closed.pinned,
       });
     }
@@ -1599,7 +1615,10 @@ impl BrowserAppState {
         .and_then(|t| t.current_url.as_deref())
         .ok_or_else(|| "cannot navigate to a fragment without an active document".to_string())?;
       let current = Url::parse(current).map_err(|err| err.to_string())?;
-      current.join(raw).map_err(|err| err.to_string())?.to_string()
+      current
+        .join(raw)
+        .map_err(|err| err.to_string())?
+        .to_string()
     } else {
       match resolve_omnibox_input(raw)? {
         crate::ui::OmniboxInputResolution::Url { url } => url,
@@ -2104,7 +2123,10 @@ mod browser_app_tests {
     let closed = app.close_other_tabs(tab_c);
 
     assert_eq!(closed, vec![tab_a, tab_b]);
-    assert_eq!(app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(), vec![tab_c]);
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![tab_c]
+    );
     assert_eq!(app.active_tab_id(), Some(tab_c));
     assert_active_is_valid(&app);
   }
@@ -2663,7 +2685,10 @@ mod browser_app_tests {
       can_go_forward: false,
     });
     assert_eq!(
-      app.active_tab().expect("tab exists").chrome_loading_progress(),
+      app
+        .active_tab()
+        .expect("tab exists")
+        .chrome_loading_progress(),
       None,
       "expected progress to be hidden once loading=false"
     );
@@ -2705,7 +2730,6 @@ mod browser_app_tests {
     let b = app.tab(tab_b).unwrap();
     assert!(!b.find.open);
     assert_eq!(b.find, FindInPageState::default());
-
   }
 
   #[test]
@@ -2715,15 +2739,30 @@ mod browser_app_tests {
     let b = TabId(2);
     let c = TabId(3);
 
-    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
-    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
 
-    assert_eq!(app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(), vec![a, b, c]);
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![a, b, c]
+    );
 
     // Moving the first tab to an out-of-bounds index clamps to the last position.
     assert!(app.reorder_tab(a, 999));
-    assert_eq!(app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(), vec![b, c, a]);
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![b, c, a]
+    );
   }
 
   #[test]
@@ -2731,11 +2770,20 @@ mod browser_app_tests {
     let mut app = BrowserAppState::new();
     let a = TabId(1);
     let b = TabId(2);
-    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
-    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
 
     assert!(!app.reorder_tab(TabId(999), 0));
-    assert_eq!(app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(), vec![a, b]);
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![a, b]
+    );
   }
 
   #[test]
@@ -2744,9 +2792,18 @@ mod browser_app_tests {
     let a = TabId(1);
     let b = TabId(2);
     let c = TabId(3);
-    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), true);
-    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
 
     let active_before = app.active_tab_id();
     assert_eq!(active_before, Some(b));
@@ -3009,10 +3066,22 @@ mod tab_group_tests {
     let b = TabId(2);
     let c = TabId(3);
     let d = TabId(4);
-    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
-    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(d, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(d, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
 
     let group = app.create_group_with_tabs(&[b, d]);
     assert_ne!(group, TabGroupId(0));
@@ -3036,9 +3105,18 @@ mod tab_group_tests {
     let a = TabId(1);
     let b = TabId(2);
     let c = TabId(3);
-    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
-    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
 
     let group = app.create_group_with_tabs(&[a, b]);
     assert!(app.tab_groups.contains_key(&group));
@@ -3060,9 +3138,18 @@ mod tab_group_tests {
     let a = TabId(1);
     let b = TabId(2);
     let c = TabId(3);
-    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
-    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
 
     let group = app.create_group_with_tabs(&[a, b]);
     assert!(app.set_active_tab(c));
@@ -3095,11 +3182,26 @@ mod tab_group_tests {
     let c = TabId(3);
     let d = TabId(4);
     let e = TabId(5);
-    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
-    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(d, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(e, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(d, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(e, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
 
     let group = app.create_group_with_tabs(&[b, c, d]);
     assert_group_contiguous(&app, group);
@@ -3125,8 +3227,14 @@ mod tab_group_tests {
     let mut app = BrowserAppState::new();
     let a = TabId(1);
     let b = TabId(2);
-    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
-    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
 
     let rev0 = app.session_revision();
     assert!(app.pin_tab(b));
@@ -3144,9 +3252,18 @@ mod tab_group_tests {
     let a = TabId(1);
     let b = TabId(2);
     let c = TabId(3);
-    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
-    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
-    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
 
     let group = app.create_group_with_tabs(&[a, b]);
 
@@ -3156,11 +3273,17 @@ mod tab_group_tests {
 
     app.set_group_title(group, "Renamed".to_string());
     let rev1 = app.session_revision();
-    assert!(rev1 > rev0, "expected set_group_title to bump session revision");
+    assert!(
+      rev1 > rev0,
+      "expected set_group_title to bump session revision"
+    );
 
     app.set_group_color(group, TabGroupColor::Orange);
     let rev2 = app.session_revision();
-    assert!(rev2 > rev1, "expected set_group_color to bump session revision");
+    assert!(
+      rev2 > rev1,
+      "expected set_group_color to bump session revision"
+    );
 
     app.toggle_group_collapsed(group);
     let rev3 = app.session_revision();
