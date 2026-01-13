@@ -554,6 +554,10 @@ fn url_construct_native(
         b: 0,
       },
     )?;
+    state
+      .urls
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     state.urls.insert(WeakGcObject::from(obj), url);
     Ok(Value::Object(obj))
   })
@@ -614,6 +618,10 @@ fn url_parse_native(
         b: 0,
       },
     )?;
+    state
+      .urls
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     state.urls.insert(WeakGcObject::from(obj), url);
     Ok(Value::Object(obj))
   })
@@ -1463,6 +1471,14 @@ fn url_search_params_get_native(
           return Ok(Ok(entry.params_obj));
         }
 
+        state
+          .params
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        state
+          .cached_search_params
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
         state.params.insert(WeakGcObject::from(params_obj), params);
         state.cached_search_params.insert(
           url_key,
@@ -1621,6 +1637,10 @@ fn urlsp_construct_native(
         b: 0,
       },
     )?;
+    state
+      .params
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     state.params.insert(WeakGcObject::from(obj), params);
     Ok(Value::Object(obj))
   })
@@ -1943,6 +1963,10 @@ fn urlsp_entries_native(
       },
     )?;
     scope.push_root(Value::Object(obj))?;
+    state
+      .params_iterators
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     state.params_iterators.insert(
       WeakGcObject::from(obj),
       UrlSearchParamsIteratorState {
@@ -1977,6 +2001,10 @@ fn urlsp_keys_native(
       },
     )?;
     scope.push_root(Value::Object(obj))?;
+    state
+      .params_iterators
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     state.params_iterators.insert(
       WeakGcObject::from(obj),
       UrlSearchParamsIteratorState {
@@ -2011,6 +2039,10 @@ fn urlsp_values_native(
       },
     )?;
     scope.push_root(Value::Object(obj))?;
+    state
+      .params_iterators
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     state.params_iterators.insert(
       WeakGcObject::from(obj),
       UrlSearchParamsIteratorState {
@@ -2809,6 +2841,10 @@ pub fn install_window_url_bindings(
 
   // Register per-realm state.
   let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
+  registry
+    .realms
+    .try_reserve(1)
+    .map_err(|_| VmError::OutOfMemory)?;
   registry.realms.insert(
     realm_id,
     UrlRealmState {
