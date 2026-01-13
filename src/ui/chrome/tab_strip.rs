@@ -1531,6 +1531,7 @@ fn tab_ui(
       chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
         tab_id: tab.id,
         anchor_points: (pos.x, pos.y),
+        opener_id: response.id,
       });
       chrome.tab_context_menu_rect = None;
     }
@@ -1742,6 +1743,7 @@ fn pinned_tab_ui(
       chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
         tab_id: tab.id,
         anchor_points: (pos.x, pos.y),
+        opener_id: response.id,
       });
       chrome.tab_context_menu_rect = None;
     }

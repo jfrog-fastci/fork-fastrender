@@ -828,6 +828,10 @@ impl ChromeState {
 pub struct OpenTabContextMenuState {
   pub tab_id: TabId,
   pub anchor_points: (f32, f32),
+  /// Egui widget id for the invoking tab control, used to restore focus when the context menu
+  /// closes.
+  #[cfg(feature = "browser_ui")]
+  pub opener_id: egui::Id,
 }
 
 #[derive(Debug, Clone)]
