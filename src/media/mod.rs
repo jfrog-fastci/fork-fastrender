@@ -21,10 +21,12 @@ pub mod clock;
 pub mod codecs;
 pub mod demux;
 pub mod master_clock;
+pub mod mp4;
 pub mod timebase;
 
 pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, RealAudioDeviceClock};
 pub use master_clock::{ClockSource, MasterClock};
+pub use mp4::{Mp4Demuxer, Mp4Sample, Mp4Track, SeekMethod};
 pub use timebase::{duration_to_ticks, ticks_to_duration, Timebase};
 
 /// Size information that can help a [`MediaFrameProvider`] choose an appropriate decode/scale
@@ -183,4 +185,3 @@ pub struct DecodedAudioChunk {
   /// Interleaved f32 samples in the range `[-1.0, 1.0]`.
   pub samples: Vec<f32>,
 }
-
