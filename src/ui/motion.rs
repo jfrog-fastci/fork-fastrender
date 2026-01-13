@@ -32,7 +32,9 @@ fn parse_env_bool(value: &str) -> bool {
 /// - `Some(false)` means the env var is set but falsey (`0`, `false`, empty, etc).
 /// - `Some(true)` means the env var is set and truthy (`1`, `true`, etc).
 pub fn reduced_motion_override_from_env() -> Option<bool> {
-  runtime_toggles().get(ENV_REDUCED_MOTION).map(parse_env_bool)
+  runtime_toggles()
+    .get(ENV_REDUCED_MOTION)
+    .map(parse_env_bool)
 }
 
 fn reduced_motion_from_runtime_toggles() -> bool {
@@ -48,6 +50,8 @@ pub struct UiMotionDurations {
   pub hover_fade: f32,
   /// Transition duration for tab underline (seconds).
   pub tab_underline: f32,
+  /// Collapse/expand duration for tab groups in the tab strip (seconds).
+  pub tab_group_collapse: f32,
   /// Fade/scale duration for popup menus (context menus, `<select>` dropdowns) (seconds).
   pub popup_open: f32,
   /// Fade/expand duration for the address bar focus ring (seconds).
@@ -61,6 +65,7 @@ impl Default for UiMotionDurations {
     Self {
       hover_fade: 0.12,
       tab_underline: 0.16,
+      tab_group_collapse: 0.18,
       popup_open: 0.14,
       focus_ring: 0.14,
       progress_fade: 0.18,
@@ -139,13 +144,7 @@ impl UiMotion {
   }
 
   #[cfg(feature = "browser_ui")]
-  pub fn animate_f32(
-    &self,
-    ctx: &egui::Context,
-    id: egui::Id,
-    target: f32,
-    duration: f32,
-  ) -> f32 {
+  pub fn animate_f32(&self, ctx: &egui::Context, id: egui::Id, target: f32, duration: f32) -> f32 {
     if !self.enabled || duration <= 0.0 || ctx.style().animation_time <= 0.0 {
       return target;
     }
@@ -168,10 +167,7 @@ mod tests {
   #[test]
   fn parse_env_bool_falsey_values() {
     for v in ["", "0", "false", "FALSE", "no", "off", " 0 ", " false "] {
-      assert!(
-        !parse_env_bool(v),
-        "expected {v:?} to be treated as false"
-      );
+      assert!(!parse_env_bool(v), "expected {v:?} to be treated as false");
     }
   }
 
@@ -185,7 +181,10 @@ mod tests {
   #[test]
   fn ui_motion_from_env_respects_reduced_motion_env_var() {
     with_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
-      assert!(UiMotion::from_env().enabled, "motion should be enabled by default");
+      assert!(
+        UiMotion::from_env().enabled,
+        "motion should be enabled by default"
+      );
     });
 
     with_runtime_toggles(
@@ -240,7 +239,10 @@ mod tests {
       "expected scale at t=1 to reach 1.0"
     );
     let mid = motion.popup_open_scale(0.5);
-    assert!(mid > 0.98 && mid < 1.0, "expected mid scale to be in (0.98, 1.0)");
+    assert!(
+      mid > 0.98 && mid < 1.0,
+      "expected mid scale to be in (0.98, 1.0)"
+    );
   }
 
   #[test]

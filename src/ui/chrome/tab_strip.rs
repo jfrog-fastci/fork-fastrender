@@ -6,6 +6,7 @@ use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
 use crate::ui::{icon_button, BrowserIcon};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Vec2};
+use std::collections::HashMap;
 
 use super::ChromeAction;
 use super::FocusRingStyle;
@@ -507,6 +508,7 @@ fn tab_ui(
   motion: UiMotion,
   tab: &BrowserTabState,
   is_active: bool,
+  interactive: bool,
   can_close_tabs: bool,
   tab_width: f32,
   favicon_tex: Option<egui::TextureId>,
@@ -518,8 +520,17 @@ fn tab_ui(
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
   let (err, warn) = tab_status_messages(tab);
-  let mut response = ui.interact(tab_rect, tab_id, Sense::click_and_drag());
-  if response.hovered() {
+  let mut response = ui.interact(
+    tab_rect,
+    tab_id,
+    if interactive {
+      Sense::click_and_drag()
+    } else {
+      Sense::hover()
+    },
+  );
+  let hovered = interactive && response.hovered();
+  if hovered {
     if err.is_none() && warn.is_none() {
       response = response.on_hover_text(title.as_str());
     } else {
@@ -546,15 +557,17 @@ fn tab_ui(
   super::show_tooltip_on_focus(ui, &response, title.as_str());
 
   let visuals = ui.style().visuals.clone();
+  let mut paint_ui = ui.child_ui(tab_rect, egui::Layout::left_to_right(egui::Align::Center));
+  paint_ui.set_clip_rect(tab_rect);
 
   // Micro-interaction: fade hover highlight in/out.
   //
-  // Active tabs ignore hover (as today), but we still drive the animation state toward `0.0` while
-  // active so switching tabs doesn't resurrect a stale hover value.
+  // Active/non-interactive tabs ignore hover, but we still drive the animation state toward `0.0`
+  // so switching states doesn't resurrect a stale hover value.
   let hover_t = motion.animate_bool(
     ui.ctx(),
     tab_id.with("hover"),
-    response.hovered() && !is_active,
+    hovered && !is_active,
     motion.durations.hover_fade,
   );
 
@@ -574,7 +587,7 @@ fn tab_ui(
   let bg = lerp_color(inactive_bg, visuals.widgets.active.bg_fill, active_t);
   let rounding = visuals.widgets.inactive.rounding;
   {
-    let painter = ui.painter();
+    let painter = paint_ui.painter();
     painter.rect_filled(tab_rect, rounding, bg);
 
     if let Some(color) = group_color {
@@ -589,12 +602,14 @@ fn tab_ui(
   );
   let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(ICON_SIZE));
   if let Some(tex_id) = favicon_tex {
-    if ui.is_rect_visible(icon_rect) {
+    if paint_ui.is_rect_visible(icon_rect) {
       let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
-      ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
+      paint_ui
+        .painter()
+        .image(tex_id, icon_rect, uv, Color32::WHITE);
     }
   } else {
-    placeholder_favicon(ui.painter(), icon_rect, &visuals);
+    placeholder_favicon(paint_ui.painter(), icon_rect, &visuals);
     // Show a small deterministic glyph so blank favicons are still distinguishable at a glance.
     let glyph = title
       .trim()
@@ -602,7 +617,7 @@ fn tab_ui(
       .next()
       .map(|ch| ch.to_ascii_uppercase().to_string())
       .unwrap_or_else(|| "?".to_string());
-    ui.painter().text(
+    paint_ui.painter().text(
       icon_rect.center(),
       Align2::CENTER_CENTER,
       glyph,
@@ -615,13 +630,13 @@ fn tab_ui(
     // Spinner overlay around the favicon.
     let time = if motion.enabled {
       ui.ctx().request_repaint();
-      ui.input(|i| i.time)
+      paint_ui.input(|i| i.time)
     } else {
       // Reduced-motion: keep the spinner static (and avoid continuous repaints).
       0.0
     };
     paint_spinner(
-      ui.painter(),
+      paint_ui.painter(),
       icon_rect.expand(2.0),
       time,
       visuals.text_color(),
@@ -640,11 +655,11 @@ fn tab_ui(
     warn.is_some(),
     motion.durations.progress_fade,
   );
-  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t, warn_t);
+  paint_tab_status_badges(paint_ui.painter(), icon_rect, &visuals, err_t, warn_t);
 
   // Close button (only when more than one tab exists).
   let mut close_clicked = false;
-  let close_rect = if can_close_tabs {
+  let close_rect = if can_close_tabs && interactive {
     let close_min = Pos2::new(
       tab_rect.max.x - TAB_PADDING_X - CLOSE_BUTTON_SIZE,
       tab_rect.center().y - CLOSE_BUTTON_SIZE * 0.5,
@@ -664,8 +679,7 @@ fn tab_ui(
     // (either the tab itself or the close button).
     //
     // Keep the interaction rect stable; only the icon painting is animated.
-    let close_reveal_target =
-      is_active || response.hovered() || response.has_focus() || close_has_focus;
+    let close_reveal_target = is_active || hovered || response.has_focus() || close_has_focus;
     let close_resp = ui
       .interact(
         close_rect,
@@ -696,7 +710,7 @@ fn tab_ui(
       motion.durations.hover_fade,
     );
     if close_hover_t > 0.0 {
-      ui.painter().rect_filled(
+      paint_ui.painter().rect_filled(
         close_rect,
         close_rounding,
         with_alpha(
@@ -727,7 +741,7 @@ fn tab_ui(
       let scale = lerp(0.9, 1.0, t);
       let icon_rect = close_rect.translate(Vec2::new(offset_x, 0.0));
       paint_icon_in_rect(
-        ui,
+        &paint_ui,
         icon_rect,
         BrowserIcon::CloseTab,
         ICON_SIZE * scale,
@@ -755,7 +769,7 @@ fn tab_ui(
       }
       egui::Label::new(text).truncate(true).wrap(false)
     };
-    let _ = ui.put(title_rect, label);
+    let _ = paint_ui.put(title_rect, label);
   }
 
   // Input semantics.
@@ -1064,6 +1078,37 @@ pub(super) fn tab_strip_ui(
   );
   let unpinned_viewport_width = unpinned_viewport_rect.width().max(0.0);
 
+  // Tab group collapse/expand animation state. This is computed up front so sizing + layout can
+  // account for groups that are mid-transition.
+  let mut group_expand_t: HashMap<TabGroupId, f32> = HashMap::new();
+  let mut group_animating = false;
+  {
+    for tab in app.tabs.iter().skip(pinned_len) {
+      let Some(group_id) = tab.group else {
+        continue;
+      };
+      if group_expand_t.contains_key(&group_id) {
+        continue;
+      }
+      let collapsed = app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed);
+      let id = ui.make_persistent_id(("tab_group_expand", group_id.0));
+      let t = motion.animate_bool(
+        ui.ctx(),
+        id,
+        !collapsed,
+        motion.durations.tab_group_collapse,
+      );
+      let target = if collapsed { 0.0 } else { 1.0 };
+      if motion.enabled && ui.ctx().style().animation_time > 0.0 && (t - target).abs() > 0.001 {
+        group_animating = true;
+      }
+      group_expand_t.insert(group_id, t);
+    }
+  }
+  if group_animating {
+    ui.ctx().request_repaint();
+  }
+
   let mut visible_unpinned_count = 0usize;
   let mut group_chip_count = 0usize;
   let mut group_chip_total_width = 0.0f32;
@@ -1083,7 +1128,12 @@ pub(super) fn tab_strip_ui(
             group_chip_count += 1;
           }
 
-          if group.collapsed {
+          let t = group_expand_t
+            .get(&group_id)
+            .copied()
+            .unwrap_or(if group.collapsed { 0.0 } else { 1.0 });
+
+          if group.collapsed && t <= 0.001 {
             while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
               idx += 1;
             }
@@ -1258,9 +1308,29 @@ pub(super) fn tab_strip_ui(
         .auto_shrink([false, true])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(&mut unpinned_ui, |ui| {
-          ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
+          // We apply tab gaps explicitly (instead of relying on `item_spacing`) so group collapse can
+          // smoothly shrink both tab widths and the intra-group gaps without leaving behind fixed
+          // spacers.
+          ui.spacing_mut().item_spacing = Vec2::ZERO;
           ui.horizontal(|ui| {
             let mut idx = pinned_len;
+            let mut first_item = true;
+            // If the previous rendered element was a tab inside a group, the following gap should
+            // shrink/grow with that group's expand factor.
+            let mut prev_gap_scale: Option<f32> = None;
+
+            let mut add_gap =
+              |ui: &mut egui::Ui, first_item: &mut bool, prev_gap_scale: Option<f32>| {
+                if *first_item {
+                  *first_item = false;
+                  return;
+                }
+                let scale = prev_gap_scale.unwrap_or(1.0);
+                let gap = (TAB_GAP * scale).max(0.0);
+                if gap > 0.0 {
+                  ui.add_space(gap);
+                }
+              };
             while idx < app.tabs.len() {
               let tab_id = app.tabs[idx].id;
               let tab_group = app.tabs[idx].group;
@@ -1268,18 +1338,77 @@ pub(super) fn tab_strip_ui(
               if let Some(group_id) = tab_group {
                 let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
                 if is_first {
+                  add_gap(ui, &mut first_item, prev_gap_scale);
+                  prev_gap_scale = None;
                   group_chip_ui(ui, motion, app, group_id, &mut ops, focus_ring);
                 }
 
-                if app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed) {
-                  // Skip all member tabs when collapsed.
+                let collapsed = app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed);
+                let group_t = group_expand_t.get(&group_id).copied().unwrap_or(1.0);
+                if collapsed && group_t <= 0.001 {
+                  // Fully collapsed: hide all member tabs (but keep the chip visible).
                   while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
                     idx += 1;
                   }
                   continue;
                 }
+
+                add_gap(ui, &mut first_item, prev_gap_scale);
+                let interactive = !collapsed && group_t > 0.95;
+                let tab_width = sizing.tab_width * group_t.clamp(0.0, 1.0);
+                let is_active = active_id == Some(tab_id);
+                let favicon_tex = favicon_for_tab(tab_id);
+                let (tab_rect, tab_response, maybe_action) = {
+                  let tab = &app.tabs[idx];
+                  let group_border = tab
+                    .group
+                    .and_then(|gid| app.tab_groups.get(&gid).map(|g| group_color_egui(g.color)));
+                  tab_ui(
+                    ui,
+                    motion,
+                    tab,
+                    is_active,
+                    interactive,
+                    can_close_tabs,
+                    tab_width,
+                    favicon_tex,
+                    &mut app.chrome,
+                    focus_ring,
+                    group_border,
+                  )
+                };
+                if is_active {
+                  active_tab_rect = Some(tab_rect);
+                  active_tab_is_pinned = false;
+                }
+                if is_active && active_changed {
+                  tab_response.scroll_to_me(Some(egui::Align::Center));
+                }
+                #[cfg(test)]
+                tab_rects_for_test.push(tab_rect);
+
+                if interactive {
+                  unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
+                  if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
+                    app.chrome.dragging_tab_id = Some(tab_id);
+                    app.chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+                  }
+                  if app.chrome.dragging_tab_id == Some(tab_id) {
+                    dragged_tab_rect = Some(tab_rect);
+                  }
+                }
+
+                if let Some(action) = maybe_action {
+                  actions.push(action);
+                }
+
+                prev_gap_scale = Some(group_t.clamp(0.0, 1.0));
+                idx += 1;
+                continue;
               }
 
+              add_gap(ui, &mut first_item, prev_gap_scale);
+              prev_gap_scale = None;
               let is_active = active_id == Some(tab_id);
               let favicon_tex = favicon_for_tab(tab_id);
               let (tab_rect, tab_response, maybe_action) = {
@@ -1292,6 +1421,7 @@ pub(super) fn tab_strip_ui(
                   motion,
                   tab,
                   is_active,
+                  true,
                   can_close_tabs,
                   sizing.tab_width,
                   favicon_tex,
@@ -1407,37 +1537,12 @@ pub(super) fn tab_strip_ui(
     );
   }
   if unpinned_viewport_rect.width() > 0.0 {
-    let max_scroll_x = unpinned_max_scroll_x;
-    let fade_w = 18.0_f32.min(unpinned_viewport_rect.width() * 0.5);
-    if max_scroll_x > 0.0 && fade_w > 0.0 {
-      let left_t = (scroll_offset_x / fade_w).clamp(0.0, 1.0);
-      let right_t = ((max_scroll_x - scroll_offset_x) / fade_w).clamp(0.0, 1.0);
-      if left_t > 0.0 || right_t > 0.0 {
-        let fade_rect = Rect::from_min_max(
-          unpinned_viewport_rect.min,
-          Pos2::new(
-            unpinned_viewport_rect.max.x,
-            unpinned_viewport_rect.max.y - 1.0,
-          ),
-        );
-        let painter = ui.painter().with_clip_rect(unpinned_viewport_rect);
-        let fade_color = ui.visuals().panel_fill;
-        if left_t > 0.0 {
-          let left_rect = Rect::from_min_max(
-            fade_rect.min,
-            Pos2::new(fade_rect.min.x + fade_w, fade_rect.max.y),
-          );
-          paint_tab_strip_edge_fade(&painter, left_rect, with_alpha(fade_color, left_t), true);
-        }
-        if right_t > 0.0 {
-          let right_rect = Rect::from_min_max(
-            Pos2::new(fade_rect.max.x - fade_w, fade_rect.min.y),
-            fade_rect.max,
-          );
-          paint_tab_strip_edge_fade(&painter, right_rect, with_alpha(fade_color, right_t), false);
-        }
-      }
-    }
+    paint_scroll_edge_fades(
+      ui,
+      unpinned_viewport_rect,
+      scroll_offset_x,
+      unpinned_max_scroll_x,
+    );
   }
 
   // Micro-interaction: animate the active tab underline position/width.
