@@ -524,6 +524,9 @@ Scope note: the rendered page is currently an image; full document accessibility
 future project. Today, screen reader support is intended for chrome-only UI: tabs, toolbar buttons,
 address bar, and popups/menus.
 
+For the current page accessibility semantics workflow (`dump_a11y`, bounds mapping, and how this will
+eventually feed into OS accessibility), see [page_accessibility.md](page_accessibility.md).
+
 For a deeper architecture/debugging guide (AccessKit updates, node id stability, coordinate system
 notes, and future chrome+content composition), see [`docs/chrome_accessibility.md`](chrome_accessibility.md).
 
