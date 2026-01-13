@@ -240,13 +240,27 @@ pub struct NetworkProcessHandle {
 }
 
 impl NetworkProcessHandle {
-  /// Create a new IPC client object.
+  /// Create a new IPC client object configured for an untrusted renderer.
+  ///
+  /// This is the least-privileged role and should be preferred whenever the caller might run in (or
+  /// on behalf of) an untrusted renderer process.
   pub fn connect_client(&self) -> NetworkClient {
+    self.connect_client_with_role(ipc::ClientRole::Renderer)
+  }
+
+  /// Create a new IPC client object with an explicit [`ipc::ClientRole`].
+  pub fn connect_client_with_role(&self, role: ipc::ClientRole) -> NetworkClient {
     NetworkClient {
       addr: self.addr,
       connect_timeout: self.connect_timeout,
       auth_token: self.auth_token.clone(),
+      role,
     }
+  }
+
+  /// Create a privileged IPC client configured for the trusted browser.
+  pub fn connect_browser_client(&self) -> NetworkClient {
+    self.connect_client_with_role(ipc::ClientRole::Browser)
   }
 
   /// Address the network process is listening on.
@@ -284,6 +298,7 @@ impl Drop for NetworkProcessHandle {
         &mut stream,
         &ipc::NetworkRequest::Hello {
           token: self.auth_token.as_str().to_string(),
+          role: ipc::ClientRole::Browser,
         },
       );
       let _ = ipc::write_request_frame(&mut stream, &ipc::NetworkRequest::Shutdown);
@@ -302,15 +317,22 @@ pub struct NetworkClient {
   addr: SocketAddr,
   connect_timeout: Duration,
   auth_token: NetworkAuthToken,
+  role: ipc::ClientRole,
 }
 
 impl NetworkClient {
+  /// Client role used when authenticating to the network process.
+  pub fn role(&self) -> ipc::ClientRole {
+    self.role
+  }
+
   /// Return an IPC-backed [`ResourceFetcher`] that forwards requests to the network process.
   pub fn resource_fetcher(&self) -> Arc<dyn ResourceFetcher> {
     Arc::new(IpcResourceFetcher {
       addr: self.addr,
       connect_timeout: self.connect_timeout,
       auth_token: self.auth_token.clone(),
+      role: self.role,
     })
   }
 
@@ -343,6 +365,7 @@ pub struct IpcResourceFetcher {
   addr: SocketAddr,
   connect_timeout: Duration,
   auth_token: NetworkAuthToken,
+  role: ipc::ClientRole,
 }
 
 impl IpcResourceFetcher {
@@ -355,6 +378,7 @@ impl IpcResourceFetcher {
     conn
       .send_request(&ipc::NetworkRequest::Hello {
         token: self.auth_token.as_str().to_string(),
+        role: self.role,
       })
       .map_err(Error::Io)?;
     let hello_ack: ipc::NetworkResponse = conn.recv_response().map_err(Error::Io)?;
@@ -381,8 +405,8 @@ impl ResourceFetcher for IpcResourceFetcher {
 
     match res {
       ipc::NetworkResponse::FetchOk { resource } => resource.into_fetched(),
-      ipc::NetworkResponse::Error { message } => Err(Error::Other(format!(
-        "network process fetch failed for {url}: {message}"
+      ipc::NetworkResponse::Error { error } => Err(Error::Other(format!(
+        "network process fetch failed for {url}: {error}"
       ))),
       other => Err(Error::Other(format!(
         "network process returned unexpected response to fetch: {other:?}"

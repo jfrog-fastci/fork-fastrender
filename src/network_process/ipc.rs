@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+pub use crate::net::transport::{ClientRole, NetworkError};
 use crate::resource::FetchedResource;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
@@ -139,8 +140,13 @@ impl<S: Read + Write> NetworkService<S> {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
 pub enum NetworkRequest {
-  Hello { token: String },
+  Hello { token: String, role: ClientRole },
   Fetch { url: String },
+  /// Begin a streaming download (browser-only).
+  ///
+  /// After acknowledging with [`NetworkResponse::DownloadStarted`], the network process may emit one
+  /// or more [`NetworkResponse::DownloadChunk`] messages before closing the connection.
+  DownloadStart { url: String },
   Shutdown,
 }
 
@@ -150,8 +156,17 @@ pub enum NetworkRequest {
 pub enum NetworkResponse {
   HelloAck,
   FetchOk { resource: IpcFetchedResource },
+  DownloadStarted {
+    download_id: u64,
+    total_bytes: Option<u64>,
+  },
+  DownloadChunk {
+    download_id: u64,
+    finished: bool,
+    bytes_base64: String,
+  },
   Ok,
-  Error { message: String },
+  Error { error: NetworkError },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

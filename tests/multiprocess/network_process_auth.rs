@@ -27,6 +27,7 @@ fn network_process_rejects_invalid_auth_token() {
     &mut stream,
     &ipc::NetworkRequest::Hello {
       token: "this-is-not-a-valid-token".to_string(),
+      role: ipc::ClientRole::Renderer,
     },
   )
   .expect("write hello frame");

@@ -11,6 +11,17 @@ use serde::{Deserialize, Serialize};
 
 pub type RequestId = u64;
 
+/// Role assigned to a network IPC connection during the hello handshake.
+///
+/// The network process must treat the renderer as untrusted and restrict it to a minimal set of
+/// network capabilities. More privileged clients (e.g. the browser process) may be allowed to use
+/// additional operations such as download streaming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientRole {
+  Browser,
+  Renderer,
+}
+
 pub const MAX_URL_BYTES: usize = 1024 * 1024;
 pub const MAX_METHOD_BYTES: usize = 64;
 pub const MAX_HEADER_COUNT: usize = 1024;
@@ -177,6 +188,9 @@ pub enum TransportError {
 pub enum NetworkError {
   #[error("invalid request: {message}")]
   InvalidRequest { message: String },
+
+  #[error("permission denied")]
+  PermissionDenied,
 }
 
 impl From<TransportError> for NetworkError {
