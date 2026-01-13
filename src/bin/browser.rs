@@ -2123,6 +2123,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           win.app.window.request_redraw();
         }
       }
+      Event::MainEventsCleared => {
+        // Coalesce OS file drops: winit delivers one `DroppedFile` event per path.
+        for win in windows.values_mut() {
+          win.app.flush_pending_dropped_files();
+        }
+      }
       _ => {}
     }
 
@@ -3173,6 +3179,15 @@ struct App {
   /// appear "stuck" or missing).
   hover_sync_pending: bool,
 
+  /// OS file-drop paths received from winit (`WindowEvent::DroppedFile`) that have not yet been
+  /// forwarded to the render worker.
+  ///
+  /// Winit reports one `DroppedFile` event per dropped path. We coalesce them and forward a single
+  /// `UiToWorker::DropFiles` message once per event-loop cycle (see `Event::MainEventsCleared`).
+  pending_dropped_files: Vec<std::path::PathBuf>,
+  pending_dropped_files_tab: Option<fastrender::ui::TabId>,
+  pending_dropped_files_pos_css: Option<(f32, f32)>,
+
   pending_context_menu_request: Option<PendingContextMenuRequest>,
   open_context_menu: Option<OpenContextMenu>,
   open_context_menu_rect: Option<egui::Rect>,
@@ -3716,6 +3731,9 @@ impl App {
       page_cursor_override: None,
       pending_pointer_move: None,
       hover_sync_pending: false,
+      pending_dropped_files: Vec::new(),
+      pending_dropped_files_tab: None,
+      pending_dropped_files_pos_css: None,
       pending_context_menu_request: None,
       open_context_menu: None,
       open_context_menu_rect: None,
@@ -4376,6 +4394,60 @@ impl App {
       }
     }
     self.send_worker_msg(msg);
+  }
+
+  fn page_pos_points_to_pos_css_for_drop(&self, pos_points: egui::Pos2) -> Option<(f32, f32)> {
+    if self.page_loading_overlay_blocks_input {
+      return None;
+    }
+    if !self
+      .page_rect_points
+      .is_some_and(|page_rect| page_rect.contains(pos_points))
+    {
+      return None;
+    }
+    if !self.pointer_captured && self.cursor_over_egui_overlay(pos_points) {
+      return None;
+    }
+    if !self.pointer_captured && self.cursor_over_overlay_scrollbars(pos_points) {
+      return None;
+    }
+    let mapping = self.page_input_mapping.as_ref()?;
+    mapping.pos_points_to_pos_css_clamped(pos_points)
+  }
+
+  fn flush_pending_dropped_files(&mut self) {
+    if self.pending_dropped_files.is_empty() {
+      return;
+    }
+    let Some(tab_id) = self
+      .pending_dropped_files_tab
+      .take()
+      .or(self.page_input_tab)
+      .or(self.browser_state.active_tab_id())
+    else {
+      self.pending_dropped_files.clear();
+      self.pending_dropped_files_pos_css = None;
+      return;
+    };
+
+    let pos_css = self
+      .pending_dropped_files_pos_css
+      .take()
+      .or_else(|| {
+        self
+          .last_cursor_pos_points
+          .and_then(|pos| self.page_pos_points_to_pos_css_for_drop(pos))
+      });
+    let Some(pos_css) = pos_css else {
+      self.pending_dropped_files.clear();
+      return;
+    };
+
+    let paths = std::mem::take(&mut self.pending_dropped_files);
+    // Ensure any coalesced hover update is delivered before the drop message.
+    self.flush_pending_pointer_move();
+    self.send_worker_msg(fastrender::ui::UiToWorker::DropFiles { tab_id, pos_css, paths });
   }
 
   fn apply_page_cursor_icon(&mut self) {
@@ -8244,37 +8316,25 @@ impl App {
         self.cursor_in_page = now_in_page;
       }
       WindowEvent::DroppedFile(path) => {
-        // OS-level file drop. Winit does not provide a drop position, so we use the last known
-        // cursor position tracked by `CursorMoved`.
+        // OS-level file drop.
         //
-        // Best-effort: if we don't have a cursor position or an active points→CSS mapping from the
-        // most recent paint, ignore gracefully.
-        if self.page_loading_overlay_blocks_input {
-          return;
+        // Winit reports one `DroppedFile` event per dropped path. Coalesce them into one
+        // `UiToWorker::DropFiles` message (flushed from `Event::MainEventsCleared`) so multi-file
+        // drops populate `<input type=file multiple>` correctly.
+        //
+        // Winit does not provide a drop position, so we use the last known cursor position tracked
+        // by `CursorMoved` and map it into page-space CSS coordinates.
+        let tab_id = self.page_input_tab.or(self.browser_state.active_tab_id());
+        let pos_points = self.last_cursor_pos_points;
+        let pos_css = pos_points.and_then(|pos| self.page_pos_points_to_pos_css_for_drop(pos));
+
+        if self.pending_dropped_files.is_empty() {
+          self.pending_dropped_files_tab = tab_id;
+          self.pending_dropped_files_pos_css = pos_css;
         }
-        let Some(pos_points) = self.last_cursor_pos_points else {
-          return;
-        };
-        let Some(page_rect) = self.page_rect_points else {
-          return;
-        };
-        if !page_rect.contains(pos_points) {
-          return;
+        if !self.pending_dropped_files.contains(path) {
+          self.pending_dropped_files.push(path.clone());
         }
-        let Some(tab_id) = self.page_input_tab else {
-          return;
-        };
-        let Some(mapping) = self.page_input_mapping else {
-          return;
-        };
-        let Some(pos_css) = mapping.pos_points_to_pos_css_if_inside(pos_points) else {
-          return;
-        };
-        self.send_worker_msg(fastrender::ui::UiToWorker::DropFiles {
-          tab_id,
-          pos_css,
-          paths: vec![path.clone()],
-        });
         self.window.request_redraw();
       }
       WindowEvent::MouseInput { state, button, .. } => {
