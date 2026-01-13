@@ -8,8 +8,7 @@
 //!
 //! For the full intended clocking model and drift-bug checklist, see `docs/media_clocking.md`.
 
-use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -275,6 +274,18 @@ impl MediaClock for AudioStreamClock {
 /// Playback rate is stored as an `f64` multiplier. To avoid accumulating floating-point error over
 /// time (drift), the rate is applied to the **absolute** master-clock delta from a stored origin and
 /// rounded once to the nearest nanosecond, similar to [`AudioStreamClock`].
+///
+/// The clock exposes a lightweight [`PlaybackState`] so callers can query whether it is currently
+/// advancing (`Playing`) or frozen (`Paused`).
+///
+/// Note: `playbackRate` of 0 is treated as a valid value (the timeline simply does not advance while
+/// `playing` remains `true`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+  Playing,
+  Paused,
+}
+
 pub struct PlaybackClock {
   master_clock: Arc<dyn MediaClock>,
 
@@ -347,6 +358,15 @@ impl PlaybackClock {
     self.base_timeline_time.store(timeline_now_nanos, Ordering::Relaxed);
     self.last_now.store(timeline_now_nanos, Ordering::Relaxed);
     self.playing.store(false, Ordering::Relaxed);
+  }
+
+  #[must_use]
+  pub fn state(&self) -> PlaybackState {
+    if self.playing.load(Ordering::Relaxed) {
+      PlaybackState::Playing
+    } else {
+      PlaybackState::Paused
+    }
   }
 
   /// Jumps the timeline to `new_time` and continues from there (if playing).
@@ -424,6 +444,10 @@ impl MediaClock for PlaybackClock {
   fn now(&self) -> Duration {
     PlaybackClock::now(self)
   }
+
+  fn is_started(&self) -> bool {
+    self.master_clock.is_started()
+  }
 }
 
 fn duration_to_nanos_u64(duration: Duration) -> u64 {
@@ -443,186 +467,6 @@ fn scale_nanos(nanos: u64, rate: f64) -> u64 {
   }
   // Round to the nearest nanosecond.
   u64::try_from(scaled.round() as u128).unwrap_or(u64::MAX)
-}
-
-// ============================================================================================
-// Playback clock (play/pause/seek/rate) driven by a base clock
-// ============================================================================================
-
-/// Playback state for [`PlaybackClock`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackState {
-  Playing,
-  Paused,
-}
-
-#[derive(Debug)]
-struct PlaybackClockState {
-  playback_state: PlaybackState,
-  /// Media position at `base_anchor`.
-  media_anchor: Duration,
-  /// Base clock timestamp at which `media_anchor` was sampled.
-  base_anchor: Duration,
-  /// Playback rate multiplier (1.0 = realtime).
-  rate: f64,
-  /// Last returned media timestamp, used to clamp to monotonic while playing.
-  ///
-  /// This is reset on explicit seeks (including backwards seeks).
-  last_now: Duration,
-}
-
-/// Thread-safe media timeline with play/pause/seek/rate control.
-///
-/// `PlaybackClock` maps a monotonic *base clock* (system time, audio device time, etc) onto the
-/// media timeline. When playing, media time advances as:
-///
-/// `media = media_anchor + (base_now - base_anchor) * rate`
-///
-/// When paused, media time does not advance.
-///
-/// This clock is intended to be the single source of truth for `HTMLMediaElement.currentTime` and
-/// for scheduling video frames, avoiding drift from UI tick count.
-pub struct PlaybackClock {
-  base_clock: Arc<dyn MediaClock>,
-  state: Mutex<PlaybackClockState>,
-}
-
-impl PlaybackClock {
-  pub fn new(base_clock: Arc<dyn MediaClock>, start_time: Duration) -> Self {
-    let base_now = base_clock.now();
-    Self {
-      base_clock,
-      state: Mutex::new(PlaybackClockState {
-        playback_state: PlaybackState::Playing,
-        media_anchor: start_time,
-        base_anchor: base_now,
-        rate: 1.0,
-        last_now: start_time,
-      }),
-    }
-  }
-
-  /// Returns the current media position.
-  pub fn now(&self) -> Duration {
-    let base_now = self.base_clock.now();
-    let mut state = self.state.lock();
-    let candidate = playback_position_at(&state, base_now);
-
-    if state.playback_state == PlaybackState::Playing && candidate < state.last_now {
-      return state.last_now;
-    }
-
-    state.last_now = candidate;
-    candidate
-  }
-
-  pub fn state(&self) -> PlaybackState {
-    self.state.lock().playback_state
-  }
-
-  pub fn rate(&self) -> f64 {
-    self.state.lock().rate
-  }
-
-  /// Start advancing the media clock.
-  pub fn play(&self) {
-    let base_now = self.base_clock.now();
-    let mut state = self.state.lock();
-    if state.playback_state == PlaybackState::Playing {
-      return;
-    }
-    // When resuming, preserve the current media position, but re-anchor it to "now" on the base
-    // clock so media time doesn't jump forward.
-    state.base_anchor = base_now;
-    state.playback_state = PlaybackState::Playing;
-    state.last_now = state.media_anchor;
-  }
-
-  /// Stop advancing the media clock (freezes at the current position).
-  pub fn pause(&self) {
-    let base_now = self.base_clock.now();
-    let mut state = self.state.lock();
-    if state.playback_state == PlaybackState::Paused {
-      return;
-    }
-    let candidate = playback_position_at(&state, base_now);
-    state.media_anchor = if candidate < state.last_now {
-      state.last_now
-    } else {
-      candidate
-    };
-    state.base_anchor = base_now;
-    state.playback_state = PlaybackState::Paused;
-    state.last_now = state.media_anchor;
-  }
-
-  /// Set the current media position immediately.
-  pub fn seek(&self, new_time: Duration) {
-    let base_now = self.base_clock.now();
-    let mut state = self.state.lock();
-    state.media_anchor = new_time;
-    state.base_anchor = base_now;
-    state.last_now = new_time;
-  }
-
-  /// Set the playback rate multiplier.
-  pub fn set_rate(&self, rate: f64) {
-    let rate = sanitize_playback_rate(rate);
-    let base_now = self.base_clock.now();
-    let mut state = self.state.lock();
-
-    if state.rate == rate {
-      return;
-    }
-
-    if state.playback_state == PlaybackState::Playing {
-      // Preserve continuity: re-anchor at the current media position under the old rate.
-      let candidate = playback_position_at(&state, base_now);
-      state.media_anchor = if candidate < state.last_now {
-        state.last_now
-      } else {
-        candidate
-      };
-      state.base_anchor = base_now;
-      state.last_now = state.media_anchor;
-    }
-
-    state.rate = rate;
-  }
-}
-
-impl MediaClock for PlaybackClock {
-  fn now(&self) -> Duration {
-    PlaybackClock::now(self)
-  }
-
-  fn is_started(&self) -> bool {
-    self.base_clock.is_started()
-  }
-}
-
-fn playback_position_at(state: &PlaybackClockState, base_now: Duration) -> Duration {
-  match state.playback_state {
-    PlaybackState::Paused => state.media_anchor,
-    PlaybackState::Playing => {
-      let delta = base_now.saturating_sub(state.base_anchor);
-      state
-        .media_anchor
-        .saturating_add(scale_duration(delta, state.rate))
-    }
-  }
-}
-
-fn sanitize_playback_rate(rate: f64) -> f64 {
-  if rate.is_finite() && rate >= 0.0 {
-    rate
-  } else {
-    0.0
-  }
-}
-
-fn scale_duration(duration: Duration, rate: f64) -> Duration {
-  Duration::from_nanos(scale_nanos(duration_to_nanos_u64(duration), rate))
 }
 
 #[cfg(test)]
@@ -737,8 +581,6 @@ mod tests {
   }
 
   // --- PlaybackClock tests ---
-
-  use crate::js::clock::VirtualClock;
 
   impl MediaClock for VirtualClock {
     fn now(&self) -> Duration {

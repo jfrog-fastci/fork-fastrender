@@ -3404,7 +3404,6 @@ const TREE_WALKER_ROOT_KEY: &str = "__fastrender_tree_walker_root";
 const TREE_WALKER_CURRENT_NODE_KEY: &str = "__fastrender_tree_walker_current_node";
 const TREE_WALKER_WHAT_TO_SHOW_KEY: &str = "__fastrender_tree_walker_what_to_show";
 const TREE_WALKER_FILTER_KEY: &str = "__fastrender_tree_walker_filter";
-const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const TREE_WALKER_PROTOTYPE_KEY: &str = "__fastrender_tree_walker_prototype";
 const NODE_FILTER_FILTER_ACCEPT: u16 = 1;
 const NODE_FILTER_FILTER_REJECT: u16 = 2;

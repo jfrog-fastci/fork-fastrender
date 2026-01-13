@@ -13,7 +13,6 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 use publicsuffix::{List, Psl};
-use rustc_hash::FxHashSet;
 
 /// The input + state available to [`OmniboxProvider`] implementations.
 ///
