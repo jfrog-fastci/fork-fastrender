@@ -665,7 +665,6 @@ impl VmJobContext for WindowRealmJobContext<'_> {
 
 pub struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
   any: VmJsHostHooksPayload,
-  pending_discard: Vec<Job>,
   heap_ptr: Option<NonNull<Heap>>,
   heap_alive: Option<Arc<AtomicBool>>,
   enqueue_error: Option<crate::error::Error>,
@@ -729,7 +728,6 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     any.set_vm_host(host_ctx);
     Self {
       any,
-      pending_discard: Vec::new(),
       heap_ptr: None,
       heap_alive: None,
       enqueue_error: None,
@@ -834,12 +832,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
   }
 
   pub fn finish(mut self, heap: &mut Heap) -> Option<crate::error::Error> {
-    if !self.pending_discard.is_empty() {
-      let mut ctx = HeapRootContext { heap };
-      for job in self.pending_discard.drain(..) {
-        job.discard(&mut ctx);
-      }
-    }
+    let _ = heap;
     self.enqueue_error.take()
   }
 }
@@ -922,18 +915,22 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
   }
 
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
+    // Once enqueueing fails (queue limit, missing EventLoop), we keep the first error and discard
+    // all subsequent jobs (while the heap is still live) to avoid leaking persistent roots.
     if self.enqueue_error.is_some() {
-      self.pending_discard.push(job);
-      return;
-    }
-
-    let job_cell: std::rc::Rc<std::cell::RefCell<AutoDiscardJobCell>> =
-      std::rc::Rc::new(std::cell::RefCell::new(AutoDiscardJobCell {
+      drop(AutoDiscardJobCell {
         job: Some(job),
         heap_ptr: self.heap_ptr,
         heap_alive: self.heap_alive.as_ref().map(Arc::clone),
-      }));
-    let job_cell_for_closure = std::rc::Rc::clone(&job_cell);
+      });
+      return;
+    }
+
+    let mut job_cell = AutoDiscardJobCell {
+      job: Some(job),
+      heap_ptr: self.heap_ptr,
+      heap_alive: self.heap_alive.as_ref().map(Arc::clone),
+    };
 
     let enqueue_result: crate::error::Result<()> = (|| {
       let Some(event_loop) = self.any.event_loop_mut::<EventLoop<Host>>() else {
@@ -942,8 +939,11 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
         ));
       };
 
+      // `queue_microtask` accepts `FnOnce`, so we can move the job wrapper directly into the
+      // runnable. If enqueue fails, the runnable (and the wrapper) will be dropped immediately,
+      // triggering `AutoDiscardJobCell` to call `Job::discard(..)` while the heap is still alive.
       event_loop.queue_microtask(move |host, event_loop| {
-        let Some(job) = job_cell_for_closure.borrow_mut().take() else {
+        let Some(job) = job_cell.take() else {
           return Ok(());
         };
 
@@ -1005,9 +1005,9 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     })();
 
     if let Err(err) = enqueue_result {
-      if let Some(job) = job_cell.borrow_mut().take() {
-        self.pending_discard.push(job);
-      }
+      // `job_cell` is either still in scope (no EventLoop) or has already been dropped (enqueue
+      // failure). Either way, the `AutoDiscardJobCell` drop path ensures the job is discarded while
+      // the heap is live.
       self.enqueue_error = Some(err);
     }
   }
@@ -7206,6 +7206,64 @@ mod tests {
       !host.window.heap().is_valid_object(argument_obj),
       "Job::run should remove persistent roots after execution"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_discard_roots_when_event_loop_is_dropped() -> crate::error::Result<()> {
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    let rooted_obj = {
+      let heap = host.window.heap_mut();
+      let mut scope = heap.scope();
+      scope.alloc_object().expect("alloc object")
+    };
+
+    let (root, job) = {
+      let mut job =
+        vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| Ok(())).expect("create job");
+      let heap = host.window.heap_mut();
+      let mut ctx = HeapRootContext { heap };
+      let root = job
+        .add_root(&mut ctx, Value::Object(rooted_obj))
+        .expect("root object");
+      (root, job)
+    };
+
+    assert_eq!(
+      host.window.heap().get_root(root),
+      Some(Value::Object(rooted_obj))
+    );
+
+    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(&mut host)?;
+    hooks.set_event_loop(&mut event_loop);
+    hooks.host_enqueue_promise_job(job, None);
+    assert!(hooks.finish(host.window.heap_mut()).is_none());
+
+    // The job should keep the object alive until it is run or discarded.
+    host.window.heap_mut().collect_garbage();
+    assert!(
+      host.window.heap().is_valid_object(rooted_obj),
+      "expected object to stay alive while the Promise job is still queued"
+    );
+
+    // Drop the host microtask queue without running it: this should discard the job and clean up its
+    // persistent roots while the heap is still alive.
+    drop(event_loop);
+
+    assert_eq!(
+      host.window.heap().get_root(root),
+      None,
+      "expected Promise job to discard its persistent roots when the microtask is dropped"
+    );
+
+    host.window.heap_mut().collect_garbage();
+    assert!(
+      !host.window.heap().is_valid_object(rooted_obj),
+      "expected rooted object to become collectible after job discard"
+    );
+
     Ok(())
   }
 
