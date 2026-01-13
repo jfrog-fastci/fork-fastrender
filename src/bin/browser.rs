@@ -20383,6 +20383,7 @@ impl App {
                 self
                   .page_input_mapping
                   .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
+                  .or(Some(controls.anchor_rect_points))
                   .is_some_and(|rect_points| rect_points.contains(pos_points))
               });
               self.cancel_media_controls();
