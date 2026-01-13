@@ -238,7 +238,7 @@ Wrapper/root nodes in the compositor/renderer-chrome accessibility tree (see
 in the “non-page” namespace (upper 64 bits are `0`, so `decode_page_node_id` returns `None`).
 
 This guarantees that DOM node id `1` in any tab will never collide with wrapper/root ids like `1`/`2`/`3`.
-Note: [`src/ui/page_accesskit_ids.rs`](../src/ui/page_accesskit_ids.rs) contains an older tag-bit
+Note: [`src/ui/page_accesskit_ids.rs`](../src/ui/page_accesskit_ids.rs) contains an alternative tag-bit
 encoding variant; the windowed browser UI currently uses `encode_page_node_id` for page subtree ids.
 
 ---

@@ -122,7 +122,11 @@ pub mod accesskit_bridge;
 #[cfg(feature = "browser_ui")]
 pub mod fastrender_accesskit;
 
-// AccessKit node ID helpers for in-page accessibility nodes (distinct from egui's own nodes).
+// Alternative tag-bit page `NodeId` encoding helpers.
+//
+// The windowed browser UI's injected page subtree currently uses `page_a11y::encode_page_node_id`
+// (tab id + document generation + dom node id). `page_accesskit_ids` is kept as a reversible
+// tag-bit variant.
 #[cfg(feature = "browser_ui")]
 pub mod page_accesskit_ids;
 

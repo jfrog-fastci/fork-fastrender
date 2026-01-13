@@ -1,3 +1,13 @@
+//! Alternative AccessKit `NodeId` encoding for page DOM nodes.
+//!
+//! This module defines a tag-bit (bit 127) namespacing scheme (`page_node_id` /
+//! `decode_page_node_id`) that can cheaply distinguish "page/content" nodes from chrome/egui nodes.
+//!
+//! Note: the windowed browser UI's injected page subtree currently uses the `(tab_id, document
+//! generation, dom_node_id)` encoding in [`crate::ui::page_a11y`] (`encode_page_node_id`) so stale
+//! action requests from previous navigations can be rejected. This tag-bit variant is kept as a
+//! compact, reversible alternative encoding.
+
 #![cfg(feature = "browser_ui")]
 
 use crate::ui::TabId;
