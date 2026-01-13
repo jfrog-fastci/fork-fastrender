@@ -48,19 +48,20 @@ If you run the `browser` binary without the feature, it will print a short messa
 (the real implementation is behind the `browser_ui` feature gate; see
 [`src/bin/browser.rs`](../src/bin/browser.rs)).
 
-### Native dialogs (file/color) on Linux
+### Native dialogs (file/color) (developer note)
 
-The browser UI uses the [`rfd`](https://crates.io/crates/rfd) crate for native file pickers and
-color pickers.
+The `browser_ui` feature includes an optional dependency on the
+[`rfd`](https://crates.io/crates/rfd) crate for native file/color dialogs, but the current windowed
+`browser` app does **not** open native file pickers or color pickers yet.
 
 On Linux, `rfd` is configured to use the `xdg-portal` backend (via Cargo feature selection) so
 `--features browser_ui` stays **CI-friendly** and does **not** require GTK development packages
 (`libgtk-3-dev`, etc).
 
-Runtime note: the portal backend requires an `xdg-desktop-portal` implementation to be running. If
-your environment doesn't provide one (common on minimal/headless setups), file/color pickers may
-fail to open at runtime, but the browser UI will still compile and run (including headless CI
-smoke tests).
+If/when native dialogs are wired up, note that the portal backend requires an
+`xdg-desktop-portal` implementation to be running. If your environment doesn't provide one (common
+on minimal/headless setups), dialogs may fail to open at runtime, but the browser UI will still
+compile and run (including headless CI smoke tests).
 
 When running the browser UI against arbitrary real-world pages, consider using the repo’s resource
 limit wrapper (especially on multi-agent hosts):
@@ -572,6 +573,7 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - `ViewportChanged { tab_id, viewport_css, dpr }`
 - `Scroll { tab_id, delta_css, pointer_css }`
 - pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)
+- `DropFiles { tab_id, pos_css, paths }` — OS file drop (used to populate `<input type=file>` controls)
 - `SelectDropdownChoose { tab_id, select_node_id, option_node_id }` — user selected an option from
   a dropdown popup (sent after `WorkerToUi::SelectDropdownOpened`)
 - `SelectDropdownCancel { tab_id }` — user dismissed a dropdown popup (Escape/click-away)
@@ -759,7 +761,10 @@ Front-ends are encouraged to print these to stderr while developing new protocol
     - basic clipboard shortcuts (Ctrl/Cmd+C/X/V) are supported for focused `<input>`/`<textarea>`
   - `<select>` support is basic (listbox clicks + dropdown popup selection; keyboard navigation and
     simple typeahead are supported; no multi-select yet)
-  - many controls are not yet supported (`contenteditable`, file inputs, etc.)
+  - `<input type=file>`:
+    - Selecting files via a native file picker dialog is not implemented yet.
+    - OS drag-and-drop onto the control is supported (best-effort; typically one file per drop).
+  - many controls are not yet supported (`contenteditable`, etc.)
 - No persistent browser profile (cookies/storage/devtools/extensions/etc.).
 
 ## MSRV + GUI version pinning
