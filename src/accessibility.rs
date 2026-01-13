@@ -246,6 +246,60 @@ pub fn build_accessibility_tree(
     deadline_error: RefCell::new(None),
   };
 
+  // Expose a more browser-like root document node by deriving its accessible name from the first
+  // HTML `<title>` element, even though `<head>/<title>` are typically display:none.
+  //
+  // Use referenced-mode traversal so visually hidden nodes still contribute, while respecting
+  // `aria-hidden`/`inert` so titles hidden from assistive technology are ignored.
+  let document_title = {
+    let mut stack: Vec<&StyledNode> = vec![root];
+    let mut title_node: Option<&StyledNode> = None;
+
+    while let Some(node) = stack.pop() {
+      if ctx.deadline_tripped() {
+        break;
+      }
+      ctx.deadline_step(RenderStage::BoxTree);
+      if ctx.deadline_tripped() {
+        break;
+      }
+
+      // If a subtree is hidden from assistive technology via `aria-hidden`/`inert`, it cannot
+      // contribute a document title.
+      if ctx.is_accessibility_hidden(node) {
+        continue;
+      }
+
+      // Shadow roots are not part of the document tree, and `<template>` contents are inert.
+      if matches!(node.node.node_type, DomNodeType::ShadowRoot { .. })
+        || node.node.template_contents_are_inert()
+      {
+        continue;
+      }
+
+      if is_html_element(&node.node)
+        && node
+          .node
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("title"))
+      {
+        title_node = Some(node);
+        break;
+      }
+
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+
+    title_node.and_then(|node| {
+      let mut visited = HashSet::new();
+      let title = ctx.text_content(node, &mut visited, TextAlternativeMode::Referenced);
+      let title = normalize_whitespace(&title);
+      (!title.is_empty()).then_some(title)
+    })
+  };
+
   let mut children = Vec::new();
   for child in ctx.tree_children(root) {
     children.extend(build_nodes(child, &ctx));
@@ -261,7 +315,7 @@ pub fn build_accessibility_tree(
   Ok(AccessibilityNode {
     role: "document".to_string(),
     role_description: None,
-    name: None,
+    name: document_title,
     description: None,
     value: None,
     level: None,
