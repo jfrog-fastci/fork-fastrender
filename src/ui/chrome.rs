@@ -5256,6 +5256,54 @@ frame={idx} repaint_after={:?}\n",
   }
 
   #[test]
+  fn ctrl_l_select_all_is_applied_before_paste() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/path?x=1#y".to_string()),
+      true,
+    );
+
+    // Simulate the user pressing Ctrl/Cmd+L and pasting immediately before the next redraw.
+    // The select-all behavior should be applied before the paste so the paste replaces the URL
+    // (not append/insert).
+    let events = vec![
+      egui::Event::Key {
+        key: egui::Key::L,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers {
+          command: true,
+          ..Default::default()
+        },
+      },
+      egui::Event::Paste("example.com".to_string()),
+    ];
+
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, events);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.address_bar_has_focus);
+    assert!(app.chrome.address_bar_editing);
+    assert!(!app.chrome.request_focus_address_bar);
+    assert!(!app.chrome.request_select_all_address_bar);
+    assert_eq!(app.chrome.address_bar_text, "example.com");
+    assert!(
+      app.chrome.omnibox.open,
+      "expected omnibox suggestions to open after pasting into the address bar"
+    );
+  }
+
+  #[test]
   fn address_bar_copy_copies_selected_text() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
