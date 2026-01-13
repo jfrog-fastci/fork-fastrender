@@ -57,9 +57,10 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - Windows alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off` (`off`/`0`/`false`/`no` disable).
   - macOS alias: `FASTR_MACOS_RENDERER_SANDBOX=off`.
   - When set, FastRender logs a warning to stderr so insecure runs are not silent.
-  - Windows note: disabling token/AppContainer sandboxing does **not** remove all guardrails: the spawn
-    helper still uses a Job Object (kill-on-close, active-process cap) and the handle-inheritance
-    allowlist.
+  - Windows note: disabling token/AppContainer sandboxing does **not** remove all guardrails: the
+    spawn helper still uses the handle-inheritance allowlist and still attempts to apply a Job
+    Object (kill-on-close, active-process cap). If job assignment fails (e.g. nested jobs are
+    disallowed by the parent job), it may run jobless and prints a warning.
 - `FASTR_ALLOW_UNSANDBOXED_RENDERER=0|1` – **Windows-only**: opt in to running the renderer without the full Windows sandbox when required primitives are missing or sandbox startup fails.
   - Default: disabled (sandbox failures return an error; no silent downgrade).
   - `crates/win-sandbox`: used by `RendererSandboxMode::new_default()` to avoid silently disabling

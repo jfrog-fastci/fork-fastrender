@@ -18,7 +18,11 @@ Code map (repo reality):
   - `src/sandbox/windows/appcontainer.rs` (dynamic loader for AppContainer APIs in `userenv.dll`)
     - We resolve AppContainer APIs at runtime (via `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)`
       + `GetProcAddress`) so the binary can still load on Windows versions that lack these exports;
-      missing symbols are treated as “no AppContainer support” → fallback mode.
+      missing symbols are treated as “no AppContainer support”.
+      - By default, `spawn_sandboxed(...)` fails closed and returns an error rather than silently
+        downgrading.
+      - If `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` is set, it may fall back to restricted-token or
+        unsandboxed mode.
 - Reusable Win32 wrappers + reusable spawner + tests:
   - `crates/win-sandbox/`
     - `Job` (job object wrapper + limits)
@@ -428,8 +432,10 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
 - `FASTR_DISABLE_RENDERER_SANDBOX=1` / `FASTR_WINDOWS_RENDERER_SANDBOX=off`: disable Windows
   renderer sandboxing entirely (**debug only; insecure**).
   - Note: even with the token/AppContainer sandbox disabled, `spawn_sandboxed(...)` still uses the
-    **Job object** and the **handle allowlist**. This is not a security boundary (no network/FS
-    restrictions), but it keeps lifecycle/handle-leak invariants closer to the real configuration.
+    **handle allowlist** and still attempts to apply the **Job object** limits (kill-on-close,
+    active-process cap).
+    - If the child cannot be assigned to the Job (nested-job restrictions), it runs jobless and
+      prints a warning.
 - `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`: opt in to running without the full Windows sandbox when
   required primitives are missing or sandbox startup fails.
 

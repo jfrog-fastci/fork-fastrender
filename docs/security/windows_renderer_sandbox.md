@@ -62,7 +62,7 @@ versions / unusual CI setups), set:
 When this opt-in is enabled, the renderer may fall back to spawning with:
 
 - a **restricted token** (max privileges removed), and
-- **low integrity**, still under the same Job Object constraints.
+- **low integrity**, still under the same Job Object constraints when job assignment succeeds.
 
 Limitations:
 
@@ -73,7 +73,8 @@ Limitations:
 
 If both AppContainer and restricted-token spawning fail (and
 `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` is set), `spawn_sandboxed(...)` falls back to an unsandboxed
-spawn **still inside the Job Object**, and logs a warning to stderr.
+spawn (still attempts to apply the Job Object limits; if job assignment fails due to host job
+restrictions it may run jobless) and logs a warning to stderr.
 
 ---
 

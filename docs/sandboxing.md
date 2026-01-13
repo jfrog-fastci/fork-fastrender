@@ -73,7 +73,8 @@ to running without the full sandbox by setting:
 - `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`
 
 When this opt-in is enabled, the spawner may fall back to a **restricted token** + **low integrity**
-mode (still under the same Job Object constraints) when AppContainer is unavailable.
+mode (still under the same Job Object constraints when job assignment succeeds) when AppContainer is
+unavailable.
 
 Limitations of the fallback:
 
@@ -82,7 +83,8 @@ Limitations of the fallback:
 
 If both AppContainer and restricted-token sandboxing fail (and
 `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` is set), `spawn_sandboxed(...)` falls back to an unsandboxed
-spawn (still inside a Job Object) and prints a warning to stderr.
+spawn (still attempts to apply the Job Object limits; if job assignment fails due to host job
+restrictions, it may run jobless) and prints a warning to stderr.
 
 ### Windows version constraints
 
