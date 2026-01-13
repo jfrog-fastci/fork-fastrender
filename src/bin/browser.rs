@@ -19975,17 +19975,44 @@ impl App {
 
     if !self.clear_browsing_data_dialog_open
       && (self.bookmarks_panel_open || self.history_panel_open)
-      && ctx.input(|i| i.key_pressed(egui::Key::Escape))
-      && (!self.chrome_has_text_focus
-        || (!self.browser_state.chrome.address_bar_has_focus
-          && !self.browser_state.chrome.tab_search.open
-          && !self
-            .browser_state
-            .active_tab()
-            .is_some_and(|tab| tab.find.open)))
     {
-      close_bookmarks_panel |= self.bookmarks_panel_open;
-      close_history_panel |= self.history_panel_open;
+      let address_bar_has_focus = self.browser_state.chrome.address_bar_has_focus;
+      let tab_search_open = self.browser_state.chrome.tab_search.open;
+      let find_in_page_open = self
+        .browser_state
+        .active_tab()
+        .is_some_and(|tab| tab.find.open);
+
+      if self.history_panel_open {
+        match fastrender::ui::panel_escape::history_panel_escape_action(
+          ctx.wants_keyboard_input(),
+          self.browser_state.chrome.history_search_text.is_empty(),
+          address_bar_has_focus,
+          tab_search_open,
+          find_in_page_open,
+        ) {
+          fastrender::ui::panel_escape::PanelEscapeAction::ClearSearch => {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+              self.browser_state.chrome.history_search_text.clear();
+              // Ensure the input stays focused after clearing, matching common browser UX.
+              self.history_panel_request_focus_search = true;
+            }
+          }
+          fastrender::ui::panel_escape::PanelEscapeAction::ClosePanel => {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+              close_history_panel = true;
+            }
+          }
+          fastrender::ui::panel_escape::PanelEscapeAction::Noop => {}
+        }
+      }
+
+      if self.bookmarks_panel_open && !(address_bar_has_focus || tab_search_open || find_in_page_open)
+      {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+          close_bookmarks_panel = true;
+        }
+      }
     }
 
     if self.bookmarks_panel_open && !close_bookmarks_panel {
