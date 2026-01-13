@@ -3012,6 +3012,19 @@ impl BrowserRuntime {
         let changed =
           doc.mutate_dom(|dom| tab.interaction.set_text_control_value(dom, node_id, &value));
         if changed {
+          if let Some(js_tab) = tab.js_tab.as_mut() {
+            let dom_snapshot = doc.dom();
+            let element_id = dom_node_by_preorder_id(dom_snapshot, node_id)
+              .and_then(|node| node.get_attribute_ref("id"));
+            mirror_dom1_form_control_state_into_dom2(
+              js_tab,
+              tab.js_dom_mapping.as_ref(),
+              dom_snapshot,
+              node_id,
+              element_id,
+            );
+            tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+          }
           tab.cancel.bump_paint();
           tab.needs_repaint = true;
         }
