@@ -870,15 +870,25 @@ fn regexp_unicode_property_escape_ascii_and_script_han() {
         const m2v = new RegExp("\\p{ASCII}", "v").exec(text);
         const m3u = new RegExp("\\P{ASCII}", "u").exec("a\u{20BB7}b");
         const m3v = new RegExp("\\P{ASCII}", "v").exec("a\u{20BB7}b");
+        const m4u = new RegExp("\\p{Lu}", "u").exec("aA");
+        const m5u = new RegExp("[\\p{ASCII}]", "u").exec("éa");
+        const m6iu = new RegExp("\\p{Lu}", "iu").exec("a");
+
+        let e1, e2;
+        try { new RegExp("\\p{ascii}", "u"); e1 = "no"; } catch (e) { e1 = e.name; }
+        try { new RegExp("\\p{Han}", "u"); e2 = "no"; } catch (e) { e2 = e.name; }
         [m1u[0], m1u.index, m1v[0], m1v.index,
          m2u[0], m2u.index, m2v[0], m2v.index,
-         m3u[0], m3u.index, m3v[0], m3v.index].join(",")
+         m3u[0], m3u.index, m3v[0], m3v.index,
+         m4u[0], m4u.index, m5u[0], m5u.index,
+         m6iu[0], m6iu.index,
+         e1, e2].join(",")
       "#,
     )
     .unwrap();
   assert_eq!(
     as_utf8_lossy(&rt, value),
-    "𠮷,0,𠮷,0,a,2,a,2,𠮷,1,𠮷,1"
+    "𠮷,0,𠮷,0,a,2,a,2,𠮷,1,𠮷,1,A,1,a,1,a,0,SyntaxError,SyntaxError"
   );
 }
 
