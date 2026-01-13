@@ -7581,14 +7581,23 @@ impl App {
   }
 
   fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-    self.last_resize_event_at = Some(std::time::Instant::now());
     if new_size.width == 0 || new_size.height == 0 {
       // Window minimization can transiently report a 0×0 size; clear any pending configure request
       // so we don't reconfigure the surface at a stale size while minimized.
       self.surface_needs_configure = false;
+      // Minimization shouldn't participate in resize-burst tracking (which is intended for
+      // interactive drag-resize). Clear the timestamp and burst flag so we don't schedule a
+      // resize-burst wakeup/redraw while the window is minimized.
+      self.last_resize_event_at = None;
+      if self.resize_burst_active {
+        self.resize_burst_active = false;
+        std::mem::swap(&mut self.viewport_throttle, &mut self.viewport_throttle_resizing);
+        self.viewport_throttle.reset();
+      }
       return;
     }
 
+    self.last_resize_event_at = Some(std::time::Instant::now());
     if new_size.width == self.surface_config.width && new_size.height == self.surface_config.height {
       return;
     }
