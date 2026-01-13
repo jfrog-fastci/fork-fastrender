@@ -137,3 +137,61 @@ test(() => {
   assert_true(it.pointerBeforeReferenceNode);
 }, "NodeIterator pre-remove: moving a node via appendChild runs pre-remove updates");
 
+test(() => {
+  clear_children(document.body);
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+
+  const frag = document.createDocumentFragment();
+  const a = document.createElement("a");
+  const b = document.createElement("b");
+  frag.appendChild(a);
+  frag.appendChild(b);
+
+  const it = document.createNodeIterator(
+    frag,
+    NodeFilter.SHOW_DOCUMENT_FRAGMENT | NodeFilter.SHOW_ELEMENT,
+    null
+  );
+
+  assert_equals(it.nextNode(), frag);
+  assert_equals(it.nextNode(), a);
+  assert_equals(it.previousNode(), a, "previousNode() toggles pointerBeforeReferenceNode without moving");
+  assert_equals(it.referenceNode, a);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  // Appending a DocumentFragment moves its children into the new parent, which removes them from the
+  // fragment. The iterator rooted at the fragment should update during those removals.
+  container.appendChild(frag);
+
+  assert_equals(it.referenceNode, frag);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator pre-remove: moving DocumentFragment children updates iterators rooted at the fragment");
+
+test(() => {
+  clear_children(document.body);
+
+  const container = document.createElement("div");
+  const a = document.createElement("span");
+  const b = document.createElement("span");
+  container.appendChild(a);
+  container.appendChild(b);
+  document.body.appendChild(container);
+
+  const it = document.createNodeIterator(container, NodeFilter.SHOW_ALL, null);
+  it.nextNode(); // container
+  it.nextNode(); // a
+  it.nextNode(); // b
+  it.previousNode(); // b (toggle pointerBeforeReferenceNode => true)
+
+  assert_equals(it.referenceNode, b);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  // Replacing innerHTML removes existing children in a deterministic order. Iterator pre-remove
+  // steps should run and keep the reference/pointer in a consistent state.
+  container.innerHTML = "<span></span>";
+
+  assert_equals(it.referenceNode, container);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator pre-remove: innerHTML replacement runs pre-remove updates");
