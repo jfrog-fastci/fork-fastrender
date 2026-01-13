@@ -20,7 +20,7 @@ use crate::tree::box_tree::SelectControl;
 use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
 use crate::tree::fragment_tree::{FragmentContent, HitTestRoot};
-use crate::ui::messages::{MediaElementKind, PointerButton, PointerModifiers};
+use crate::ui::messages::{CursorKind, MediaElementKind, PointerButton, PointerModifiers};
 use rustc_hash::FxHashSet;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -6217,7 +6217,6 @@ impl InteractionEngine {
   pub fn hover_tooltip(&self) -> Option<&str> {
     self.hover_tooltip.as_deref()
   }
-
   /// Replace the set of visited link node ids for the current document.
   ///
   /// This is used by browser-UI integrations to populate `:visited` pseudo-class matching from an
@@ -6267,6 +6266,74 @@ impl InteractionEngine {
   /// The drag state is cleared on pointer up, focus changes, and `clear_pointer_state`.
   pub fn active_document_selection_drag(&self) -> bool {
     self.document_drag.is_some()
+  }
+
+  pub fn drag_cursor_hint(
+    &self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    page_point: Point,
+    hit: Option<&HitTestResult>,
+  ) -> Option<CursorKind> {
+    if self.drag_drop_active_kind().is_some() {
+      return None;
+    }
+
+    // Document selection highlight can be dragged.
+    if page_point.x.is_finite()
+      && page_point.y.is_finite()
+      && page_point.x >= 0.0
+      && page_point.y >= 0.0
+    {
+      if let Some(selection) = self
+        .state
+        .document_selection
+        .as_ref()
+        .filter(|sel| sel.has_highlight())
+      {
+        if let Some(point) =
+          document_selection_point_at_page_point(box_tree, fragment_tree, page_point)
+        {
+          if document_selection_contains_point(selection, point) {
+            return Some(CursorKind::Grab);
+          }
+        }
+      }
+    }
+
+    // Focused text-control selection highlight can be dragged.
+    let Some(edit) = self.text_edit.as_ref() else {
+      return None;
+    };
+    let Some((sel_start, sel_end)) = edit.selection() else {
+      return None;
+    };
+    let Some(hit) = hit
+      .filter(|hit| hit.kind == HitTestKind::FormControl && hit.dom_node_id == edit.node_id)
+    else {
+      return None;
+    };
+
+    let index = DomIndexMut::new(dom);
+    let Some((caret, _)) = caret_index_for_text_control_point(
+      &index,
+      box_tree,
+      fragment_tree,
+      scroll,
+      hit.dom_node_id,
+      hit.box_id,
+      page_point,
+    ) else {
+      return None;
+    };
+
+    if caret >= sel_start && caret <= sel_end {
+      Some(CursorKind::Grab)
+    } else {
+      None
+    }
   }
 
   /// Debug/test helper: validate internal interaction invariants.

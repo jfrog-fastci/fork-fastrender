@@ -6138,6 +6138,8 @@ impl BrowserRuntime {
               &scroll_snapshot,
               viewport_point,
             );
+          let mut fragment_tree_for_cursor = fragment_tree_before;
+          let mut scroll_for_cursor = &scroll_snapshot;
 
           if let Some(scroll_after) = next_scroll.as_ref() {
             let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
@@ -6154,8 +6156,23 @@ impl BrowserRuntime {
             changed |= changed_after;
             hit = hit_after;
             hover_is_drop_target = hover_is_drop_target_after;
+            fragment_tree_for_cursor = fragment_tree_after;
+            scroll_for_cursor = scroll_after;
           }
           let drag_drop_active = engine.drag_drop_active_kind().is_some();
+          let page_point = viewport_point.translate(scroll_for_cursor.viewport);
+          let drag_cursor_hint = if pointer_in_page {
+            engine.drag_cursor_hint(
+              dom,
+              box_tree,
+              fragment_tree_for_cursor,
+              scroll_for_cursor,
+              page_point,
+              hit.as_ref(),
+            )
+          } else {
+            None
+          };
           let (
             hovered_url,
             mut cursor,
@@ -6195,6 +6212,12 @@ impl BrowserRuntime {
               None => (None, CursorKind::Default, None, None, false),
             }
           };
+
+          if pointer_in_page && !drag_drop_active {
+            if let Some(cursor_hint) = drag_cursor_hint {
+              cursor = cursor_hint;
+            }
+          }
 
           if pointer_in_page && drag_drop_active {
             cursor = if hover_is_drop_target {
