@@ -894,6 +894,11 @@ fn parse_allow_crash_urls_env(raw: Option<&str>) -> Result<bool, String> {
 }
 
 #[cfg(feature = "browser_ui")]
+fn perf_log_enabled_from_env() -> bool {
+  parse_env_bool(std::env::var(ENV_PERF_LOG).ok().as_deref())
+}
+
+#[cfg(feature = "browser_ui")]
 fn parse_browser_show_menu_bar_env(raw: Option<&str>) -> Result<Option<bool>, String> {
   let Some(raw) = raw else {
     return Ok(None);
@@ -3257,6 +3262,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             session_dirty = true;
           }
         } else if let Some(win) = windows.get_mut(&window_id) {
+          if let Some(monitor) = win.app.idle_repaint_monitor.as_mut() {
+            monitor.note_winit_event(&event);
+          }
           let response = win.app.egui_state.on_event(&win.app.egui_ctx, &event);
           win.app.handle_winit_input_event(&event);
 
@@ -5213,6 +5221,144 @@ impl BrowserHud {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+struct IdleRepaintMonitor {
+  /// Whether at least one frame has been presented already.
+  ///
+  /// "Idle repaint" is defined as activity *since the previous presented frame*, so the first
+  /// presented frame is never counted as idle.
+  has_presented_once: bool,
+  had_winit_input_since_present: bool,
+  had_resize_since_present: bool,
+  had_worker_activity_since_present: bool,
+  /// Whether the previous presented frame's egui output requested a follow-up repaint via
+  /// `egui::FullOutput::repaint_after` (i.e. non-`Duration::MAX`).
+  had_egui_repaint_request_since_present: bool,
+
+  idle_frames_total: u64,
+  idle_frame_times: std::collections::VecDeque<std::time::Instant>,
+  idle_frames_per_sec: f32,
+
+  perf_log_enabled: bool,
+  window_id: String,
+  start_time: std::time::Instant,
+  last_perf_log: Option<std::time::Instant>,
+}
+
+#[cfg(feature = "browser_ui")]
+impl IdleRepaintMonitor {
+  const IDLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+  const PERF_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+  fn new(window_id: winit::window::WindowId, perf_log_enabled: bool) -> Self {
+    Self {
+      has_presented_once: false,
+      had_winit_input_since_present: false,
+      had_resize_since_present: false,
+      had_worker_activity_since_present: false,
+      had_egui_repaint_request_since_present: false,
+      idle_frames_total: 0,
+      idle_frame_times: std::collections::VecDeque::new(),
+      idle_frames_per_sec: 0.0,
+      perf_log_enabled,
+      window_id: format!("{window_id:?}"),
+      start_time: std::time::Instant::now(),
+      last_perf_log: None,
+    }
+  }
+
+  fn note_winit_event(&mut self, event: &winit::event::WindowEvent<'_>) {
+    use winit::event::WindowEvent;
+
+    match event {
+      WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+        self.had_resize_since_present = true;
+      }
+      WindowEvent::KeyboardInput { .. }
+      | WindowEvent::ReceivedCharacter(_)
+      | WindowEvent::Ime(_)
+      | WindowEvent::ModifiersChanged(_)
+      | WindowEvent::CursorMoved { .. }
+      | WindowEvent::CursorEntered { .. }
+      | WindowEvent::CursorLeft { .. }
+      | WindowEvent::MouseWheel { .. }
+      | WindowEvent::MouseInput { .. }
+      | WindowEvent::TouchpadMagnify { .. }
+      | WindowEvent::TouchpadRotate { .. }
+      | WindowEvent::TouchpadPressure { .. }
+      | WindowEvent::AxisMotion { .. }
+      | WindowEvent::Touch(_) => {
+        self.had_winit_input_since_present = true;
+      }
+      _ => {}
+    }
+  }
+
+  fn note_worker_activity(&mut self) {
+    self.had_worker_activity_since_present = true;
+  }
+
+  fn on_frame_presented(&mut self, repaint_after: std::time::Duration) {
+    let now = std::time::Instant::now();
+
+    if self.has_presented_once {
+      let is_idle = !(self.had_winit_input_since_present
+        || self.had_resize_since_present
+        || self.had_worker_activity_since_present
+        || self.had_egui_repaint_request_since_present);
+
+      if is_idle {
+        self.idle_frames_total = self.idle_frames_total.saturating_add(1);
+        self.idle_frame_times.push_back(now);
+      }
+    }
+    self.has_presented_once = true;
+
+    while let Some(front) = self.idle_frame_times.front() {
+      if now.saturating_duration_since(*front) > Self::IDLE_WINDOW {
+        self.idle_frame_times.pop_front();
+      } else {
+        break;
+      }
+    }
+
+    self.idle_frames_per_sec = if Self::IDLE_WINDOW.as_secs_f32() > 0.0 {
+      (self.idle_frame_times.len() as f32) / Self::IDLE_WINDOW.as_secs_f32()
+    } else {
+      0.0
+    };
+
+    if self.perf_log_enabled {
+      let should_log = match self.last_perf_log {
+        Some(prev) => now.saturating_duration_since(prev) >= Self::PERF_LOG_INTERVAL,
+        None => true,
+      };
+      if should_log {
+        self.last_perf_log = Some(now);
+        let t_ms = now
+          .saturating_duration_since(self.start_time)
+          .as_millis()
+          .min(u128::from(u64::MAX)) as u64;
+        let line = serde_json::json!({
+          "event": "idle_summary",
+          "t_ms": t_ms,
+          "window_id": self.window_id.as_str(),
+          "idle_frames_total": self.idle_frames_total,
+          "idle_frames_per_sec": self.idle_frames_per_sec,
+        });
+        println!("{line}");
+      }
+    }
+
+    // Reset per-presented-frame activity tracking. `repaint_after` applies to the *next* frame.
+    self.had_winit_input_since_present = false;
+    self.had_resize_since_present = false;
+    self.had_worker_activity_since_present = false;
+    self.had_egui_repaint_request_since_present = repaint_after != std::time::Duration::MAX;
+  }
+}
+
+#[cfg(feature = "browser_ui")]
 #[derive(Debug, Default)]
 struct TabNotificationUiState {
   warning_toast: fastrender::ui::WarningToastState,
@@ -5675,6 +5821,7 @@ struct App {
   debug_log_overlay_pointer_capture: bool,
   media_controls_overlay_pointer_capture: bool,
   hud: Option<BrowserHud>,
+  idle_repaint_monitor: Option<IdleRepaintMonitor>,
 
   tab_notifications: std::collections::HashMap<fastrender::ui::TabId, TabNotificationUiState>,
   warning_toast_rect: Option<egui::Rect>,
@@ -6181,7 +6328,12 @@ impl App {
       );
     }
     let window_id = window.id();
-    let perf_log_enabled = parse_env_bool(std::env::var(ENV_PERF_LOG).ok().as_deref());
+    let perf_log_enabled = perf_log_enabled_from_env();
+    let idle_repaint_monitor = if hud.is_some() || perf_log_enabled {
+      Some(IdleRepaintMonitor::new(window_id, perf_log_enabled))
+    } else {
+      None
+    };
 
     let mut browser_state = fastrender::ui::BrowserAppState::new();
     browser_state.history = history;
@@ -6327,6 +6479,7 @@ impl App {
       debug_log_overlay_pointer_capture: false,
       media_controls_overlay_pointer_capture: false,
       hud,
+      idle_repaint_monitor,
       tab_notifications: std::collections::HashMap::new(),
       warning_toast_rect: None,
       error_infobar_rect: None,
@@ -7848,6 +8001,9 @@ impl App {
           tab.unresponsive = false;
         }
         self.open_url_in_new_tab(url);
+        if let Some(monitor) = self.idle_repaint_monitor.as_mut() {
+          monitor.note_worker_activity();
+        }
         return WorkerMessageResult {
           request_redraw: true,
           history_changed: false,
@@ -7859,6 +8015,9 @@ impl App {
           tab.unresponsive = false;
         }
         self.open_request_in_new_tab(request);
+        if let Some(monitor) = self.idle_repaint_monitor.as_mut() {
+          monitor.note_worker_activity();
+        }
         return WorkerMessageResult {
           request_redraw: true,
           history_changed: false,
@@ -8190,6 +8349,7 @@ impl App {
     let update = self.browser_state.apply_worker_msg(msg);
     history_changed |= update.history_changed;
 
+    let has_frame_ready = update.frame_ready.is_some();
     if let Some(frame_ready) = update.frame_ready {
       // Ignore stale frames for tabs that have already been closed.
       if self.browser_state.tab(frame_ready.tab_id).is_some() {
@@ -8286,6 +8446,11 @@ impl App {
     }
 
     request_redraw |= update.request_redraw;
+    if has_frame_ready || request_redraw {
+      if let Some(monitor) = self.idle_repaint_monitor.as_mut() {
+        monitor.note_worker_activity();
+      }
+    }
     WorkerMessageResult {
       request_redraw,
       history_changed,
@@ -9304,6 +9469,16 @@ impl App {
       );
     } else {
       let _ = writeln!(&mut hud.text_buf, "resize_burst: no");
+    }
+
+    if let Some(monitor) = self.idle_repaint_monitor.as_ref() {
+      let idle_fps = monitor.idle_frames_per_sec;
+      let idle_total = monitor.idle_frames_total;
+      if idle_fps.is_finite() {
+        let _ = writeln!(&mut hud.text_buf, "idle_frames: {idle_fps:.1}/s total={idle_total}");
+      } else {
+        let _ = writeln!(&mut hud.text_buf, "idle_frames: -/s total={idle_total}");
+      }
     }
 
     egui::Area::new(egui::Id::new("fastr_browser_hud"))
@@ -15519,6 +15694,10 @@ impl App {
     {
       let _span = self.trace.span("wgpu.present", "ui.frame");
       surface_texture.present();
+    }
+
+    if let Some(monitor) = self.idle_repaint_monitor.as_mut() {
+      monitor.on_frame_presented(repaint_after);
     }
 
     for id in &full_output.textures_delta.free {
