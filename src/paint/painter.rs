@@ -20579,7 +20579,6 @@ mod tests {
   use crate::style::values::Length;
   use crate::style::ComputedStyle;
   use crate::text::font_loader::FontContext;
-  use crate::text::caret::CaretAffinity;
   use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::box_tree::ForeignObjectInfo;
   use crate::tree::box_tree::ImageDecodingAttribute;
