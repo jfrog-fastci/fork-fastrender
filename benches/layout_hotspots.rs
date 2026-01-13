@@ -6,6 +6,7 @@
 //! The goal is not to mimic full-page rendering. Instead, each benchmark stresses a tight loop
 //! that has historically been performance sensitive:
 //! - Flex item measurement (Taffy measure callback)
+//! - Flex intrinsic sizing (min/max-content width)
 //! - Block intrinsic sizing (min/max-content width)
 //! - Grid track sizing + intrinsic measurement fanout (Taffy grid measure callback)
 //! - Table cell intrinsic sizing + column width distribution
@@ -15,6 +16,7 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use fastrender::layout::contexts::block::BlockFormattingContext;
+use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::engine::LayoutParallelism;
 use fastrender::layout::table::{TableFormattingContext, TableStructure};
 use fastrender::layout::taffy_integration::{
@@ -96,6 +98,61 @@ fn build_flex_measure_tree(item_count: usize) -> BoxTree {
   let mut children = Vec::with_capacity(item_count);
   for idx in 0..item_count {
     let text = BoxNode::new_text(text_style.clone(), format!("item-{idx} {TEXT}"));
+    let inline = BoxNode::new_block(
+      inline_style.clone(),
+      FormattingContextType::Inline,
+      vec![text],
+    );
+    children.push(BoxNode::new_block(
+      item_style.clone(),
+      FormattingContextType::Block,
+      vec![inline],
+    ));
+  }
+
+  let root = BoxNode::new_block(flex_style, FormattingContextType::Flex, children);
+  BoxTree::new(root)
+}
+
+fn build_flex_intrinsic_tree(item_count: usize) -> BoxTree {
+  // Regression protected:
+  // - Flex intrinsic sizing (min/max-content width) can become dominated by scanning child items.
+  //   This tree is constructed so each child requires non-trivial intrinsic sizing (inline text),
+  //   but stable ids allow child results to be cached across iterations.
+  const WORD: &str = "supercalifragilisticexpialidocious";
+  const FILL: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit";
+
+  let mut flex_style = ComputedStyle::default();
+  flex_style.display = Display::Flex;
+  // Keep the container's preferred size auto so intrinsic sizing must inspect children.
+  flex_style.width = None;
+  flex_style.flex_wrap = FlexWrap::NoWrap;
+  // Include a non-zero gap so intrinsic sizing has to account for it.
+  flex_style.grid_column_gap = Length::px(4.0);
+  let flex_style = Arc::new(flex_style);
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  item_style.padding_left = Length::px(2.0);
+  item_style.padding_right = Length::px(2.0);
+  item_style.margin_left = Some(Length::px(1.0));
+  item_style.margin_right = Some(Length::px(1.0));
+  let item_style = Arc::new(item_style);
+
+  let mut inline_style = ComputedStyle::default();
+  inline_style.display = Display::Block;
+  let inline_style = Arc::new(inline_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.display = Display::Inline;
+  let text_style = Arc::new(text_style);
+
+  let mut children = Vec::with_capacity(item_count);
+  for idx in 0..item_count {
+    let text = BoxNode::new_text(
+      text_style.clone(),
+      format!("item-{idx} {WORD} {FILL} {FILL}"),
+    );
     let inline = BoxNode::new_block(
       inline_style.clone(),
       FormattingContextType::Inline,
@@ -582,6 +639,90 @@ fn bench_flex_measure_hot_path(c: &mut Criterion) {
   group.finish();
 }
 
+fn bench_flex_intrinsic_sizing(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  let viewport = Size::new(800.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+  let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+    .with_parallelism(LayoutParallelism::disabled());
+  let ffc = FlexFormattingContext::with_factory(factory);
+
+  // Large enough to make the child-scan overhead measurable while remaining a microbench.
+  let mut tree = build_flex_intrinsic_tree(512);
+  // Disable global intrinsic caching for the root so each iteration recomputes the intrinsic widths.
+  tree.root.id = 0;
+  let node = &tree.root;
+
+  // Warm intrinsic caches for descendants so the steady-state benchmark isolates the flex
+  // container's child scanning.
+  let _ = ffc
+    .compute_intrinsic_inline_sizes(node)
+    .expect("intrinsic sizing warmup should succeed");
+
+  // Capture cache activity for a single intrinsic probe so the benchmark documents its workload.
+  {
+    let stats_engine = LayoutEngine::new(LayoutConfig::for_viewport(viewport));
+    let before = stats_engine.stats();
+    let (min, max) = ffc
+      .compute_intrinsic_inline_sizes(node)
+      .expect("intrinsic sizing probe should succeed");
+    let after = stats_engine.stats();
+    let delta_hits = after.cache_hits.saturating_sub(before.cache_hits);
+    let delta_misses = after.cache_misses.saturating_sub(before.cache_misses);
+    let delta_lookups = delta_hits + delta_misses;
+    assert!(min > 0.0 && max > 0.0);
+    assert!(delta_lookups > 0, "expected intrinsic cache activity");
+    eprintln!(
+      "layout_hotspots flex_intrinsic: items={} min={:.2} max={:.2} intrinsic_cache lookups={} hits={} misses={}",
+      node.children.len(),
+      min,
+      max,
+      delta_lookups,
+      delta_hits,
+      delta_misses
+    );
+  }
+
+  let mut group = c.benchmark_group("layout_hotspots_flex_intrinsic");
+  group.bench_function("min_content", |b| {
+    b.iter(|| {
+      let width = ffc
+        .compute_intrinsic_inline_size(black_box(node), IntrinsicSizingMode::MinContent)
+        .expect("intrinsic sizing should succeed");
+      black_box(width);
+    })
+  });
+  group.bench_function("max_content", |b| {
+    b.iter(|| {
+      let width = ffc
+        .compute_intrinsic_inline_size(black_box(node), IntrinsicSizingMode::MaxContent)
+        .expect("intrinsic sizing should succeed");
+      black_box(width);
+    })
+  });
+  group.bench_function("min_and_max", |b| {
+    b.iter(|| {
+      let min = ffc
+        .compute_intrinsic_inline_size(black_box(node), IntrinsicSizingMode::MinContent)
+        .expect("intrinsic sizing should succeed");
+      let max = ffc
+        .compute_intrinsic_inline_size(black_box(node), IntrinsicSizingMode::MaxContent)
+        .expect("intrinsic sizing should succeed");
+      black_box((min, max));
+    })
+  });
+  // Exercise the combined min/max intrinsic sizing API (single child scan).
+  group.bench_function("min_and_max_combined_api", |b| {
+    b.iter(|| {
+      let widths = ffc
+        .compute_intrinsic_inline_sizes(black_box(node))
+        .expect("intrinsic sizing should succeed");
+      black_box(widths);
+    })
+  });
+  group.finish();
+}
+
 fn bench_float_shrink_to_fit_intrinsic_cache_reuse(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
@@ -990,6 +1131,7 @@ criterion_group!(
   config = micro_criterion();
   targets =
     bench_flex_measure_hot_path,
+    bench_flex_intrinsic_sizing,
     bench_grid_track_sizing_measure_fanout,
     bench_float_shrink_to_fit_intrinsic_cache_reuse,
     bench_block_intrinsic_sizing,

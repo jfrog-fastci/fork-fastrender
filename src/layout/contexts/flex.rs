@@ -772,7 +772,11 @@ impl FlexFormattingContext {
     }
   }
 
-  pub(crate) fn with_factory(factory: FormattingContextFactory) -> Self {
+  /// Creates a FlexFormattingContext backed by an existing [`FormattingContextFactory`].
+  ///
+  /// This is primarily useful for tests and microbenchmarks where we want a flex formatting
+  /// context that shares the caller's font context, viewport, and cache configuration.
+  pub fn with_factory(factory: FormattingContextFactory) -> Self {
     let viewport_size = factory.viewport_size();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
     let nearest_fixed_cb = factory.nearest_fixed_cb();
