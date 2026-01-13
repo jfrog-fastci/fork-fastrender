@@ -250,7 +250,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
 
 ## `prefetch_assets`
 
-- Purpose: warm the subresource cache (`fetches/assets/`) by prefetching linked stylesheets and their `@import` chains (plus referenced fonts) for the cached pages under `fetches/html/`. Optional flags can also prefetch additional HTML-linked subresources (images, iframes, embeds, icons, video posters). This makes subsequent pageset renders more repeatable and reduces time spent fetching during `pageset_progress`.
+- Purpose: warm the subresource cache (`fetches/assets/`) by prefetching linked stylesheets and their `@import` chains (plus referenced fonts) for the cached pages under `fetches/html/`. Optional flags can also prefetch additional HTML-linked subresources (images, media sources, iframes/embeds, icons, video posters, scripts). This makes subsequent pageset renders more repeatable and reduces time spent fetching during `pageset_progress`.
 - Entry: `src/bin/prefetch_assets.rs`
 - Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin prefetch_assets -- --help`
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
