@@ -455,6 +455,22 @@ mod tests {
   #[cfg(windows)]
   #[test]
   fn sandboxed_child_has_renderer_mitigations_enabled() {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _env_guard = ENV_LOCK.lock().unwrap();
+    const DISABLE_MITIGATIONS_ENV: &str = "FASTR_DISABLE_WIN_MITIGATIONS";
+    let prev_mitigations = env::var_os(DISABLE_MITIGATIONS_ENV);
+    env::remove_var(DISABLE_MITIGATIONS_ENV);
+    struct EnvRestore(Option<OsString>);
+    impl Drop for EnvRestore {
+      fn drop(&mut self) {
+        match self.0.take() {
+          Some(value) => env::set_var(DISABLE_MITIGATIONS_ENV, value),
+          None => env::remove_var(DISABLE_MITIGATIONS_ENV),
+        }
+      }
+    }
+    let _restore = EnvRestore(prev_mitigations);
+
     let exe = env::current_exe().unwrap();
 
     let test_name = "tests::verify_child_renderer_mitigations";

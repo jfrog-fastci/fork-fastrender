@@ -19,6 +19,7 @@ use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObj
 
 const CHILD_ENV: &str = "FASTR_WIN_SANDBOX_TEST_CHILD";
 const PATH_ENV: &str = "FASTR_WIN_SANDBOX_TEST_PATH";
+const DISABLE_MITIGATIONS_ENV: &str = "FASTR_DISABLE_WIN_MITIGATIONS";
 
 const WAIT_OBJECT_0: u32 = 0x0000_0000;
 const WAIT_TIMEOUT: u32 = 0x0000_0102;
@@ -27,6 +28,7 @@ struct EnvRestore {
   prev_child: Option<OsString>,
   prev_path: Option<OsString>,
   prev_threads: Option<OsString>,
+  prev_disable_mitigations: Option<OsString>,
 }
 
 impl EnvRestore {
@@ -34,15 +36,18 @@ impl EnvRestore {
     let prev_child = std::env::var_os(CHILD_ENV);
     let prev_path = std::env::var_os(PATH_ENV);
     let prev_threads = std::env::var_os("RUST_TEST_THREADS");
+    let prev_disable_mitigations = std::env::var_os(DISABLE_MITIGATIONS_ENV);
 
     std::env::set_var(CHILD_ENV, "1");
     std::env::set_var(PATH_ENV, file_path);
     std::env::set_var("RUST_TEST_THREADS", "1");
+    std::env::remove_var(DISABLE_MITIGATIONS_ENV);
 
     Self {
       prev_child,
       prev_path,
       prev_threads,
+      prev_disable_mitigations,
     }
   }
 }
@@ -52,6 +57,10 @@ impl Drop for EnvRestore {
     restore_var(CHILD_ENV, self.prev_child.take());
     restore_var(PATH_ENV, self.prev_path.take());
     restore_var("RUST_TEST_THREADS", self.prev_threads.take());
+    restore_var(
+      DISABLE_MITIGATIONS_ENV,
+      self.prev_disable_mitigations.take(),
+    );
   }
 }
 

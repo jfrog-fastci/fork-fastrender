@@ -10,6 +10,30 @@ use tempfile::tempdir;
 
 use win_sandbox::renderer::RendererSandbox;
 
+const DISABLE_MITIGATIONS_ENV: &str = "FASTR_DISABLE_WIN_MITIGATIONS";
+
+struct EnvVarRestore {
+  key: &'static str,
+  prev: Option<OsString>,
+}
+
+impl EnvVarRestore {
+  fn remove(key: &'static str) -> Self {
+    let prev = std::env::var_os(key);
+    std::env::remove_var(key);
+    Self { key, prev }
+  }
+}
+
+impl Drop for EnvVarRestore {
+  fn drop(&mut self) {
+    match self.prev.take() {
+      Some(value) => std::env::set_var(self.key, value),
+      None => std::env::remove_var(self.key),
+    }
+  }
+}
+
 fn icacls_grant_rx(path: &std::path::Path, sid: &str, inherit: bool) {
   let mut grant = OsString::from(sid);
   if inherit {
@@ -37,6 +61,8 @@ fn icacls_grant_rx(path: &std::path::Path, sid: &str, inherit: bool) {
 
 #[test]
 fn renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren() {
+  let _mitigation_guard = EnvVarRestore::remove(DISABLE_MITIGATIONS_ENV);
+
   if !common::require_full_sandbox_support(
     "renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren",
   ) {

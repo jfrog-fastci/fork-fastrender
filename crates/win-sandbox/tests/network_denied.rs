@@ -21,6 +21,7 @@ use windows_sys::Win32::System::Threading::{
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_APPCONTAINER_NETWORK_CHILD";
 const PORT_ENV: &str = "FASTR_TEST_WIN_APPCONTAINER_NETWORK_PORT";
+const DISABLE_MITIGATIONS_ENV: &str = "FASTR_DISABLE_WIN_MITIGATIONS";
 
 const WSAEACCES: i32 = 10013;
 
@@ -31,6 +32,7 @@ struct EnvRestore {
   prev_child: Option<OsString>,
   prev_port: Option<OsString>,
   prev_threads: Option<OsString>,
+  prev_disable_mitigations: Option<OsString>,
 }
 
 impl EnvRestore {
@@ -38,15 +40,18 @@ impl EnvRestore {
     let prev_child = std::env::var_os(CHILD_ENV);
     let prev_port = std::env::var_os(PORT_ENV);
     let prev_threads = std::env::var_os("RUST_TEST_THREADS");
+    let prev_disable_mitigations = std::env::var_os(DISABLE_MITIGATIONS_ENV);
 
     std::env::set_var(CHILD_ENV, "1");
     std::env::set_var(PORT_ENV, port);
     std::env::set_var("RUST_TEST_THREADS", "1");
+    std::env::remove_var(DISABLE_MITIGATIONS_ENV);
 
     Self {
       prev_child,
       prev_port,
       prev_threads,
+      prev_disable_mitigations,
     }
   }
 }
@@ -56,6 +61,10 @@ impl Drop for EnvRestore {
     restore_var(CHILD_ENV, self.prev_child.take());
     restore_var(PORT_ENV, self.prev_port.take());
     restore_var("RUST_TEST_THREADS", self.prev_threads.take());
+    restore_var(
+      DISABLE_MITIGATIONS_ENV,
+      self.prev_disable_mitigations.take(),
+    );
   }
 }
 
