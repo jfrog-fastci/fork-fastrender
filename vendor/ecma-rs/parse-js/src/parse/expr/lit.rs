@@ -1082,6 +1082,17 @@ fn regex_group_prefix_info(
   }
 }
 
+fn is_regex_syntax_character(ch: char) -> bool {
+  matches!(
+    ch,
+    '^' | '$' | '\\' | '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+  )
+}
+
+fn is_regex_identity_escape_unicode_mode(ch: char) -> bool {
+  is_regex_syntax_character(ch) || ch == '/'
+}
+
 fn validate_regex_pattern(
   pattern: &str,
   base_offset: usize,
@@ -1477,7 +1488,97 @@ fn validate_regex_pattern(
           }
           return Ok((j, true));
         }
-        // Escapes that represent character classes are not valid range endpoints.
+        if unicode_mode {
+          // UnicodeMode (`/v`) uses the strict escape grammar.
+
+          // `\0` is only valid when not followed by a decimal digit.
+          if esc.is_ascii_digit() {
+            if esc == '0' {
+              let after = i + esc_len;
+              let next_is_digit = after < pattern.len()
+                && pattern[after..]
+                  .chars()
+                  .next()
+                  .is_some_and(|c| c.is_ascii_digit());
+              if next_is_digit {
+                return Err(RegexError {
+                  kind: RegexErrorKind::InvalidPattern,
+                  offset: base_offset + escape_start,
+                  len: 2 + esc_len,
+                });
+              }
+              return Ok((i + esc_len, true));
+            }
+            // Decimal escapes/backreferences are not valid inside character classes.
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: 1 + esc_len,
+            });
+          }
+
+          // ControlEscape
+          if matches!(esc, 'f' | 'n' | 'r' | 't' | 'v') {
+            return Ok((i + esc_len, true));
+          }
+
+          // `\c` AsciiLetter
+          if esc == 'c' {
+            let after_c = i + esc_len;
+            if after_c >= pattern.len() {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: pattern.len().saturating_sub(escape_start),
+              });
+            }
+            let ctrl = pattern[after_c..].chars().next().unwrap();
+            if !ctrl.is_ascii_alphabetic() {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: after_c + ctrl.len_utf8() - escape_start,
+              });
+            }
+            return Ok((after_c + ctrl.len_utf8(), true));
+          }
+
+          // `\b` is backspace inside character classes.
+          if esc == 'b' {
+            return Ok((i + esc_len, true));
+          }
+
+          // `\B` and `\k<name>` are not valid inside character classes.
+          if esc == 'B' || esc == 'k' {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: 1 + esc_len,
+            });
+          }
+
+          // `\-` is a ClassEscape in UnicodeMode.
+          if esc == '-' {
+            return Ok((i + esc_len, true));
+          }
+
+          // CharacterClassEscape (not valid as range endpoint).
+          if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
+            return Ok((i + esc_len, false));
+          }
+
+          // IdentityEscape[+UnicodeMode] is limited to SyntaxCharacter or `/`.
+          if !is_regex_identity_escape_unicode_mode(esc) {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: 1 + esc_len,
+            });
+          }
+          return Ok((i + esc_len, true));
+        }
+
+        // Non-UnicodeMode: Escapes that represent character classes are not valid range endpoints.
         let rangeable = !matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W');
         Ok((i + esc_len, rangeable))
       } else if ch == '[' {
@@ -1897,7 +1998,167 @@ fn validate_regex_pattern(
         continue;
       }
 
-      // Other escapes are treated as atoms.
+      if unicode_mode {
+        // In UnicodeMode (`u`/`v`), escapes must match the strict grammar.
+        //
+        // We validate the shapes we explicitly support and then fall back to
+        // `IdentityEscape`, which is restricted to SyntaxCharacter or `/`.
+
+        // `\0` inside character classes is a null escape only when not followed by a decimal digit.
+        if in_charset && esc.is_ascii_digit() {
+          if esc == '0' {
+            let after = i + esc_len;
+            let next_is_digit = after < pattern.len()
+              && pattern[after..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit());
+            if next_is_digit {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: 2 + esc_len,
+              });
+            }
+            i += esc_len;
+            continue;
+          }
+          // Decimal escapes/backreferences are not valid inside character classes in UnicodeMode.
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: 1 + esc_len,
+          });
+        }
+
+        // ControlEscape
+        if matches!(esc, 'f' | 'n' | 'r' | 't' | 'v') {
+          if !in_charset {
+            prev_can_be_quantified = true;
+            quantifier_allows_lazy = false;
+          }
+          i += esc_len;
+          continue;
+        }
+
+        // CharacterEscape: `c` AsciiLetter
+        if esc == 'c' {
+          let after_c = i + esc_len;
+          if after_c >= pattern.len() {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: pattern.len().saturating_sub(escape_start),
+            });
+          }
+          let ctrl = pattern[after_c..].chars().next().unwrap();
+          if !ctrl.is_ascii_alphabetic() {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: after_c + ctrl.len_utf8() - escape_start,
+            });
+          }
+          i = after_c + ctrl.len_utf8();
+          if !in_charset {
+            prev_can_be_quantified = true;
+            quantifier_allows_lazy = false;
+          }
+          continue;
+        }
+
+        // CharacterClassEscape (valid both inside and outside character classes).
+        if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
+          if !in_charset {
+            prev_can_be_quantified = true;
+            quantifier_allows_lazy = false;
+          }
+          i += esc_len;
+          continue;
+        }
+
+        // Assertion escapes (`\b`, `\B`). Inside character classes, `\b` is backspace and `\B`
+        // is not a valid escape in UnicodeMode.
+        if esc == 'b' {
+          if !in_charset {
+            prev_can_be_quantified = false;
+            quantifier_allows_lazy = false;
+          }
+          i += esc_len;
+          continue;
+        }
+        if esc == 'B' {
+          if in_charset {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: 1 + esc_len,
+            });
+          }
+          prev_can_be_quantified = false;
+          quantifier_allows_lazy = false;
+          i += esc_len;
+          continue;
+        }
+
+        // Named backreference `\k<name>` is not valid inside character classes.
+        if esc == 'k' {
+          if in_charset {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: 1 + esc_len,
+            });
+          }
+          let after_k = i + esc_len;
+          if after_k >= bytes.len() || bytes[after_k] != b'<' {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: 1 + esc_len,
+            });
+          }
+          let mut j = after_k + 1;
+          while j < bytes.len() && bytes[j] != b'>' {
+            j += 1;
+          }
+          if j >= bytes.len() || j == after_k + 1 {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: j.saturating_sub(escape_start),
+            });
+          }
+          i = j + 1;
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+          continue;
+        }
+
+        // In UnicodeMode, `\-` is a ClassEscape.
+        if in_charset && esc == '-' {
+          i += esc_len;
+          continue;
+        }
+
+        // IdentityEscape[+UnicodeMode] is limited to SyntaxCharacter or `/`.
+        if !is_regex_identity_escape_unicode_mode(esc) {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: 1 + esc_len,
+          });
+        }
+
+        if !in_charset {
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+        }
+        i += esc_len;
+        continue;
+      }
+
+      // Non-UnicodeMode: Annex B identity escapes are permissive; treat everything else as an atom.
       if !in_charset {
         prev_can_be_quantified = true;
         quantifier_allows_lazy = false;
