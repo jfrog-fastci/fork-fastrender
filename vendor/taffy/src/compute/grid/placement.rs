@@ -291,7 +291,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
     let secondary_definite = placement_is_definite(axis_item(child_placement, secondary_axis));
 
     if primary_definite && secondary_definite {
-      #[cfg(test)]
+      #[cfg(all(test, feature = "debug"))]
       println!("Definite Item {}\n==============", index);
 
       let (primary_span, secondary_span) = place_definite_grid_item(child_placement, primary_axis);
@@ -322,7 +322,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       continue;
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "debug"))]
     println!("Definite One Axis Item {}\n==============", index);
 
     // Determine which axis is definite and call the appropriate placement function
@@ -406,7 +406,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       continue;
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "debug"))]
     println!("\nAuto Item {}\n==============", index);
 
     // Compute placement
@@ -634,9 +634,9 @@ fn record_grid_placement<S: GridItemStyle>(
   secondary_span: Line<OriginZeroLine>,
   placement_type: CellOccupancyState,
 ) {
-  #[cfg(test)]
+  #[cfg(all(test, feature = "debug"))]
   println!("BEFORE placement:");
-  #[cfg(test)]
+  #[cfg(all(test, feature = "debug"))]
   println!("{cell_occupancy_matrix:?}");
 
   // Mark area of grid as occupied
@@ -657,11 +657,11 @@ fn record_grid_placement<S: GridItemStyle>(
     index as u16,
   ));
 
-  #[cfg(test)]
+  #[cfg(all(test, feature = "debug"))]
   println!("AFTER placement:");
-  #[cfg(test)]
+  #[cfg(all(test, feature = "debug"))]
   println!("{cell_occupancy_matrix:?}");
-  #[cfg(test)]
+  #[cfg(all(test, feature = "debug"))]
   println!("\n");
 }
 
