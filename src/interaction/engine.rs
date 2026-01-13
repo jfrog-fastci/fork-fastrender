@@ -146,6 +146,13 @@ pub struct InteractionEngine {
   text_edit: Option<TextEditState>,
   text_undo: HashMap<usize, TextUndoHistory>,
   form_default_snapshots: HashMap<usize, FormDefaultSnapshot>,
+  /// Per-`<select>` anchor option for Shift range-selection in listbox controls (`multiple` or
+  /// `size > 1`).
+  ///
+  /// Native browsers treat Shift-click as selecting a contiguous option range from a stable anchor.
+  /// The anchor updates on non-shift interactions (plain click, Ctrl/Cmd click, arrow-key
+  /// navigation), and is then used as the start of future range selections.
+  select_listbox_anchor: HashMap<usize, usize>,
   modality: InputModality,
   last_click_target: Option<usize>,
   last_form_submitter: Option<usize>,
@@ -3482,6 +3489,8 @@ fn apply_select_listbox_click(
   scroll_state: &ScrollState,
   control: &SelectControl,
   style: &ComputedStyle,
+  modifiers: PointerModifiers,
+  select_listbox_anchor: &mut HashMap<usize, usize>,
 ) -> bool {
   let is_listbox = control.multiple || control.size > 1;
   if !is_listbox {
@@ -3593,7 +3602,89 @@ fn apply_select_listbox_click(
       if *disabled {
         return false;
       }
-      dom_mutation::activate_select_option(dom, select_id, *node_id, control.multiple)
+
+      // Native browser listbox semantics:
+      // - Plain click replaces selection (even in `<select multiple>`).
+      // - Ctrl/Cmd click toggles a single option (multiple-select only).
+      // - Shift click range-selects from a stable anchor option.
+      let clicked_option_id = *node_id;
+
+      // Single-select listboxes always use replacement semantics.
+      if !control.multiple {
+        select_listbox_anchor.insert(select_id, clicked_option_id);
+        return dom_mutation::activate_select_option(dom, select_id, clicked_option_id, false);
+      }
+
+      if modifiers.shift() {
+        // Shift-click range selection for multiple-select listboxes.
+        let stored_anchor = select_listbox_anchor.get(&select_id).copied();
+        let anchor_option_id = stored_anchor.unwrap_or_else(|| {
+          // Fallback when there is no stored anchor yet (e.g. first interaction is a shift click):
+          // use the last selected option from the painted snapshot, falling back to the clicked
+          // option.
+          control
+            .selected
+            .iter()
+            .rev()
+            .filter_map(|&idx| match control.items.get(idx) {
+              Some(SelectItem::Option {
+                node_id, disabled, ..
+              }) if !*disabled => Some(*node_id),
+              _ => None,
+            })
+            .next()
+            .unwrap_or(clicked_option_id)
+        });
+
+        // If this is the first time we've needed an anchor for this select, persist it so future
+        // shift-clicks remain stable.
+        if stored_anchor.is_none() {
+          select_listbox_anchor.insert(select_id, anchor_option_id);
+        }
+
+        let anchor_idx = control
+          .items
+          .iter()
+          .enumerate()
+          .find_map(|(idx, item)| match item {
+            SelectItem::Option { node_id, .. } if *node_id == anchor_option_id => Some(idx),
+            _ => None,
+          })
+          .unwrap_or(row_idx);
+
+        let (start_idx, end_idx) = if anchor_idx <= row_idx {
+          (anchor_idx, row_idx)
+        } else {
+          (row_idx, anchor_idx)
+        };
+
+        let mut range_option_ids: Vec<usize> = Vec::new();
+        for idx in start_idx..=end_idx {
+          if let Some(SelectItem::Option {
+            node_id, disabled, ..
+          }) = control.items.get(idx)
+          {
+            if !*disabled {
+              range_option_ids.push(*node_id);
+            }
+          }
+        }
+
+        // Shift-only replaces selection with the range. Ctrl/Cmd+Shift adds the range.
+        let clear_others = !modifiers.command();
+        return dom_mutation::set_select_selected_options(
+          dom,
+          select_id,
+          &range_option_ids,
+          clear_others,
+        );
+      }
+
+      // Non-shift interactions update the range-selection anchor.
+      select_listbox_anchor.insert(select_id, clicked_option_id);
+
+      // Ctrl/Cmd toggles in multiple-select listboxes; plain click replaces.
+      dom_mutation::activate_select_option(dom, select_id, clicked_option_id, modifiers.command())
     }
   }
 }
@@ -4130,6 +4221,7 @@ impl InteractionEngine {
       text_edit: None,
       text_undo: HashMap::new(),
       form_default_snapshots: HashMap::new(),
+      select_listbox_anchor: HashMap::new(),
       modality: InputModality::Pointer,
       last_click_target: None,
       last_form_submitter: None,
@@ -4203,6 +4295,10 @@ impl InteractionEngine {
     }
     if let Some(id) = self.last_form_submitter {
       check_node_id("last_form_submitter", id);
+    }
+    for (&select_id, &option_id) in &self.select_listbox_anchor {
+      check_node_id("select_listbox_anchor.select", select_id);
+      check_node_id("select_listbox_anchor.option", option_id);
     }
     if let Some(ime) = &self.state.ime_preedit {
       check_node_id("ime_preedit", ime.node_id);
@@ -6480,6 +6576,8 @@ impl InteractionEngine {
                 scroll,
                 control,
                 style,
+                modifiers,
+                &mut self.select_listbox_anchor,
               );
               dom_changed |= changed;
               if changed {
@@ -8526,6 +8624,8 @@ impl InteractionEngine {
           }
 
           let option_node_id = options[next_idx].0;
+          // Keep the Shift range-selection anchor consistent with keyboard-driven selection.
+          self.select_listbox_anchor.insert(focused, option_node_id);
           changed |= self.activate_select_option(dom, focused, option_node_id, false);
         }
       }

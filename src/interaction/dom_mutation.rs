@@ -934,3 +934,114 @@ pub fn activate_select_option(
 
   changed
 }
+
+/// Update the selectedness of a set of `<option>` elements within a `<select multiple>` control.
+///
+/// This is used for listbox range selection (Shift-click), which can select multiple options in a
+/// single interaction.
+///
+/// - When `clear_others` is `true`, any `<option selected>` descendants of the select that are not
+///   in `option_node_ids` are deselected (replacement semantics).
+/// - When `clear_others` is `false`, options in `option_node_ids` are selected, but other options
+///   keep their current selectedness (additive semantics, e.g. Ctrl/Cmd+Shift range selection).
+///
+/// Returns `true` iff any DOM attributes were changed.
+pub fn set_select_selected_options(
+  root: &mut DomNode,
+  select_node_id: usize,
+  option_node_ids: &[usize],
+  clear_others: bool,
+) -> bool {
+  use std::collections::HashSet;
+
+  let mut index = DomIndex::build(root);
+
+  if super::effective_disabled::is_effectively_inert(select_node_id, &index)
+    || super::effective_disabled::is_effectively_disabled(select_node_id, &index)
+  {
+    return false;
+  }
+
+  let Some((select_ok, select_multiple)) = index.with_node_mut(select_node_id, |node| {
+    let is_select = node
+      .tag_name()
+      .is_some_and(|t| t.eq_ignore_ascii_case("select") && is_html_element(node));
+    if !is_select {
+      return (false, false);
+    }
+    (true, node.get_attribute_ref("multiple").is_some())
+  }) else {
+    return false;
+  };
+  if !select_ok || !select_multiple {
+    return false;
+  }
+
+  // Map option node ids to raw pointers so we can do membership checks during a single subtree
+  // traversal without needing node ids for each visited pointer.
+  let mut target_ptrs: HashSet<*mut DomNode> = HashSet::with_capacity(option_node_ids.len());
+  for &id in option_node_ids {
+    if let Some(ptr) = index.with_node_mut(id, |node| node as *mut DomNode) {
+      if !ptr.is_null() {
+        target_ptrs.insert(ptr);
+      }
+    }
+  }
+
+  struct Frame {
+    ptr: *mut DomNode,
+    optgroup_disabled: bool,
+  }
+
+  let mut changed = false;
+
+  let _ = index.with_node_mut(select_node_id, |select| {
+    // Avoid recursion for deeply nested `<optgroup>` trees.
+    let mut stack: Vec<Frame> = Vec::new();
+    stack.push(Frame {
+      ptr: select as *mut DomNode,
+      optgroup_disabled: false,
+    });
+
+    while let Some(Frame {
+      ptr,
+      optgroup_disabled,
+    }) = stack.pop()
+    {
+      // Safety: `select` is mutably borrowed for the duration of this traversal, and we never mutate
+      // `children` vectors (only element attributes), so raw pointers remain stable.
+      let current = unsafe { &mut *ptr };
+
+      if current.is_template_element() {
+        continue;
+      }
+
+      let tag = current.tag_name().unwrap_or("");
+      let is_option = tag.eq_ignore_ascii_case("option") && is_html_element(current);
+      let is_optgroup = tag.eq_ignore_ascii_case("optgroup") && is_html_element(current);
+
+      let disabled_attr = current.get_attribute_ref("disabled").is_some();
+      let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
+
+      if is_option {
+        let option_disabled = disabled_attr || optgroup_disabled;
+        let should_select = target_ptrs.contains(&ptr);
+
+        if should_select && !option_disabled {
+          changed |= set_bool_attr(current, "selected", true);
+        } else if clear_others {
+          changed |= remove_attr(current, "selected");
+        }
+      }
+
+      for child in current.children.iter_mut().rev() {
+        stack.push(Frame {
+          ptr: child as *mut DomNode,
+          optgroup_disabled: next_optgroup_disabled,
+        });
+      }
+    }
+  });
+
+  changed
+}
