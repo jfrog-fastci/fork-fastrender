@@ -45413,6 +45413,16 @@ fn init_window_globals(
 
   let history_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(history_proto))?;
+  // `Object.prototype.toString.call(history)` should yield `[object History]`.
+  let history_to_string_tag_key =
+    PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag);
+  let history_to_string_tag_value = scope.alloc_string("History")?;
+  scope.push_root(Value::String(history_to_string_tag_value))?;
+  scope.define_property(
+    history_proto,
+    history_to_string_tag_key,
+    read_only_data_desc(Value::String(history_to_string_tag_value)),
+  )?;
   let history_ctor_name = scope.alloc_string("History")?;
   scope.push_root(Value::String(history_ctor_name))?;
   let history_ctor_func = scope.alloc_native_function(
@@ -45448,6 +45458,16 @@ fn init_window_globals(
 
   let location_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(location_proto))?;
+  // `Object.prototype.toString.call(location)` should yield `[object Location]`.
+  let location_to_string_tag_key =
+    PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag);
+  let location_to_string_tag_value = scope.alloc_string("Location")?;
+  scope.push_root(Value::String(location_to_string_tag_value))?;
+  scope.define_property(
+    location_proto,
+    location_to_string_tag_key,
+    read_only_data_desc(Value::String(location_to_string_tag_value)),
+  )?;
   let location_ctor_name = scope.alloc_string("Location")?;
   scope.push_root(Value::String(location_ctor_name))?;
   let location_ctor_func = scope.alloc_native_function(
@@ -48200,6 +48220,19 @@ mod tests {
       )?,
       Value::Bool(true)
     );
+    Ok(())
+  }
+
+  #[test]
+  fn window_history_and_location_have_to_string_tag() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let history_tag = realm.exec_script("Object.prototype.toString.call(history)")?;
+    assert_eq!(get_string(realm.heap(), history_tag), "[object History]");
+
+    let location_tag = realm.exec_script("Object.prototype.toString.call(location)")?;
+    assert_eq!(get_string(realm.heap(), location_tag), "[object Location]");
+
     Ok(())
   }
 
