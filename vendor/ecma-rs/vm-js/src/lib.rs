@@ -231,6 +231,10 @@ mod private_in_tests;
 mod compound_assignment_bitwise_shift_tests;
 
 #[cfg(test)]
+#[path = "../tests/compound_assignment_arithmetic.rs"]
+mod compound_assignment_arithmetic_tests;
+
+#[cfg(test)]
 #[path = "../tests/unit/error_coercion.rs"]
 mod error_coercion_tests;
 
