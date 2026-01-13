@@ -1639,7 +1639,7 @@ pub(super) fn tab_strip_ui(
         egui::Layout::left_to_right(egui::Align::Center),
       );
       pinned_ui.set_clip_rect(pinned_viewport_rect);
-      let mut restore_scroll_delta: Option<Vec2> = None;
+      let mut restore_scroll_deltas: Option<(Vec2, Vec2)> = None;
       // Match the unpinned segment ergonomics: treat vertical wheel scroll as horizontal scroll
       // while the pointer is over the pinned strip.
       let pointer_over_strip = pinned_ui.input(|i| {
@@ -1648,11 +1648,14 @@ pub(super) fn tab_strip_ui(
           .is_some_and(|pos| pinned_viewport_rect.contains(pos))
       });
       if pointer_over_strip {
-        let has_vertical_scroll = pinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0);
+        let has_vertical_scroll =
+          pinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0 || i.smooth_scroll_delta.y.abs() > 0.0);
         if has_vertical_scroll {
           pinned_ui.ctx().input_mut(|i| {
-            restore_scroll_delta = Some(i.scroll_delta);
+            restore_scroll_deltas = Some((i.scroll_delta, i.smooth_scroll_delta));
             i.scroll_delta = Vec2::new(i.scroll_delta.x + i.scroll_delta.y, 0.0);
+            i.smooth_scroll_delta =
+              Vec2::new(i.smooth_scroll_delta.x + i.smooth_scroll_delta.y, 0.0);
           });
         }
       }
@@ -1731,9 +1734,10 @@ pub(super) fn tab_strip_ui(
         (scroll_output.content_size.x - scroll_output.inner_rect.width()).max(0.0);
       let pinned_scroll_rect = scroll_output.inner_rect;
       pinned_scroll_viewport_rect = Some(pinned_scroll_rect);
-      if let Some(scroll_delta) = restore_scroll_delta {
+      if let Some((scroll_delta, smooth_scroll_delta)) = restore_scroll_deltas {
         pinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
+          i.smooth_scroll_delta = smooth_scroll_delta;
         });
       }
 
@@ -1771,7 +1775,7 @@ pub(super) fn tab_strip_ui(
       );
       unpinned_ui.set_clip_rect(unpinned_viewport_rect);
 
-      let mut restore_scroll_delta: Option<Vec2> = None;
+      let mut restore_scroll_deltas: Option<(Vec2, Vec2)> = None;
       // Browser-like ergonomics: treat vertical wheel scrolling as horizontal scrolling when the
       // pointer is over the tab strip (so users don't need a trackpad horizontal gesture).
       let pointer_over_strip = unpinned_ui.input(|i| {
@@ -1780,11 +1784,14 @@ pub(super) fn tab_strip_ui(
           .is_some_and(|pos| unpinned_viewport_rect.contains(pos))
       });
       if pointer_over_strip {
-        let has_vertical_scroll = unpinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0);
+        let has_vertical_scroll = unpinned_ui
+          .input(|i| i.scroll_delta.y.abs() > 0.0 || i.smooth_scroll_delta.y.abs() > 0.0);
         if has_vertical_scroll {
           unpinned_ui.ctx().input_mut(|i| {
-            restore_scroll_delta = Some(i.scroll_delta);
+            restore_scroll_deltas = Some((i.scroll_delta, i.smooth_scroll_delta));
             i.scroll_delta = Vec2::new(i.scroll_delta.x + i.scroll_delta.y, 0.0);
+            i.smooth_scroll_delta =
+              Vec2::new(i.smooth_scroll_delta.x + i.smooth_scroll_delta.y, 0.0);
           });
         }
       }
@@ -1980,9 +1987,10 @@ pub(super) fn tab_strip_ui(
         (scroll_output.content_size.x - scroll_output.inner_rect.width()).max(0.0);
       let unpinned_scroll_rect = scroll_output.inner_rect;
       unpinned_scroll_viewport_rect = Some(unpinned_scroll_rect);
-      if let Some(scroll_delta) = restore_scroll_delta {
+      if let Some((scroll_delta, smooth_scroll_delta)) = restore_scroll_deltas {
         unpinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
+          i.smooth_scroll_delta = smooth_scroll_delta;
         });
       }
 
