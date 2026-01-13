@@ -14,6 +14,7 @@
 //! Recording all `about:*` pages quickly pollutes history and makes omnibox suggestions noisy.
 //! We therefore keep a small allowlist of useful `about:` pages and ignore the rest.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::time::SystemTime;
 
@@ -339,7 +340,12 @@ impl VisitedUrlStore {
     }
 
     // Lowercase once so we can use the fast ASCII-only matcher (non-ASCII bytes compare exactly).
-    let query_lower = query.to_ascii_lowercase();
+    // Most queries are already lowercase; avoid allocating unless needed.
+    let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+      Cow::Owned(query.to_ascii_lowercase())
+    } else {
+      Cow::Borrowed(query)
+    };
     let tokens: Vec<&str> = query_lower
       .split_whitespace()
       .filter(|t| !t.is_empty())

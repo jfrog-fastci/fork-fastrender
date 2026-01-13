@@ -8,6 +8,7 @@ use super::string_match::{
   contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitiveStr,
 };
 use rustc_hash::FxHashSet;
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
@@ -183,7 +184,11 @@ impl OmniboxProvider for AboutPagesProvider {
     if input.is_empty() {
       return Vec::new();
     }
-    let input_lower = input.to_ascii_lowercase();
+    let input_lower: Cow<'_, str> = if input.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+      Cow::Owned(input.to_ascii_lowercase())
+    } else {
+      Cow::Borrowed(input)
+    };
 
     const PAGES: &[(&str, &str)] = &[
       (about_pages::ABOUT_NEWTAB, "New Tab"),
@@ -197,8 +202,8 @@ impl OmniboxProvider for AboutPagesProvider {
 
     let mut out = Vec::new();
     for (url, title) in PAGES {
-      if !contains_ascii_case_insensitive(url, &input_lower)
-        && !contains_ascii_case_insensitive(title, &input_lower)
+      if !contains_ascii_case_insensitive(url, input_lower.as_ref())
+        && !contains_ascii_case_insensitive(title, input_lower.as_ref())
       {
         continue;
       }
@@ -516,8 +521,14 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
   }
   // Lowercase once and keep tokens as slices into the lowercased buffer so we don't allocate a
   // separate `String` per token on the hot per-keystroke path.
-  let input_lower = input.to_ascii_lowercase();
-  let tokens_lower = tokenize_lower(&input_lower);
+  //
+  // Most omnibox input is already lowercase; avoid allocating unless needed.
+  let input_lower: Cow<'_, str> = if input.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+    Cow::Owned(input.to_ascii_lowercase())
+  } else {
+    Cow::Borrowed(input)
+  };
+  let tokens_lower = tokenize_lower(input_lower.as_ref());
   if tokens_lower.is_empty() {
     return Vec::new();
   }
