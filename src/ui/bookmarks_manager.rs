@@ -233,7 +233,14 @@ pub fn bookmarks_manager_side_panel(
         ui.add_space(4.0);
 
         ui.horizontal(|ui| {
-          if ui.button("Export (copy to clipboard)").clicked() {
+          let export_clipboard_resp = ui.button("Export (copy to clipboard)");
+          export_clipboard_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(
+              egui::WidgetType::Button,
+              "Export bookmarks JSON to clipboard",
+            )
+          });
+          if export_clipboard_resp.clicked() {
             match serde_json::to_string_pretty(store) {
               Ok(json) => {
                 state.export_json = Some(json.clone());
@@ -247,7 +254,14 @@ pub fn bookmarks_manager_side_panel(
             }
           }
           if let Some(json) = state.export_json.as_ref() {
-            if ui.button("Copy last export").clicked() {
+            let copy_last_export_resp = ui.button("Copy last export");
+            copy_last_export_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                "Copy last exported bookmarks JSON to clipboard",
+              )
+            });
+            if copy_last_export_resp.clicked() {
               ctx.output_mut(|o| o.copied_text = json.clone());
             }
           }
@@ -273,7 +287,11 @@ pub fn bookmarks_manager_side_panel(
             state.export_path = profile_path.display().to_string();
           }
 
-          if ui.button("Export file").clicked() {
+          let export_file_resp = ui.button("Export file");
+          export_file_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Export bookmarks to file")
+          });
+          if export_file_resp.clicked() {
             let raw = state.export_path.trim();
             if raw.is_empty() {
               state.error = Some("Export path is empty.".to_string());
@@ -330,7 +348,11 @@ pub fn bookmarks_manager_side_panel(
             state.import_path = profile_path.display().to_string();
           }
 
-          if ui.button("Import file").clicked() {
+          let import_file_resp = ui.button("Import file");
+          import_file_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Import bookmarks from file")
+          });
+          if import_file_resp.clicked() {
             let raw = state.import_path.trim();
             if raw.is_empty() {
               state.error = Some("Import path is empty.".to_string());
@@ -373,7 +395,11 @@ pub fn bookmarks_manager_side_panel(
         }
 
         ui.horizontal(|ui| {
-          if ui.button("Import").clicked() {
+          let import_resp = ui.button("Import");
+          import_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Import bookmarks from JSON")
+          });
+          if import_resp.clicked() {
             match BookmarkStore::from_json_str_migrating(&state.import_json) {
               Ok((imported, migration)) => {
                 *store = imported;
@@ -389,7 +415,11 @@ pub fn bookmarks_manager_side_panel(
               }
             }
           }
-          if ui.button("Clear").clicked() {
+          let clear_resp = ui.button("Clear");
+          clear_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear import JSON")
+          });
+          if clear_resp.clicked() {
             state.import_json.clear();
           }
         });
