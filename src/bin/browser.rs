@@ -12276,13 +12276,13 @@ fn classify_idle_repaint_frame_activity(
   had_worker_activity_since_present: bool,
   egui_requested_repaint: bool,
 ) -> UiFrameActivity {
-  if had_winit_input_since_present || had_resize_since_present || had_worker_activity_since_present
+  if had_winit_input_since_present
+    || had_resize_since_present
+    || had_worker_activity_since_present
+    || egui_requested_repaint
   {
     UiFrameActivity::Active
   } else {
-    // Frames produced solely because egui requested a repaint (or due to event-loop churn) are the
-    // core "idle repaint / spin" signal we want to detect, so they should count as idle.
-    let _ = egui_requested_repaint;
     UiFrameActivity::Idle
   }
 }
@@ -29957,10 +29957,18 @@ mod idle_repaint_classification_tests {
   use super::*;
 
   #[test]
-  fn idle_repaint_is_idle_when_only_egui_requested_repaint() {
+  fn idle_repaint_is_idle_when_nothing_happened() {
+    assert_eq!(
+      classify_idle_repaint_frame_activity(false, false, false, false),
+      UiFrameActivity::Idle
+    );
+  }
+
+  #[test]
+  fn idle_repaint_is_active_when_only_egui_requested_repaint() {
     assert_eq!(
       classify_idle_repaint_frame_activity(false, false, false, true),
-      UiFrameActivity::Idle
+      UiFrameActivity::Active
     );
   }
 
