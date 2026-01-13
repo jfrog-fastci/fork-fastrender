@@ -5120,7 +5120,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(win) = windows.get(id) {
           let mut session_window =
             fastrender::ui::BrowserSessionWindow::from_app_state(&win.app.browser_state);
-          session_window.window_state = capture_window_state(&win.app.window);
+          session_window.window_state = capture_window_state(
+            &win.app.window,
+            win.app.window_minimized,
+            win.app.last_known_good_window_state.as_ref(),
+          );
           session_windows.push(session_window);
         }
       }
@@ -5206,7 +5210,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(win) = windows.get(id) {
           let mut session_window =
             fastrender::ui::BrowserSessionWindow::from_app_state(&win.app.browser_state);
-          session_window.window_state = capture_window_state(&win.app.window);
+          session_window.window_state = capture_window_state(
+            &win.app.window,
+            win.app.window_minimized,
+            win.app.last_known_good_window_state.as_ref(),
+          );
           session_windows.push(session_window);
         }
       }
@@ -5268,11 +5276,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
 
           match event {
+            WindowEvent::Moved(new_pos) => {
+              let size = win.app.window.inner_size();
+              win.app.update_last_known_good_window_state(fastrender::ui::BrowserWindowState {
+                x: Some(new_pos.x as i64),
+                y: Some(new_pos.y as i64),
+                width: Some(size.width as i64),
+                height: Some(size.height as i64),
+                maximized: win.app.window.is_maximized(),
+              });
+            }
             WindowEvent::Focused(true) => {
               active_window_id = Some(window_id);
             }
             WindowEvent::Resized(new_size) => {
               win.app.window_minimized = new_size.width == 0 || new_size.height == 0;
+              let pos = win.app.window.outer_position().ok();
+              win.app.update_last_known_good_window_state(fastrender::ui::BrowserWindowState {
+                x: pos.map(|p| p.x as i64),
+                y: pos.map(|p| p.y as i64),
+                width: Some(new_size.width as i64),
+                height: Some(new_size.height as i64),
+                maximized: win.app.window.is_maximized(),
+              });
               win.app.resize(new_size);
               win.app.schedule_resize_redraw();
             }
@@ -5280,8 +5306,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               scale_factor,
               new_inner_size,
             } => {
-              win.app.window_minimized = new_inner_size.width == 0 || new_inner_size.height == 0;
+              let new_size = *new_inner_size;
+              win.app.window_minimized = new_size.width == 0 || new_size.height == 0;
               win.app.set_system_pixels_per_point(scale_factor as f32);
+              let pos = win.app.window.outer_position().ok();
+              win.app.update_last_known_good_window_state(fastrender::ui::BrowserWindowState {
+                x: pos.map(|p| p.x as i64),
+                y: pos.map(|p| p.y as i64),
+                width: Some(new_size.width as i64),
+                height: Some(new_size.height as i64),
+                maximized: win.app.window.is_maximized(),
+              });
               win.app.resize(*new_inner_size);
               win.app.schedule_resize_redraw();
             }
@@ -8945,7 +8980,7 @@ struct App {
   window_occluded: bool,
   window_minimized: bool,
   window_fullscreen: bool,
-
+  last_known_good_window_state: Option<fastrender::ui::BrowserWindowState>,
   page_has_focus: bool,
   /// Whether a browser-chrome (non-page) text input currently owns keyboard input.
   ///
@@ -9641,7 +9676,13 @@ impl App {
       .ok_or("wgpu surface reports no alpha modes")?;
 
     let size = window.inner_size();
+    let window_minimized = size.width == 0 || size.height == 0;
     let window_fullscreen = window.fullscreen().is_some();
+    let last_known_good_window_state = merge_last_known_good_window_state(
+      None,
+      capture_window_state_raw(&window),
+      window_minimized,
+    );
     let surface_config = wgpu::SurfaceConfiguration {
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
       format: surface_format,
@@ -9813,8 +9854,9 @@ impl App {
       perf_log_enabled,
       window_focused: true,
       window_occluded: false,
-      window_minimized: size.width == 0 || size.height == 0,
+      window_minimized,
       window_fullscreen,
+      last_known_good_window_state,
       page_has_focus: false,
       chrome_has_text_focus: false,
       pointer_captured: false,
@@ -9883,8 +9925,17 @@ impl App {
       tab_groups,
       active_tab_index,
       show_menu_bar,
-      ..
+      window_state,
     } = window.sanitized();
+
+    // Seed the per-window "last known good" geometry tracker with the persisted session state.
+    // This ensures we don't immediately clobber a valid stored geometry if the platform doesn't
+    // report `outer_position` (or if the window starts minimized and reports 0×0).
+    self.last_known_good_window_state = merge_last_known_good_window_state(
+      window_state,
+      capture_window_state_raw(&self.window),
+      self.window_minimized,
+    );
 
     // Allow CI/scripts to force showing/hiding the menu bar regardless of persisted state.
     self.browser_state.chrome.show_menu_bar =
@@ -9976,6 +10027,14 @@ impl App {
 
     // Keep debug `about:` pages (e.g. `about:processes`) updated with the current open tabs list.
     self.sync_about_open_tabs_snapshot();
+  }
+
+  fn update_last_known_good_window_state(&mut self, capture: fastrender::ui::BrowserWindowState) {
+    self.last_known_good_window_state = merge_last_known_good_window_state(
+      self.last_known_good_window_state.take(),
+      capture,
+      self.window_minimized,
+    );
   }
 
   fn sync_window_title(&mut self) {
@@ -21063,18 +21122,137 @@ impl App {
 #[cfg(feature = "browser_ui")]
 fn capture_window_state(
   window: &winit::window::Window,
+  window_minimized: bool,
+  last_known_good: Option<&fastrender::ui::BrowserWindowState>,
 ) -> Option<fastrender::ui::BrowserWindowState> {
+  let raw = capture_window_state_raw(window);
+  merge_last_known_good_window_state(last_known_good.cloned(), raw, window_minimized)
+}
+
+#[cfg(feature = "browser_ui")]
+fn capture_window_state_raw(window: &winit::window::Window) -> fastrender::ui::BrowserWindowState {
   let maximized = window.is_maximized();
   let size = window.inner_size();
   let pos = window.outer_position().ok();
 
-  Some(fastrender::ui::BrowserWindowState {
+  fastrender::ui::BrowserWindowState {
     x: pos.map(|p| p.x as i64),
     y: pos.map(|p| p.y as i64),
     width: Some(size.width as i64),
     height: Some(size.height as i64),
     maximized,
-  })
+  }
+}
+
+/// Merge a newly captured window state into the last-known-good state.
+///
+/// Some platforms emit `Resized(0, 0)` when a window is minimized. Persisting that transient size
+/// would clobber the previous good window geometry (and result in sessions restoring at the
+/// fallback/default size). This helper treats 0×0 captures as invalid and keeps the prior state.
+#[cfg(any(test, feature = "browser_ui"))]
+fn merge_last_known_good_window_state(
+  previous: Option<fastrender::ui::BrowserWindowState>,
+  capture: fastrender::ui::BrowserWindowState,
+  window_minimized: bool,
+) -> Option<fastrender::ui::BrowserWindowState> {
+  let (Some(width), Some(height)) = (capture.width, capture.height) else {
+    return previous;
+  };
+
+  // Treat minimization / 0×0 sizes as transient and do not overwrite the last known good geometry.
+  if window_minimized || width <= 0 || height <= 0 {
+    return previous;
+  }
+
+  let mut next = previous.unwrap_or(fastrender::ui::BrowserWindowState {
+    x: None,
+    y: None,
+    width: None,
+    height: None,
+    maximized: false,
+  });
+
+  // Always update size/maximized when we have a non-minimized capture.
+  next.width = Some(width);
+  next.height = Some(height);
+  next.maximized = capture.maximized;
+
+  // Best-effort position tracking: preserve any previously captured position when the platform
+  // doesn't expose outer_position.
+  if capture.x.is_some() {
+    next.x = capture.x;
+  }
+  if capture.y.is_some() {
+    next.y = capture.y;
+  }
+
+  Some(next)
+}
+
+#[cfg(test)]
+mod window_state_persistence_tests {
+  use super::merge_last_known_good_window_state;
+
+  fn state(width: i64, height: i64) -> fastrender::ui::BrowserWindowState {
+    fastrender::ui::BrowserWindowState {
+      x: None,
+      y: None,
+      width: Some(width),
+      height: Some(height),
+      maximized: false,
+    }
+  }
+
+  #[test]
+  fn keeps_previous_geometry_when_window_is_minimized() {
+    let previous = Some(state(800, 600));
+    let capture = state(0, 0);
+    assert_eq!(
+      merge_last_known_good_window_state(previous.clone(), capture, true),
+      previous
+    );
+  }
+
+  #[test]
+  fn returns_none_when_no_previous_geometry_and_capture_is_invalid() {
+    let capture = state(0, 0);
+    assert_eq!(merge_last_known_good_window_state(None, capture, false), None);
+  }
+
+  #[test]
+  fn updates_geometry_on_valid_capture() {
+    let previous = Some(state(800, 600));
+    let capture = state(1024, 768);
+    let merged =
+      merge_last_known_good_window_state(previous, capture, false).expect("expected merged state");
+    assert_eq!(merged.width, Some(1024));
+    assert_eq!(merged.height, Some(768));
+  }
+
+  #[test]
+  fn preserves_position_when_outer_position_is_unavailable() {
+    let previous = Some(fastrender::ui::BrowserWindowState {
+      x: Some(10),
+      y: Some(20),
+      width: Some(800),
+      height: Some(600),
+      maximized: false,
+    });
+    let capture = fastrender::ui::BrowserWindowState {
+      x: None,
+      y: None,
+      width: Some(1024),
+      height: Some(768),
+      maximized: true,
+    };
+    let merged = merge_last_known_good_window_state(previous, capture, false)
+      .expect("expected merged state");
+    assert_eq!(merged.x, Some(10));
+    assert_eq!(merged.y, Some(20));
+    assert_eq!(merged.width, Some(1024));
+    assert_eq!(merged.height, Some(768));
+    assert!(merged.maximized);
+  }
 }
 
 #[cfg(feature = "browser_ui")]
