@@ -34,7 +34,9 @@ use super::form_submit::{
   form_submission, form_submission_without_submitter, FormSubmission, FormSubmissionMethod,
 };
 use super::fragment_geometry::content_rect_for_border_rect;
-use super::hit_test::{hit_test_dom, HitTestKind, HitTestResult};
+use super::hit_test::{
+  hit_test_dom_with_indices, BoxIndex as HitTestBoxIndex, HitTestKind, HitTestResult,
+};
 use super::image_maps;
 use super::resolve_url;
 use super::state::{
@@ -6717,7 +6719,8 @@ impl InteractionEngine {
 
     dom_changed |= self.sync_text_edit_paint_state();
 
-    let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
+    let box_index = HitTestBoxIndex::new(box_tree);
+    let hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point);
     let new_chain = hit
       .as_ref()
       .and_then(|hit| nearest_element_ancestor(&index, hit.styled_node_id))
@@ -6770,7 +6773,8 @@ impl InteractionEngine {
     }
 
     let page_point = viewport_point.translate(scroll.viewport);
-    let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point)?;
+    let box_index = HitTestBoxIndex::new(box_tree);
+    let hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point)?;
     if hit.dom_node_id != focused {
       return None;
     }
@@ -6834,8 +6838,9 @@ impl InteractionEngine {
     let prev_doc_selection = self.state.document_selection.clone();
 
     let page_point = viewport_point.translate(scroll.viewport);
-
-    let down_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
+    let mut index = DomIndexMut::new(dom);
+    let box_index = HitTestBoxIndex::new(box_tree);
+    let down_hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point);
     let down_target = down_hit.as_ref().map(|hit| hit.dom_node_id);
 
     if matches!(button, PointerButton::Primary) {
@@ -6847,8 +6852,6 @@ impl InteractionEngine {
         });
       }
     }
-
-    let mut index = DomIndexMut::new(dom);
     let new_chain = down_target
       .map(|target| collect_element_chain_with_label_associated_controls(&index, target))
       .unwrap_or_default();
@@ -7712,7 +7715,6 @@ impl InteractionEngine {
       });
 
     let page_point = viewport_point.translate(scroll.viewport);
-
     // Link drag suppression: if the pointer moves beyond a small threshold while holding down on a
     // link, do not treat the gesture as a click (mirrors native browsers).
     const LINK_DRAG_THRESHOLD_PX: f32 = 5.0;
@@ -7730,10 +7732,10 @@ impl InteractionEngine {
     }) {
       suppress_click = true;
     }
-
-    let up_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
-    let up_semantic = up_hit.as_ref().map(|hit| hit.dom_node_id);
     let mut index = DomIndexMut::new(dom);
+    let box_index = HitTestBoxIndex::new(box_tree);
+    let up_hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point);
+    let up_semantic = up_hit.as_ref().map(|hit| hit.dom_node_id);
 
     let down_semantic = self.pointer_down_target;
 
@@ -8578,9 +8580,9 @@ impl InteractionEngine {
   ) -> bool {
     self.modality = InputModality::Pointer;
     let page_point = viewport_point.translate(scroll.viewport);
-    let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
-
     let mut index = DomIndexMut::new(dom);
+    let box_index = HitTestBoxIndex::new(box_tree);
+    let hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point);
 
     let mut target_id = hit.as_ref().map(|hit| hit.dom_node_id);
     if let Some(hit) = hit.as_ref() {

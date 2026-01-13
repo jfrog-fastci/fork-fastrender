@@ -7,8 +7,10 @@ use crate::tree::fragment_tree::{FragmentContent, FragmentTree};
 use crate::ui::messages::CursorKind;
 #[cfg(feature = "browser_ui")]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::marker::PhantomData;
 use std::ptr;
 
+use super::effective_disabled::DomIdLookup;
 use super::image_maps;
 use super::engine::box_is_selectable_for_document_selection;
 
@@ -77,13 +79,35 @@ pub enum HitTestKind {
   Other,
 }
 
-struct BoxIndex {
-  id_to_ptr: Vec<*const BoxNode>,
-  parent: Vec<usize>,
+pub(crate) trait DomIdLookupExt: DomIdLookup {
+  fn id_for_ptr(&self, ptr: *const DomNode) -> Option<usize> {
+    if ptr.is_null() {
+      return None;
+    }
+    // Pre-order node ids are expected to be stable, but `DomIdLookup` doesn't guarantee pointer
+    // lookup. Fall back to a linear scan.
+    for node_id in 1..=self.len() {
+      let Some(node) = self.node(node_id) else {
+        continue;
+      };
+      if (node as *const DomNode) == ptr {
+        return Some(node_id);
+      }
+    }
+    None
+  }
 }
 
-impl BoxIndex {
-  fn new(box_tree: &BoxTree) -> Self {
+impl<T: DomIdLookup + ?Sized> DomIdLookupExt for T {}
+
+pub(crate) struct BoxIndex<'a> {
+  id_to_ptr: Vec<*const BoxNode>,
+  parent: Vec<usize>,
+  _marker: PhantomData<&'a BoxNode>,
+}
+
+impl<'a> BoxIndex<'a> {
+  pub(crate) fn new(box_tree: &'a BoxTree) -> Self {
     let mut id_to_ptr: Vec<*const BoxNode> = vec![ptr::null()];
     let mut parent: Vec<usize> = vec![0];
 
@@ -111,7 +135,11 @@ impl BoxIndex {
       }
     }
 
-    Self { id_to_ptr, parent }
+    Self {
+      id_to_ptr,
+      parent,
+      _marker: PhantomData,
+    }
   }
 
   fn node(&self, box_id: usize) -> Option<&BoxNode> {
@@ -128,13 +156,14 @@ impl BoxIndex {
   }
 }
 
-struct DomIndex {
+struct DomIndex<'a> {
   id_to_ptr: Vec<*const DomNode>,
   parent: Vec<usize>,
+  _marker: PhantomData<&'a DomNode>,
 }
 
-impl DomIndex {
-  fn new(dom: &DomNode) -> Self {
+impl<'a> DomIndex<'a> {
+  fn new(dom: &'a DomNode) -> Self {
     let mut id_to_ptr: Vec<*const DomNode> = vec![ptr::null()];
     let mut parent: Vec<usize> = vec![0];
 
@@ -150,7 +179,11 @@ impl DomIndex {
       }
     }
 
-    Self { id_to_ptr, parent }
+    Self {
+      id_to_ptr,
+      parent,
+      _marker: PhantomData,
+    }
   }
 
   fn node(&self, node_id: usize) -> Option<&DomNode> {
@@ -191,7 +224,7 @@ impl DomIndex {
   }
 }
 
-impl super::effective_disabled::DomIdLookup for DomIndex {
+impl<'a> DomIdLookup for DomIndex<'a> {
   fn len(&self) -> usize {
     self.id_to_ptr.len().saturating_sub(1)
   }
@@ -205,7 +238,7 @@ impl super::effective_disabled::DomIdLookup for DomIndex {
   }
 }
 
-fn tree_root_boundary_id(dom_index: &DomIndex, mut node_id: usize) -> Option<usize> {
+fn tree_root_boundary_id(dom_index: &DomIndex<'_>, mut node_id: usize) -> Option<usize> {
   while node_id != 0 {
     let node = dom_index.node(node_id)?;
     if matches!(
@@ -219,12 +252,12 @@ fn tree_root_boundary_id(dom_index: &DomIndex, mut node_id: usize) -> Option<usi
   None
 }
 
-fn node_or_ancestor_is_template(dom_index: &DomIndex, node_id: usize) -> bool {
+fn node_or_ancestor_is_template(dom_index: &DomIndex<'_>, node_id: usize) -> bool {
   super::effective_disabled::is_in_template_contents(node_id, dom_index)
 }
 
 fn find_element_by_id_attr_in_tree(
-  dom_index: &DomIndex,
+  dom_index: &DomIndex<'_>,
   tree_root_id: usize,
   html_id: &str,
 ) -> Option<usize> {
@@ -338,7 +371,7 @@ pub fn cursor_kind_for_hover(dom: &DomNode, hit: Option<&HitTestResult>) -> Curs
 }
 
 fn resolve_styled_node_id_from_box_ancestors(
-  box_index: &BoxIndex,
+  box_index: &BoxIndex<'_>,
   mut box_id: usize,
 ) -> Option<usize> {
   while box_id != 0 {
@@ -361,7 +394,10 @@ enum SemanticResolveResult {
   Invalid,
 }
 
-fn resolve_semantic_target(dom_index: &DomIndex, start_node_id: usize) -> SemanticResolveResult {
+fn resolve_semantic_target(
+  dom_index: &(impl DomIdLookup + ?Sized),
+  start_node_id: usize,
+) -> SemanticResolveResult {
   if dom_index.node(start_node_id).is_none() {
     return SemanticResolveResult::Invalid;
   }
@@ -405,7 +441,7 @@ fn resolve_semantic_target(dom_index: &DomIndex, start_node_id: usize) -> Semant
       }
     }
 
-    current = dom_index.parent_id(current).unwrap_or(0);
+    current = dom_index.parent_id(current);
   }
 
   match first_element {
@@ -418,20 +454,13 @@ fn resolve_semantic_target(dom_index: &DomIndex, start_node_id: usize) -> Semant
   }
 }
 
-pub fn hit_test_dom(
+pub(crate) fn hit_test_dom_with_indices<D: DomIdLookupExt + ?Sized>(
   dom: &DomNode,
-  box_tree: &BoxTree,
+  dom_index: &D,
+  box_index: &BoxIndex<'_>,
   fragment_tree: &FragmentTree,
   point: Point,
 ) -> Option<HitTestResult> {
-  #[cfg(feature = "browser_ui")]
-  if HIT_TEST_DOM_COUNTING_ENABLED.load(Ordering::Relaxed) {
-    HIT_TEST_DOM_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-  }
-
-  let box_index = BoxIndex::new(box_tree);
-  let dom_index = DomIndex::new(dom);
-
   for fragment in fragment_tree.hit_test(point) {
     let Some(box_id) = fragment.box_id() else {
       continue;
@@ -444,11 +473,12 @@ pub fn hit_test_dom(
     }
 
     let css_cursor = box_node.style.cursor;
-    let is_selectable_text = matches!(&fragment.content, FragmentContent::Text { is_marker, .. } if !*is_marker)
-      && matches!(&box_node.box_type, BoxType::Text(_))
-      && box_is_selectable_for_document_selection(box_node);
+    let is_selectable_text =
+      matches!(&fragment.content, FragmentContent::Text { is_marker, .. } if !*is_marker)
+        && matches!(&box_node.box_type, BoxType::Text(_))
+        && box_is_selectable_for_document_selection(box_node);
 
-    let Some(styled_node_id) = resolve_styled_node_id_from_box_ancestors(&box_index, box_id) else {
+    let Some(styled_node_id) = resolve_styled_node_id_from_box_ancestors(box_index, box_id) else {
       continue;
     };
 
@@ -456,7 +486,7 @@ pub fn hit_test_dom(
     let dom_node_id = styled_node_id;
 
     let (semantic_dom_node_id, mut kind, mut href) =
-      match resolve_semantic_target(&dom_index, dom_node_id) {
+      match resolve_semantic_target(dom_index, dom_node_id) {
         SemanticResolveResult::Hit {
           node_id,
           kind,
@@ -514,6 +544,22 @@ pub fn hit_test_dom(
   None
 }
 
+pub fn hit_test_dom(
+  dom: &DomNode,
+  box_tree: &BoxTree,
+  fragment_tree: &FragmentTree,
+  point: Point,
+) -> Option<HitTestResult> {
+  #[cfg(feature = "browser_ui")]
+  if HIT_TEST_DOM_COUNTING_ENABLED.load(Ordering::Relaxed) {
+    HIT_TEST_DOM_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+  }
+
+  let box_index = BoxIndex::new(box_tree);
+  let dom_index = DomIndex::new(dom);
+  hit_test_dom_with_indices(dom, &dom_index, &box_index, fragment_tree, point)
+}
+
 /// Like [`hit_test_dom`], but returns *all* hit targets (topmost first).
 ///
 /// This is a convenience for APIs like `Document.elementsFromPoint()` that need to enumerate the
@@ -526,6 +572,16 @@ pub fn hit_test_dom_all(
 ) -> Vec<HitTestResult> {
   let box_index = BoxIndex::new(box_tree);
   let dom_index = DomIndex::new(dom);
+  hit_test_dom_all_with_indices(dom, &dom_index, &box_index, fragment_tree, point)
+}
+
+pub(crate) fn hit_test_dom_all_with_indices<D: DomIdLookupExt + ?Sized>(
+  dom: &DomNode,
+  dom_index: &D,
+  box_index: &BoxIndex<'_>,
+  fragment_tree: &FragmentTree,
+  point: Point,
+) -> Vec<HitTestResult> {
   let mut results: Vec<HitTestResult> = Vec::new();
   let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
@@ -541,29 +597,31 @@ pub fn hit_test_dom_all(
     }
 
     let css_cursor = box_node.style.cursor;
-    let is_selectable_text = matches!(&fragment.content, FragmentContent::Text { is_marker, .. } if !*is_marker)
-      && matches!(&box_node.box_type, BoxType::Text(_))
-      && box_is_selectable_for_document_selection(box_node);
+    let is_selectable_text =
+      matches!(&fragment.content, FragmentContent::Text { is_marker, .. } if !*is_marker)
+        && matches!(&box_node.box_type, BoxType::Text(_))
+        && box_is_selectable_for_document_selection(box_node);
 
-    let Some(styled_node_id) = resolve_styled_node_id_from_box_ancestors(&box_index, box_id) else {
+    let Some(styled_node_id) = resolve_styled_node_id_from_box_ancestors(box_index, box_id) else {
       continue;
     };
 
     // MVP: styled node ids are the cascade DOM pre-order ids.
     let dom_node_id = styled_node_id;
 
-    let (semantic_dom_node_id, mut kind, mut href) = match resolve_semantic_target(&dom_index, dom_node_id) {
-      SemanticResolveResult::Hit {
-        node_id,
-        kind,
-        href,
-      } => (node_id, kind, href),
-      SemanticResolveResult::InertSubtree => {
-        // Inert subtrees block interaction target resolution entirely.
-        return Vec::new();
-      }
-      SemanticResolveResult::Invalid => continue,
-    };
+    let (semantic_dom_node_id, mut kind, mut href) =
+      match resolve_semantic_target(dom_index, dom_node_id) {
+        SemanticResolveResult::Hit {
+          node_id,
+          kind,
+          href,
+        } => (node_id, kind, href),
+        SemanticResolveResult::InertSubtree => {
+          // Inert subtrees block interaction target resolution entirely.
+          return Vec::new();
+        }
+        SemanticResolveResult::Invalid => continue,
+      };
 
     let mut resolved_dom_node_id = semantic_dom_node_id;
 
@@ -577,7 +635,9 @@ pub fn hit_test_dom_all(
         .node(dom_node_id)
         .and_then(|node| node.get_attribute_ref("usemap"))
       {
-        if let Some(image_point) = image_maps::local_point_in_fragment(fragment_tree, fragment, point) {
+        if let Some(image_point) =
+          image_maps::local_point_in_fragment(fragment_tree, fragment, point)
+        {
           if let Some(area) = image_maps::hit_test_image_map(dom, usemap, image_point) {
             if let Some(area_id) = dom_index.id_for_ptr(area as *const DomNode) {
               resolved_dom_node_id = area_id;
@@ -862,9 +922,13 @@ mod tests {
 
 #[cfg(test)]
 mod dom_hit_testing_tests {
-  use super::{hit_test_dom, resolve_label_associated_control, DomIndex, HitTestKind};
+  use super::{
+    hit_test_dom, hit_test_dom_with_indices, resolve_label_associated_control,
+    BoxIndex as HitTestBoxIndex, DomIndex, HitTestKind,
+  };
   use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
   use crate::geometry::{Point, Rect};
+  use crate::interaction::dom_index::DomIndex as MutableDomIndex;
   use crate::style::display::FormattingContextType;
   use crate::style::types::PointerEvents;
   use crate::style::ComputedStyle;
@@ -909,6 +973,17 @@ mod dom_hit_testing_tests {
 
   fn default_style() -> Arc<ComputedStyle> {
     Arc::new(ComputedStyle::default())
+  }
+
+  fn hit_test_with_prebuilt_indices(
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    point: Point,
+  ) -> Option<super::HitTestResult> {
+    let box_index = HitTestBoxIndex::new(box_tree);
+    let dom_index = MutableDomIndex::build(dom);
+    hit_test_dom_with_indices(dom, &dom_index, &box_index, fragment_tree, point)
   }
 
   #[test]
@@ -1017,11 +1092,8 @@ mod dom_hit_testing_tests {
 
     let mut img_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
     img_box.styled_node_id = Some(img_id);
-    let mut container_box = BoxNode::new_block(
-      default_style(),
-      FormattingContextType::Block,
-      vec![img_box],
-    );
+    let mut container_box =
+      BoxNode::new_block(default_style(), FormattingContextType::Block, vec![img_box]);
     container_box.styled_node_id = Some(container_id);
     let box_tree = BoxTree::new(container_box);
     let img_box_id = box_tree.root.children[0].id;
@@ -1132,8 +1204,7 @@ mod dom_hit_testing_tests {
     let mut link_box = BoxNode::new_inline(style.clone(), vec![]);
     link_box.styled_node_id = Some(3);
 
-    let mut overlay_box =
-      BoxNode::new_block(overlay_style, FormattingContextType::Block, vec![]);
+    let mut overlay_box = BoxNode::new_block(overlay_style, FormattingContextType::Block, vec![]);
     overlay_box.styled_node_id = Some(4);
 
     let mut root_box = BoxNode::new_block(
@@ -1147,11 +1218,8 @@ mod dom_hit_testing_tests {
     let link_box_id = box_tree.root.children[0].id;
     let overlay_box_id = box_tree.root.children[1].id;
 
-    let link_fragment = FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
-      link_box_id,
-      vec![],
-    );
+    let link_fragment =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), link_box_id, vec![]);
     let overlay_fragment = FragmentNode::new_block_with_id(
       Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
       overlay_box_id,
@@ -1209,6 +1277,108 @@ mod dom_hit_testing_tests {
     assert_eq!(
       hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0)),
       None
+    );
+  }
+
+  #[test]
+  fn hit_test_dom_with_indices_matches_hit_test_dom_for_image_maps_and_inert_and_pointer_events() {
+    // Image map case.
+    let (mut dom, box_tree, fragment_tree, _, _, _, _) = image_map_fixture();
+    let point = Point::new(65.0, 65.0);
+    let expected = hit_test_dom(&dom, &box_tree, &fragment_tree, point);
+    let actual = hit_test_with_prebuilt_indices(&mut dom, &box_tree, &fragment_tree, point);
+    assert_eq!(actual, expected);
+    assert!(
+      expected.is_some(),
+      "fixture should produce a hit for image maps"
+    );
+
+    // Pointer-events:none overlay case.
+    let mut dom = doc(vec![elem(
+      "div",
+      vec![("id", "root")],
+      vec![
+        elem("a", vec![("href", "/ok")], vec![]),
+        elem("div", vec![("id", "overlay")], vec![]),
+      ],
+    )]);
+    let style = default_style();
+    let mut overlay_style = ComputedStyle::default();
+    overlay_style.pointer_events = PointerEvents::None;
+    let overlay_style = Arc::new(overlay_style);
+
+    let mut link_box = BoxNode::new_inline(style.clone(), vec![]);
+    link_box.styled_node_id = Some(3);
+
+    let mut overlay_box = BoxNode::new_block(overlay_style, FormattingContextType::Block, vec![]);
+    overlay_box.styled_node_id = Some(4);
+
+    let mut root_box = BoxNode::new_block(
+      style,
+      FormattingContextType::Block,
+      vec![link_box, overlay_box],
+    );
+    root_box.styled_node_id = Some(2);
+
+    let box_tree = BoxTree::new(root_box);
+    let link_box_id = box_tree.root.children[0].id;
+    let overlay_box_id = box_tree.root.children[1].id;
+
+    let link_fragment =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), link_box_id, vec![]);
+    let overlay_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      overlay_box_id,
+      vec![],
+    );
+    let root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      box_tree.root.id,
+      vec![link_fragment, overlay_fragment],
+    );
+    let fragment_tree = FragmentTree::new(root_fragment);
+
+    let point = Point::new(10.0, 10.0);
+    let expected = hit_test_dom(&dom, &box_tree, &fragment_tree, point);
+    let actual = hit_test_with_prebuilt_indices(&mut dom, &box_tree, &fragment_tree, point);
+    assert_eq!(actual, expected);
+    assert!(
+      expected.is_some(),
+      "fixture should produce a hit under pointer-events:none overlay"
+    );
+
+    // Inert subtree case.
+    let mut dom = doc(vec![elem(
+      "a",
+      vec![("href", "/foo"), ("inert", "")],
+      vec![elem("span", vec![], vec![text("txt")])],
+    )]);
+    let style = default_style();
+    let anonymous = BoxNode::new_anonymous_inline(style.clone(), vec![]);
+    let mut span = BoxNode::new_inline(style.clone(), vec![anonymous]);
+    span.styled_node_id = Some(3);
+    let mut a_box = BoxNode::new_inline(style, vec![span]);
+    a_box.styled_node_id = Some(2);
+    let box_tree = BoxTree::new(a_box);
+    let anonymous_box_id = box_tree.root.children[0].children[0].id;
+    let hit_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      anonymous_box_id,
+      vec![],
+    );
+    let root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      box_tree.root.id,
+      vec![hit_fragment],
+    );
+    let fragment_tree = FragmentTree::new(root_fragment);
+    let point = Point::new(10.0, 10.0);
+    let expected = hit_test_dom(&dom, &box_tree, &fragment_tree, point);
+    let actual = hit_test_with_prebuilt_indices(&mut dom, &box_tree, &fragment_tree, point);
+    assert_eq!(actual, expected);
+    assert_eq!(
+      expected, None,
+      "fixture should be blocked by inert semantics"
     );
   }
 
