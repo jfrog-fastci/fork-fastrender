@@ -746,6 +746,59 @@ fn compiled_computed_object_literal_key_uses_to_property_key() -> Result<(), VmE
 }
 
 #[test]
+fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function mul_obj() {
+        return ({ valueOf() { return 2; } }) * 3;
+      }
+      function plus_obj() {
+        return +({ valueOf() { return 4; } });
+      }
+    "#,
+  )?;
+  let mul_body = find_function_body(&script, "mul_obj");
+  let plus_body = find_function_body(&script, "plus_obj");
+
+  let mut vm = Vm::new(VmOptions::default());
+  // `ToPrimitive` (used by `ToNumber` on objects) requires initialized intrinsics for @@toPrimitive.
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+  {
+    let mut scope = heap.scope();
+
+    let mul_name = scope.alloc_string("mul_obj")?;
+    let mul_fn = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: mul_body,
+      },
+      mul_name,
+      0,
+    )?;
+    let mul_result = vm.call_without_host(&mut scope, Value::Object(mul_fn), Value::Undefined, &[])?;
+    assert_eq!(mul_result, Value::Number(6.0));
+
+    let plus_name = scope.alloc_string("plus_obj")?;
+    let plus_fn = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: plus_body,
+      },
+      plus_name,
+      0,
+    )?;
+    let plus_result = vm.call_without_host(&mut scope, Value::Object(plus_fn), Value::Undefined, &[])?;
+    assert_eq!(plus_result, Value::Number(4.0));
+  }
+
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn compiled_var_is_hoisted_in_function_body() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(

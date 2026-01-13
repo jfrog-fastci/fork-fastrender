@@ -2152,21 +2152,16 @@ impl<'vm> HirEvaluator<'vm> {
       }
       hir_js::UnaryOp::Plus => {
         let v = self.eval_expr(scope, body, expr)?;
-        let mut tick = || self.vm.tick();
-        Ok(Value::Number(crate::ops::to_number_with_tick(
-          scope.heap_mut(),
-          v,
-          &mut tick,
-        )?))
+        // Full `ToNumber` requires `ToPrimitive`, which can invoke user code.
+        Ok(Value::Number(
+          scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, v)?,
+        ))
       }
       hir_js::UnaryOp::Minus => {
         let v = self.eval_expr(scope, body, expr)?;
-        let mut tick = || self.vm.tick();
-        Ok(Value::Number(-crate::ops::to_number_with_tick(
-          scope.heap_mut(),
-          v,
-          &mut tick,
-        )?))
+        Ok(Value::Number(
+          -scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, v)?,
+        ))
       }
       hir_js::UnaryOp::Typeof => {
         // Special-case `typeof unboundIdentifier` so it evaluates to `"undefined"` without
@@ -2396,37 +2391,39 @@ impl<'vm> HirEvaluator<'vm> {
         self.addition_operator(scope, l, r)
       }
       hir_js::BinaryOp::Subtract => {
-        let mut tick = || self.vm.tick();
-        Ok(Value::Number(
-          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
-            - crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
-        ))
+        // Root operands across `ToPrimitive`/`ToNumber`, which can invoke user code and allocate.
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Number(ln - rn))
       }
       hir_js::BinaryOp::Multiply => {
-        let mut tick = || self.vm.tick();
-        Ok(Value::Number(
-          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
-            * crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
-        ))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Number(ln * rn))
       }
       hir_js::BinaryOp::Divide => {
-        let mut tick = || self.vm.tick();
-        Ok(Value::Number(
-          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
-            / crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
-        ))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Number(ln / rn))
       }
       hir_js::BinaryOp::Remainder => {
-        let mut tick = || self.vm.tick();
-        Ok(Value::Number(
-          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
-            % crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
-        ))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Number(ln % rn))
       }
       hir_js::BinaryOp::Exponent => {
-        let mut tick = || self.vm.tick();
-        let base = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
-        let exp = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let base = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let exp = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
         Ok(Value::Number(base.powf(exp)))
       }
       hir_js::BinaryOp::ShiftLeft => {
@@ -2473,32 +2470,32 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::BinaryOp::StrictEquality => Ok(Value::Bool(self.strict_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::StrictInequality => Ok(Value::Bool(!self.strict_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::LessThan => {
-        let mut tick = || self.vm.tick();
-        Ok(Value::Bool(
-          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
-            < crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
-        ))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Bool(ln < rn))
       }
       hir_js::BinaryOp::LessEqual => {
-        let mut tick = || self.vm.tick();
-        Ok(Value::Bool(
-          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
-            <= crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
-        ))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Bool(ln <= rn))
       }
       hir_js::BinaryOp::GreaterThan => {
-        let mut tick = || self.vm.tick();
-        Ok(Value::Bool(
-          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
-            > crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
-        ))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Bool(ln > rn))
       }
       hir_js::BinaryOp::GreaterEqual => {
-        let mut tick = || self.vm.tick();
-        Ok(Value::Bool(
-          crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?
-            >= crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
-        ))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Bool(ln >= rn))
       }
       hir_js::BinaryOp::Instanceof => Ok(Value::Bool(self.instanceof_operator(scope, l, r)?)),
       hir_js::BinaryOp::Comma => {
