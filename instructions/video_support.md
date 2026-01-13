@@ -183,7 +183,8 @@ Create/collect test videos in various formats:
 
 When importing offline page fixtures that need **playable** media (e.g. to exercise `<video>` in the
 windowed `browser` UI), note that `xtask import-page-fixture` rewrites media sources to deterministic
-empty placeholder files by default to keep fixtures small.
+empty `assets/missing_<hash>.<ext>` placeholder files by default to keep fixtures small (placeholders
+are 0-byte files; they exist so fixtures remain hermetic/offline).
 
 Opt in to vendoring media bytes with:
 
@@ -192,7 +193,16 @@ bash scripts/cargo_agent.sh xtask import-page-fixture <bundle.tar> <fixture_name
 ```
 
 Safety: vendored media is capped by `--media-max-bytes` (total) and `--media-max-file-bytes` (per
-file). Set either to `0` to disable the limit if you intentionally need larger files.
+file). Defaults are **5 MiB total** and **2 MiB per file**; set either to `0` to disable the limit
+if you intentionally need larger files.
+
+Note: if you need the bundle capture itself to include media bytes (instead of placeholders), capture
+with crawl mode so HTML discovery picks up media URLs:
+
+```bash
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
+  fetch --no-render <url> --out /tmp/capture.tar
+```
 
 ### Test pages
 
