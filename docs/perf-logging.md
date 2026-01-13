@@ -67,12 +67,12 @@ When enabled, you should expect events covering at least:
 The exact schema evolves, but each JSON line is intended to be self-describing. Common fields
 include:
 
-- `event` (string): the event kind (e.g. `frame`, `input_latency`, `ttfp`).
-- `t_ms` (number): monotonic timestamp in milliseconds (relative to process start).
-- `tab_id` / `window_id` (optional): identifiers for multi-tab/multi-window sessions.
-- `dt_ms` / `frame_ms` / `latency_ms` (number): the measured duration in milliseconds.
-- `reason` (string, optional): why a frame was produced (e.g. `scroll`, `resize`, `idle`,
-  `navigation`).
+- `schema_version` (integer) — currently `1`.
+- `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`).
+- `ts_ms` (integer) — monotonic timestamp in milliseconds since process start.
+- `window_id` (string) — identifier for the window instance.
+- Event-specific numeric fields such as `ui_frame_ms`, `input_to_present_ms`, `resize_to_present_ms`,
+  `ttfp_ms`, etc.
 
 ### Headless benchmark harness: `ui_perf_smoke`
 
