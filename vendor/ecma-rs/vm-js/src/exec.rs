@@ -39806,20 +39806,97 @@ fn gen_root_values_for_continuation(
   scope: &mut Scope<'_>,
   cont: &GeneratorContinuation,
 ) -> Result<(), VmError> {
+  // Build a list of values that must be treated as GC roots while we:
+  // - push stack roots (which can trigger GC while `root_stack` grows), and
+  // - attach a temporary persistent env root for the generator resumption.
+  //
+  // Root list construction itself must not infallibly reallocate, since generator resumption
+  // happens while the continuation is stored outside of the heap and cannot be traced by GC.
+  let mut needed = 2usize // `this` + `new_target`.
+    .saturating_add(usize::from(cont.home_object.is_some()))
+    .saturating_add(cont.args.len());
+
+  for frame in cont.frames.iter() {
+    match frame {
+      GenFrame::StmtList { last_value, .. } => {
+        needed = needed.saturating_add(usize::from(last_value.is_some()));
+      }
+      GenFrame::YieldStar { .. } => {
+        needed = needed.saturating_add(2);
+      }
+      GenFrame::WhileAfterTest { .. }
+      | GenFrame::WhileAfterBody { .. }
+      | GenFrame::DoWhileAfterBody { .. }
+      | GenFrame::DoWhileAfterTest { .. } => {
+        needed = needed.saturating_add(1);
+      }
+      GenFrame::ForOfAfterBody { .. } => {
+        needed = needed.saturating_add(3);
+      }
+      GenFrame::TryAfterFinally { pending } => {
+        needed = needed.saturating_add(usize::from(pending.value().is_some()));
+      }
+      GenFrame::ComputedMemberAfterMember { .. }
+      | GenFrame::DeleteComputedMemberAfterMember { .. }
+      | GenFrame::UpdateComputedMemberAfterMember { .. }
+      | GenFrame::CallComputedMemberAfterMember { .. }
+      | GenFrame::AssignComputedMemberAfterMember { .. } => {
+        needed = needed.saturating_add(1);
+      }
+      GenFrame::BinaryAfterRight { .. } => {
+        needed = needed.saturating_add(1);
+      }
+      GenFrame::AssignPatternAfterBind { .. } => {
+        needed = needed.saturating_add(1);
+      }
+      GenFrame::BindObjAfterKey { excluded, .. }
+      | GenFrame::BindObjAfterDefault { excluded, .. }
+      | GenFrame::BindObjContinue { excluded, .. } => {
+        needed = needed.saturating_add(1).saturating_add(excluded.len());
+      }
+      GenFrame::BindArrAfterDefault { .. } | GenFrame::BindArrContinue { .. } => {
+        needed = needed.saturating_add(1);
+      }
+      GenFrame::CallArgs { args, .. } => {
+        needed = needed.saturating_add(2).saturating_add(args.len());
+      }
+      GenFrame::AssignAfterRhs {
+        base,
+        key,
+        receiver,
+        ..
+      } => {
+        needed = needed
+          .saturating_add(usize::from(base.is_some()))
+          .saturating_add(usize::from(key.is_some()))
+          .saturating_add(usize::from(receiver.is_some()));
+      }
+      GenFrame::AssignAddAfterRhs {
+        base,
+        key,
+        receiver,
+        ..
+      } => {
+        needed = needed
+          .saturating_add(1) // `left`.
+          .saturating_add(usize::from(base.is_some()))
+          .saturating_add(usize::from(key.is_some()))
+          .saturating_add(usize::from(receiver.is_some()));
+      }
+      _ => {}
+    }
+  }
+
   let mut values: Vec<Value> = Vec::new();
   values
-    .try_reserve_exact(
-      2usize
-        .saturating_add(cont.args.len())
-        .saturating_add(cont.frames.len()),
-    )
+    .try_reserve_exact(needed)
     .map_err(|_| VmError::OutOfMemory)?;
   values.push(cont.this);
   values.push(cont.new_target);
   if let Some(home_object) = cont.home_object {
     values.push(Value::Object(home_object));
   }
-  values.extend_from_slice(&cont.args);
+  values.extend_from_slice(cont.args.as_ref());
 
   for frame in cont.frames.iter() {
     match frame {
@@ -39853,7 +39930,8 @@ fn gen_root_values_for_continuation(
       GenFrame::ComputedMemberAfterMember { base, .. }
       | GenFrame::DeleteComputedMemberAfterMember { base, .. }
       | GenFrame::UpdateComputedMemberAfterMember { base, .. }
-      | GenFrame::CallComputedMemberAfterMember { base, .. } => values.push(*base),
+      | GenFrame::CallComputedMemberAfterMember { base, .. }
+      | GenFrame::AssignComputedMemberAfterMember { base, .. } => values.push(*base),
       GenFrame::BinaryAfterRight { left, .. } => values.push(*left),
       GenFrame::AssignAfterRhs {
         base,
@@ -39911,9 +39989,49 @@ fn gen_root_values_for_continuation(
         values.push(*this);
         values.extend_from_slice(args);
       }
+      GenFrame::AssignAfterRhs {
+        base,
+        key,
+        receiver,
+        ..
+      } => {
+        if let Some(b) = base {
+          values.push(*b);
+        }
+        if let Some(k) = key {
+          values.push(*k);
+        }
+        if let Some(r) = receiver {
+          values.push(*r);
+        }
+      }
+      GenFrame::AssignAddAfterRhs {
+        base,
+        key,
+        receiver,
+        left,
+        ..
+      } => {
+        if let Some(b) = base {
+          values.push(*b);
+        }
+        if let Some(k) = key {
+          values.push(*k);
+        }
+        if let Some(r) = receiver {
+          values.push(*r);
+        }
+        values.push(*left);
+      }
       _ => {}
     }
   }
+
+  debug_assert_eq!(
+    values.len(),
+    needed,
+    "gen_root_values_for_continuation value count mismatch"
+  );
 
   scope.push_roots_with_extra_roots(&values, &[], &[cont.env.lexical_env()])?;
   Ok(())
