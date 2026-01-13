@@ -14,7 +14,7 @@
     "layout": 0.0,
     "paint": 0.0
   },
-  "notes": "Placeholder from `pageset_progress sync` (auto_notes=not run): status=error just means no cached pageset run yet. Offline fixture `tests/pages/fixtures/craigslist.org_about_sites/` renders visually good; `bash scripts/cargo_agent.sh xtask page-loop --fixture craigslist.org_about_sites --chrome` (default 1040x1240) shows ~4.7% pixel diff vs Chrome, appearing as small scattered text/background differences (no major layout breakage).",
+  "notes": "Placeholder from pageset_progress sync (auto_notes=not run); status=error is not a renderer failure.\nOffline fixture: tests/pages/fixtures/craigslist.org_about_sites/index.html\nRepro: timeout -k 10 600 bash scripts/cargo_agent.sh xtask page-loop --fixture craigslist.org_about_sites --chrome --overlay --inspect-dump-json",
   "auto_notes": "not run",
   "accuracy": {
     "baseline": "chrome",
