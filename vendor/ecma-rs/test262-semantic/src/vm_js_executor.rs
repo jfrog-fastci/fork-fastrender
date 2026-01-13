@@ -866,62 +866,55 @@ impl Executor for VmJsExecutor {
     if cancel.load(Ordering::Relaxed) {
       return Err(ExecError::Cancelled);
     }
-
-    // Copy just the fields `vm-js` needs (avoid cloning the test body).
-    let case = TestCase {
-      id: case.id.clone(),
-      path: case.path.clone(),
-      variant: case.variant,
-      expected: case.expected.clone(),
-      metadata: case.metadata.clone(),
-      body: String::new(),
-    };
-
-    let source = source.to_owned();
-    let cancel_for_thread = Arc::clone(cancel);
-    let exec = *self;
-
-    let handle = thread::Builder::new()
-      .stack_size(TEST_CASE_THREAD_STACK_SIZE)
-      .spawn(move || exec.execute_in_current_thread(&case, &source, &cancel_for_thread));
-
-    let handle = match handle {
-      Ok(handle) => handle,
-      Err(err) => {
-        // If we're cancelled, preserve existing cancellation semantics.
-        if cancel.load(Ordering::Relaxed) {
-          return Err(ExecError::Cancelled);
+ 
+    // Use scoped threads so we can reuse the caller's `&TestCase` / `&str` without cloning large
+    // sources or test bodies.
+    thread::scope(|scope| {
+      let cancel_for_thread = Arc::clone(cancel);
+      let exec = *self;
+ 
+      let handle = thread::Builder::new()
+        .stack_size(TEST_CASE_THREAD_STACK_SIZE)
+        .spawn_scoped(scope, move || exec.execute_in_current_thread(case, source, &cancel_for_thread));
+ 
+      let handle = match handle {
+        Ok(handle) => handle,
+        Err(err) => {
+          // If we're cancelled, preserve existing cancellation semantics.
+          if cancel.load(Ordering::Relaxed) {
+            return Err(ExecError::Cancelled);
+          }
+          return Err(ExecError::Js(JsError::new(
+            ExecPhase::Runtime,
+            None,
+            format!("failed to spawn executor thread: {err}"),
+          )));
         }
-        return Err(ExecError::Js(JsError::new(
-          ExecPhase::Runtime,
-          None,
-          format!("failed to spawn executor thread: {err}"),
-        )));
-      }
-    };
-
-    match handle.join() {
-      Ok(result) => result,
-      Err(payload) => {
-        if cancel.load(Ordering::Relaxed) {
-          return Err(ExecError::Cancelled);
+      };
+ 
+      match handle.join() {
+        Ok(result) => result,
+        Err(payload) => {
+          if cancel.load(Ordering::Relaxed) {
+            return Err(ExecError::Cancelled);
+          }
+ 
+          let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+            (*s).to_string()
+          } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+          } else {
+            "<non-string panic payload>".to_string()
+          };
+ 
+          Err(ExecError::Js(JsError::new(
+            ExecPhase::Runtime,
+            None,
+            format!("panic while executing test case: {msg}"),
+          )))
         }
-
-        let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
-          (*s).to_string()
-        } else if let Some(s) = payload.downcast_ref::<String>() {
-          s.clone()
-        } else {
-          "<non-string panic payload>".to_string()
-        };
-
-        Err(ExecError::Js(JsError::new(
-          ExecPhase::Runtime,
-          None,
-          format!("panic while executing test case: {msg}"),
-        )))
       }
-    }
+    })
   }
 }
 
