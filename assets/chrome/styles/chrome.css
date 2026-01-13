@@ -1,0 +1,16 @@
+/* FastRender internal browser chrome stylesheet.
+ *
+ * This file is served via `chrome://styles/chrome.css` by the trusted
+ * `resource::chrome::TrustedChromeFetcher`.
+ *
+ * Keep this file self-contained (no external network dependencies). It is used
+ * both by the windowed browser UI (renderer-chrome workstream) and by security
+ * regression tests ensuring `chrome://` is only reachable from trusted code.
+ */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+

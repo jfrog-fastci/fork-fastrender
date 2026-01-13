@@ -60,6 +60,7 @@ use ureq::ResponseExt;
 use url::Url;
 
 pub mod bundle;
+pub mod chrome;
 mod cors;
 #[cfg(feature = "direct_network")]
 mod curl_backend;
@@ -2544,22 +2545,31 @@ impl ResourcePolicy {
   }
 
   fn ensure_url_allowed(&self, url: &str) -> Result<ResourceScheme> {
-    if trim_ascii_whitespace(url).is_empty() {
+    let trimmed = trim_ascii_whitespace(url);
+    if trimmed.is_empty() {
       return Err(policy_error("empty URL"));
     }
-    let scheme = classify_scheme(url);
+    let scheme = classify_scheme(trimmed);
     if scheme == ResourceScheme::Relative && !self.allow_bare_file_paths {
       return Err(policy_error("bare filesystem paths are not allowed"));
     }
     if !self.allowed_schemes.allows(scheme) {
+      // `chrome://` is an internal scheme used by the trusted browser-chrome runtime. Keep it out
+      // of the generic scheme allowlist so untrusted content cannot enable it accidentally by
+      // widening `AllowedSchemes`.
+      if crate::resource::chrome::is_chrome_url(trimmed) {
+        return Err(policy_error(format!(
+          "blocked chrome:// URL {trimmed:?}: internal chrome pages/assets are only available to the trusted chrome runtime"
+        )));
+      }
       return Err(policy_error(format!("scheme {:?} is not allowed", scheme)));
     }
 
     if matches!(scheme, ResourceScheme::Http | ResourceScheme::Https) {
-      let parsed = match Url::parse(url) {
+      let parsed = match Url::parse(trimmed) {
         Ok(parsed) => parsed,
         Err(err) => {
-          let Some(normalized) = normalize_http_url_for_fetch(url) else {
+          let Some(normalized) = normalize_http_url_for_fetch(trimmed) else {
             return Err(policy_error(format!("invalid URL: {err}")));
           };
           Url::parse(&normalized).map_err(|e| policy_error(format!("invalid URL: {e}")))?

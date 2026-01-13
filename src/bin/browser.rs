@@ -11108,7 +11108,6 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         return false;
       }
     };
-
     // Close any transient UI state before switching tabs.
     if self.open_select_dropdown.is_some() {
       self.cancel_select_dropdown();

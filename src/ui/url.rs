@@ -61,10 +61,26 @@ impl OmniboxInputResolution {
 ///
 /// For programmatic navigations (e.g. link clicks) the worker still validates schemes independently.
 pub fn validate_user_navigation_url_scheme(url: &str) -> Result<(), String> {
+  validate_navigation_url_scheme(url, false)
+}
+
+/// Validate that a URL uses a supported scheme for *trusted* chrome documents.
+///
+/// This is intended for internal browser-chrome pages (renderer-chrome workstream) that need to
+/// navigate to other built-in pages and assets.
+///
+/// Security note: Do **not** use this for untrusted web content.
+pub fn validate_trusted_chrome_navigation_url_scheme(url: &str) -> Result<(), String> {
+  validate_navigation_url_scheme(url, true)
+}
+
+fn validate_navigation_url_scheme(url: &str, allow_chrome: bool) -> Result<(), String> {
   let parsed = Url::parse(url).map_err(|err| err.to_string())?;
   let scheme = parsed.scheme().to_ascii_lowercase();
   match scheme.as_str() {
     "http" | "https" | "file" | "about" => Ok(()),
+    "chrome" if allow_chrome => Ok(()),
+    "chrome" => Err("navigation to chrome:// URLs is restricted to trusted chrome pages".to_string()),
     "crash" if crash_urls_allowed() => Ok(()),
     "javascript" => Err("navigation to javascript: URLs is not supported".to_string()),
     _ => Err(format!("unsupported URL scheme: {scheme}")),
@@ -562,7 +578,8 @@ fn has_explicit_scheme(input: &str) -> bool {
 mod tests {
   use super::{
     normalize_user_url, omnibox_input_looks_like_url, resolve_link_url, resolve_omnibox_input,
-    resolve_omnibox_search_query, sanitize_worker_url_for_ui, validate_user_navigation_url_scheme,
+    resolve_omnibox_search_query, sanitize_worker_url_for_ui,
+    validate_trusted_chrome_navigation_url_scheme, validate_user_navigation_url_scheme,
     OmniboxInputResolution,
   };
 
@@ -619,8 +636,8 @@ mod tests {
     // accepted for user/content navigations.
     let err = validate_user_navigation_url_scheme("chrome://styles/chrome.css").unwrap_err();
     assert!(
-      err.to_ascii_lowercase().contains("unsupported") && err.contains("chrome"),
-      "unexpected error for chrome://: {err}"
+      err.to_ascii_lowercase().contains("chrome://"),
+      "expected error to mention chrome://, got: {err}"
     );
 
     let err = validate_user_navigation_url_scheme("chrome-action:new-tab").unwrap_err();
@@ -634,6 +651,21 @@ mod tests {
   fn user_navigation_scheme_validation_allows_about_and_https() {
     assert!(validate_user_navigation_url_scheme("about:newtab").is_ok());
     assert!(validate_user_navigation_url_scheme("https://example.com/").is_ok());
+  }
+
+  #[test]
+  fn open_in_new_tab_ipc_rejects_chrome_scheme_for_untrusted_content() {
+    // `WorkerToUi::RequestOpenInNewTab` (renderer → browser IPC) must not be able to ask the browser
+    // to open a privileged `chrome://` page.
+    assert!(validate_user_navigation_url_scheme("chrome://icons/back.svg").is_err());
+  }
+
+  #[test]
+  fn trusted_chrome_navigation_scheme_validation_allows_chrome_scheme() {
+    assert!(
+      validate_trusted_chrome_navigation_url_scheme("chrome://styles/chrome.css").is_ok(),
+      "trusted chrome navigations should allow chrome://"
+    );
   }
 
   #[test]
