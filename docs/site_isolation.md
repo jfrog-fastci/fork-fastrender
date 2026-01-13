@@ -12,41 +12,66 @@ The goal is that contributors can implement/extend site isolation without “fil
 Related:
 - Workstream overview: [`instructions/multiprocess_security.md`](../instructions/multiprocess_security.md)
 - OS sandbox policy overview (seccomp/AppContainer/etc): [sandboxing.md](sandboxing.md)
-- Current single-process iframe rendering (recursive): [`src/paint/iframe.rs`](../src/paint/iframe.rs)
+- Inline iframe rendering (single-process + fallback path): [`src/paint/iframe.rs`](../src/paint/iframe.rs)
 - Current iframe depth limit knobs: `FastRenderConfig::with_max_iframe_depth` (default `DEFAULT_MAX_IFRAME_DEPTH` in `src/api.rs`)
 
 **Status / repo reality (today):**
 
-- FastRender is currently **single-process**; iframes are rendered by recursively rendering nested
-  documents into images (see `src/paint/iframe.rs`).
-- The windowed `browser` app currently runs the “renderer” on a dedicated worker **thread**, not a
-  separate OS process (see `docs/browser.md` + `docs/multiprocess_threat_model.md`).
-- This document specifies the **target process model** for the multiprocess workstream and is
-  intended to be treated as **normative** once site isolation lands (so future work stays
-  consistent).
+FastRender supports both a single-process embedding (library-style) and a multiprocess model.
 
-## Policy overview (MVP → site isolation)
+- **Single-process / in-process embedding**: iframes can be rendered by recursively rendering nested
+  documents into images (see `src/paint/iframe.rs`). This mode is still used for:
+  - one-shot rendering APIs, and
+  - “inline iframe” fallback when OOPIF compositing is not supported for a particular embedding
+    (see `SubframeEffects` in `crates/fastrender-ipc`).
+- **Multiprocess + site isolation**: the browser process owns a `FrameTree` and assigns each frame
+  to a site-locked renderer process (`process-per-SiteKey`, defaulting to per-origin).
+  - Cross-site iframes become out-of-process iframes (OOPIF).
+  - Cross-site navigations may swap a frame into a different renderer process.
+  - Defense-in-depth is provided by `SiteLock` (renderer rejects navigations that would commit a
+    different site).
 
-This repo will likely evolve through two related policies:
+Core implementation entry points (helpful for contributors):
 
-### Current MVP: process-per-tab
+- Browser-side frame tree + process registry: `src/multiprocess/{frame_tree.rs,registry.rs,subframes.rs}`
+- Site key derivation + isolation policy helpers: `src/site_isolation/`
+- IPC schema for OOPIF + compositing: `crates/fastrender-ipc` (`SiteKey`, `SiteLock`, `SubframeInfo`,
+  `FramePaintPlan`)
+- Multiprocess renderer binary/library: `crates/fastrender-renderer`
 
-- **New tab → new renderer process.**
-- All navigations and iframes for that tab remain in that one process (no process swaps, no OOPIF).
-- Goal: simplest multiprocess boundary with strong cross-tab crash/security isolation.
+## Policy overview (site isolation modes)
 
-### Planned: process-per-`SiteKey`
+The browser’s site isolation behavior is controlled by `FASTR_SITE_ISOLATION_MODE`
+(see `src/site_isolation/policy.rs`).
 
-- The browser derives a `SiteKey` for every committed document.
-- **Tabs/frames with the same `SiteKey` may share a renderer process.**
-- **Navigating to a different `SiteKey` may swap the tab/frame into a different renderer process.**
-  - Once process swaps exist, **session history must live in the browser process** (not only in the renderer),
-    otherwise back/forward cannot survive renderer replacement.
-- Special URL handling is security-critical:
-  - `about:` internal pages must not share processes with arbitrary web content.
-  - `about:blank` / `about:srcdoc` inherit from their initiator.
-  - `data:` uses an opaque key (unique; never shared).
-  - `file:` is isolated from network origins and is expected to be brokered by the browser process.
+### Mode: `off` (no site isolation)
+
+- All frames for a tab are hosted in one renderer context (single-process or process-per-tab,
+  depending on the embedding).
+- No out-of-process iframes (OOPIF); cross-origin iframes are rendered inline.
+- Navigations do not swap renderer processes.
+
+This mode is useful for debugging and for incremental bring-up, but it is not the intended secure
+default.
+
+### Mode: `per-origin` (default)
+
+- The browser derives a `SiteKey` for every committed document (see §2).
+- **Frames with the same `SiteKey` may share a renderer process** (`process-per-SiteKey`).
+- **Navigating to a different `SiteKey` may swap the frame into a different renderer process.**
+  - Once process swaps exist, **session history must live in the browser process** (not only in the
+    renderer), otherwise back/forward cannot survive renderer replacement.
+- Cross-origin (cross-`SiteKey`) iframes become OOPIFs.
+- Each renderer process is configured with a defense-in-depth `SiteLock` derived from the assigned
+  `SiteKey`.
+
+### Mode: `per-site` (future / coarse site grouping)
+
+This mode exists so embedders can start plumbing configuration early.
+
+Today:
+- Browser-side process assignment still behaves like `per-origin`.
+- `SiteLock` derivation may choose a schemeful-site lock (eTLD+1) for `SiteKey::Origin(...)`.
 
 ### How this differs from Chrome’s “SiteInstance”
 
@@ -141,52 +166,47 @@ share a renderer process.
 
 **Normative model (origin-keyed / per-origin):**
 
-- For `http`/`https`: `SiteKey` is the tuple `(scheme, host, port)` using the effective port
-  (i.e. `https://example.com` and `https://example.com:443` are the same key).
+- For `http`/`https`: `SiteKey` is the canonical origin tuple `(scheme, host, port)` using the
+  effective port (i.e. `https://example.com` and `https://example.com:443` are the same key).
 
 This is intentionally **per-origin** (not per-registrable-domain) so cross-origin iframes isolate
 strictly without needing eTLD+1 reasoning.
 
-For other schemes we either:
+For URLs/schemes that do not have a stable, shared origin (or where we intentionally avoid
+co-hosting unrelated documents), the browser derives an **opaque** site key.
 
-- map to a stable internal bucket (`about:*` internal pages → `SiteKey::Internal`), or
-- use an *opaque* key (`SiteKey::Opaque(_)`) when the document has an opaque origin or when we
-  intentionally avoid co-hosting unrelated documents.
-
-In particular, `file:` URLs are treated as *opaque* for process assignment, keyed by a stable hash
-of the absolute file URL by default (see §2.2).
-
-Recommended representation:
+In code, `SiteKey` is implemented (on both sides of IPC) as:
 
 ```rust
-/// The grouping key used for renderer process assignment.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// The grouping key used for renderer process assignment (browser + IPC).
+///
+/// See:
+/// - `src/site_isolation/site_key.rs`
+/// - `crates/fastrender-ipc` (`SiteKey`, `SiteLock`)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SiteKey {
-    /// Network origins: https://example.com:443
-    Origin { scheme: String, host: String, port: u16 },
-
-    /// Opaque site keys used for documents with opaque origins or schemes that should not co-host.
-    ///
-    /// Some schemes intentionally generate a *fresh* opaque key per navigation (`data:`), while
-    /// others derive a stable opaque key (e.g. `file:` by hashing the absolute path).
-    Opaque(OpaqueSiteId),
-
-    /// Browser-internal documents that must never share a process with untrusted web content.
-    ///
-    /// This is used for built-in `about:*` pages like `about:newtab` and `about:history` (excluding
-    /// inheriting URLs like `about:blank` and `about:srcdoc`). See §2.6.
-    Internal,
+    /// Regular origin-based site key (HTTP/HTTPS/File).
+    Origin(DocumentOrigin),
+    /// Opaque site key for documents with an opaque origin (`data:`) or for schemes we do not
+    /// model as origin-bearing navigations.
+    Opaque(u64),
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct OpaqueSiteId(u64);
 ```
+
+Opaque IDs are used in two ways (important for contributors):
+
+- **Fresh opaque**: new unique key per navigation (e.g. `data:`; also `about:blank`/`about:srcdoc`
+  when no parent/initiator exists). These are typically monotonic IDs allocated by a `SiteKeyFactory`.
+- **Stable opaque**: deterministic hash-derived keys for URLs that should stay isolated but should
+  not churn processes on trivial URL changes:
+  - `file:` URLs (hashed by absolute path / canonical URL string; see §2.2)
+  - internal `about:*` pages (hashed by *page identifier* only; query/fragment ignored; see §2.6)
 
 Important invariants:
 
 - **Different `SiteKey`s MUST NOT share a renderer process** (unless site isolation is explicitly
   turned off via a build/runtime flag for debugging).
-- `SiteKey::Opaque(_)` values are **never equal** unless they are literally the same `OpaqueSiteId`.
+- `SiteKey::Opaque(_)` values are **never equal** unless they have the same ID.
   - For `data:` specifically, identical `data:` URLs still produce different `SiteKey`s (fresh
     opaque key per navigation).
 
@@ -246,8 +266,6 @@ Responsibilities:
 
 - Maintain a mapping `SiteKey -> RendererProcess` (1 process per SiteKey, unless explicitly
   configured otherwise).
-- Ensure `SiteKey::Internal` is routed to a **trusted** renderer context (browser process or a
-  dedicated privileged renderer) and never co-hosted with untrusted web content.
 - Enforce global/per-tab process limits (see §5).
 - Reference-count processes by the number of live frames currently assigned to them.
 - Handle crashes (mark dead; notify `FrameTree` owners; allow reload to respawn).
@@ -287,30 +305,33 @@ Define a browser-side helper:
 ```rust
 /// `initiator_site` is the SiteKey of the frame that is creating/navigating this document.
 /// For top-level user-typed navigations, it can be None.
-fn derive_site_key(url: &Url, initiator_site: Option<&SiteKey>) -> SiteKey
+///
+/// `force_opaque_origin` is used when the resulting document must have an opaque origin even if
+/// the URL would normally be origin-bearing (e.g. `<iframe sandbox>` without `allow-same-origin`).
+fn derive_site_key(url: &str, initiator_site: Option<&SiteKey>, force_opaque_origin: bool) -> SiteKey
 ```
 
 ### 2.0 Summary table
 
 | URL kind | Example | `SiteKey` | Inherits `initiator_site`? |
 |---|---|---|---|
-| Network origin | `https://a.test/` | `SiteKey::Origin { https, a.test, 443 }` | N/A |
+| Network origin | `https://a.test/` | `SiteKey::Origin(a.test)` | N/A |
 | `file:` | `file:///tmp/a.html` | `SiteKey::Opaque(stable_hash(file_url))` | No |
-| `about:blank` | `about:blank` | `initiator_site` if present, else `Opaque` | Yes (if present) |
-| `about:srcdoc` | `about:srcdoc` | `initiator_site` if present, else `Opaque` | Yes (if present) |
-| Internal `about:*` | `about:newtab` | `SiteKey::Internal` | No |
+| `about:blank` | `about:blank` | `initiator_site` if present, else `Opaque(new)` | Yes (if present) |
+| `about:srcdoc` | `about:srcdoc` | `initiator_site` if present, else `Opaque(new)` | Yes (if present) |
+| Internal `about:*` | `about:history?q=rust` | `SiteKey::Opaque(stable_hash(\"history\"))` | No |
 | `data:` | `data:text/html,hi` | `SiteKey::Opaque(new)` | No |
-| Unknown scheme | `blob:...` | `SiteKey::Opaque(new)` | No |
+| `blob:` | `blob:https://a.test/uuid` | `SiteKey::Origin(a.test)` (from embedded URL) | No |
+| Other/unknown | `foo:bar` | `SiteKey::Opaque(new)` | No |
 
 ### 2.1 Network origins (`http`, `https`)
 
-```
-SiteKey::Origin {
-  scheme: url.scheme().lowercase(),
-  host: url.host_str().lowercase(),
-  port: url.port_or_known_default(),
-}
-```
+Rule (normative):
+
+- `SiteKey::Origin(DocumentOrigin::from_url(url))`, where `DocumentOrigin` canonicalizes:
+  - host casing,
+  - default ports, and
+  - scheme.
 
 ### 2.2 `file:`
 
@@ -348,10 +369,13 @@ Security notes / rationale:
 
 **Rule (normative):**
 
-- If there is an `initiator_site` (e.g. iframe creation), `about:blank` **inherits** it:
-  - `derive_site_key(about:blank, Some(parent_site)) == parent_site.clone()`
+- If there is an `initiator_site` (e.g. iframe creation) **and** `force_opaque_origin == false`,
+  `about:blank` **inherits** it:
+  - `derive_site_key("about:blank", Some(parent_site), false) == parent_site.clone()`
 - Otherwise (`initiator_site == None`), `about:blank` is treated as an opaque origin:
   - `SiteKey::Opaque(new_opaque_id())`
+  - (Also applies when `force_opaque_origin == true`, e.g. sandboxed iframes without
+    `allow-same-origin`.)
 
 This matches the “creator origin” intuition: about:blank created by a document is same-origin with
 that document; about:blank created by the browser UI is a fresh opaque origin.
@@ -367,9 +391,10 @@ Implementation detail (normative for matching browser behavior):
 
 **Rule (normative):**
 
-- `about:srcdoc` always inherits `initiator_site`.
-- If `initiator_site == None`, treat it as opaque (defensive; this should not happen in normal
-  iframe creation flows).
+- If `initiator_site` is present **and** `force_opaque_origin == false`, `about:srcdoc` inherits
+  `initiator_site`.
+- Otherwise, treat it as opaque (defensive; this should not happen in normal iframe creation flows
+  except for sandboxed/opaque-origin iframes).
 
 ### 2.5 `data:`
 
@@ -397,19 +422,21 @@ state snapshots**.
 
 **Rule (normative):**
 
-- `about:*` URLs other than `about:blank` and `about:srcdoc` map to `SiteKey::Internal`.
+- `about:*` URLs other than `about:blank` and `about:srcdoc` map to a **stable opaque** site key:
+  - `SiteKey::Opaque(stable_hash(about_page_id))`
+  - where `about_page_id` is the case-insensitive page identifier (the `about:` path component),
+    and query/fragment are ignored for site-key purposes.
 - They **do not inherit** `initiator_site`.
 
 Rationale:
 - Internal pages must not share a renderer process with arbitrary web content, otherwise a renderer
   compromise in a web page could read the internal page’s in-memory state after navigating.
-  - Internal pages may safely share a process with each other (they are all browser-generated and
-    belong to the same trust bucket).
+  - Using stable opaque keys avoids process churn for pages like `about:history?q=...` while still
+    preventing co-hosting with unrelated origins.
 
 Implementation note:
-- `SiteKey::Internal` is expected to run in a **trusted** context (browser process or a dedicated
-  privileged renderer), since internal pages can embed browser-owned state snapshots (history,
-  bookmarks, downloads).
+- The in-tree implementation uses a domain-separated hash of the `about_page_id` in
+  `src/site_isolation/site_key.rs` so query/fragment state does not create new processes.
 
 Repo reality note:
 - The in-tree browser has a concrete set of built-in about pages defined in
@@ -417,13 +444,12 @@ Repo reality note:
 
 Navigation policy note:
 
-- Deriving `SiteKey::Internal` does **not** imply that untrusted web content is allowed to navigate
-  to (or embed) internal pages.
+- Deriving a stable-opaque `SiteKey` for internal pages does **not** imply that untrusted web
+  content is allowed to navigate to (or embed) those pages.
   - In particular, embedding privileged internal pages in cross-origin iframes can be a UI/security
     risk even if same-origin scripting prevents direct DOM access.
 - The browser process should enforce a policy such as:
-  - only allow `SiteKey::Internal` navigations that are initiated by the browser UI / trusted code,
-    and
+  - only allow internal `about:*` navigations that are initiated by the browser UI / trusted code,
   - reject renderer-initiated navigations to internal `about:*` pages (and reject `about:*` as an
     iframe `src` unless explicitly intended).
 
@@ -437,10 +463,13 @@ For the site isolation process model, we still need an explicit fallback rule:
 
 **Rule (normative):**
 
-- If a URL’s scheme is not covered above (`http(s)` origins, `file:`, `about:blank`, `about:srcdoc`, internal `about:*`, `data:`),
-  treat it as a fresh opaque site: `SiteKey::Opaque(new_opaque_id())`.
-- Do not attempt to “guess” an origin for schemes we don’t fully model yet. Add explicit handling
-  plus tests when a new scheme is introduced (e.g. `blob:` origin tracking).
+- `blob:` URLs derive their site key from the **embedded URL** (`blob:https://a.test/uuid` → same
+  site key as `https://a.test/`). They do **not** inherit `initiator_site`.
+  - `blob:null/...` and unparseable embedded URLs are treated as opaque.
+- For schemes not covered above (`http(s)`, `file:`, `about:*`, `data:`, `blob:`):
+  - treat them as a fresh opaque site: `SiteKey::Opaque(new_opaque_id())`.
+  - do not attempt to “guess” an origin for schemes we don’t fully model yet. Add explicit
+    handling plus tests when a new scheme is introduced.
 
 ---
 
@@ -461,16 +490,16 @@ Inputs:
   - For non-network URLs (`about:*`, `data:`, etc.) this is the URL itself.
 - `initiator_site`: site of the frame that initiated the navigation (usually the current site of
   `frame_id` itself; for iframe creation it’s the parent frame site).
+- `force_opaque_origin`: true when the resulting document must have an opaque origin even if the
+  URL would normally be origin-bearing (e.g. `<iframe sandbox>` without `allow-same-origin`).
 
 Algorithm (normative):
 
-1. `target_site = derive_site_key(commit_url, initiator_site)`
+1. `target_site = derive_site_key(commit_url, initiator_site, force_opaque_origin)`
 2. If `frame.current_site == target_site` **and** the current renderer process is alive:
    - Stay in the same process (`no process swap`).
 3. Else:
    - Ask `RendererProcessRegistry::get_or_spawn(&target_site)`.
-     - For `SiteKey::Internal`, this must route to the browser’s trusted internal renderer context
-       (not a sandboxed content renderer).
    - If allocation fails due to quota (see §5), the navigation **must not** silently fall back to a
      different `SiteKey`’s process. Instead:
      - treat the navigation as **failed** and do **not** commit a new document that would require a
@@ -492,8 +521,9 @@ Redirects are a common source of ambiguity; this section is **normative** to avo
 Rule (normative):
 
 - Process assignment is based on the **committed URL**, not the initial requested URL.
-- A cross-origin redirect (i.e. redirect where `derive_site_key(final_url, initiator_site)` differs
-  from the initially-requested `SiteKey`) must result in a **process swap before commit**.
+- A cross-origin redirect (i.e. redirect where
+  `derive_site_key(final_url, initiator_site, force_opaque_origin)` differs from the
+  initially-requested `SiteKey`) must result in a **process swap before commit**.
 
 Implementation guidance:
 
@@ -549,8 +579,12 @@ Process assignment must observe these URL rules:
 
 Definition:
 
-- “Same-`SiteKey` iframe” means `derive_site_key(iframe_url, Some(parent_site)) == parent_site`.
-  - This includes `about:blank` and `about:srcdoc` iframes (both inherit the parent).
+- “Same-`SiteKey` iframe” means
+  `derive_site_key(iframe_url, Some(parent_site), iframe_force_opaque_origin) == parent_site`.
+  - This includes `about:blank` and `about:srcdoc` iframes **when** `iframe_force_opaque_origin ==
+    false` (inherit the parent site).
+  - If the iframe is sandboxed without `allow-same-origin`, `iframe_force_opaque_origin == true`
+    and even `about:blank`/`about:srcdoc` become cross-site (opaque).
 
 Rule (normative):
 
@@ -570,8 +604,12 @@ Implementation note:
 
 Definition:
 
-- “Cross-`SiteKey` iframe” means `derive_site_key(iframe_url, Some(parent_site)) != parent_site`.
-  - This includes `data:` iframes, which are always opaque and therefore cross-origin / cross-`SiteKey`.
+- “Cross-`SiteKey` iframe” means
+  `derive_site_key(iframe_url, Some(parent_site), iframe_force_opaque_origin) != parent_site`.
+  - This includes:
+    - `data:` iframes (always opaque),
+    - sandboxed opaque-origin iframes (even if the URL is `about:blank`/`about:srcdoc`), and
+    - regular cross-origin iframe URLs.
 
 Rule (normative):
 
@@ -602,10 +640,37 @@ outputs** into a single window/tab viewport.
 
 ### 4.2 Minimum data the browser must have
 
-For each *embedder* frame, the browser needs a list of “subframe embeddings” that describe where a
-child frame’s surface should appear.
+For each *embedder* frame, the browser needs enough information to:
 
-Conceptual structure:
+- place each child frame surface (OOPIF) into the embedder’s coordinate space, and
+- preserve **paint order** between embedder content and child frame content.
+
+In IPC, this is represented by a *layered paint plan* (`fastrender_ipc::FramePaintPlan`), delivered
+by the renderer via `RendererToBrowser::FramePaintPlan`.
+
+Conceptual structure (normative shape):
+
+```rust
+pub struct FramePaintPlan {
+    pub frame_id: FrameId,
+
+    /// Embedder layers. Each layer must be RGBA8 premultiplied with a transparent background.
+    pub layers: Vec<FrameBuffer>,
+
+    /// Out-of-process iframe slots in stable paint order.
+    pub slots: Vec<SubframeInfo>,
+}
+// Expected invariant: layers.len() == slots.len() + 1.
+```
+
+Composition order is:
+
+```
+layers[0] -> slots[0] -> layers[1] -> slots[1] -> ... -> layers[N]
+```
+
+Each `SubframeInfo` describes where the child frame surface should appear and how it participates
+in hit testing / navigation policy:
 
 ```rust
 pub struct SubframeInfo {
@@ -620,12 +685,25 @@ pub struct SubframeInfo {
 
     /// Stable key that defines z-order between subframes.
     pub z_index: u64,
+
+    /// Whether the iframe should receive pointer events / be hit-testable.
+    pub hit_testable: bool,
+
+    /// `<iframe sandbox>` derived flags and whether the resulting origin is forced opaque.
+    pub sandbox_flags: SandboxFlags,
+    pub opaque_origin: bool,
+
+    /// Summary of visual effects at the embedding point (used for OOPIF eligibility decisions).
+    pub effects: SubframeEffects,
 }
 ```
 
-This mirrors how the single-process renderer currently treats iframes as “render-to-image then draw
-as replaced content” (see `src/paint/iframe.rs`), but with the critical difference that the *pixels*
-come from a different process.
+This mirrors how the single-process renderer treats iframes as “render-to-image then draw as
+replaced content” (see `src/paint/iframe.rs`), but with the critical difference that the *pixels*
+come from a different process and must be interleaved with embedder content in paint order.
+
+Note: `RendererToBrowser::FrameReady { buffer, subframes }` is a legacy/simpler shape that cannot
+express interleaving; `FramePaintPlan` is the normative shape for correct OOPIF compositing.
 
 ### 4.2.1 Trust boundary: validating subframe embedding data
 
@@ -641,9 +719,11 @@ treated as attacker-controlled.
     may treat it as a protocol violation (kill the renderer / mark the tab crashed).
 - Geometry and effect data must be **bounded and finite**:
   - transforms must contain only finite numbers,
-  - clip stacks must have a hard maximum depth,
+  - clip stacks must have a hard maximum depth (see `MAX_SUBFRAME_CLIP_STACK_DEPTH` in
+    `crates/fastrender-ipc`),
   - rectangles/sizes must be clamped to reasonable limits (see §5.3),
-  - the number of embedded subframes per frame must be capped (frame-tree limits, §5.1).
+  - the number of embedded subframes per frame must be capped (see `MAX_SUBFRAMES_PER_FRAME` in
+    `crates/fastrender-ipc`, plus frame-tree limits in §5.1).
 - The browser must treat embedder-provided ordering keys (`z_index`, stacking keys, etc.) as
   *relative ordering hints* only; the compositor is responsible for enforcing correct paint order
   rules and preventing pathological ordering values from causing resource abuse.
@@ -652,31 +732,23 @@ Rationale:
 - Without validation, a compromised renderer could attempt to embed a frame it does not own (UI
   spoofing / confusion) or provide degenerate geometry that DoS’es the compositor.
 
-### 4.3 Current limitation: stacking-order assumptions (MVP compositor)
+### 4.3 Current compositor model: layered paint plans (stacking-order correct)
 
-An initial multiprocess implementation often starts with a simple compositor:
+FastRender’s site isolation compositor preserves stacking/paint order by using `FramePaintPlan`
+layers:
 
-1. Render the embedder frame to a single bitmap.
-2. Render each child frame to a bitmap.
-3. Blit child bitmaps into the embedder bitmap.
+- The embedder renderer splits its output into `N+1` layers around `N` OOPIF slots.
+- The browser composites in the plan’s order, treating missing child buffers as transparent (skip).
 
-This is **not fully correct** because it cannot interleave child-frame content with embedder content
-that paints *above* the iframe (e.g. overlays, fixed headers, popups).
+Remaining limitations (current code; important for contributors):
 
-Therefore, if the compositor is implemented as “one bitmap per frame + blit children”, it must
-declare and enforce a limitation:
-
-- **Assumption (temporary):** iframe rectangles do not overlap embedder content that must appear
-  above them (no cross-frame interleaving).
-
-If this limitation is unacceptable for accuracy, the compositor must evolve to a layer-based model:
-
-- The embedder renderer outputs a layer tree / display list that contains explicit
-  `DrawSubframe(FrameId)` commands at the correct paint order.
-- The browser compositor executes that ordering while treating subframes as opaque layers.
-
-This doc does not mandate *which* of these two compositor implementations ships first, but it does
-mandate that the behavior is documented and tested, and that we do not silently get layering wrong.
+- The browser compositor/hit tester currently supports only a limited subset of effects for OOPIF:
+  - axis-aligned affine transforms (translate/scale),
+  - axis-aligned rectangular/rounded clipping (via `clip_stack`),
+  - stable z-order keys for deterministic ordering.
+- If an embedding point has unsupported effects (opacity groups, blend modes, filters/masks,
+  non-axis-aligned transforms), the embedder should conservatively fall back to **inline iframe**
+  rendering and avoid emitting an OOPIF slot. The renderer communicates this via `SubframeEffects`.
 
 ---
 
@@ -732,14 +804,21 @@ process model.
 
 ### 6.1 Unit tests (pure, fast)
 
-Add browser-side unit tests for `derive_site_key`:
+Site key derivation and iframe isolation decisions should be unit-tested close to the helper code:
+
+- `src/site_isolation/site_key.rs` (`site_key_for_navigation` / `SiteKeyFactory`)
+- `src/site_isolation/policy.rs` (`should_isolate_child_frame*`)
+- `crates/fastrender-ipc` (`SiteLock::matches_url`, `FrameHitTester`, `composite_paint_plan`, etc.)
+
+Minimum coverage for `derive_site_key`/`site_key_for_navigation`:
 
 - `https://a.test/` vs `https://a.test:443/` normalize to the same `SiteKey`.
-- `about:blank` inherits initiator site.
-- `about:blank` with no initiator is `Opaque`.
-- `about:srcdoc` inherits initiator site.
-- `about:newtab` / `about:history` map to `SiteKey::Internal` (do not inherit).
-- `data:` always produces `Opaque` and never inherits.
+- `about:blank` / `about:srcdoc` inherit initiator site when `force_opaque_origin == false`.
+- `about:blank` / `about:srcdoc` become fresh `Opaque` when `force_opaque_origin == true`
+  (sandboxed opaque-origin iframes).
+- Internal `about:*` pages map to **stable opaque** keys by page id (query/fragment ignored).
+- `data:` always produces fresh `Opaque` and never inherits.
+- `blob:https://a.test/...` derives `SiteKey` from the embedded URL (does not inherit parent site).
 
 Notes:
 - Follow the repo’s test organization rules in [`docs/test_architecture.md`](test_architecture.md):
@@ -754,22 +833,21 @@ Add unit tests for process assignment decisions:
 
 ### 6.2 Integration tests (multiprocess harness)
 
-Write an integration harness that can:
+FastRender already has a multiprocess integration harness. Prefer extending existing tests over
+inventing new ad-hoc binaries.
 
-1. Start a browser process in headless mode.
-2. Start N renderer processes.
-3. Serve test pages from multiple origins (host and/or port differences).
-   - Since `SiteKey` is origin-keyed in this spec, distinct ports are sufficient to force different processes.
-4. Assert observable state:
-   - frame tree shape (FrameId parent/child),
-   - `SiteKey` per frame,
-   - renderer process id per frame.
+Where to add integration coverage:
+
+- Renderer↔browser IPC/OOPIF semantics: `crates/fastrender-renderer/tests/oopif_*.rs`
+- Browser-side process model: `tests/multiprocess_registry.rs` and `tests/multiprocess/*`
+- Crash containment: `tests/iframe/crash_isolation.rs`
+- Sandbox/opaque-origin iframe cases: `tests/site_isolation_sandbox_iframe.rs`
 
 Must-have cases:
 
 - Top-level `https://a` with cross-origin iframe `https://b` → different renderer processes.
 - Same-`SiteKey` iframe `https://a` inside `https://a` → same renderer process.
-- `srcdoc` iframe inherits parent process.
+- `srcdoc` / missing-`src` (`about:blank`) iframes inherit parent site unless forced opaque by sandbox.
 - `data:` iframe gets its own `Opaque` site and therefore a separate process.
 
 ### 6.3 Compositing tests
@@ -778,8 +856,12 @@ Add pixel-level tests that confirm the compositor correctly embeds subframe pixe
 
 - Basic rectangle positioning.
 - Rounded-corner clipping / overflow clipping for the iframe content box.
-- (If MVP compositor uses “blit children at end”): tests that demonstrate the known limitation and
-  are marked accordingly, or tests that enforce the limitation does not regress once fixed.
+- Stacking/paint-order interleaving (embedder layers above/below child surfaces).
+
+Existing coverage to build on:
+
+- `crates/fastrender-ipc` unit tests for `composite_paint_plan` and hit testing.
+- `src/paint/tests/paint/remote_iframe_stacking_order.rs` for paint-order correctness.
 
 ### 6.4 Crash/isolation tests
 
