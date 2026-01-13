@@ -23581,14 +23581,16 @@ impl App {
 
             // Mirror the mouse-input behaviour: touching outside the page should clear page focus
             // immediately.
+            let page_rect_points = self.page_rect_points.map(|rect| {
+              fastrender::Rect::from_points(
+                fastrender::Point::new(rect.min.x, rect.min.y),
+                fastrender::Point::new(rect.max.x, rect.max.y),
+              )
+            });
+            let pos_point = fastrender::Point::new(pos_points.x, pos_points.y);
             if fastrender::ui::input_routing::should_clear_page_focus_on_pointer_press(
-              self.page_rect_points.map(|rect| {
-                fastrender::Rect::from_points(
-                  fastrender::Point::new(rect.min.x, rect.min.y),
-                  fastrender::Point::new(rect.max.x, rect.max.y),
-                )
-              }),
-              fastrender::Point::new(pos_points.x, pos_points.y),
+              page_rect_points,
+              pos_point,
             ) {
               self.clear_page_focus();
               if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {

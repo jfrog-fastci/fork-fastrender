@@ -3765,7 +3765,7 @@ mod browser_tab_tests {
 }
 
 #[cfg(test)]
-  mod browser_app_tests {
+mod browser_app_tests {
   use super::*;
   use crate::geometry::Point;
 
