@@ -756,6 +756,8 @@ impl VmJsExecutor {
     // Keep `max_stack_depth` conservative: the `vm-js` interpreter still uses host recursion
     // heavily enough that very deep call stacks can overflow the native stack before the default
     // `VmOptions::max_stack_depth` guard triggers (even on the enlarged test thread stack).
+    //
+    // The exact limit is not part of ECMAScript semantics; it is a harness safety boundary.
     let vm = Vm::new(VmOptions {
       interrupt_flag: Some(Arc::clone(cancel)),
       max_stack_depth: 256,
@@ -1998,9 +2000,9 @@ f(2000);
     };
     assert_eq!(js.phase, ExecPhase::Runtime);
     assert_eq!(js.typ.as_deref(), Some("RangeError"));
+    let message_lc = js.message.to_ascii_lowercase();
     assert!(
-      js.message.to_ascii_lowercase().contains("stack overflow")
-        || js.message.to_ascii_lowercase().contains("call stack"),
+      message_lc.contains("stack overflow") || message_lc.contains("call stack"),
       "expected stack overflow message, got: {}",
       js.message
     );

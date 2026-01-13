@@ -1,50 +1,46 @@
-# Initial curated module-centric suite for `vm-js`.
-#
-# This is intended to stay small/fast while still exercising real module semantics:
-# - static imports/exports (`language/module-code`)
-# - `import.meta`
-# - dynamic `import()`
-# - top-level await that settles via Promise jobs (microtasks)
+# Curated module-only suite intended for quick local checks.
 #
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
-include = [
-  "language/module-code/**/*.js",
-  "language/import/**/*.js",
-  "language/export/**/*.js",
-  "language/expressions/import.meta/**/*.js",
-  "language/expressions/dynamic-import/**/*.js",
-  "language/module-code/top-level-await/**/*.js",
+#
+# This suite intentionally stays small/fast while still exercising real module
+# semantics (static import/export, `import.meta`, and module instantiation-time
+# bindings). It focuses on tests that have `flags: [module]` (primarily under
+# `language/module-code/`) so contributors can start tracking module conformance.
+tests = [
+  # Stable baseline module early error.
+  "language/module-code/early-export-unresolvable.js",
+
+  # Standalone module syntax tests outside `language/module-code/`.
+  "language/import/dup-bound-names.js",
+  "language/export/escaped-default.js",
 ]
 
+include = [
+  # Early errors and syntax restrictions unique to module code.
+  "language/module-code/early-*.js",
+
+  # Basic import/export semantics.
+  "language/module-code/export-default-*.js",
+  "language/module-code/export-expname-*.js",
+
+  # Exercises ambiguous exports / namespace handling (includes some module imports).
+  "language/module-code/ambiguous-export-bindings/*.js",
+
+  # Module-only `import.meta` semantics.
+  "language/expressions/import.meta/*.js",
+
+  # Module instantiation-time bindings.
+  "language/module-code/instn-local-bndng-*.js",
+
+  # Ensure we cover module lexical grammar in comments, etc.
+  "language/module-code/comment-*.js",
+
+  # Small sanity coverage for the standalone import/export directory tests.
+  "language/import/dup-*.js",
+  "language/export/escaped-*.js",
+]
+
+# Exclude helper modules (fixtures) that live alongside tests.
 exclude = [
-  # `vm-js` only implements standard `import()`; skip stage/proposal syntax that depends on
-  # non-standard host hooks (import phases / source phase imports).
-  "language/import/import-defer/**/*.js",
-  "language/module-code/source-phase-import/**/*.js",
-  "language/expressions/dynamic-import/**/*import-source*.js",
-  "language/expressions/dynamic-import/**/*import-defer*.js",
-
-  # `vm-js` does not yet implement generator/async-generator execution (`yield` / `async function*`);
-  # exclude dynamic-import tests that exercise those runtime paths.
-  "language/expressions/dynamic-import/assignment-expression/yield-*.js",
-  "language/expressions/dynamic-import/**/nested-async-gen-*.js",
-  "language/expressions/dynamic-import/for-await-resolution-and-error-agen*.js",
-  "language/expressions/dynamic-import/import-attributes/2nd-param-evaluation-abrupt-return.js",
-  "language/expressions/dynamic-import/import-attributes/*yield*.js",
-
-  # Top-level-await syntax-coverage cases that currently require unimplemented runtime features in
-  # `vm-js` (notably class inheritance) or trigger known lexical-environment issues.
-  "language/module-code/top-level-await/syntax/export-class-decl-await-expr-*.js",
-  "language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-*.js",
-  "language/module-code/top-level-await/syntax/for-await-expr-*.js",
-
-  # `parse-js` currently rejects keywords used as `IdentifierName` in import/export specifiers.
-  "language/module-code/instn-named-id-name.js",
-  "language/module-code/instn-star-id-name.js",
-
-  # Private name validity rules across nested classes are not fully implemented in `vm-js` yet.
-  "language/module-code/privatename-valid-no-earlyerr.js",
-
-  # Module graph execution-order mismatch (DFS traversal) in `vm-js`.
-  "language/module-code/verify-dfs.js",
+  "**/*FIXTURE*.js",
 ]
