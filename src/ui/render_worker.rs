@@ -7259,7 +7259,7 @@ impl BrowserRuntime {
       tab.js_tab = None;
       tab.js_dom_mapping_generation = 0;
       tab.js_dom_mapping = None;
-      tab.js_dom_mapping_miss_logged = false;
+      tab.js_dom_mapping_miss_log_last.clear();
       tab.js_dom_dirty = false;
       tab.js_dom_mutation_generation = 0;
       return;
