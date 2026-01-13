@@ -39,6 +39,8 @@ pub enum ShortcutAction {
   ZoomIn,
   ZoomOut,
   ZoomReset,
+  /// Toggle window fullscreen state.
+  ToggleFullScreen,
   Copy,
   Cut,
   Paste,
@@ -102,6 +104,7 @@ pub enum Key {
   F4,
   F5,
   F6,
+  F11,
   Num1,
   Num2,
   Num3,
@@ -214,6 +217,26 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
         meta: false,
       },
     ) => Some(ShortcutAction::FocusAddressBar),
+
+    // Full screen.
+    (
+      Key::F11,
+      Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        meta: false,
+      },
+    ) if matches!(platform, Platform::Other) => Some(ShortcutAction::ToggleFullScreen),
+    (
+      Key::F,
+      Modifiers {
+        ctrl: true,
+        shift: false,
+        alt: false,
+        meta: true,
+      },
+    ) if matches!(platform, Platform::Mac) => Some(ShortcutAction::ToggleFullScreen),
 
     (Key::F, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::FindInPage),
 
@@ -487,6 +510,30 @@ mod tests {
         Platform::Mac
       ),
       Some(ShortcutAction::FindInPage)
+    );
+  }
+
+  #[test]
+  fn f11_toggles_fullscreen_on_other_platforms() {
+    assert_eq!(
+      map_shortcut_with_platform(KeyEvent::new(Key::F11, Modifiers::default()), Platform::Other),
+      Some(ShortcutAction::ToggleFullScreen)
+    );
+    // macOS uses Ctrl+Cmd+F for fullscreen; leave F11 unmapped.
+    assert_eq!(
+      map_shortcut_with_platform(KeyEvent::new(Key::F11, Modifiers::default()), Platform::Mac),
+      None
+    );
+  }
+
+  #[test]
+  fn mac_ctrl_cmd_f_toggles_fullscreen() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F, Modifiers::new(true, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleFullScreen)
     );
   }
 
@@ -842,6 +889,7 @@ mod tests {
       Key::Minus,
       Key::R,
       Key::Delete,
+      Key::F11,
     ] {
       assert_eq!(
         map_shortcut_with_platform(
@@ -1248,6 +1296,7 @@ mod tests {
       ShortcutAction::ZoomIn,
       ShortcutAction::ZoomOut,
       ShortcutAction::ZoomReset,
+      ShortcutAction::ToggleFullScreen,
       ShortcutAction::Copy,
       ShortcutAction::Cut,
       ShortcutAction::Paste,

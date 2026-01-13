@@ -7206,6 +7206,19 @@ impl App {
                 return;
               }
 
+              ShortcutAction::ToggleFullScreen => {
+                let next = if self.window.fullscreen().is_some() {
+                  None
+                } else {
+                  Some(winit::window::Fullscreen::Borderless(
+                    self.window.current_monitor(),
+                  ))
+                };
+                self.window.set_fullscreen(next);
+                self.window.request_redraw();
+                return;
+              }
+
               // Chrome-level shortcuts are evaluated inside the egui frame (`ui::chrome_ui`) so we
               // can respect its editing focus rules. Ensure they never reach page input.
               ShortcutAction::ToggleBookmarksManager
@@ -9672,6 +9685,7 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::F4 => ShortcutKey::F4,
     VirtualKeyCode::F5 => ShortcutKey::F5,
     VirtualKeyCode::F6 => ShortcutKey::F6,
+    VirtualKeyCode::F11 => ShortcutKey::F11,
     VirtualKeyCode::Key0 | VirtualKeyCode::Numpad0 => ShortcutKey::Num0,
     VirtualKeyCode::Key1 | VirtualKeyCode::Numpad1 => ShortcutKey::Num1,
     VirtualKeyCode::Key2 | VirtualKeyCode::Numpad2 => ShortcutKey::Num2,
