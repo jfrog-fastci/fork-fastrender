@@ -5943,6 +5943,7 @@ mod tests {
   #[test]
   fn incremental_relayout_preserves_svg_id_defs_raw_metadata() -> Result<()> {
     let renderer = renderer_for_tests();
+    // Need at least `r##` here because the SVG snippet contains `href="#icon"`.
     let html = r##"
       <svg width="0" height="0" style="position:absolute">
         <symbol id="icon" viewBox="0 0 10 10">

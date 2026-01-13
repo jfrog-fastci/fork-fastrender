@@ -8073,6 +8073,7 @@ impl BrowserTab {
     // Any buffered frame is stale after a viewport change.
     self.pending_frame = None;
     self.host.document.set_viewport(width, height);
+    self.sync_window_media_context_and_geometry();
   }
 
   /// Returns the current viewport size in CSS px, if explicitly set.
@@ -8092,6 +8093,65 @@ impl BrowserTab {
   pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
     self.pending_frame = None;
     self.host.document.set_device_pixel_ratio(dpr);
+    self.sync_window_media_context_and_geometry();
+  }
+
+  fn sync_window_media_context_and_geometry(&mut self) {
+    // Keep the stylesheet-evaluation media context aligned with the document options (viewport/DPR).
+    //
+    // This is used by streaming-parse `<link rel=stylesheet media=...>` logic, and is also a good
+    // approximation of the window environment media context used by JS shims.
+    let options_snapshot = self.host.document.options().clone();
+    self.host.update_stylesheet_media_context(&options_snapshot);
+    let media = self.host.stylesheet_media_context.clone();
+
+    // Sync the vm-js window shims (matchMedia registry + viewport geometry values) when a realm is
+    // present. Avoid panicking on VM errors: viewport updates should be best-effort.
+    let env_id = match self.host.vm_host_and_window_realm() {
+      Ok((_vm_host, window)) => {
+        let _ = update_window_geometry_vm_js(window, &media);
+        window.set_media_context(media)
+      }
+      Err(_) => None,
+    };
+
+    let Some(env_id) = env_id else {
+      return;
+    };
+
+    if !crate::js::window_env::queue_match_media_mql_update(env_id) {
+      return;
+    }
+
+    // Schedule `MediaQueryList` updates asynchronously so listeners run on the event loop (avoids
+    // re-entrancy hazards).
+    let _ = self.event_loop.queue_task(TaskSource::MediaQueryList, move |host_state, event_loop| {
+      use crate::js::window_timers::VmJsEventLoopHooks;
+
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_host(host_state)?;
+      hooks.set_event_loop(event_loop);
+
+      let (vm_host, window) = host_state.vm_host_and_window_realm()?;
+      let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
+      let vm_result = {
+        let mut scope = heap.scope();
+        crate::js::window_env::process_match_media_mql_update_for_env(
+          vm,
+          &mut scope,
+          vm_host,
+          &mut hooks,
+          env_id,
+        )
+      };
+      let result = vm_result.map_err(|err| crate::js::vm_error_format::vm_error_to_error(heap, err));
+
+      // Ensure any queued Promise jobs are properly discarded even if dispatch fails.
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+
+      result
+    });
   }
 
   /// Updates the full scroll state (viewport + element scroll offsets) used for hit testing.
@@ -8164,6 +8224,61 @@ impl BrowserTab {
 
     self.on_parsing_completed()
   }
+}
+
+fn update_window_geometry_vm_js(
+  window: &mut crate::js::WindowRealm,
+  media: &MediaContext,
+) -> std::result::Result<(), vm_js::VmError> {
+  use vm_js::{PropertyDescriptor, PropertyKey, PropertyKind, Value, VmError};
+
+  fn sanitize_f32_as_f64(value: f32, fallback: f64) -> f64 {
+    if value.is_finite() {
+      value as f64
+    } else {
+      fallback
+    }
+  }
+
+  fn define_read_only_number(
+    scope: &mut vm_js::Scope<'_>,
+    obj: vm_js::GcObject,
+    name: &str,
+    value: f64,
+  ) -> std::result::Result<(), VmError> {
+    // Root `obj` while allocating the property key: `alloc_string` can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(obj))?;
+    let key_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      obj,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Number(value),
+          writable: false,
+        },
+      },
+    )
+  }
+
+  let viewport_width = sanitize_f32_as_f64(media.viewport_width, 0.0);
+  let viewport_height = sanitize_f32_as_f64(media.viewport_height, 0.0);
+  let dpr = sanitize_f32_as_f64(media.device_pixel_ratio, 1.0);
+
+  let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+  let global = realm.global_object();
+  let mut scope = heap.scope();
+  define_read_only_number(&mut scope, global, "devicePixelRatio", dpr)?;
+  define_read_only_number(&mut scope, global, "innerWidth", viewport_width)?;
+  define_read_only_number(&mut scope, global, "innerHeight", viewport_height)?;
+  define_read_only_number(&mut scope, global, "outerWidth", viewport_width)?;
+  define_read_only_number(&mut scope, global, "outerHeight", viewport_height)?;
+  Ok(())
 }
 
 fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<ReferrerPolicy> {
