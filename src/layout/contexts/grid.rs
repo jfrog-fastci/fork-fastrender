@@ -20672,6 +20672,114 @@ mod tests {
   }
 
   #[test]
+  fn grid_measure_shared_cache_evicts_override_entries_before_base_entries() {
+    let _lock = grid_measure_size_cache_test_lock();
+    reset_grid_measure_size_cache_for_test();
+
+    let epoch = 1usize;
+    let shard_index = 0usize;
+    let max_entries = GRID_MEASURE_SHARED_CACHE_MAX_ENTRIES_PER_SHARD;
+    assert!(max_entries > 0);
+
+    // Fill a shard to capacity with mostly base-style keys plus a small number of override keys.
+    let override_seed = 6usize.min(GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD.max(1));
+    let base_seed = max_entries.saturating_sub(override_seed);
+
+    for i in 0..base_seed {
+      let key = MeasureKey {
+        box_id: i * GRID_MEASURE_SHARED_CACHE_SHARDS, // force shard 0
+        style_ptr: 0,
+        override_fingerprint: None,
+        known_width: None,
+        known_height: None,
+        available_width: MeasureAvailKey::Indefinite,
+        available_height: MeasureAvailKey::Indefinite,
+      };
+      GLOBAL_GRID_MEASURE_SIZE_CACHE.insert(key, epoch, taffy::tree::MeasureOutput::ZERO);
+    }
+    for i in 0..override_seed {
+      let key = MeasureKey {
+        box_id: (10_000 + i) * GRID_MEASURE_SHARED_CACHE_SHARDS, // same shard, distinct ids
+        style_ptr: 0,
+        override_fingerprint: Some(i as u64),
+        known_width: None,
+        known_height: None,
+        available_width: MeasureAvailKey::Indefinite,
+        available_height: MeasureAvailKey::Indefinite,
+      };
+      GLOBAL_GRID_MEASURE_SIZE_CACHE.insert(key, epoch, taffy::tree::MeasureOutput::ZERO);
+    }
+
+    let shard = GLOBAL_GRID_MEASURE_SIZE_CACHE
+      .shards
+      .get(shard_index)
+      .expect("shard");
+    {
+      let shard = shard.read();
+      assert_eq!(
+        shard.map.len(),
+        base_seed + override_seed,
+        "sanity check: shard should be full"
+      );
+      assert_eq!(
+        shard
+          .map
+          .keys()
+          .filter(|key| key.override_fingerprint.is_none())
+          .count(),
+        base_seed
+      );
+      assert_eq!(
+        shard
+          .map
+          .keys()
+          .filter(|key| key.override_fingerprint.is_some())
+          .count(),
+        override_seed
+      );
+    }
+
+    // Insert a new base-style entry into the full shard. The cache should evict override entries
+    // first (freeing space) and preserve the base keyset.
+    let new_key = MeasureKey {
+      box_id: 999_999 * GRID_MEASURE_SHARED_CACHE_SHARDS,
+      style_ptr: 0,
+      override_fingerprint: None,
+      known_width: None,
+      known_height: None,
+      available_width: MeasureAvailKey::Indefinite,
+      available_height: MeasureAvailKey::Indefinite,
+    };
+    GLOBAL_GRID_MEASURE_SIZE_CACHE.insert(new_key, epoch, taffy::tree::MeasureOutput::ZERO);
+
+    let shard = shard.read();
+    assert!(
+      shard.map.len() <= max_entries,
+      "shard must remain within capacity (len={}, max={max_entries})",
+      shard.map.len()
+    );
+    let base_count = shard
+      .map
+      .keys()
+      .filter(|key| key.override_fingerprint.is_none())
+      .count();
+    let override_count = shard
+      .map
+      .keys()
+      .filter(|key| key.override_fingerprint.is_some())
+      .count();
+    assert_eq!(
+      base_count,
+      base_seed + 1,
+      "base entries should be preserved and include the inserted entry"
+    );
+    assert_eq!(
+      override_count, 0,
+      "override entries should be evicted first under capacity pressure"
+    );
+  }
+
+  #[test]
   fn grid_measure_quantization_limits_layout_calls() {
     use taffy::style::AvailableSpace;
 
