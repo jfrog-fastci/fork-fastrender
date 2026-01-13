@@ -7840,6 +7840,8 @@ impl BrowserTab {
   /// This is a lightweight state update used by UI integrations when the embedding window is
   /// resized; it does **not** trigger navigation or reload the document.
   pub fn set_viewport(&mut self, width: u32, height: u32) {
+    // Any buffered frame is stale after a viewport change.
+    self.pending_frame = None;
     self.host.document.set_viewport(width, height);
   }
 
@@ -7858,6 +7860,7 @@ impl BrowserTab {
   /// This is a lightweight state update used by UI integrations when the system scale factor
   /// changes; it does **not** trigger navigation or reload the document.
   pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
+    self.pending_frame = None;
     self.host.document.set_device_pixel_ratio(dpr);
   }
 
