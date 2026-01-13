@@ -11537,6 +11537,52 @@ mod tests {
   }
 
   #[test]
+  fn apply_spacing_out_of_order_runs_avoids_cluster_sort() {
+    // Runs can appear out-of-order (e.g. bidi reordering). The fallback path should prefer sorting
+    // runs by start and scanning RTL buffers from the appropriate end, avoiding a full cluster sort
+    // when that still yields monotonic logical offsets.
+    let text = "abc אבג";
+    let ltr_end = text.find('א').expect("has rtl char boundary");
+    let (ltr_text, rtl_text) = text.split_at(ltr_end);
+
+    let ltr_run =
+      make_synthetic_run_with_byte_clusters(ltr_text, 0, 10.0, PipelineDirection::LeftToRight);
+    let rtl_run = make_synthetic_run_with_byte_clusters(
+      rtl_text,
+      ltr_end,
+      10.0,
+      PipelineDirection::RightToLeft,
+    );
+
+    // Present runs in reverse logical order but keep clusters monotonic within each run.
+    let mut runs = vec![rtl_run, ltr_run];
+    let base_width: f32 = runs.iter().map(|r| r.advance).sum();
+
+    reset_apply_spacing_diagnostics();
+    TextItem::apply_spacing_to_runs(&mut runs, text, 2.0, 3.0);
+    let (sorts, clusters, streams) = take_apply_spacing_diagnostics();
+
+    assert_eq!(
+      sorts, 0,
+      "expected run reordering to avoid the expensive cluster sort path"
+    );
+    assert_eq!(streams, 0, "expected mixed-direction input to avoid streaming fast path");
+    assert_eq!(clusters, text.chars().count());
+
+    let spaced_width: f32 = runs.iter().map(|r| r.advance).sum();
+    let gap_count = text.chars().count().saturating_sub(1) as f32;
+    let space_count = text
+      .chars()
+      .filter(|c| matches!(c, ' ' | '\u{00A0}' | '\t'))
+      .count() as f32;
+    let expected_extra = 2.0 * gap_count + 3.0 * space_count;
+    assert!(
+      (spaced_width - base_width - expected_extra).abs() < 0.1,
+      "expected spacing to apply in logical order across runs"
+    );
+  }
+
+  #[test]
   fn apply_spacing_rtl_monotonic_decreasing_avoids_sorting() {
     // Simulate RTL shaping output where glyphs are in visual order but cluster offsets are
     // monotonic-decreasing.
