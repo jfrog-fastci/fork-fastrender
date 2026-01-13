@@ -33,6 +33,7 @@ resolver = "2"
 # should disable them and provide a `ResourceFetcher` that proxies over IPC.
 default = ["preserve3d_warp", "avif", "direct_network", "direct_websocket", "direct_filesystem"]
 a11y_debug = []
+a11y_accesskit = ["dep:accesskit"]
 avif = ["dep:avif-decode", "dep:avif-parse"]
 audio_cpal = ["dep:cpal"]
 audio_wav = ["dep:hound"]
@@ -64,7 +65,7 @@ browser_ui_base = [
   "dep:wgpu",
   "dep:pollster",
   "dep:arboard",
-  "dep:accesskit",
+  "a11y_accesskit",
   "dep:accesskit_winit",
   "dep:rfd",
   "dep:directories",

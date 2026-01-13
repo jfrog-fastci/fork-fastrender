@@ -15,6 +15,11 @@ use std::ptr;
 #[cfg(feature = "browser_ui")]
 pub mod accesskit_tree;
 
+#[cfg(feature = "a11y_accesskit")]
+pub mod accesskit_bridge;
+#[cfg(feature = "a11y_accesskit")]
+pub mod accesskit_ids;
+
 fn is_html_ascii_whitespace(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
 }
