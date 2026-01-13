@@ -232,10 +232,11 @@ pub struct RenderedFrame {
   pub dpr: f32,
   pub scroll_state: ScrollState,
   pub scroll_metrics: ScrollMetrics,
-  /// True when the rendered document contains time-based effects (CSS animations/transitions).
+  /// True when the rendered document contains time-based effects (CSS animations/transitions,
+  /// animated images, JS timers/rAF, etc).
   ///
-  /// Front-ends that want animated content should drive periodic [`UiToWorker::Tick`] messages for
-  /// the active tab while this is `true`.
+  /// Front-ends that want time-based effects to advance should drive periodic
+  /// [`UiToWorker::Tick`] messages for the active tab while this is `true`.
   pub wants_ticks: bool,
 }
 

@@ -6693,11 +6693,12 @@ struct App {
   /// Last time we requested a redraw due to worker messages (FrameReady bursts).
   last_worker_redraw_request: Option<std::time::Instant>,
 
-  /// Periodic tick driver state for animated documents.
+  /// Periodic tick driver state for documents with time-based effects.
   ///
-  /// The render worker only advances CSS animation/transition sampling time when the UI sends
-  /// [`fastrender::ui::UiToWorker::Tick`]. We keep a small scheduler here so the windowed browser
-  /// can display multi-frame animations without busy-polling the event loop.
+  /// The render worker only advances time-based effects (CSS animations/transitions, animated
+  /// images, JS timers/rAF, etc) when the UI sends [`fastrender::ui::UiToWorker::Tick`]. We keep a
+  /// small scheduler here so the windowed browser can display time-based content without
+  /// busy-polling the event loop.
   animation_tick_tab: Option<fastrender::ui::TabId>,
   next_animation_tick: Option<std::time::Instant>,
 
@@ -7881,7 +7882,8 @@ impl App {
   fn next_wakeup_deadline(&self, now: std::time::Instant) -> Option<std::time::Instant> {
     let mut deadline: Option<std::time::Instant> = None;
 
-    // Worker-driven animation ticks (CSS animations/transitions).
+    // Worker-driven ticks for time-based effects (CSS animations/transitions, animated images, JS
+    // timers/rAF, etc).
     if let Some(tab_id) = self.desired_animation_tick_tab() {
       // `drive_animation_tick` is responsible for keeping `next_animation_tick` in sync, but be
       // defensive: if the schedule isn't primed yet, fall back to a "first tick" interval.
