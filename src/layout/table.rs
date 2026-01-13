@@ -9884,12 +9884,26 @@ impl FormattingContext for TableFormattingContext {
       // even when the computed width is `auto`, matching the layout-time optimisation (CSS 2.1
       // §10.3.3 + UA behaviour). This avoids scanning all rows (which can be unbounded work) and
       // keeps intrinsic sizing aligned with fixed-layout's "first row only" semantics.
-      let in_normal_flow = !table_root_style.float.is_floating()
+      // Note: intrinsic sizing callers (abspos, etc) may temporarily override the table's style
+      // (e.g. `position:absolute` → `position:relative`) so they can lay it out "as-if in flow".
+      // Do not let those overrides accidentally enable this optimization for out-of-flow tables,
+      // otherwise `table-layout: fixed` + `width:auto` can incorrectly behave like fixed-layout
+      // and collapse intrinsic sizing (regression tests in `table_fixed_layout_width_auto_abspos*`).
+      let override_in_normal_flow = !table_root_style.float.is_floating()
         && matches!(
           table_root_style.position,
           crate::style::position::Position::Static | crate::style::position::Position::Relative
         );
-      if matches!(table_root_style.display, Display::Table) && in_normal_flow {
+      let original_style = table_box.style.as_ref();
+      let original_in_normal_flow = !original_style.float.is_floating()
+        && matches!(
+          original_style.position,
+          crate::style::position::Position::Static | crate::style::position::Position::Relative
+        );
+      if matches!(table_root_style.display, Display::Table)
+        && override_in_normal_flow
+        && original_in_normal_flow
+      {
         distribution_mode = DistributionMode::Fixed;
       }
     }

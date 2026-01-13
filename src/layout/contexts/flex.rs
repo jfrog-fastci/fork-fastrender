@@ -12156,6 +12156,7 @@ impl FlexFormattingContext {
                     | FormattingContextType::Flex
                     | FormattingContextType::Grid
                     | FormattingContextType::Inline
+                    | FormattingContextType::Table
                 );
 
                 let mut result = abs.layout_absolute(&input, &cb)?;
