@@ -2331,6 +2331,20 @@ mod tests {
         .unwrap(),
       Value::Bool(true)
     );
+
+    // UAData is a platform object in Chromium: structuredClone must reject it.
+    assert_eq!(
+      host.exec_script("typeof structuredClone === 'function'").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script(
+          "try { structuredClone(navigator.userAgentData); false } catch (e) { e && e.name === 'DataCloneError' }",
+        )
+        .unwrap(),
+      Value::Bool(true)
+    );
   }
 
   #[test]
