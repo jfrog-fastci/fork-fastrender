@@ -298,6 +298,108 @@ fn compiled_module_supports_anonymous_default_export_function_decls() -> Result<
 }
 
 #[test]
+fn compiled_module_rejection_error_object_has_throw_site_stack() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    let script = CompiledScript::compile_module(
+      &mut heap,
+      "m.js",
+      "const err = new Error('boom');\nthrow err;\nexport const unreachable = 1;",
+    )?;
+    let mut record = SourceTextModuleRecord::parse_source(script.source.clone())?;
+    record.compiled = Some(script);
+    // Drop the AST so module evaluation must use the compiled HIR path.
+    record.ast = None;
+    let m = graph.add_module_with_specifier("m.js", record)?;
+    graph.link_all_by_specifier();
+
+    let promise = match graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      m,
+      &mut host,
+      &mut hooks,
+    ) {
+      Ok(p) => p,
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    if promise_rejection_message_contains(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      promise_obj,
+      "module AST missing",
+    )? {
+      return Ok(());
+    }
+
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+    let reason = scope
+      .heap()
+      .promise_result(promise_obj)?
+      .expect("rejected promise should have a reason");
+    let Value::Object(err_obj) = reason else {
+      return Err(VmError::InvariantViolation(
+        "expected module evaluation rejection reason to be an object",
+      ));
+    };
+
+    scope.push_root(Value::Object(err_obj))?;
+    let key_s = scope.alloc_string("stack")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    let Value::String(stack_s) = scope
+      .heap()
+      .object_get_own_data_property_value(err_obj, &key)?
+      .unwrap_or(Value::Undefined)
+    else {
+      return Err(VmError::InvariantViolation(
+        "expected rejection Error object to have a string `stack` property",
+      ));
+    };
+
+    // The `throw err;` statement is the 2nd line of the module and starts at column 1.
+    let stack = scope.heap().get_string(stack_s)?.to_utf8_lossy();
+    let first_frame = stack.lines().find(|line| line.starts_with("at ")).unwrap_or("");
+    assert!(
+      first_frame.starts_with("at m.js:2:1"),
+      "unexpected stack trace: {stack:?}"
+    );
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}
+
+#[test]
 fn compiled_module_supports_anonymous_default_export_class_decls() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
