@@ -19,6 +19,25 @@
 //!
 //! When updating extended job limits, the wrapper clears breakaway flags so
 //! sandboxed processes cannot escape via `CREATE_BREAKAWAY_FROM_JOB`.
+//!
+//! ## AppContainer
+//!
+//! [`AppContainerProfile`] provides a small helper around `CreateAppContainerProfile` /
+//! `DeriveAppContainerSidFromAppContainerName` and returns an owned [`OwnedSid`]. The
+//! implementation loads `userenv.dll` dynamically so binaries remain loadable on Windows builds
+//! that do not ship the AppContainer exports.
+//!
+//! ## Restricted tokens (fallback)
+//!
+//! [`RestrictedToken`] builds the "fallback" sandbox token used when AppContainer is unavailable:
+//! `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)` + a low integrity label (`S-1-16-4096`) applied
+//! via `SetTokenInformation(TokenIntegrityLevel)`.
+//!
+//! ## Process mitigations
+//!
+//! The [`mitigations`] module provides a default mitigation policy bitmask suitable for headless
+//! renderer processes, and [`spawn_sandboxed`] can apply that policy at process creation time via
+//! `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`.
 
 #[cfg(windows)]
 mod job;
