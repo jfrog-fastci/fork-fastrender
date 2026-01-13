@@ -400,8 +400,23 @@ impl SiteLock {
       SiteLock::Origin(_) | SiteLock::SchemefulSite { .. } => {}
     }
 
-    if let Some(about_path) = url.strip_prefix("about:") {
-      if about_path.eq_ignore_ascii_case("blank") || about_path.eq_ignore_ascii_case("srcdoc") {
+    // `about:blank` / `about:srcdoc` inherit their origin from the creating document, and may carry
+    // query/fragment components (`about:blank#foo`, `about:blank?x=1`). The renderer cannot derive
+    // the effective origin from these URLs alone, so fall back to the browser-provided SiteKey.
+    //
+    // Important: only treat *direct* `about:` URLs as inheriting. `blob:about:...` should not be
+    // special-cased here; blob URLs derive their origin from the embedded URL and are handled below.
+    if url
+      .as_bytes()
+      .get(..6)
+      .is_some_and(|head| head.eq_ignore_ascii_case(b"about:"))
+    {
+      let rest = &url[6..];
+      let path_end = rest
+        .find(|c| matches!(c, '?' | '#'))
+        .unwrap_or(rest.len());
+      let path = &rest[..path_end];
+      if path.eq_ignore_ascii_case("blank") || path.eq_ignore_ascii_case("srcdoc") {
         return self.matches_site_key(claimed_site_key);
       }
     }
@@ -728,7 +743,19 @@ mod tests {
 
     // about:blank inherits its origin; the renderer must fall back to the claimed site key.
     assert!(lock.matches_url("about:blank", &lock_site));
+    assert!(lock.matches_url("about:blank#frag", &lock_site));
+    assert!(lock.matches_url("about:blank?x=1", &lock_site));
+    assert!(lock.matches_url("ABOUT:blank#frag", &lock_site));
     assert!(!lock.matches_url("about:blank", &other_site));
+    assert!(!lock.matches_url("about:blank#frag", &other_site));
+
+    // about:srcdoc is also inheriting.
+    assert!(lock.matches_url("about:srcdoc", &lock_site));
+    assert!(lock.matches_url("about:srcdoc#frag", &lock_site));
+    assert!(!lock.matches_url("about:srcdoc#frag", &other_site));
+
+    // Non-inheriting internal pages must not be allowed even if a buggy browser claims they are.
+    assert!(!lock.matches_url("about:newtab", &lock_site));
   }
 
   #[test]
