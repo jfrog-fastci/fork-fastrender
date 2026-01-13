@@ -200,6 +200,10 @@ pub struct AccessibilityNode {
   pub debug: Option<AccessibilityDebugInfo>,
 }
 
+// Task 15: AccessKit integration is only built when the desktop browser UI stack is enabled.
+#[cfg(feature = "browser_ui")]
+pub mod accesskit;
+
 /// Build an accessibility tree from a styled DOM.
 pub fn build_accessibility_tree(
   root: &StyledNode,
@@ -3636,11 +3640,34 @@ fn compute_relations(
     .map(|value| resolve_idref_list(ctx, node, value))
     .unwrap_or_default();
 
-  let labelled_by = node
-    .node
-    .get_attribute_ref("aria-labelledby")
+  let aria_labelledby_attr = node.node.get_attribute_ref("aria-labelledby");
+  let mut labelled_by = aria_labelledby_attr
     .map(|value| resolve_idref_list(ctx, node, value))
     .unwrap_or_default();
+
+  // Preserve native HTML `<label>` associations as a labelled-by relationship when ARIA does not
+  // override naming. This enables downstream tooling (e.g. AccessKit) to keep an explicit link
+  // between controls and their labels when the label element has an `id`.
+  //
+  // If `aria-labelledby` is present (even when it resolves to nothing), it overrides native label
+  // associations per the ARIA name computation rules, so do not fall back in that case.
+  if aria_labelledby_attr.is_none() {
+    if let Some(labels) = ctx.labels.get(&node.node_id) {
+      let mut seen_ids: HashSet<&str> = HashSet::new();
+      for label_node_id in labels {
+        let Some(label_node) = ctx.node_by_id(*label_node_id) else {
+          continue;
+        };
+        let Some(id) = label_node.node.get_attribute_ref("id").filter(|s| !s.is_empty()) else {
+          continue;
+        };
+        if !seen_ids.insert(id) {
+          continue;
+        }
+        labelled_by.push(id.to_string());
+      }
+    }
+  }
 
   let described_by = node
     .node
