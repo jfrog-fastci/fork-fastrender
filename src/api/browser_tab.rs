@@ -7500,27 +7500,30 @@ impl BrowserTab {
   /// Returns a scheduler hint for when the tab should be "ticked" next.
   ///
   /// This is intended for interactive embeddings that want to avoid ticking at a fixed cadence
-  /// (e.g. 60Hz) when the tab only has long-delay timers pending.
+  /// (e.g. ~60Hz) when the tab only has long-delay timers pending.
   ///
   /// This method is purely a query: it must **not** run any tasks.
-  pub fn next_tick_due_in(&mut self) -> Option<std::time::Duration> {
+  pub fn next_tick_due_in(&mut self) -> Option<Duration> {
     // If there is runnable work immediately (tasks/microtasks/external tasks/idle callbacks),
     // request an immediate tick.
     if !self.event_loop.is_idle() {
-      return Some(std::time::Duration::ZERO);
+      return Some(Duration::ZERO);
     }
 
-    // If rAF callbacks are pending, we should tick on the next vsync-ish cadence.
-    if self.event_loop.has_pending_animation_frame_callbacks() {
-      return Some(self.host.js_execution_options.animation_frame_interval);
-    }
+    let timer_due = self.event_loop.duration_until_next_timer();
 
-    // Timers are not considered by `EventLoop::is_idle`, so check them separately.
-    if self.event_loop.has_pending_timers() {
-      return self.event_loop.duration_until_next_timer();
-    }
+    // Only request ~60Hz ticks when `requestAnimationFrame` callbacks are pending *and* the
+    // document is visible. rAF callbacks are throttled/suppressed in hidden documents.
+    let raf_due = (self.event_loop.has_pending_animation_frame_callbacks()
+      && self.host.document.visibility_state() == DocumentVisibilityState::Visible)
+      .then(|| self.host.js_execution_options.animation_frame_interval);
 
-    None
+    match (timer_due, raf_due) {
+      (Some(a), Some(b)) => Some(a.min(b)),
+      (Some(a), None) => Some(a),
+      (None, Some(b)) => Some(b),
+      (None, None) => None,
+    }
   }
 
   /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
@@ -9220,6 +9223,103 @@ mod tests {
       .to_string();
 
     assert_eq!(log, "m1-start,m1-end,m2,dcl,load,");
+    Ok(())
+  }
+
+  fn build_tab_for_next_tick_due_in_tests(
+    clock: Arc<crate::js::clock::VirtualClock>,
+  ) -> Result<BrowserTab> {
+    let event_loop = EventLoop::with_clock(clock);
+    let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
+      "<!doctype html><html></html>",
+      RenderOptions::default(),
+      NoopExecutor::default(),
+      event_loop,
+      JsExecutionOptions::default(),
+    )?;
+    // Drain lifecycle tasks scheduled during construction so tests start from a fully idle tab.
+    tab.event_loop.clear_all_pending_work();
+    Ok(tab)
+  }
+
+  #[test]
+  fn next_tick_due_in_prefers_timer_over_pending_raf() -> Result<()> {
+    use crate::js::clock::VirtualClock;
+    use std::time::Duration;
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut tab = build_tab_for_next_tick_due_in_tests(clock)?;
+
+    tab
+      .event_loop
+      .request_animation_frame(|_, _, _| Ok(()))
+      .expect("requestAnimationFrame should succeed");
+    tab
+      .event_loop
+      .set_timeout(Duration::from_millis(5), |_, _| Ok(()))
+      .expect("setTimeout should succeed");
+
+    assert_eq!(tab.next_tick_due_in(), Some(Duration::from_millis(5)));
+    Ok(())
+  }
+
+  #[test]
+  fn next_tick_due_in_returns_animation_frame_interval_for_pending_raf() -> Result<()> {
+    use crate::js::clock::VirtualClock;
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut tab = build_tab_for_next_tick_due_in_tests(clock)?;
+
+    tab
+      .event_loop
+      .request_animation_frame(|_, _, _| Ok(()))
+      .expect("requestAnimationFrame should succeed");
+
+    assert_eq!(
+      tab.next_tick_due_in(),
+      Some(tab.js_execution_options().animation_frame_interval)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn next_tick_due_in_ignores_raf_when_hidden() -> Result<()> {
+    use crate::js::clock::VirtualClock;
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut tab = build_tab_for_next_tick_due_in_tests(clock)?;
+
+    tab
+      .event_loop
+      .request_animation_frame(|_, _, _| Ok(()))
+      .expect("requestAnimationFrame should succeed");
+    tab
+      .host
+      .document
+      .set_visibility_state(DocumentVisibilityState::Hidden);
+
+    assert_eq!(tab.next_tick_due_in(), None);
+    Ok(())
+  }
+
+  #[test]
+  fn next_tick_due_in_returns_zero_for_due_timer_even_with_raf() -> Result<()> {
+    use crate::js::clock::VirtualClock;
+    use std::time::Duration;
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut tab = build_tab_for_next_tick_due_in_tests(clock)?;
+
+    tab
+      .event_loop
+      .request_animation_frame(|_, _, _| Ok(()))
+      .expect("requestAnimationFrame should succeed");
+    tab
+      .event_loop
+      .set_timeout(Duration::from_millis(0), |_, _| Ok(()))
+      .expect("setTimeout should succeed");
+
+    assert_eq!(tab.next_tick_due_in(), Some(Duration::ZERO));
     Ok(())
   }
 
