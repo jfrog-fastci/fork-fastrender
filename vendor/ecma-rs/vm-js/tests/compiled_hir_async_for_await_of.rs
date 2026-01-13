@@ -1,0 +1,256 @@
+use std::sync::Arc;
+use vm_js::{
+  CompiledFunctionRef, CompiledScript, Heap, HeapLimits, PromiseState, PropertyKey, Value, Vm, VmError, VmOptions,
+};
+
+fn find_function_body(script: &Arc<CompiledScript>, name: &str) -> hir_js::BodyId {
+  let hir = script.hir.as_ref();
+  for def in hir.defs.iter() {
+    let Some(body_id) = def.body else {
+      continue;
+    };
+    let Some(body) = hir.body(body_id) else {
+      continue;
+    };
+    if body.kind != hir_js::BodyKind::Function {
+      continue;
+    }
+    let def_name = hir.names.resolve(def.name).unwrap_or("");
+    if def_name == name {
+      return body_id;
+    }
+  }
+  panic!("function body not found for name={name:?}");
+}
+
+#[test]
+fn compiled_async_for_await_of_closure_capture_per_iteration_env() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "compiled_async_for_await_of_closure_capture.js",
+    r#"
+      async function f() {
+        const fs = [];
+        const iterable = {
+          [Symbol.asyncIterator]() {
+            let i = 0;
+            return {
+              next() {
+                if (i < 3) {
+                  i = i + 1;
+                  return Promise.resolve({ value: i, done: false });
+                }
+                return Promise.resolve({ done: true });
+              },
+            };
+          }
+        };
+
+        for await (let x of iterable) {
+          fs.push(() => x);
+        }
+        return fs[0]() + fs[1]() + fs[2]();
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let promise_root = {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+    let promise = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    scope.push_root(promise)?;
+    scope.heap_mut().add_root(promise)?
+  };
+
+  vm.perform_microtask_checkpoint(&mut heap)?;
+
+  let promise = heap
+    .get_root(promise_root)
+    .ok_or(VmError::InvariantViolation("missing promise root"))?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("expected promise object, got {promise:?}");
+  };
+
+  assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = heap
+    .promise_result(promise_obj)?
+    .ok_or(VmError::InvariantViolation("missing promise result"))?;
+  assert_eq!(result, Value::Number(6.0));
+
+  heap.remove_root(promise_root);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn compiled_async_for_await_of_break_closes_iterator() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "compiled_async_for_await_of_break_closes.js",
+    r#"
+      async function f() {
+        let closed = 0;
+        const iterable = {
+          [Symbol.asyncIterator]() {
+            let i = 0;
+            return {
+              next() {
+                if (i < 3) {
+                  i = i + 1;
+                  return Promise.resolve({ value: i, done: false });
+                }
+                return Promise.resolve({ done: true });
+              },
+              return() {
+                closed = closed + 1;
+                return Promise.resolve({ done: true });
+              }
+            };
+          }
+        };
+
+        let iter = 0;
+        for await (const x of iterable) {
+          iter = iter + 1;
+          if (iter === 2) break;
+        }
+        return closed;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let promise_root = {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+    let promise = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    scope.push_root(promise)?;
+    scope.heap_mut().add_root(promise)?
+  };
+
+  vm.perform_microtask_checkpoint(&mut heap)?;
+
+  let promise = heap
+    .get_root(promise_root)
+    .ok_or(VmError::InvariantViolation("missing promise root"))?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("expected promise object, got {promise:?}");
+  };
+
+  assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = heap
+    .promise_result(promise_obj)?
+    .ok_or(VmError::InvariantViolation("missing promise result"))?;
+  assert_eq!(result, Value::Number(1.0));
+
+  heap.remove_root(promise_root);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn compiled_async_for_await_of_step_error_does_not_close_iterator() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "compiled_async_for_await_of_step_error_no_close.js",
+    r#"
+      async function f() {
+        globalThis.closed = 0;
+        const iterable = {
+          [Symbol.asyncIterator]() {
+            return {
+              next() {
+                return Promise.reject("err");
+              },
+              return() {
+                globalThis.closed = globalThis.closed + 1;
+                return Promise.resolve({ done: true });
+              }
+            };
+          }
+        };
+        for await (const x of iterable) {
+          // never reached
+        }
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let promise_root = {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+    let promise = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    scope.push_root(promise)?;
+    scope.heap_mut().add_root(promise)?
+  };
+
+  vm.perform_microtask_checkpoint(&mut heap)?;
+
+  let promise = heap
+    .get_root(promise_root)
+    .ok_or(VmError::InvariantViolation("missing promise root"))?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("expected promise object, got {promise:?}");
+  };
+
+  assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = heap
+    .promise_result(promise_obj)?
+    .ok_or(VmError::InvariantViolation("missing promise rejection reason"))?;
+  let Value::String(reason_s) = reason else {
+    panic!("expected promise rejection reason to be a string, got {reason:?}");
+  };
+  assert_eq!(heap.get_string(reason_s)?.to_utf8_lossy(), "err");
+
+  // `return()` should not have been invoked for step errors.
+  let closed_value = {
+    let mut scope = heap.scope();
+    let key_s = scope.alloc_string("closed")?;
+    let key = PropertyKey::from_string(key_s);
+    vm.get(&mut scope, realm.global_object(), key)?
+  };
+  assert_eq!(closed_value, Value::Number(0.0));
+
+  heap.remove_root(promise_root);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+

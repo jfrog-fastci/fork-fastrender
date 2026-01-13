@@ -14580,7 +14580,8 @@ fn alloc_string_from_lit_str(
 /// This is an explicit reification of the evaluator call stack needed to resume execution after an
 /// `await` suspension point.
 #[derive(Debug)]
-enum AsyncFrame {
+#[allow(private_interfaces)]
+pub(crate) enum AsyncFrame {
   /// Root frame for block-bodied async functions (`async function f(){...}`).
   RootBlockBody,
   /// Root frame for expression-bodied async arrow functions (`async () => expr`).
@@ -14589,6 +14590,8 @@ enum AsyncFrame {
   RootModuleBody,
   /// Root frame for async classic script evaluation (top-level await / `for await...of` in scripts).
   RootScriptBody,
+  /// Root frame for compiled (HIR) async execution.
+  HirAsync { state: crate::hir_exec::HirAsyncState },
   /// Converts the internal optional-chaining sentinel value to `undefined`.
   ///
   /// This frame is injected by `async_eval_expr` so the async evaluator can propagate optional-chain
@@ -15568,6 +15571,7 @@ impl RootedCompletion {
 
 fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
   match frame {
+    AsyncFrame::HirAsync { state } => state.teardown(heap),
     AsyncFrame::StmtList {
       last_value_root, ..
     } => heap.remove_root(*last_value_root),
@@ -15799,29 +15803,29 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
 
 #[derive(Debug)]
 pub(crate) struct AsyncContinuation {
-  env: RuntimeEnv,
-  strict: bool,
+  pub(crate) env: RuntimeEnv,
+  pub(crate) strict: bool,
   /// Optional execution context to install while resuming the async continuation.
   ///
   /// This is primarily used for top-level await in modules: module evaluation must provide an
   /// active `ScriptOrModule::Module` so `import.meta` and dynamic `import()` can observe the active
   /// module during each resumed execution segment (ECMA-262 `AsyncBlockStart` behaviour).
-  exec_ctx: Option<ExecutionContext>,
+  pub(crate) exec_ctx: Option<ExecutionContext>,
   /// Keeps the parsed script AST alive when resuming an async classic script (top-level
   /// `for await...of`).
   ///
   /// Async frames store raw pointers into the parsed `TopLevel` AST; classic scripts normally parse
   /// and evaluate synchronously so dropping the AST is fine, but async classic scripts return a
   /// Promise and continue execution from microtasks after this entrypoint returns.
-  script_ast: Option<Arc<Node<parse_js::ast::stx::TopLevel>>>,
-  this_root: RootId,
-  new_target_root: RootId,
-  home_object_root: RootId,
-  promise_root: RootId,
-  resolve_root: RootId,
-  reject_root: RootId,
-  awaited_promise_root: Option<RootId>,
-  frames: VecDeque<AsyncFrame>,
+  pub(crate) script_ast: Option<Arc<Node<parse_js::ast::stx::TopLevel>>>,
+  pub(crate) this_root: RootId,
+  pub(crate) new_target_root: RootId,
+  pub(crate) home_object_root: RootId,
+  pub(crate) promise_root: RootId,
+  pub(crate) resolve_root: RootId,
+  pub(crate) reject_root: RootId,
+  pub(crate) awaited_promise_root: Option<RootId>,
+  pub(crate) frames: VecDeque<AsyncFrame>,
 }
 
 pub(crate) fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: AsyncContinuation) {
@@ -26748,6 +26752,61 @@ fn async_resume_from_frames(
     };
 
     match frame {
+      AsyncFrame::HirAsync {
+        state: mut hir_state,
+      } => match state {
+        AsyncState::Expr(resume_res) => {
+          let res = hir_state.resume(
+            evaluator.vm,
+            scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            evaluator.env,
+            evaluator.strict,
+            evaluator.this,
+            evaluator.new_target,
+            evaluator.home_object,
+            resume_res,
+          );
+          match res {
+            Ok(crate::hir_exec::HirAsyncResult::Await { await_value }) => {
+              if frames.try_reserve(1).is_err() {
+                hir_state.teardown(scope.heap_mut());
+                return Err(VmError::OutOfMemory);
+              }
+              frames.push_front(AsyncFrame::HirAsync { state: hir_state });
+              let frames_out = mem::take(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                kind: AsyncSuspendKind::Await,
+                await_value,
+                frames: frames_out,
+              });
+            }
+            Ok(crate::hir_exec::HirAsyncResult::CompleteOk(v)) => {
+              hir_state.teardown(scope.heap_mut());
+              return Ok(AsyncBodyResult::CompleteOk(v));
+            }
+            Ok(crate::hir_exec::HirAsyncResult::CompleteThrow(reason)) => {
+              hir_state.teardown(scope.heap_mut());
+              return Ok(AsyncBodyResult::CompleteThrow(reason));
+            }
+            Err(VmError::Throw(value) | VmError::ThrowWithStack { value, .. }) => {
+              hir_state.teardown(scope.heap_mut());
+              return Ok(AsyncBodyResult::CompleteThrow(value));
+            }
+            Err(err) => {
+              hir_state.teardown(scope.heap_mut());
+              return Err(err);
+            }
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "hir async frame received completion state",
+          ))
+        }
+      },
+
       AsyncFrame::RootExprBody => match state {
         AsyncState::Expr(res) => match res {
           Ok(v) => return Ok(AsyncBodyResult::CompleteOk(v)),

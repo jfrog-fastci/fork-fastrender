@@ -4291,20 +4291,6 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    // Async compiled functions can suspend and store an `AsyncContinuation` that clones the
-    // `RuntimeEnv` (including its persistent env root). In that case, the caller must NOT tear down
-    // `env` after `run_compiled_function` returns, otherwise the continuation will resume with an
-    // invalid environment root.
-    //
-    // Mirror `Vm::call_ecma_function`'s `is_async` handling so the compiled path can evolve to
-    // support async functions without changing call plumbing again.
-    let is_async = func
-      .script
-      .hir
-      .body(func.body)
-      .and_then(|body| body.function.as_ref())
-      .is_some_and(|f| f.async_ && !f.generator);
-
     let (this_mode, is_strict, realm, outer, bound_this, bound_new_target, func_data) = {
       let f = scope.heap().get_function(callee)?;
       (
@@ -4411,6 +4397,16 @@ impl Vm {
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
 
+    let is_async = func
+      .script
+      .hir
+      .body(func.body)
+      .and_then(|b| b.function.as_ref())
+      .map(|m| m.async_)
+      .ok_or(VmError::InvariantViolation(
+        "compiled function body missing metadata",
+      ))?;
+
     let result = crate::hir_exec::run_compiled_function(
       self,
       scope,
@@ -4429,6 +4425,10 @@ impl Vm {
       /* this_root_idx */ None,
     );
 
+    // Compiled async functions transfer ownership of their environment into an async continuation
+    // when they suspend. In that case, the continuation is responsible for tearing down the env.
+    //
+    // Synchronous compiled functions still tear down eagerly.
     if !is_async {
       env.teardown(scope.heap_mut());
     }
@@ -4506,6 +4506,15 @@ impl Vm {
       RuntimeEnv::new_with_var_env(this_scope.heap_mut(), global_object, func_env, func_env)?;
 
     let home_object = this_scope.heap().get_function_home_object(callee)?;
+    let is_async = func
+      .script
+      .hir
+      .body(func.body)
+      .and_then(|b| b.function.as_ref())
+      .map(|m| m.async_)
+      .ok_or(VmError::InvariantViolation(
+        "compiled function body missing metadata",
+      ))?;
 
     let result = crate::hir_exec::run_compiled_function(
       self,
@@ -4525,7 +4534,9 @@ impl Vm {
       /* this_root_idx */ None,
     );
 
-    env.teardown(this_scope.heap_mut());
+    if !is_async {
+      env.teardown(this_scope.heap_mut());
+    }
 
     // If the constructor returns an object, return it; otherwise return the newly-created `this`.
     match result? {
