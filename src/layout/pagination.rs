@@ -18,6 +18,7 @@ use crate::layout::formatting_context::{
 use crate::layout::fragmentation::{
   apply_abspos_parallel_flow_forced_break_shifts, apply_flex_parallel_flow_forced_break_shifts,
   apply_float_parallel_flow_forced_break_shifts, apply_grid_parallel_flow_forced_break_shifts,
+  apply_table_cell_parallel_flow_forced_break_shifts,
   clip_node,
   collect_forced_boundaries_for_pagination_with_axes, normalize_fragment_margins,
   parallel_flow_content_extent, propagate_fragment_metadata, ForcedBoundary, FragmentAxis,
@@ -1024,6 +1025,12 @@ impl CachedLayout {
     };
 
     apply_grid_parallel_flow_forced_break_shifts(
+      &mut root,
+      axes,
+      style_block_size,
+      FragmentationContext::Page,
+    );
+    apply_table_cell_parallel_flow_forced_break_shifts(
       &mut root,
       axes,
       style_block_size,

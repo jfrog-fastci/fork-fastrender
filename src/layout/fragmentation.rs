@@ -703,6 +703,107 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
   );
 }
 
+pub(crate) fn apply_table_cell_parallel_flow_forced_break_shifts(
+  root: &mut FragmentNode,
+  axes: FragmentAxes,
+  fragmentainer_size: f32,
+  context: FragmentationContext,
+) {
+  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
+    return;
+  }
+
+  let axis = axis_from_fragment_axes(axes);
+  let default_style = default_style();
+  let root_writing_mode = root
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(WritingMode::HorizontalTb);
+
+  fn walk(
+    node: &mut FragmentNode,
+    abs_start: f32,
+    axis: &FragmentAxis,
+    fragmentainer_size: f32,
+    context: FragmentationContext,
+    inherited_writing_mode: WritingMode,
+    default_style: &ComputedStyle,
+  ) {
+    let style = node
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    let node_writing_mode = node
+      .style
+      .as_ref()
+      .map(|s| s.writing_mode)
+      .unwrap_or(inherited_writing_mode);
+    let node_block_size = axis.block_size(&node.bounds);
+
+    if matches!(style.display, Display::TableCell) {
+      // CSS Break 3 §3: forced breaks inside table cells establish a parallel fragmentation flow.
+      // They must not force breaks in the surrounding table row (or sibling cells); instead
+      // continuation content inside the cell is shifted to the next fragmentainer boundary.
+      let mut collection = BreakCollection::default();
+      collect_break_opportunities(
+        node,
+        abs_start,
+        &mut collection,
+        0,
+        0,
+        context,
+        axis,
+        node_writing_mode,
+        true,
+        false,
+        true,
+      );
+
+      let cell_end = abs_start + node_block_size;
+      let mut positions: Vec<f32> = collection
+        .opportunities
+        .into_iter()
+        .filter(|o| matches!(o.strength, BreakStrength::Forced))
+        .map(|o| o.pos)
+        .collect();
+      positions.retain(|p| *p > abs_start + BREAK_EPSILON && *p < cell_end - BREAK_EPSILON);
+      if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) {
+        apply_parallel_flow_shifts_to_descendants(node, abs_start, 0.0, axis, &shifts);
+      }
+    }
+
+    for child in node.children_mut().iter_mut() {
+      let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+      let child_writing_mode = child
+        .style
+        .as_ref()
+        .map(|s| s.writing_mode)
+        .unwrap_or(node_writing_mode);
+      walk(
+        child,
+        child_abs_start,
+        axis,
+        fragmentainer_size,
+        context,
+        child_writing_mode,
+        default_style,
+      );
+    }
+  }
+
+  walk(
+    root,
+    0.0,
+    &axis,
+    fragmentainer_size,
+    context,
+    root_writing_mode,
+    default_style,
+  );
+}
+
 pub(crate) fn apply_float_parallel_flow_forced_break_shifts(
   root: &mut FragmentNode,
   axes: FragmentAxes,
@@ -2347,6 +2448,12 @@ fn fragment_tree_impl(
   // next fragmentainer, even when the item spans multiple tracks.
   let mut root = root.clone();
   apply_grid_parallel_flow_forced_break_shifts(
+    &mut root,
+    axes,
+    options.fragmentainer_size,
+    context,
+  );
+  apply_table_cell_parallel_flow_forced_break_shifts(
     &mut root,
     axes,
     options.fragmentainer_size,
@@ -4621,7 +4728,9 @@ fn collect_forced_boundaries_with_axes_internal(
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
     if suppress_parallel_flow_descendants
-      && (node_style.float.is_floating() || node_style.position.is_absolutely_positioned())
+      && (node_style.float.is_floating()
+        || node_style.position.is_absolutely_positioned()
+        || matches!(node_style.display, Display::TableCell))
     {
       return;
     }
