@@ -15,8 +15,9 @@ Implementation map (keep these modules aligned with this doc):
 * `src/media/timebase.rs` — container timebase/tick ↔ `Duration` conversions (PTS normalization)
 * `src/media/clock.rs` — clock selection + timeline mapping (**intended module**, may be introduced
   as video support lands)
-* `src/media/audio/*` — audio backend(s), audio device clock exposure, output latency model
-  (**intended module path**)
+* `src/media/audio/mod.rs` — `AudioBackend` trait + `AudioClock` (audio device time exposure)
+* `src/media/audio/null_backend.rs` — `NullAudioBackend` (silence / CI fallback)
+* `src/media/audio/cpal_backend.rs` — CPAL output backend (feature = `audio_cpal`)
 * `src/media/av_sync.rs` — video scheduling + correction policy (drop/hold/delay) (**intended module
   path**)
 * `src/js/clock.rs` — existing `Clock` + `VirtualClock` pattern used for deterministic time in tests
@@ -122,12 +123,23 @@ FastRender should expose an **audio clock** to the rest of the media pipeline th
 
 This clock is the **master** when audio is present (see below).
 
+In code today, this is represented by [`AudioClock`](../src/media/audio/mod.rs), which can report:
+
+* `AudioClock::OutputFrames { .. }` — derived from a backend playhead counter (preferred when output
+  is active, e.g. CPAL).
+* `AudioClock::Instant { .. }` — derived from wall-clock time (used by `NullAudioBackend`).
+
 ---
 
 ## Audio backend clock contract (what `src/media/audio/*` must provide)
 
 Even with “audio is master” as a principle, the media pipeline still needs a precise contract for
 what time the audio backend reports.
+
+In code, the contract surface is:
+
+* `AudioBackend` + `AudioSink` in `src/media/audio/mod.rs`
+* `AudioClock` in `src/media/audio/mod.rs`
 
 The audio backend should provide:
 
@@ -314,6 +326,15 @@ The intended test strategy is:
   * accepts audio samples into a queue,
   * advances “device playback position” based on the injected `VirtualClock`,
   * exposes an audio master clock derived from “played frames / sample_rate”.
+
+Current implementation note: `src/media/audio/null_backend.rs` currently uses `Instant` for its
+clock. That is fine for “best effort” headless runs, but tests that need strict determinism should
+avoid wall time. Two ways to achieve that:
+
+* Add a `Virtual`/injected-clock variant to `AudioClock` (mirroring `src/js/clock.rs`) and teach
+  `NullAudioBackend` to use it in tests, or
+* Use `AudioClock::OutputFrames` with a test-controlled `frames_played` counter derived from the
+  `VirtualClock` (e.g. `frames = now * sample_rate`).
 
 With these pieces, a test can:
 
