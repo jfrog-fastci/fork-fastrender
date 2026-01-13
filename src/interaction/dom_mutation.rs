@@ -319,14 +319,15 @@ pub fn step_number_value(node: &mut DomNode, delta_steps: i32) -> bool {
     other => other,
   };
 
-  // HTML number controls use the `min` value as the step base when present; otherwise 0.
-  let step_base = min.unwrap_or(0.0);
-
   // Treat missing/invalid/non-finite values as 0. (Downstream clamping handles a positive `min`.)
   let current = node
     .get_attribute_ref("value")
     .and_then(parse_finite_number)
     .unwrap_or(0.0);
+
+  // HTML number controls use the `min` value as the step base when present; otherwise the current
+  // value (when valid), falling back to 0.
+  let step_base = min.unwrap_or(current);
 
   let mut q = (current - step_base) / step;
   if !q.is_finite() {
