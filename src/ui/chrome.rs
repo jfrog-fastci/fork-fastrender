@@ -6545,6 +6545,96 @@ mod tests {
   }
 
   #[test]
+  fn releasing_tab_outside_strip_emits_detach_tab_action() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: read the tab strip layout so we can target a specific tab rect.
+    begin_frame_with_screen_size(&ctx, egui::vec2(800.0, 600.0), Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let (strip_rect, tab_rects) =
+      super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let _ = ctx.end_frame();
+
+    let press_pos = tab_rects.first().expect("expected first tab rect").center();
+    let drag_start_pos = egui::pos2(press_pos.x + 80.0, press_pos.y);
+
+    // Release just outside the strip bounds, but still within the detach drag threshold region.
+    // This ensures we cover the release-driven detach path (vs. detach-on-drag).
+    let release_pos = egui::pos2(strip_rect.center().x, strip_rect.top() - 10.0);
+    assert!(
+      strip_rect.expand(super::tab_strip::TAB_DETACH_DRAG_THRESHOLD).contains(release_pos),
+      "expected release_pos to be inside the detach threshold expansion"
+    );
+    assert!(
+      !strip_rect.contains(release_pos),
+      "expected release_pos to be outside strip_rect to trigger release detach"
+    );
+
+    // Frame 1: press on the first tab.
+    begin_frame_with_screen_size(
+      &ctx,
+      egui::vec2(800.0, 600.0),
+      vec![
+        egui::Event::PointerMoved(press_pos),
+        egui::Event::PointerButton {
+          pos: press_pos,
+          button: egui::PointerButton::Primary,
+          pressed: true,
+          modifiers: egui::Modifiers::default(),
+        },
+      ],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: start a drag inside the strip so egui enters drag mode.
+    begin_frame_with_screen_size(
+      &ctx,
+      egui::vec2(800.0, 600.0),
+      vec![egui::Event::PointerMoved(drag_start_pos)],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 3: release just outside the strip.
+    begin_frame_with_screen_size(
+      &ctx,
+      egui::vec2(800.0, 600.0),
+      vec![
+        egui::Event::PointerMoved(release_pos),
+        egui::Event::PointerButton {
+          pos: release_pos,
+          button: egui::PointerButton::Primary,
+          pressed: false,
+          modifiers: egui::Modifiers::default(),
+        },
+      ],
+    );
+    let actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, &ChromeAction::DetachTab(id) if id == tab_a)),
+      "expected release-outside-strip to emit DetachTab({tab_a:?}), got {actions:?}"
+    );
+    assert!(app.chrome.dragging_tab_id.is_none());
+  }
+
+  #[test]
   fn ctrl_wheel_zooms_active_tab() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);

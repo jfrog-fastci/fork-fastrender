@@ -37,7 +37,7 @@ const DRAG_GAP_BASE_ALPHA: f32 = 0.10;
 
 // Minimum distance (in egui points) the cursor must travel outside the tab strip before we treat a
 // drag as a "detach into new window" gesture.
-const TAB_DETACH_DRAG_THRESHOLD: f32 = 40.0;
+pub(super) const TAB_DETACH_DRAG_THRESHOLD: f32 = 40.0;
 
 const TAB_STRIP_SCROLL_CLAMP_DURATION: f32 = 0.16;
 
