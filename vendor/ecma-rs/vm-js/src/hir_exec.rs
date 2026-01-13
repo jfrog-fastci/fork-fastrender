@@ -7688,12 +7688,12 @@ impl<'vm> HirEvaluator<'vm> {
           "class constructor prototype property is not a data property",
         ));
       };
-       let Value::Object(prototype_obj) = value else {
-         return Err(VmError::InvariantViolation(
-           "class constructor prototype property is not an object",
-         ));
-       };
-       class_scope.push_root(Value::Object(prototype_obj))?;
+      let Value::Object(prototype_obj) = value else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not an object",
+        ));
+      };
+      class_scope.push_root(Value::Object(prototype_obj))?;
 
       if let Some(body_func) = ctor_body_inner_func {
         class_scope

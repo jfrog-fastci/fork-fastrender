@@ -57974,6 +57974,55 @@ mod tests {
   }
 
   #[test]
+  fn document_create_processing_instruction_uses_owned_document_dom() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let status = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        // Prefer an owned XML document once `DOMImplementation.createDocument()` exists (Task 221);
+        // fall back to `createHTMLDocument()` in older builds.
+        let xmlDoc;
+        try {
+          xmlDoc = document.implementation.createDocument(null, "root", null);
+        } catch (e) {
+          xmlDoc = document.implementation.createHTMLDocument();
+        }
+
+        // Inflate the host document's NodeId counter so a buggy implementation (allocating in the
+        // host dom2::Document) would produce a node id that is out-of-range for `xmlDoc`'s DOM.
+        for (let i = 0; i < 50; i++) {
+          document.createElement("div");
+        }
+
+        const pi = xmlDoc.createProcessingInstruction("whippoorwill", "chirp chirp chirp");
+        if (pi.ownerDocument !== xmlDoc) return "bad-owner";
+        if (pi.ownerDocument === document) return "bad-owner-host";
+
+        try {
+          xmlDoc.appendChild(pi);
+        } catch (e) {
+          return "append-threw:" + (e && e.name);
+        }
+
+        const nodes = xmlDoc.childNodes;
+        if (nodes.indexOf(pi) === -1) return "missing-child";
+
+        // Ensure the node is not shared with the host document.
+        if (document.childNodes.indexOf(pi) !== -1) return "shared-with-host";
+        return "ok";
+      })()"#,
+    )?;
+
+    assert_eq!(get_string(realm.heap(), status), "ok");
+    Ok(())
+  }
+
+  #[test]
   fn html_element_constructors_prototype_chains_and_instanceof_work() -> Result<(), VmError> {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
