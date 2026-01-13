@@ -38,9 +38,7 @@ Examples:
   bash scripts/capture_browser_perf_log.sh --summary target/browser.perf.jsonl about:test-scroll
 
 Notes:
-  - The main perf log stream is written to <out.jsonl> via `FASTR_PERF_LOG_OUT`.
-  - Some auxiliary perf diagnostics may still be emitted on stdout; this script captures stdout and
-    appends any JSON lines that contain an `"event"` field into <out.jsonl> after the browser exits.
+  - Perf logs are emitted on stdout and also written to <out.jsonl> via `tee`.
   - Script progress messages (including optional summaries) are written to stderr.
 EOF
 }
@@ -173,60 +171,25 @@ if [[ ${#extra_browser_args[@]} -gt 0 ]]; then
   browser_cmd+=("${extra_browser_args[@]}")
 fi
 
-echo "capture_browser_perf_log: capturing perf JSONL (FASTR_PERF_LOG_OUT → ${out_path})" >&2
-
-stdout_tmp="$(mktemp -t fastrender-browser-perf-stdout.XXXXXX)"
-stdout_filtered_tmp=""
-cleanup() {
-  rm -f -- "${stdout_tmp}"
-  if [[ -n "${stdout_filtered_tmp}" ]]; then
-    rm -f -- "${stdout_filtered_tmp}"
-  fi
-}
-trap cleanup EXIT
+echo "capture_browser_perf_log: capturing perf JSONL (stdout → tee → ${out_path})" >&2
 
 set +e
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT="${out_path}" "${browser_cmd[@]}" >"${stdout_tmp}"
-browser_status=$?
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT= "${browser_cmd[@]}" | tee -- "${out_path}"
+# NOTE: `PIPESTATUS` is updated after *every* command (including simple assignments). Capture both
+# pipeline statuses in a single assignment statement so `set -u` doesn't explode mid-script.
+browser_status=${PIPESTATUS[0]:-0} tee_status=${PIPESTATUS[1]:-0}
 set -e
 
 status="${browser_status}"
+if [[ "${status}" -eq 0 && "${tee_status}" -ne 0 ]]; then
+  status="${tee_status}"
+fi
 
 if [[ "${browser_status}" -ne 0 ]]; then
   echo "capture_browser_perf_log: browser exited with status ${browser_status} (continuing)" >&2
 fi
-
-if [[ -s "${stdout_tmp}" ]]; then
-  stdout_filtered_tmp="$(mktemp -t fastrender-browser-perf-stdout-filtered.XXXXXX)"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "${stdout_tmp}" >"${stdout_filtered_tmp}" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path, "r", errors="replace") as f:
-    for raw in f:
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(obj, dict) and isinstance(obj.get("event"), str):
-            # Emit compact JSON to keep the output file stable and JSONL-friendly.
-            sys.stdout.write(json.dumps(obj, separators=(",", ":")))
-            sys.stdout.write("\n")
-PY
-  else
-    # Best-effort fallback: keep only lines that look like JSON objects with an "event" field.
-    awk 'BEGIN{FS=""} /^[[:space:]]*\\{/ && $0 ~ /"event"[[:space:]]*:[[:space:]]*"/ {print}' \
-      "${stdout_tmp}" >"${stdout_filtered_tmp}"
-  fi
-
-  if [[ -s "${stdout_filtered_tmp}" ]]; then
-    cat "${stdout_filtered_tmp}" >> "${out_path}"
-  fi
+if [[ "${tee_status}" -ne 0 ]]; then
+  echo "capture_browser_perf_log: tee exited with status ${tee_status}" >&2
 fi
 
 if [[ ! -s "${out_path}" ]]; then
@@ -234,24 +197,48 @@ if [[ ! -s "${out_path}" ]]; then
 fi
 
 echo "capture_browser_perf_log: hint: summarize with browser_perf_log_summary:" >&2
-echo "  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \\" >&2
-echo "    bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input ${out_path}" >&2
+echo "  timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input ${out_path}" >&2
 
 if [[ "${run_summary}" -eq 1 ]]; then
   if [[ ! -s "${out_path}" ]]; then
     echo "capture_browser_perf_log: skipping summary (empty log file)" >&2
   else
-    echo "capture_browser_perf_log: running summary (p50/p95/max)..." >&2
-    set +e
-    # `browser_perf_log_summary` prints a human-readable summary to stderr and JSON to stdout.
-    # Suppress stdout so the wrapper stays terminal-friendly.
-    timeout -k 10 600 bash "${repo_root}/scripts/run_limited.sh" --as 64G -- \
-      bash "${repo_root}/scripts/cargo_agent.sh" run --quiet --release --bin browser_perf_log_summary -- \
-      --input "${out_path}" >/dev/null
-    summary_status=$?
-    set -e
-    if [[ "${summary_status}" -ne 0 ]]; then
-      echo "capture_browser_perf_log: warning: browser_perf_log_summary exited with ${summary_status}" >&2
+    summary_bin=""
+    if [[ -n "${CARGO_BIN_EXE_browser_perf_log_summary:-}" && -x "${CARGO_BIN_EXE_browser_perf_log_summary}" ]]; then
+      summary_bin="${CARGO_BIN_EXE_browser_perf_log_summary}"
+    elif command -v browser_perf_log_summary >/dev/null 2>&1; then
+      summary_bin="$(command -v browser_perf_log_summary)"
+    else
+      target_dir="${CARGO_TARGET_DIR:-}"
+      if [[ -z "${target_dir}" ]]; then
+        target_dir="${repo_root}/target"
+      elif [[ "${target_dir}" != /* ]]; then
+        target_dir="${repo_root}/${target_dir}"
+      fi
+      for profile in release debug; do
+        candidate="${target_dir}/${profile}/browser_perf_log_summary${exe_suffix}"
+        if [[ -x "${candidate}" ]]; then
+          summary_bin="${candidate}"
+          break
+        fi
+      done
+    fi
+
+    if [[ -z "${summary_bin}" ]]; then
+      echo "capture_browser_perf_log: browser_perf_log_summary not found; build it with:" >&2
+      echo "  timeout -k 10 600 bash scripts/cargo_agent.sh build --release --bin browser_perf_log_summary" >&2
+    else
+      echo "capture_browser_perf_log: running summary (p50/p95/max)..." >&2
+      set +e
+      # `browser_perf_log_summary` prints a human-readable summary to stderr and JSON to stdout.
+      # Suppress stdout so the wrapper stays terminal-friendly (and stdout remains JSONL-only).
+      timeout -k 10 600 bash "${repo_root}/scripts/run_limited.sh" --as 64G -- \
+        "${summary_bin}" --input "${out_path}" >/dev/null
+      summary_status=$?
+      set -e
+      if [[ "${summary_status}" -ne 0 ]]; then
+        echo "capture_browser_perf_log: warning: browser_perf_log_summary exited with ${summary_status}" >&2
+      fi
     fi
   fi
 fi
