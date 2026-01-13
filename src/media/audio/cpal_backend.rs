@@ -9,6 +9,7 @@ use super::{
   frames_to_duration, AudioBackend, AudioClock, AudioEngineConfig, AudioError, AudioOutputInfo,
   AudioSink, AudioStreamConfig,
 };
+use super::convert::sanitize_sample;
 use crate::media::audio::ring_buffer::AudioRingBuffer;
 use cpal::traits::{HostTrait, StreamTrait};
 
@@ -477,21 +478,13 @@ fn duration_to_nanos_u64(duration: Duration) -> u64 {
   u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn sanitize_f32(value: f32) -> f32 {
-  if value.is_finite() {
-    value.clamp(-1.0, 1.0)
-  } else {
-    0.0
-  }
-}
-
 fn f32_to_i16(value: f32) -> i16 {
-  let value = sanitize_f32(value);
+  let value = sanitize_sample(value);
   (value * i16::MAX as f32) as i16
 }
 
 fn f32_to_u16(value: f32) -> u16 {
-  let value = sanitize_f32(value);
+  let value = sanitize_sample(value);
   let shifted = value * 0.5 + 0.5;
   (shifted * u16::MAX as f32) as u16
 }
@@ -502,7 +495,7 @@ trait OutputSample: cpal::Sample {
 
 impl OutputSample for f32 {
   fn from_mixed_f32(value: f32) -> Self {
-    sanitize_f32(value)
+    sanitize_sample(value)
   }
 }
 
@@ -520,13 +513,14 @@ impl OutputSample for u16 {
 
 #[cfg(test)]
 mod tests {
-  use super::{f32_to_i16, f32_to_u16, sanitize_f32};
+  use super::{f32_to_i16, f32_to_u16};
+  use crate::media::audio::convert::sanitize_sample;
 
   #[test]
   fn sanitize_handles_nan_and_clamps() {
-    assert_eq!(sanitize_f32(f32::NAN), 0.0);
-    assert_eq!(sanitize_f32(2.0), 1.0);
-    assert_eq!(sanitize_f32(-2.0), -1.0);
+    assert_eq!(sanitize_sample(f32::NAN), 0.0);
+    assert_eq!(sanitize_sample(2.0), 1.0);
+    assert_eq!(sanitize_sample(-2.0), -1.0);
   }
 
   #[test]

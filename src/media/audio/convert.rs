@@ -100,6 +100,53 @@ fn planar_to_f32_interleaved<T: Copy>(
   Ok(out)
 }
 
+/// Sanitize a sample before it can be accumulated into a mix buffer.
+///
+/// This is intended for *intermediate* mixing math, so it intentionally does **not** clamp the
+/// amplitude. (Some unit tests and internal mixers use values outside [-1, 1].)
+///
+/// Goals:
+/// - Prevent NaNs/Infs from poisoning the entire mixed output.
+/// - Flush subnormals to zero to avoid denormal performance traps in DSP code paths.
+#[inline]
+pub(crate) fn sanitize_mix_sample(x: f32) -> f32 {
+  if !x.is_finite() {
+    return 0.0;
+  }
+  if !x.is_normal() {
+    return 0.0;
+  }
+  x
+}
+
+/// Sanitize a decoded/mixed audio sample before it can be converted to the final output format.
+///
+/// This clamps to the expected output range (typically [-1, 1]) after flushing NaN/Inf/subnormals.
+#[inline]
+pub(crate) fn sanitize_sample(x: f32) -> f32 {
+  // 1) NaN / +/-Inf are never meaningful as PCM.
+  if !x.is_finite() {
+    return 0.0;
+  }
+
+  // 2) `is_normal` rejects subnormals (and also zero). We flush both to zero to
+  //    ensure we never emit denormals to the audio device callback.
+  if !x.is_normal() {
+    return 0.0;
+  }
+
+  // 3) Clamp to a sane output range.
+  x.clamp(-1.0, 1.0)
+}
+
+/// Sanitize an interleaved sample buffer in place.
+#[inline]
+pub(crate) fn sanitize_buffer_in_place(buf: &mut [f32]) {
+  for x in buf {
+    *x = sanitize_mix_sample(*x);
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -150,5 +197,31 @@ mod tests {
 
     let err = convert_to_f32_interleaved(&buffer).unwrap_err();
     assert!(matches!(err, AudioError::InvalidInterleavedLength { .. }));
+  }
+
+  #[test]
+  fn sanitize_sample_nan_and_inf_become_zero() {
+    assert_eq!(sanitize_sample(f32::NAN), 0.0);
+    assert_eq!(sanitize_sample(f32::INFINITY), 0.0);
+    assert_eq!(sanitize_sample(f32::NEG_INFINITY), 0.0);
+  }
+
+  #[test]
+  fn sanitize_sample_subnormals_become_zero() {
+    // Smallest positive/negative subnormal numbers.
+    let sub_pos = f32::from_bits(1);
+    let sub_neg = f32::from_bits(1) * -1.0;
+    assert!(!sub_pos.is_normal());
+    assert!(!sub_neg.is_normal());
+    assert_eq!(sanitize_sample(sub_pos), 0.0);
+    assert_eq!(sanitize_sample(sub_neg), 0.0);
+  }
+
+  #[test]
+  fn sanitize_sample_clamps_large_magnitudes() {
+    assert_eq!(sanitize_sample(10.0), 1.0);
+    assert_eq!(sanitize_sample(-10.0), -1.0);
+    assert_eq!(sanitize_sample(0.5), 0.5);
+    assert_eq!(sanitize_sample(-0.5), -0.5);
   }
 }

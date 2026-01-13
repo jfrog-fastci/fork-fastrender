@@ -1,3 +1,4 @@
+use super::convert::{sanitize_buffer_in_place, sanitize_mix_sample};
 use super::timed_queue::TimedAudioQueue;
 use super::{AudioClock, AudioOutputInfo};
 use std::collections::HashMap;
@@ -82,10 +83,19 @@ impl AudioMixer {
       stream
         .queue
         .read_into(&mut self.scratch[..needed], target_pts, frames);
+      let gain = stream.params.gain;
+      if gain == 0.0 || !gain.is_finite() || !gain.is_normal() {
+        continue;
+      }
       for (dst, src) in out[..needed].iter_mut().zip(self.scratch[..needed].iter()) {
-        *dst += *src * stream.params.gain;
+        // Sanitize each stream's contribution before accumulation so malformed values
+        // (NaN/Inf/denormals) can't poison the entire mixed output.
+        *dst += sanitize_mix_sample(*src * gain);
       }
     }
+
+    // Final pass to ensure we never hand NaN/Inf/denormals to the device callback.
+    sanitize_buffer_in_place(&mut out[..needed]);
   }
 
   /// Mix into `out` aligned to an absolute device frame counter.
@@ -122,10 +132,16 @@ impl AudioMixer {
       stream
         .queue
         .read_into_frames(&mut self.scratch[..needed], target_frame, frames);
+      let gain = stream.params.gain;
+      if gain == 0.0 || !gain.is_finite() || !gain.is_normal() {
+        continue;
+      }
       for (dst, src) in out[..needed].iter_mut().zip(self.scratch[..needed].iter()) {
-        *dst += *src * stream.params.gain;
+        *dst += sanitize_mix_sample(*src * gain);
       }
     }
+
+    sanitize_buffer_in_place(&mut out[..needed]);
   }
 
   /// Convenience wrapper that mixes based on an [`AudioClock`] + output latency estimate.

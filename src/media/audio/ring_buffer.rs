@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
+use super::convert::sanitize_mix_sample;
+
 /// A minimal-lock ring buffer for interleaved f32 PCM samples.
 ///
 /// - The audio callback thread is the sole consumer.
@@ -80,6 +82,11 @@ impl AudioRingBuffer {
     if dst.is_empty() {
       return;
     }
+    // Defensively treat non-finite/denormal gains as silence so we never poison the mix.
+    // (`gain` originates from user volume, but the atomic bit-pattern may still be corrupted.)
+    if !gain.is_finite() || !gain.is_normal() {
+      return;
+    }
 
     let read = self.read.load(Ordering::Relaxed);
     let write = self.write.load(Ordering::Acquire);
@@ -105,12 +112,14 @@ impl AudioRingBuffer {
       let first = to_read.min(self.capacity - pos);
       for i in 0..first {
         let sample = unsafe { *self.buf[pos + i].get() };
-        dst[i] += sample * gain;
+        // Sanitize per-sample before accumulation so malformed data cannot poison the entire mix
+        // and so we never feed denormals back into subsequent mixing math.
+        dst[i] += sanitize_mix_sample(sample * gain);
       }
       pos = 0;
       for i in 0..(to_read - first) {
         let sample = unsafe { *self.buf[pos + i].get() };
-        dst[first + i] += sample * gain;
+        dst[first + i] += sanitize_mix_sample(sample * gain);
       }
     }
 
@@ -146,7 +155,6 @@ mod tests {
     rb.pop_add_into(&mut out, 0.5);
     assert_eq!(out, vec![0.5, 0.5]);
   }
-
   #[test]
   fn ring_buffer_drains_when_gain_is_zero() {
     // 200ms worth of mono 48kHz samples.

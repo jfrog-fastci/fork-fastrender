@@ -3,6 +3,25 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+#[inline]
+fn sanitize_mix_sample(x: f32) -> f32 {
+  if !x.is_finite() {
+    return 0.0;
+  }
+  // Flush subnormals (and +/-0) to avoid denormal slowdowns in mixing math.
+  if !x.is_normal() {
+    return 0.0;
+  }
+  x
+}
+
+#[inline]
+fn sanitize_mix_buffer_in_place(buf: &mut [f32]) {
+  for sample in buf {
+    *sample = sanitize_mix_sample(*sample);
+  }
+}
+
 #[derive(Debug)]
 pub struct AudioMixer {
   sample_rate_hz: u32,
@@ -85,6 +104,10 @@ impl AudioMixer {
     for stream in streams {
       stream.mix_into(out);
     }
+
+    // Ensure the mixed output cannot contain NaN/Inf/denormals, even if an upstream decoder
+    // misbehaves or in the face of extreme cancellation.
+    sanitize_mix_buffer_in_place(out);
   }
 }
 
@@ -103,6 +126,13 @@ impl AudioStreamHandle {
         len: samples.len(),
         channels: self.inner.channels,
       });
+    }
+
+    // Sanitize decoded samples before they enter the queue so malformed values cannot poison the
+    // mixer (NaN propagation) and so we never store denormals.
+    let mut samples = samples;
+    for sample in &mut samples {
+      *sample = sanitize_mix_sample(*sample);
     }
 
     let mut state = self.inner.state.lock();

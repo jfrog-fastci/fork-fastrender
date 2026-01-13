@@ -30,6 +30,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::convert::sanitize_buffer_in_place;
+
 const NO_PTS_NS: u64 = u64::MAX;
 
 /// Creates a bounded SPSC queue for interleaved PCM `f32` audio.
@@ -328,6 +330,10 @@ impl PcmF32QueueInner {
       }
     }
 
+    // Sanitize the popped samples before handing them to the audio callback / mixer so malformed
+    // decoder output (NaN/Inf/denormals) cannot propagate into the output device buffer.
+    sanitize_buffer_in_place(&mut out[..samples_to_read]);
+
     self
       .read_frame
       .store(read + frames_to_read, Ordering::Release);
@@ -453,4 +459,3 @@ mod tests {
     assert_eq!(cons.head_pts(), Some(Duration::from_millis(123)));
   }
 }
-
