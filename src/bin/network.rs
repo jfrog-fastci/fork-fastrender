@@ -3,7 +3,7 @@ use fastrender::resource::{HttpFetcher, ResourceFetcher};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 
-fn handle_client(mut stream: TcpStream) -> io::Result<()> {
+fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher) -> io::Result<()> {
   stream.set_nodelay(true)?;
 
   let req: ipc::NetworkRequest = match ipc::read_frame(&mut stream) {
@@ -17,7 +17,6 @@ fn handle_client(mut stream: TcpStream) -> io::Result<()> {
 
   match req {
     ipc::NetworkRequest::Fetch { url } => {
-      let fetcher = HttpFetcher::new();
       match fetcher.fetch(&url) {
         Ok(resource) => ipc::write_frame(
           &mut stream,
@@ -69,6 +68,7 @@ fn main() -> io::Result<()> {
 
   let listener = TcpListener::bind(&bind_addr)?;
   let addr = listener.local_addr()?;
+  let fetcher = HttpFetcher::new();
 
   // Print the listening address as the startup handshake for `spawn_network_process`.
   println!("{addr}");
@@ -78,8 +78,9 @@ fn main() -> io::Result<()> {
   for conn in listener.incoming() {
     match conn {
       Ok(stream) => {
+        let fetcher = fetcher.clone();
         std::thread::spawn(move || {
-          let _ = handle_client(stream);
+          let _ = handle_client(stream, fetcher);
         });
       }
       Err(err) => {
@@ -91,4 +92,3 @@ fn main() -> io::Result<()> {
 
   Ok(())
 }
-

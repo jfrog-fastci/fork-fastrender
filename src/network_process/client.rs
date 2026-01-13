@@ -1,10 +1,6 @@
 use crate::error::{Error, Result};
 use crate::resource::{FetchedResource, ResourceFetcher};
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine as _;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Read, Write};
+use std::io::BufRead;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -13,6 +9,8 @@ use std::time::Duration;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::protocol::{CloseFrame, Message as TungsteniteMessage};
 use tungstenite::Error as TungsteniteError;
+
+use super::ipc;
 
 /// Configuration for spawning the `network` subprocess.
 #[derive(Debug, Clone)]
@@ -320,8 +318,7 @@ impl WebSocketBackend for DirectWebSocketBackend {
       );
     }
 
-    let (socket, response) =
-      tungstenite::connect(req).map_err(map_tungstenite_err)?;
+    let (socket, response) = tungstenite::connect(req).map_err(map_tungstenite_err)?;
     let protocol = response
       .headers()
       .get("sec-websocket-protocol")
@@ -351,10 +348,7 @@ impl WebSocketStream for DirectWebSocketStream {
   }
 
   fn recv(&mut self) -> Result<WebSocketMessage> {
-    let msg = self
-      .socket
-      .read_message()
-      .map_err(map_tungstenite_err)?;
+    let msg = self.socket.read_message().map_err(map_tungstenite_err)?;
     Ok(match msg {
       TungsteniteMessage::Text(text) => WebSocketMessage::Text(text),
       TungsteniteMessage::Binary(bytes) => WebSocketMessage::Binary(bytes),
@@ -383,10 +377,7 @@ impl WebSocketStream for DirectWebSocketStream {
       code: tungstenite::protocol::frame::coding::CloseCode::from(code),
       reason: reason.unwrap_or_default().into(),
     });
-    self
-      .socket
-      .close(frame)
-      .map_err(map_tungstenite_err)?;
+    self.socket.close(frame).map_err(map_tungstenite_err)?;
     Ok(())
   }
 
@@ -409,82 +400,3 @@ impl DownloadClient {
   }
 }
 
-/// Internal IPC framing and wire types shared between the library API and the `network` binary.
-#[doc(hidden)]
-pub mod ipc {
-  use super::*;
-
-  #[derive(Debug, Serialize, Deserialize)]
-  #[serde(tag = "type", rename_all = "snake_case")]
-  pub enum NetworkRequest {
-    Fetch { url: String },
-    Shutdown,
-  }
-
-  #[derive(Debug, Serialize, Deserialize)]
-  #[serde(tag = "type", rename_all = "snake_case")]
-  pub enum NetworkResponse {
-    FetchOk { resource: IpcFetchedResource },
-    Ok,
-    Error { message: String },
-  }
-
-  #[derive(Debug, Clone, Serialize, Deserialize)]
-  pub struct IpcFetchedResource {
-    pub bytes_base64: String,
-    pub content_type: Option<String>,
-    pub status: Option<u16>,
-    pub final_url: Option<String>,
-    pub response_headers: Option<Vec<(String, String)>>,
-  }
-
-  impl IpcFetchedResource {
-    pub fn from_fetched(resource: FetchedResource) -> Self {
-      Self {
-        bytes_base64: BASE64_STANDARD.encode(&resource.bytes),
-        content_type: resource.content_type,
-        status: resource.status,
-        final_url: resource.final_url,
-        response_headers: resource.response_headers,
-      }
-    }
-
-    pub fn into_fetched(self) -> Result<FetchedResource> {
-      let bytes = BASE64_STANDARD
-        .decode(self.bytes_base64.as_bytes())
-        .map_err(|err| Error::Other(format!("invalid base64 bytes from network process: {err}")))?;
-      let mut res = FetchedResource::new(bytes, self.content_type);
-      res.status = self.status;
-      res.final_url = self.final_url;
-      res.response_headers = self.response_headers;
-      Ok(res)
-    }
-  }
-
-  fn serde_err_to_io(err: serde_json::Error) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, err)
-  }
-
-  /// Write a length-prefixed JSON message.
-  pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, msg: &T) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(msg).map_err(serde_err_to_io)?;
-    let len: u32 = bytes
-      .len()
-      .try_into()
-      .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "frame too large"))?;
-    writer.write_all(&len.to_be_bytes())?;
-    writer.write_all(&bytes)?;
-    writer.flush()?;
-    Ok(())
-  }
-
-  /// Read a length-prefixed JSON message.
-  pub fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> std::io::Result<T> {
-    let mut len_buf = [0u8; 4];
-    reader.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf)?;
-    serde_json::from_slice(&buf).map_err(serde_err_to_io)
-  }
-}

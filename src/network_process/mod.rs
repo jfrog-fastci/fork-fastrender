@@ -6,3 +6,13 @@
 
 pub mod websocket_manager;
 
+#[doc(hidden)]
+pub mod ipc;
+
+mod client;
+
+pub use client::{
+  spawn_network_process, try_spawn_network_process, DownloadClient, IpcResourceFetcher,
+  NetworkClient, NetworkProcessConfig, NetworkProcessHandle, WebSocketBackend, WebSocketMessage,
+  WebSocketStream,
+};
