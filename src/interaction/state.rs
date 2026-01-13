@@ -1554,6 +1554,10 @@ impl InteractionStateDom2 {
   pub fn prune_disconnected(&mut self, dom: &crate::dom2::Document) {
     let is_connected = |id: NodeId| dom.is_connected_for_scripting(id);
 
+    if self.fullscreen_element.is_some_and(|id| !is_connected(id)) {
+      self.fullscreen_element = None;
+    }
+
     if self.focused.is_some_and(|id| !is_connected(id)) {
       self.focused = None;
       self.focus_visible = false;
