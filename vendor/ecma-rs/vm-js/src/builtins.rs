@@ -15924,10 +15924,18 @@ pub fn string_prototype_includes(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let is_regexp =
+    crate::spec_ops::is_regexp_with_host_and_hooks(vm, &mut scope, host, hooks, search_value)?;
+  if is_regexp {
+    return Err(VmError::TypeError(
+      "String.prototype.includes called with a RegExp argument",
+    ));
+  }
   let search = scope.to_string(vm, host, hooks, search_value)?;
   scope.push_root(Value::String(search))?;
 
@@ -15978,10 +15986,18 @@ pub fn string_prototype_starts_with(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let is_regexp =
+    crate::spec_ops::is_regexp_with_host_and_hooks(vm, &mut scope, host, hooks, search_value)?;
+  if is_regexp {
+    return Err(VmError::TypeError(
+      "String.prototype.startsWith called with a RegExp argument",
+    ));
+  }
   let search = scope.to_string(vm, host, hooks, search_value)?;
   scope.push_root(Value::String(search))?;
 
@@ -16017,10 +16033,18 @@ pub fn string_prototype_ends_with(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let is_regexp =
+    crate::spec_ops::is_regexp_with_host_and_hooks(vm, &mut scope, host, hooks, search_value)?;
+  if is_regexp {
+    return Err(VmError::TypeError(
+      "String.prototype.endsWith called with a RegExp argument",
+    ));
+  }
   let search = scope.to_string(vm, host, hooks, search_value)?;
   scope.push_root(Value::String(search))?;
 
@@ -16687,7 +16711,6 @@ pub fn string_prototype_replace_all(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
   // 1. Let O be ? RequireObjectCoercible(this value).
   //
@@ -16695,6 +16718,8 @@ pub fn string_prototype_replace_all(
   // before `ToString(this)` per ECMA-262 and test262.
   let o = crate::spec_ops::require_object_coercible(this)?;
   scope.push_root(o)?;
+
+  let intr = require_intrinsics(vm)?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -16706,13 +16731,8 @@ pub fn string_prototype_replace_all(
   // lookup on `Boolean/Number/String.prototype[Symbol.replace]`).
   if let Value::Object(_) = search_value {
     // 2.a. Let isRegExp be ? IsRegExp(searchValue).
-    let is_regexp = crate::spec_ops::is_regexp_with_host_and_hooks(
-      vm,
-      &mut scope,
-      host,
-      hooks,
-      search_value,
-    )?;
+    let is_regexp =
+      crate::spec_ops::is_regexp_with_host_and_hooks(vm, &mut scope, host, hooks, search_value)?;
 
     // 2.b. If isRegExp is true, validate `flags` is object-coercible and contains `"g"`.
     if is_regexp {
@@ -16730,6 +16750,8 @@ pub fn string_prototype_replace_all(
         flags_key,
         Value::Object(search_obj),
       )?;
+      // Root `flags_val` across `ToString(flags)`; the coercion can allocate and trigger GC.
+      scope.push_root(flags_val)?;
 
       // `RequireObjectCoercible(flags)`.
       let flags_val = crate::spec_ops::require_object_coercible(flags_val)?;
