@@ -2,6 +2,11 @@
 
 The canonical entry point for this repo’s internal documentation is [`docs/index.md`](index.md).
 
+If you are looking for the current “which document/tab API runs JS + event loop?” map, start with:
+
+- [`docs/runtime_stacks.md`](runtime_stacks.md)
+- [`docs/live_rendering_loop.md`](live_rendering_loop.md) (driving a JS-enabled `BrowserTab` loop)
+
 Browser UI development:
 
 - Running + architecture overview: [`docs/browser_ui.md`](browser_ui.md)
