@@ -1645,23 +1645,24 @@ mod tests {
 
   #[test]
   fn window_realm_webidl_dom_backend_does_not_clobber_element_sibling_accessors() -> Result<()> {
-    let mut realm = WindowRealm::new(
-      WindowRealmConfig::new("https://example.invalid/")
-        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
-    )
-    .map_err(|err| Error::Other(err.to_string()))?;
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
 
-    let mut exec = |source: &str| -> Result<Value> {
-      match realm.exec_script(source) {
-        Ok(value) => Ok(value),
-        Err(err) => Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
-      }
-    };
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      "https://example.invalid/",
+      Arc::new(HttpFetcher::new()),
+      clock,
+      JsExecutionOptions::default(),
+      DomBindingsBackend::WebIdl,
+    )?;
 
     // The WebIDL-generated installer defines these accessors as enumerable, while the legacy
     // handwritten WindowRealm shim uses `enumerable: false`. If WindowRealm overwrites the
     // WebIDL-defined property, this assertion will fail (guarding migration correctness).
-    let ok = exec(
+    let ok = host.exec_script_in_event_loop(
+      &mut event_loop,
       "(() => {\n\
         const nextDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'nextElementSibling');\n\
         const prevDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'previousElementSibling');\n\
