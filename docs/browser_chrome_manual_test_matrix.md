@@ -39,9 +39,10 @@ parity are out of scope here** (see `instructions/browser_interaction.md`). This
    ```
 
 3. Prefer deterministic built-in pages when possible:
-   - `about:test-scroll` (contains the literal text `scroll`)
-   - `about:test-form` (simple `<input>`/`<button>`)
-   - `about:test-heavy` (large DOM; useful for stop-loading / cancellation)
+    - `about:test-scroll` (contains the literal text `scroll`)
+    - `about:test-form` (simple `<input>`/`<button>`)
+    - `about:test-heavy` (large DOM; useful for stop-loading / cancellation)
+    - `about:test-layout-stress` (width-sensitive layout; useful for resize/scroll responsiveness)
 
 ---
 
