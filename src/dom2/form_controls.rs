@@ -891,12 +891,15 @@ impl Document {
       };
 
       // Apply only to HTML elements in the HTML namespace.
-      let (tag_name, namespace) = match &node.node_type {
-        DomNodeType::Element {
-          tag_name,
-          namespace,
-          ..
-        } => (tag_name.as_str(), namespace.as_str()),
+      //
+      // NOTE: avoid holding borrows into `node.node_type` across attribute mutations below.
+      let (is_input, is_textarea, is_option, in_html_namespace) = match &node.node_type {
+        DomNodeType::Element { tag_name, namespace, .. } => (
+          tag_name.eq_ignore_ascii_case("input"),
+          tag_name.eq_ignore_ascii_case("textarea"),
+          tag_name.eq_ignore_ascii_case("option"),
+          namespace.is_empty() || namespace == HTML_NAMESPACE,
+        ),
         _ => {
           let len = node.children.len();
           let children_ptr = node.children.as_mut_ptr();
@@ -906,7 +909,7 @@ impl Document {
           continue;
         }
       };
-      if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+      if !in_html_namespace {
         let len = node.children.len();
         let children_ptr = node.children.as_mut_ptr();
         for idx in (0..len).rev() {
@@ -915,7 +918,7 @@ impl Document {
         continue;
       }
 
-      if tag_name.eq_ignore_ascii_case("input") {
+      if is_input {
         // Avoid holding a borrowed `&str` from the node's attribute map across mutations (calling
         // `set_attribute`/`toggle_bool_attribute` can reallocate).
         let (is_file, is_checkable) = {
@@ -948,7 +951,7 @@ impl Document {
             node.toggle_bool_attribute("checked", state.checkedness);
           }
         }
-      } else if tag_name.eq_ignore_ascii_case("textarea") {
+      } else if is_textarea {
         if let Some(state) = self
           .textarea_states
           .get(dom2_id.index())
@@ -964,7 +967,7 @@ impl Document {
             node.remove_attribute("data-fastr-value");
           }
         }
-      } else if tag_name.eq_ignore_ascii_case("option") {
+      } else if is_option {
         if let Some(state) = self
           .option_states
           .get(dom2_id.index())

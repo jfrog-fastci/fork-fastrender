@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+#[cfg(feature = "direct_websocket")]
 use crate::ipc::websocket as websocket_ipc;
 use crate::resource::{FetchedResource, ResourceFetcher};
 use getrandom::getrandom;
