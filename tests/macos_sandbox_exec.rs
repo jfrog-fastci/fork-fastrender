@@ -6,9 +6,8 @@
 
 #![cfg(target_os = "macos")]
 
-mod common;
-
 use std::io;
+use std::net::TcpListener;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,8 +17,8 @@ const PORT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_LOCALHOST_PORT";
 const READ_PATH_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_READ_PATH";
 const WRITE_PATH_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_WRITE_PATH";
 
-// Keep this string in sync with the module + fn name below; it's passed to `--exact`.
-const TEST_NAME: &str = "macos_sandbox_exec::sandbox_exec_wrapper_enforces_sandbox";
+// Passed to `--exact` when spawning the sandboxed child process.
+const TEST_NAME: &str = concat!(module_path!(), "::sandbox_exec_wrapper_enforces_sandbox");
 
 fn sandbox_exec_path() -> &'static Path {
   Path::new("/usr/bin/sandbox-exec")
@@ -109,9 +108,8 @@ fn sandbox_exec_wrapper_enforces_sandbox() {
     return;
   }
 
-  let _net_lock = crate::common::net_test_lock();
-  let Some(listener) = crate::common::try_bind_localhost("macos sandbox-exec enforcement test")
-  else {
+  let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
+    eprintln!("skipping macos sandbox-exec enforcement test: unable to bind localhost");
     return;
   };
   let port = listener
