@@ -1831,6 +1831,16 @@ fn validate_regex_pattern(
             return Ok((i + esc_len, Some('-' as u32), false));
           }
 
+          // ClassSetReservedPunctuator escapes are only valid in UnicodeSets mode (`/v`) inside a
+          // class set. They allow representing punctuators that would otherwise form a reserved
+          // double punctuator/operator (e.g. `[\&\&]`, `[\!\!]`).
+          if matches!(
+            esc,
+            '&' | '!' | '#' | '%' | ',' | ':' | ';' | '<' | '=' | '>' | '@' | '`' | '~'
+          ) {
+            return Ok((i + esc_len, Some(esc as u32)));
+          }
+
           // CharacterClassEscape (not valid as range endpoint).
           if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
             return Ok((i + esc_len, None, false));
@@ -3295,6 +3305,20 @@ mod regex_validation_tests {
     ] {
       assert_invalid(pat);
     }
+  }
+
+  #[test]
+  fn unicode_sets_mode_accepts_escaped_reserved_punctuators() {
+    // These punctuators can be escaped in `/v` mode to avoid being parsed as reserved operators
+    // (e.g. `&&` is intersection) / reserved double punctuators (e.g. `!!`).
+    assert_valid(r"/[\&\&]/v");
+    assert_valid(r"/[\!\!]/v");
+    assert_valid(r"/[\#\#]/v");
+    assert_valid(r"/[\~\~]/v");
+
+    // Single punctuators should also be accepted when escaped.
+    assert_valid(r"/[\&]/v");
+    assert_valid(r"/[\!]/v");
   }
 
   #[test]
