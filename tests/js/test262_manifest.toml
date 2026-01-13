@@ -824,16 +824,6 @@ glob = "built-ins/Boolean/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Object/getOwnPropertyNames/15.2.3.4-4-1.js"
-status = "xfail"
-reason = "vm-js: global object is missing some standard built-ins (e.g. Date/RegExp/Error constructors)."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyNames/15.2.3.4-4-2.js"
-status = "xfail"
-reason = "vm-js: Object is missing some ES5-era static methods (e.g. defineProperties, seal, freeze)."
-
-[[expectations]]
 glob = "built-ins/Object/getOwnPropertyDescriptor/**"
 status = "pass"
 
