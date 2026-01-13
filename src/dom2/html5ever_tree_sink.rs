@@ -772,10 +772,13 @@ impl TreeSink for Dom2TreeSink {
     );
     doc.node_mut(shadow_root_id).parent = Some(*location);
     doc.live_mutation.pre_insert(*location, 0, 1);
+    let range_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
+    let inserted_count =
+      doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]);
     doc.live_range_pre_insert_steps(
       *location,
-      doc.tree_child_index_from_raw_index_for_range(*location, 0),
-      doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]),
+      range_index,
+      inserted_count,
     );
     doc.node_mut(*location).children.insert(0, shadow_root_id);
 
@@ -1061,10 +1064,14 @@ impl TreeSink for Dom2TreeSink {
       doc
         .live_mutation
         .pre_insert(*new_parent, old_len, moved_children_snapshot.len());
+      let range_index =
+        doc.tree_child_index_from_raw_index_for_range(*new_parent, old_len);
+      let inserted_count =
+        doc.inserted_tree_children_count_for_range(*new_parent, &moved_children_snapshot);
       doc.live_range_pre_insert_steps(
         *new_parent,
-        doc.tree_child_index_from_raw_index_for_range(*new_parent, old_len),
-        doc.inserted_tree_children_count_for_range(*new_parent, &moved_children_snapshot),
+        range_index,
+        inserted_count,
       );
     }
     let moved_children = std::mem::take(&mut doc.node_mut(*node).children);

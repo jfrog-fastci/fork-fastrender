@@ -1028,18 +1028,17 @@ fn rewrite_mdn_live_sample_iframes(
               }
             } else {
               let mut tag = tag.to_string();
-              let Some(close_idx) = tag.rfind('>') else {
-                tag.to_string()
-              };
-              let mut insert_pos = close_idx;
-              let mut cursor = close_idx;
-              while cursor > 0 && tag.as_bytes()[cursor - 1].is_ascii_whitespace() {
-                cursor -= 1;
+              if let Some(close_idx) = tag.rfind('>') {
+                let mut insert_pos = close_idx;
+                let mut cursor = close_idx;
+                while cursor > 0 && tag.as_bytes()[cursor - 1].is_ascii_whitespace() {
+                  cursor -= 1;
+                }
+                if cursor > 0 && tag.as_bytes()[cursor - 1] == b'/' {
+                  insert_pos = cursor - 1;
+                }
+                tag.insert_str(insert_pos, &format!(" src=\"{new_src}\""));
               }
-              if cursor > 0 && tag.as_bytes()[cursor - 1] == b'/' {
-                insert_pos = cursor - 1;
-              }
-              tag.insert_str(insert_pos, &format!(" src=\"{new_src}\""));
               tag
             }
           } else {
