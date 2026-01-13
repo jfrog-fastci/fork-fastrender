@@ -1,0 +1,213 @@
+// META: script=/resources/testharness.js
+//
+// Extended DOM Traversal API coverage: TreeWalker method semantics, filtering behavior, and
+// re-entrancy guards.
+//
+// Spec: https://dom.spec.whatwg.org/#interface-treewalker
+// Filtering: https://dom.spec.whatwg.org/#concept-node-filter
+//
+// This is a curated, deterministic subset intended to exercise the full algorithmic surface of
+// TreeWalker beyond `nextNode()` basics.
+
+function clear_children(node) {
+  while (node.childNodes.length !== 0) {
+    node.removeChild(node.childNodes[0]);
+  }
+}
+
+function make_tree() {
+  clear_children(document.body);
+
+  // Tree shape (tree order, element nodes only):
+  // root
+  //   a
+  //     a1
+  //     a2
+  //   b
+  //     b1
+  //   c
+  const root = document.createElement("div");
+  root.id = "root";
+
+  const a = document.createElement("div");
+  a.id = "a";
+  const a1 = document.createElement("div");
+  a1.id = "a1";
+  const a2 = document.createElement("div");
+  a2.id = "a2";
+  a.appendChild(a1);
+  a.appendChild(a2);
+
+  const b = document.createElement("div");
+  b.id = "b";
+  const b1 = document.createElement("div");
+  b1.id = "b1";
+  b.appendChild(b1);
+
+  const c = document.createElement("div");
+  c.id = "c";
+
+  root.appendChild(a);
+  root.appendChild(b);
+  root.appendChild(c);
+  document.body.appendChild(root);
+
+  return { root, a, a1, a2, b, b1, c };
+}
+
+test(() => {
+  const { root, a, a1, a2, b, b1 } = make_tree();
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+
+  assert_equals(tw.currentNode, root);
+
+  // root is the traversal boundary; parentNode() should return null and not move.
+  assert_equals(tw.parentNode(), null);
+  assert_equals(tw.currentNode, root);
+
+  assert_equals(tw.firstChild(), a);
+  assert_equals(tw.currentNode, a);
+
+  assert_equals(tw.firstChild(), a1);
+  assert_equals(tw.currentNode, a1);
+
+  assert_equals(tw.nextSibling(), a2);
+  assert_equals(tw.currentNode, a2);
+
+  // a2 has no next sibling, and the first accepted ancestor is `a`, so nextSibling() returns null.
+  assert_equals(tw.nextSibling(), null);
+  assert_equals(tw.currentNode, a2);
+
+  assert_equals(tw.parentNode(), a);
+  assert_equals(tw.currentNode, a);
+
+  assert_equals(tw.nextSibling(), b);
+  assert_equals(tw.currentNode, b);
+
+  assert_equals(tw.lastChild(), b1);
+  assert_equals(tw.currentNode, b1);
+
+  // b1 has no previous sibling, and `b` is accepted, so previousSibling() returns null.
+  assert_equals(tw.previousSibling(), null);
+  assert_equals(tw.currentNode, b1);
+}, "TreeWalker navigation methods (parentNode/firstChild/lastChild/nextSibling/previousSibling) update currentNode per spec");
+
+test(() => {
+  const { root, a, a1, a2, b, b1, c } = make_tree();
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+
+  // nextNode() starts at currentNode and returns the first following descendant (not the root).
+  assert_equals(tw.nextNode(), a);
+  assert_equals(tw.nextNode(), a1);
+  assert_equals(tw.nextNode(), a2);
+  assert_equals(tw.nextNode(), b);
+  assert_equals(tw.nextNode(), b1);
+  assert_equals(tw.nextNode(), c);
+  assert_equals(tw.nextNode(), null);
+
+  // previousNode() walks backwards in tree order, including returning the root.
+  assert_equals(tw.currentNode, c, "currentNode remains unchanged when nextNode() returns null");
+
+  assert_equals(tw.previousNode(), b1);
+  assert_equals(tw.previousNode(), b);
+  assert_equals(tw.previousNode(), a2);
+  assert_equals(tw.previousNode(), a1);
+  assert_equals(tw.previousNode(), a);
+  assert_equals(tw.previousNode(), root);
+  assert_equals(tw.previousNode(), null);
+  assert_equals(tw.currentNode, root, "currentNode remains unchanged when previousNode() returns null");
+}, "TreeWalker nextNode()/previousNode() traverse in tree order and respect the root boundary");
+
+test(() => {
+  const { root, a, a1, a2, b, b1 } = make_tree();
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+
+  // The currentNode setter is not constrained beyond being a Node; it should affect subsequent
+  // traversal operations immediately.
+  tw.currentNode = b;
+  assert_equals(tw.currentNode, b);
+  assert_equals(tw.nextNode(), b1);
+
+  tw.currentNode = a1;
+  assert_equals(tw.nextNode(), a2);
+  assert_equals(tw.parentNode(), a);
+}, "TreeWalker currentNode setter affects subsequent traversal");
+
+test(() => {
+  const { root, a, a1, b } = make_tree();
+
+  // FILTER_SKIP: skip the node itself but still descend into its children.
+  const skip_a = (node) => (node === a ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT);
+  const tw_skip = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, skip_a);
+  assert_equals(tw_skip.firstChild(), a1, "firstChild() should descend into skipped nodes");
+
+  tw_skip.currentNode = root;
+  assert_equals(tw_skip.nextNode(), a1, "nextNode() should descend into skipped nodes");
+
+  // FILTER_REJECT: skip the node and its subtree.
+  const reject_a = (node) => (node === a ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
+  const tw_reject = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, reject_a);
+  assert_equals(tw_reject.firstChild(), b, "firstChild() should skip rejected subtrees");
+
+  tw_reject.currentNode = root;
+  assert_equals(tw_reject.nextNode(), b, "nextNode() should skip rejected subtrees");
+}, "TreeWalker filter return values: FILTER_SKIP descends into children; FILTER_REJECT prunes subtree");
+
+test(() => {
+  const { root, a, a2, b } = make_tree();
+
+  // When the previous sibling is FILTER_SKIP, previousSibling() should walk into its last accepted
+  // descendant. When it is FILTER_REJECT, the subtree should be skipped entirely.
+  const skip_a = (node) => (node === a ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT);
+  const tw_skip = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, skip_a);
+  tw_skip.currentNode = b;
+  assert_equals(tw_skip.previousSibling(), a2);
+
+  const reject_a = (node) => (node === a ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
+  const tw_reject = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, reject_a);
+  tw_reject.currentNode = b;
+  assert_equals(tw_reject.previousSibling(), null);
+}, "TreeWalker traverse-siblings algorithm: FILTER_SKIP descends; FILTER_REJECT does not");
+
+test(() => {
+  const { root, a } = make_tree();
+
+  let did_reenter = false;
+  let nested_threw = false;
+  let nested_name = "";
+  let tw = null;
+
+  const filter = () => {
+    if (!did_reenter) {
+      did_reenter = true;
+      try {
+        tw.nextNode();
+      } catch (e) {
+        nested_threw = true;
+        nested_name = e && e.name;
+      }
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+
+  assert_equals(tw.nextNode(), a);
+  assert_true(did_reenter, "Filter callback should have attempted a re-entrant traversal call");
+  assert_true(nested_threw, "Re-entrant nextNode() should throw");
+  assert_equals(nested_name, "InvalidStateError");
+}, "TreeWalker rejects re-entrant nextNode() calls from the filter callback (InvalidStateError)");
+
+test(() => {
+  const { root, a1 } = make_tree();
+
+  const filter = {
+    acceptNode(node) {
+      return node === a1 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+    },
+  };
+
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+  assert_equals(tw.nextNode(), a1);
+  assert_equals(tw.nextNode(), null);
+}, "TreeWalker supports NodeFilter objects with an acceptNode() method");
