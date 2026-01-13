@@ -60,99 +60,120 @@ fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> 
 #[test]
 fn yield_star_return_delegates_to_delegate_return_and_awaits_final_value() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  if !feature_detect_async_generators(&mut rt)? {
-    return Ok(());
-  }
 
-  rt.exec_script(
-    r#"
-      var ok = false;
-      var done = false;
-      var error = null;
+  let result: Result<(), VmError> = (|| {
+    if !feature_detect_async_generators(&mut rt)? {
+      return Ok(());
+    }
 
-      var returnCalls = 0;
-      var returnArg = null;
+    rt.exec_script(
+      r#"
+        var ok = false;
+        var done = false;
+        var error = null;
 
-      var delegate = {
-        next() { return { value: 1, done: false }; },
-        return(v) {
-          returnCalls++;
-          returnArg = v;
-          // Ensure the outer async generator awaits the delegate's final completion value.
-          return Promise.resolve({ value: Promise.resolve(99), done: true });
-        },
-        [Symbol.asyncIterator]() { return this; },
-      };
+        var returnCalls = 0;
+        var returnArg = null;
 
-      async function* g() { return yield* delegate; }
-      var it = g();
+        var delegate = {
+          next() { return { value: 1, done: false }; },
+          return(v) {
+            returnCalls++;
+            returnArg = v;
+            // Ensure the outer async generator awaits the delegate's final completion value.
+            return Promise.resolve({ value: Promise.resolve(99), done: true });
+          },
+          [Symbol.asyncIterator]() { return this; },
+        };
 
-      async function run() {
-        try {
-          var r1 = await it.next();
-          var r2 = await it.return("X");
-          ok =
-            r1.value === 1 && r1.done === false &&
-            r2.value === 99 && r2.done === true &&
-            returnCalls === 1 && returnArg === "X";
-        } catch (e) {
-          error = e;
+        async function* g() { return yield* delegate; }
+        var it = g();
+
+        async function run() {
+          try {
+            var r1 = await it.next();
+            var r2 = await it.return("X");
+            ok =
+              r1.value === 1 && r1.done === false &&
+              r2.value === 99 && r2.done === true &&
+              returnCalls === 1 && returnArg === "X";
+          } catch (e) {
+            error = e;
+          }
+          done = true;
         }
-        done = true;
-      }
 
-      run();
-    "#,
-  )?;
+        run();
+      "#,
+    )?;
 
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let v = rt.exec_script("done && ok && error === null")?;
-  assert_eq!(v, Value::Bool(true));
-  Ok(())
+    let v = rt.exec_script("done && ok && error === null")?;
+    assert_eq!(v, Value::Bool(true));
+    assert!(
+      rt.vm.microtask_queue().is_empty(),
+      "expected microtask queue to be empty after checkpoint"
+    );
+    Ok(())
+  })();
+
+  // Ensure we don't leak queued microtasks even if the test fails.
+  rt.teardown_microtasks();
+  result
 }
 
 #[test]
 fn yield_star_return_without_delegate_return_completes_with_outer_value() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  if !feature_detect_async_generators(&mut rt)? {
-    return Ok(());
-  }
 
-  rt.exec_script(
-    r#"
-      var ok = false;
-      var done = false;
-      var error = null;
+  let result: Result<(), VmError> = (|| {
+    if !feature_detect_async_generators(&mut rt)? {
+      return Ok(());
+    }
 
-      var delegate = {
-        next() { return { value: 1, done: false }; },
-        [Symbol.asyncIterator]() { return this; },
-      };
+    rt.exec_script(
+      r#"
+        var ok = false;
+        var done = false;
+        var error = null;
 
-      async function* g() { return yield* delegate; }
-      var it = g();
+        var delegate = {
+          next() { return { value: 1, done: false }; },
+          [Symbol.asyncIterator]() { return this; },
+        };
 
-      async function run() {
-        try {
-          var r1 = await it.next();
-          var r2 = await it.return(Promise.resolve("Y"));
-          ok =
-            r1.value === 1 && r1.done === false &&
-            r2.value === "Y" && r2.done === true;
-        } catch (e) {
-          error = e;
+        async function* g() { return yield* delegate; }
+        var it = g();
+
+        async function run() {
+          try {
+            var r1 = await it.next();
+            var r2 = await it.return(Promise.resolve("Y"));
+            ok =
+              r1.value === 1 && r1.done === false &&
+              r2.value === "Y" && r2.done === true;
+          } catch (e) {
+            error = e;
+          }
+          done = true;
         }
-        done = true;
-      }
 
-      run();
-    "#,
-  )?;
+        run();
+      "#,
+    )?;
 
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let v = rt.exec_script("done && ok && error === null")?;
-  assert_eq!(v, Value::Bool(true));
-  Ok(())
+    let v = rt.exec_script("done && ok && error === null")?;
+    assert_eq!(v, Value::Bool(true));
+    assert!(
+      rt.vm.microtask_queue().is_empty(),
+      "expected microtask queue to be empty after checkpoint"
+    );
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
 }
