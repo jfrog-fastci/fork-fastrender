@@ -5720,6 +5720,7 @@ dependencies = [
  "diagnostics",
  "fast-float",
  "hir-js",
+ "icu_properties",
  "itoa",
  "parse-js",
  "ryu",
