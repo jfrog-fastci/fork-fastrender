@@ -281,7 +281,6 @@ impl Document {
       }
     }
   }
-
   fn range(&self, range: RangeId) -> DomResult<&Range> {
     self.ranges.get(&range).ok_or(DomError::NotFoundError)
   }
