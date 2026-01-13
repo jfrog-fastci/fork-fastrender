@@ -38,7 +38,7 @@ use base64::Engine as _;
 use parking_lot::Mutex;
 use selectors::context::QuirksMode;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -300,6 +300,13 @@ pub(crate) struct WindowRealmUserData {
   fallback_scroll_x: f64,
   fallback_scroll_y: f64,
   pending_navigation: Option<LocationNavigationRequest>,
+  /// Pending `hashchange` events queued when the realm is running without an HTML [`EventLoop`].
+  ///
+  /// In full browser-style embeddings, fragment navigations queue a DOM manipulation task on the
+  /// event loop. When embedders use `WindowRealm` directly (no event loop installed in
+  /// `VmHostHooks`), we still need to deliver `hashchange` asynchronously; these entries are
+  /// dispatched during `WindowRealm::perform_microtask_checkpoint`.
+  pending_hashchange_events: VecDeque<QueuedHashChangeEvent>,
   cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
   pub(crate) module_loader: ModuleLoaderHandle,
@@ -417,6 +424,10 @@ impl std::fmt::Debug for WindowRealmUserData {
         &self.pending_dataset_mutation_observer_microtasks.borrow().len(),
       )
       .field(
+        "pending_hashchange_events_len",
+        &self.pending_hashchange_events.len(),
+      )
+      .field(
         "owned_dom2_documents_len",
         &self.owned_dom2_documents.borrow().len(),
       )
@@ -464,6 +475,7 @@ impl WindowRealmUserData {
       fallback_scroll_x: 0.0,
       fallback_scroll_y: 0.0,
       pending_navigation: None,
+      pending_hashchange_events: VecDeque::new(),
       document_url,
       privileged_chrome_realm: false,
       cookie_fetcher: None,
@@ -1317,11 +1329,17 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
-    let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
-    // When the embedder doesn't provide a real document host, `WindowRealm::exec_script` runs
-    // against this lightweight `DocumentHostState`. Keep the document in the default `loading`
-    // state so embedders/tests that drive the document lifecycle can observe the expected
-    // `loading` → `interactive` → `complete` transitions.
+    // When the embedder doesn't provide a real host context, execute against a lightweight host
+    // value.
+    //
+    // IMPORTANT: we intentionally do not use `DocumentHostState` here. A per-call `DocumentHostState`
+    // would carry a fresh `dom2::Document`, which would:
+    // - lose `addEventListener` registrations across turns, and
+    // - incorrectly drop any asynchronously-dispatched events (e.g. `hashchange` fallback delivery).
+    //
+    // Instead, event listeners fall back to the realm-owned `events_dom_fallback` document stored in
+    // `WindowRealmUserData`, which persists for the lifetime of the realm.
+    let mut host_ctx = VmJsHostContext::default();
     self.exec_script_source_with_host_and_hooks(&mut host_ctx, hooks, source)
   }
 
@@ -1452,11 +1470,7 @@ impl WindowRealm {
       // - expose DOM shim exotic hooks to the evaluator, and
       // - keep Promise jobs enqueued onto the VM-owned queue (restored on drop).
       let mut guard = MicrotaskQueueRestoreGuard::new(&mut rt.vm);
-      let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
-      // When the embedder doesn't provide a real document host, `WindowRealm::exec_script` runs
-      // against this lightweight `DocumentHostState`. Keep the document in the default `loading`
-      // state so embedders/tests that drive the document lifecycle can observe the expected
-      // `loading` → `interactive` → `complete` transitions.
+      let mut host_ctx = VmJsHostContext::default();
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(&mut host_ctx);
       any.set_webidl_limits(webidl_limits);
@@ -1510,6 +1524,7 @@ impl WindowRealm {
   pub fn perform_microtask_checkpoint(&mut self) -> Result<(), VmError> {
     let webidl_bindings_host = self.webidl_bindings_host;
     let webidl_limits = self.js_execution_options.webidl_limits;
+    let realm_id = self.realm_id;
     self.with_vm_budget(|rt| {
       // `vm-js`'s built-in `Vm::perform_microtask_checkpoint` runs queued jobs using a lightweight
       // internal `VmHostHooks` implementation that only supports Promise job chaining. FastRender's
@@ -1730,9 +1745,9 @@ impl WindowRealm {
       // Use a lightweight `VmHost` context for Promise job execution when the higher-level
       // `WindowHost`/event-loop pipeline is not in use.
       //
-      // `HostDocumentState` carries the `Document.currentScript` handle, so Promise jobs run in this
-      // fallback path can still observe/override `currentScript` when needed.
-      let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+      // `VmJsHostContext` is a stable downcast target for host-side state needed by some DOM
+      // algorithms (currently: `Document.currentScript` bookkeeping).
+      let mut host_ctx = VmJsHostContext::default();
       let dataset_ctx = DatasetExoticContext::for_vm(&rt.vm);
       let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx, dataset_ctx, webidl_limits);
       let mut fallback_webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
@@ -1791,6 +1806,127 @@ impl WindowRealm {
       if let Some(err) = hard_stop_err {
         // Hard stop: discard any remaining queued jobs (and any jobs enqueued by the failing job)
         // so we don't leak persistent roots.
+        let mut ctx = TeardownCtx { heap: &mut rt.heap };
+        rt.vm.microtask_queue_mut().teardown(&mut ctx);
+        rt.vm.microtask_queue_mut().end_checkpoint();
+        // Ensure the locally-created fallback bindings host outlives the microtask checkpoint: the
+        // hooks payload stores a raw pointer to it.
+        let _ = &mut fallback_webidl_bindings_host;
+        return Err(err);
+      }
+
+      let mut termination_err: Option<VmError> = None;
+
+      // Drain and dispatch any pending fallback `hashchange` events queued while running without an
+      // HTML `EventLoop` (for example when embedders use `WindowRealm` directly).
+      //
+      // We take a snapshot of the queue so `hashchange` listeners that trigger further fragment
+      // navigations still see asynchronous delivery: events queued during dispatch will remain
+      // pending until the next explicit checkpoint.
+      let mut pending_hashchange_events: VecDeque<QueuedHashChangeEvent> = rt
+        .vm
+        .user_data_mut::<WindowRealmUserData>()
+        .map(|data| std::mem::take(&mut data.pending_hashchange_events))
+        .unwrap_or_default();
+
+      while let Some(event) = pending_hashchange_events.pop_front() {
+        let dispatch_result: Result<(), VmError> = (|| {
+          let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+          let mut scope = heap.scope();
+          let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+            realm: realm_id,
+            script_or_module: None,
+          })?;
+          dispatch_hashchange_event(
+            &mut vm,
+            &mut scope,
+            &mut host_ctx,
+            &mut hooks,
+            realm.global_object(),
+            &event.old_url,
+            &event.new_url,
+          )
+        })();
+
+        // Ensure any Promise jobs scheduled during dispatch are enqueued before continuing (or
+        // before teardown on termination).
+        hooks.drain_into(rt.vm.microtask_queue_mut());
+
+        match dispatch_result {
+          Ok(()) => {}
+          Err(e @ (VmError::Termination(_) | VmError::OutOfMemory)) => {
+            termination_err = Some(e);
+            // Re-queue the current + remaining events so a future checkpoint can retry delivery.
+            pending_hashchange_events.push_front(event);
+            break;
+          }
+          Err(e) => {
+            if first_err.is_none() {
+              first_err = Some(e);
+            }
+          }
+        }
+      }
+
+      if !pending_hashchange_events.is_empty() {
+        if let Some(data) = rt.vm.user_data_mut::<WindowRealmUserData>() {
+          let mut queued_during_dispatch = std::mem::take(&mut data.pending_hashchange_events);
+          data.pending_hashchange_events = pending_hashchange_events;
+          data
+            .pending_hashchange_events
+            .append(&mut queued_during_dispatch);
+          while data.pending_hashchange_events.len() > MAX_PENDING_HASHCHANGE_EVENTS {
+            data.pending_hashchange_events.pop_front();
+          }
+        }
+      }
+
+      if let Some(err) = termination_err {
+        // Termination during `hashchange` dispatch is also a hard stop: discard any queued microtasks
+        // to avoid leaking persistent roots.
+        let mut ctx = TeardownCtx { heap: &mut rt.heap };
+        rt.vm.microtask_queue_mut().teardown(&mut ctx);
+        rt.vm.microtask_queue_mut().end_checkpoint();
+        // Ensure the locally-created fallback bindings host outlives the microtask checkpoint: the
+        // hooks payload stores a raw pointer to it.
+        let _ = &mut fallback_webidl_bindings_host;
+        return Err(err);
+      }
+
+      // Drain any Promise jobs queued during fallback event dispatch so callers see a fully-drained
+      // microtask queue after the checkpoint.
+      loop {
+        let Some((realm, job)) = rt.vm.microtask_queue_mut().pop_front() else {
+          break;
+        };
+
+        let job_result = {
+          let mut ctx = Ctx {
+            vm: &mut rt.vm,
+            heap: &mut rt.heap,
+            host: &mut host_ctx,
+            realm,
+          };
+          job.run(&mut ctx, &mut hooks)
+        };
+
+        hooks.drain_into(rt.vm.microtask_queue_mut());
+
+        match job_result {
+          Ok(()) => {}
+          Err(e @ (VmError::Termination(_) | VmError::OutOfMemory)) => {
+            termination_err = Some(e);
+            break;
+          }
+          Err(e) => {
+            if first_err.is_none() {
+              first_err = Some(e);
+            }
+          }
+        }
+      }
+
+      if let Some(err) = termination_err {
         let mut ctx = TeardownCtx { heap: &mut rt.heap };
         rt.vm.microtask_queue_mut().teardown(&mut ctx);
         rt.vm.microtask_queue_mut().end_checkpoint();
@@ -5470,14 +5606,44 @@ fn window_location_get_native(
   Ok(location_value)
 }
 
-fn queue_hashchange_event_task(hooks: &mut dyn VmHostHooks, old_url: String, new_url: String) {
+const MAX_PENDING_HASHCHANGE_EVENTS: usize = 1024;
+
+#[derive(Clone, Debug)]
+struct QueuedHashChangeEvent {
+  old_url: String,
+  new_url: String,
+}
+
+fn queue_hashchange_event_task(
+  vm: &mut Vm,
+  hooks: &mut dyn VmHostHooks,
+  old_url: String,
+  new_url: String,
+) {
   if let Some(event_loop) = event_loop_mut_from_hooks::<crate::api::BrowserTabHost>(hooks) {
     queue_hashchange_event_task_for_event_loop(event_loop, old_url, new_url);
     return;
   }
   if let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) {
     queue_hashchange_event_task_for_event_loop(event_loop, old_url, new_url);
+    return;
   }
+
+  // When no HTML event loop is installed (e.g. `WindowRealm` direct usage), still deliver
+  // `hashchange` asynchronously by queueing it into the realm's user data. The queue is drained by
+  // `WindowRealm::perform_microtask_checkpoint`.
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return;
+  };
+
+  // Keep the queue bounded: if the limit is exceeded, drop the oldest events so the realm can't
+  // grow unbounded via `location.hash` loops.
+  while data.pending_hashchange_events.len() >= MAX_PENDING_HASHCHANGE_EVENTS {
+    data.pending_hashchange_events.pop_front();
+  }
+  data
+    .pending_hashchange_events
+    .push_back(QueuedHashChangeEvent { old_url, new_url });
 }
 
 fn queue_hashchange_event_task_for_event_loop<Host: WindowRealmHost + 'static>(
@@ -5488,6 +5654,113 @@ fn queue_hashchange_event_task_for_event_loop<Host: WindowRealmHost + 'static>(
   let _ = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
     dispatch_hashchange_event_task(host, event_loop, old_url, new_url)
   });
+}
+
+fn dispatch_hashchange_event(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_obj: GcObject,
+  old_url: &str,
+  new_url: &str,
+) -> Result<(), VmError> {
+  let document_obj = match vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.document_obj)
+  {
+    Some(obj) => obj,
+    None => return Ok(()),
+  };
+
+  let dispatch_event = {
+    scope.push_root(Value::Object(document_obj))?;
+    let key = alloc_key(scope, EVENT_TARGET_DISPATCH_EVENT_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+      .unwrap_or(Value::Undefined)
+  };
+  let dispatch_event = if matches!(dispatch_event, Value::Object(_))
+    && scope.heap().is_callable(dispatch_event).unwrap_or(false)
+  {
+    dispatch_event
+  } else {
+    return Ok(());
+  };
+
+  let event_proto = {
+    scope.push_root(Value::Object(document_obj))?;
+    let key = alloc_key(scope, HASH_CHANGE_EVENT_PROTOTYPE_KEY)?;
+    let proto = scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+      .and_then(|v| match v {
+        Value::Object(obj) => Some(obj),
+        _ => None,
+      });
+    if proto.is_some() {
+      proto
+    } else {
+      let key = alloc_key(scope, EVENT_PROTOTYPE_KEY)?;
+      scope
+        .heap()
+        .object_get_own_data_property_value(document_obj, &key)?
+        .and_then(|v| match v {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        })
+    }
+  };
+
+  let event_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(event_obj))?;
+  if let Some(proto) = event_proto {
+    scope.heap_mut().object_set_prototype(event_obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  let type_s = scope.alloc_string("hashchange")?;
+  scope.push_root(Value::String(type_s))?;
+  scope.define_property(event_obj, type_key, data_desc(Value::String(type_s)))?;
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(false)))?;
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(false)))?;
+  let composed_key = alloc_key(scope, "composed")?;
+  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+
+  define_event_default_properties(scope, event_obj)?;
+
+  let old_url_key = alloc_key(scope, "oldURL")?;
+  let old_url_s = scope.alloc_string(old_url)?;
+  scope.push_root(Value::String(old_url_s))?;
+  scope.define_property(
+    event_obj,
+    old_url_key,
+    read_only_data_desc(Value::String(old_url_s)),
+  )?;
+  let new_url_key = alloc_key(scope, "newURL")?;
+  let new_url_s = scope.alloc_string(new_url)?;
+  scope.push_root(Value::String(new_url_s))?;
+  scope.define_property(
+    event_obj,
+    new_url_key,
+    read_only_data_desc(Value::String(new_url_s)),
+  )?;
+
+  brand_event_object(scope, event_obj, BrandedEventKind::HashChangeEvent)?;
+
+  vm.call_with_host_and_hooks(
+    vm_host,
+    scope,
+    hooks,
+    dispatch_event,
+    Value::Object(global_obj),
+    &[Value::Object(event_obj)],
+  )?;
+  Ok(())
 }
 
 fn dispatch_hashchange_event_task<Host: WindowRealmHost + 'static>(
@@ -5510,103 +5783,15 @@ fn dispatch_hashchange_event_task<Host: WindowRealmHost + 'static>(
         script_or_module: None,
       })?;
 
-    let document_obj = match vm
-      .user_data::<WindowRealmUserData>()
-      .and_then(|data| data.document_obj)
-    {
-      Some(obj) => obj,
-      None => return Ok(()),
-    };
-
-    let dispatch_event = {
-      scope.push_root(Value::Object(document_obj))?;
-      let key = alloc_key(&mut scope, EVENT_TARGET_DISPATCH_EVENT_KEY)?;
-      scope
-        .heap()
-        .object_get_own_data_property_value(document_obj, &key)?
-        .unwrap_or(Value::Undefined)
-    };
-    let dispatch_event = if matches!(dispatch_event, Value::Object(_))
-      && scope.heap().is_callable(dispatch_event).unwrap_or(false)
-    {
-      dispatch_event
-    } else {
-      return Ok(());
-    };
-
-    let event_proto = {
-      scope.push_root(Value::Object(document_obj))?;
-      let key = alloc_key(&mut scope, HASH_CHANGE_EVENT_PROTOTYPE_KEY)?;
-      let proto = scope
-        .heap()
-        .object_get_own_data_property_value(document_obj, &key)?
-        .and_then(|v| match v {
-          Value::Object(obj) => Some(obj),
-          _ => None,
-        });
-      if proto.is_some() {
-        proto
-      } else {
-        let key = alloc_key(&mut scope, EVENT_PROTOTYPE_KEY)?;
-        scope
-          .heap()
-          .object_get_own_data_property_value(document_obj, &key)?
-          .and_then(|v| match v {
-            Value::Object(obj) => Some(obj),
-            _ => None,
-          })
-      }
-    };
-
-    let event_obj = scope.alloc_object()?;
-    scope.push_root(Value::Object(event_obj))?;
-    if let Some(proto) = event_proto {
-      scope.heap_mut().object_set_prototype(event_obj, Some(proto))?;
-    }
-
-    let type_key = alloc_key(&mut scope, "type")?;
-    let type_s = scope.alloc_string("hashchange")?;
-    scope.push_root(Value::String(type_s))?;
-    scope.define_property(event_obj, type_key, data_desc(Value::String(type_s)))?;
-
-    let bubbles_key = alloc_key(&mut scope, "bubbles")?;
-    scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(false)))?;
-    let cancelable_key = alloc_key(&mut scope, "cancelable")?;
-    scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(false)))?;
-    let composed_key = alloc_key(&mut scope, "composed")?;
-    scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
-
-    define_event_default_properties(&mut scope, event_obj)?;
-
-    let old_url_key = alloc_key(&mut scope, "oldURL")?;
-    let old_url_s = scope.alloc_string(&old_url)?;
-    scope.push_root(Value::String(old_url_s))?;
-    scope.define_property(
-      event_obj,
-      old_url_key,
-      read_only_data_desc(Value::String(old_url_s)),
-    )?;
-    let new_url_key = alloc_key(&mut scope, "newURL")?;
-    let new_url_s = scope.alloc_string(&new_url)?;
-    scope.push_root(Value::String(new_url_s))?;
-    scope.define_property(
-      event_obj,
-      new_url_key,
-      read_only_data_desc(Value::String(new_url_s)),
-    )?;
-
-    brand_event_object(&mut scope, event_obj, BrandedEventKind::HashChangeEvent)?;
-
-    let global = realm.global_object();
-    vm.call_with_host_and_hooks(
-      vm_host,
+    dispatch_hashchange_event(
+      &mut vm,
       &mut scope,
+      vm_host,
       &mut hooks,
-      dispatch_event,
-      Value::Object(global),
-      &[Value::Object(event_obj)],
-    )?;
-    Ok(())
+      realm.global_object(),
+      &old_url,
+      &new_url,
+    )
   });
 
   if let Some(err) = hooks.finish(window_realm.heap_mut()) {
@@ -5814,8 +5999,10 @@ fn request_location_navigation(
         }
       }
 
-      // Fire `hashchange` asynchronously when an event loop is available.
-      queue_hashchange_event_task(hooks, current_document_url, resolved);
+      // Fire `hashchange` asynchronously: queue a DOM manipulation task when an event loop is
+      // available, otherwise fall back to queuing the event on the realm for dispatch during
+      // `WindowRealm::perform_microtask_checkpoint`.
+      queue_hashchange_event_task(vm, hooks, current_document_url, resolved);
       return Ok(Value::Undefined);
     }
   }

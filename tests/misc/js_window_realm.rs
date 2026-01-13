@@ -629,6 +629,42 @@ fn pop_state_event_and_hash_change_event_constructors_are_exposed() -> Result<()
 }
 
 #[test]
+fn location_fragment_navigation_emits_hashchange_without_event_loop() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  // Same-document fragment navigation should queue `hashchange` asynchronously. When driving
+  // `WindowRealm` directly (no HTML event loop installed), the event should not fire during the
+  // same script turn.
+  let len = realm
+    .exec_script(
+      r#"
+      globalThis.__events = [];
+      window.addEventListener('hashchange', (e) => {
+        __events.push([e.oldURL, e.newURL, (typeof HashChangeEvent === 'function') && (e instanceof HashChangeEvent)]);
+      });
+      location.href = '#a';
+      __events.length
+      "#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(len, Value::Number(0.0));
+
+  realm
+    .perform_microtask_checkpoint()
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let events = realm
+    .exec_script("JSON.stringify(__events)")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(
+    get_string(realm.heap(), events),
+    r#"[["https://example.com/","https://example.com/#a",true]]"#
+  );
+  Ok(())
+}
+
+#[test]
 fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
   #[derive(Default)]
   struct NoopHostHooks;
