@@ -441,6 +441,35 @@ test(() => {
 test(() => {
   const { root, a } = make_tree();
 
+  let did_reenter = false;
+  let nested_threw = false;
+  let nested_name = "";
+  let tw = null;
+
+  const filter = () => {
+    if (!did_reenter) {
+      did_reenter = true;
+      try {
+        tw.firstChild();
+      } catch (e) {
+        nested_threw = true;
+        nested_name = e && e.name;
+      }
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+
+  assert_equals(tw.nextNode(), a);
+  assert_true(did_reenter, "Filter callback should have attempted a re-entrant firstChild() call");
+  assert_true(nested_threw, "Re-entrant firstChild() should throw");
+  assert_equals(nested_name, "InvalidStateError");
+}, "TreeWalker rejects re-entrant firstChild() calls from the filter callback (InvalidStateError)");
+
+test(() => {
+  const { root, a } = make_tree();
+
   let did_throw = false;
   const filter = () => {
     if (!did_throw) {
