@@ -2072,10 +2072,6 @@ glob = "built-ins/JSON/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Math/round/S15.8.2.15_A7.js"
-status = "pass"
-
-[[expectations]]
 glob = "built-ins/Math/**"
 status = "pass"
 
