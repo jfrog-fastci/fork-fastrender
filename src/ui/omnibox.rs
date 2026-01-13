@@ -1916,18 +1916,10 @@ mod tests {
     let visited = VisitedUrlStore::new();
     let mut bookmarks = BookmarkStore::default();
     bookmarks
-      .add(
-        "https://example.com/".to_string(),
-        Some("Lower".to_string()),
-        None,
-      )
+      .add("HTTP://EXAMPLE.COM".to_string(), Some("Upper".to_string()), None)
       .unwrap();
     bookmarks
-      .add(
-        "https://EXAMPLE.com/".to_string(),
-        Some("Upper".to_string()),
-        None,
-      )
+      .add("http://example.com".to_string(), Some("Lower".to_string()), None)
       .unwrap();
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,
@@ -1940,10 +1932,18 @@ mod tests {
 
     let provider = BookmarksProvider;
     let suggestions = provider.suggestions(&ctx, "example");
+
     assert_eq!(
       suggestions.len(),
       1,
       "expected provider-level dedupe of duplicate bookmark URLs, got {suggestions:?}"
+    );
+    assert!(
+      suggestions[0]
+        .url
+        .as_deref()
+        .is_some_and(|u| u.eq_ignore_ascii_case("http://example.com")),
+      "expected deduped URL to match example.com (case-insensitive), got {suggestions:?}"
     );
   }
 

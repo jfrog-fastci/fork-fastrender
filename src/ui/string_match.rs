@@ -272,4 +272,24 @@ mod tests {
       Some(hay.len())
     );
   }
+
+  #[test]
+  fn ascii_case_insensitive_str_hash_and_eq() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+
+    fn hash<T: Hash>(value: &T) -> u64 {
+      let mut hasher = DefaultHasher::new();
+      value.hash(&mut hasher);
+      hasher.finish()
+    }
+
+    let a = AsciiCaseInsensitiveStr("HTTP://EXAMPLE.COM");
+    let b = AsciiCaseInsensitiveStr("http://example.com");
+    assert_eq!(a, b);
+    assert_eq!(hash(&a), hash(&b));
+
+    // Non-ASCII bytes must compare exactly (ASCII-only case folding policy).
+    assert_ne!(AsciiCaseInsensitiveStr("café"), AsciiCaseInsensitiveStr("cafÉ"));
+  }
 }
