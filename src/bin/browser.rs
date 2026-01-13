@@ -205,6 +205,8 @@ mod perf_log {
       window_focused: bool,
       window_occluded: bool,
       window_minimized: bool,
+      #[serde(flatten)]
+      breakdown: super::UiFrameBreakdownMs,
     },
     Input {
       schema_version: u32,
@@ -2421,6 +2423,15 @@ const RENDERER_UNRESPONSIVE_TIMEOUT: std::time::Duration = if cfg!(debug_asserti
   std::time::Duration::from_secs(15)
 };
 
+#[cfg(any(test, feature = "browser_ui"))]
+fn sanitize_json_number_f64(value: f64) -> f64 {
+  if value.is_finite() && value > 0.0 {
+    value
+  } else {
+    0.0
+  }
+}
+
 fn parse_browser_hud_env(raw: Option<&str>) -> Result<bool, String> {
   let Some(raw) = raw else {
     return Ok(false);
@@ -3000,6 +3011,22 @@ mod browser_accesskit_enabled_tests {
       output.platform_output.accesskit_update.is_some(),
       "expected browser egui context to enable AccessKit output"
     );
+  }
+}
+
+#[cfg(test)]
+mod sanitize_json_number_tests {
+  use super::sanitize_json_number_f64;
+
+  #[test]
+  fn sanitize_json_number_clamps_non_finite_and_negative() {
+    assert_eq!(sanitize_json_number_f64(1.25), 1.25);
+    assert_eq!(sanitize_json_number_f64(0.0), 0.0);
+    assert_eq!(sanitize_json_number_f64(-0.0), 0.0);
+    assert_eq!(sanitize_json_number_f64(-1.0), 0.0);
+    assert_eq!(sanitize_json_number_f64(f64::NAN), 0.0);
+    assert_eq!(sanitize_json_number_f64(f64::INFINITY), 0.0);
+    assert_eq!(sanitize_json_number_f64(f64::NEG_INFINITY), 0.0);
   }
 }
 
@@ -5512,6 +5539,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       session_path,
       download_dir,
       renderer_watchdog_timeout,
+      perf_log_writer.clone(),
     );
   }
 
@@ -6542,6 +6570,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut span = win.app.trace.span("worker_drain", "ui.worker");
             let hud_enabled = win.app.hud.is_some();
+            let breakdown_timer_start = win
+              .app
+              .frame_breakdown_enabled()
+              .then(std::time::Instant::now);
 
             // Pull any newly-arrived worker messages into the local backlog with a single lock so we
             // can process them without holding the mutex.
@@ -6630,6 +6662,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   perf_log.record_followup_wake();
                 }
               }
+            }
+
+            if let Some(start) = breakdown_timer_start {
+              win.app.pending_worker_msg_time = win
+                .app
+                .pending_worker_msg_time
+                .saturating_add(start.elapsed());
             }
           }
 
@@ -8008,6 +8047,11 @@ fn run_headless_smoke_mode(
   session_path: std::path::PathBuf,
   download_dir: std::path::PathBuf,
   renderer_watchdog_timeout: Option<std::time::Duration>,
+  perf_log_writer: Option<
+    std::rc::Rc<
+      std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+    >,
+  >,
 ) -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
@@ -8341,6 +8385,26 @@ fn run_headless_smoke_mode(
     "HEADLESS_SMOKE_OK source={source_label} active_url={active_url} viewport_css={}x{} dpr={:.1} pixmap_px={}x{}",
     viewport_css.0, viewport_css.1, dpr, pixmap_w, pixmap_h
   );
+
+  // Emit a synthetic "frame" perf event so integration tests can validate the schema without
+  // requiring a windowed winit/wgpu stack.
+  if let Some(writer) = perf_log_writer.as_ref() {
+    let now = Instant::now();
+    let t_ms = writer.borrow().ms_since_start(now);
+    let event = perf_log::PerfEvent::Frame {
+      schema_version: perf_log::SCHEMA_VERSION,
+      t_ms,
+      window_id: "headless",
+      active_tab_id: None,
+      ui_frame_ms: 0.0,
+      fps: None,
+      window_focused: false,
+      window_occluded: false,
+      window_minimized: false,
+      breakdown: UiFrameBreakdownMs::default(),
+    };
+    writer.borrow_mut().emit(&event);
+  }
 
   Ok(())
 }
@@ -10077,6 +10141,68 @@ impl ProcessCpuSampler {
   }
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, Default)]
+struct UiFrameBreakdown {
+  worker_msgs: std::time::Duration,
+  upload: std::time::Duration,
+  egui: std::time::Duration,
+  tessellate: std::time::Duration,
+  wgpu: std::time::Duration,
+  present: std::time::Duration,
+  total: std::time::Duration,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl UiFrameBreakdown {
+  fn sum_known(&self) -> std::time::Duration {
+    self
+      .worker_msgs
+      .saturating_add(self.upload)
+      .saturating_add(self.egui)
+      .saturating_add(self.tessellate)
+      .saturating_add(self.wgpu)
+      .saturating_add(self.present)
+  }
+
+  fn total_ms(&self) -> f64 {
+    duration_to_ms(self.total)
+  }
+
+  fn sum_known_ms(&self) -> f64 {
+    duration_to_ms(self.sum_known())
+  }
+
+  fn as_ms(&self) -> UiFrameBreakdownMs {
+    UiFrameBreakdownMs {
+      worker_msgs_ms: duration_to_ms(self.worker_msgs),
+      upload_ms: duration_to_ms(self.upload),
+      egui_ms: duration_to_ms(self.egui),
+      tessellate_ms: duration_to_ms(self.tessellate),
+      wgpu_ms: duration_to_ms(self.wgpu),
+      present_ms: duration_to_ms(self.present),
+      total_ms: duration_to_ms(self.total),
+    }
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+struct UiFrameBreakdownMs {
+  worker_msgs_ms: f64,
+  upload_ms: f64,
+  egui_ms: f64,
+  tessellate_ms: f64,
+  wgpu_ms: f64,
+  present_ms: f64,
+  total_ms: f64,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn duration_to_ms(duration: std::time::Duration) -> f64 {
+  sanitize_json_number_f64(duration.as_secs_f64() * 1000.0)
+}
+
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Default)]
 struct TabNotificationUiState {
@@ -10482,6 +10608,7 @@ impl PerfWindowLog {
     window_focused: bool,
     window_occluded: bool,
     window_minimized: bool,
+    frame_breakdown: UiFrameBreakdownMs,
   ) {
     let t_ms = self.ts_ms(present_at);
     let fps = self.last_present.and_then(|prev| {
@@ -10504,6 +10631,7 @@ impl PerfWindowLog {
       window_focused,
       window_occluded,
       window_minimized,
+      breakdown: frame_breakdown,
     };
     self.emit(&frame_event);
 
@@ -10879,6 +11007,15 @@ struct App {
   tab_switch_latency: Option<fastrender::ui::perf_log::TabSwitchLatencyTracker>,
   idle_repaint_monitor: Option<IdleRepaintMonitor>,
   perf_log: Option<PerfWindowLog>,
+  /// Cumulative time spent processing worker messages (`WorkerToUi`) since the last presented
+  /// frame.
+  ///
+  /// Worker messages are drained from the winit event loop (outside `render_frame`) but are still
+  /// part of what users perceive as "a long frame". We attribute this time to the next rendered
+  /// frame so the HUD/perf log breakdown is actionable.
+  pending_worker_msg_time: std::time::Duration,
+  /// Per-frame wall-clock breakdown from the most recently presented frame.
+  last_frame_breakdown: Option<UiFrameBreakdown>,
 
   tab_notifications: std::collections::HashMap<fastrender::ui::TabId, TabNotificationUiState>,
   warning_toast_rect: Option<egui::Rect>,
@@ -11046,7 +11183,12 @@ impl App {
     perf.frame_uploaded(tab_id);
   }
 
-  fn perf_on_present(&mut self, present_at: std::time::Instant, ui_frame_ms: f64) {
+  fn perf_on_present(
+    &mut self,
+    present_at: std::time::Instant,
+    ui_frame_ms: f64,
+    frame_breakdown: UiFrameBreakdownMs,
+  ) {
     let Some(perf) = self.perf_log.as_mut() else {
       return;
     };
@@ -11058,6 +11200,7 @@ impl App {
       self.window_focused,
       self.window_occluded,
       self.window_minimized,
+      frame_breakdown,
     );
   }
 
@@ -11092,6 +11235,10 @@ impl App {
       "expected AccessKit update to be Some after merging page subtree nodes"
     );
     true
+  }
+
+  fn frame_breakdown_enabled(&self) -> bool {
+    self.hud.is_some() || self.perf_log.is_some()
   }
 
   fn sync_media_preferences_to_worker(&mut self, system_theme: Option<winit::window::Theme>) {
@@ -11779,6 +11926,8 @@ impl App {
       tab_switch_latency,
       idle_repaint_monitor,
       perf_log,
+      pending_worker_msg_time: std::time::Duration::ZERO,
+      last_frame_breakdown: None,
       tab_notifications: std::collections::HashMap::new(),
       warning_toast_rect: None,
       error_infobar_rect: None,
@@ -16691,6 +16840,34 @@ impl App {
           hud.worker_last_drain, hud.worker_max_drain_recent
         );
       }
+    }
+
+    if let Some(breakdown) = self.last_frame_breakdown {
+      let ms = breakdown.as_ms();
+      let _ = writeln!(
+        &mut hud.text_buf,
+        "  msgs: {worker_msgs_ms:.1}  upload: {upload_ms:.1}",
+        worker_msgs_ms = ms.worker_msgs_ms,
+        upload_ms = ms.upload_ms
+      );
+      let _ = writeln!(
+        &mut hud.text_buf,
+        "  egui: {egui_ms:.1}  tess: {tessellate_ms:.1}",
+        egui_ms = ms.egui_ms,
+        tessellate_ms = ms.tessellate_ms
+      );
+      let _ = writeln!(
+        &mut hud.text_buf,
+        "  wgpu: {wgpu_ms:.1}  present: {present_ms:.1}",
+        wgpu_ms = ms.wgpu_ms,
+        present_ms = ms.present_ms
+      );
+      let _ = writeln!(
+        &mut hud.text_buf,
+        "  sum: {sum_ms:.1}  total: {total_ms:.1}",
+        sum_ms = breakdown.sum_known_ms(),
+        total_ms = breakdown.total_ms()
+      );
     }
 
     let _ = writeln!(
@@ -22913,11 +23090,17 @@ impl App {
   }
 
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) -> bool {
-    let perf_frame_start = self.perf_log.is_some().then(std::time::Instant::now);
     let _frame_span = self.trace.span("ui.frame", "ui.frame");
+    let breakdown_enabled = self.frame_breakdown_enabled();
+    let frame_start = breakdown_enabled.then(std::time::Instant::now);
+    let perf_frame_start = if self.perf_log.is_some() { frame_start } else { None };
+    let mut breakdown = UiFrameBreakdown::default();
+    if breakdown_enabled {
+      breakdown.worker_msgs = self.pending_worker_msg_time;
+    }
 
-    let frame_start = if let Some(hud) = self.hud.as_mut() {
-      let now = std::time::Instant::now();
+    if let Some(hud) = self.hud.as_mut() {
+      let now = frame_start.expect("frame timer start should exist when HUD is enabled");
       if let Some(prev) = hud.last_frame_start {
         let dt = now.saturating_duration_since(prev);
         let secs = dt.as_secs_f32();
@@ -22926,14 +23109,17 @@ impl App {
         }
       }
       hud.last_frame_start = Some(now);
-      Some(now)
-    } else {
-      None
-    };
+    }
 
     // Upload any newly received page pixmaps now (coalesced). We do this right before drawing so
     // multiple `FrameReady` messages received between redraws result in a single GPU upload.
-    self.flush_pending_frame_uploads();
+    if breakdown_enabled {
+      let start = std::time::Instant::now();
+      self.flush_pending_frame_uploads();
+      breakdown.upload = start.elapsed();
+    } else {
+      self.flush_pending_frame_uploads();
+    }
 
     let session_revision_before = self.browser_state.session_revision();
     // Keep fullscreen tracking in sync with winit (e.g. when the user toggles fullscreen via
@@ -22956,6 +23142,7 @@ impl App {
     }
     let mut session_dirty = false;
 
+    let egui_timer_start = breakdown_enabled.then(std::time::Instant::now);
     {
       let _span = self.trace.span("egui.begin_frame", "ui.frame");
       let raw_input = {
@@ -23010,7 +23197,6 @@ impl App {
             );
           }
         }
-
         raw
       };
 
@@ -24459,6 +24645,9 @@ impl App {
       let _span = self.trace.span("egui.end_frame", "ui.frame");
       self.egui_ctx.end_frame()
     };
+    if let Some(start) = egui_timer_start {
+      breakdown.egui = start.elapsed();
+    }
     let repaint_after = full_output.repaint_after;
 
     let mut platform_output = full_output.platform_output;
@@ -24492,16 +24681,21 @@ impl App {
     // frames even when no OS events are incoming.
     self.schedule_egui_repaint(repaint_after);
 
+    let tess_timer_start = breakdown_enabled.then(std::time::Instant::now);
     let paint_jobs = {
       let _span = self.trace.span("egui.tessellate", "ui.frame");
       self.egui_ctx.tessellate(full_output.shapes)
     };
+    if let Some(start) = tess_timer_start {
+      breakdown.tessellate = start.elapsed();
+    }
 
     let screen_descriptor = egui_wgpu::renderer::ScreenDescriptor {
       size_in_pixels: [self.surface_config.width, self.surface_config.height],
       pixels_per_point: self.pixels_per_point,
     };
 
+    let wgpu_timer_start = breakdown_enabled.then(std::time::Instant::now);
     {
       let _span = self.trace.span("egui.update_textures", "ui.upload");
       for (id, image_delta) in &full_output.textures_delta.set {
@@ -24596,24 +24790,55 @@ impl App {
       let _span = self.trace.span("wgpu.submit", "ui.frame");
       self.queue.submit(Some(encoder.finish()));
     }
-    {
+    if let Some(start) = wgpu_timer_start {
+      breakdown.wgpu = start.elapsed();
+    }
+
+    let present_at = {
       let _span = self.trace.span("wgpu.present", "ui.frame");
+      let present_timer_start = breakdown_enabled.then(std::time::Instant::now);
       surface_texture.present();
-      if let Some(hud) = self.hud.as_mut() {
-        hud.record_present(
-          std::time::Instant::now(),
-          self.browser_state.active_tab_id(),
-        );
+      let present_elapsed = present_timer_start.map(|start| start.elapsed());
+      let present_at = std::time::Instant::now();
+      if let Some(elapsed) = present_elapsed {
+        breakdown.present = elapsed;
       }
+      if let Some(hud) = self.hud.as_mut() {
+        hud.record_present(present_at, self.browser_state.active_tab_id());
+      }
+      present_at
+    };
+
+    if breakdown_enabled {
+      let frame_start =
+        frame_start.expect("frame timer start should exist when breakdown is enabled");
+      breakdown.total = breakdown
+        .worker_msgs
+        .saturating_add(present_at.saturating_duration_since(frame_start));
+      self.last_frame_breakdown = Some(breakdown);
+      self.pending_worker_msg_time = std::time::Duration::ZERO;
+
+      if let Some(hud) = self.hud.as_mut() {
+        let elapsed_ms = breakdown.total_ms() as f32;
+        if elapsed_ms.is_finite() {
+          hud.last_frame_cpu_ms = Some(elapsed_ms);
+        }
+      }
+    } else {
+      self.last_frame_breakdown = None;
     }
 
     if let Some(perf_start) = perf_frame_start {
-      let present_at = std::time::Instant::now();
       let ui_frame_ms = present_at
         .saturating_duration_since(perf_start)
         .as_secs_f64()
         * 1000.0;
-      self.perf_on_present(present_at, ui_frame_ms);
+      let breakdown_ms = if breakdown_enabled {
+        breakdown.as_ms()
+      } else {
+        UiFrameBreakdownMs::default()
+      };
+      self.perf_on_present(present_at, ui_frame_ms, breakdown_ms);
     }
     if let Some(monitor) = self.idle_repaint_monitor.as_mut() {
       monitor.on_frame_presented(repaint_after);
@@ -24628,13 +24853,6 @@ impl App {
     // output.
     if self.sync_appearance_settings() {
       self.window.request_redraw();
-    }
-
-    if let (Some(hud), Some(frame_start)) = (self.hud.as_mut(), frame_start) {
-      let elapsed_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
-      if elapsed_ms.is_finite() {
-        hud.last_frame_cpu_ms = Some(elapsed_ms);
-      }
     }
 
     // Keep the platform accessibility tree for renderer-chrome in sync with the latest rendered
@@ -25280,6 +25498,7 @@ mod perf_log_tests {
       window_focused: true,
       window_occluded: false,
       window_minimized: false,
+      breakdown: super::UiFrameBreakdownMs::default(),
     };
     writer.emit(&event);
     drop(writer);
