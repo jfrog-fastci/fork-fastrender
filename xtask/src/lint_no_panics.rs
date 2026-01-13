@@ -256,15 +256,15 @@ fn module_dir_for_file(path: &Path) -> Option<PathBuf> {
   }
 }
 
-fn resolve_mod_file(parent_path: &Path, decl: &ExternalModDecl) -> Option<PathBuf> {
-  let parent_dir = parent_path.parent()?;
-
+fn resolve_mod_file_with_dirs(
+  decl_file_dir: &Path,
+  module_dir: &Path,
+  decl: &ExternalModDecl,
+) -> Option<PathBuf> {
   if let Some(path_attr) = &decl.path_attr {
-    let candidate = parent_dir.join(path_attr);
+    let candidate = decl_file_dir.join(path_attr);
     return candidate.exists().then_some(candidate);
   }
-
-  let module_dir = module_dir_for_file(parent_path)?;
 
   let candidate_rs = module_dir.join(format!("{}.rs", decl.name));
   if candidate_rs.exists() {
@@ -273,6 +273,12 @@ fn resolve_mod_file(parent_path: &Path, decl: &ExternalModDecl) -> Option<PathBu
 
   let candidate_mod_rs = module_dir.join(&decl.name).join("mod.rs");
   candidate_mod_rs.exists().then_some(candidate_mod_rs)
+}
+
+fn resolve_mod_file(parent_path: &Path, decl: &ExternalModDecl) -> Option<PathBuf> {
+  let decl_file_dir = parent_path.parent()?;
+  let module_dir = module_dir_for_file(parent_path)?;
+  resolve_mod_file_with_dirs(decl_file_dir, &module_dir, decl)
 }
 
 fn find_cfg_test_module_files(parent_path: &Path, source: &str) -> Vec<PathBuf> {
@@ -292,15 +298,23 @@ fn find_cfg_test_module_files(parent_path: &Path, source: &str) -> Vec<PathBuf> 
         if let Some(path) = resolve_mod_file(parent_path, &decl) {
           out.push(path);
         }
-      } else if let Some((inline_name, body)) = parse_inline_mod_decl(item) {
+      } else if let Some((name, body)) = parse_inline_mod_decl(item) {
         // `#[cfg(test)] mod tests { mod foo; }` is extremely common. Even though the `mod foo;`
         // declarations are not annotated with `#[cfg(test)]`, they are test-only by virtue of
         // appearing inside a test-only module. Mark their resolved files as test-only too so
         // lint-no-panics doesn't force production-grade panic discipline on test suites.
-        if let Some(parent_module_dir) = module_dir_for_file(parent_path) {
-          let synthetic_parent = parent_module_dir.join(inline_name).join("mod.rs");
-          out.extend(find_external_mod_files(&synthetic_parent, body));
-        }
+        let Some(decl_file_dir) = parent_path.parent() else {
+          i = end;
+          pending_cfg_test = false;
+          continue;
+        };
+        let Some(parent_module_dir) = module_dir_for_file(parent_path) else {
+          i = end;
+          pending_cfg_test = false;
+          continue;
+        };
+        let module_dir = parent_module_dir.join(&name);
+        out.extend(find_external_mod_files_with_context(decl_file_dir, &module_dir, body));
       }
       i = end;
       pending_cfg_test = false;
@@ -390,6 +404,20 @@ fn find_cfg_test_module_files(parent_path: &Path, source: &str) -> Vec<PathBuf> 
 /// This intentionally ignores `cfg(...)` conditions: callers should decide whether the parent file
 /// itself is test-only before treating its submodules as test-only.
 fn find_external_mod_files(parent_path: &Path, source: &str) -> Vec<PathBuf> {
+  let Some(decl_file_dir) = parent_path.parent() else {
+    return Vec::new();
+  };
+  let Some(module_dir) = module_dir_for_file(parent_path) else {
+    return Vec::new();
+  };
+  find_external_mod_files_with_context(decl_file_dir, &module_dir, source)
+}
+
+fn find_external_mod_files_with_context(
+  decl_file_dir: &Path,
+  module_dir: &Path,
+  source: &str,
+) -> Vec<PathBuf> {
   let bytes = source.as_bytes();
   let mut i = 0usize;
   let mut out = Vec::new();
@@ -410,9 +438,12 @@ fn find_external_mod_files(parent_path: &Path, source: &str) -> Vec<PathBuf> {
 
     if let Some(item) = source.get(start..end) {
       if let Some(decl) = parse_external_mod_decl(item) {
-        if let Some(path) = resolve_mod_file(parent_path, &decl) {
+        if let Some(path) = resolve_mod_file_with_dirs(decl_file_dir, module_dir, &decl) {
           out.push(path);
         }
+      } else if let Some((name, body)) = parse_inline_mod_decl(item) {
+        let child_dir = module_dir.join(&name);
+        out.extend(find_external_mod_files_with_context(decl_file_dir, &child_dir, body));
       }
     }
 
@@ -1939,7 +1970,7 @@ pub fn nested() {
   }
 
   #[test]
-  fn lint_dir_skips_files_only_referenced_from_inline_cfg_test_modules() {
+  fn lint_dir_skips_cfg_test_inline_module_external_files() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
 
@@ -1961,6 +1992,50 @@ pub fn prod() {
     fs::create_dir_all(root.join("tests")).unwrap();
     fs::write(
       root.join("tests/foo.rs"),
+      r#"
+pub fn test_only() {
+  panic!("boom");
+  let _ = Some(1).unwrap();
+}
+"#,
+    )
+    .unwrap();
+
+    let violations = lint_dir(root, root).unwrap();
+    assert_eq!(
+      violations.len(),
+      1,
+      "expected only the production file violation to be reported: {violations:#?}"
+    );
+    assert_eq!(violations[0].path, PathBuf::from("mod.rs"));
+    assert_eq!(violations[0].kind, ViolationKind::Unwrap);
+  }
+
+  #[test]
+  fn lint_dir_skips_cfg_test_nested_inline_module_external_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    fs::write(
+      root.join("mod.rs"),
+      r#"
+#[cfg(test)]
+mod tests {
+  mod nested {
+    mod foo;
+  }
+}
+
+pub fn prod() {
+  let _ = Some(1).unwrap();
+}
+"#,
+    )
+    .unwrap();
+
+    fs::create_dir_all(root.join("tests/nested")).unwrap();
+    fs::write(
+      root.join("tests/nested/foo.rs"),
       r#"
 pub fn test_only() {
   panic!("boom");

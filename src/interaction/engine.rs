@@ -2293,6 +2293,93 @@ mod tests {
     assert_eq!(paint.selection, Some((0, 3)));
   }
 
+  #[test]
+  fn focus_node_id_ignores_missing_target() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    assert_eq!(engine.focused_node_id(), Some(input_id));
+
+    // Focusing an out-of-range node id should be a no-op rather than clearing focus.
+    let (changed, action) = engine.focus_node_id(&mut dom, Some(input_id + 9999), true);
+    assert!(!changed);
+    assert_eq!(action, InteractionAction::None);
+    assert_eq!(engine.focused_node_id(), Some(input_id));
+  }
+
+  #[test]
+  fn key_action_clears_detached_focus() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    assert_eq!(engine.focused_node_id(), Some(input_id));
+
+    // Replace the DOM with one that does not contain the focused node id.
+    let mut dom_detached = crate::dom::parse_html("<html><body></body></html>").expect("parse");
+
+    // Should not panic; stale focus should be dropped.
+    assert!(engine.key_action(&mut dom_detached, KeyAction::ArrowLeft));
+    assert_eq!(engine.focused_node_id(), None);
+  }
+
+  #[test]
+  fn select_keyboard_action_no_enabled_option_is_noop() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><select>\
+         <option disabled selected>One</option>\
+         <option disabled>Two</option>\
+       </select></body></html>",
+    )
+    .expect("parse");
+    let select_id = find_element_node_id(&mut dom, "select");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(select_id), true);
+
+    let index_before = DomIndexMut::new(&mut dom);
+    let mut option_ids: Vec<usize> = Vec::new();
+    for node_id in 1..index_before.id_to_node.len() {
+      if index_before.node(node_id).is_some_and(|node| {
+        node
+          .tag_name()
+          .is_some_and(|t| t.eq_ignore_ascii_case("option"))
+      }) {
+        option_ids.push(node_id);
+      }
+    }
+    assert_eq!(option_ids.len(), 2);
+    let selected_before: Vec<bool> = option_ids
+      .iter()
+      .map(|&id| {
+        index_before
+          .node(id)
+          .and_then(|node| node.get_attribute_ref("selected"))
+          .is_some()
+      })
+      .collect();
+
+    // With no enabled options, arrow navigation should be a no-op and must not panic.
+    assert!(!engine.key_action(&mut dom, KeyAction::ArrowDown));
+
+    let index_after = DomIndexMut::new(&mut dom);
+    let selected_after: Vec<bool> = option_ids
+      .iter()
+      .map(|&id| {
+        index_after
+          .node(id)
+          .and_then(|node| node.get_attribute_ref("selected"))
+          .is_some()
+      })
+      .collect();
+    assert_eq!(selected_after, selected_before);
+  }
+
   fn find_box_id_for_styled_node_id(box_tree: &BoxTree, styled_node_id: usize) -> usize {
     let mut stack = vec![&box_tree.root];
     while let Some(node) = stack.pop() {
@@ -5991,7 +6078,10 @@ fn apply_select_keyboard_action(
     .get(next_idx)
     .copied()
     .map(|(node_id, _)| node_id)
-    .unwrap_or_else(|| options[first_enabled_idx].0);
+    .or_else(|| options.get(first_enabled_idx).copied().map(|(node_id, _)| node_id));
+  let Some(option_id) = option_id else {
+    return false;
+  };
 
   dom_mutation::activate_select_option(dom, select_id, option_id, false)
 }
@@ -7130,17 +7220,36 @@ impl InteractionEngine {
     node_id: Option<usize>,
     focus_visible: bool,
   ) -> (bool, InteractionAction) {
+    let mut index = DomIndexMut::new(dom);
+    let prev_focus = self.state.focused;
+
+    // If focus already points at a detached node, drop it so we don't propagate stale ids.
+    let mut changed = false;
+    if prev_focus.is_some_and(|id| !index.node(id).is_some_and(DomNode::is_element)) {
+      changed |= self.set_focus(&mut index, None, false);
+    }
+
+    // Invalid focus targets should be ignored (no-op). Clearing focus is an explicit `None`.
+    if let Some(requested) = node_id {
+      if !index.node(requested).is_some_and(DomNode::is_element) {
+        let action = if self.state.focused != prev_focus {
+          InteractionAction::FocusChanged {
+            node_id: self.state.focused,
+          }
+        } else {
+          InteractionAction::None
+        };
+        return (changed, action);
+      }
+    }
+
     self.modality = if focus_visible {
       InputModality::Keyboard
     } else {
       InputModality::Pointer
     };
 
-    let prev_focus = self.state.focused;
-    let mut index = DomIndexMut::new(dom);
-
-    let node_id = node_id.filter(|&id| index.node(id).is_some_and(DomNode::is_element));
-    let changed = self.set_focus(&mut index, node_id, focus_visible);
+    changed |= self.set_focus(&mut index, node_id, focus_visible);
 
     let action = if self.state.focused != prev_focus {
       InteractionAction::FocusChanged {
@@ -10221,14 +10330,23 @@ impl InteractionEngine {
     text: &str,
   ) -> bool {
     self.modality = InputModality::Keyboard;
+    let mut index = DomIndexMut::new(dom);
+    let mut changed = false;
+
+    // Guard against stale focus when the DOM changes underneath us.
+    if self
+      .state
+      .focused
+      .is_some_and(|id| !index.node(id).is_some_and(DomNode::is_element))
+    {
+      changed |= self.set_focus(&mut index, None, false);
+    }
     let Some(focused) = self.state.focused else {
-      return false;
+      return changed;
     };
 
-    let mut index = DomIndexMut::new(dom);
-
     // Ensure focus-visible when the keyboard is used.
-    let mut changed = self.set_focus(&mut index, Some(focused), true);
+    changed |= self.set_focus(&mut index, Some(focused), true);
 
     let focused_is_text_input = index.node(focused).is_some_and(is_text_input);
     let focused_is_textarea = index.node(focused).is_some_and(is_textarea);
@@ -10758,13 +10876,22 @@ impl InteractionEngine {
   /// Returns `(dom_changed, clipboard_text)`.
   pub fn clipboard_cut(&mut self, dom: &mut DomNode) -> (bool, Option<String>) {
     self.modality = InputModality::Keyboard;
-    let Some(focused) = self.state.focused else {
-      return (false, None);
-    };
-
     let mut index = DomIndexMut::new(dom);
+    let mut dom_changed = false;
+
+    // Drop stale focus if the DOM was replaced/compacted since the last interaction.
+    if self
+      .state
+      .focused
+      .is_some_and(|id| !index.node(id).is_some_and(DomNode::is_element))
+    {
+      dom_changed |= self.set_focus(&mut index, None, false);
+    }
+    let Some(focused) = self.state.focused else {
+      return (dom_changed, None);
+    };
     // Ensure focus-visible when the keyboard is used.
-    let mut dom_changed = self.set_focus(&mut index, Some(focused), true);
+    dom_changed |= self.set_focus(&mut index, Some(focused), true);
 
     if node_or_ancestor_is_inert(&index, focused) || node_is_disabled(&index, focused) {
       return (dom_changed, None);
@@ -10911,9 +11038,19 @@ impl InteractionEngine {
     key: KeyAction,
   ) -> bool {
     self.modality = InputModality::Keyboard;
+
+    let mut index = DomIndexMut::new(dom);
+    let mut changed = false;
+    if self
+      .state
+      .focused
+      .is_some_and(|id| !index.node(id).is_some_and(DomNode::is_element))
+    {
+      changed |= self.set_focus(&mut index, None, false);
+    }
+
     if matches!(key, KeyAction::Tab | KeyAction::ShiftTab) {
       // Focus traversal (wraps at ends).
-      let mut index = DomIndexMut::new(dom);
       let focusables = collect_tab_stops(&index);
       let next_focus = match key {
         KeyAction::Tab => next_tab_focus(self.state.focused, &focusables),
@@ -10921,17 +11058,15 @@ impl InteractionEngine {
         _ => None,
       };
       let Some(next_focus) = next_focus else {
-        return false;
+        return changed;
       };
-      return self.set_focus(&mut index, Some(next_focus), true);
+      changed |= self.set_focus(&mut index, Some(next_focus), true);
+      return changed;
     }
 
     let Some(focused) = self.state.focused else {
-      return false;
+      return changed;
     };
-
-    let mut index = DomIndexMut::new(dom);
-    let mut changed = false;
 
     // Ensure focus-visible when the keyboard is used.
     changed |= self.set_focus(&mut index, Some(focused), true);
@@ -11958,7 +12093,15 @@ impl InteractionEngine {
             _ => anchor_idx,
           };
 
-          let option_node_id = options[next_idx].0;
+          // If we clamped and the anchor was already selected, treat as a no-op (avoids clearing
+          // unrelated selections in multi-select).
+          if next_idx == anchor_idx && last_selected_idx.is_some() {
+            return changed;
+          }
+
+          let Some(option_node_id) = options.get(next_idx).map(|(id, _)| *id) else {
+            return changed;
+          };
           // Keep the Shift range-selection anchor consistent with keyboard-driven selection.
           self.select_listbox_anchor.insert(focused, option_node_id);
 
@@ -11980,11 +12123,6 @@ impl InteractionEngine {
               changed |= self.mark_user_validity(focused);
             }
           } else {
-            // If we clamped and the anchor was already selected, treat as a no-op.
-            if next_idx == anchor_idx && last_selected_idx.is_some() {
-              return changed;
-            }
-
             changed |= self.activate_select_option(dom, focused, option_node_id, false);
           }
         }
