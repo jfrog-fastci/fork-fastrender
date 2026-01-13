@@ -123,6 +123,12 @@ treats `chrome://<host>` as a persistent origin (unlike `about:`/`file:` which a
 opaque). This only remains safe if untrusted content cannot create chrome documents (enforced by the
 navigation/fetch allowlists above).
 
+The vm-js `Window` realm also uses a chrome-aware origin serializer for `document.origin` /
+`location.origin`: [`src/js/vmjs/window_realm.rs`](../src/js/vmjs/window_realm.rs)
+(`serialized_origin_for_document_url`). It treats trusted `chrome://<host>` documents as a tuple
+origin so internal pages can safely use same-document APIs like `history.pushState` without
+collapsing all internal pages into the opaque `"null"` origin bucket.
+
 ---
 
 ## `chrome-action:` — trusted chrome actions

@@ -4810,7 +4810,8 @@ fn serialized_origin_for_document_url(url: &str) -> String {
     "http" | "https" => url.origin().ascii_serialization(),
     // FastRender treats trusted `chrome://` documents as having a tuple origin so internal pages
     // can safely use same-document navigation APIs like `history.pushState` without collapsing all
-    // `chrome://*` pages into the opaque "null" origin bucket.
+    // `chrome://*` pages into the opaque "null" origin bucket. See
+    // `docs/renderer_chrome_schemes.md`.
     "chrome" => {
       let Some(host) = url.host_str() else {
         return "null".to_string();
@@ -34229,7 +34230,8 @@ fn init_window_globals(
   let url_v = Value::String(url_s);
 
   // HTML's serialized origin is "null" for opaque origins (and most non-HTTP(S) URLs). FastRender
-  // treats trusted `chrome://` documents as having a non-opaque origin.
+  // treats trusted `chrome://` documents as having a non-opaque origin (see
+  // `docs/renderer_chrome_schemes.md`).
   let origin_str = serialized_origin_for_document_url(&config.document_url);
   let origin_s = scope.alloc_string(&origin_str)?;
   scope.push_root(Value::String(origin_s))?;
