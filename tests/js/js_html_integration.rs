@@ -557,6 +557,68 @@ fn p2_module_scripts_are_deferred_by_default_and_delay_domcontentloaded() -> Res
 }
 
 #[test]
+fn p2_nomodule_classic_scripts_are_suppressed_when_modules_are_supported() -> Result<()> {
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut h = Harness::new("https://example.invalid/p2_nomodule_supported.html", js_options)?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script nomodule>console.log('nomodule');</script>
+      <script>console.log('classic');</script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(console_logs(&h.tab), vec!["classic".to_string()]);
+  Ok(())
+}
+
+#[test]
+fn p2_nomodule_classic_scripts_execute_when_modules_are_not_supported() -> Result<()> {
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = false;
+  let mut h = Harness::new("https://example.invalid/p2_nomodule_unsupported.html", js_options)?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script nomodule>console.log('nomodule');</script>
+      <script>console.log('classic');</script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["nomodule".to_string(), "classic".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
+fn p2_module_scripts_observe_document_current_script_null() -> Result<()> {
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut h = Harness::new("https://example.invalid/p2_module_current_script.html", js_options)?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script type="module">console.log('cs:' + (document.currentScript === null));</script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(console_logs(&h.tab), vec!["cs:true".to_string()]);
+  Ok(())
+}
+
+#[test]
 fn p2_async_module_scripts_execute_asap_before_later_parser_scripts() -> Result<()> {
   let mut js_options = JsExecutionOptions::default();
   js_options.supports_module_scripts = true;
