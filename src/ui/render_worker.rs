@@ -754,7 +754,6 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   }
   tab.js_dom_mapping_generation = generation;
   tab.js_dom_mapping = Some(mapping);
-  tab.js_dom_mapping_miss_log_last.clear();
   tab.js_dom_dirty = false;
   tab.js_dom_mutation_generation = generation;
 
@@ -1043,7 +1042,6 @@ fn js_dom_node_for_preorder_id(
 fn js_dom_node_for_preorder_id_with_log(
   ui_tx: &Sender<WorkerToUi>,
   tab_id: TabId,
-  debug_log_enabled: bool,
   js_tab: &mut BrowserTab,
   preorder_id: usize,
   element_id: Option<&str>,
@@ -1060,7 +1058,7 @@ fn js_dom_node_for_preorder_id_with_log(
     js_dom_mapping_generation,
     js_dom_mapping,
   );
-  if debug_log_enabled && node_id.is_none() {
+  if node_id.is_none() {
     let now = Instant::now();
     let should_emit = match js_dom_mapping_miss_log_last.get(event_name) {
       None => true,
@@ -5195,7 +5193,6 @@ impl BrowserRuntime {
         js_dom_node_for_preorder_id_with_log(
           &self.ui_tx,
           tab_id,
-          self.debug_log_enabled,
           js_tab,
           preorder_id,
           hovered_dom_element_id.as_deref(),
@@ -5569,7 +5566,6 @@ impl BrowserRuntime {
         let target = js_dom_node_for_preorder_id_with_log(
           &self.ui_tx,
           tab_id,
-          self.debug_log_enabled,
           js_tab,
           target_id,
           target_element_id.as_deref(),
@@ -5693,7 +5689,6 @@ impl BrowserRuntime {
           let target = js_dom_node_for_preorder_id_with_log(
             &self.ui_tx,
             tab_id,
-            self.debug_log_enabled,
             js_tab,
             target_id,
             target_element_id.as_deref(),
@@ -6006,7 +6001,6 @@ impl BrowserRuntime {
             let target = js_dom_node_for_preorder_id_with_log(
               &self.ui_tx,
               tab_id,
-              self.debug_log_enabled,
               js_tab,
               target_id,
               mouseup_target_element_id.as_deref(),
@@ -6064,7 +6058,6 @@ impl BrowserRuntime {
               let target = js_dom_node_for_preorder_id_with_log(
                 &self.ui_tx,
                 tab_id,
-                self.debug_log_enabled,
                 js_tab,
                 target_id,
                 click_target_element_id.as_deref(),
@@ -6129,7 +6122,6 @@ impl BrowserRuntime {
               let target = js_dom_node_for_preorder_id_with_log(
                 &self.ui_tx,
                 tab_id,
-                self.debug_log_enabled,
                 js_tab,
                 target_id,
                 click_target_element_id.as_deref(),
@@ -6187,7 +6179,6 @@ impl BrowserRuntime {
               let submitter_node = js_dom_node_for_preorder_id_with_log(
                 &self.ui_tx,
                 tab_id,
-                self.debug_log_enabled,
                 js_tab,
                 submitter_id,
                 form_submitter_element_id.as_deref(),
@@ -6301,7 +6292,6 @@ impl BrowserRuntime {
             let target = js_dom_node_for_preorder_id_with_log(
               &self.ui_tx,
               tab_id,
-              self.debug_log_enabled,
               js_tab,
               target_dom_id,
               mouseup_target_element_id.as_deref(),
@@ -6613,7 +6603,6 @@ impl BrowserRuntime {
         let target = js_dom_node_for_preorder_id_with_log(
           &self.ui_tx,
           tab_id,
-          self.debug_log_enabled,
           js_tab,
           target_id,
           drop_target_element_id.as_deref(),
@@ -6941,7 +6930,6 @@ impl BrowserRuntime {
           let target = js_dom_node_for_preorder_id_with_log(
             &self.ui_tx,
             tab_id,
-            self.debug_log_enabled,
             js_tab,
             target_id,
             hit_info.dispatch_target_element_id.as_deref(),
@@ -8301,7 +8289,6 @@ impl BrowserRuntime {
               let target = js_dom_node_for_preorder_id_with_log(
                 &self.ui_tx,
                 tab_id,
-                self.debug_log_enabled,
                 js_tab,
                 target_id,
                 click_target_element_id,
@@ -8338,7 +8325,6 @@ impl BrowserRuntime {
                 let source_node = js_dom_node_for_preorder_id_with_log(
                   &self.ui_tx,
                   tab_id,
-                  self.debug_log_enabled,
                   js_tab,
                   source_id,
                   submit_source_element_id,
