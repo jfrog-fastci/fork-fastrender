@@ -1,3 +1,4 @@
+use crate::interaction::form_controls;
 use crate::interaction::InteractionState;
 use crate::text::caret::CaretAffinity;
 use crate::tree::box_tree::{BoxNode, BoxTree, FormControl, FormControlKind, ReplacedType};
@@ -77,23 +78,6 @@ fn collect_box_id_to_styled_node_id(box_tree: &BoxTree) -> FxHashMap<usize, usiz
   mapping
 }
 
-fn normalize_selection_range(
-  selection: Option<(usize, usize)>,
-  max_chars: usize,
-) -> Option<(usize, usize)> {
-  selection.and_then(|(start, end)| {
-    let start = start.min(max_chars);
-    let end = end.min(max_chars);
-    if start == end {
-      None
-    } else if start < end {
-      Some((start, end))
-    } else {
-      Some((end, start))
-    }
-  })
-}
-
 fn apply_form_control_paint_state(
   control: &mut FormControl,
   node_id: usize,
@@ -108,22 +92,17 @@ fn apply_form_control_paint_state(
       ..
     } => {
       let value_char_len = value.chars().count();
-      let mut next_caret = value_char_len;
-      let mut next_affinity = CaretAffinity::Downstream;
-      let mut next_selection: Option<(usize, usize)> = None;
-      if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(node_id)) {
-        next_caret = edit.caret.min(value_char_len);
-        next_affinity = edit.caret_affinity;
-        next_selection = normalize_selection_range(edit.selection, value_char_len);
-      }
+      let (next_caret, next_affinity, next_selection) =
+        form_controls::text_edit_state_for_value_char_len(
+          interaction_state,
+          node_id,
+          value_char_len,
+        );
       *caret = next_caret;
       *caret_affinity = next_affinity;
       *selection = next_selection;
 
-      control.ime_preedit = interaction_state
-        .and_then(|state| state.ime_preedit_for(node_id))
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string());
+      control.ime_preedit = form_controls::ime_preedit_for_node(interaction_state, node_id);
     }
     FormControlKind::TextArea {
       value,
@@ -133,36 +112,20 @@ fn apply_form_control_paint_state(
       ..
     } => {
       let value_char_len = value.chars().count();
-      let mut next_caret = value_char_len;
-      let mut next_affinity = CaretAffinity::Downstream;
-      let mut next_selection: Option<(usize, usize)> = None;
-      if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(node_id)) {
-        next_caret = edit.caret.min(value_char_len);
-        next_affinity = edit.caret_affinity;
-        next_selection = normalize_selection_range(edit.selection, value_char_len);
-      }
+      let (next_caret, next_affinity, next_selection) =
+        form_controls::text_edit_state_for_value_char_len(
+          interaction_state,
+          node_id,
+          value_char_len,
+        );
       *caret = next_caret;
       *caret_affinity = next_affinity;
       *selection = next_selection;
 
-      control.ime_preedit = interaction_state
-        .and_then(|state| state.ime_preedit_for(node_id))
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string());
+      control.ime_preedit = form_controls::ime_preedit_for_node(interaction_state, node_id);
     }
     FormControlKind::File { value } => {
-      let next_value = interaction_state
-        .and_then(|state| state.form_state.files_for(node_id))
-        .and_then(|files| {
-          if files.is_empty() {
-            None
-          } else if files.len() == 1 {
-            Some(files[0].path.to_string_lossy().to_string())
-          } else {
-            Some(format!("{} files", files.len()))
-          }
-        });
-      *value = next_value;
+      *value = form_controls::file_input_display_value(interaction_state, node_id);
       control.ime_preedit = None;
     }
     _ => {

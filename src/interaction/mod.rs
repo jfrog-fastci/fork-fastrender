@@ -9,6 +9,7 @@ pub(crate) mod effective_disabled;
 pub(crate) mod effective_disabled_dom2;
 pub mod engine;
 pub mod focus_scroll;
+pub(crate) mod form_controls;
 pub mod form_submit;
 pub mod element_geometry;
 pub mod fragment_geometry;

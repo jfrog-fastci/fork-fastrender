@@ -18,6 +18,7 @@ use crate::error::{RenderStage, Result};
 use crate::geometry::Size;
 use crate::html::image_attrs;
 use crate::html::images::is_supported_image_mime;
+use crate::interaction::form_controls;
 use crate::interaction::InteractionState;
 use crate::render_control::check_active_periodic;
 use crate::resource::ReferrerPolicy;
@@ -7334,17 +7335,7 @@ fn create_form_control_replaced(
         raw: raw_value.map(|v| v.to_string()),
       }
     } else if input_type.eq_ignore_ascii_case("file") {
-      let value = interaction_state
-        .and_then(|state| state.form_state.files_for(styled.node_id))
-        .and_then(|files| {
-          if files.is_empty() {
-            None
-          } else if files.len() == 1 {
-            Some(files[0].path.to_string_lossy().to_string())
-          } else {
-            Some(format!("{} files", files.len()))
-          }
-        });
+      let value = form_controls::file_input_display_value(interaction_state, styled.node_id);
       FormControlKind::File { value }
     } else {
       let size_attr = styled
@@ -7380,34 +7371,21 @@ fn create_form_control_replaced(
       } else if input_type.eq_ignore_ascii_case("time") {
         placeholder.get_or_insert_with(|| "hh:mm".to_string());
         TextControlKind::Date
-      } else {
-        // HTML: invalid/unknown `<input type="...">` values fall back to the text state.
-        TextControlKind::Plain
-      };
+       } else {
+         // HTML: invalid/unknown `<input type="...">` values fall back to the text state.
+         TextControlKind::Plain
+       };
 
-      let value_char_len = value.chars().count();
-      let mut caret = value_char_len;
-      let mut caret_affinity = crate::text::caret::CaretAffinity::Downstream;
-      let mut selection: Option<(usize, usize)> = None;
-      if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(styled.node_id)) {
-        caret = edit.caret.min(value_char_len);
-        caret_affinity = edit.caret_affinity;
-        selection = edit.selection.and_then(|(start, end)| {
-          let start = start.min(value_char_len);
-          let end = end.min(value_char_len);
-          if start == end {
-            None
-          } else if start < end {
-            Some((start, end))
-          } else {
-            Some((end, start))
-          }
-        });
-      }
+       let value_char_len = value.chars().count();
+       let (caret, caret_affinity, selection) = form_controls::text_edit_state_for_value_char_len(
+         interaction_state,
+         styled.node_id,
+         value_char_len,
+       );
 
-      FormControlKind::Text {
-        value,
-        placeholder,
+       FormControlKind::Text {
+         value,
+         placeholder,
         placeholder_style: styled.placeholder_styles.clone(),
         size_attr,
         kind,
@@ -7429,15 +7407,13 @@ fn create_form_control_replaced(
         FormControlKind::File { .. } => {
           (None, None, None, styled.file_selector_button_styles.clone())
         }
-        _ => (None, None, None, None),
+       _ => (None, None, None, None),
       };
 
-    let ime_preedit = match &control {
-      FormControlKind::Text { .. } => interaction_state
-        .and_then(|state| state.ime_preedit_for(styled.node_id))
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string()),
-      _ => None,
+    let ime_preedit = if matches!(&control, FormControlKind::Text { .. }) {
+      form_controls::ime_preedit_for_node(interaction_state, styled.node_id)
+    } else {
+      None
     };
 
     Some(FormControl {
@@ -7469,24 +7445,11 @@ fn create_form_control_replaced(
       .map(|p| p.to_string());
     let value = textarea_value.unwrap_or_default();
     let value_char_len = value.chars().count();
-    let mut caret = value_char_len;
-    let mut caret_affinity = crate::text::caret::CaretAffinity::Downstream;
-    let mut selection: Option<(usize, usize)> = None;
-    if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(styled.node_id)) {
-      caret = edit.caret.min(value_char_len);
-      caret_affinity = edit.caret_affinity;
-      selection = edit.selection.and_then(|(start, end)| {
-        let start = start.min(value_char_len);
-        let end = end.min(value_char_len);
-        if start == end {
-          None
-        } else if start < end {
-          Some((start, end))
-        } else {
-          Some((end, start))
-        }
-      });
-    }
+    let (caret, caret_affinity, selection) = form_controls::text_edit_state_for_value_char_len(
+      interaction_state,
+      styled.node_id,
+      value_char_len,
+    );
     Some(FormControl {
       control: FormControlKind::TextArea {
         value,
@@ -7520,10 +7483,7 @@ fn create_form_control_replaced(
       focus_visible,
       required,
       invalid,
-      ime_preedit: interaction_state
-        .and_then(|state| state.ime_preedit_for(styled.node_id))
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string()),
+      ime_preedit: form_controls::ime_preedit_for_node(interaction_state, styled.node_id),
     })
   } else if tag.eq_ignore_ascii_case("select") {
     let control = select_control.unwrap_or_else(|| build_select_control(styled));
