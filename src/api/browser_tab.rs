@@ -20,7 +20,7 @@ use crate::js::{
   HtmlScriptSchedulerAction, HtmlScriptWork, JsDomEvents, JsExecutionOptions, LoadBlockerKind,
   LocationNavigationRequest, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome,
   RunUntilIdleStopReason, ScriptBlockExecutor, ScriptBlockingStyleSheetSet, ScriptElementSpec,
-  ScriptOrchestrator, ScriptType, TaskSource,
+  ScriptOrchestrator, ScriptType, TaskSource, WindowRealmHost,
 };
 use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::ResourceFetcher;
@@ -778,8 +778,10 @@ impl BrowserTabHost {
       // We therefore must mirror those immutable fields onto the temporary snapshot we pass into
       // `with_dispatch_event_object`, even though `web_events::dispatch_event` itself operates on
       // the mutable `event` instance below.
+      event_for_event_obj.time_stamp = event.time_stamp;
       event_for_event_obj.is_trusted = event.is_trusted;
       event_for_event_obj.mouse = event.mouse;
+      event_for_event_obj.drag_data_transfer = event.drag_data_transfer;
       event_for_event_obj.detail = event.detail.clone();
       event_for_event_obj.storage = event.storage.clone();
       return invoker
@@ -814,14 +816,15 @@ impl BrowserTabHost {
             composed: event.composed,
           },
         );
+        event_for_event_obj.time_stamp = event.time_stamp;
         event_for_event_obj.is_trusted = event.is_trusted;
         event_for_event_obj.mouse = event.mouse;
         event_for_event_obj.detail = event.detail.clone();
         event_for_event_obj.storage = event.storage.clone();
-        invoker
-          .with_dispatch_event_object(&event_for_event_obj, |invoker| {
-            crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
-          })
+        event_for_event_obj.drag_data_transfer = event.drag_data_transfer;
+        invoker.with_dispatch_event_object(&event_for_event_obj, |invoker| {
+          crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
+        })
           .map_err(|err| Error::Other(err.to_string()))
       })
     } else {
@@ -5737,6 +5740,173 @@ impl BrowserTab {
     event.mouse = Some(mouse);
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     host.dispatch_dom_event_in_event_loop(EventTargetId::Node(node_id).normalize(), event, event_loop)
+  }
+
+  fn create_data_transfer_for_files(
+    &mut self,
+    paths: &[PathBuf],
+  ) -> Result<Option<(vm_js::Value, vm_js::RootId)>> {
+    use vm_js::{PropertyDescriptor, PropertyKey, PropertyKind, Value, VmError};
+
+    // `vm-js` integrations may run with JS disabled (no realm). Treat DataTransfer creation as
+    // best-effort so callers can still dispatch a `drop` event (for `preventDefault()` semantics)
+    // even when the embedding cannot provide `dataTransfer.files` yet.
+    let Ok((_host_ctx, realm)) = self.host.vm_host_and_window_realm() else {
+      return Ok(None);
+    };
+
+    // Reset any prior termination state: host-driven event dispatch should be able to allocate even
+    // if the previous turn ran out of budget.
+    realm.reset_interrupt();
+
+    let (_vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+
+    let alloc_key = |scope: &mut vm_js::Scope<'_>, name: &str| -> std::result::Result<PropertyKey, VmError> {
+      let s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(s))?;
+      Ok(PropertyKey::from_string(s))
+    };
+
+    let intr = realm_ref.intrinsics();
+
+    // DataTransfer object placeholder.
+    let data_transfer_obj = scope.alloc_object().map_err(|e| Error::Other(e.to_string()))?;
+    scope
+      .push_root(Value::Object(data_transfer_obj))
+      .map_err(|e| Error::Other(e.to_string()))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(data_transfer_obj, Some(intr.object_prototype()))
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    // MVP `dataTransfer.files` surface:
+    // - implemented as a plain JS `Array` of file name strings
+    // - NOT a real `FileList` (and entries are not `File` objects)
+    //
+    // This is sufficient for basic `drop` handlers that only need to observe that files exist, and
+    // keeps the API deterministic while the full File/FileList plumbing is implemented.
+    let files_arr = scope
+      .alloc_array(paths.len())
+      .map_err(|e| Error::Other(e.to_string()))?;
+    scope
+      .push_root(Value::Object(files_arr))
+      .map_err(|e| Error::Other(e.to_string()))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(files_arr, Some(intr.array_prototype()))
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    for (idx, path) in paths.iter().enumerate() {
+      let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+      let name_s = scope.alloc_string(&name).map_err(|e| Error::Other(e.to_string()))?;
+      scope
+        .push_root(Value::String(name_s))
+        .map_err(|e| Error::Other(e.to_string()))?;
+      let key = alloc_key(&mut scope, &idx.to_string()).map_err(|e| Error::Other(e.to_string()))?;
+      scope
+        .define_property(
+          files_arr,
+          key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: Value::String(name_s),
+              writable: true,
+            },
+          },
+        )
+        .map_err(|e| Error::Other(e.to_string()))?;
+    }
+
+    let files_key = alloc_key(&mut scope, "files").map_err(|e| Error::Other(e.to_string()))?;
+    scope
+      .define_property(
+        data_transfer_obj,
+        files_key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(files_arr),
+            writable: false,
+          },
+        },
+      )
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    let value = Value::Object(data_transfer_obj);
+    let root_id = scope
+      .heap_mut()
+      .add_root(value)
+      .map_err(|e| Error::Other(e.to_string()))?;
+    Ok(Some((value, root_id)))
+  }
+
+  fn release_vm_js_root(&mut self, root_id: vm_js::RootId) {
+    let Ok((_host_ctx, realm)) = self.host.vm_host_and_window_realm() else {
+      return;
+    };
+    let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    heap.remove_root(root_id);
+  }
+
+  /// Dispatch a trusted, cancelable `"drop"` DOM event with an embedding-created `dataTransfer`
+  /// payload.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub(crate) fn dispatch_drop_event_with_files(
+    &mut self,
+    node_id: NodeId,
+    pos_css: (f32, f32),
+    paths: &[PathBuf],
+  ) -> Result<bool> {
+    // Best-effort: if DataTransfer allocation fails, still dispatch the `drop` event so JS can
+    // cancel it via `preventDefault()`.
+    let data_transfer = self.create_data_transfer_for_files(paths).ok().flatten();
+
+    let mut event = Event::new(
+      "drop",
+      EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    // Treat drop as a UIEvent/MouseEvent-like dispatch so JS can observe pointer coordinates.
+    event.mouse = Some(MouseEvent {
+      client_x: pos_css.0 as f64,
+      client_y: pos_css.1 as f64,
+      button: 0,
+      buttons: 0,
+      detail: 0,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: None,
+    });
+    event.drag_data_transfer = data_transfer.as_ref().map(|(value, _root_id)| *value);
+
+    let dispatch_result = {
+      let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+      host.dispatch_dom_event_in_event_loop(
+        EventTargetId::Node(node_id).normalize(),
+        event,
+        event_loop,
+      )
+    };
+
+    if let Some((_value, root_id)) = data_transfer {
+      self.release_vm_js_root(root_id);
+    }
+
+    dispatch_result
   }
 
   /// Dispatch a trusted `submit` DOM event to `node_id`.

@@ -104,6 +104,7 @@ mod ui_context_menu_input_type_image;
 mod ui_context_menu_link_image;
 mod ui_file_drop;
 mod ui_file_drop_label_for;
+mod ui_file_drop_prevent_default;
 mod ui_fragment_navigation;
 mod ui_frame_upload_coalescing;
 mod ui_input_routing;

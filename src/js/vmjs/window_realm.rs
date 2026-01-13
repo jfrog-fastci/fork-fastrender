@@ -24316,6 +24316,19 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       scope.define_property(event_obj, view_key, read_only_data_desc(view))?;
     }
 
+    // Drag-and-drop payload (`DragEvent.dataTransfer`).
+    //
+    // MVP: This may be a simple JS object with an `Array` placeholder for `.files` (not a real
+    // `DataTransfer` / `FileList` implementation yet).
+    if let Some(data_transfer) = event.drag_data_transfer {
+      let data_transfer_key = alloc_key(scope, "dataTransfer")?;
+      scope.define_property(
+        event_obj,
+        data_transfer_key,
+        read_only_data_desc(data_transfer),
+      )?;
+    }
+
     if interface == EventInterface::CustomEvent {
       let detail_key = alloc_key(scope, "detail")?;
       let detail = event.detail.unwrap_or(Value::Null);

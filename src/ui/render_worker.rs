@@ -5306,9 +5306,68 @@ impl BrowserRuntime {
 
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
-    let engine = &mut tab.interaction;
     let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
 
+    // ---------------------------------------------------------------------------
+    // JS `drop` event dispatch
+    // ---------------------------------------------------------------------------
+    //
+    // When JavaScript is enabled for this tab, dispatch a trusted, cancelable `drop` event before
+    // applying the default file-input drop behavior. If page JS cancels the event via
+    // `preventDefault()`, suppress the default file-input selection.
+    let (drop_target_id, drop_target_element_id) =
+      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+
+        let page_point = viewport_point.translate(scroll.viewport);
+        let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
+        let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
+        let target_element_id = target_id.and_then(|target_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
+        });
+
+        (false, (target_id, target_element_id))
+      }) {
+        Ok(result) => result,
+        Err(_) => (None, None),
+      };
+
+    if let Some(js_tab) = tab.js_tab.as_mut() {
+      if let Some(target_id) = drop_target_id {
+        let target = js_dom_node_for_preorder_id_with_log(
+          &self.ui_tx,
+          tab_id,
+          self.debug_log_enabled,
+          js_tab,
+          target_id,
+          drop_target_element_id.as_deref(),
+          &mut tab.js_dom_mapping_generation,
+          &mut tab.js_dom_mapping,
+          &mut tab.js_dom_mapping_miss_logged,
+          "drop",
+        );
+        if let Some(node_id) = target {
+          match js_tab.dispatch_drop_event_with_files(node_id, pos_css, &paths) {
+            Ok(default_allowed) => {
+              if !default_allowed {
+                return;
+              }
+            }
+            Err(err) => {
+              // Best-effort: keep default behavior working even when JS event dispatch fails.
+              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                tab_id,
+                line: format!("js drop event dispatch failed: {err}"),
+              });
+            }
+          }
+        }
+      }
+    }
+
+    let engine = &mut tab.interaction;
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
 

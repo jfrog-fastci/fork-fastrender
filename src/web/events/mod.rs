@@ -260,6 +260,9 @@ pub struct Event {
   ///
   /// This is intentionally a raw JS value so embeddings can provide a lightweight host object
   /// without implementing the full HTML `DataTransfer` interface yet.
+  ///
+  /// MVP: this is currently used for host-driven file drops to expose a placeholder
+  /// `dataTransfer.files` list to JS.
   pub drag_data_transfer: Option<JsValue>,
   pub(crate) in_passive_listener: bool,
 }
