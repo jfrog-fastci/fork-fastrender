@@ -28,6 +28,36 @@ const ICON_GAP: f32 = 8.0;
 const CLOSE_BUTTON_SIZE: f32 = 28.0;
 const ACTIVE_UNDERLINE_HEIGHT: f32 = 2.0;
 
+// Tab-strip drag auto-scroll parameters (when the unpinned segment overflows).
+const DRAG_AUTOSCROLL_EDGE_ZONE_PX: f32 = 36.0;
+const DRAG_AUTOSCROLL_MAX_SPEED_PX_PER_S: f32 = 1200.0;
+
+fn drag_autoscroll_delta_x(pointer_pos: Pos2, viewport_rect: Rect, dt: f32) -> f32 {
+  if dt <= 0.0 || !dt.is_finite() || viewport_rect.width() <= 0.0 {
+    return 0.0;
+  }
+
+  // Don't let the activation zone exceed half the viewport width.
+  let zone = DRAG_AUTOSCROLL_EDGE_ZONE_PX.min(viewport_rect.width() * 0.5);
+  if zone <= 0.0 {
+    return 0.0;
+  }
+
+  // Quadratic ramp: gentle when near the zone boundary, fast when hugging the edge.
+  let mut delta_x = 0.0;
+  if pointer_pos.x < viewport_rect.left() + zone {
+    let t = ((viewport_rect.left() + zone) - pointer_pos.x) / zone;
+    let t = t.clamp(0.0, 1.0);
+    delta_x -= DRAG_AUTOSCROLL_MAX_SPEED_PX_PER_S * t * t * dt;
+  } else if pointer_pos.x > viewport_rect.right() - zone {
+    let t = (pointer_pos.x - (viewport_rect.right() - zone)) / zone;
+    let t = t.clamp(0.0, 1.0);
+    delta_x += DRAG_AUTOSCROLL_MAX_SPEED_PX_PER_S * t * t * dt;
+  }
+
+  delta_x
+}
+
 fn tab_status_messages(tab: &BrowserTabState) -> (Option<&str>, Option<&str>) {
   let err = tab.error.as_deref().filter(|s| !s.trim().is_empty());
   let warn = tab.warning.as_deref().filter(|s| !s.trim().is_empty());
@@ -929,9 +959,7 @@ pub(super) fn tab_strip_ui(
             } else {
               group.title.as_str()
             };
-            let arrow = if group.collapsed { "▸" } else { "▾" };
-            let label = format!("{arrow} {title}");
-            group_chip_total_width += group_chip_width(ui, &label);
+            group_chip_total_width += group_chip_width(ui, title);
             group_chip_count += 1;
           }
 
@@ -966,6 +994,7 @@ pub(super) fn tab_strip_ui(
   let mut active_tab_rect: Option<Rect> = None;
   let mut active_tab_is_pinned = false;
   let mut scroll_offset_x: f32 = 0.0;
+  let mut unpinned_max_scroll_x: f32 = 0.0;
 
   if tabs_viewport_width > 0.0 {
     if pinned_count > 0 && pinned_viewport_rect.width() > 0.0 {
@@ -1023,6 +1052,7 @@ pub(super) fn tab_strip_ui(
       );
       unpinned_ui.set_clip_rect(unpinned_viewport_rect);
 
+      let scroll_id = unpinned_ui.make_persistent_id("tab_strip_scroll");
       let mut restore_scroll_delta: Option<(Vec2, Vec2)> = None;
       // Browser-like ergonomics: treat vertical wheel scrolling as horizontal scrolling when the
       // pointer is over the tab strip (so users don't need a trackpad horizontal gesture).
@@ -1046,7 +1076,7 @@ pub(super) fn tab_strip_ui(
       }
 
       let scroll_output = egui::ScrollArea::horizontal()
-        .id_source("tab_strip_scroll")
+        .id_source(scroll_id)
         .auto_shrink([false, true])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(&mut unpinned_ui, |ui| {
@@ -1091,10 +1121,10 @@ pub(super) fn tab_strip_ui(
                   sizing.tab_width,
                   favicon_tex,
                   &mut app.chrome,
-                  focus_ring,
-                  group_border,
-                )
-              };
+                   focus_ring,
+                   group_border,
+                 )
+               };
               if is_active {
                 active_tab_rect = Some(tab_rect);
                 active_tab_is_pinned = false;
@@ -1131,12 +1161,44 @@ pub(super) fn tab_strip_ui(
             }
           });
         });
-      scroll_offset_x = scroll_output.state.offset.x;
+
+      let mut scroll_state = scroll_output.state;
+      scroll_offset_x = scroll_state.offset.x;
       if let Some((scroll_delta, smooth_scroll_delta)) = restore_scroll_delta {
         unpinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
           i.smooth_scroll_delta = smooth_scroll_delta;
         });
+      }
+
+      // While dragging an unpinned tab, auto-scroll the overflowing scroll area when the pointer is
+      // near the left/right edge of the unpinned viewport (standard browser UX).
+      unpinned_max_scroll_x = (sizing.total_content_width - unpinned_viewport_width).max(0.0);
+      if unpinned_max_scroll_x > 0.5 {
+        if let (Some(dragging_tab_id), Some(pointer_pos)) = (
+          app.chrome.dragging_tab_id,
+          ui.input(|i| i.pointer.interact_pos()),
+        ) {
+          let dragging_is_unpinned = app
+            .tab(dragging_tab_id)
+            .is_some_and(|tab| !tab.pinned);
+          if dragging_is_unpinned
+            && pointer_pos.y >= unpinned_viewport_rect.top()
+            && pointer_pos.y <= unpinned_viewport_rect.bottom()
+          {
+            let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.0, 0.1);
+            let delta_x = drag_autoscroll_delta_x(pointer_pos, unpinned_viewport_rect, dt);
+            if delta_x != 0.0 {
+              let prev = scroll_state.offset.x;
+              let next = (prev + delta_x).clamp(0.0, unpinned_max_scroll_x);
+              if (next - prev).abs() > 0.01 {
+                scroll_state.offset.x = next;
+                scroll_state.store(ui.ctx(), scroll_id);
+                ui.ctx().request_repaint();
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -1154,8 +1216,8 @@ pub(super) fn tab_strip_ui(
   }
 
   // Micro-interaction: animate the active tab underline position/width.
-  if sizing.overflow && unpinned_viewport_rect.width() > 0.0 {
-    let max_scroll_x = (sizing.total_content_width - unpinned_viewport_width).max(0.0);
+  if unpinned_viewport_rect.width() > 0.0 {
+    let max_scroll_x = unpinned_max_scroll_x;
     let fade_w = 18.0_f32.min(unpinned_viewport_rect.width() * 0.5);
     if max_scroll_x > 0.0 && fade_w > 0.0 {
       let left_t = (scroll_offset_x / fade_w).clamp(0.0, 1.0);
