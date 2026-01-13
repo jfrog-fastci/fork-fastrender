@@ -505,11 +505,44 @@ pub fn serialize_document_selection(
   mod tests {
   use super::*;
   use crate::style::display::FormattingContextType;
-  use crate::style::types::TextCombineUpright;
+  use crate::style::types::{TextCombineUpright, WhiteSpace};
   use crate::style::ComputedStyle;
   use crate::tree::fragment_tree::{TextEmphasisOffset, TextSourceRange};
   use crate::Rect;
   use std::sync::Arc;
+
+  fn serialize_single_text(style: Arc<ComputedStyle>, text: &str) -> String {
+    let text_node = BoxNode::new_text(style.clone(), text.to_string());
+    let root = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![text_node]);
+    let box_tree = BoxTree::new(root);
+
+    let text_id = box_tree.root.children[0].id;
+
+    let text_fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+      FragmentContent::Text {
+        text: Arc::from(text),
+        box_id: Some(text_id),
+        source_range: TextSourceRange::new(0..text.len()),
+        baseline_offset: 0.0,
+        shaped: None,
+        is_marker: false,
+        emphasis_offset: TextEmphasisOffset::default(),
+        document_selection: None,
+      },
+      vec![],
+      style.clone(),
+    );
+    let line = FragmentNode::new_line(
+      Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+      0.0,
+      vec![text_fragment],
+    );
+    let fragment_root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![line]);
+    let fragment_tree = FragmentTree::new(fragment_root);
+
+    serialize_document_selection(&box_tree, &fragment_tree, DocumentSelection::All)
+  }
 
   #[test]
   fn selection_serialization_treats_text_combine_merged_text_nodes_as_visible() {
@@ -560,5 +593,35 @@ pub fn serialize_document_selection(
     let serialized =
       serialize_document_selection(&box_tree, &fragment_tree, DocumentSelection::All);
     assert_eq!(serialized, "12");
+  }
+
+  #[test]
+  fn selection_serialization_preserves_preformatted_spaces() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Pre;
+    let style = Arc::new(style);
+
+    let serialized = serialize_single_text(style, "hello   world");
+    assert_eq!(serialized, "hello   world");
+  }
+
+  #[test]
+  fn selection_serialization_preserves_preformatted_newlines() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Pre;
+    let style = Arc::new(style);
+
+    let serialized = serialize_single_text(style, "hello\nworld");
+    assert_eq!(serialized, "hello\nworld");
+  }
+
+  #[test]
+  fn selection_serialization_does_not_trim_preformatted_trailing_spaces() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Pre;
+    let style = Arc::new(style);
+
+    let serialized = serialize_single_text(style, "hello   ");
+    assert_eq!(serialized, "hello   ");
   }
 }
