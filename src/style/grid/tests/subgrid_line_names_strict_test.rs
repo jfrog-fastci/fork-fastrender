@@ -8,6 +8,10 @@ fn subgrid_line_names_accepts_specified_grammar() {
     Some(Vec::<Vec<String>>::new())
   );
   assert_eq!(
+    parse_subgrid_line_names("SuBgRiD [a]"),
+    Some(vec![vec!["a".to_string()]])
+  );
+  assert_eq!(
     parse_subgrid_line_names("/*comment*/subgrid"),
     Some(Vec::<Vec<String>>::new())
   );
@@ -18,6 +22,14 @@ fn subgrid_line_names_accepts_specified_grammar() {
   assert!(
     parse_subgrid_line_names(&format!("{nbsp}subgrid")).is_none(),
     "NBSP must not be treated as CSS whitespace"
+  );
+  assert!(
+    parse_subgrid_line_names("subgrid-foo [a]").is_none(),
+    "`subgrid` must be a full identifier token, not a substring prefix"
+  );
+  assert!(
+    parse_subgrid_line_names("subgrid\\61 [a]").is_none(),
+    "escaped identifier continuations must prevent keyword matching"
   );
   assert_eq!(
     parse_subgrid_line_names("subgrid [a] [b]"),
