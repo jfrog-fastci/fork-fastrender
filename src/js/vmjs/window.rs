@@ -1557,6 +1557,109 @@ mod tests {
   }
 
   #[test]
+  fn node_child_nodes_does_not_expose_shadow_root_handwritten_backend() -> Result<()> {
+    let html = "<!doctype html><html><body>\
+      <div id=host><template shadowroot=open><span>shadow</span></template></div>\
+      </body></html>";
+    let dom = dom2::parse_html(html).expect("parse_html");
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let out = host.exec_script("document.getElementById('host').childNodes.length === 0")?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_child_nodes_does_not_expose_shadow_root_webidl_backend() -> Result<()> {
+    use crate::js::window_timers::VmJsEventLoopHooks;
+
+    struct WebIdlHostState {
+      document: DocumentHostState,
+      window: WindowRealm,
+      webidl_bindings_host: VmJsWebIdlBindingsHostDispatch<WebIdlHostState>,
+    }
+
+    impl DomHost for WebIdlHostState {
+      fn with_dom<R, F>(&self, f: F) -> R
+      where
+        F: FnOnce(&dom2::Document) -> R,
+      {
+        self.document.with_dom(f)
+      }
+
+      fn mutate_dom<R, F>(&mut self, f: F) -> R
+      where
+        F: FnOnce(&mut dom2::Document) -> (R, bool),
+      {
+        self.document.mutate_dom(f)
+      }
+    }
+
+    impl WindowRealmHost for WebIdlHostState {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn vm_js::VmHost, &mut WindowRealm)> {
+        Ok((&mut self.document, &mut self.window))
+      }
+
+      fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
+        Some(&mut self.webidl_bindings_host)
+      }
+    }
+
+    impl WebIdlHostState {
+      fn new(dom: dom2::Document, document_url: &str) -> Result<Self> {
+        let document = DocumentHostState::new(dom);
+        let window = WindowRealm::new(
+          WindowRealmConfig::new(document_url)
+            .with_current_script_state(document.current_script_state().clone())
+            .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+        )
+        .map_err(|err| Error::Other(err.to_string()))?;
+        let webidl_bindings_host =
+          VmJsWebIdlBindingsHostDispatch::<WebIdlHostState>::new(window.global_object());
+
+        Ok(Self {
+          document,
+          window,
+          webidl_bindings_host,
+        })
+      }
+
+      fn exec_script(
+        &mut self,
+        event_loop: &mut EventLoop<Self>,
+        source: &str,
+      ) -> Result<Value> {
+        let mut hooks = VmJsEventLoopHooks::<Self>::new_with_host(self)?;
+        hooks.set_event_loop(event_loop);
+        let (vm_host, window) = self.vm_host_and_window_realm()?;
+        let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
+
+        if let Some(err) = hooks.finish(window.heap_mut()) {
+          return Err(err);
+        }
+
+        match result {
+          Ok(value) => Ok(value),
+          Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+        }
+      }
+    }
+
+    let html = "<!doctype html><html><body>\
+      <div id=host><template shadowroot=open><span>shadow</span></template></div>\
+      </body></html>";
+    let dom = dom2::parse_html(html).expect("parse_html");
+    let mut host = WebIdlHostState::new(dom, "https://example.invalid/")?;
+    let mut event_loop = EventLoop::<WebIdlHostState>::new();
+
+    let out = host.exec_script(&mut event_loop, "document.getElementById('host').childNodes.length === 0")?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn generated_vmjs_node_installer_can_patch_prototype_chain_after_event_target_install(
   ) -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
