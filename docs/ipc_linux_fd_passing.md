@@ -256,6 +256,8 @@ Benefits:
 - Reduces attack surface: no arbitrary FD injection into the browser.
 - Eliminates per-frame FD passing overhead.
 - Makes “FD receipt” a rare, auditable code path.
+- Avoids kernel “in-flight FD” edge cases (e.g. `ETOOMANYREFS` when too many passed FDs are queued
+  but not yet received), which is another reason to avoid per-frame `SCM_RIGHTS` traffic.
 
 If renderer→browser FD flow is unavoidable (e.g. dynamic buffer resizing), treat it as a privileged operation:
 - require explicit negotiation
