@@ -125,7 +125,9 @@ fn build_grid_track_sizing_measure_tree(item_count: usize) -> BoxTree {
 
   let mut children = Vec::with_capacity(item_count);
   for idx in 0..item_count {
-    let text = BoxNode::new_text(text_style.clone(), format!("cell-{idx} {TEXT} {TEXT}"));
+    // Keep the payload non-trivial (forces intrinsic sizing) but avoid extremely long strings so
+    // the benchmark stays quick under the micro Criterion settings.
+    let text = BoxNode::new_text(text_style.clone(), format!("cell-{idx} {TEXT}"));
     let inline = BoxNode::new_block(
       inline_style.clone(),
       FormattingContextType::Inline,
