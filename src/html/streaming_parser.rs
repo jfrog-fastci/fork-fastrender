@@ -135,9 +135,13 @@ impl StreamingHtmlParser {
                   && (namespace.is_empty() || namespace == HTML_NAMESPACE)
                 {
                   let parser_document = doc.node(script).script_parser_document;
-                  doc.node_mut(script).script_parser_document = false;
+                  doc
+                    .set_script_parser_document(script, false)
+                    .expect("set_script_parser_document should succeed for <script>");
                   if parser_document && !doc.has_attribute(script, "async").unwrap_or(false) {
-                    doc.node_mut(script).script_force_async = true;
+                    doc
+                      .set_script_force_async(script, true)
+                      .expect("set_script_force_async should succeed for <script>");
                   }
                 }
               }
@@ -377,6 +381,57 @@ mod tests {
       StreamingParserYield::Finished { .. } => {}
       other => panic!("expected Finished, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn filtering_inert_script_yields_does_not_bump_mutation_generation() {
+    let mut parser = StreamingHtmlParser::new(None);
+
+    // Parse up to (but not including) the `</script>` end tag so we can snapshot the mutation
+    // generation right before html5ever yields `TokenizerResult::Script`.
+    parser.push_str("<!doctype html><template><script>");
+    match parser.pump().unwrap() {
+      StreamingParserYield::NeedMoreInput => {}
+      other => panic!("expected NeedMoreInput, got {other:?}"),
+    }
+
+    let (script_node, generation_before) = {
+      let doc = parser
+        .document()
+        .expect("document should be available while parsing");
+      let script = find_first_element(&doc, "script").expect("missing <script> element");
+      assert!(
+        !doc.is_connected_for_scripting(script),
+        "<script> inside <template> contents must not be connected for scripting"
+      );
+      assert!(
+        doc.node(script).script_parser_document,
+        "parser-inserted inert scripts should still start as parser-inserted"
+      );
+      (script, doc.mutation_generation())
+    };
+
+    // Finish the script. This will make html5ever yield `Script`, but StreamingHtmlParser should
+    // filter it out and only adjust internal slots (parser-document + force-async).
+    parser.push_str("</script></template>");
+    match parser.pump().unwrap() {
+      StreamingParserYield::NeedMoreInput => {}
+      other => panic!("expected NeedMoreInput, got {other:?}"),
+    }
+
+    let doc = parser
+      .document()
+      .expect("document should be available while parsing");
+    assert_eq!(
+      doc.mutation_generation(),
+      generation_before,
+      "clearing script internal slots for inert scripts must not bump mutation_generation"
+    );
+    assert!(!doc.node(script_node).script_parser_document);
+    assert!(
+      doc.node(script_node).script_force_async,
+      "inert parser-inserted scripts without an async attribute should end up force-async"
+    );
   }
 
   #[test]

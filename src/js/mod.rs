@@ -842,9 +842,13 @@ pub(crate) fn prepare_script_element_dom2(
   }
 
   let was_parser_inserted = doc.node(script).script_parser_document;
-  doc.node_mut(script).script_parser_document = false;
+  doc
+    .set_script_parser_document(script, false)
+    .expect("set_script_parser_document should succeed for <script>");
   if was_parser_inserted && !spec.async_attr {
-    doc.node_mut(script).script_force_async = true;
+    doc
+      .set_script_force_async(script, true)
+      .expect("set_script_force_async should succeed for <script>");
   }
 
   // Whether the caller should hand this script off to the scheduler / execution pipeline.

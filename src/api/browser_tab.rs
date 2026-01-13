@@ -1623,9 +1623,13 @@ impl BrowserTabHost {
                     && (namespace.is_empty() || namespace == HTML_NAMESPACE)
                   {
                     let parser_document = dom.node(script).script_parser_document;
-                    dom.node_mut(script).script_parser_document = false;
+                    dom
+                      .set_script_parser_document(script, false)
+                      .expect("set_script_parser_document should succeed for <script>");
                     if parser_document && !dom.has_attribute(script, "async").unwrap_or(false) {
-                      dom.node_mut(script).script_force_async = true;
+                      dom
+                        .set_script_force_async(script, true)
+                        .expect("set_script_force_async should succeed for <script>");
                     }
                   }
                 }
@@ -2662,7 +2666,9 @@ impl BrowserTabHost {
     // Dynamic scripts are marked "already started" at preparation time (DOM insertion steps /
     // attribute mutation steps) so subsequent insertion attempts short-circuit.
     self.mutate_dom(|dom| {
-      dom.node_mut(node_id).script_already_started = true;
+      dom
+        .set_script_already_started(node_id, true)
+        .expect("set_script_already_started should succeed for <script>");
       ((), false)
     });
     self.scripts.insert(
