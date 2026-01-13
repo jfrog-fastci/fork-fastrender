@@ -263,6 +263,8 @@ win-sandbox = { path = "crates/win-sandbox" }
 [dev-dependencies]
 criterion = "0.5"
 filetime = "0.2"
+rand = "0.8"
+rand_chacha = "0.3"
 usvg = "0.43"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }

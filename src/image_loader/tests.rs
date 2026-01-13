@@ -1,16 +1,15 @@
 use crate::api::ResourceContext;
 use crate::error::{Error, Result};
+use crate::image_loader::ImageCache;
 use crate::resource::{
   origin_from_url, FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy, ResourceFetcher,
 };
-use crate::image_loader::ImageCache;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use image::{ImageFormat, Rgba, RgbaImage};
 use resvg::usvg;
 use std::fs;
 use std::io::Cursor;
-use std::fs;
 use std::sync::{Arc, Mutex};
 use tiny_skia::{Pixmap, PremultipliedColorU8, Transform};
 use url::Url;

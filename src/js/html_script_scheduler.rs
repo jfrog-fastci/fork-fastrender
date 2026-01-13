@@ -782,7 +782,6 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
 #[cfg(test)]
 mod state_machine_tests {
   use super::*;
-  use crate::cli_utils::prng::SplitMix64;
   use crate::js::{EventLoop, RunLimits, TaskSource};
   use std::collections::{HashMap, HashSet};
 
@@ -1989,9 +1988,12 @@ mod state_machine_tests {
 
   #[test]
   fn randomized_state_machine_stress_ordering_invariants() -> Result<()> {
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
+
     // Multiple seeds to cover a variety of interleavings, while remaining fully deterministic.
     for seed in [1_u64, 2, 3, 4, 5] {
-      let mut rng = SplitMix64::new(seed);
+      let mut rng = ChaCha8Rng::seed_from_u64(seed);
       let mut h = StressHarness::new();
 
       // Pre-seed with a baseline mix to guarantee coverage even if the RNG happens to skew.
@@ -2069,10 +2071,10 @@ mod state_machine_tests {
       const EXTRA_DYNAMIC: usize = 12;
 
       for i in 0..EXTRA_PARSER {
-        let roll = rng.next_usize(100);
+        let roll = rng.gen_range(0..100);
         let spec = if roll < 55 {
           // Classic external, with parser-blocking/defer/async variants.
-          let variant = rng.next_usize(3);
+          let variant = rng.gen_range(0..3);
           let (async_attr, defer_attr) = match variant {
             0 => (false, false), // parser-blocking
             1 => (false, true),  // defer
@@ -2086,8 +2088,8 @@ mod state_machine_tests {
           )
         } else if roll < 85 {
           // Module (external or inline).
-          let async_attr = rng.next_usize(4) == 0;
-          if rng.next_usize(2) == 0 {
+          let async_attr = rng.gen_range(0..4) == 0;
+          if rng.gen_range(0..2) == 0 {
             make_module_external_with_force_async(
               &format!("p_rand_mod_{i}.js"),
               async_attr,
@@ -2108,21 +2110,21 @@ mod state_machine_tests {
       }
 
       for i in 0..EXTRA_DYNAMIC {
-        let roll = rng.next_usize(100);
+        let roll = rng.gen_range(0..100);
         let spec = if roll < 55 {
           // Dynamic classic external.
-          let ordered = rng.next_usize(2) == 0;
+          let ordered = rng.gen_range(0..2) == 0;
           if ordered {
             classic_external(
               &format!("d_rand_ordered_classic_{i}.js"),
               /* async */ false,
-              /* defer */ rng.next_usize(2) == 0,
+              /* defer */ rng.gen_range(0..2) == 0,
               /* parser_inserted */ false,
             )
           } else {
             make_classic_external_with_force_async(
               &format!("d_rand_async_classic_{i}.js"),
-              /* async_attr */ rng.next_usize(2) == 0,
+              /* async_attr */ rng.gen_range(0..2) == 0,
               /* defer_attr */ false,
               /* parser_inserted */ false,
               /* force_async */ true,
@@ -2130,10 +2132,10 @@ mod state_machine_tests {
           }
         } else if roll < 90 {
           // Dynamic module.
-          let ordered = rng.next_usize(2) == 0;
-          let async_attr = !ordered && rng.next_usize(2) == 0;
-          let force_async = !ordered && !async_attr && rng.next_usize(2) == 0;
-          if rng.next_usize(2) == 0 {
+          let ordered = rng.gen_range(0..2) == 0;
+          let async_attr = !ordered && rng.gen_range(0..2) == 0;
+          let force_async = !ordered && !async_attr && rng.gen_range(0..2) == 0;
+          if rng.gen_range(0..2) == 0 {
             make_module_external_with_force_async(
               &format!("d_rand_mod_{i}.js"),
               async_attr,
@@ -2203,7 +2205,7 @@ mod state_machine_tests {
           "deadlock in stress harness (seed={seed})"
         );
 
-        let choice = choices[rng.next_usize(choices.len())];
+        let choice = choices[rng.gen_range(0..choices.len())];
         match choice {
           "discover_parser" => {
             let spec = parser_specs[next_parser].clone();
@@ -2216,15 +2218,15 @@ mod state_machine_tests {
             let _ = h.discover(spec, step)?;
           }
           "complete_classic" => {
-            let idx = rng.next_usize(h.pending_classic_fetches.len());
+            let idx = rng.gen_range(0..h.pending_classic_fetches.len());
             let id = h.pending_classic_fetches.swap_remove(idx);
-            let success = rng.next_usize(5) != 0; // ~80% success.
+            let success = rng.gen_range(0..5) != 0; // ~80% success.
             h.complete_classic_fetch(id, success, step)?;
           }
           "complete_module" => {
-            let idx = rng.next_usize(h.pending_module_fetches.len());
+            let idx = rng.gen_range(0..h.pending_module_fetches.len());
             let id = h.pending_module_fetches.swap_remove(idx);
-            let success = rng.next_usize(5) != 0; // ~80% success.
+            let success = rng.gen_range(0..5) != 0; // ~80% success.
             h.complete_module_graph(id, success, step)?;
           }
           "parsing_completed" => {
