@@ -2981,7 +2981,7 @@ impl BrowserTabHost {
             .scripts
             .get(&script_id)
             .map(|entry| match entry.spec.script_type {
-              ScriptType::Module => TaskSource::Networking,
+              ScriptType::Module => TaskSource::Script,
               _ => TaskSource::Script,
             })
             .unwrap_or(TaskSource::Script);
@@ -6693,6 +6693,84 @@ mod tests {
           FetchDestination::ScriptCors
         ),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_script_execution_task_source_is_script() -> Result<()> {
+    struct TaskSourceRecordingExecutor {
+      observed: Rc<Cell<Option<TaskSource>>>,
+    }
+
+    impl BrowserTabJsExecutor for TaskSourceRecordingExecutor {
+      fn execute_classic_script(
+        &mut self,
+        _script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        _script_id: HtmlScriptId,
+        _script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<ModuleScriptExecutionStatus> {
+        let running = event_loop
+          .currently_running_task()
+          .expect("module script should execute within an event-loop task");
+        self.observed.set(Some(running.source));
+        Ok(ModuleScriptExecutionStatus::Completed)
+      }
+    }
+
+    let observed = Rc::new(Cell::new(None));
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let document = BrowserDocumentDom2::from_html(
+      r#"<!doctype html>
+      <script type="module" async>
+        // Ensure the body is non-empty so the scheduler actually runs module execution.
+        export const answer = 42;
+      </script>"#,
+      RenderOptions::default(),
+    )?;
+
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(TaskSourceRecordingExecutor {
+        observed: Rc::clone(&observed),
+      }),
+      TraceHandle::default(),
+      js_options,
+    )?;
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+
+    let mut event_loop = EventLoop::new();
+    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
+
+    let discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1, "expected one module <script> element");
+    for (node_id, spec) in discovered {
+      let base_url_at_discovery = spec.base_url.clone();
+      host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      observed.get(),
+      Some(TaskSource::Script),
+      "module execution tasks should run on the Script task source"
     );
     Ok(())
   }
