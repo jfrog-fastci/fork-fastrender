@@ -14405,6 +14405,17 @@ impl DisplayListRenderer {
         }
         let is_left_edge = col_idx == 0;
         let is_right_edge = col_idx == item.borders.column_count;
+        // Interior grid lines are centered: the stroke extends `width/2` to either side of the
+        // grid line center.
+        //
+        // Outer edges are special (CSS 2.1 §17.6.2): the table grid is positioned using a
+        // "baseline" outer border width (recorded in `*_line_base`; for left/right this comes from
+        // the first row). Later rows/columns can resolve thicker winning border segments on the
+        // outer edge, but those must not move the inside edge of the table; the excess thickness
+        // spills outward into the margin (WPT `border-collapse-basic-001`).
+        //
+        // `inside` is therefore capped to the baseline half-width so any extra thickness paints
+        // outward only.
         let baseline_edge = if is_left_edge || is_right_edge {
           base_edge_width
         } else {
@@ -14470,6 +14481,9 @@ impl DisplayListRenderer {
         }
         let is_top_edge = row_idx == 0;
         let is_bottom_edge = row_idx == item.borders.row_count;
+        // See the vertical loop above for the baseline-vs-spill rationale. The same rule applies
+        // here: clamp how much of an outer edge segment is allowed inside the table, and let any
+        // excess thickness paint outward.
         let baseline_edge = if is_top_edge || is_bottom_edge {
           base_edge_width
         } else {

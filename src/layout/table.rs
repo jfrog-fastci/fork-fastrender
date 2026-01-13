@@ -3419,7 +3419,7 @@ fn collect_source_rows<'a>(table_box: &'a BoxNode) -> Vec<&'a BoxNode> {
 /// Computes the grid line centers and item start offsets for the collapsed border model.
 /// Line widths are centered on the grid lines; outer lines contribute half their width to
 /// the measured extent so the remaining half may spill into the table's margin area
-/// (CSS 2.2 §17.6.2).
+/// (CSS 2.1 §17.6.2).
 fn collapsed_line_positions(
   sizes: &[f32],
   line_widths: &[f32],
@@ -4366,9 +4366,29 @@ fn build_table_collapsed_borders_metadata(
   let counts = collapsed_border_allocation_guard(structure.row_count, structure.column_count)?;
   let mut deadline_counter = 0usize;
   check_layout_deadline(&mut deadline_counter)?;
-  // Layout geometry uses `vertical_line_max`/`horizontal_line_max` (outer vertical edges are based
-  // on the first row per CSS 2.2 §17.6.2). Paint bounds must still include thicker outer-edge
-  // segments that can appear in later rows/columns.
+  // `TableCollapsedBorders` is a compact paint-time snapshot of the collapsed border grid.
+  //
+  // Coordinate convention:
+  // - `column_line_pos` / `row_line_pos` are **grid line center** coordinates in the table
+  //   fragment's local space (i.e. relative to the table fragment origin). For collapsed-border
+  //   tables the fragment origin is aligned with the left/top outer grid line (`*_line_pos[0]`),
+  //   so the baseline outer border edge is at local coordinate 0.
+  // - `vertical_line_max` / `horizontal_line_max` are the **layout baseline** line widths: the
+  //   widths that were used to position the grid in layout. In particular, the outer left/right
+  //   edges are based on the first row per CSS 2.1 §17.6.2.
+  //
+  // Baseline-vs-spill:
+  // Per §17.6.2 the table's used width/height include only *half* of the outer border; the other
+  // half paints into the margin. Additionally, later rows/columns can resolve thicker *outer-edge*
+  // segments than the baseline without affecting layout; the excess thickness must "spill" outward
+  // (see WPT `border-collapse-basic-001`). This is why `paint_bounds` must be computed from the
+  // maximum outer-edge segment widths (and corner join widths) rather than only the baseline line
+  // widths.
+  //
+  // Note: `paint_bounds` can still have a negative origin because those negative coordinates
+  // represent border pixels that paint into the margin (including any outward spill). This is
+  // intentional and relied upon by the display list bounds/culling logic (see
+  // `collapsed_border_paint_bounds_include_thick_outer_segment` and WPT `border-collapse-basic-001`).
   let mut outer_left_half = 0.0f32;
   let mut outer_right_half = 0.0f32;
   if let (Some(left), Some(right)) = (
@@ -8474,11 +8494,23 @@ impl FormattingContext for TableFormattingContext {
       let mut col_offsets = Vec::with_capacity(structure.column_count);
       let mut row_prefix_heights: Option<Vec<f32>> = None;
 
-      // Collapsed borders place border strokes on grid lines, with half of the outer
-      // borders inside the table box and half potentially spilling into the margin
-      // area (CSS 2.2 §17.6.2). Compute line centers and cell start offsets from the
-      // resolved line widths so that the table width/height include only half of the
-      // outer collapsed borders.
+      // Collapsed border model geometry (CSS 2.1 §17.6.2).
+      //
+      // Coordinate convention (important for avoiding negative-origin clipping):
+      //
+      // - `column_line_pos` / `row_line_pos` store **grid line center** positions, measured from
+      //   the table fragment origin (`FragmentNode.bounds.origin == (0,0)` for the table grid
+      //   box). `*_line_pos[0]` is the left/top outer grid line, and `*_line_pos.last()` is the
+      //   right/bottom outer grid line.
+      // - `col_offsets` / `row_offsets` are the **cell slot starts** (inside edges): for index
+      //   `i`, `offsets[i] == line_pos[i] + 0.5*line_width[i]`.
+      //
+      // In the collapsed model, border strokes are centered on these grid lines; only **half** of
+      // the outer border contributes to the table's used width/height, and the other half paints
+      // into the margin area. Outer edge widths used for *layout* are "baselined" (e.g. left/right
+      // come from the first row per §17.6.2); if later rows/columns resolve a thicker winning outer
+      // border, the excess must *spill outward* instead of widening the table (WPT:
+      // `border-collapse-basic-001`).
       let (content_width, content_height, content_origin_x, content_origin_y) =
         match collapsed_borders.as_ref() {
           Some(collapsed_borders) => {
@@ -8486,7 +8518,8 @@ impl FormattingContext for TableFormattingContext {
               check_layout_deadline(&mut deadline_counter)?;
               let width = if idx == 0 || idx == structure.column_count {
                 // Table left/right border widths are based on the first row's collapsed border
-                // (CSS 2.2 §17.6.2), with any excess in later rows spilling into the margin.
+                // (CSS 2.1 §17.6.2), with any excess in later rows spilling into the margin (WPT:
+                // `border-collapse-basic-001`).
                 if structure.row_count > 0 {
                   segments.first().map(|b| b.width).unwrap_or(0.0)
                 } else {
