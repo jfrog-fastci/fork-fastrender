@@ -98,10 +98,11 @@ impl Mp4Track {
         (idx, SeekMethod::MonotonicBinarySearch)
       }
       PtsIndex::Sorted { sample_indices_by_pts } => {
-        let pos = sample_indices_by_pts.partition_point(|&i| self.pts_ns_by_sample[i] < time_ns);
+        let pos = sample_indices_by_pts
+          .partition_point(|&i| self.pts_ns_by_sample[i as usize] < time_ns);
         let idx = sample_indices_by_pts
           .get(pos)
-          .copied()
+          .map(|&idx| idx as usize)
           .unwrap_or_else(|| self.samples.len());
         (idx, SeekMethod::SortedBinarySearch)
       }
@@ -159,7 +160,7 @@ enum PtsIndex {
   /// PTS values are monotonic in sample order (common for audio and baseline-profile H.264).
   Monotonic,
   /// PTS values are non-monotonic in sample order; binary search over sorted PTS.
-  Sorted { sample_indices_by_pts: Vec<usize> },
+  Sorted { sample_indices_by_pts: Vec<u32> },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -343,8 +344,12 @@ fn build_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
   }
 
   // Non-monotonic (e.g. B-frames / CTTS reordering). Build a sorted index.
-  let mut sample_indices_by_pts: Vec<usize> = (0..pts_ns_by_sample.len()).collect();
-  sample_indices_by_pts.sort_by_key(|&i| (pts_ns_by_sample[i], i));
+  let mut sample_indices_by_pts = Vec::with_capacity(pts_ns_by_sample.len());
+  for i in 0..pts_ns_by_sample.len() {
+    // `stsz.sample_count` is a u32, so sample tables should always fit.
+    sample_indices_by_pts.push(i as u32);
+  }
+  sample_indices_by_pts.sort_by_key(|&i| (pts_ns_by_sample[i as usize], i));
 
   PtsIndex::Sorted { sample_indices_by_pts }
 }
