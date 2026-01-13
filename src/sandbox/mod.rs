@@ -315,6 +315,11 @@ pub enum RendererSandboxError {
   #[error("rlimit value {value} for {resource} does not fit platform rlim_t")]
   InvalidRlimitValue { resource: &'static str, value: u64 },
 
+  #[error(
+    "invalid sandbox env var {var}={value:?}; expected 0|1|true|false|yes|no|on|off"
+  )]
+  InvalidSandboxEnvVar { var: &'static str, value: String },
+
   #[cfg(target_os = "macos")]
   #[error("failed to configure macOS sandbox-exec wrapper")]
   MacosSandboxExecWrapFailed {

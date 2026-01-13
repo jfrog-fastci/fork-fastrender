@@ -136,8 +136,9 @@ when you need system fonts, and use `off` only when debugging sandbox behaviour.
 
 ## Renderer sandbox layers (Linux)
 
-These environment variables control individual **Linux** renderer sandbox layers (and are also
-consumed by the `sandbox_probe` utility).
+These environment variables control individual **Linux** renderer sandbox layers. They are
+consumed by the `sandbox_probe` utility and by Linux renderer sandbox spawn helpers (e.g.
+`fastrender::sandbox::spawn::configure_renderer_command`).
 
 They are primarily intended for developer ergonomics and debugging. When sandboxing is disabled via
 `FASTR_DISABLE_RENDERER_SANDBOX=1` (or other platform-specific disable knobs), these layer toggles
@@ -146,6 +147,8 @@ are ignored.
 - `FASTR_RENDERER_SECCOMP=0|1` – enable/disable the Linux seccomp-bpf syscall filter layer.
 - `FASTR_RENDERER_LANDLOCK=0|1` – enable/disable the Linux Landlock filesystem sandbox layer.
 - `FASTR_RENDERER_CLOSE_FDS=0|1` – enable/disable closing non-stdio file descriptors at renderer startup.
+  - Currently applied by `sandbox_probe`; renderer entrypoints may adopt this over time as IPC wiring
+    stabilizes.
 
 ## Browser UI (`browser` binary)
 

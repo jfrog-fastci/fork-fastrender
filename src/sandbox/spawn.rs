@@ -15,6 +15,11 @@ use std::process::Command;
 
 #[cfg(all(unix, target_os = "linux"))]
 use std::os::unix::process::CommandExt;
+#[cfg(all(unix, target_os = "linux"))]
+use std::sync::OnceLock;
+
+#[cfg(all(unix, target_os = "linux"))]
+use crate::system::renderer_sandbox as env_sandbox;
 
 /// Configure `cmd` so the spawned renderer process is sandboxed as early as possible.
 ///
@@ -42,6 +47,9 @@ pub fn configure_renderer_command(
 ) -> Result<(), RendererSandboxError> {
   #[cfg(all(unix, target_os = "linux"))]
   {
+    let Some(config) = apply_linux_env_overrides(config)? else {
+      return Ok(());
+    };
     let cfg = LinuxPreExecConfig::try_from_config(config)?;
 
     // SAFETY: `pre_exec` is unsafe because the closure runs after fork. The
@@ -73,6 +81,66 @@ pub fn configure_renderer_command(
     let _ = (cmd, config);
     return Ok(());
   }
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn log_linux_renderer_sandbox_disabled_once() {
+  static LOGGED: OnceLock<()> = OnceLock::new();
+  LOGGED.get_or_init(|| {
+    eprintln!(
+      "warning: Linux renderer sandbox is DISABLED (debug escape hatch; INSECURE). \
+Set FASTR_DISABLE_RENDERER_SANDBOX=0/1 and FASTR_RENDERER_SECCOMP/FASTR_RENDERER_LANDLOCK to control this."
+    );
+  });
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn apply_linux_env_overrides(
+  config: RendererSandboxConfig,
+) -> Result<Option<RendererSandboxConfig>, RendererSandboxError> {
+  let defaults = env_sandbox::RendererSandboxConfig {
+    enabled: true,
+    seccomp: !matches!(config.seccomp, crate::sandbox::RendererSeccompPolicy::Disabled),
+    landlock: !matches!(config.landlock, crate::sandbox::RendererLandlockPolicy::Disabled),
+    // Not currently applied here; `std::process::Command` uses internal exec-error pipes that make
+    // "close all fds except stdio" from `pre_exec` tricky. (A post-exec close_fds layer can be
+    // applied by renderer entrypoints that use stdio-only IPC.)
+    close_fds: false,
+  };
+
+  let env_cfg = env_sandbox::RendererSandboxConfig::from_env_with_defaults(defaults).map_err(|err| {
+    RendererSandboxError::InvalidSandboxEnvVar {
+      var: err.var(),
+      value: err.value().to_string(),
+    }
+  })?;
+
+  if !env_cfg.enabled {
+    log_linux_renderer_sandbox_disabled_once();
+    return Ok(None);
+  }
+
+  let mut config = config;
+
+  config.seccomp = if env_cfg.seccomp {
+    match config.seccomp {
+      crate::sandbox::RendererSeccompPolicy::Disabled => crate::sandbox::RendererSeccompPolicy::RendererDefault,
+      other => other,
+    }
+  } else {
+    crate::sandbox::RendererSeccompPolicy::Disabled
+  };
+
+  config.landlock = if env_cfg.landlock {
+    match config.landlock {
+      crate::sandbox::RendererLandlockPolicy::Disabled => crate::sandbox::RendererLandlockPolicy::RestrictWrites,
+      other => other,
+    }
+  } else {
+    crate::sandbox::RendererLandlockPolicy::Disabled
+  };
+
+  Ok(Some(config))
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -131,6 +199,116 @@ mod tests {
     match prev_profile {
       Some(value) => std::env::set_var(ENV_MACOS_RENDERER_SANDBOX, value),
       None => std::env::remove_var(ENV_MACOS_RENDERER_SANDBOX),
+    }
+  }
+}
+
+#[cfg(all(test, unix, target_os = "linux"))]
+mod linux_tests {
+  use super::*;
+  use crate::system::renderer_sandbox::{
+    ENV_DISABLE_RENDERER_SANDBOX, ENV_RENDERER_LANDLOCK, ENV_RENDERER_SECCOMP,
+  };
+
+  #[test]
+  fn linux_env_disable_skips_sandbox() {
+    let _guard = crate::testing::global_test_lock();
+    let prev_disable = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+    let prev_seccomp = std::env::var_os(ENV_RENDERER_SECCOMP);
+    let prev_landlock = std::env::var_os(ENV_RENDERER_LANDLOCK);
+
+    std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, "1");
+    std::env::remove_var(ENV_RENDERER_SECCOMP);
+    std::env::remove_var(ENV_RENDERER_LANDLOCK);
+
+    let result = apply_linux_env_overrides(RendererSandboxConfig::default())
+      .expect("apply_linux_env_overrides should succeed");
+    assert_eq!(result, None);
+
+    restore_env(prev_disable, prev_seccomp, prev_landlock);
+  }
+
+  #[test]
+  fn linux_env_disables_seccomp() {
+    let _guard = crate::testing::global_test_lock();
+    let prev_disable = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+    let prev_seccomp = std::env::var_os(ENV_RENDERER_SECCOMP);
+    let prev_landlock = std::env::var_os(ENV_RENDERER_LANDLOCK);
+
+    std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX);
+    std::env::set_var(ENV_RENDERER_SECCOMP, "0");
+    std::env::remove_var(ENV_RENDERER_LANDLOCK);
+
+    let cfg = apply_linux_env_overrides(RendererSandboxConfig::default())
+      .expect("apply_linux_env_overrides should succeed")
+      .expect("sandbox should remain enabled");
+    assert_eq!(cfg.seccomp, crate::sandbox::RendererSeccompPolicy::Disabled);
+
+    restore_env(prev_disable, prev_seccomp, prev_landlock);
+  }
+
+  #[test]
+  fn linux_env_enables_landlock() {
+    let _guard = crate::testing::global_test_lock();
+    let prev_disable = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+    let prev_seccomp = std::env::var_os(ENV_RENDERER_SECCOMP);
+    let prev_landlock = std::env::var_os(ENV_RENDERER_LANDLOCK);
+
+    std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX);
+    std::env::remove_var(ENV_RENDERER_SECCOMP);
+    std::env::set_var(ENV_RENDERER_LANDLOCK, "1");
+
+    let cfg = apply_linux_env_overrides(RendererSandboxConfig::default())
+      .expect("apply_linux_env_overrides should succeed")
+      .expect("sandbox should remain enabled");
+    assert_eq!(
+      cfg.landlock,
+      crate::sandbox::RendererLandlockPolicy::RestrictWrites
+    );
+
+    restore_env(prev_disable, prev_seccomp, prev_landlock);
+  }
+
+  #[test]
+  fn linux_env_rejects_invalid_values() {
+    let _guard = crate::testing::global_test_lock();
+    let prev_disable = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+    let prev_seccomp = std::env::var_os(ENV_RENDERER_SECCOMP);
+    let prev_landlock = std::env::var_os(ENV_RENDERER_LANDLOCK);
+
+    std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX);
+    std::env::set_var(ENV_RENDERER_SECCOMP, "maybe");
+    std::env::remove_var(ENV_RENDERER_LANDLOCK);
+
+    let err = apply_linux_env_overrides(RendererSandboxConfig::default())
+      .expect_err("expected invalid env var to error");
+    match err {
+      RendererSandboxError::InvalidSandboxEnvVar { var, value } => {
+        assert_eq!(var, ENV_RENDERER_SECCOMP);
+        assert_eq!(value, "maybe".to_string());
+      }
+      other => panic!("unexpected error variant: {other:?}"),
+    }
+
+    restore_env(prev_disable, prev_seccomp, prev_landlock);
+  }
+
+  fn restore_env(
+    prev_disable: Option<std::ffi::OsString>,
+    prev_seccomp: Option<std::ffi::OsString>,
+    prev_landlock: Option<std::ffi::OsString>,
+  ) {
+    match prev_disable {
+      Some(value) => std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, value),
+      None => std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX),
+    }
+    match prev_seccomp {
+      Some(value) => std::env::set_var(ENV_RENDERER_SECCOMP, value),
+      None => std::env::remove_var(ENV_RENDERER_SECCOMP),
+    }
+    match prev_landlock {
+      Some(value) => std::env::set_var(ENV_RENDERER_LANDLOCK, value),
+      None => std::env::remove_var(ENV_RENDERER_LANDLOCK),
     }
   }
 }
