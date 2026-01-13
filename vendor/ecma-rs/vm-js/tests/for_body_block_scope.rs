@@ -154,3 +154,52 @@ fn generator_for_body_restores_lex_env_across_yield() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn for_body_restores_lex_env_on_break() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      (function(x) {
+        for (var i = 0; i < 10; ++i) {
+          let x = 'inner' + i;
+          break;
+        }
+        return x === 'outer';
+      })('outer')
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn for_in_body_let_is_instantiated_per_iteration() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var obj = { a: 1, b: 2 };
+      for (var k in obj) {
+        let x = k;
+      }
+      true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn for_of_body_const_is_instantiated_per_iteration() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      for (var v of [0, 1]) {
+        const x = v;
+      }
+      true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
