@@ -249,6 +249,9 @@ Output notes:
     explicit AccessKit `Expand`/`Collapse` action routing, e.g. details toggles/toasts)
   - a stringified `id` (helpful when correlating focus updates, but avoid asserting on ids unless
     you are explicitly debugging id stability)
+- The top-level snapshot also includes:
+  - `root_id` (the current tree root node id, when egui emits a tree update)
+  - `focus_id` (the AccessKit node id that currently has accessibility focus, when any)
 
 ### Unit tests (headless AccessKit snapshots)
 
