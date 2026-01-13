@@ -3200,7 +3200,8 @@ mod page_context_menu_keyboard_shortcut_tests {
     };
 
     assert_eq!(pending.tab_id, tab_id);
-    assert_eq!(pending.anchor_points, cursor);
+    assert_eq!(pending.anchor_points, Some(cursor));
+    assert!(pending.match_pos_css);
     assert!((pending.pos_css.0 - 100.0).abs() < 1e-4);
     assert!((pending.pos_css.1 - 50.0).abs() < 1e-4);
 
@@ -3249,7 +3250,8 @@ mod page_context_menu_keyboard_shortcut_tests {
       other => panic!("expected worker request plan, got: {other:?}"),
     };
 
-    assert_eq!(pending.anchor_points, expected_anchor);
+    assert_eq!(pending.anchor_points, Some(expected_anchor));
+    assert!(pending.match_pos_css);
     assert_eq!(pending.pos_css, expected_pos_css);
 
     match msg {
@@ -6345,8 +6347,21 @@ struct OpenMediaControls {
 #[derive(Debug, Clone)]
 struct PendingContextMenuRequest {
   tab_id: fastrender::ui::TabId,
+  /// The CSS position used for hit-testing.
+  ///
+  /// For accessibility-triggered context menus this may be a placeholder; see `match_pos_css`.
   pos_css: (f32, f32),
-  anchor_points: egui::Pos2,
+  /// Fallback anchor point in egui points (cursor position).
+  ///
+  /// When `None`, the UI should derive an anchor from `pos_css` (using `InputMapping`) or fall back
+  /// to a stable default like the page center.
+  anchor_points: Option<egui::Pos2>,
+  /// When true, `pos_css` must exactly match the worker response before opening the menu.
+  ///
+  /// Pointer/keyboard-triggered context menus set this to `true`. Accessibility-triggered context
+  /// menus (AccessKit) set this to `false` because the worker computes the final anchor position
+  /// from the focused node bounds.
+  match_pos_css: bool,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -6460,7 +6475,8 @@ fn keyboard_page_context_menu_request(
     let pending = PendingContextMenuRequest {
       tab_id,
       pos_css,
-      anchor_points,
+      anchor_points: Some(anchor_points),
+      match_pos_css: true,
     };
     let msg = fastrender::ui::UiToWorker::ContextMenuRequest {
       tab_id,
@@ -9716,6 +9732,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       | UiToWorker::PointerUp { tab_id, .. }
       | UiToWorker::DropFiles { tab_id, .. }
       | UiToWorker::ContextMenuRequest { tab_id, .. }
+      | UiToWorker::AccessKitAction { tab_id, .. }
       | UiToWorker::SelectDropdownChoose { tab_id, .. }
       | UiToWorker::SelectDropdownCancel { tab_id }
       | UiToWorker::SelectDropdownPick { tab_id, .. }
@@ -9799,6 +9816,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           UiToWorker::SetMediaPreferences { .. }
           | UiToWorker::SetDebugLogEnabled { .. }
           | UiToWorker::ContextMenuRequest { .. }
+          | UiToWorker::AccessKitAction { .. }
           | UiToWorker::CreateTab { .. }
           | UiToWorker::NewTab { .. }
           | UiToWorker::CloseTab { .. }
@@ -10946,7 +10964,16 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       let matches_pending = self
         .pending_context_menu_request
         .as_ref()
-        .is_some_and(|pending| pending.tab_id == *tab_id && pending.pos_css == *pos_css);
+        .is_some_and(|pending| {
+          if pending.tab_id != *tab_id {
+            return false;
+          }
+          if pending.match_pos_css {
+            pending.pos_css == *pos_css
+          } else {
+            true
+          }
+        });
 
       if matches_pending {
         let pending = self.pending_context_menu_request.take();
@@ -10955,6 +10982,21 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         // is still active.
         if !*default_prevented && self.browser_state.active_tab_id() == Some(*tab_id) {
           if let Some(pending) = pending {
+            let mut anchor_points = pending.anchor_points;
+            if anchor_points.is_none() && self.page_input_tab == Some(*tab_id) {
+              anchor_points = self
+                .page_input_mapping
+                .and_then(|mapping| mapping.pos_css_to_pos_points_clamped(*pos_css));
+            }
+
+            let anchor_points = anchor_points.unwrap_or_else(|| {
+              page_context_menu_anchor_points_for_keyboard_open(
+                self.page_rect_points,
+                self.content_rect_points,
+                self.last_cursor_pos_points,
+              )
+            });
+
             let link_url = link_url
               .as_deref()
               .and_then(fastrender::ui::url::sanitize_worker_url_for_ui);
@@ -10964,7 +11006,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             self.open_context_menu = Some(OpenContextMenu {
               tab_id: *tab_id,
               pos_css: *pos_css,
-              anchor_points: pending.anchor_points,
+              anchor_points,
               link_url,
               image_url,
               can_copy: *can_copy,
@@ -15938,7 +15980,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               self.pending_context_menu_request = Some(PendingContextMenuRequest {
                 tab_id,
                 pos_css,
-                anchor_points: pos_points,
+                anchor_points: Some(pos_points),
+                match_pos_css: true,
               });
               let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
                 tab_id,
@@ -18619,6 +18662,43 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         handle_page_host_accesskit_focus_actions(ui, &response, &mut self.page_has_focus);
         if self.page_has_focus {
           response.request_focus();
+        }
+
+        // AccessKit "Show context menu" action (assistive technologies / screen readers).
+        //
+        // This mirrors the right-click context menu pipeline: we send a request to the worker, which
+        // performs a hit-test and responds with `WorkerToUi::ContextMenu` containing link/image
+        // metadata.
+        if ui.input(|i| {
+          i.has_accesskit_action_request(response.id, accesskit::Action::ShowContextMenu)
+        }) {
+          // If a popup is already open, dismiss it rather than opening a new one (matching the
+          // keyboard context menu shortcut behaviour).
+          if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
+            self.close_context_menu();
+          } else if self.open_select_dropdown.is_some() {
+            self.cancel_select_dropdown();
+          } else if self.open_date_time_picker.is_some() {
+            self.cancel_date_time_picker();
+          } else if self.open_file_picker.is_some() {
+            self.cancel_file_picker();
+          } else if !self.clear_browsing_data_dialog_open && !self.page_loading_overlay_blocks_input {
+            // Mark a pending context menu request so the worker response opens the menu even though
+            // we don't yet know the final hit-test position (it will be derived from the focused
+            // element bounds).
+            self.close_context_menu();
+            self.pending_context_menu_request = Some(PendingContextMenuRequest {
+              tab_id: active_tab,
+              pos_css: (0.0, 0.0),
+              anchor_points: None,
+              match_pos_css: false,
+            });
+            self.send_worker_msg(fastrender::ui::UiToWorker::AccessKitAction {
+              tab_id: active_tab,
+              action: accesskit::Action::ShowContextMenu,
+              target_node_id: None,
+            });
+          }
         }
 
         if prev_loading_overlay_blocks_input != self.page_loading_overlay_blocks_input {

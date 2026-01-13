@@ -93,6 +93,7 @@ mod ui_context_menu_buttons;
 mod ui_context_menu_can_select_all_without_selection;
 mod ui_context_menu_modifiers;
 mod ui_context_menu_entries;
+mod ui_accesskit_show_context_menu;
 mod ui_context_menu_text_caret_right_click;
 mod ui_context_menu_preserves_document_selection;
 mod ui_context_menu_preserves_text_selection;
