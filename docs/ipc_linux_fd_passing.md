@@ -123,6 +123,10 @@ are blocked by the renderer sandbox, either:
 - do FD passing before installing the seccomp filter, or
 - extend the allowlist (see [`docs/seccomp_allowlist.md`](seccomp_allowlist.md)).
 
+Also note: `send(2)` / `recv(2)` are typically implemented via the `sendto(2)` / `recvfrom(2)`
+syscalls on Linux. If your sandbox denies `sendto/recvfrom` (FastRender’s renderer seccomp policy
+currently does), prefer using `read(2)` / `write(2)` on a connected socket for steady-state IPC.
+
 ### FD passing footgun: include at least 1 byte of non-ancillary data
 
 When sending `SCM_RIGHTS`, include at least **one byte** of real (non-ancillary) data in the same
@@ -139,6 +143,8 @@ References:
 - `unix(7)` (socket types, `SCM_RIGHTS`): https://man7.org/linux/man-pages/man7/unix.7.html
 - `socketpair(2)`: https://man7.org/linux/man-pages/man2/socketpair.2.html
 - `sendmsg(2)`: https://man7.org/linux/man-pages/man2/sendmsg.2.html
+- `send(2)`: https://man7.org/linux/man-pages/man2/send.2.html
+- `recv(2)`: https://man7.org/linux/man-pages/man2/recv.2.html
 
 ---
 
