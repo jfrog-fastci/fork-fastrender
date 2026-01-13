@@ -106,8 +106,10 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - `system` follows the OS light/dark preference when available.
   - `light` / `dark` force a specific theme regardless of the OS preference.
   - Interaction with content rendering:
-    - When the browser UI is following a system/dark/light mode, the intent is to expose the same preference to pages via `prefers-color-scheme`.
-    - Explicit renderer overrides like `FASTR_PREFERS_COLOR_SCHEME=...` take precedence over any browser UI preference.
+    - In the windowed `browser` UI, the resolved chrome theme is propagated to rendered pages by
+      default via `prefers-color-scheme` (implemented by installing `FASTR_PREFERS_COLOR_SCHEME`
+      defaults into the renderer’s runtime toggles).
+    - Explicit renderer overrides like `FASTR_PREFERS_COLOR_SCHEME=...` still take precedence.
 - `FASTR_BROWSER_UI_SCALE=<float>` – UI scale multiplier for browser chrome widgets.
   - Default: `1.0` (no additional scaling beyond the OS/window scale factor).
   - Must be a finite, positive float (e.g. `1.25`).
@@ -115,11 +117,13 @@ Not all builds implement all of these toggles yet; unsupported values are expect
 - `FASTR_BROWSER_HIGH_CONTRAST=0|1` – enable a high-contrast UI theme / stronger focus indicators.
   - Default: `0`.
   - Interaction with content rendering:
-    - Intended to map to `prefers-contrast` for pages unless explicitly overridden via `FASTR_PREFERS_CONTRAST=...`.
+    - In the windowed `browser` UI, this maps to `prefers-contrast` for pages by default unless
+      explicitly overridden via `FASTR_PREFERS_CONTRAST=...`.
 - `FASTR_BROWSER_REDUCED_MOTION=0|1` – reduce/disable non-essential UI animations.
   - Default: `0`.
   - Interaction with content rendering:
-    - Intended to map to `prefers-reduced-motion` for pages unless explicitly overridden via `FASTR_PREFERS_REDUCED_MOTION=...`.
+    - In the windowed `browser` UI, this maps to `prefers-reduced-motion` for pages by default unless
+      explicitly overridden via `FASTR_PREFERS_REDUCED_MOTION=...`.
 - `FASTR_BROWSER_HUD=0|1` – show an in-app HUD overlay with browser/debug metrics.
   - Default: `0`.
 - `FASTR_BROWSER_DEBUG_LOG=0|1` – enable browser/worker debug logging UI.

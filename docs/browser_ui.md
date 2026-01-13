@@ -141,18 +141,18 @@ scripting/CI); see [env-vars.md](env-vars.md).
 
 Interaction with rendered pages:
 
-- The intended behaviour is for the browser UI preference to also drive the default
-  `prefers-color-scheme` media query surface for page rendering.
+- The windowed browser UI propagates its resolved theme to rendered pages by default via
+  `prefers-color-scheme`.
 - Explicit renderer overrides like `FASTR_PREFERS_COLOR_SCHEME=...` take precedence.
 
 ### High contrast / reduced motion
 
 - `FASTR_BROWSER_HIGH_CONTRAST=1` is intended to enable a higher-contrast chrome theme and stronger
   focus indicators.
-  - Intended to map to `prefers-contrast` for pages unless explicitly overridden via
+  - Maps to `prefers-contrast` for pages by default unless explicitly overridden via
     `FASTR_PREFERS_CONTRAST=...`.
 - `FASTR_BROWSER_REDUCED_MOTION=1` is intended to reduce/disable non-essential UI animations.
-  - Intended to map to `prefers-reduced-motion` for pages unless explicitly overridden via
+  - Maps to `prefers-reduced-motion` for pages by default unless explicitly overridden via
     `FASTR_PREFERS_REDUCED_MOTION=...`.
 
 ### UI scale vs page zoom
