@@ -14,7 +14,7 @@
     "layout": 6.563240446131432,
     "paint": 66.22170449433936
   },
-  "notes": "",
+  "notes": "Mismatch is limited to the single \"Please enable JS and disable any ad blocker\" text line in the Cloudflare/Datadome interstitial fixture. FastRender and Chrome lay out the text identically; the remaining ~0.1-0.2% pixel diffs come from tiny grayscale anti-aliasing/hinting differences around glyph edges (text rasterization), not a cascade/layout bug.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 2354,
