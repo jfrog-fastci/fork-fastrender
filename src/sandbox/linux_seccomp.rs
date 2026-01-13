@@ -7,7 +7,9 @@
 //! - The policy is a small denylist (returning `EPERM`) on top of a broad allowlist,
 //!   with a conservative default action (`KILL_PROCESS`) for syscalls not explicitly allowed.
 
-use super::{RendererSandboxConfig, SandboxError, SandboxStatus, SeccompInstallRejectedReason};
+use super::{
+  NetworkPolicy, RendererSandboxConfig, SandboxError, SandboxStatus, SeccompInstallRejectedReason,
+};
 use std::io;
 
 // Values from `linux/seccomp.h`.
@@ -77,7 +79,7 @@ const fn bpf_jump(code: u16, k: u32, jt: u8, jf: u8) -> libc::sock_filter {
   libc::sock_filter { code, jt, jf, k }
 }
 
-fn build_renderer_filter() -> Vec<libc::sock_filter> {
+fn build_renderer_filter(config: RendererSandboxConfig) -> Vec<libc::sock_filter> {
   let mut filter = Vec::<libc::sock_filter>::new();
 
   // Validate architecture early. If this doesn't match, the syscall numbers below are wrong.
@@ -89,26 +91,47 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
   // Load syscall number into the accumulator.
   filter.push(bpf_stmt(BPF_LD_W_ABS, SECCOMP_DATA_NR_OFFSET));
 
-  // `socket(2)` is the main surface for network access, but renderer IPC may need Unix-domain
-  // sockets. Allow `socket(AF_UNIX, ...)` while denying AF_INET/AF_INET6/etc with EPERM.
-  //
-  // This must run before the generic denylist/allowlist rules because it inspects syscall args.
-  filter.push(bpf_jump(BPF_JMP_JEQ_K, libc::SYS_socket as u32, 0, 4));
-  // args[0] = `domain` (lower 32-bits).
-  filter.push(bpf_stmt(BPF_LD_W_ABS, SECCOMP_DATA_ARG0_OFFSET));
-  // If domain == AF_UNIX: allow; otherwise: EPERM.
-  filter.push(bpf_jump(BPF_JMP_JEQ_K, libc::AF_UNIX as u32, 1, 0));
-  filter.push(bpf_stmt(
-    BPF_RET_K,
-    SECCOMP_RET_ERRNO | (libc::EPERM as u32),
-  ));
-  filter.push(bpf_stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+  // Socket policy must run before the generic denylist/allowlist rules because it inspects syscall
+  // args (`domain`).
+  let ret_eperm = SECCOMP_RET_ERRNO | (libc::EPERM as u32);
+  match config.network_policy {
+    NetworkPolicy::DenyAllSockets => {
+      // Deny all socket creation, including AF_UNIX. This is the default conservative policy.
+      filter.push(bpf_jump(BPF_JMP_JEQ_K, libc::SYS_socket as u32, 0, 1));
+      filter.push(bpf_stmt(BPF_RET_K, ret_eperm));
+      filter.push(bpf_jump(BPF_JMP_JEQ_K, libc::SYS_socketpair as u32, 0, 1));
+      filter.push(bpf_stmt(BPF_RET_K, ret_eperm));
+    }
+    NetworkPolicy::AllowUnixSocketsOnly => {
+      // Allow `socket(AF_UNIX, ...)` while denying AF_INET/AF_INET6/etc with EPERM.
+      filter.push(bpf_jump(BPF_JMP_JEQ_K, libc::SYS_socket as u32, 0, 4));
+      // args[0] = `domain` (lower 32-bits).
+      filter.push(bpf_stmt(BPF_LD_W_ABS, SECCOMP_DATA_ARG0_OFFSET));
+      // If domain == AF_UNIX: allow; otherwise: EPERM.
+      filter.push(bpf_jump(BPF_JMP_JEQ_K, libc::AF_UNIX as u32, 1, 0));
+      filter.push(bpf_stmt(BPF_RET_K, ret_eperm));
+      filter.push(bpf_stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+
+      // Allow `socketpair(AF_UNIX, ...)` while denying all other families with EPERM.
+      filter.push(bpf_jump(
+        BPF_JMP_JEQ_K,
+        libc::SYS_socketpair as u32,
+        0,
+        4,
+      ));
+      filter.push(bpf_stmt(BPF_LD_W_ABS, SECCOMP_DATA_ARG0_OFFSET));
+      filter.push(bpf_jump(BPF_JMP_JEQ_K, libc::AF_UNIX as u32, 1, 0));
+      filter.push(bpf_stmt(BPF_RET_K, ret_eperm));
+      filter.push(bpf_stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+    }
+  }
 
   // Explicit denylist: return EPERM (tests assert this) rather than killing the process.
   //
   // Keep this list conservative and focused on high-level capability denial for the renderer:
   // filesystem path operations, networking, process execution, and obvious kernel escape surfaces.
-  let deny = [
+  let mut deny = Vec::<libc::c_long>::new();
+  deny.extend_from_slice(&[
     // Filesystem opens.
     libc::SYS_open,
     libc::SYS_openat,
@@ -145,18 +168,6 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     // Process execution.
     libc::SYS_execve,
     libc::SYS_execveat,
-    // Network / sockets.
-    libc::SYS_connect,
-    libc::SYS_bind,
-    libc::SYS_listen,
-    libc::SYS_accept,
-    libc::SYS_accept4,
-    libc::SYS_sendto,
-    libc::SYS_sendmsg,
-    libc::SYS_recvfrom,
-    libc::SYS_recvmsg,
-    libc::SYS_setsockopt,
-    libc::SYS_getsockopt,
     // Introspection / escape.
     libc::SYS_ptrace,
     libc::SYS_bpf,
@@ -175,32 +186,54 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,
     libc::SYS_kcmp,
-    // pidfd-based process and FD introspection.
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    libc::SYS_pidfd_open,
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    libc::SYS_pidfd_getfd,
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    libc::SYS_pidfd_send_signal,
     libc::SYS_userfaultfd,
     libc::SYS_keyctl,
     libc::SYS_add_key,
     libc::SYS_request_key,
-    // Filesystem notification (expand kernel surface; should never be needed in a renderer).
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    libc::SYS_fanotify_init,
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    libc::SYS_fanotify_mark,
     // Privilege/namespace syscalls (even if they'd fail, make it explicit).
     libc::SYS_unshare,
     libc::SYS_setns,
-  ];
+  ]);
+
+  // pidfd-based process and FD introspection.
+  #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+  deny.extend_from_slice(&[
+    libc::SYS_pidfd_open,
+    libc::SYS_pidfd_getfd,
+    libc::SYS_pidfd_send_signal,
+  ]);
+
+  // Filesystem notification (expand kernel surface; should never be needed in a renderer).
+  #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+  deny.extend_from_slice(&[libc::SYS_fanotify_init, libc::SYS_fanotify_mark]);
+
+  // Socket operations are denied by default, but can be allowed for Unix-domain IPC.
+  //
+  // Seccomp filters cannot inspect `sockaddr` pointers, so the security model for
+  // `AllowUnixSocketsOnly` relies on denying creation of non-Unix sockets (see the `socket(2)` /
+  // `socketpair(2)` rules above) and sanitising inherited file descriptors.
+  if matches!(config.network_policy, NetworkPolicy::DenyAllSockets) {
+    deny.extend_from_slice(&[
+      libc::SYS_connect,
+      libc::SYS_bind,
+      libc::SYS_listen,
+      libc::SYS_accept,
+      libc::SYS_accept4,
+      libc::SYS_sendto,
+      libc::SYS_sendmsg,
+      libc::SYS_recvfrom,
+      libc::SYS_recvmsg,
+      libc::SYS_setsockopt,
+      libc::SYS_getsockopt,
+      libc::SYS_getsockname,
+      libc::SYS_getpeername,
+      libc::SYS_shutdown,
+    ]);
+  }
+
   for nr in deny {
     filter.push(bpf_jump(BPF_JMP_JEQ_K, nr as u32, 0, 1));
-    filter.push(bpf_stmt(
-      BPF_RET_K,
-      SECCOMP_RET_ERRNO | (libc::EPERM as u32),
-    ));
+    filter.push(bpf_stmt(BPF_RET_K, ret_eperm));
   }
 
   // Allowlist: syscalls expected to be used by a typical renderer process at runtime.
@@ -305,6 +338,25 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_fstatfs,
   ]);
 
+  if matches!(config.network_policy, NetworkPolicy::AllowUnixSocketsOnly) {
+    allow.extend_from_slice(&[
+      libc::SYS_connect,
+      libc::SYS_bind,
+      libc::SYS_listen,
+      libc::SYS_accept,
+      libc::SYS_accept4,
+      libc::SYS_sendto,
+      libc::SYS_sendmsg,
+      libc::SYS_recvfrom,
+      libc::SYS_recvmsg,
+      libc::SYS_setsockopt,
+      libc::SYS_getsockopt,
+      libc::SYS_getsockname,
+      libc::SYS_getpeername,
+      libc::SYS_shutdown,
+    ]);
+  }
+
   #[cfg(target_arch = "x86_64")]
   allow.push(libc::SYS_arch_prctl);
   #[cfg(target_arch = "x86")]
@@ -359,7 +411,7 @@ fn disable_core_dumps() -> Result<(), SandboxError> {
 }
 
 pub(super) fn apply_renderer_sandbox_linux(
-  _config: RendererSandboxConfig,
+  config: RendererSandboxConfig,
 ) -> Result<SandboxStatus, SandboxError> {
   apply_renderer_sandbox_prelude_linux()?;
 
@@ -373,7 +425,7 @@ pub(super) fn apply_renderer_sandbox_linux(
   }
 
   // 2) Build and install the seccomp filter.
-  let mut filter = build_renderer_filter();
+  let mut filter = build_renderer_filter(config);
   let prog = libc::sock_fprog {
     len: filter
       .len()

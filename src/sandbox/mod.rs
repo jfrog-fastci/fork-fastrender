@@ -62,14 +62,41 @@ pub fn apply_pure_computation_sandbox() -> io::Result<()> {
   ));
 }
 
+/// Network socket policy for sandboxed renderer processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkPolicy {
+  /// Deny `socket(2)` / `socketpair(2)` entirely.
+  ///
+  /// This is the most conservative setting and is the default for renderer sandboxes unless a
+  /// caller explicitly opts into Unix-domain sockets for IPC.
+  DenyAllSockets,
+  /// Allow Unix-domain sockets (`AF_UNIX`) while denying all other socket families.
+  ///
+  /// This enables IPC mechanisms that rely on `socketpair(AF_UNIX, ...)` or `socket(AF_UNIX, ...)`
+  /// while still preventing direct access to the host network (AF_INET/AF_INET6/etc).
+  ///
+  /// Note: seccomp cannot reliably restrict `connect(2)`/`bind(2)` by inspecting the `sockaddr`
+  /// pointer. The security model relies on denying non-Unix socket *creation* and ensuring the
+  /// sandboxed process does not inherit any pre-existing network socket file descriptors.
+  AllowUnixSocketsOnly,
+}
+
+impl Default for NetworkPolicy {
+  fn default() -> Self {
+    Self::DenyAllSockets
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RendererSandboxConfig {
-  // Reserved for future policy knobs.
+  pub network_policy: NetworkPolicy,
 }
 
 impl Default for RendererSandboxConfig {
   fn default() -> Self {
-    Self {}
+    Self {
+      network_policy: NetworkPolicy::DenyAllSockets,
+    }
   }
 }
 
@@ -223,6 +250,9 @@ pub mod windows;
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
   use super::*;
+  use std::io::{Read, Write};
+  use std::net::TcpListener;
+  use std::os::unix::net::UnixStream;
   use std::process::Command;
 
   fn is_seccomp_unsupported_error(err: &SandboxError) -> bool {
@@ -260,8 +290,15 @@ mod tests {
         "expected EPERM for filesystem read (got {fs_err:?})"
       );
 
+      let unix_err = UnixStream::pair().expect_err("expected UnixStream::pair to fail");
+      assert_eq!(
+        unix_err.raw_os_error(),
+        Some(libc::EPERM),
+        "expected EPERM for Unix socketpair (got {unix_err:?})"
+      );
+
       let net_err =
-        std::net::TcpListener::bind("127.0.0.1:0").expect_err("expected bind to fail");
+        TcpListener::bind("127.0.0.1:0").expect_err("expected bind to fail");
       assert_eq!(
         net_err.raw_os_error(),
         Some(libc::EPERM),
@@ -287,6 +324,60 @@ mod tests {
     let output = Command::new(exe)
       .env(CHILD_ENV, "1")
       // Avoid a large libtest threadpool: the sandbox uses TSYNC and applies to all threads.
+      .env("RUST_TEST_THREADS", "1")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn child test process");
+    assert!(
+      output.status.success(),
+      "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  #[test]
+  fn renderer_seccomp_allow_unix_sockets_only_allows_unix_ipc_but_denies_tcp() {
+    const CHILD_ENV: &str = "FASTR_TEST_RENDERER_SECCOMP_UNIX_ONLY_CHILD";
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      match linux_seccomp::apply_renderer_sandbox_linux(RendererSandboxConfig {
+        network_policy: NetworkPolicy::AllowUnixSocketsOnly,
+      }) {
+        Ok(SandboxStatus::Applied) => {}
+        Ok(SandboxStatus::Unsupported) => return,
+        Err(err) => {
+          if is_seccomp_unsupported_error(&err) {
+            return;
+          }
+          panic!("failed to apply seccomp sandbox in child: {err}");
+        }
+      }
+
+      let (mut a, mut b) = UnixStream::pair().expect("expected UnixStream::pair to succeed");
+      a.write_all(b"ping").expect("write to unix socket");
+      let mut buf = [0u8; 4];
+      b.read_exact(&mut buf).expect("read from unix socket");
+      assert_eq!(&buf, b"ping");
+
+      let net_err = TcpListener::bind("127.0.0.1:0").expect_err("expected tcp bind to fail");
+      assert_eq!(
+        net_err.raw_os_error(),
+        Some(libc::EPERM),
+        "expected EPERM for network bind (got {net_err:?})"
+      );
+
+      return;
+    }
+
+    // Run the sandbox assertions in a child process so the parent test runner is unaffected.
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name =
+      "sandbox::tests::renderer_seccomp_allow_unix_sockets_only_allows_unix_ipc_but_denies_tcp";
+    let output = Command::new(exe)
+      .env(CHILD_ENV, "1")
       .env("RUST_TEST_THREADS", "1")
       .arg("--exact")
       .arg(test_name)
