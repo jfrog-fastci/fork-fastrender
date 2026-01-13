@@ -238,6 +238,11 @@ Security invariants:
    - Repo reality note: `src/ipc/fd_passing.rs` currently calls `recvmsg` with flags `0` (no
      `MSG_CMSG_CLOEXEC`). Until that is upgraded, callers must ensure passed FDs are already CLOEXEC
      (e.g. created with `O_CLOEXEC` / `MFD_CLOEXEC`) or set `FD_CLOEXEC` immediately after receipt.
+7. **Include at least one byte of real payload data when sending FDs.**
+   - On Linux, `SCM_RIGHTS` control messages are associated with a received datagram/packet. Sending
+     “FD-only” control messages without accompanying payload bytes is a well-known footgun; always
+     include at least one byte of non-ancillary data.
+   - See also: [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
 
 Why this matters:
 
