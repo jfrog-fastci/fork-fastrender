@@ -495,6 +495,65 @@ fn string_match_primitive_does_not_consult_symbol_match() {
 }
 
 #[test]
+fn regexp_match_indices_basic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#""abc".match(/a/d).indices[0].join(",")"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "0,1");
+}
+
+#[test]
+fn regexp_match_indices_captures_and_unmatched() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var a = "abc".match(/(a)?b/d).indices[1].join(",");
+        var b = "bc".match(/(a)?b/d).indices[1];
+        a + "|" + (b === undefined)
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "0,1|true");
+}
+
+#[test]
+fn regexp_match_indices_groups_duplicate_named_properties() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const matcher = /(?:(?<x>a)|(?<y>a)(?<x>b))(?:(?<z>c)|(?<z>d))/d;
+        const three = "abc".match(matcher);
+        const out1 =
+          three.indices.groups.x.join(",") + "|" +
+          three.indices.groups.y.join(",") + "|" +
+          three.indices.groups.z.join(",") + "|" +
+          Object.keys(three.indices.groups).join(",");
+
+        const two = "ad".match(matcher);
+        const out2 =
+          two.indices.groups.x.join(",") + "|" +
+          (two.indices.groups.y === undefined) + "|" +
+          two.indices.groups.z.join(",") + "|" +
+          Object.keys(two.indices.groups).join(",");
+
+        const iteratedMatcher = /(?:(?:(?<x>a)|(?<x>b)|c)\k<x>){2}/d;
+        const prev = "aac".match(iteratedMatcher);
+        const out3 = (prev.indices.groups.x === undefined);
+
+        [out1, out2, out3].join(";")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "1,2|0,1|2,3|x,y,z;0,1|true|1,2|x,y,z;true"
+  );
+}
+
+#[test]
 fn regexp_s_and_s_match_full_ecma262_whitespace_and_lineterminators() {
   let mut rt = new_runtime();
   let value = rt

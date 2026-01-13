@@ -1515,11 +1515,6 @@ status = "xfail"
 reason = "vm-js: RegExp named capture groups / match result `.groups` semantics are still incomplete."
 
 [[expectations]]
-id = "built-ins/RegExp/prototype/exec/duplicate-named-indices-groups-properties.js"
-status = "xfail"
-reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
-
-[[expectations]]
 id = "built-ins/RegExp/prototype/exec/regexp-builtin-exec-v-u-flag.js"
 status = "xfail"
 reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
@@ -1608,8 +1603,12 @@ reason = "lookbehind not implemented yet"
 
 [[expectations]]
 glob = "built-ins/RegExp/match-indices/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/match-indices/indices-array-unicode-property-names.js"
 status = "xfail"
-reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
+reason = "vm-js: RegExp named capture group names do not yet support all Unicode IdentifierName forms."
 
 [[expectations]]
 id = "built-ins/RegExp/match-indices/no-indices-array.js"
@@ -1673,8 +1672,7 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/duplicate-named-indices-groups-properties.js"
-status = "xfail"
-reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js"
