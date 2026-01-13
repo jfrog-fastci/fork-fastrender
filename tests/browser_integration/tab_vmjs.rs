@@ -341,6 +341,113 @@ fn browser_tab_vmjs_request_animation_frame_runs_and_triggers_rerender() -> Resu
 }
 
 #[test]
+fn browser_tab_vmjs_tick_frame_runs_request_animation_frame_and_rerenders() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 64px; height: 64px; }
+          .a { background: rgb(255, 0, 0); }
+          .b { background: rgb(0, 0, 255); }
+        </style>
+      </head>
+      <body>
+        <div id="box" class="a"></div>
+        <script>
+          (function () {
+            const box = document.getElementById("box");
+            box.setAttribute("data-order", "script");
+            requestAnimationFrame(function (ts) {
+              box.setAttribute(
+                "data-order",
+                box.getAttribute("data-order") + ",raf"
+              );
+              box.setAttribute("class", "b");
+              box.setAttribute("data-ts", String(ts));
+              queueMicrotask(function () {
+                box.setAttribute(
+                  "data-order",
+                  box.getAttribute("data-order") + ",microtask"
+                );
+              });
+            });
+          })();
+        </script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new().with_viewport(64, 64);
+
+  let clock = Arc::new(VirtualClock::new());
+  let clock_for_loop: Arc<dyn Clock> = clock.clone();
+  let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock_for_loop);
+
+  let mut tab = BrowserTab::from_html_with_event_loop(
+    html,
+    options,
+    VmJsBrowserTabExecutor::default(),
+    event_loop,
+  )?;
+
+  // 1. Render initial frame.
+  let frame_a = tab.render_frame()?;
+  assert_eq!(rgba_at(&frame_a, 32, 32), [255, 0, 0, 255]);
+
+  let box_id = tab
+    .dom()
+    .get_element_by_id("box")
+    .ok_or_else(|| Error::Other("expected #box element".to_string()))?;
+  assert!(get_attr(tab.dom(), box_id, "data-ts")?.is_none());
+
+  // 2. `run_event_loop_until_idle` does not run requestAnimationFrame callbacks.
+  assert_eq!(
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert!(get_attr(tab.dom(), box_id, "data-ts")?.is_none());
+
+  // Parsing completion queues DOMContentLoaded/load lifecycle tasks. They can change
+  // `document.readyState`, which FastRender currently treats as a full DOM invalidation. Drain any
+  // resulting render so the requestAnimationFrame-driven mutation is the only source of a new
+  // frame.
+  if let Some(frame) = tab.render_if_needed()? {
+    assert_eq!(rgba_at(&frame, 32, 32), [255, 0, 0, 255]);
+  }
+  assert!(tab.render_if_needed()?.is_none());
+
+  // 3. The timestamp passed to requestAnimationFrame is computed when the callback runs.
+  clock.set_now(Duration::from_millis(123));
+
+  // 4. Tick the frame: this should run rAF callbacks and re-render.
+  let frame_b = tab
+    .tick_frame()?
+    .expect("expected tick_frame to render after requestAnimationFrame mutation");
+  assert_ne!(frame_b.data(), frame_a.data(), "expected pixels to change");
+  assert_eq!(rgba_at(&frame_b, 32, 32), [0, 0, 255, 255]);
+
+  // 5. requestAnimationFrame callback runs before its queued microtasks.
+  assert_eq!(
+    get_attr(tab.dom(), box_id, "data-order")?.as_deref(),
+    Some("script,raf,microtask")
+  );
+  assert_eq!(
+    get_attr(tab.dom(), box_id, "data-ts")?.as_deref(),
+    Some("123")
+  );
+
+  // 6. No further work remains.
+  assert!(tab.tick_frame()?.is_none());
+  assert!(tab.render_if_needed()?.is_none());
+
+  Ok(())
+}
+
+#[test]
 fn browser_tab_vmjs_fetch_resolves_and_triggers_rerender() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
