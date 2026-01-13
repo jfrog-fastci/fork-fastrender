@@ -682,10 +682,6 @@ impl Vm {
     realm: RealmId,
   ) -> Result<Option<RealmId>, VmError> {
     let prev = self.intrinsics_realm;
-    if prev == Some(realm) {
-      return Ok(prev);
-    }
-
     let state = self
       .realm_states
       .get(&realm)
@@ -4489,6 +4485,9 @@ mod tests {
         script_or_module: None,
       };
       let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
+      let prev_state = vm_ctx.load_realm_state(heap, realm)?;
+
+      let result: Result<Value, VmError> = (|| {
       let mut scope = heap.scope();
       let source_string = scope.alloc_string(source)?;
       let mut host = ();
@@ -4502,7 +4501,17 @@ mod tests {
       )?;
       // These tests do not involve Promises; ensure no jobs were enqueued.
       assert!(hooks.is_empty());
-      Ok(value)
+        Ok(value)
+      })();
+
+      drop(vm_ctx);
+      let restore_res = vm.restore_realm_state(heap, prev_state);
+      match (result, restore_res) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(err), Err(_)) => Err(err),
+      }
     }
 
     fn value_as_f64(v: Value) -> f64 {
@@ -4560,6 +4569,24 @@ mod tests {
       let b_r2 = value_as_f64(eval_in_realm(&mut vm, &mut heap, realm_b_id, "Math.random()")?);
       assert_eq!(a_r2.to_bits(), b_r2.to_bits());
       assert_ne!(a_r1.to_bits(), a_r2.to_bits());
+
+      // Constructor prototype objects should inherit from the current realm's %Object.prototype%.
+      // This depends on the heap's default prototype being updated when switching realms.
+      let a_proto_ok = eval_in_realm(
+        &mut vm,
+        &mut heap,
+        realm_a_id,
+        "function C(){} Object.getPrototypeOf(C.prototype) === Object.prototype",
+      )?;
+      assert_eq!(a_proto_ok, Value::Bool(true));
+
+      let b_proto_ok = eval_in_realm(
+        &mut vm,
+        &mut heap,
+        realm_b_id,
+        "function D(){} Object.getPrototypeOf(D.prototype) === Object.prototype",
+      )?;
+      assert_eq!(b_proto_ok, Value::Bool(true));
 
       Ok(())
     })();
