@@ -23151,6 +23151,43 @@ fn async_eval_chain_base(
   async_eval_expr_chain(evaluator, scope, expr)
 }
 
+/// Returns the current `this` binding value used as the receiver for Super References.
+///
+/// In derived constructors (and in arrow/eval code nested within them), `this` is uninitialized
+/// until `super()` returns. That state is represented either by:
+/// - a boolean (`derived_constructor && !this_initialized`) for ordinary evaluation contexts, or
+/// - a heap-owned [`crate::heap::DerivedConstructorState`] object captured by arrow functions and
+///   eval code.
+///
+/// For Super References (`super.prop` / `super[expr]`), this must throw a ReferenceError before any
+/// further evaluation when `this` is uninitialized.
+fn async_get_super_receiver(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+) -> Result<Value, VmError> {
+  if let Value::Object(obj) = evaluator.this {
+    if scope.heap().is_derived_constructor_state(obj) {
+      let state = scope.heap().get_derived_constructor_state(obj)?;
+      if let Some(this_obj) = state.this_value {
+        return Ok(Value::Object(this_obj));
+      }
+      return Err(throw_reference_error(
+        evaluator.vm,
+        scope,
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
+    }
+  }
+  if evaluator.derived_constructor && !evaluator.this_initialized {
+    return Err(throw_reference_error(
+      evaluator.vm,
+      scope,
+      "Must call super constructor in derived class before accessing 'this'",
+    )?);
+  }
+  Ok(evaluator.this)
+}
+
 fn async_eval_expr_chain(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -23284,6 +23321,20 @@ fn async_eval_expr_chain(
         Ok(AsyncEval::Suspend(suspend))
       }
     },
+    // Super property access: `super[expr]` with an `await` in the computed key expression.
+    Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+      if member.stx.optional_chaining {
+        return Err(VmError::Unimplemented("optional chaining super property"));
+      }
+
+      // Evaluating a super property reference requires an initialized `this` binding. In derived
+      // constructors before `super()`, this check happens before evaluating the computed key
+      // expression.
+      let _ = async_get_super_receiver(evaluator, scope)?;
+
+      // `super` is not an ordinary expression and is not evaluated as the computed-member base.
+      async_computed_member_after_base(evaluator, scope, &member.stx, Value::Undefined)
+    }
     Expr::ComputedMember(member) => {
       // `super[expr]` computed member access is not a normal property reference: it resolves
       // against `[[HomeObject]].[[Prototype]]` and uses the current `this` binding as the receiver.
@@ -26309,13 +26360,7 @@ fn async_eval_delete_expr(
       // Evaluating a super property reference requires an initialized `this` binding. In derived
       // constructors before `super()`, this check happens before evaluating the computed key
       // expression.
-      if evaluator.derived_constructor && !evaluator.this_initialized {
-        return Err(throw_reference_error(
-          evaluator.vm,
-          scope,
-          "Must call super constructor in derived class before accessing 'this'",
-        )?);
-      }
+      let _ = async_get_super_receiver(evaluator, scope)?;
 
       match async_eval_expr(evaluator, scope, &member.stx.member)? {
         AsyncEval::Complete(member_value) => {
@@ -26641,7 +26686,7 @@ fn async_computed_member_after_base(
 fn async_computed_member_after_member(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
-  _expr: &ComputedMemberExpr,
+  expr: &ComputedMemberExpr,
   base: Value,
   member_value: Value,
 ) -> Result<Value, VmError> {
@@ -26650,10 +26695,30 @@ fn async_computed_member_after_member(
   let key = evaluator
     .to_property_key_operator(&mut key_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-  let reference = Reference::Property { base, key };
-  evaluator
-    .get_value_from_reference(&mut key_scope, &reference)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
+
+  if matches!(&*expr.object.stx, Expr::Super(_)) {
+    let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+
+    // Root receiver + key across `GetSuperBase()` and any proxy traps.
+    key_scope.push_root(receiver)?;
+    match key {
+      PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+    };
+
+    let base = evaluator
+      .get_super_base(&mut key_scope)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    let reference = Reference::SuperProperty { base, key, receiver };
+    evaluator
+      .get_value_from_reference(&mut key_scope, &reference)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
+  } else {
+    let reference = Reference::Property { base, key };
+    evaluator
+      .get_value_from_reference(&mut key_scope, &reference)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
+  }
 }
 
 fn async_super_get(
@@ -27145,68 +27210,49 @@ fn async_eval_call(
   let callee_is_parenthesized = expr.callee.assoc.get::<ParenthesizedExpr>().is_some();
 
   match &*expr.callee.stx {
-    // `super.prop(...args)` / `super[expr](...args)` calls.
+    // `super.prop(...args)`.
     Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
       if member.stx.optional_chaining {
-        return Err(VmError::Unimplemented("optional chaining super call"));
+        return Err(VmError::Unimplemented("optional chaining super member call"));
       }
       if member.stx.right.starts_with('#') {
-        return Err(VmError::Unimplemented("super private member call"));
+        return Err(VmError::Unimplemented("super private name"));
       }
 
-      // Evaluating a super property reference requires an initialized `this` binding.
-      if evaluator.derived_constructor && !evaluator.this_initialized {
-        return Err(throw_reference_error(
-          evaluator.vm,
-          scope,
-          "Must call super constructor in derived class before accessing 'this'",
-        )?);
-      }
+      // Spec: `super` uses the current `this` binding as the call receiver (`GetThisBinding`).
+      let receiver = async_get_super_receiver(evaluator, scope)?;
 
       let callee_value = {
         let mut key_scope = scope.reborrow();
+        // Root receiver + key across `GetSuperBase()` and any proxy traps.
+        key_scope.push_root(receiver)?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
         key_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
-        async_super_get(evaluator, &mut key_scope, key)?
+
+        let base = evaluator
+          .get_super_base(&mut key_scope)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+        let reference = Reference::SuperProperty { base, key, receiver };
+        evaluator
+          .get_value_from_reference(&mut key_scope, &reference)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
       };
-      async_call_begin(evaluator, scope, expr, callee_value, evaluator.this)
+
+      async_call_begin(evaluator, scope, expr, callee_value, receiver)
     }
+    // `super[expr](...args)`.
     Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
       if member.stx.optional_chaining {
-        return Err(VmError::Unimplemented(
-          "optional chaining super computed member call",
-        ));
+        return Err(VmError::Unimplemented("optional chaining super member call"));
       }
 
       // Evaluating a super property reference requires an initialized `this` binding. In derived
       // constructors before `super()`, this check happens before evaluating the computed key
       // expression.
-      if evaluator.derived_constructor && !evaluator.this_initialized {
-        return Err(throw_reference_error(
-          evaluator.vm,
-          scope,
-          "Must call super constructor in derived class before accessing 'this'",
-        )?);
-      }
+      let _ = async_get_super_receiver(evaluator, scope)?;
 
-      match async_eval_expr(evaluator, scope, &member.stx.member)? {
-        AsyncEval::Complete(member_value) => {
-          let callee_value =
-            async_super_computed_member_after_member(evaluator, scope, member_value)?;
-          async_call_begin(evaluator, scope, expr, callee_value, evaluator.this)
-        }
-        AsyncEval::Suspend(mut suspend) => {
-          async_frames_push(
-            &mut suspend.frames,
-            AsyncFrame::CallSuperComputedMemberAfterMember {
-              expr: expr as *const CallExpr,
-              member: &*member.stx as *const ComputedMemberExpr,
-            },
-          )?;
-          Ok(AsyncEval::Suspend(suspend))
-        }
-      }
+      async_call_computed_member_after_base(evaluator, scope, expr, &member.stx, Value::Undefined)
     }
     // Optional member call (e.g. `obj?.method()`): only applies when the optional member expression
     // is directly in the callee position (i.e. not parenthesized).
@@ -27403,33 +27449,60 @@ fn async_call_computed_member_after_member(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
   call: &CallExpr,
-  _member: &ComputedMemberExpr,
+  member: &ComputedMemberExpr,
   base: Value,
   member_value: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
+  let is_super = matches!(&*member.object.stx, Expr::Super(_));
+
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
   let key = evaluator
     .to_property_key_operator(&mut key_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
 
-  if is_nullish(base) {
-    return Err(throw_type_error(
-      evaluator.vm,
-      &mut key_scope,
-      "Cannot convert undefined or null to object",
-    )?);
-  }
+  let (callee_value, this_value) = if is_super {
+    let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
 
-  let reference = Reference::Property { base, key };
-  let callee_value = evaluator
-    .get_value_from_reference(&mut key_scope, &reference)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    // Root receiver + key across `GetSuperBase()` and any proxy traps.
+    key_scope.push_root(receiver)?;
+    match key {
+      PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+    };
+
+    let super_base = evaluator
+      .get_super_base(&mut key_scope)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    let reference = Reference::SuperProperty {
+      base: super_base,
+      key,
+      receiver,
+    };
+    let callee_value = evaluator
+      .get_value_from_reference(&mut key_scope, &reference)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    (callee_value, receiver)
+  } else {
+    if is_nullish(base) {
+      return Err(throw_type_error(
+        evaluator.vm,
+        &mut key_scope,
+        "Cannot convert undefined or null to object",
+      )?);
+    }
+
+    let reference = Reference::Property { base, key };
+    let callee_value = evaluator
+      .get_value_from_reference(&mut key_scope, &reference)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    (callee_value, base)
+  };
 
   // Drop `key_scope` before proceeding to argument evaluation (which reborrows `scope`).
   drop(key_scope);
 
-  async_call_begin(evaluator, scope, call, callee_value, base)
+  async_call_begin(evaluator, scope, call, callee_value, this_value)
 }
 
 fn async_call_begin(
