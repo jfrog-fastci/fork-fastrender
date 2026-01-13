@@ -372,14 +372,16 @@ fn range_offsets_ignore_shadow_root_pseudo_child() {
     "<html><body>",
     "<div id=host>",
     "<template shadowrootmode=open></template>",
-    "<p id=light></p>",
+    "<p id=a></p>",
+    "<p id=b></p>",
     "</div>",
     "</body></html>",
   );
   let mut doc: Document = parse_html(html).unwrap();
 
   let host = doc.get_element_by_id("host").expect("host node not found");
-  let light = doc.get_element_by_id("light").expect("light node not found");
+  let a = doc.get_element_by_id("a").expect("a node not found");
+  let b = doc.get_element_by_id("b").expect("b node not found");
 
   // dom2 stores the attached shadow root as a child of the host at index 0 for renderer traversal.
   let shadow_root = doc.node(host).children[0];
@@ -389,26 +391,44 @@ fn range_offsets_ignore_shadow_root_pseudo_child() {
   );
   assert_eq!(
     doc.node(host).children[1],
-    light,
+    a,
     "expected light DOM child to remain as a host child after ShadowRoot promotion"
   );
 
   // Range boundary offsets on the host must ignore the ShadowRoot pseudo-child.
   let range = doc.create_range();
-  doc.range_set_end(range, light, 0).unwrap();
-  // With correct tree-child semantics, offset=1 is after the only light DOM child, so setting the
+  doc.range_set_end(range, a, 0).unwrap();
+  // With correct tree-child semantics, offset=2 is after the two light DOM children, so setting the
   // start there must collapse the range (end becomes start).
-  doc.range_set_start(range, host, 1).unwrap();
+  doc.range_set_start(range, host, 2).unwrap();
   assert_eq!(doc.range_start_container(range).unwrap(), host);
-  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
   assert_eq!(doc.range_end_container(range).unwrap(), host);
-  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
 
   // Offsets beyond the light-child count must be rejected. (The ShadowRoot does not contribute.)
   assert!(matches!(
-    doc.range_set_start(range, host, 2),
+    doc.range_set_start(range, host, 3),
     Err(DomError::IndexSizeError)
   ));
+
+  // `extractContents()` should remove the first light DOM child when selecting [0, 1], and must
+  // not treat the ShadowRoot pseudo-child as part of the host's offset space.
+  let extract_range = doc.create_range();
+  doc.range_set_start(extract_range, host, 0).unwrap();
+  doc.range_set_end(extract_range, host, 1).unwrap();
+
+  let fragment = doc.range_extract_contents(extract_range).unwrap();
+  assert_eq!(
+    doc.node(a).parent,
+    Some(fragment),
+    "expected extracted node to move into the returned fragment"
+  );
+  assert_eq!(
+    doc.node(host).children.as_slice(),
+    &[shadow_root, b],
+    "expected host to retain its ShadowRoot pseudo-child at index 0 and keep remaining light children"
+  );
 }
 
 #[test]
