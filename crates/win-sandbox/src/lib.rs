@@ -334,6 +334,42 @@ impl OwnedSid {
     self.sid
   }
 
+  /// Converts the SID to its string form (e.g. `"S-1-15-2-1"`).
+  pub fn to_string_sid(&self) -> Result<String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+
+    if self.sid.is_null() {
+      return Err(WinSandboxError::NullPointer {
+        func: "OwnedSid::to_string_sid",
+      });
+    }
+
+    let mut wide: *mut u16 = std::ptr::null_mut();
+    let ok = unsafe { ConvertSidToStringSidW(self.sid, &mut wide) };
+    if ok == 0 {
+      return Err(WinSandboxError::last("ConvertSidToStringSidW"));
+    }
+    if wide.is_null() {
+      return Err(WinSandboxError::NullPointer {
+        func: "ConvertSidToStringSidW",
+      });
+    }
+
+    // SAFETY: Win32 contract: `ConvertSidToStringSidW` returns a NUL-terminated wide string
+    // allocated with `LocalAlloc`; free it with `LocalFree`.
+    unsafe {
+      let mut len = 0usize;
+      while *wide.add(len) != 0 {
+        len += 1;
+      }
+      let slice = std::slice::from_raw_parts(wide, len);
+      let s = String::from_utf16_lossy(slice);
+      LocalFree(wide as _);
+      Ok(s)
+    }
+  }
+
   /// Consumes the wrapper without freeing the SID.
   pub fn into_ptr(self) -> windows_sys::Win32::Security::PSID {
     let sid = self.sid;

@@ -11,9 +11,6 @@ use tempfile::tempdir;
 use win_sandbox::renderer::RendererSandbox;
 use win_sandbox::AppContainerProfile;
 
-use windows_sys::Win32::Foundation::LocalFree;
-use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-
 const DISABLE_MITIGATIONS_ENV: &str = "FASTR_DISABLE_WIN_MITIGATIONS";
 const JOB_MEM_LIMIT_ENV: &str = "FASTR_RENDERER_JOB_MEM_LIMIT_MB";
 
@@ -64,29 +61,6 @@ fn icacls_grant_rx(path: &std::path::Path, sid: &str, inherit: bool) {
   }
 }
 
-fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> String {
-  let mut wide: *mut u16 = std::ptr::null_mut();
-  let ok = unsafe { ConvertSidToStringSidW(sid, &mut wide) };
-  assert_ne!(
-    ok,
-    0,
-    "ConvertSidToStringSidW failed: {}",
-    std::io::Error::last_os_error()
-  );
-  assert!(!wide.is_null(), "ConvertSidToStringSidW returned null");
-
-  unsafe {
-    let mut len = 0usize;
-    while *wide.add(len) != 0 {
-      len += 1;
-    }
-    let slice = std::slice::from_raw_parts(wide, len);
-    let s = String::from_utf16_lossy(slice);
-    LocalFree(wide as _);
-    s
-  }
-}
-
 #[test]
 fn renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren() {
   let _mitigation_guard = EnvVarRestore::remove(DISABLE_MITIGATIONS_ENV);
@@ -111,7 +85,10 @@ fn renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren() {
     "FastRender renderer AppContainer profile",
   )
   .expect("ensure AppContainer profile");
-  let sid_str = sid_to_string(profile.sid().as_ptr());
+  let sid_str = profile
+    .sid()
+    .to_string_sid()
+    .expect("convert AppContainer SID to string");
   let sid_grant = format!("*{sid_str}");
 
   icacls_grant_rx(tmp.path(), &sid_grant, true);
