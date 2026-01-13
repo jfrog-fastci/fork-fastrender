@@ -503,6 +503,82 @@ fn compiled_new_target_is_undefined_in_inner_non_construct_call() -> Result<(), 
 }
 
 #[test]
+fn compiled_array_literal_holes_and_length() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        let a = [1,,3];
+        return a.length === 3 && a[1] === undefined;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let res: Result<(), VmError> = (|| {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+
+    let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  })();
+
+  realm.teardown(&mut heap);
+  res
+}
+
+#[test]
+fn compiled_array_literal_spread_join() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        return [1, ...[2,3], 4].join(',');
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let res: Result<(), VmError> = (|| {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+
+    let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    let expected = scope.alloc_string("1,2,3,4")?;
+    assert!(result.same_value(Value::String(expected), scope.heap()));
+    Ok(())
+  })();
+
+  realm.teardown(&mut heap);
+  res
+}
+
+#[test]
 fn compiled_new_target_is_constructor_function_in_new_call() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
