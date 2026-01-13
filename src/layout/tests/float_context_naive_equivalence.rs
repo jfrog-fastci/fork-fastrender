@@ -256,10 +256,12 @@ fn choose_query_y(rng: &mut TinyRng, boundaries: &[f32], min: f32, max: f32) -> 
 fn float_context_rectangular_naive_equivalence() {
   const SEED_COUNT: u64 = 50;
   const WIDTH_QUERIES: usize = 200;
-  const RANGE_QUERIES: usize = 100;
+  // Range scans are the most expensive part of the equivalence checks (O(floats * boundaries) per
+  // query). Keep the count moderate so the test stays fast in debug builds.
+  const RANGE_QUERIES: usize = 40;
   const BOUNDARY_QUERIES: usize = 200;
   const OFFSET_WIDTH_QUERIES: usize = 100;
-  const OFFSET_RANGE_QUERIES: usize = 50;
+  const OFFSET_RANGE_QUERIES: usize = 20;
 
   for seed in 0..SEED_COUNT {
     // Mix the seed a bit so neighboring seeds don't produce nearly-identical float fields.
