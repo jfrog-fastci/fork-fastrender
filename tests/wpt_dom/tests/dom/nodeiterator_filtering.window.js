@@ -342,3 +342,63 @@ test(() => {
   assert_true(nested_threw, "Re-entrant previousNode() should throw");
   assert_equals(nested_name, "InvalidStateError");
 }, "NodeIterator rejects re-entrant previousNode() calls from the filter callback (InvalidStateError)");
+
+test(() => {
+  const { root } = make_tree_with_text();
+
+  const calls = [];
+  const filter = (node) => {
+    calls.push(node);
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  // whatToShow=0 excludes all node types (the n-th bit check always fails), so filtering returns
+  // FILTER_SKIP without ever invoking the user filter callback. Traversal should therefore return
+  // null and leave the iterator's state unchanged.
+  const it = document.createNodeIterator(root, 0, filter);
+
+  assert_equals(it.referenceNode, root);
+  assert_true(it.pointerBeforeReferenceNode);
+  assert_equals(it.nextNode(), null);
+  assert_equals(it.referenceNode, root);
+  assert_true(it.pointerBeforeReferenceNode);
+  assert_equals(calls.length, 0, "Filter callback should not be invoked when whatToShow excludes all nodes");
+}, "NodeIterator whatToShow=0 excludes all nodes (nextNode returns null without moving and does not invoke the filter)");
+
+test(() => {
+  const { root } = make_tree_with_text();
+
+  const calls = [];
+  const filter = (node) => {
+    calls.push(node);
+    return NodeFilter.FILTER_SKIP;
+  };
+
+  // Even though every node is filtered out (SKIP), NodeIterator does not update its reference/pointer
+  // unless an accepted node is found. When traversal reaches the end, nextNode() returns null
+  // without moving the iterator.
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, filter);
+
+  assert_equals(it.referenceNode, root);
+  assert_true(it.pointerBeforeReferenceNode);
+  assert_equals(it.nextNode(), null);
+  assert_equals(it.referenceNode, root);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  assert_true(calls.length !== 0, "Filter callback should have been invoked for candidate nodes");
+  assert_equals(calls[0], root, "First filter invocation should be for the root (which is a candidate node)");
+}, "NodeIterator with a filter that never accepts returns null without moving the iterator");
+
+test(() => {
+  const { root, a } = make_tree_with_text();
+
+  // FILTER_REJECT does not prune for NodeIterator; rejecting the root should still allow traversal to
+  // its descendants.
+  const reject_root = (node) =>
+    node === root ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, reject_root);
+
+  assert_equals(it.nextNode(), a, "Rejecting the root should not prevent visiting accepted descendants");
+  assert_equals(it.referenceNode, a);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator FILTER_REJECT on the root behaves like FILTER_SKIP (no subtree pruning)");

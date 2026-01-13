@@ -137,6 +137,44 @@ test(() => {
 }, "TreeWalker does not traverse outside its root subtree");
 
 test(() => {
+  const { root } = make_tree();
+
+  const calls = [];
+  const filter = (node) => {
+    calls.push(node);
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  // whatToShow=0 excludes all node types, so filtering returns FILTER_SKIP without invoking the user
+  // filter callback.
+  const tw = document.createTreeWalker(root, 0, filter);
+  assert_equals(tw.currentNode, root);
+  assert_equals(tw.nextNode(), null);
+  assert_equals(tw.currentNode, root);
+  assert_equals(calls.length, 0, "Filter callback should not be invoked when whatToShow excludes all nodes");
+}, "TreeWalker whatToShow=0 excludes all nodes (nextNode returns null without moving and does not invoke the filter)");
+
+test(() => {
+  const { root, a, a1, a2, b, b1, c } = make_tree();
+
+  const calls = [];
+  const filter = (node) => {
+    calls.push(node);
+    return NodeFilter.FILTER_SKIP;
+  };
+
+  // If the filter never accepts, nextNode() should traverse but ultimately return null without
+  // moving `currentNode`.
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+  assert_equals(tw.currentNode, root);
+  assert_equals(tw.nextNode(), null);
+  assert_equals(tw.currentNode, root);
+
+  // nextNode() should have visited each descendant candidate in tree order (excluding the root).
+  assert_array_equals(calls, [a, a1, a2, b, b1, c]);
+}, "TreeWalker with a filter that never accepts returns null without moving currentNode");
+
+test(() => {
   clear_children(document.body);
 
   // Tree:
