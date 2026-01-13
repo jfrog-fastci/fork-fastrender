@@ -239,8 +239,6 @@ pub mod cli_utils;
 pub mod browser_perf_log;
 #[doc(hidden)]
 pub mod bench_utils;
-pub mod audio;
-pub mod media;
 pub mod css;
 pub mod debug;
 pub mod dom;

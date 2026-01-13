@@ -1,3 +1,10 @@
+//! Legacy audio mixer/backends.
+//!
+//! This module contains the pre-media-pipeline audio implementation that was previously
+//! exposed as the top-level `audio` module. It is retained temporarily to ease migration.
+//!
+//! Prefer the modern `crate::media::audio` APIs for new code.
+
 use crate::clock::Clock;
 use crate::debug::runtime::runtime_toggles;
 use parking_lot::Mutex;

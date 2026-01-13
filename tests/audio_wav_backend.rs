@@ -1,4 +1,4 @@
-use fastrender::audio::{audio_backend_from_env, AudioBackend};
+use fastrender::media::audio::legacy::{audio_backend_from_env, AudioBackend};
 use fastrender::debug::runtime::{with_runtime_toggles, RuntimeToggles};
 use fastrender::clock::VirtualClock;
 use std::collections::HashMap;

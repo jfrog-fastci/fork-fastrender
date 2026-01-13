@@ -52,6 +52,12 @@ pub mod types;
 #[cfg(any(feature = "audio_wav", test))]
 mod wav_backend;
 
+/// Legacy audio mixer/backends that were previously exposed as the top-level `audio` module.
+///
+/// Prefer the modern `crate::media::audio` APIs for new code.
+#[deprecated(note = "Legacy audio APIs (previously the top-level `audio` module). Prefer `crate::media::audio` for new code.")]
+pub mod legacy;
+
 pub use config::{
   audio_engine_config, set_audio_engine_config, with_audio_engine_config, AudioEngineConfig,
   AudioEngineConfigGuard,
