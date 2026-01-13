@@ -1328,6 +1328,112 @@ mod profile_autosave_toast_tests {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
+type ToastText = String;
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn truncate_utf8_str_tail_to_bytes(value: &str, max_bytes: usize) -> String {
+  if max_bytes == 0 {
+    return String::new();
+  }
+  if value.len() <= max_bytes {
+    return value.to_string();
+  }
+  if max_bytes <= 3 {
+    return "…".to_string();
+  }
+
+  let keep_bytes = max_bytes - 3;
+  let start = value.len().saturating_sub(keep_bytes);
+  let mut start = start.min(value.len());
+  while start < value.len() && !value.is_char_boundary(start) {
+    start += 1;
+  }
+  format!("…{}", value.get(start..).unwrap_or(""))
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn sanitize_path_for_toast(path: &std::path::Path, max_bytes: usize) -> String {
+  let raw = path.to_string_lossy();
+  let mut sanitized = String::with_capacity(raw.len());
+  for ch in raw.chars() {
+    if ch == '\n' || ch == '\r' || ch == '\t' || ch.is_control() {
+      sanitized.push(' ');
+    } else {
+      sanitized.push(ch);
+    }
+  }
+  let collapsed = sanitized
+    .split_whitespace()
+    .filter(|chunk| !chunk.is_empty())
+    .collect::<Vec<_>>()
+    .join(" ");
+  truncate_utf8_str_tail_to_bytes(&collapsed, max_bytes)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn check_download_path_exists_for_ui(path: &std::path::Path) -> Result<(), ToastText> {
+  if path.exists() {
+    return Ok(());
+  }
+
+  // Keep toast messages small/robust: sanitize control characters/newlines (paths can be untrusted
+  // or corrupted) and truncate extreme lengths so we don't flood the UI.
+  const MAX_TOAST_PATH_BYTES: usize = 240;
+  let display_path = sanitize_path_for_toast(path, MAX_TOAST_PATH_BYTES);
+  Err(format!("File no longer exists: {display_path}"))
+}
+
+#[cfg(test)]
+mod download_path_exists_for_ui_tests {
+  use super::check_download_path_exists_for_ui;
+  use std::path::PathBuf;
+
+  #[test]
+  fn missing_path_produces_toast_text() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("missing_download.txt");
+    let err = check_download_path_exists_for_ui(&missing).expect_err("expected missing path");
+    assert!(
+      err.starts_with("File no longer exists:"),
+      "unexpected toast text: {err:?}"
+    );
+    assert!(
+      err.contains("missing_download.txt"),
+      "toast should include filename, got: {err:?}"
+    );
+    assert!(!err.contains('\n') && !err.contains('\r'));
+  }
+
+  #[test]
+  fn existing_path_does_not_produce_toast_text() {
+    let file = tempfile::NamedTempFile::new().expect("temp file");
+    check_download_path_exists_for_ui(file.path()).expect("existing path should pass");
+  }
+
+  #[test]
+  fn toast_text_sanitizes_and_truncates_extreme_paths() {
+    let long = format!("line1\n{}\nline3", "a".repeat(5000));
+    let path = PathBuf::from(long);
+    let err = check_download_path_exists_for_ui(&path).expect_err("expected missing path");
+
+    // Should not leak newlines/control characters into the toast UI.
+    assert!(!err.contains('\n') && !err.contains('\r') && !err.contains('\t'));
+
+    // Must stay within the configured byte limit (+ prefix).
+    let max = "File no longer exists: ".len() + 240;
+    assert!(
+      err.len() <= max,
+      "expected toast text <= {max} bytes, got {} bytes: {err:?}",
+      err.len()
+    );
+    assert!(
+      err.contains('…'),
+      "expected truncated paths to include an ellipsis: {err:?}"
+    );
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 fn sanitize_anchor_css_rect(rect: fastrender::geometry::Rect) -> fastrender::geometry::Rect {
   const MAX_ABS_POS: f32 = 1_000_000.0;
   const MAX_SIZE: f32 = 1_000_000.0;
@@ -18468,8 +18574,19 @@ impl App {
 
     for path in output.open_requests {
       if is_path_within_dir(&self.download_dir, &path) {
-        if let Err(err) = open_file_with_os_default(&path) {
-          self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &err);
+        match check_download_path_exists_for_ui(&path) {
+          Ok(()) => {
+            if let Err(err) = open_file_with_os_default(&path) {
+              self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &err);
+            }
+          }
+          Err(toast_text) => {
+            eprintln!(
+              "download open requested but file no longer exists: {}",
+              path.display()
+            );
+            self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Warning, &toast_text);
+          }
         }
       } else {
         eprintln!(
@@ -18481,8 +18598,19 @@ impl App {
     }
     for path in output.reveal_requests {
       if is_path_within_dir(&self.download_dir, &path) {
-        if let Err(err) = reveal_file_in_os_file_manager(&path) {
-          self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &err);
+        match check_download_path_exists_for_ui(&path) {
+          Ok(()) => {
+            if let Err(err) = reveal_file_in_os_file_manager(&path) {
+              self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &err);
+            }
+          }
+          Err(toast_text) => {
+            eprintln!(
+              "download reveal requested but file no longer exists: {}",
+              path.display()
+            );
+            self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Warning, &toast_text);
+          }
         }
       } else {
         eprintln!(
