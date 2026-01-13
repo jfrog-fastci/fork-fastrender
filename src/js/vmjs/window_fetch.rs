@@ -3478,12 +3478,45 @@ fn apply_request_init(
   let referrer_key = alloc_key(scope, "referrer")?;
   let referrer_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, referrer_key)?;
   if !matches!(referrer_val, Value::Undefined | Value::Null) {
-    request.referrer = to_rust_string_limited(
+    let raw = to_rust_string_limited(
       scope.heap_mut(),
       referrer_val,
       limits.max_url_bytes,
       FETCH_REFERRER_TOO_LONG_ERROR,
     )?;
+
+    // https://fetch.spec.whatwg.org/#dom-requestinit-referrer
+    // FastRender internal referrer state is stored as:
+    // - "" (empty) => "client" referrer state (use execution context default)
+    // - "no-referrer" => explicit omission
+    // - any other string => absolute URL
+    if raw.is_empty() {
+      request.referrer = "no-referrer".to_string();
+    } else {
+      let base_url = current_document_base_url(vm, scope.heap(), env_id)?;
+      let resolved = resolve_url(&raw, base_url.as_deref())
+        .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
+
+      let parsed = ::url::Url::parse(&resolved)
+        .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
+
+      if parsed.scheme() == "about" && parsed.path() == "client" {
+        // "about:client" maps to the internal "client" referrer state.
+        request.referrer = String::new();
+      } else {
+        let same_origin = match (origin_from_url(&request.url), origin_from_url(&resolved)) {
+          (Some(request_origin), Some(referrer_origin)) => request_origin.same_origin(&referrer_origin),
+          _ => false,
+        };
+
+        if !same_origin {
+          // Cross-origin referrers are not stored; fall back to the internal "client" state.
+          request.referrer = String::new();
+        } else {
+          request.referrer = resolved;
+        }
+      }
+    }
   }
 
   let referrer_policy_key = alloc_key(scope, "referrerPolicy")?;
@@ -6536,7 +6569,20 @@ fn make_request_wrapper(
   let redirect_s = scope.alloc_string(request_redirect_to_string(redirect))?;
   set_data_prop(scope, obj, "redirect", Value::String(redirect_s), false)?;
 
-  let referrer_s = scope.alloc_string(&referrer)?;
+  // https://fetch.spec.whatwg.org/#dom-request-referrer
+  //
+  // FastRender stores referrer state as:
+  // - "" => "client" referrer state
+  // - "no-referrer" => explicit omission
+  // - otherwise => absolute URL
+  let js_referrer = if referrer == "no-referrer" {
+    ""
+  } else if referrer.is_empty() {
+    "about:client"
+  } else {
+    &referrer
+  };
+  let referrer_s = scope.alloc_string(js_referrer)?;
   set_data_prop(scope, obj, "referrer", Value::String(referrer_s), false)?;
   let referrer_policy_s = scope.alloc_string(referrer_policy.as_str())?;
   set_data_prop(
@@ -9134,6 +9180,53 @@ mod tests {
 
     let response = window.exec_script("Object.prototype.toString.call(new Response())")?;
     assert_eq!(get_string(window.heap(), response), "[object Response]");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn request_referrer_parsing_and_getter_semantics() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    // Default is the internal "client" referrer state, exposed as "about:client".
+    let v = window.exec_script("new Request('https://example.invalid/').referrer")?;
+    assert_eq!(get_string(window.heap(), v), "about:client");
+
+    // Empty string means explicit "no-referrer", exposed as empty string.
+    let v = window.exec_script("new Request('https://example.invalid/', { referrer: '' }).referrer")?;
+    assert_eq!(get_string(window.heap(), v), "");
+
+    // about:client maps to the internal "client" state.
+    let v = window.exec_script(
+      "new Request('https://example.invalid/', { referrer: 'about:client' }).referrer",
+    )?;
+    assert_eq!(get_string(window.heap(), v), "about:client");
+
+    // Cross-origin referrer falls back to the internal "client" state.
+    let v = window.exec_script(
+      "new Request('https://example.invalid/', { referrer: 'https://other.invalid/' }).referrer",
+    )?;
+    assert_eq!(get_string(window.heap(), v), "about:client");
+
+    // Invalid referrer string throws TypeError.
+    let v = window.exec_script(
+      "(() => {\
+         try { new Request('https://example.invalid/', { referrer: 'https://[::1' }); return false; }\
+         catch (e) { return e instanceof TypeError; }\
+       })()",
+    )?;
+    assert_eq!(v, Value::Bool(true));
 
     drop(fetch_bindings);
     window.teardown();
