@@ -11313,6 +11313,16 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     resource: &FetchedResource,
     stored_at: SystemTime,
   ) -> Option<CacheEntry> {
+    // Defense in depth: never store HTTP 206 Partial Content responses in the normal URL cache key.
+    //
+    // When callers introduce Range requests, caching a 206 response under the original URL would
+    // poison the cache with a truncated body, potentially impacting subsequent full fetches.
+    //
+    // Be conservative and also treat any response that includes a `Content-Range` header as
+    // uncacheable, even if the status code is missing/malformed.
+    if resource.status == Some(206) || resource.header_get("content-range").is_some() {
+      return None;
+    }
     if resource.vary.as_deref() == Some("*") {
       return None;
     }
@@ -17952,6 +17962,48 @@ mod tests {
       calls.load(Ordering::SeqCst),
       2,
       "expected one underlying fetch per credential mode"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_does_not_cache_http_206_partial_content() {
+    #[derive(Clone)]
+    struct PartialFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for PartialFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(b"partial".to_vec(), Some("text/plain".to_string()));
+        res.status = Some(206);
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CachingFetcher::new(PartialFetcher {
+      calls: Arc::clone(&calls),
+    });
+    let url = "https://example.com/partial";
+    let req = FetchRequest::new(url, FetchDestination::Other);
+
+    fetcher
+      .fetch_with_request(req)
+      .expect("first fetch should succeed");
+    fetcher
+      .fetch_with_request(req)
+      .expect("second fetch should also hit network (no caching)");
+
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "expected 206 responses to be treated as uncacheable"
     );
   }
 

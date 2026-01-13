@@ -2192,6 +2192,17 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     origin_key: Option<&str>,
     credentials_partition: super::CacheCredentialsPartition,
   ) {
+    // Defense in depth: never persist HTTP 206 Partial Content responses under the normal URL key.
+    //
+    // When Range requests are used (e.g. probing / incremental downloads), a 206 body is not the
+    // complete representation of the resource. Persisting it would poison the disk cache and could
+    // cause future non-range fetches to receive truncated bytes.
+    //
+    // Be conservative and also skip persistence when a `Content-Range` header is present, even if
+    // the status code is missing/malformed.
+    if resource.status == Some(206) || resource.header_get("content-range").is_some() {
+      return;
+    }
     if self.disk_writeback_disabled_for_len(resource.bytes.len()) {
       return;
     }
@@ -4685,6 +4696,52 @@ mod tests {
         .meta_path_for_data(&disk.data_path_for_key(&canonical_key))
         .exists(),
       "expected canonical variant meta to exist"
+    );
+  }
+
+  #[test]
+  fn disk_cache_does_not_persist_http_206_partial_content() {
+    #[derive(Clone)]
+    struct PartialFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for PartialFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(b"partial".to_vec(), Some("text/plain".to_string()));
+        res.status = Some(206);
+        res.final_url = Some(url.to_string());
+        Ok(res)
+      }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let url = "https://example.com/partial_206";
+
+    let first = DiskCachingFetcher::new(
+      PartialFetcher {
+        calls: Arc::clone(&calls),
+      },
+      tmp.path(),
+    );
+    first.fetch(url).expect("first fetch should succeed");
+
+    // Recreate the disk cache wrapper to ensure we're testing persistence (disk hits), not the
+    // in-memory layer.
+    let second = DiskCachingFetcher::new(
+      PartialFetcher {
+        calls: Arc::clone(&calls),
+      },
+      tmp.path(),
+    );
+    second.fetch(url).expect("second fetch should also hit network");
+
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "expected 206 responses to never be written to disk cache"
     );
   }
 
