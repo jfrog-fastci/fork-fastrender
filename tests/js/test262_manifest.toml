@@ -1448,6 +1448,10 @@ glob = "built-ins/RegExp/prototype/toString/**"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/RegExp/CharacterClassEscapes/character-class-whitespace-class-escape-positive-cases.js"
+status = "pass"
+
+[[expectations]]
 id = "built-ins/RegExp/prototype/global/cross-realm.js"
 status = "xfail"
 reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."

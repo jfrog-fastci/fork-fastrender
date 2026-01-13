@@ -38,6 +38,11 @@ include = [
 
   # --- Unicode property escapes (`\\p{…}`) ---
   "built-ins/RegExp/property-escapes/**/*.js",
+  # --- Character class escapes (`\\s`, `\\S`, etc) ---
+  #
+  # The generated negative corpus is extremely large and slow; keep only the positive coverage
+  # here, and rely on vm-js unit tests for additional guardrails.
+  "built-ins/RegExp/CharacterClassEscapes/character-class-whitespace-class-escape-positive-cases.js",
 
   # --- UnicodeMode (`/u`) disallow-extended-pattern restrictions (Annex B disabled) ---
   "built-ins/RegExp/unicode_restricted_*.js",
