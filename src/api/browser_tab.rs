@@ -7835,23 +7835,31 @@ impl BrowserTab {
     BROWSER_TAB_RENDERER_DOM_MAPPING_BUILD_COUNT.with(|count| count.set(0));
   }
 
+  /// Updates the viewport size in CSS px for the tab's live `dom2` document.
+  ///
+  /// This affects layout/geometry queries (`elementFromPoint`, `getBoundingClientRect`, etc) and
+  /// media query evaluation, and marks layout+paint dirty.
+  ///
+  /// This is a lightweight state update used by UI integrations when the embedding window is
+  /// resized; it does **not** trigger navigation or reload the document.
+  pub fn set_viewport(&mut self, width: u32, height: u32) {
+    self.host.document.set_viewport(width, height);
+  }
+
   /// Returns the current viewport size in CSS px, if explicitly set.
   pub fn viewport_size_css(&self) -> Option<(u32, u32)> {
     self.host.document.options().viewport
   }
 
-  /// Updates the viewport size (in CSS px), marking style/layout/paint dirty.
-  ///
-  /// This is a convenience wrapper around [`BrowserDocumentDom2::set_viewport`] for embedders that
-  /// host a live [`BrowserTab`] (JS + event loop) and need to keep DOM geometry queries consistent
-  /// with the embedding viewport.
-  pub fn set_viewport(&mut self, width: u32, height: u32) {
-    self.host.document.set_viewport(width, height);
-  }
-
   /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
   ///
+  /// Non-finite or non-positive values clear the override (falling back to the renderer default).
+  /// Changing DPR invalidates layout+paint.
+  ///
   /// This forwards to [`BrowserDocumentDom2::set_device_pixel_ratio`].
+  ///
+  /// This is a lightweight state update used by UI integrations when the system scale factor
+  /// changes; it does **not** trigger navigation or reload the document.
   pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
     self.host.document.set_device_pixel_ratio(dpr);
   }
