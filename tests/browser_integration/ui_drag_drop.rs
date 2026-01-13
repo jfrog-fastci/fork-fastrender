@@ -590,3 +590,107 @@ fn click_inside_document_selection_defers_collapse_until_mouseup() -> Result<()>
 
   Ok(())
 }
+
+#[test]
+fn click_inside_text_control_selection_defers_collapse_until_mouseup() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (320, 100);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          input {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 260px;
+            height: 40px;
+            padding: 0;
+            border: 0;
+            outline: none;
+            font-family: "Noto Sans Mono", monospace;
+            font-size: 24px;
+          }
+        </style>
+      </head>
+      <body>
+        <input id="src" value="hello">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the input.
+  let src_click = (10.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+  ))?;
+
+  // Select all text in the input.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::SelectAll))?;
+
+  // Precondition: the focused text control should have an active selection highlight.
+  let focused = controller.interaction_state().focused;
+  assert!(
+    controller
+      .interaction_state()
+      .text_edit
+      .as_ref()
+      .is_some_and(|state| state.selection.is_some() && Some(state.node_id) == focused),
+    "expected focused text control selection after SelectAll"
+  );
+
+  // Clicking inside the selection should *not* collapse the selection on pointer down (so the user
+  // can still begin a drag-and-drop), but should collapse on mouseup if no drag occurs.
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+  ))?;
+  assert!(
+    controller
+      .interaction_state()
+      .text_edit
+      .as_ref()
+      .is_some_and(|state| state.selection.is_some() && Some(state.node_id) == focused),
+    "selection should remain highlighted during pointer down"
+  );
+
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+  ))?;
+  assert!(
+    controller
+      .interaction_state()
+      .text_edit
+      .as_ref()
+      .is_some_and(|state| state.selection.is_none() && Some(state.node_id) == focused),
+    "selection should collapse on click release when no drag/drop occurs"
+  );
+
+  Ok(())
+}
