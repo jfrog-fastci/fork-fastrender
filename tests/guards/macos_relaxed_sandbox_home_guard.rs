@@ -5,60 +5,16 @@
 
 #![cfg(target_os = "macos")]
 
-use std::ffi::{CStr, CString};
+use fastrender::sandbox::macos::MacosSandboxMode;
 use std::io;
-use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const ENV_HOME_FILE: &str = "FASTR_TEST_SANDBOX_HOME_FILE";
 
-#[link(name = "sandbox")]
-extern "C" {
-  fn sandbox_init(profile: *const c_char, flags: u64, errorbuf: *mut *mut c_char) -> i32;
-  fn sandbox_free_error(errorbuf: *mut c_char);
-}
-
-fn escape_sandbox_string(value: &str) -> String {
-  value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 fn apply_relaxed_sandbox_profile() {
-  // The parent created the file under `$HOME`, so deny reads under that directory.
-  let home = std::env::var("HOME").expect("HOME env var must be set for sandbox test");
-  let home = home.trim_end_matches('/');
-  assert!(
-    !home.is_empty(),
-    "HOME env var must not be empty for sandbox test"
-  );
-
-  // A deliberately minimal "relaxed" profile: allow everything by default, but deny reads of the
-  // user's home directory. This keeps the test harness functional while providing a guardrail
-  // against accidentally allowing `~/` access in the relaxed profile.
-  let profile = format!(
-    "(version 1)\n(allow default)\n(deny file-read* (subpath \"{}\"))\n",
-    escape_sandbox_string(home)
-  );
-  let profile =
-    CString::new(profile).expect("sandbox profile should not contain interior NUL bytes");
-
-  let mut errorbuf: *mut c_char = std::ptr::null_mut();
-  // SAFETY: Calls into the macOS libsandbox API with stable pointers.
-  let rc = unsafe { sandbox_init(profile.as_ptr(), 0, &mut errorbuf) };
-  if rc != 0 {
-    let message = if errorbuf.is_null() {
-      format!("sandbox_init failed with rc={rc}")
-    } else {
-      // SAFETY: errorbuf points to a NUL-terminated string on failure.
-      let msg = unsafe { CStr::from_ptr(errorbuf) }
-        .to_string_lossy()
-        .into_owned();
-      // SAFETY: errorbuf was allocated by libsandbox.
-      unsafe { sandbox_free_error(errorbuf) };
-      msg
-    };
-    panic!("sandbox_init failed: {message}");
-  }
+  fastrender::sandbox::macos::apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
+    .expect("apply macOS relaxed renderer sandbox");
 }
 
 fn assert_permission_denied(err: &io::Error, path: &Path) {
@@ -122,6 +78,7 @@ fn relaxed_sandbox_profile_denies_home_file_read() {
 
   let output = Command::new(exe)
     .env(ENV_HOME_FILE, &path)
+    .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
     .arg(test_name)
     .arg("--nocapture")
