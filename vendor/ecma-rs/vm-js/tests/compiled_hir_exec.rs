@@ -8773,6 +8773,64 @@ fn compiled_direct_eval_inherits_strictness_from_caller() -> Result<(), VmError>
 }
 
 #[test]
+fn compiled_direct_eval_use_strict_directive_in_source_makes_eval_strict() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ eval("'use strict'; x = 1"); }
+      f();
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  let Value::Object(thrown_obj) = thrown else {
+    panic!("expected thrown value to be an object, got {thrown:?}");
+  };
+
+  let intr = rt
+    .vm
+    .intrinsics()
+    .expect("intrinsics should be initialized for JsRuntime");
+  let thrown_proto = rt.heap().object_prototype(thrown_obj)?;
+  assert_eq!(thrown_proto, Some(intr.reference_error_prototype()));
+  Ok(())
+}
+
+#[test]
+fn compiled_direct_eval_var_decl_is_function_scoped_in_sloppy_function() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        eval("var x = 1");
+        return (typeof x) + "," + (typeof this.x);
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string result, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "number,undefined");
+  Ok(())
+}
+
+#[test]
 fn compiled_function_creates_arguments_object() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
