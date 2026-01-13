@@ -5057,18 +5057,63 @@ impl App {
               );
 
               ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Retry").clicked() {
+                let retry_resp = ui.button("Retry");
+                retry_resp.widget_info(|| {
+                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Retry navigation")
+                });
+                if retry_resp.clicked() {
                   retry = true;
                 }
 
-                let details_label = if details_open {
-                  "Hide details"
-                } else {
-                  "Details"
-                };
-                if ui.button(details_label).clicked() {
-                  details_open = !details_open;
+                let details_label = if details_open { "Hide details" } else { "Details" };
+                let details_resp = ui.button(details_label);
+
+                // AccessKit may request explicit expand/collapse actions when the node exposes an
+                // expanded state.
+                let expand_requested = ui.input(|i| {
+                  i.has_accesskit_action_request(details_resp.id, accesskit::Action::Expand)
+                });
+                let collapse_requested = ui.input(|i| {
+                  i.has_accesskit_action_request(details_resp.id, accesskit::Action::Collapse)
+                });
+
+                let mut toggle_requested = details_resp.clicked();
+                if details_resp.has_focus() {
+                  toggle_requested |= ui.input_mut(|i| {
+                    i.consume_key(Default::default(), egui::Key::Enter)
+                      || i.consume_key(Default::default(), egui::Key::Space)
+                  });
                 }
+
+                if expand_requested || collapse_requested {
+                  let desired = expand_requested && !collapse_requested;
+                  if details_open != desired {
+                    details_open = desired;
+                    details_resp.request_focus();
+                  }
+                } else if toggle_requested {
+                  details_open = !details_open;
+                  details_resp.request_focus();
+                }
+
+                let details_a11y_label = if details_open {
+                  "Hide error details"
+                } else {
+                  "Show error details"
+                };
+                details_resp.widget_info(|| {
+                  egui::WidgetInfo::labeled(egui::WidgetType::Button, details_a11y_label)
+                });
+                let _ = details_resp.ctx.accesskit_node_builder(details_resp.id, |builder| {
+                  builder.set_expanded(details_open);
+                  if details_open {
+                    builder.add_action(accesskit::Action::Collapse);
+                    builder.remove_action(accesskit::Action::Expand);
+                  } else {
+                    builder.add_action(accesskit::Action::Expand);
+                    builder.remove_action(accesskit::Action::Collapse);
+                  }
+                });
               });
             });
 
