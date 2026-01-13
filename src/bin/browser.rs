@@ -1198,6 +1198,48 @@ fn sanitize_worker_to_ui_untrusted_payloads(
       tab_id,
       url: sanitize_untrusted_text(&url, MAX_URL_BYTES),
     }),
+    WorkerToUi::ContextMenu {
+      tab_id,
+      pos_css,
+      default_prevented,
+      link_url,
+      image_url,
+      can_copy,
+      can_cut,
+      can_paste,
+      can_select_all,
+    } => {
+      const ABSURD_URL_BYTES_MULTIPLIER: usize = 64;
+      let absurd_url_limit = MAX_URL_BYTES.saturating_mul(ABSURD_URL_BYTES_MULTIPLIER);
+
+      fn sanitize_pos(pos: (f32, f32)) -> (f32, f32) {
+        (
+          if pos.0.is_finite() { pos.0 } else { 0.0 },
+          if pos.1.is_finite() { pos.1 } else { 0.0 },
+        )
+      }
+
+      let sanitize_opt_url = |raw: Option<String>| {
+        let raw = raw?;
+        if raw.len() > absurd_url_limit {
+          return None;
+        }
+        let safe = sanitize_untrusted_text(&raw, MAX_URL_BYTES);
+        (!safe.is_empty()).then_some(safe)
+      };
+
+      Some(WorkerToUi::ContextMenu {
+        tab_id,
+        pos_css: sanitize_pos(pos_css),
+        default_prevented,
+        link_url: sanitize_opt_url(link_url),
+        image_url: sanitize_opt_url(image_url),
+        can_copy,
+        can_cut,
+        can_paste,
+        can_select_all,
+      })
+    }
     WorkerToUi::HoverChanged {
       tab_id,
       hovered_url,
@@ -1812,6 +1854,53 @@ mod bridge_worker_to_ui_sanitization_tests {
       value.capacity(),
       value.len()
     );
+  }
+
+  #[test]
+  fn context_menu_urls_are_sanitized_before_enqueue() {
+    let tab_id = TabId(1);
+    let mut url = String::with_capacity(fastrender::ui::protocol_limits::MAX_URL_BYTES * 8);
+    url.push_str("http://example.com/");
+    assert!(url.capacity() > fastrender::ui::protocol_limits::MAX_URL_BYTES);
+
+    let msg = WorkerToUi::ContextMenu {
+      tab_id,
+      pos_css: (f32::NAN, f32::INFINITY),
+      default_prevented: false,
+      link_url: Some(url),
+      image_url: None,
+      can_copy: true,
+      can_cut: false,
+      can_paste: false,
+      can_select_all: false,
+    };
+
+    let BridgeSanitizedMsgs::One(QueuedMsg::Worker(worker_msg)) =
+      sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
+      panic!("expected ContextMenu to be enqueued");
+    };
+    let WorkerToUi::ContextMenu {
+      pos_css,
+      link_url,
+      image_url,
+      ..
+    } = worker_msg
+    else {
+      panic!("expected ContextMenu after sanitization");
+    };
+
+    assert!(pos_css.0.is_finite());
+    assert!(pos_css.1.is_finite());
+    let link_url = link_url.expect("link_url should remain Some");
+    assert_eq!(link_url, "http://example.com/");
+    assert!(
+      link_url.capacity() <= fastrender::ui::protocol_limits::MAX_URL_BYTES,
+      "expected link_url capacity to be bounded (cap={}, len={})",
+      link_url.capacity(),
+      link_url.len()
+    );
+    assert!(image_url.is_none());
   }
 }
 
