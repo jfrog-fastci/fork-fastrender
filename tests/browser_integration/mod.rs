@@ -136,6 +136,7 @@ mod ui_worker_number_input;
 mod ui_worker_number_input_step_base_value_when_min_missing;
 mod ui_worker_range_input_keyboard;
 mod ui_worker_open_in_new_tab;
+mod ui_worker_open_in_new_tab_privileged_schemes;
 mod ui_worker_prioritization_preemption;
 mod ui_worker_protocol_smoke;
 mod ui_worker_renderer_reuse;
