@@ -2714,21 +2714,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               if node_id.index() >= dom.nodes_len() {
                 return Err(DomError::NotFoundError);
               }
-              match &dom.node(node_id).kind {
-                NodeKind::Text { content } => Ok(Some(content.clone())),
-                NodeKind::Comment { content } => Ok(Some(content.clone())),
-                NodeKind::ProcessingInstruction { data, .. } => Ok(Some(data.clone())),
-                NodeKind::Doctype { .. } => Ok(None),
-                _ => {
-                  let mut out = String::new();
-                  for id in dom.subtree_preorder(node_id) {
-                    if let NodeKind::Text { content } = &dom.node(id).kind {
-                      out.push_str(content);
-                    }
-                  }
-                  Ok(Some(out))
-                }
-              }
+              Ok(dom2_bindings::text_content_get_from_dom(dom, node_id))
             }))
           })?;
           match text {
@@ -2743,6 +2729,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         } else {
           let value = args.get(0).copied().unwrap_or(Value::Undefined);
           let value = match value {
+            // `textContent` is `DOMString?`; `null` and `undefined` act as the empty string.
             Value::Undefined | Value::Null => String::new(),
             Value::String(_) => js_string_to_rust_string(scope, value)?,
             other => {
@@ -2753,68 +2740,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
           let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
             Ok(host.mutate_dom(|dom| {
-              if node_id.index() >= dom.nodes_len() {
-                return (Err(DomError::NotFoundError), false);
+              match dom2_bindings::text_content_set_from_dom(dom, node_id, &value) {
+                Ok(result) => (Ok(()), result.render_affecting),
+                Err(err) => (Err(err), false),
               }
-
-              // Fast-path: character-data nodes.
-              match &dom.node(node_id).kind {
-                NodeKind::Text { .. } => match dom.set_text_data(node_id, &value) {
-                  Ok(changed) => return (Ok(()), changed),
-                  Err(err) => return (Err(err), false),
-                },
-                NodeKind::Comment { .. } => {
-                  let old = match &dom.node(node_id).kind {
-                    NodeKind::Comment { content } => content.as_str(),
-                    _ => "",
-                  };
-                  if old == value.as_str() {
-                    return (Ok(()), false);
-                  }
-                  if let NodeKind::Comment { content } = &mut dom.node_mut(node_id).kind {
-                    content.clear();
-                    content.push_str(&value);
-                  }
-                  return (Ok(()), true);
-                }
-                NodeKind::ProcessingInstruction { .. } => {
-                  let old = match &dom.node(node_id).kind {
-                    NodeKind::ProcessingInstruction { data, .. } => data.as_str(),
-                    _ => "",
-                  };
-                  if old == value.as_str() {
-                    return (Ok(()), false);
-                  }
-                  if let NodeKind::ProcessingInstruction { data, .. } = &mut dom.node_mut(node_id).kind {
-                    data.clear();
-                    data.push_str(&value);
-                  }
-                  return (Ok(()), true);
-                }
-                NodeKind::Doctype { .. } => return (Ok(()), false),
-                _ => {}
-              }
-
-              // Replace children.
-              let children = match dom.children(node_id) {
-                Ok(children) => children.to_vec(),
-                Err(err) => return (Err(err), false),
-              };
-              let mut changed = false;
-              for child in children {
-                match dom.remove_child(node_id, child) {
-                  Ok(child_changed) => changed |= child_changed,
-                  Err(err) => return (Err(err), false),
-                }
-              }
-              if !value.is_empty() {
-                let text = dom.create_text(&value);
-                match dom.append_child(node_id, text) {
-                  Ok(child_changed) => changed |= child_changed,
-                  Err(err) => return (Err(err), false),
-                }
-              }
-              (Ok(()), changed)
             }))
           })?;
           match result {
@@ -2835,7 +2764,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
-            let res = if matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. }) {
+            let res = if child_id.index() < dom.nodes_len()
+              && matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. })
+            {
               dom.with_shadow_root_as_document_fragment(child_id, |dom| dom.append_child(parent_id, child_id))
             } else {
               dom.append_child(parent_id, child_id)
@@ -2880,10 +2811,16 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
-            if reference.is_some_and(|reference| matches!(dom.node(reference).kind, NodeKind::ShadowRoot { .. })) {
+            if reference.is_some_and(|reference| {
+              reference.index() < dom.nodes_len()
+                && matches!(dom.node(reference).kind, NodeKind::ShadowRoot { .. })
+            }) {
               return (Err(DomError::NotFoundError), false);
             }
-            let res = if matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. }) {
+
+            let res = if child_id.index() < dom.nodes_len()
+              && matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. })
+            {
               dom.with_shadow_root_as_document_fragment(child_id, |dom| {
                 dom.insert_before(parent_id, child_id, reference)
               })
@@ -2926,7 +2863,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
-            if matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. }) {
+            // ShadowRoot is never a tree child in the DOM Standard, so it cannot be removed (even
+            // though dom2 stores it as a child of its host element).
+            if child_id.index() < dom.nodes_len()
+              && matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. })
+            {
               return (Err(DomError::NotFoundError), false);
             }
             match dom.remove_child(parent_id, child_id) {
@@ -2967,10 +2908,16 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
-            if matches!(dom.node(old_child_id).kind, NodeKind::ShadowRoot { .. }) {
+            // ShadowRoot is never a tree child in the DOM Standard, so it cannot be replaced (even
+            // though dom2 stores it as a child of its host element).
+            if old_child_id.index() < dom.nodes_len()
+              && matches!(dom.node(old_child_id).kind, NodeKind::ShadowRoot { .. })
+            {
               return (Err(DomError::NotFoundError), false);
             }
-            let res = if matches!(dom.node(new_child_id).kind, NodeKind::ShadowRoot { .. }) {
+            let res = if new_child_id.index() < dom.nodes_len()
+              && matches!(dom.node(new_child_id).kind, NodeKind::ShadowRoot { .. })
+            {
               dom.with_shadow_root_as_document_fragment(new_child_id, |dom| {
                 dom.replace_child(parent_id, new_child_id, old_child_id)
               })
@@ -3040,7 +2987,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
-            if matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. }) {
+            if node_id.index() < dom.nodes_len()
+              && matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. })
+            {
               // ShadowRoot is not a tree child per the DOM Standard. It must not be removable via
               // `Node.remove()` even though `dom2` stores it as a child of its host element.
               return (Ok(()), false);
