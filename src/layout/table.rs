@@ -6715,10 +6715,15 @@ impl FormattingContext for TableFormattingContext {
             AvailableSpace::Definite(w) => Some(w),
             _ => None,
           });
-      let containing_height = match constraints.available_height {
-        AvailableSpace::Definite(h) => Some(h),
-        _ => None,
-      };
+      // Percentage block sizes resolve against the containing block's *definite* used block size,
+      // which normal-flow block layout communicates via `block_percentage_base` even when the
+      // available height is `auto`/indefinite.
+      let containing_height = constraints
+        .block_percentage_base
+        .or_else(|| match constraints.available_height {
+          AvailableSpace::Definite(h) => Some(h),
+          _ => None,
+        });
 
       // Honor explicit table width if present.
       let font_size = table_root_style.font_size;
@@ -15422,6 +15427,52 @@ mod tests {
       .expect("table layout");
 
     assert!((fragment.bounds.height() - 100.0).abs() < 0.1);
+  }
+
+  #[test]
+  fn table_percent_height_resolves_against_block_percentage_base() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.height = Some(Length::percent(50.0));
+    table_style.height_keyword = None;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_block(
+        Arc::new(cell_style),
+        FormattingContextType::Block,
+        vec![],
+      )],
+    );
+
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![row],
+    );
+
+    let tfc = TableFormattingContext::new();
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(200.0),
+      AvailableSpace::Indefinite,
+    )
+    .with_block_percentage_base(Some(300.0));
+    let fragment = tfc.layout(&table, &constraints).expect("table layout");
+
+    assert!(
+      (fragment.bounds.height() - 150.0).abs() < 0.1,
+      "expected table height to resolve against block percentage base (got {:.2})",
+      fragment.bounds.height()
+    );
   }
 
   #[test]
