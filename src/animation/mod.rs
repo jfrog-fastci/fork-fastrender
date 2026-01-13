@@ -4630,17 +4630,6 @@ fn invert_affine_matrix(m: &Transform3D) -> Option<Transform3D> {
   out.m.iter().all(|v| v.is_finite()).then_some(out)
 }
 
-fn mat4_mul_vec4(m: &Transform3D, v: [f32; 4]) -> Option<[f32; 4]> {
-  if !v.iter().all(|c| c.is_finite()) {
-    return None;
-  }
-  let x = m.m[0] * v[0] + m.m[4] * v[1] + m.m[8] * v[2] + m.m[12] * v[3];
-  let y = m.m[1] * v[0] + m.m[5] * v[1] + m.m[9] * v[2] + m.m[13] * v[3];
-  let z = m.m[2] * v[0] + m.m[6] * v[1] + m.m[10] * v[2] + m.m[14] * v[3];
-  let w = m.m[3] * v[0] + m.m[7] * v[1] + m.m[11] * v[2] + m.m[15] * v[3];
-  (x.is_finite() && y.is_finite() && z.is_finite() && w.is_finite()).then_some([x, y, z, w])
-}
-
 fn mat4_transpose_mul_vec4(m: &Transform3D, v: [f32; 4]) -> Option<[f32; 4]> {
   // Multiply the transpose of `m` by a column vector `v` (i.e. (m^T) * v).
   if !v.iter().all(|c| c.is_finite()) {
