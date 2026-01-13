@@ -239,9 +239,9 @@ impl Job {
     // Fallback for iterators with an unknown upper bound: extend one element at a time using a
     // fallible reserve so allocator OOM does not abort the process.
     //
-    // Note: This may partially extend `roots` if the iterator yields more than `lower` elements and
-    // we hit OOM mid-way. Callers that need all-or-nothing semantics should pass an iterator with a
-    // known upper bound (e.g. a slice/`Vec`).
+    // We maintain an all-or-nothing guarantee: on allocation failure, `roots` is truncated back to
+    // its original length so callers can safely clean up the provided roots if desired.
+    let original_len = self.roots.len();
     if lower != 0 {
       // Pre-reserve the lower bound as a best-effort optimisation; failure here indicates OOM.
       self
@@ -250,7 +250,10 @@ impl Job {
         .map_err(|_| VmError::OutOfMemory)?;
     }
     for id in iter {
-      self.try_push_root(id)?;
+      if let Err(e) = self.try_push_root(id) {
+        self.roots.truncate(original_len);
+        return Err(e);
+      }
     }
     Ok(())
   }
@@ -1179,6 +1182,53 @@ mod oom_tests {
     .expect_err("expected OOM error");
 
     assert!(matches!(err, VmError::OutOfMemory));
+    Ok(())
+  }
+
+  #[test]
+  fn job_try_extend_roots_rolls_back_on_oom_with_unknown_upper_bound_iterator() -> Result<(), VmError> {
+    // Construct the job before enabling allocation failure so `Job::new` can allocate its closure box.
+    let mut job = Job::new(JobKind::Generic, |_ctx, _host| Ok(()))?;
+
+    // Ensure we can push the first element without allocating, so we can simulate OOM mid-extend.
+    job
+      .roots
+      .try_reserve_exact(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    struct NoUpperBoundIter {
+      items: [RootId; 2],
+      idx: usize,
+    }
+
+    impl Iterator for NoUpperBoundIter {
+      type Item = RootId;
+
+      fn next(&mut self) -> Option<Self::Item> {
+        let out = self.items.get(self.idx).copied();
+        self.idx += 1;
+        out
+      }
+
+      fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)
+      }
+    }
+
+    let iter = NoUpperBoundIter {
+      items: [RootId(0), RootId(1)],
+      idx: 0,
+    };
+
+    let _guard = FailAllocsGuard::new();
+    let result = job.try_extend_roots(iter);
+    drop(_guard);
+
+    assert!(matches!(result, Err(VmError::OutOfMemory)));
+    assert!(
+      job.roots.is_empty(),
+      "expected try_extend_roots to roll back on error"
+    );
     Ok(())
   }
 }
