@@ -27608,3 +27608,83 @@ mod regexp_prototype_tests {
     Ok(())
   }
 }
+
+#[cfg(test)]
+mod async_generator_function_constructor_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn async_generator_function_dynamic_constructor_creates_function_object() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function() {
+          let AGF = (async function*(){}).constructor;
+
+          // `%AsyncGeneratorFunction%` exists and is spec-shaped.
+          if (typeof AGF !== "function") return false;
+          if (AGF.name !== "AsyncGeneratorFunction") return false;
+          if (AGF.length !== 1) return false;
+
+          // Dynamic creation: `AsyncGeneratorFunction(params..., body)` returns a fresh async
+          // generator function object, even though execution semantics are currently unimplemented.
+          let f = AGF("a", "yield a;");
+          if (typeof f !== "function") return false;
+          if (f.name !== "anonymous") return false;
+          if (f.length !== 1) return false;
+
+          // `[[Prototype]]` is `%AsyncGeneratorFunction.prototype%`.
+          if (Object.getPrototypeOf(f) !== AGF.prototype) return false;
+          if (f.constructor !== AGF) return false;
+
+          // Each async generator function gets its own `.prototype` whose `[[Prototype]]` is
+          // `%AsyncGeneratorPrototype%` (reachable as `AsyncGeneratorFunction.prototype.prototype`).
+          if (typeof f.prototype !== "object") return false;
+          if (Object.getPrototypeOf(f.prototype) !== AGF.prototype.prototype) return false;
+          // Spec: generator/async-generator per-function `.prototype` objects do *not* define an own
+          // `constructor` property; it is inherited from `%AsyncGeneratorPrototype%` and points at
+          // `%AsyncGeneratorFunction.prototype%`.
+          if (Object.prototype.hasOwnProperty.call(f.prototype, "constructor")) return false;
+          if (f.prototype.constructor !== AGF.prototype) return false;
+
+          // Async generator functions are not constructors.
+          try {
+            new f();
+            return false;
+          } catch (e) {
+            if (!(e instanceof TypeError)) return false;
+          }
+
+          // Syntax errors are thrown as catchable `SyntaxError` objects.
+          try {
+            AGF("a b", "");
+            return false;
+          } catch (e) {
+            if (!(e instanceof SyntaxError)) return false;
+          }
+
+          // Strict-mode `with` is rejected at creation time by `CreateDynamicFunction`.
+          try {
+            AGF('"use strict"; with ({}) {}');
+            return false;
+          } catch (e) {
+            if (!(e instanceof SyntaxError)) return false;
+          }
+
+          // `%AsyncGeneratorFunction.prototype%[@@toStringTag]`.
+          if (Object.prototype.toString.call(f) !== "[object AsyncGeneratorFunction]") return false;
+
+          return true;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
