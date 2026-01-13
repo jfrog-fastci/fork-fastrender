@@ -7178,6 +7178,58 @@ fn compiled_switch_break_exits_only_switch() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_switch_case_matching_uses_strict_equality() -> Result<(), VmError> {
+  // `switch` case selection uses strict equality (`===`), not abstract equality (`==`).
+  //
+  // If it used `==`, `"1"` would match `case 1` and return 10.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(x){
+        switch (x) {
+          case 1: return 10;
+          case "1": return 20;
+          default: return 30;
+        }
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    1,
+  )?;
+
+  let arg = scope.alloc_string("1")?;
+  let r_str = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::String(arg)],
+  )?;
+  assert_eq!(r_str, Value::Number(20.0));
+
+  let r_num = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(1.0)],
+  )?;
+  assert_eq!(r_num, Value::Number(10.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_switch_continue_targets_outer_loop() -> Result<(), VmError> {
   // `continue` inside a switch statement should target the nearest enclosing loop, and must not be
   // consumed by the switch itself.
