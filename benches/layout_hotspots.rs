@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, SamplingMode, Throughput};
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::engine::{layout_parallelism_workload, LayoutParallelism};
@@ -174,8 +174,9 @@ fn build_grid_track_sizing_measure_tree(item_count: usize) -> BoxTree {
   // - Grid track sizing can become dominated by intrinsic measurement of grid items (Taffy invoking
   //   the measure callback repeatedly for min/max-content probes). This tree is constructed to
   //   force auto minimum track sizing (`1fr` -> `minmax(auto, 1fr)`) across many text-heavy items.
-  const TEXT: &str =
-    "supercalifragilisticexpialidocious lorem ipsum dolor sit amet consectetur adipiscing elit";
+  // Keep this short but non-trivial so we still hit intrinsic sizing paths without turning the
+  // benchmark into a text shaping benchmark.
+  const TEXT: &str = "supercalifragilisticexpialidocious lorem";
 
   let mut grid_style = ComputedStyle::default();
   grid_style.display = Display::Grid;
@@ -1342,7 +1343,9 @@ fn bench_table_cell_intrinsic_and_distribution(c: &mut Criterion) {
 
 fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
-  const GRID_ITEM_COUNT: usize = 256;
+  // Keep this large enough to stress grid intrinsic sizing fanout, but small enough to stay fast
+  // under the micro Criterion settings on typical developer machines/CI.
+  const GRID_ITEM_COUNT: usize = 192;
   let viewport = Size::new(800.0, 600.0);
   let font_ctx = common::fixed_font_context();
   let engine = LayoutEngine::with_font_context(
@@ -1350,7 +1353,7 @@ fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
     font_ctx,
   );
 
-  // 256 grid items * ~3 nodes/item ~= 769 nodes total.
+  // `GRID_ITEM_COUNT` grid items * ~3 nodes/item ~= O(700) nodes total.
   let box_tree = build_grid_track_sizing_measure_tree(GRID_ITEM_COUNT);
 
   // Document the workload once (and assert we are actually exercising grid measurement).
@@ -1380,11 +1383,13 @@ fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
   let _taffy_usage_guard = enable_taffy_counters(true);
 
   let mut group = c.benchmark_group("layout_hotspots_grid_track_sizing");
-  // This benchmark tends to be heavier than the other "micro" hotspots, and Criterion may choose
-  // >1 iteration/sample when the iteration time sits just below the per-sample budget. Keep the
-  // measurement window small so `cargo bench --bench layout_hotspots` stays quick.
+  // This benchmark tends to be heavier than the other "micro" hotspots. Keep its measurement
+  // window smaller so `cargo bench --bench layout_hotspots` stays quick.
   group.warm_up_time(Duration::from_millis(100));
   group.measurement_time(Duration::from_millis(400));
+  // Use flat sampling so Criterion doesn't vary the iterations/sample across samples. That keeps
+  // the per-iteration counter resets + measure fanout easier to interpret.
+  group.sampling_mode(SamplingMode::Flat);
   group.throughput(Throughput::Elements(GRID_ITEM_COUNT as u64));
   group.bench_function("grid_track_sizing_measure_fanout", |b| {
     b.iter(|| {
