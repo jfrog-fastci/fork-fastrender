@@ -4,7 +4,7 @@ use crate::ui::messages::TabId;
 use crate::ui::url::{resolve_omnibox_input, resolve_omnibox_search_query, OmniboxInputResolution};
 use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
 use crate::ui::{BookmarkNode, BookmarkStore};
-use super::string_match::find_ascii_case_insensitive;
+use super::string_match::{contains_ascii_case_insensitive, find_ascii_case_insensitive};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -195,10 +195,9 @@ impl OmniboxProvider for AboutPagesProvider {
 
     let mut out = Vec::new();
     for (url, title) in PAGES {
-      let url_lower = url.to_ascii_lowercase();
-      let title_lower = title.to_ascii_lowercase();
-
-      if !url_lower.contains(&input_lower) && !title_lower.contains(&input_lower) {
+      if !contains_ascii_case_insensitive(url, &input_lower)
+        && !contains_ascii_case_insensitive(title, &input_lower)
+      {
         continue;
       }
 
