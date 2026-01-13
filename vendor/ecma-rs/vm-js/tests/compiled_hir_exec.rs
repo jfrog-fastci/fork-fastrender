@@ -3134,3 +3134,43 @@ fn compiled_delete_member() -> Result<(), VmError> {
   assert_eq!(result, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn compiled_named_function_expr_recursion_works() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        let fact = function fact(n) {
+          if (n <= 1) return 1;
+          return n * fact(n - 1);
+        };
+        // Named function expressions must have an inner immutable name binding for recursion that
+        // is independent of the outer lexical binding.
+        let g = fact;
+        fact = 0;
+        return g(5);
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut scope = heap.scope();
+
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Number(120.0));
+  Ok(())
+}

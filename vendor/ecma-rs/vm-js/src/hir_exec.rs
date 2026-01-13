@@ -338,6 +338,7 @@ impl<'vm> HirEvaluator<'vm> {
     body_id: hir_js::BodyId,
     name: &str,
     is_arrow: bool,
+    name_binding: Option<&str>,
   ) -> Result<GcObject, VmError> {
     // Avoid holding references into `self.script.hir` across `vm.tick()` calls below: `tick()`
     // requires `&mut Vm`, so borrow HIR via a standalone `Arc` clone of the compiled script.
@@ -405,10 +406,25 @@ impl<'vm> HirEvaluator<'vm> {
 
     // Root inputs across string allocation + function allocation in case either triggers GC.
     let mut scope = scope.reborrow();
-    let closure_env = Some(self.env.lexical_env());
-    scope.push_env_root(self.env.lexical_env())?;
+    let outer_env = self.env.lexical_env();
+    scope.push_env_root(outer_env)?;
     scope.push_root(self.this)?;
     scope.push_root(self.new_target)?;
+
+    // Named function expressions introduce an inner immutable binding for their name so the body
+    // can reliably reference itself (for recursion) even if the outer binding is reassigned.
+    //
+    // Spec: https://tc39.es/ecma262/#sec-runtime-semantics-instantiateordinaryfunctionexpression
+    let (closure_env, name_binding_env) = if let Some(name) = name_binding.filter(|n| !n.is_empty()) {
+      // Create the function name environment and keep it rooted across function allocation + name
+      // binding initialization.
+      let func_env = scope.env_create(Some(outer_env))?;
+      scope.push_env_root(func_env)?;
+      scope.env_create_immutable_binding(func_env, name)?;
+      (Some(func_env), Some((func_env, name)))
+    } else {
+      (Some(outer_env), None)
+    };
 
     let name_s = scope.alloc_string(name)?;
     scope.push_root(Value::String(name_s))?;
@@ -432,6 +448,17 @@ impl<'vm> HirEvaluator<'vm> {
       is_strict,
       closure_env,
     )?;
+
+    // If this was a named function expression, initialize its name binding now that the function
+    // object exists.
+    if let Some((env, name)) = name_binding_env {
+      // Root the function object across binding initialization. This is currently allocation-free,
+      // but keep it robust in case env initialization grows to allocate in the future.
+      scope.push_root(Value::Object(func_obj))?;
+      scope
+        .heap_mut()
+        .env_initialize_binding(env, name, Value::Object(func_obj))?;
+    }
 
     // Arrow functions capture lexical `this`/`new.target`.
     if is_arrow {
@@ -789,7 +816,13 @@ impl<'vm> HirEvaluator<'vm> {
           }
           let name = self.resolve_name(def.name)?;
           let func_obj =
-            self.alloc_user_function_object(scope, body_id, name.as_str(), /* is_arrow */ false)?;
+            self.alloc_user_function_object(
+              scope,
+              body_id,
+              name.as_str(),
+              /* is_arrow */ false,
+              /* name_binding */ None,
+            )?;
           // Root the function object while assigning into the environment.
           let mut assign_scope = scope.reborrow();
           assign_scope.push_root(Value::Object(func_obj))?;
@@ -2311,8 +2344,13 @@ impl<'vm> HirEvaluator<'vm> {
           .and_then(|id| self.hir().names.resolve(*id))
           .unwrap_or("")
           .to_owned();
-        let func_obj =
-          self.alloc_user_function_object(scope, *func_body, name_str.as_str(), *is_arrow)?;
+        let func_obj = self.alloc_user_function_object(
+          scope,
+          *func_body,
+          name_str.as_str(),
+          *is_arrow,
+          /* name_binding */ (!name_str.is_empty()).then_some(name_str.as_str()),
+        )?;
         Ok(Value::Object(func_obj))
       }
       hir_js::ExprKind::ClassExpr { body: class_body, name, .. } => {
@@ -4688,8 +4726,13 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
 
-          let func_obj =
-            self.alloc_user_function_object(&mut scope, *getter_body, /* name */ "", /* is_arrow */ false)?;
+          let func_obj = self.alloc_user_function_object(
+            &mut scope,
+            *getter_body,
+            /* name */ "",
+            /* is_arrow */ false,
+            /* name_binding */ None,
+          )?;
           crate::function_properties::set_function_name(&mut scope, func_obj, key, Some("get"))?;
           scope.push_root(Value::Object(func_obj))?;
 
@@ -4718,8 +4761,13 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
 
-          let func_obj =
-            self.alloc_user_function_object(&mut scope, *setter_body, /* name */ "", /* is_arrow */ false)?;
+          let func_obj = self.alloc_user_function_object(
+            &mut scope,
+            *setter_body,
+            /* name */ "",
+            /* is_arrow */ false,
+            /* name_binding */ None,
+          )?;
           crate::function_properties::set_function_name(&mut scope, func_obj, key, Some("set"))?;
           scope.push_root(Value::Object(func_obj))?;
 
@@ -4982,7 +5030,13 @@ impl<'vm> HirEvaluator<'vm> {
 
           // Allocate the compiled function object for the constructor body.
           let body_func =
-            self.alloc_user_function_object(scope, body_id, "constructor", /* is_arrow */ false)?;
+            self.alloc_user_function_object(
+              scope,
+              body_id,
+              "constructor",
+              /* is_arrow */ false,
+              /* name_binding */ None,
+            )?;
 
           // Wrap it in a constructable native function so `class_constructor_construct` can delegate
           // via `vm.construct`.
@@ -5123,6 +5177,7 @@ impl<'vm> HirEvaluator<'vm> {
               *body_id,
               method_name.as_str(),
               /* is_arrow */ false,
+              /* name_binding */ None,
             )?;
 
             match kind {
