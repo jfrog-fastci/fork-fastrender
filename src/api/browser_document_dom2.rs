@@ -1307,7 +1307,7 @@ impl BrowserDocumentDom2 {
     let current_scroll_state = self.scroll_state();
     let page_point_css = viewport_point_css.translate(current_scroll_state.viewport);
     let (delta_x, delta_y) = delta_css;
-    let next = crate::interaction::scroll_wheel::apply_wheel_scroll_at_point(
+    let mut next = crate::interaction::scroll_wheel::apply_wheel_scroll_at_point(
       prepared.fragment_tree(),
       &current_scroll_state,
       prepared.layout_viewport(),
@@ -1315,7 +1315,10 @@ impl BrowserDocumentDom2 {
       crate::interaction::scroll_wheel::ScrollWheelInput { delta_x, delta_y },
     );
 
-    if next != current_scroll_state {
+    let changed_offsets =
+      next.viewport != current_scroll_state.viewport || next.elements != current_scroll_state.elements;
+    if changed_offsets {
+      next.update_deltas_from(&current_scroll_state);
       self.set_scroll_state(next);
       Ok(true)
     } else {
