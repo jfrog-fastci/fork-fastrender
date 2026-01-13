@@ -47402,6 +47402,28 @@ fn init_window_globals(
       data_desc(Value::Object(contains_func)),
     )?;
 
+    let compare_document_position_call_id =
+      vm.register_native_call(node_compare_document_position_native)?;
+    let compare_document_position_name = scope.alloc_string("compareDocumentPosition")?;
+    scope.push_root(Value::String(compare_document_position_name))?;
+    let compare_document_position_func = scope.alloc_native_function(
+      compare_document_position_call_id,
+      None,
+      compare_document_position_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      compare_document_position_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(compare_document_position_func))?;
+    let compare_document_position_key = alloc_key(&mut scope, "compareDocumentPosition")?;
+    scope.define_property(
+      node_proto,
+      compare_document_position_key,
+      data_desc(Value::Object(compare_document_position_func)),
+    )?;
+
     let has_child_nodes_call_id = vm.register_native_call(node_has_child_nodes_native)?;
     let has_child_nodes_name = scope.alloc_string("hasChildNodes")?;
     scope.push_root(Value::String(has_child_nodes_name))?;

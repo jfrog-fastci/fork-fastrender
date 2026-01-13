@@ -144,6 +144,60 @@ impl Document {
       .count()
   }
 
+  /// WHATWG DOM `Node.compareDocumentPosition()` for nodes within this `dom2::Document`.
+  ///
+  /// This is a pure helper for bindings. Callers are responsible for handling comparisons across
+  /// distinct `dom2::Document` allocations (different JS `Document` objects that are backed by
+  /// different arenas).
+  ///
+  /// Shadow DOM note: `dom2` stores `ShadowRoot` nodes as children of their host element, but per
+  /// the DOM Standard a shadow root is the root of a separate tree (its parent is null). This
+  /// implementation therefore uses the Range-specific "tree root" helpers (`tree_root_for_range` /
+  /// `range_parent`) so comparisons do not cross shadow boundaries.
+  pub fn compare_document_position(&self, a: NodeId, b: NodeId) -> u16 {
+    const DOCUMENT_POSITION_DISCONNECTED: u16 = 0x01;
+    const DOCUMENT_POSITION_PRECEDING: u16 = 0x02;
+    const DOCUMENT_POSITION_FOLLOWING: u16 = 0x04;
+    const DOCUMENT_POSITION_CONTAINS: u16 = 0x08;
+    const DOCUMENT_POSITION_CONTAINED_BY: u16 = 0x10;
+    const DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: u16 = 0x20;
+
+    if a == b {
+      return 0;
+    }
+
+    let root_a = self.tree_root_for_range(a);
+    let root_b = self.tree_root_for_range(b);
+    if root_a != root_b {
+      // Per DOM, disconnected nodes must include DISCONNECTED and IMPLEMENTATION_SPECIFIC, plus an
+      // arbitrary but consistent PRECEDING/FOLLOWING bit. We use the tree root node id as a stable
+      // tie-breaker.
+      let mut out = DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
+      out |= if root_a.index() < root_b.index() {
+        DOCUMENT_POSITION_FOLLOWING
+      } else {
+        DOCUMENT_POSITION_PRECEDING
+      };
+      return out;
+    }
+
+    // DOM semantics:
+    // - If `b` is an ancestor of `a`, then "other contains this" => CONTAINS | PRECEDING.
+    // - If `b` is a descendant of `a`, then "other is contained by this" => CONTAINED_BY | FOLLOWING.
+    if self.is_ancestor_for_range(b, a) {
+      return DOCUMENT_POSITION_CONTAINS | DOCUMENT_POSITION_PRECEDING;
+    }
+    if self.is_ancestor_for_range(a, b) {
+      return DOCUMENT_POSITION_CONTAINED_BY | DOCUMENT_POSITION_FOLLOWING;
+    }
+
+    match self.compare_tree_order_for_range(a, b) {
+      Ordering::Less => DOCUMENT_POSITION_FOLLOWING,
+      Ordering::Greater => DOCUMENT_POSITION_PRECEDING,
+      Ordering::Equal => 0,
+    }
+  }
+
   fn insert_range_state(&mut self, id: RangeId) {
     let start_end = BoundaryPoint {
       node: self.root(),

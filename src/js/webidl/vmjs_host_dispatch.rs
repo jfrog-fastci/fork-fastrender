@@ -18,7 +18,8 @@ use crate::js::dom_host::DomHostVmJs;
 use crate::js::dom_platform::{DocumentId, DomInterface, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
-  event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
+  dom_ptr_for_document_id_read, event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2,
+  WindowRealmUserData,
   EVENT_TARGET_HOST_TAG,
 };
 use crate::js::window_timers::{
@@ -3234,6 +3235,49 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Ok(value) => Ok(Value::Bool(value)),
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
+      }
+      ("Node", "compareDocumentPosition", 0) => {
+        const DOCUMENT_POSITION_DISCONNECTED: u16 = 0x01;
+        const DOCUMENT_POSITION_PRECEDING: u16 = 0x02;
+        const DOCUMENT_POSITION_FOLLOWING: u16 = 0x04;
+        const DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: u16 = 0x20;
+
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let this_handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let other_handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), other_value)?;
+
+        if this_handle.document_id == other_handle.document_id && this_handle.node_id == other_handle.node_id {
+          return Ok(Value::Number(0.0));
+        }
+
+        let Some(mask) = with_active_vm_host_and_hooks(vm, |vm, host, _hooks| {
+          let this_dom_ptr = dom_ptr_for_document_id_read(vm, host, this_handle.document_id)
+            .ok_or(VmError::TypeError("Illegal invocation"))?;
+          let other_dom_ptr = dom_ptr_for_document_id_read(vm, host, other_handle.document_id)
+            .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+          let mask = if this_dom_ptr == other_dom_ptr {
+            // SAFETY: `dom_ptr_for_document_id_read` returns a valid pointer for the duration of this
+            // JS execution boundary.
+            let dom = unsafe { this_dom_ptr.as_ref() };
+            dom.compare_document_position(this_handle.node_id, other_handle.node_id)
+          } else {
+            let mut out = DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
+            out |= if this_handle.document_id < other_handle.document_id {
+              DOCUMENT_POSITION_FOLLOWING
+            } else {
+              DOCUMENT_POSITION_PRECEDING
+            };
+            out
+          };
+          Ok(mask)
+        })?
+        else {
+          return Err(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR));
+        };
+
+        Ok(Value::Number(mask as f64))
       }
       ("Node", "textContent", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);

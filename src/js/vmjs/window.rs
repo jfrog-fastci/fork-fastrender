@@ -1988,6 +1988,69 @@ mod tests {
     Ok(())
   }
 
+  fn exec_compare_document_position_smoke(backend: DomBindingsBackend) -> Result<()> {
+    let dom = dom2::parse_html("<!doctype html><html><head></head><body></body></html>")
+      .expect("parse_html");
+    let mut host = WindowHost::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      "https://example.invalid/",
+      Arc::new(HttpFetcher::new()),
+      Arc::new(RealClock::default()),
+      JsExecutionOptions::default(),
+      backend,
+    )?;
+
+    let ok = host.exec_script(
+      "(() => {\n\
+        const parent = document.createElement('div');\n\
+        const child = document.createElement('span');\n\
+        parent.appendChild(child);\n\
+        document.body.appendChild(parent);\n\
+\n\
+        if (parent.compareDocumentPosition(parent) !== 0) return false;\n\
+\n\
+        const ancestorMask = Node.DOCUMENT_POSITION_CONTAINED_BY | Node.DOCUMENT_POSITION_FOLLOWING;\n\
+        const descendantMask = Node.DOCUMENT_POSITION_CONTAINS | Node.DOCUMENT_POSITION_PRECEDING;\n\
+        if (parent.compareDocumentPosition(child) !== ancestorMask) return false;\n\
+        if (child.compareDocumentPosition(parent) !== descendantMask) return false;\n\
+\n\
+        const sib1 = document.createElement('i');\n\
+        const sib2 = document.createElement('i');\n\
+        parent.appendChild(sib1);\n\
+        parent.appendChild(sib2);\n\
+        if (sib1.compareDocumentPosition(sib2) !== Node.DOCUMENT_POSITION_FOLLOWING) return false;\n\
+        if (sib2.compareDocumentPosition(sib1) !== Node.DOCUMENT_POSITION_PRECEDING) return false;\n\
+\n\
+        const d1 = document.createElement('p');\n\
+        const d2 = document.createElement('p');\n\
+        const r1 = d1.compareDocumentPosition(d2);\n\
+        const r2 = d2.compareDocumentPosition(d1);\n\
+        const disconnected = Node.DOCUMENT_POSITION_DISCONNECTED | Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;\n\
+        if ((r1 & disconnected) !== disconnected) return false;\n\
+        if ((r2 & disconnected) !== disconnected) return false;\n\
+        const dir = Node.DOCUMENT_POSITION_PRECEDING | Node.DOCUMENT_POSITION_FOLLOWING;\n\
+        if ((r1 & dir) === 0 || (r2 & dir) === 0) return false;\n\
+        // Disconnected ordering should be antisymmetric.\n\
+        if ((r1 & Node.DOCUMENT_POSITION_PRECEDING) && !(r2 & Node.DOCUMENT_POSITION_FOLLOWING)) return false;\n\
+        if ((r1 & Node.DOCUMENT_POSITION_FOLLOWING) && !(r2 & Node.DOCUMENT_POSITION_PRECEDING)) return false;\n\
+\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_compare_document_position_smoke_handwritten_dom_backend() -> Result<()> {
+    exec_compare_document_position_smoke(DomBindingsBackend::Handwritten)
+  }
+
+  #[test]
+  fn node_compare_document_position_smoke_webidl_dom_backend() -> Result<()> {
+    exec_compare_document_position_smoke(DomBindingsBackend::WebIdl)
+  }
+
   #[test]
   fn webidl_dom_wrappers_expose_wrapper_document_for_legacy_shims() -> Result<()> {
     let mut realm = WindowRealm::new(
