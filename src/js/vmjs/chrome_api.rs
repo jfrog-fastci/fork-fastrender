@@ -3,6 +3,9 @@
 //! This module defines a minimal `globalThis.chrome` surface intended for *trusted* chrome/UI pages
 //! (renderer chrome workstream). It must never be installed into untrusted content realms.
 //!
+//! For the privileged internal URL schemes reserved for those trusted chrome pages (`chrome://`
+//! assets and `chrome-action:` actions), see `docs/renderer_chrome_schemes.md`.
+//!
 //! # Tab id representation
 //!
 //! Rust tab ids are `u64` (`crate::ui::messages::TabId(pub u64)`), but JS `Number` cannot precisely
@@ -461,4 +464,3 @@ pub fn install_chrome_api_bindings_vm_js(
 
   Ok(ChromeApiBindings::new(env_id))
 }
-

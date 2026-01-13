@@ -419,8 +419,13 @@ pub fn clear_default_web_storage_hub() {
 /// Derive a storage origin key from a document URL.
 ///
 /// Documents with a non-opaque origin get a persistent storage origin key (currently: `http:`,
-/// `https:`, and trusted `chrome:` URLs). Everything else is treated as an **opaque origin** and
+/// `https:`, and trusted `chrome://` URLs). Everything else is treated as an **opaque origin** and
 /// returns `None` (including `file:`), matching `window.origin === "null"` semantics.
+///
+/// Security note: `chrome://` is a privileged internal scheme reserved for renderer-chrome (trusted
+/// UI pages rendered in the browser process). Untrusted content must never be able to create/navigate
+/// to `chrome://` documents, otherwise it would gain a persistent storage origin. See
+/// `docs/renderer_chrome_schemes.md`.
 pub fn origin_key_from_document_url(url: &str) -> StorageOriginKey {
   let origin = crate::resource::origin_from_url(url)?;
   if !matches!(origin.scheme(), "http" | "https" | "chrome") {
