@@ -2344,7 +2344,7 @@ fn parse_number(value: Option<&str>) -> f32 {
     .unwrap_or(0.0)
 }
 
-fn parse_number_list(value: Option<&str>) -> Vec<f32> {
+fn parse_number_iter<'a>(value: Option<&'a str>) -> impl Iterator<Item = f32> + 'a {
   value
     .unwrap_or("")
     .split(|c: char| {
@@ -2358,18 +2358,17 @@ fn parse_number_list(value: Option<&str>) -> Vec<f32> {
         trimmed.parse::<f32>().ok()
       }
     })
-    .collect()
 }
 
 fn parse_number_pair(value: Option<&str>) -> (f32, f32) {
-  let mut iter = parse_number_list(value).into_iter();
+  let mut iter = parse_number_iter(value);
   let first = iter.next().unwrap_or(0.0);
   let second = iter.next().unwrap_or(first);
   (first, second)
 }
 
 fn parse_filter_res(value: Option<&str>) -> Option<(u32, u32)> {
-  let mut iter = parse_number_list(value).into_iter();
+  let mut iter = parse_number_iter(value);
   let first = iter.next()?;
   let second = iter.next().unwrap_or(first);
   let clamp_dim = |v: f32| -> Option<u32> {
@@ -2525,9 +2524,8 @@ fn parse_fe_color_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
       // The `values` attribute defaults to 1 (identity). Clamp negative values to 0 while allowing
       // oversaturation (> 1). Non-finite values are treated as missing so we don't poison the
       // filter graph with NaNs.
-      let mut amount = parse_number_list(node.attribute("values"))
-        .get(0)
-        .copied()
+      let mut amount = parse_number_iter(node.attribute("values"))
+        .next()
         .unwrap_or(1.0);
       if !amount.is_finite() {
         amount = 1.0;
@@ -2536,15 +2534,23 @@ fn parse_fe_color_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
       ColorMatrixKind::Saturate(amount)
     }
     "huerotate" => {
-      let angle = parse_number(node.attribute("values"));
+      let angle = parse_number_iter(node.attribute("values"))
+        .next()
+        .unwrap_or(0.0);
       ColorMatrixKind::HueRotate(angle)
     }
     "luminancetoalpha" => ColorMatrixKind::LuminanceToAlpha,
     _ => {
-      let values = parse_number_list(node.attribute("values"));
-      if values.len() >= 20 {
-        let mut arr = [0.0; 20];
-        arr.copy_from_slice(&values[..20]);
+      let mut arr = [0.0; 20];
+      let mut count = 0usize;
+      for (slot, value) in arr
+        .iter_mut()
+        .zip(parse_number_iter(node.attribute("values")))
+      {
+        *slot = value;
+        count += 1;
+      }
+      if count == 20 {
         ColorMatrixKind::Matrix(arr)
       } else {
         ColorMatrixKind::Matrix([
@@ -2827,7 +2833,7 @@ fn parse_fe_tile(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 }
 
 fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
-  let base_freq_values = parse_number_list(node.attribute("baseFrequency"));
+  let (raw_fx, raw_fy) = parse_number_pair(node.attribute("baseFrequency"));
   let sanitize_freq = |v: f32| -> f32 {
     if v.is_finite() {
       v.max(0.0)
@@ -2836,8 +2842,8 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     }
   };
   // SVG: default baseFrequency is 0 (produces a constant output).
-  let fx = sanitize_freq(base_freq_values.get(0).copied().unwrap_or(0.0));
-  let fy = sanitize_freq(base_freq_values.get(1).copied().unwrap_or(fx));
+  let fx = sanitize_freq(raw_fx);
+  let fy = sanitize_freq(raw_fy);
 
   // SVG: seed is a number; implementations coerce it to an integer.
   //
