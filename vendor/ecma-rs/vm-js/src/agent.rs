@@ -327,8 +327,15 @@ impl Agent {
     let mut scope = self.heap_mut().scope();
     scope.push_root(Value::Object(obj)).ok()?;
 
-    let name_key = PropertyKey::from_string(scope.common_key_name().ok()?);
-    let message_key = PropertyKey::from_string(scope.common_key_message().ok()?);
+    let name_key_s = scope.common_key_name().ok()?;
+    // Root key strings across subsequent allocations so they survive any GC triggered while we
+    // allocate the other key.
+    scope.push_root(Value::String(name_key_s)).ok()?;
+    let message_key_s = scope.common_key_message().ok()?;
+    scope.push_root(Value::String(message_key_s)).ok()?;
+
+    let name_key = PropertyKey::from_string(name_key_s);
+    let message_key = PropertyKey::from_string(message_key_s);
 
     let heap = scope.heap();
 
@@ -350,6 +357,9 @@ impl Agent {
 
     if message.is_empty() {
       return Some(name);
+    }
+    if name.is_empty() {
+      return Some(message);
     }
 
     let mut out = String::new();
