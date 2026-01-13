@@ -656,6 +656,8 @@ Front-ends are encouraged to print these to stderr while developing new protocol
 - **No author JavaScript in the browser UI yet**: `<script>` does not run in the windowed `browser`
   app today. (See [javascript.md](javascript.md) and
   [html_script_processing.md](html_script_processing.md) for the in-tree JS workstream.)
+  - Note: `browser --js` is currently supported only for `--headless-smoke` (a vm-js `BrowserTab`
+    smoke test); the windowed UI does not execute author scripts yet.
 - **Interaction gaps** (non-JS): the windowed UI forwards pointer/keyboard input to the browser
   worker, which applies basic hit-testing + form interactions. Some interactions are still
   incomplete (e.g. select dropdown UI, rich text editing, complex focus traversal).
