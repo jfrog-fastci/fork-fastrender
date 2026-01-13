@@ -1228,6 +1228,88 @@ fn compiled_member_assignment_to_primitive_throws_in_strict_mode() -> Result<(),
 }
 
 #[test]
+fn compiled_destructuring_member_assignment_to_primitive_is_silent_in_sloppy_mode() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      try { ({ x: 'abc'.x } = { x: 1 }); ok = 1; } catch (e) { ok = 2; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_destructuring_member_assignment_to_primitive_throws_in_strict_mode() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      let ok = 0;
+      try { ({ x: 'abc'.x } = { x: 1 }); } catch (e) { ok = 1; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_array_destructuring_member_assignment_to_primitive_is_silent_in_sloppy_mode() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      try { ['abc'.x] = [1]; ok = 1; } catch (e) { ok = 2; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_array_destructuring_member_assignment_to_primitive_throws_in_strict_mode() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      let ok = 0;
+      try { ['abc'.x] = [1]; } catch (e) { ok = 1; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_computed_member_key_evaluates_before_nullish_base_error() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
