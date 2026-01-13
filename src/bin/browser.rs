@@ -3629,7 +3629,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           span.arg_u64("messages", outcome.drained as u64);
 
           if request_redraw {
-            win.app.window.request_redraw();
+            win.app.schedule_worker_redraw(std::time::Instant::now());
           }
 
           if needs_follow_up_wake {
@@ -4101,7 +4101,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
-    // pending deadline (worker ticks, viewport throttling, egui repaint scheduling, session autosave).
+    // pending deadline (worker ticks, worker redraw coalescing, viewport throttling, egui repaint scheduling, session autosave).
     for win in windows.values_mut() {
       win
         .app
@@ -6047,6 +6047,14 @@ struct App {
   /// Deadline for the next resize-driven redraw when resize events arrive faster than the frame cadence.
   next_resize_redraw: Option<std::time::Instant>,
 
+  /// Deadline for the next worker-driven redraw request (coalesced to a ~60fps cadence).
+  ///
+  /// The UI worker can emit many `FrameReady` / stage updates in bursts (especially during resize);
+  /// requesting a redraw for every message can busy-loop the event loop.
+  next_worker_redraw: Option<std::time::Instant>,
+  /// Last time we requested a redraw due to worker messages (FrameReady bursts).
+  last_worker_redraw_request: Option<std::time::Instant>,
+
   /// Periodic tick driver state for animated documents.
   ///
   /// The render worker only advances CSS animation/transition sampling time when the UI sends
@@ -6699,6 +6707,8 @@ impl App {
       last_egui_redraw_request: None,
       last_resize_redraw_request: None,
       next_resize_redraw: None,
+      next_worker_redraw: None,
+      last_worker_redraw_request: None,
       animation_tick_tab: None,
       next_animation_tick: None,
       next_media_wakeup: std::collections::HashMap::new(),
@@ -6889,6 +6899,7 @@ impl App {
     self.drive_page_upload_redraw();
     self.drive_touch_long_press();
     self.drive_resize_redraw();
+    self.drive_worker_redraw();
     self.update_control_flow_for_animation_ticks(control_flow);
   }
 
@@ -7084,6 +7095,45 @@ impl App {
     }
   }
 
+  fn schedule_worker_redraw(&mut self, now: std::time::Instant) {
+    if self.window_occluded || self.window_minimized {
+      self.next_worker_redraw = None;
+      return;
+    }
+
+    let plan = fastrender::ui::repaint_scheduler::plan_worker_redraw(
+      now,
+      self.last_worker_redraw_request,
+      self.next_worker_redraw,
+    );
+
+    if plan.request_redraw_now {
+      self.next_worker_redraw = None;
+      self.last_worker_redraw_request = Some(now);
+      self.window.request_redraw();
+    } else {
+      self.next_worker_redraw = plan.next_deadline;
+    }
+  }
+
+  fn drive_worker_redraw(&mut self) {
+    if self.window_occluded || self.window_minimized {
+      self.next_worker_redraw = None;
+      return;
+    }
+
+    let Some(deadline) = self.next_worker_redraw else {
+      return;
+    };
+
+    let now = std::time::Instant::now();
+    if now >= deadline {
+      self.next_worker_redraw = None;
+      self.last_worker_redraw_request = Some(now);
+      self.window.request_redraw();
+    }
+  }
+
   fn update_control_flow_for_animation_ticks(
     &mut self,
     control_flow: &mut winit::event_loop::ControlFlow,
@@ -7153,6 +7203,14 @@ impl App {
       deadline = Some(match deadline {
         Some(existing) => existing.min(resize_deadline),
         None => resize_deadline,
+      });
+    }
+
+    // Worker-driven redraw scheduling (FrameReady bursts, resize updates).
+    if let Some(worker_deadline) = self.next_worker_redraw {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(worker_deadline),
+        None => worker_deadline,
       });
     }
 

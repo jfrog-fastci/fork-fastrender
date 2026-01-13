@@ -14,6 +14,13 @@ pub const MIN_EGUI_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
 /// platforms, so we clamp to a small minimum interval.
 pub const MIN_WORKER_WAKE_INTERVAL: Duration = Duration::from_millis(4);
 
+/// Minimum interval between worker-driven redraw requests (e.g. `WorkerToUi::FrameReady` bursts).
+///
+/// The render worker can emit multiple stage updates / frames in rapid succession (notably during
+/// resize). Requesting a redraw for every message can turn into a busy loop, so we coalesce to a
+/// ~60fps cadence by default.
+pub const MIN_WORKER_REDRAW_INTERVAL: Duration = Duration::from_millis(16);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepaintSchedule {
   /// Whether the caller should request a redraw immediately (e.g. `window.request_redraw()`).
@@ -93,6 +100,59 @@ pub fn plan_egui_repaint(
     repaint_after,
     last_redraw_request,
     MIN_EGUI_REPAINT_INTERVAL,
+  )
+}
+
+/// Plan a worker-driven redraw request ("as soon as possible"), rate-limited relative to the last
+/// worker-driven request.
+///
+/// The returned `next_deadline` is coalesced with any `existing_deadline` by keeping the earliest
+/// one. This ensures bursts of worker messages don't keep pushing the wakeup time forward.
+pub fn plan_worker_redraw_with_min_interval(
+  now: Instant,
+  last_redraw_request: Option<Instant>,
+  existing_deadline: Option<Instant>,
+  min_interval: Duration,
+) -> RepaintSchedule {
+  // If we already had a pending wakeup and it's due, request immediately so the caller can clear it
+  // without waiting for a separate timer event.
+  if existing_deadline.is_some_and(|deadline| deadline <= now) {
+    return RepaintSchedule {
+      request_redraw_now: true,
+      next_deadline: None,
+    };
+  }
+
+  let plan =
+    plan_egui_repaint_with_min_interval(now, Duration::ZERO, last_redraw_request, min_interval);
+  if plan.request_redraw_now {
+    return plan;
+  }
+
+  let next_deadline = earliest_deadline(existing_deadline, plan.next_deadline);
+  if next_deadline.is_some_and(|deadline| deadline <= now) {
+    RepaintSchedule {
+      request_redraw_now: true,
+      next_deadline: None,
+    }
+  } else {
+    RepaintSchedule {
+      request_redraw_now: false,
+      next_deadline,
+    }
+  }
+}
+
+pub fn plan_worker_redraw(
+  now: Instant,
+  last_redraw_request: Option<Instant>,
+  existing_deadline: Option<Instant>,
+) -> RepaintSchedule {
+  plan_worker_redraw_with_min_interval(
+    now,
+    last_redraw_request,
+    existing_deadline,
+    MIN_WORKER_REDRAW_INTERVAL,
   )
 }
 
@@ -216,6 +276,33 @@ mod tests {
     let plan = plan_egui_repaint_with_min_interval(now, delay, None, Duration::from_millis(16));
     assert!(!plan.request_redraw_now);
     assert_eq!(plan.next_deadline, Some(now + delay));
+  }
+
+  #[test]
+  fn worker_redraw_is_throttled_and_does_not_push_out_existing_deadline() {
+    let base = Instant::now();
+    let min = Duration::from_millis(16);
+
+    // We already requested a worker redraw at `base`, so the earliest allowed next request is
+    // `base + min`. Assume we've already scheduled a wakeup there.
+    let existing_deadline = Some(base + min);
+    let now = base + Duration::from_millis(1);
+
+    let plan = plan_worker_redraw_with_min_interval(now, Some(base), existing_deadline, min);
+    assert!(!plan.request_redraw_now);
+    assert_eq!(plan.next_deadline, existing_deadline);
+  }
+
+  #[test]
+  fn worker_redraw_requests_immediately_when_existing_deadline_is_due() {
+    let base = Instant::now();
+    let min = Duration::from_millis(16);
+    let existing_deadline = Some(base - Duration::from_millis(1));
+
+    let plan =
+      plan_worker_redraw_with_min_interval(base, Some(base - min), existing_deadline, min);
+    assert!(plan.request_redraw_now);
+    assert_eq!(plan.next_deadline, None);
   }
 
   #[test]
