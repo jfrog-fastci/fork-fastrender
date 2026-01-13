@@ -2484,7 +2484,9 @@ pub(super) fn tab_strip_ui(
               }
               #[cfg(test)]
               tab_rects_for_test.push(tab_rect);
-              pinned_tab_rects_for_drag.push((tab_id, tab_rect));
+              if close_t.is_none() {
+                pinned_tab_rects_for_drag.push((tab_id, tab_rect));
+              }
 
               let is_close_action = maybe_action
                 .as_ref()
@@ -3024,7 +3026,9 @@ pub(super) fn tab_strip_ui(
               unpinned_items_for_snapshot.push(TabStripItemKey::Tab(tab_id));
               item_pos += 1;
 
-              unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
+              if close_t.is_none() {
+                unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
+              }
               let is_close_action = maybe_action
                 .as_ref()
                 .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
