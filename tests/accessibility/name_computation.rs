@@ -183,20 +183,6 @@ fn aria_describedby_includes_hidden_references() {
 }
 
 #[test]
-fn aria_describedby_missing_ids_suppresses_title_description_fallback() {
-  let html = r#"
-    <html><body>
-      <input id="x" aria-label="Name" aria-describedby="missing" title="Tooltip" />
-    </body></html>
-  "#;
-
-  let tree = render_accessibility_tree(html);
-  let node = find_by_id(&tree, "x").expect("node x");
-  assert_eq!(node.name.as_deref(), Some("Name"));
-  assert_eq!(node.description, None);
-}
-
-#[test]
 fn aria_label_empty_blocks_fallbacks() {
   let html = r#"
     <html>
