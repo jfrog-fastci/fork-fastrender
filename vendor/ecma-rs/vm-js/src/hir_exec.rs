@@ -4004,15 +4004,19 @@ impl<'vm> HirEvaluator<'vm> {
             // Super References are not deletable (ECMA-262 `delete` runtime semantics).
             //
             // For computed super property references, the key expression (including `ToPropertyKey`)
-            // is still evaluated before throwing.
+            // is still evaluated before throwing *unless* we're in a derived constructor before
+            // `super()` has initialized `this` (in which case evaluating the SuperPropertyReference
+            // itself throws a ReferenceError before evaluating the property key expression).
             let object_expr = self.get_expr(body, member.object)?;
             if matches!(object_expr.kind, hir_js::ExprKind::Super) {
-              if let hir_js::ObjectKey::Computed(expr_id) = &member.property {
-                let member_value = self.eval_expr(scope, body, *expr_id)?;
-                let mut key_scope = scope.reborrow();
-                key_scope.push_root(member_value)?;
-                let _ =
-                  key_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, member_value)?;
+              if self.this_initialized {
+                if let hir_js::ObjectKey::Computed(expr_id) = &member.property {
+                  let member_value = self.eval_expr(scope, body, *expr_id)?;
+                  let mut key_scope = scope.reborrow();
+                  key_scope.push_root(member_value)?;
+                  let _ =
+                    key_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, member_value)?;
+                }
               }
               return Err(throw_reference_error(
                 self.vm,

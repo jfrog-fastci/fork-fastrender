@@ -362,6 +362,27 @@ fn delete_super_property_derived_instance_method_throws_reference_error() -> Res
 }
 
 #[test]
+fn delete_super_property_derived_instance_method_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { m(){} }
+      class D extends B {
+        del() {
+          try { delete super.m; return "no"; }
+          catch (e) { return e.name; }
+        }
+      }
+      new D().del()
+    "#,
+  )?;
+
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
 fn delete_super_property_derived_static_method_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
@@ -382,9 +403,52 @@ fn delete_super_property_derived_static_method_throws_reference_error() -> Resul
 }
 
 #[test]
+fn delete_super_property_derived_static_method_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { static m(){} }
+      class D extends B {
+        static del() {
+          try { delete super.m; return "no"; }
+          catch (e) { return e.name; }
+        }
+      }
+      D.del()
+    "#,
+  )?;
+
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
 fn delete_super_property_derived_constructor_does_not_evaluate_key_before_super() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
+    r#"
+      let side = 0;
+      class B {}
+      class D extends B {
+        constructor() {
+          delete super[(side = 1, "m")];
+        }
+      }
+      try { new D(); }
+      catch (e) { String(side) + ":" + e.name; }
+    "#,
+  )?;
+
+  assert_value_is_utf8(&rt, value, "0:ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn delete_super_property_derived_constructor_does_not_evaluate_key_before_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
     r#"
       let side = 0;
       class B {}
