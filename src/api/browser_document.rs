@@ -1810,6 +1810,7 @@ pub(super) fn prepare_dom_inner(
     max_iframe_depth: renderer.max_iframe_depth,
     paint_parallelism,
     runtime_toggles: std::sync::Arc::clone(&renderer.runtime_toggles),
+    display_list_cache: std::cell::RefCell::new(super::DisplayListCache::default()),
   })
 }
 
@@ -2334,6 +2335,49 @@ mod tests {
         })
       ),
       "expected paint timeout error, got {err:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn paint_from_cache_reuses_cached_display_list_when_unchanged() -> Result<()> {
+    let toggles = RuntimeToggles::from_map(std::collections::HashMap::from([(
+      "FASTR_PAINT_BACKEND".to_string(),
+      "display_list".to_string(),
+    )]));
+    let options = RenderOptions::default()
+      .with_viewport(32, 32)
+      .with_runtime_toggles(toggles);
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      "<div>hi</div>",
+      options,
+    )?;
+    document.render_frame()?;
+
+    let (hits_before, misses_before) = document
+      .prepared()
+      .expect("prepared document")
+      .display_list_cache_stats_for_tests();
+
+    // Simulate paint-only invalidations (e.g. video frame updates) without changing layout/scroll.
+    document.paint_dirty = true;
+    document.paint_from_cache_frame_with_deadline(None)?;
+    document.paint_dirty = true;
+    document.paint_from_cache_frame_with_deadline(None)?;
+
+    let (hits_after, misses_after) = document
+      .prepared()
+      .expect("prepared document")
+      .display_list_cache_stats_for_tests();
+
+    assert!(
+      hits_after >= hits_before + 2,
+      "expected display-list cache hits to increase; before={hits_before}, after={hits_after}"
+    );
+    assert_eq!(
+      misses_after, misses_before,
+      "expected no additional display-list cache misses when paint inputs are unchanged"
     );
     Ok(())
   }

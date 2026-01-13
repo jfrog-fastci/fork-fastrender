@@ -161,6 +161,7 @@ use crate::layout::utils::resolve_font_relative_length;
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::conservative_tile_halo_px;
 use crate::paint::display_list_renderer::PaintParallelism;
+use crate::paint::optimize::DisplayListOptimizer;
 use crate::paint::painter::paint_backend_from_env;
 use crate::paint::painter::paint_display_list_with_resources_scaled_with_trace;
 use crate::paint::painter::paint_tree_display_list_into_rgba_with_resources_scaled_offset_depth_with_trace;
@@ -2515,6 +2516,82 @@ pub struct LayoutArtifacts {
   pub animation_time: Option<f32>,
 }
 
+#[derive(Clone)]
+struct DisplayListCacheEntry {
+  key: DisplayListCacheKey,
+  display_list: Arc<crate::paint::display_list::DisplayList>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisplayListCacheKey {
+  paint_viewport_width_bits: u32,
+  paint_viewport_height_bits: u32,
+  scrollport_viewport_width_bits: u32,
+  scrollport_viewport_height_bits: u32,
+  viewport_inset_x_bits: u32,
+  viewport_inset_y_bits: u32,
+  device_pixel_ratio_bits: u32,
+  offset_x_bits: u32,
+  offset_y_bits: u32,
+  target_width: u32,
+  target_height: u32,
+  scroll_state_hash: u64,
+  max_iframe_depth: usize,
+  paint_backend: PaintBackend,
+  has_media_provider: bool,
+}
+
+#[derive(Clone)]
+struct DisplayListCache {
+  entry: Option<DisplayListCacheEntry>,
+  #[cfg(test)]
+  hits: usize,
+  #[cfg(test)]
+  misses: usize,
+}
+
+impl Default for DisplayListCache {
+  fn default() -> Self {
+    Self {
+      entry: None,
+      #[cfg(test)]
+      hits: 0,
+      #[cfg(test)]
+      misses: 0,
+    }
+  }
+}
+
+fn scroll_state_fingerprint_for_display_list_cache(state: &ScrollState) -> u64 {
+  let mut hasher = DefaultHasher::default();
+  f32_to_canonical_bits(state.viewport.x).hash(&mut hasher);
+  f32_to_canonical_bits(state.viewport.y).hash(&mut hasher);
+  f32_to_canonical_bits(state.viewport_delta.x).hash(&mut hasher);
+  f32_to_canonical_bits(state.viewport_delta.y).hash(&mut hasher);
+
+  let mut element_ids: Vec<usize> = state.elements.keys().copied().collect();
+  element_ids.sort_unstable();
+  for box_id in element_ids {
+    box_id.hash(&mut hasher);
+    if let Some(offset) = state.elements.get(&box_id) {
+      f32_to_canonical_bits(offset.x).hash(&mut hasher);
+      f32_to_canonical_bits(offset.y).hash(&mut hasher);
+    }
+  }
+
+  let mut delta_ids: Vec<usize> = state.elements_delta.keys().copied().collect();
+  delta_ids.sort_unstable();
+  for box_id in delta_ids {
+    box_id.hash(&mut hasher);
+    if let Some(delta) = state.elements_delta.get(&box_id) {
+      f32_to_canonical_bits(delta.x).hash(&mut hasher);
+      f32_to_canonical_bits(delta.y).hash(&mut hasher);
+    }
+  }
+
+  hasher.finish()
+}
+
 /// A fully prepared document ready for repeated painting.
 ///
 /// `PreparedDocument` owns the parsed DOM, resolved stylesheet, styled tree, box
@@ -2548,6 +2625,7 @@ pub struct PreparedDocument {
   max_iframe_depth: usize,
   paint_parallelism: PaintParallelism,
   runtime_toggles: Arc<RuntimeToggles>,
+  display_list_cache: RefCell<DisplayListCache>,
 }
 
 /// Painting options for a prepared document.
@@ -2838,6 +2916,7 @@ impl PreparedDocument {
         self.paint_parallelism,
         self.max_iframe_depth,
         None,
+        &self.display_list_cache,
       )?;
       if pixmap.width() != width_px || pixmap.height() != height_px {
         return Err(Error::Render(RenderError::InvalidParameters {
@@ -2884,6 +2963,12 @@ impl PreparedDocument {
     animation_state_store: &mut animation::AnimationStateStore,
   ) -> Result<(PaintedFrame, Rect)> {
     self.paint_with_options_region_frame_internal(options, region, Some(animation_state_store))
+  }
+
+  #[cfg(test)]
+  pub(crate) fn display_list_cache_stats_for_tests(&self) -> (usize, usize) {
+    let cache = self.display_list_cache.borrow();
+    (cache.hits, cache.misses)
   }
 
   pub(crate) fn paint_with_options_frame_with_animation_state_store(
@@ -2964,6 +3049,7 @@ impl PreparedDocument {
         self.paint_parallelism,
         self.max_iframe_depth,
         animation_state_store.as_deref_mut(),
+        &self.display_list_cache,
       )
     })
   }
@@ -7403,7 +7489,12 @@ fn paint_fragment_tree_with_state(
   paint_parallelism: PaintParallelism,
   max_iframe_depth: usize,
   animation_state_store: Option<&mut animation::AnimationStateStore>,
+  display_list_cache: &RefCell<DisplayListCache>,
 ) -> Result<PaintedFrame> {
+  let paint_backend = paint_backend_from_env();
+  let animation_time = sanitize_animation_time_ms(animation_time);
+  let display_list_cache_enabled =
+    paint_backend == PaintBackend::DisplayList && animation_time.is_none();
   let prepared = prepare_fragment_tree_paint_state(
     fragment_tree,
     scroll_state,
@@ -7418,25 +7509,233 @@ fn paint_fragment_tree_with_state(
     animation_state_store,
   )?;
 
-  let pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
-    &prepared.fragment_tree,
-    prepared.target_width,
-    prepared.target_height,
-    background,
-    font_context.clone(),
-    prepared.paint_image_cache,
-    media_provider,
-    device_pixel_ratio,
-    prepared.offset,
-    paint_parallelism,
-    &prepared.scroll_state_for_paint,
-    paint_backend_from_env(),
-    max_iframe_depth,
-  )?;
+  let PreparedFragmentTreePaintState {
+    fragment_tree,
+    scroll_state,
+    scroll_state_for_paint,
+    paint_image_cache,
+    offset,
+    target_width,
+    target_height,
+  } = prepared;
+
+  let pixmap = if display_list_cache_enabled {
+    let cache_key = DisplayListCacheKey {
+      paint_viewport_width_bits: f32_to_canonical_bits(paint_viewport.width),
+      paint_viewport_height_bits: f32_to_canonical_bits(paint_viewport.height),
+      scrollport_viewport_width_bits: f32_to_canonical_bits(scrollport_viewport.width),
+      scrollport_viewport_height_bits: f32_to_canonical_bits(scrollport_viewport.height),
+      viewport_inset_x_bits: f32_to_canonical_bits(viewport_inset.x),
+      viewport_inset_y_bits: f32_to_canonical_bits(viewport_inset.y),
+      device_pixel_ratio_bits: f32_to_canonical_bits(device_pixel_ratio),
+      offset_x_bits: f32_to_canonical_bits(offset.x),
+      offset_y_bits: f32_to_canonical_bits(offset.y),
+      target_width,
+      target_height,
+      scroll_state_hash: scroll_state_fingerprint_for_display_list_cache(&scroll_state_for_paint),
+      max_iframe_depth,
+      paint_backend,
+      has_media_provider: media_provider.is_some(),
+    };
+
+    // We're bypassing the normal display-list backend's builder/optimizer stage, so manually emit
+    // the paint-build heartbeat.
+    record_stage(StageHeartbeat::PaintBuild);
+    crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
+
+    let cached_list = {
+      let mut cache = display_list_cache.borrow_mut();
+      let cached = cache.entry.as_ref().and_then(|entry| {
+        if entry.key == cache_key {
+          Some(Arc::clone(&entry.display_list))
+        } else {
+          None
+        }
+      });
+      #[cfg(test)]
+      {
+        if cached.is_some() {
+          cache.hits += 1;
+        } else {
+          cache.misses += 1;
+        }
+      }
+      cached
+    };
+
+    let trace = TraceHandle::disabled();
+    if let Some(display_list) = cached_list {
+      paint_display_list_with_resources_scaled_with_trace(
+        &display_list,
+        target_width,
+        target_height,
+        background,
+        font_context.clone(),
+        device_pixel_ratio,
+        paint_parallelism,
+        &trace,
+        false,
+      )?
+    } else {
+      // Use the layout viewport for resolving viewport-relative paint units (vw/vh, etc), but cull
+      // against the actual paint surface size so paged media stacked into a single pixmap (or
+      // fit-to-content renders) don't drop fragments outside the first viewport.
+      let viewport = fragment_tree.viewport_size();
+      let culling_viewport = Size::new(target_width as f32, target_height as f32);
+
+      let build_budget = crate::render_control::active_deadline()
+        .and_then(|deadline| deadline.remaining_timeout())
+        .map(crate::paint::painter::display_list_build_budget_from_remaining);
+      let build_display_list_for_root =
+        |root: &FragmentNode| -> Result<crate::paint::display_list::DisplayList> {
+          DisplayListBuilder::with_image_cache(paint_image_cache.clone())
+            .with_font_context(font_context.clone())
+            .with_svg_filter_defs(fragment_tree.svg_filter_defs.clone())
+            .with_svg_id_defs(fragment_tree.svg_id_defs.clone())
+            .with_svg_id_defs_raw(fragment_tree.svg_id_defs_raw.clone())
+            .with_appearance_none_form_controls(fragment_tree.appearance_none_form_controls.clone())
+            .with_scroll_state(scroll_state_for_paint.clone())
+            .with_media_provider(media_provider.clone())
+            .with_device_pixel_ratio(device_pixel_ratio)
+            .with_parallelism(&paint_parallelism)
+            .with_max_iframe_depth(max_iframe_depth)
+            .with_viewport_size(viewport.width, viewport.height)
+            .with_culling_viewport_size(culling_viewport.width, culling_viewport.height)
+            .build_with_stacking_tree_offset_checked(root, offset)
+        };
+
+      let display_list_result = match build_budget {
+        Some(budget) => {
+          let cancel = crate::render_control::active_deadline()
+            .and_then(|deadline| deadline.cancel_callback());
+          let deadline = RenderDeadline::new(Some(budget), cancel);
+          crate::render_control::with_deadline(Some(&deadline), || {
+            let mut display_list = build_display_list_for_root(&fragment_tree.root)?;
+            for extra in &fragment_tree.additional_fragments {
+              display_list.append(build_display_list_for_root(extra)?);
+            }
+            Ok(display_list)
+          })
+        }
+        None => {
+          let mut display_list = build_display_list_for_root(&fragment_tree.root)?;
+          for extra in &fragment_tree.additional_fragments {
+            display_list.append(build_display_list_for_root(extra)?);
+          }
+          Ok(display_list)
+        }
+      };
+
+      let display_list = match display_list_result {
+        Ok(list) => list,
+        Err(err) => {
+          // The display-list pipeline is faster for most pages, but builder/stacking-tree construction
+          // can still be slower than legacy in pathological cases. When we're running under a render
+          // deadline, fall back to the legacy painter if the builder can't complete within a small
+          // slice of the remaining budget.
+          if build_budget.is_some() && matches!(err, Error::Render(RenderError::Timeout { .. })) {
+            // If the outer render deadline has expired/canceled, surface it instead of treating this
+            // as a display-list build budget timeout.
+            if let Err(err) = crate::render_control::check_active(RenderStage::Paint) {
+              return Err(Error::Render(err));
+            }
+            return Ok(PaintedFrame {
+              pixmap: paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
+                &fragment_tree,
+                target_width,
+                target_height,
+                background,
+                font_context.clone(),
+                paint_image_cache,
+                media_provider,
+                device_pixel_ratio,
+                offset,
+                paint_parallelism,
+                &scroll_state_for_paint,
+                PaintBackend::Legacy,
+                max_iframe_depth,
+              )?,
+              scroll_state,
+            });
+          }
+          return Err(err);
+        }
+      };
+
+      let viewport_rect = Rect::from_xywh(0.0, 0.0, target_width as f32, target_height as f32);
+      let optimizer = DisplayListOptimizer::new();
+      let optimize_budget = crate::render_control::active_deadline()
+        .and_then(|deadline| deadline.remaining_timeout())
+        .map(crate::paint::painter::display_list_optimize_budget_from_remaining);
+      let optimize_result = match optimize_budget {
+        Some(budget) => {
+          let cancel = crate::render_control::active_deadline()
+            .and_then(|deadline| deadline.cancel_callback());
+          let deadline = RenderDeadline::new(Some(budget), cancel);
+          crate::render_control::with_deadline(Some(&deadline), || {
+            optimizer.optimize_checked(&display_list, viewport_rect)
+          })
+        }
+        None => optimizer.optimize_checked(&display_list, viewport_rect),
+      };
+
+      let list_to_store = match optimize_result {
+        Ok((optimized, _stats)) => optimized,
+        Err(err) => {
+          // Optimization is optional; if we hit the optimization budget, rasterize the original
+          // display list (still benefiting from display-list renderer caching + tiling).
+          if optimize_budget.is_some() && matches!(err, Error::Render(RenderError::Timeout { .. })) {
+            if let Err(err) = crate::render_control::check_active(RenderStage::Paint) {
+              return Err(Error::Render(err));
+            }
+            display_list
+          } else {
+            return Err(err);
+          }
+        }
+      };
+
+      let display_list = Arc::new(list_to_store);
+      {
+        let mut cache = display_list_cache.borrow_mut();
+        cache.entry = Some(DisplayListCacheEntry {
+          key: cache_key,
+          display_list: Arc::clone(&display_list),
+        });
+      }
+      paint_display_list_with_resources_scaled_with_trace(
+        &display_list,
+        target_width,
+        target_height,
+        background,
+        font_context.clone(),
+        device_pixel_ratio,
+        paint_parallelism,
+        &trace,
+        false,
+      )?
+    }
+  } else {
+    paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
+      &fragment_tree,
+      target_width,
+      target_height,
+      background,
+      font_context.clone(),
+      paint_image_cache,
+      media_provider,
+      device_pixel_ratio,
+      offset,
+      paint_parallelism,
+      &scroll_state_for_paint,
+      paint_backend,
+      max_iframe_depth,
+    )?
+  };
 
   Ok(PaintedFrame {
     pixmap,
-    scroll_state: prepared.scroll_state,
+    scroll_state,
   })
 }
 
@@ -8240,7 +8539,8 @@ fn paint_fragment_tree_into_rgba_with_state(
 
   let offset = Point::new(viewport_inset.x - scroll.x, viewport_inset.y - scroll.y);
   let mut scroll_state_for_paint = scroll_state.clone();
-  scroll_state_for_paint.viewport = Point::new(scroll.x - viewport_inset.x, scroll.y - viewport_inset.y);
+  scroll_state_for_paint.viewport =
+    Point::new(scroll.x - viewport_inset.x, scroll.y - viewport_inset.y);
   paint_tree_display_list_into_rgba_with_resources_scaled_offset_depth_with_trace(
     &fragment_tree,
     target_width,
@@ -9372,6 +9672,7 @@ impl FastRender {
           max_iframe_depth: self.max_iframe_depth,
           paint_parallelism,
           runtime_toggles: Arc::clone(&self.runtime_toggles),
+          display_list_cache: RefCell::new(DisplayListCache::default()),
         };
 
         let diagnostics_value = diagnostics
@@ -10064,6 +10365,7 @@ impl FastRender {
           self.device_pixel_ratio,
           paint_parallelism,
           trace,
+          true,
         )?
       } else {
         self.paint_with_offset_traced(
@@ -10671,6 +10973,7 @@ impl FastRender {
       max_iframe_depth: self.max_iframe_depth,
       paint_parallelism,
       runtime_toggles: Arc::clone(&self.runtime_toggles),
+      display_list_cache: RefCell::new(DisplayListCache::default()),
     })
   }
 
@@ -10991,6 +11294,7 @@ impl FastRender {
       max_iframe_depth: self.max_iframe_depth,
       paint_parallelism,
       runtime_toggles: Arc::clone(&self.runtime_toggles),
+      display_list_cache: RefCell::new(DisplayListCache::default()),
     })
   }
 
@@ -11150,6 +11454,7 @@ impl FastRender {
       max_iframe_depth: self.max_iframe_depth,
       paint_parallelism,
       runtime_toggles: Arc::clone(&self.runtime_toggles),
+      display_list_cache: RefCell::new(DisplayListCache::default()),
     })
   }
 

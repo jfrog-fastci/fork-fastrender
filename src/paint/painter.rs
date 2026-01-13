@@ -20524,12 +20524,12 @@ fn display_list_optimize_budget_cap() -> Duration {
 }
 
 #[inline]
-fn display_list_build_budget_from_remaining(remaining: Duration) -> Duration {
+pub(crate) fn display_list_build_budget_from_remaining(remaining: Duration) -> Duration {
   (remaining / 2).min(DISPLAY_LIST_BUILD_BUDGET_CAP)
 }
 
 #[inline]
-fn display_list_optimize_budget_from_remaining(remaining: Duration) -> Duration {
+pub(crate) fn display_list_optimize_budget_from_remaining(remaining: Duration) -> Duration {
   (remaining / 4).min(display_list_optimize_budget_cap())
 }
 
@@ -20747,6 +20747,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
     scale,
     paint_parallelism,
     &trace,
+    true,
   )
 }
 
@@ -20879,6 +20880,7 @@ pub(crate) fn paint_display_list_with_resources_scaled_with_trace(
   scale: f32,
   paint_parallelism: PaintParallelism,
   trace: &TraceHandle,
+  optimize_display_list: bool,
 ) -> Result<Pixmap> {
   Ok(
     paint_display_list_with_resources_scaled_with_trace_report(
@@ -20890,6 +20892,7 @@ pub(crate) fn paint_display_list_with_resources_scaled_with_trace(
       scale,
       paint_parallelism,
       trace,
+      optimize_display_list,
     )?
     .pixmap,
   )
@@ -20903,8 +20906,10 @@ pub(crate) struct DisplayListPaintReport {
 fn optimize_display_list_for_paint(
   display_list: &crate::paint::display_list::DisplayList,
   viewport_rect: Rect,
-) -> Result<(Option<crate::paint::display_list::DisplayList>, crate::paint::optimize::OptimizationStats)>
-{
+) -> Result<(
+  Option<crate::paint::display_list::DisplayList>,
+  crate::paint::optimize::OptimizationStats,
+)> {
   let optimizer = DisplayListOptimizer::new();
   let optimize_budget = active_deadline()
     .and_then(|deadline| deadline.remaining_timeout())
@@ -20914,9 +20919,7 @@ fn optimize_display_list_for_paint(
     Some(budget) => {
       let cancel = active_deadline().and_then(|deadline| deadline.cancel_callback());
       let deadline = RenderDeadline::new(Some(budget), cancel);
-      with_deadline(Some(&deadline), || {
-        optimizer.optimize_checked(display_list, viewport_rect)
-      })
+      with_deadline(Some(&deadline), || optimizer.optimize_checked(display_list, viewport_rect))
     }
     None => optimizer.optimize_checked(display_list, viewport_rect),
   };
@@ -20956,40 +20959,48 @@ pub(crate) fn paint_display_list_with_resources_scaled_with_trace_report(
   scale: f32,
   paint_parallelism: PaintParallelism,
   trace: &TraceHandle,
+  optimize_display_list: bool,
 ) -> Result<DisplayListPaintReport> {
   let diagnostics_enabled = paint_diagnostics_enabled();
 
-  let _optimize_span = trace.span("display_list_optimize", "paint");
-  let viewport_rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
-  let optimize_start = diagnostics_enabled.then(Instant::now);
-  let (optimized, stats) = optimize_display_list_for_paint(display_list, viewport_rect)?;
-  let used_optimized_list = optimized.is_some();
+  let mut optimized: Option<crate::paint::display_list::DisplayList> = None;
+  let (list_to_render, used_optimized_list) = if optimize_display_list {
+    let _optimize_span = trace.span("display_list_optimize", "paint");
+    let viewport_rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+    let optimize_start = diagnostics_enabled.then(Instant::now);
+    let (optimized_list, stats) = optimize_display_list_for_paint(display_list, viewport_rect)?;
+    optimized = optimized_list;
+    let used_optimized_list = optimized.is_some();
+    let list_to_render = optimized.as_ref().unwrap_or(display_list);
 
-  let list_to_render = optimized.as_ref().unwrap_or(display_list);
+    if let (true, Some(start)) = (diagnostics_enabled, optimize_start) {
+      let optimize_ms = start.elapsed().as_secs_f64() * 1000.0;
+      with_paint_diagnostics(|diag| {
+        diag.optimize_ms = optimize_ms;
+        diag.optimize_original_items = stats.original_count;
+        diag.optimize_final_items = stats.final_count;
+        diag.optimize_culled = stats.culled_count;
+        diag.optimize_transparent_removed = stats.transparent_removed;
+        diag.optimize_noop_removed = stats.noop_removed;
+        diag.optimize_merged = stats.merged_count;
+        diag.serial_ms += optimize_ms;
+        diag.parallel_threads = diag.parallel_threads.max(1);
+      });
+    }
 
-  if let (true, Some(start)) = (diagnostics_enabled, optimize_start) {
-    let optimize_ms = start.elapsed().as_secs_f64() * 1000.0;
-    with_paint_diagnostics(|diag| {
-      diag.optimize_ms = optimize_ms;
-      diag.optimize_original_items = stats.original_count;
-      diag.optimize_final_items = stats.final_count;
-      diag.optimize_culled = stats.culled_count;
-      diag.optimize_transparent_removed = stats.transparent_removed;
-      diag.optimize_noop_removed = stats.noop_removed;
-      diag.optimize_merged = stats.merged_count;
-      diag.serial_ms += optimize_ms;
-      diag.parallel_threads = diag.parallel_threads.max(1);
-    });
-  }
+    drop(_optimize_span);
+    (list_to_render, used_optimized_list)
+  } else {
+    (display_list, false)
+  };
 
-  drop(_optimize_span);
   let _raster_span = trace.span("rasterize", "paint");
   let mut renderer = DisplayListRenderer::new_scaled(width, height, background, font_ctx, scale)?;
   renderer.set_parallelism(paint_parallelism);
   record_stage(StageHeartbeat::PaintRasterize);
   let report = renderer.render_with_report(list_to_render)?;
 
-  if paint_diagnostics_enabled() {
+  if diagnostics_enabled {
     with_paint_diagnostics(|diag| {
       diag.raster_ms = report.duration.as_secs_f64() * 1000.0;
       diag.command_count = list_to_render.len();
