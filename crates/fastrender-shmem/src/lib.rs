@@ -237,8 +237,11 @@ impl ShmemHandle {
     if rc < 0 {
       return Err(io::Error::last_os_error());
     }
-    // `dup2` does not clear CLOEXEC when `fd == target_fd`, so explicitly clear it.
-    clear_fd_cloexec(target_fd)
+    // `dup2` clears `FD_CLOEXEC` on the new descriptor, except when `fd == target_fd` (no-op).
+    if fd == target_fd {
+      clear_fd_cloexec(target_fd)?;
+    }
+    Ok(())
   }
 
   /// Clears `FD_CLOEXEC` on this handle's FD.
