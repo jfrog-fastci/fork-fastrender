@@ -740,9 +740,9 @@ pub fn assert_event_subsequence(events: &[WorkerToUiEvent], expected: &[WorkerEv
   assert_eq!(
     next,
     expected.len(),
-    "expected event subsequence {:?} in {:?}",
+    "expected event subsequence {:?}.\nEvents:\n{}",
     expected,
-    events.iter().map(WorkerToUiEvent::kind).collect::<Vec<_>>()
+    format_events(events)
   );
 }
 
@@ -782,12 +782,21 @@ impl WorkerHarness {
   }
 
   pub fn send(&self, msg: UiToWorker) {
-    self
-      .ui_tx
-      .as_ref()
-      .expect("worker harness tx available")
-      .send(msg)
-      .expect("send UiToWorker");
+    let Some(tx) = self.ui_tx.as_ref() else {
+      panic!(
+        "worker harness tx not available; recent events:\n{}",
+        format_events(&self.buffered_snapshot())
+      );
+    };
+    if let Err(err) = tx.send(msg) {
+      let worker_finished = self.worker_thread_finished();
+      let worker_name = self.worker_thread_name().unwrap_or("<unnamed>");
+      let msg = err.0;
+      panic!(
+        "failed to send UiToWorker to worker thread {worker_name} (finished={worker_finished:?}): {msg:?}\nrecent events:\n{}",
+        format_events(&self.buffered_snapshot())
+      );
+    }
   }
 
   fn push_buffered_event(&self, event: &WorkerToUiEvent) {
