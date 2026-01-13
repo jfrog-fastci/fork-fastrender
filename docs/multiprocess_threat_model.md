@@ -75,6 +75,10 @@ Notes:
 - “Network process” is intentionally **less trusted** than the browser process: it parses huge amounts
   of attacker-controlled bytes. If compromised, it should still not be able to alter chrome UI state
   or access browser profile secrets.
+- In site isolation modes where a renderer process is assigned to a single `SiteKey`/origin, the
+  renderer should enforce a **process-level SiteLock** (browser-provided) so a buggy browser or
+  compromised renderer cannot silently commit a cross-site navigation inside a locked process. See
+  [`docs/site_isolation.md`](site_isolation.md) for details.
 - In repo reality today, the network surface is implemented by `src/resource.rs` (e.g. `HttpFetcher`),
   and some “network + filesystem write” behavior exists in the browser worker (`src/ui/render_worker.rs`
   downloads). Multiprocess work should move these responsibilities out of the renderer.
