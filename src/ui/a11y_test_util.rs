@@ -1,6 +1,7 @@
 #![cfg(all(test, feature = "browser_ui"))]
 
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 
 /// A snapshot-friendly summary of a single AccessKit node emitted by egui.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -27,6 +28,17 @@ pub struct AccessKitSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AccessKitNamedRoleSnapshot {
   pub role: String,
+  pub name: String,
+}
+
+/// Snapshot-friendly representation of an AccessKit node reachable from the tree root.
+///
+/// Unlike [`AccessKitSnapshot`], this snapshot preserves tree order (pre-order traversal) and
+/// intentionally omits node IDs to keep snapshots stable across runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AccessKitReachableNodeSnapshot {
+  pub role: String,
+  #[serde(skip_serializing_if = "String::is_empty")]
   pub name: String,
 }
 
@@ -136,4 +148,235 @@ pub fn accesskit_named_roles_pretty_json_from_full_output(output: &egui::FullOut
   let snapshot = accesskit_named_roles_from_full_output(output);
   serde_json::to_string_pretty(&snapshot)
     .expect("accesskit named role snapshot must serialize to JSON")
+}
+
+/// Determine the root node for a tree update.
+///
+/// AccessKit updates may omit `update.tree` for incremental updates, so tests can pass the previous
+/// root via `root_id_fallback`.
+fn accesskit_root_id_from_update(
+  update: &accesskit::TreeUpdate,
+  root_id_fallback: Option<accesskit::NodeId>,
+) -> accesskit::NodeId {
+  update
+    .tree
+    .as_ref()
+    .map(|tree| tree.root)
+    .or(root_id_fallback)
+    .expect(
+      "AccessKit TreeUpdate did not include a tree/root. \
+       Pass `root_id_fallback` to compute reachability for incremental updates.",
+    )
+}
+
+/// Compute the list of node ids reachable from `root_id` in pre-order.
+///
+/// This helper is primarily intended for tests: it detects orphan nodes (present in an update but
+/// not connected to the root) by traversing `Node::children()`.
+///
+/// The `nodes_by_id` map must contain *all* nodes referenced by the reachable subtree. For
+/// incremental updates, callers can build such a map by merging the current update's nodes with a
+/// previously known node store (see [`accesskit_reachable_node_ids_from_update`]).
+pub fn accesskit_reachable_node_ids(
+  root_id: accesskit::NodeId,
+  nodes_by_id: &HashMap<accesskit::NodeId, &accesskit::Node>,
+) -> Vec<accesskit::NodeId> {
+  let mut out = Vec::new();
+  let mut visited: HashSet<accesskit::NodeId> = HashSet::new();
+
+  // Manual stack for a pre-order traversal (push children in reverse order).
+  let mut stack = vec![root_id];
+  while let Some(id) = stack.pop() {
+    if !visited.insert(id) {
+      continue;
+    }
+
+    let node = nodes_by_id.get(&id).unwrap_or_else(|| {
+      panic!(
+        "AccessKit reachability traversal referenced node id {} but it was not present in the \
+         provided node map",
+        id.0.get()
+      )
+    });
+
+    out.push(id);
+
+    // Ensure pre-order by pushing children in reverse.
+    for child in node.children().iter().rev() {
+      stack.push(*child);
+    }
+  }
+
+  out
+}
+
+/// Compute the list of reachable node ids for a [`accesskit::TreeUpdate`].
+///
+/// This function builds a temporary `NodeId → Node` map from the update, optionally merging in
+/// `additional_nodes` (e.g. previously emitted nodes from earlier updates).
+///
+/// If `update.tree` is `Some`, its root is used. Otherwise, `root_id_fallback` must be provided.
+pub fn accesskit_reachable_node_ids_from_update<'a, I>(
+  update: &'a accesskit::TreeUpdate,
+  root_id_fallback: Option<accesskit::NodeId>,
+  additional_nodes: I,
+) -> Vec<accesskit::NodeId>
+where
+  I: IntoIterator<Item = (accesskit::NodeId, &'a accesskit::Node)>,
+{
+  let root_id = accesskit_root_id_from_update(update, root_id_fallback);
+
+  let mut nodes_by_id: HashMap<accesskit::NodeId, &accesskit::Node> = HashMap::new();
+  for (id, node) in additional_nodes {
+    nodes_by_id.insert(id, node);
+  }
+  // The latest update should win if `additional_nodes` contains older versions of the same id.
+  for (id, node) in update.nodes.iter() {
+    nodes_by_id.insert(*id, node);
+  }
+
+  accesskit_reachable_node_ids(root_id, &nodes_by_id)
+}
+
+/// Snapshot-friendly pre-order list of all nodes reachable from the update's root.
+pub fn accesskit_reachable_nodes_snapshot_from_update<'a, I>(
+  update: &'a accesskit::TreeUpdate,
+  root_id_fallback: Option<accesskit::NodeId>,
+  additional_nodes: I,
+) -> Vec<AccessKitReachableNodeSnapshot>
+where
+  I: IntoIterator<Item = (accesskit::NodeId, &'a accesskit::Node)>,
+{
+  let root_id = accesskit_root_id_from_update(update, root_id_fallback);
+
+  let mut nodes_by_id: HashMap<accesskit::NodeId, &accesskit::Node> = HashMap::new();
+  for (id, node) in additional_nodes {
+    nodes_by_id.insert(id, node);
+  }
+  for (id, node) in update.nodes.iter() {
+    nodes_by_id.insert(*id, node);
+  }
+
+  accesskit_reachable_node_ids(root_id, &nodes_by_id)
+    .into_iter()
+    .map(|id| {
+      let node = nodes_by_id
+        .get(&id)
+        .expect("reachable node ids must exist in map");
+      AccessKitReachableNodeSnapshot {
+        role: format!("{:?}", node.role()),
+        name: node.name().unwrap_or("").trim().to_string(),
+      }
+    })
+    .collect()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::num::NonZeroU128;
+
+  fn id(n: u128) -> accesskit::NodeId {
+    accesskit::NodeId(NonZeroU128::new(n).expect("node id must be non-zero"))
+  }
+
+  fn node_with_classes(
+    classes: &mut accesskit::NodeClassSet,
+    role: accesskit::Role,
+    name: &str,
+    children: &[accesskit::NodeId],
+  ) -> accesskit::Node {
+    let mut builder = accesskit::NodeBuilder::new(role);
+    if !name.is_empty() {
+      builder.set_name(name);
+    }
+    for child in children {
+      builder.push_child(*child);
+    }
+    builder.build(classes)
+  }
+
+  #[test]
+  fn reachable_node_ids_are_preorder_and_exclude_orphans() {
+    let root_id = id(1);
+    let a_id = id(2);
+    let b_id = id(3);
+    let a1_id = id(4);
+    let orphan_id = id(999);
+
+    let mut classes = accesskit::NodeClassSet::new();
+    let root = node_with_classes(&mut classes, accesskit::Role::Window, "root", &[a_id, b_id]);
+    let a = node_with_classes(&mut classes, accesskit::Role::Group, "A", &[a1_id]);
+    let a1 = node_with_classes(&mut classes, accesskit::Role::Button, "A1", &[]);
+    let b = node_with_classes(&mut classes, accesskit::Role::Button, "B", &[]);
+    let orphan = node_with_classes(&mut classes, accesskit::Role::Button, "orphan", &[]);
+
+    let update = accesskit::TreeUpdate {
+      nodes: vec![
+        (root_id, root),
+        (a_id, a),
+        (a1_id, a1),
+        (b_id, b),
+        (orphan_id, orphan),
+      ],
+      tree: Some(accesskit::Tree {
+        root: root_id,
+        root_scroller: None,
+      }),
+      focus: Some(root_id),
+    };
+
+    let reachable =
+      accesskit_reachable_node_ids_from_update(&update, None, std::iter::empty());
+    assert_eq!(reachable, vec![root_id, a_id, a1_id, b_id]);
+
+    let snapshot =
+      accesskit_reachable_nodes_snapshot_from_update(&update, None, std::iter::empty());
+    assert_eq!(
+      snapshot,
+      vec![
+        AccessKitReachableNodeSnapshot {
+          role: "Window".to_string(),
+          name: "root".to_string(),
+        },
+        AccessKitReachableNodeSnapshot {
+          role: "Group".to_string(),
+          name: "A".to_string(),
+        },
+        AccessKitReachableNodeSnapshot {
+          role: "Button".to_string(),
+          name: "A1".to_string(),
+        },
+        AccessKitReachableNodeSnapshot {
+          role: "Button".to_string(),
+          name: "B".to_string(),
+        },
+      ]
+    );
+  }
+
+  #[test]
+  fn reachable_node_ids_can_use_root_fallback_and_additional_nodes() {
+    // Simulate an incremental update where AccessKit omits `update.tree` and does not resend the
+    // unchanged root node.
+    let root_id = id(1);
+    let child_id = id(2);
+    let grandchild_id = id(3);
+
+    let mut classes = accesskit::NodeClassSet::new();
+    let root = node_with_classes(&mut classes, accesskit::Role::Window, "root", &[child_id]);
+    let child = node_with_classes(&mut classes, accesskit::Role::Group, "child", &[grandchild_id]);
+    let grandchild = node_with_classes(&mut classes, accesskit::Role::Button, "grandchild", &[]);
+
+    let update = accesskit::TreeUpdate {
+      nodes: vec![(child_id, child), (grandchild_id, grandchild)],
+      tree: None,
+      focus: Some(child_id),
+    };
+
+    let additional_nodes = vec![(root_id, &root)];
+    let reachable =
+      accesskit_reachable_node_ids_from_update(&update, Some(root_id), additional_nodes);
+    assert_eq!(reachable, vec![root_id, child_id, grandchild_id]);
+  }
 }
