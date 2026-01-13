@@ -87,6 +87,14 @@ pub struct BrowserDocumentDom2 {
   dirty_style_nodes: FxHashSet<crate::dom2::NodeId>,
   dirty_text_nodes: FxHashSet<crate::dom2::NodeId>,
   dirty_structure_nodes: FxHashSet<crate::dom2::NodeId>,
+  /// Whether we observed a `dom2::MutationLog.form_state_changed` mutation since the last layout
+  /// flush.
+  ///
+  /// Form control state is projected into the renderer DOM snapshot before cascade/layout (see
+  /// `dom2::Document::project_form_control_state_into_renderer_dom_snapshot`). Incremental relayout
+  /// paths that patch an existing box tree (e.g. for text node changes) do not currently update that
+  /// projected state, so we must force a full pipeline run when it changes.
+  form_state_dirty: bool,
   invalidation_counters: BrowserDocumentDom2InvalidationCounters,
   last_seen_dom_mutation_generation: u64,
   realtime_animations_enabled: bool,
@@ -155,6 +163,7 @@ impl BrowserDocumentDom2 {
       dirty_style_nodes: FxHashSet::default(),
       dirty_text_nodes: FxHashSet::default(),
       dirty_structure_nodes: FxHashSet::default(),
+      form_state_dirty: false,
       invalidation_counters: BrowserDocumentDom2InvalidationCounters::default(),
       last_seen_dom_mutation_generation,
       realtime_animations_enabled: false,
@@ -352,6 +361,7 @@ impl BrowserDocumentDom2 {
     self.dirty_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
+    self.form_state_dirty = false;
     self.animation_timeline_origin = None;
     self.last_painted_animation_clock = None;
   }
@@ -704,6 +714,7 @@ impl BrowserDocumentDom2 {
     // Future incremental paths (e.g. form state changes) should be hooked up here so all layout
     // flush call sites stay in sync.
     let can_incremental_relayout = !self.style_dirty
+      && !self.form_state_dirty
       && self.layout_dirty
       && !self.dirty_text_nodes.is_empty()
       && self.dirty_style_nodes.is_empty()
@@ -831,6 +842,7 @@ impl BrowserDocumentDom2 {
     self.dirty_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
+    self.form_state_dirty = false;
     // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
     // can be retried.
     self.paint_dirty = true;
@@ -2327,6 +2339,7 @@ impl BrowserDocumentDom2 {
     self.dirty_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
+    self.form_state_dirty = false;
   }
 
   #[inline]
@@ -2337,6 +2350,7 @@ impl BrowserDocumentDom2 {
     self.dirty_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
+    self.form_state_dirty = false;
   }
 
   #[inline]
@@ -2392,6 +2406,7 @@ impl BrowserDocumentDom2 {
     for node in mutations.form_state_changed {
       if self.dom.is_connected_for_scripting(node) {
         render_affecting = true;
+        self.form_state_dirty = true;
         self.layout_dirty = true;
         self.paint_dirty = true;
       }
@@ -4490,6 +4505,60 @@ mod tests {
     assert!(!doc.style_dirty);
     assert!(doc.layout_dirty);
     assert!(doc.paint_dirty);
+    Ok(())
+  }
+
+  #[test]
+  fn form_state_mutation_coalesces_with_text_changes_correctly() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = "<!doctype html><html><body><input id=i value=foo><div id=d>Hello</div></body></html>";
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      RenderOptions::new().with_viewport(80, 32),
+    )?;
+    doc.render_frame()?;
+
+    let input = doc.dom().get_element_by_id("i").expect("input element");
+    let div = doc.dom().get_element_by_id("d").expect("div element");
+    let text_id = first_text_child(doc.dom(), div).expect("div text node");
+
+    let changed = doc.mutate_dom(|dom| {
+      dom.set_input_value(input, "bar").expect("set_input_value");
+      dom.set_text_data(text_id, "World").expect("set_text_data");
+      true
+    });
+    assert!(changed);
+
+    doc.render_frame()?;
+    let mapping = doc.last_dom_mapping().expect("dom mapping");
+    let styled_node_id = mapping.preorder_for_node_id(input).expect("input preorder id");
+
+    fn input_text_value(root: &BoxNode, styled_node_id: usize) -> Option<String> {
+      let mut stack: Vec<&BoxNode> = vec![root];
+      while let Some(node) = stack.pop() {
+        if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
+          if let BoxType::Replaced(replaced) = &node.box_type {
+            if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+              if let FormControlKind::Text { value, .. } = &control.control {
+                return Some(value.clone());
+              }
+            }
+          }
+        }
+        if let Some(body) = node.footnote_body.as_deref() {
+          stack.push(body);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    let prepared = doc.prepared.as_ref().expect("prepared");
+    let value = input_text_value(&prepared.box_tree.root, styled_node_id).expect("input control value");
+    assert_eq!(value, "bar");
     Ok(())
   }
 
