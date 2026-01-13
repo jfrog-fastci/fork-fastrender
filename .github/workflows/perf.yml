@@ -175,17 +175,6 @@ jobs:
           set -euo pipefail
           bash scripts/cargo_agent.sh build --locked --release --features browser_ui --bin ui_perf_smoke
 
-      - name: Run ui_perf_smoke (write target/ui_perf_smoke.json)
-        id: ui_perf_smoke
-        shell: bash
-        run: |
-          set -euo pipefail
-          FASTR_USE_BUNDLED_FONTS=1 \
-          RAYON_NUM_THREADS=1 \
-            bash scripts/run_limited.sh --as 64G -- \
-              target/release/ui_perf_smoke
-          test -s target/ui_perf_smoke.json
-
       - name: Download previous ui_perf_smoke baseline
         id: download_ui_perf_baseline
         uses: dawidd6/action-download-artifact@v3
@@ -215,53 +204,58 @@ jobs:
           echo "UI_PERF_SMOKE_BASELINE=$match" >> "$GITHUB_ENV"
           echo "Using ui_perf_smoke baseline at $match"
 
-      - name: Compare ui_perf_smoke against baseline
-        if: steps.download_ui_perf_baseline.outcome == 'success'
+      - name: Run ui_perf_smoke (baseline gate when available)
+        id: ui_perf_smoke
         shell: bash
         run: |
           set -euo pipefail
-          report_path=target/ui_perf_smoke_regression_report.txt
+          report_path=target/ui_perf_smoke_report.txt
           status=0
+          args=(--output target/ui_perf_smoke.json)
+
+          if [ -n "${UI_PERF_SMOKE_BASELINE:-}" ]; then
+            args+=(--baseline "${UI_PERF_SMOKE_BASELINE}")
+            args+=(--threshold "${UI_PERF_SMOKE_THRESHOLD}")
+            args+=(--fail-on-regression)
+          fi
+
           FASTR_USE_BUNDLED_FONTS=1 \
           RAYON_NUM_THREADS=1 \
             bash scripts/run_limited.sh --as 64G -- \
-              target/release/ui_perf_smoke \
-                --baseline "${UI_PERF_SMOKE_BASELINE}" \
-                --threshold "${UI_PERF_SMOKE_THRESHOLD}" \
-                --fail-on-regression \
+              target/release/ui_perf_smoke "${args[@]}" \
               > /dev/null 2> "${report_path}" || status=$?
 
-          cat "${report_path}" >&2
+          if [ ! -s target/ui_perf_smoke.json ]; then
+            echo "ui_perf_smoke did not produce target/ui_perf_smoke.json" >&2
+            status=1
+          fi
+
+          cat "${report_path}" >&2 || true
+
           {
             echo "## UI perf smoke regression check"
             echo
-            echo "Baseline: ${UI_PERF_SMOKE_BASELINE}"
-            echo "Threshold: ${UI_PERF_SMOKE_THRESHOLD} (relative)"
+            if [ -n "${UI_PERF_SMOKE_BASELINE:-}" ]; then
+              echo "Baseline: ${UI_PERF_SMOKE_BASELINE}"
+              echo "Threshold: ${UI_PERF_SMOKE_THRESHOLD} (relative)"
+            else
+              echo "No prior baseline artifact was available from main; skipping regression gate."
+              echo "Threshold: ${UI_PERF_SMOKE_THRESHOLD} (relative)"
+              echo
+              echo "The uploaded ui_perf_smoke output from this run will serve as the next baseline."
+            fi
             echo
             echo '```'
             tail -n 200 "${report_path}" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
           exit $status
 
-      - name: Baseline unavailable
-        if: steps.download_ui_perf_baseline.outcome != 'success'
-        shell: bash
-        run: |
-          echo "Previous ui_perf_smoke artifact not found; skipping regression gate."
-          {
-            echo "## UI perf smoke regression check"
-            echo
-            echo "No prior baseline artifact was available from main."
-            echo "Threshold: ${UI_PERF_SMOKE_THRESHOLD} (relative)"
-            echo
-            echo "The uploaded ui_perf_smoke output from this run will serve as the next baseline."
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Upload ui_perf_smoke output
-        if: always() && steps.ui_perf_smoke.outcome == 'success'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ui_perf_smoke
           path: target/ui_perf_smoke.json
-          if-no-files-found: error
+          if-no-files-found: ignore
