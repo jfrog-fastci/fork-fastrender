@@ -11,6 +11,7 @@
 
 pub mod compositor;
 pub mod frame_tree;
+pub mod network_fetch;
 pub mod registry;
 pub mod subframes;
 pub mod shmem;

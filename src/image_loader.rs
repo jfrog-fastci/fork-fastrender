@@ -13974,7 +13974,7 @@ mod tests_inline {
     let rgb = [0u8, 0, 0];
     let mut jpeg_bytes = Vec::new();
     JpegEncoder::new(&mut jpeg_bytes)
-      .write_image(&rgb, 1, 1, ColorType::Rgb8)
+      .write_image(&rgb, 1, 1, ColorType::Rgb8.into())
       .expect("encode jpeg");
     let jpeg_url = format!(
       "data:image/jpeg;base64,{}",
