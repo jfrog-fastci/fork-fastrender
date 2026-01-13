@@ -4,7 +4,7 @@ use crate::exec::RuntimeEnv;
 use crate::function::ThisMode;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::tick::vec_try_extend_from_slice_with_ticks;
-use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{GcEnv, GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::cmp::Ordering;
 use std::sync::Arc;
 
@@ -306,6 +306,10 @@ impl<'vm> HirEvaluator<'vm> {
     // executed.
     self.instantiate_function_decls(scope, body, body.root_stmts.as_slice())?;
 
+    // Create `let` / `const` bindings for the entire function body statement list up-front so TDZ
+    // + shadowing semantics are correct.
+    self.instantiate_lexical_decls(scope, body, body.root_stmts.as_slice(), self.env.lexical_env())?;
+
     Ok(())
   }
 
@@ -394,6 +398,49 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(())
   }
 
+  fn instantiate_lexical_decls(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+    env: GcEnv,
+  ) -> Result<(), VmError> {
+    for stmt_id in stmts {
+      self.vm.tick()?;
+      let stmt = self.get_stmt(body, *stmt_id)?;
+      let hir_js::StmtKind::Var(decl) = &stmt.kind else {
+        continue;
+      };
+      match decl.kind {
+        hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const => {}
+        _ => continue,
+      }
+
+      for declarator in &decl.declarators {
+        self.vm.tick()?;
+        let pat = self.get_pat(body, declarator.pat)?;
+        let hir_js::PatKind::Ident(name_id) = pat.kind else {
+          return Err(VmError::Unimplemented(
+            "non-identifier variable declarations (hir-js compiled path)",
+          ));
+        };
+        let name = self.resolve_name(name_id)?;
+
+        // Keep the engine robust against malformed HIR (e.g. a binding already exists).
+        if scope.heap().env_has_binding(env, name.as_str())? {
+          continue;
+        }
+
+        match decl.kind {
+          hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env, name.as_str())?,
+          hir_js::VarDeclKind::Const => scope.env_create_immutable_binding(env, name.as_str())?,
+          _ => unreachable!(),
+        }
+      }
+    }
+    Ok(())
+  }
+
   fn eval_stmt_list(
     &mut self,
     scope: &mut Scope<'_>,
@@ -442,7 +489,10 @@ impl<'vm> HirEvaluator<'vm> {
         let prev = self.env.lexical_env();
         let block_env = scope.env_create(Some(prev))?;
         self.env.set_lexical_env(scope.heap_mut(), block_env);
-        let result = self.eval_stmt_list(scope, body, stmts.as_slice());
+        let result = (|| {
+          self.instantiate_lexical_decls(scope, body, stmts.as_slice(), block_env)?;
+          self.eval_stmt_list(scope, body, stmts.as_slice())
+        })();
         self.env.set_lexical_env(scope.heap_mut(), prev);
         result
       }
@@ -1730,6 +1780,15 @@ pub(crate) fn run_compiled_script(
 
   // Hoist function declarations so they can be called before their declaration statement.
   evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice())?;
+
+  // Create `let` / `const` bindings up-front in the global lexical environment so TDZ + shadowing
+  // semantics are correct.
+  evaluator.instantiate_lexical_decls(
+    scope,
+    body,
+    body.root_stmts.as_slice(),
+    evaluator.env.lexical_env(),
+  )?;
 
   match evaluator.eval_stmt_list(scope, body, body.root_stmts.as_slice())? {
     Flow::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
