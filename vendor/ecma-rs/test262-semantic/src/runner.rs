@@ -235,7 +235,14 @@ fn run_single_case(
 
   let executed = executor.execute(case, &source, &cancel);
 
-  let (outcome, mut error, skip_reason, js_error) = match executed {
+  // `actual_outcome` describes what happened when attempting to run the test case, independent of
+  // test262 metadata expectations (e.g. negative tests).
+  //
+  // The `TestResult::outcome` field, however, represents the *test verdict* (passed/failed) after
+  // applying the test's expected outcome (including `negative:` metadata). This keeps summaries
+  // and report comparisons aligned with test262's definition of "passing", where negative tests
+  // pass by failing with the expected error.
+  let (actual_outcome, mut error, skip_reason, js_error) = match executed {
     Ok(()) => (TestOutcome::Passed, None, None, None),
     Err(ExecError::Cancelled) => (
       TestOutcome::TimedOut,
@@ -254,7 +261,7 @@ fn run_single_case(
 
   let (mismatched, mismatch_error) = mismatched(
     &case.expected,
-    outcome,
+    actual_outcome,
     js_error.as_ref(),
     expectation.expectation.kind,
   );
@@ -265,6 +272,23 @@ fn run_single_case(
     });
   }
   let expectation_out = expectation_outcome(expectation.clone(), mismatched);
+
+  // Convert `actual_outcome` into a final verdict outcome:
+  // - skipped stays skipped
+  // - timeouts stay timeouts
+  // - otherwise, any expectation mismatch is a failure
+  // - matched expectations are a pass (including negative tests)
+  let outcome = match actual_outcome {
+    TestOutcome::Skipped => TestOutcome::Skipped,
+    TestOutcome::TimedOut => TestOutcome::TimedOut,
+    _ if mismatched => TestOutcome::Failed,
+    _ => TestOutcome::Passed,
+  };
+
+  // Only attach an error when the test verdict is non-passing.
+  if matches!(outcome, TestOutcome::Passed | TestOutcome::Skipped) {
+    error = None;
+  }
 
   TestResult {
     id: case.id.clone(),
@@ -589,10 +613,14 @@ status = "skip"
       "parse",
       "SyntaxError",
     );
-    assert_eq!(result.outcome, TestOutcome::Failed);
+    assert_eq!(result.outcome, TestOutcome::Passed);
     assert!(
       !result.mismatched,
       "expected matched negative, got {result:#?}"
+    );
+    assert!(
+      result.error.is_none(),
+      "matched negative tests should not record an error, got {result:#?}"
     );
   }
 
