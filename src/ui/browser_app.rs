@@ -2850,12 +2850,14 @@ impl BrowserAppState {
           pix_w.abs_diff(expected_w) <= tolerance_px && pix_h.abs_diff(expected_h) <= tolerance_px;
 
         if pixmap_nonzero && pixmap_within_limits && viewport_nonzero && dims_match {
+          let mut scroll_viewport_changed_for_session = false;
           if let Some(tab) = self.tab_mut(tab_id) {
             if tab.crashed {
               tab.crashed = false;
               tab.crash_reason = None;
               tab.error = None;
             }
+            scroll_viewport_changed_for_session = tab.scroll_state.viewport != scroll_state.viewport;
             tab.scroll_state = scroll_state.clone();
             tab.rendered_scroll_state = scroll_state;
             tab.scroll_metrics = Some(scroll_metrics);
@@ -2876,6 +2878,9 @@ impl BrowserAppState {
               viewport_css,
               dpr,
             });
+          }
+          if scroll_viewport_changed_for_session {
+            self.bump_session_revision();
           }
         }
       }
@@ -3007,6 +3012,7 @@ impl BrowserAppState {
         } else {
           safe_url.as_deref().and_then(derive_site_key_from_url)
         };
+        let mut url_changed_for_session = false;
         if let Some(tab) = self.tab_mut(tab_id) {
           if tab.renderer_crashed {
             update.request_redraw = true;
@@ -3018,6 +3024,7 @@ impl BrowserAppState {
           if let Some(url) = safe_url.as_ref() {
             if tab.current_url.as_deref() != Some(url.as_str()) {
               tabs_changed = true;
+              url_changed_for_session = true;
             }
             tab.current_url = Some(url.clone());
           }
@@ -3029,6 +3036,9 @@ impl BrowserAppState {
           tab.hovered_url = None;
           tab.hover_tooltip = None;
           tab.cursor = CursorKind::Default;
+        }
+        if url_changed_for_session {
+          self.bump_session_revision();
         }
         if let Some(url) = safe_url {
           if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
@@ -3054,6 +3064,7 @@ impl BrowserAppState {
         } else {
           safe_url.as_deref().and_then(derive_site_key_from_url)
         };
+        let mut url_changed_for_session = false;
 
         if let Some(url) = safe_url.as_ref() {
           // Record global history. This is the single canonical source of truth for what counts as a
@@ -3099,6 +3110,9 @@ impl BrowserAppState {
           tab.crash_reason = None;
           tab.renderer_site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
+            if tab.current_url.as_deref() != Some(url.as_str()) {
+              url_changed_for_session = true;
+            }
             let title_deref = safe_title.as_deref();
             if tab.current_url.as_deref() != Some(url.as_str())
               || tab.committed_url.as_deref() != Some(url.as_str())
@@ -3122,6 +3136,9 @@ impl BrowserAppState {
           tab.hover_tooltip = None;
           tab.cursor = CursorKind::Default;
         }
+        if url_changed_for_session {
+          self.bump_session_revision();
+        }
         if let Some(url) = safe_url {
           if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
             self.chrome.address_bar_text = url;
@@ -3143,6 +3160,7 @@ impl BrowserAppState {
         } else {
           safe_url.as_deref().and_then(derive_site_key_from_url)
         };
+        let mut url_changed_for_session = false;
         // Do not record failed navigations in global omnibox history.
         if let Some(tab) = self.tab_mut(tab_id) {
           if tab.renderer_crashed {
@@ -3155,6 +3173,7 @@ impl BrowserAppState {
           if let Some(url) = safe_url.as_ref() {
             if tab.current_url.as_deref() != Some(url.as_str()) {
               tabs_changed = true;
+              url_changed_for_session = true;
             }
             tab.current_url = Some(url.clone());
           }
@@ -3174,6 +3193,9 @@ impl BrowserAppState {
           tab.hovered_url = None;
           tab.hover_tooltip = None;
           tab.cursor = CursorKind::Default;
+        }
+        if url_changed_for_session {
+          self.bump_session_revision();
         }
         if let Some(url) = safe_url {
           if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
@@ -3216,11 +3238,16 @@ impl BrowserAppState {
       }
       WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
         let scroll = protocol_limits::sanitize_worker_scroll_state(scroll);
+        let mut viewport_changed_for_session = false;
         if let Some(tab) = self.tab_mut(tab_id) {
           if tab.scroll_state != scroll {
+            viewport_changed_for_session = tab.scroll_state.viewport != scroll.viewport;
             tab.scroll_state = scroll;
             update.request_redraw = true;
           }
+        }
+        if viewport_changed_for_session {
+          self.bump_session_revision();
         }
       }
       WorkerToUi::LoadingState { tab_id, loading } => {
@@ -4197,8 +4224,8 @@ mod browser_tab_tests {
 
     let expected_scroll = ScrollState::with_viewport(Point::new(10.0, 20.0));
     let pixmap = tiny_skia::Pixmap::new(2, 3).unwrap();
-    let viewport_css = (800, 600);
-    let dpr = 2.0;
+    let viewport_css = (2, 3);
+    let dpr = 1.0;
     let scroll_metrics = ScrollMetrics {
       viewport_css,
       scroll_css: (10.0, 20.0),
@@ -5249,6 +5276,118 @@ mod tab_group_tests {
     assert!(app.unpin_tab(b));
     let rev2 = app.session_revision();
     assert!(rev2 > rev1, "expected unpin to bump session revision");
+  }
+
+  #[test]
+  fn session_revision_bumps_for_scroll_viewport_changes() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let rev0 = app.session_revision();
+
+    // FrameReady scroll viewport change should bump session revision.
+    let viewport_css = (2, 3);
+    let dpr = 1.0;
+    let scroll_metrics = ScrollMetrics {
+      viewport_css,
+      scroll_css: (0.0, 0.0),
+      bounds_css: crate::scroll::ScrollBounds {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 0.0,
+        max_y: 0.0,
+      },
+      content_css: (viewport_css.0 as f32, viewport_css.1 as f32),
+    };
+    let scroll = ScrollState::with_viewport(Point::new(0.0, 10.0));
+    app.apply_worker_msg(WorkerToUi::FrameReady {
+      tab_id,
+      frame: RenderedFrame {
+        pixmap: tiny_skia::Pixmap::new(viewport_css.0, viewport_css.1).unwrap(),
+        viewport_css,
+        dpr,
+        scroll_state: scroll.clone(),
+        scroll_metrics,
+        next_tick: None,
+      },
+    });
+    let rev1 = app.session_revision();
+    assert!(
+      rev1 > rev0,
+      "expected FrameReady scroll viewport change to bump session revision"
+    );
+
+    // Redundant identical FrameReady should not bump session revision.
+    let scroll_metrics = ScrollMetrics {
+      viewport_css,
+      scroll_css: (0.0, 0.0),
+      bounds_css: crate::scroll::ScrollBounds {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 0.0,
+        max_y: 0.0,
+      },
+      content_css: (viewport_css.0 as f32, viewport_css.1 as f32),
+    };
+    app.apply_worker_msg(WorkerToUi::FrameReady {
+      tab_id,
+      frame: RenderedFrame {
+        pixmap: tiny_skia::Pixmap::new(viewport_css.0, viewport_css.1).unwrap(),
+        viewport_css,
+        dpr,
+        scroll_state: scroll.clone(),
+        scroll_metrics,
+        next_tick: None,
+      },
+    });
+    let rev2 = app.session_revision();
+    assert_eq!(
+      rev2, rev1,
+      "expected identical FrameReady scroll viewport not to bump session revision"
+    );
+
+    // ScrollStateUpdated scroll viewport change should bump session revision.
+    let scroll2 = ScrollState::with_viewport(Point::new(0.0, 20.0));
+    app.apply_worker_msg(WorkerToUi::ScrollStateUpdated {
+      tab_id,
+      scroll: scroll2.clone(),
+    });
+    let rev3 = app.session_revision();
+    assert!(
+      rev3 > rev2,
+      "expected ScrollStateUpdated scroll viewport change to bump session revision"
+    );
+
+    // Redundant identical ScrollStateUpdated should not bump session revision.
+    app.apply_worker_msg(WorkerToUi::ScrollStateUpdated {
+      tab_id,
+      scroll: scroll2.clone(),
+    });
+    let rev4 = app.session_revision();
+    assert_eq!(
+      rev4, rev3,
+      "expected identical ScrollStateUpdated not to bump session revision"
+    );
+  }
+
+  #[test]
+  fn session_revision_bumps_for_navigation_committed_url_changes() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let rev0 = app.session_revision();
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://example.com/".to_string(),
+      title: None,
+      can_go_back: false,
+      can_go_forward: false,
+    });
+    let rev1 = app.session_revision();
+    assert!(
+      rev1 > rev0,
+      "expected NavigationCommitted URL change to bump session revision"
+    );
   }
 
   #[test]
