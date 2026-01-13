@@ -120,6 +120,14 @@ impl SiteKey {
   }
 }
 
+/// Returns `Ok(true)` when navigating from `current` to `target_url` crosses the current site key.
+///
+/// This is a pure policy primitive intended for future navigation/process-swap logic.
+pub fn is_cross_site_navigation(current: &SiteKey, target_url: &str) -> Result<bool, String> {
+  let target = SiteKey::from_url(target_url)?;
+  Ok(&target != current)
+}
+
 impl fmt::Display for SiteKey {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
@@ -148,7 +156,7 @@ impl fmt::Display for SiteKey {
 
 #[cfg(test)]
 mod tests {
-  use super::SiteKey;
+  use super::{is_cross_site_navigation, SiteKey};
   use std::collections::HashSet;
 
   #[test]
@@ -180,10 +188,7 @@ mod tests {
   fn ipv6_origin_is_canonical_and_displays_stably() {
     let key = SiteKey::from_url("https://[::1]/a?b#c").unwrap();
     assert_eq!(key.to_string(), "https://[::1]");
-    assert_eq!(
-      key,
-      SiteKey::from_url("https://[::1]:443/other").unwrap()
-    );
+    assert_eq!(key, SiteKey::from_url("https://[::1]:443/other").unwrap());
   }
 
   #[test]
@@ -260,4 +265,37 @@ mod tests {
     let key = SiteKey::from_url("blob:null/123").unwrap();
     assert!(matches!(key, SiteKey::Opaque { scheme, .. } if scheme == "blob"));
   }
-}
+
+  #[test]
+  fn cross_site_navigation_helper_detects_same_origin() {
+    let current = SiteKey::from_url("https://example.com/a").unwrap();
+    assert!(!is_cross_site_navigation(&current, "https://example.com/b").unwrap());
+  }
+
+  #[test]
+  fn cross_site_navigation_helper_detects_cross_origin() {
+    let current = SiteKey::from_url("https://example.com").unwrap();
+    assert!(is_cross_site_navigation(&current, "https://evil.com").unwrap());
+  }
+
+  #[test]
+  fn cross_site_navigation_helper_detects_scheme_change() {
+    let current = SiteKey::from_url("http://example.com").unwrap();
+    assert!(is_cross_site_navigation(&current, "https://example.com").unwrap());
+  }
+
+  #[test]
+  fn cross_site_navigation_helper_respects_opaque_scheme_semantics() {
+    let current = SiteKey::from_url("about:blank").unwrap();
+    assert!(is_cross_site_navigation(&current, "about:newtab").unwrap());
+
+    let current = SiteKey::from_url("file:///tmp/a.html").unwrap();
+    assert!(is_cross_site_navigation(&current, "file:///tmp/b.html").unwrap());
+  }
+
+  #[test]
+  fn cross_site_navigation_helper_propagates_parse_errors() {
+    let current = SiteKey::from_url("https://example.com").unwrap();
+    assert!(is_cross_site_navigation(&current, "not a url").is_err());
+  }
+} 

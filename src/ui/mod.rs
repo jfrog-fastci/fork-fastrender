@@ -67,8 +67,8 @@ pub mod repaint_scheduler;
 pub mod address_bar;
 pub mod url;
 pub mod url_display;
-pub mod site_isolation;
 pub mod security_indicator;
+pub mod site_isolation;
 pub mod worker;
 pub mod zoom;
 pub mod motion;
@@ -224,7 +224,7 @@ pub use url::{
   resolve_omnibox_search_query,
   validate_user_navigation_url_scheme, OmniboxInputResolution, DEFAULT_SEARCH_ENGINE_TEMPLATE,
 };
-pub use site_isolation::SiteKey;
+pub use site_isolation::{is_cross_site_navigation, SiteKey};
 #[cfg(feature = "browser_ui")]
 pub use wgpu_pixmap_texture::WgpuPixmapTexture;
 

@@ -43,7 +43,6 @@ pub enum IpcError {
 
   #[error("failed to deserialize IPC JSON message: {0}")]
   Deserialize(#[source] serde_json::Error),
-
   // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================
