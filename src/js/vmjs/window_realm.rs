@@ -44246,6 +44246,10 @@ fn init_window_globals(
     // readiness state.
     let html_media_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLMediaElement", html_media_element_proto)?;
+    let html_video_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLVideoElement", html_video_element_proto)?;
+    let html_audio_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLAudioElement", html_audio_element_proto)?;
 
     // HTMLMediaElement constants (WebIDL `const unsigned short ...`).
     for (name, value) in [
@@ -44324,34 +44328,6 @@ fn init_window_globals(
       install_illegal_dom_ctor(&mut scope, "HTMLLinkElement", html_link_element_proto)?;
     let html_script_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLScriptElement", html_script_element_proto)?;
-
-    // HTMLMediaElement constructor + constants.
-    //
-    // Many sites (and some libraries) probe these numeric constants for feature detection even when
-    // video/audio elements are not actively used.
-    let html_media_element_proto = scope.alloc_object()?;
-    scope.push_root(Value::Object(html_media_element_proto))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(html_media_element_proto, Some(html_element_proto))?;
-    let html_media_element_ctor =
-      install_illegal_dom_ctor(&mut scope, "HTMLMediaElement", html_media_element_proto)?;
-    for (name, value) in [
-      ("NETWORK_EMPTY", 0.0),
-      ("NETWORK_IDLE", 1.0),
-      ("NETWORK_LOADING", 2.0),
-      ("NETWORK_NO_SOURCE", 3.0),
-      ("HAVE_NOTHING", 0.0),
-      ("HAVE_METADATA", 1.0),
-      ("HAVE_CURRENT_DATA", 2.0),
-      ("HAVE_FUTURE_DATA", 3.0),
-      ("HAVE_ENOUGH_DATA", 4.0),
-    ] {
-      let key = alloc_key(&mut scope, name)?;
-      let desc = const_desc(Value::Number(value));
-      scope.define_property(html_media_element_ctor, key, desc.clone())?;
-      scope.define_property(html_media_element_proto, key, desc)?;
-    }
 
     // Document.doctype (readonly DocumentType?)
     let doctype_get_call_id = vm.register_native_call(document_doctype_get_native)?;
@@ -51594,6 +51570,60 @@ mod tests {
         if (Object.getPrototypeOf(HTMLMediaElement) !== HTMLElement) return false;\n\
         if (Object.getPrototypeOf(HTMLVideoElement) !== HTMLMediaElement) return false;\n\
         if (Object.getPrototypeOf(HTMLAudioElement) !== HTMLMediaElement) return false;\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_instanceof_and_prototype_chains_work() -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      "<!doctype html><html><body>\n\
+        <video id=\"v\"></video>\n\
+        <audio id=\"a\"></audio>\n\
+      </body></html>",
+      RenderOptions::default(),
+    )
+    .expect("document");
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+        const v = document.getElementById('v');\n\
+        const a = document.getElementById('a');\n\
+\n\
+        if (typeof HTMLMediaElement !== 'function') return false;\n\
+        if (typeof HTMLVideoElement !== 'function') return false;\n\
+        if (typeof HTMLAudioElement !== 'function') return false;\n\
+\n\
+        if (!(v instanceof HTMLVideoElement)) return false;\n\
+        if (!(v instanceof HTMLMediaElement)) return false;\n\
+        if (!(v instanceof HTMLElement)) return false;\n\
+\n\
+        if (!(a instanceof HTMLAudioElement)) return false;\n\
+        if (!(a instanceof HTMLMediaElement)) return false;\n\
+\n\
+        if (Object.getPrototypeOf(HTMLMediaElement) !== HTMLElement) return false;\n\
+        if (Object.getPrototypeOf(HTMLVideoElement) !== HTMLMediaElement) return false;\n\
+        if (Object.getPrototypeOf(HTMLAudioElement) !== HTMLMediaElement) return false;\n\
+\n\
+        if (Object.getPrototypeOf(HTMLMediaElement.prototype) !== HTMLElement.prototype) return false;\n\
+        if (Object.getPrototypeOf(HTMLVideoElement.prototype) !== HTMLMediaElement.prototype) return false;\n\
+        if (Object.getPrototypeOf(HTMLAudioElement.prototype) !== HTMLMediaElement.prototype) return false;\n\
+\n\
+        let ok = false;\n\
+        try { new HTMLVideoElement(); } catch (e) { ok = e instanceof TypeError && e.message === 'Illegal constructor'; }\n\
+        if (!ok) return false;\n\
+        ok = false;\n\
+        try { new HTMLMediaElement(); } catch (e) { ok = e instanceof TypeError && e.message === 'Illegal constructor'; }\n\
+        if (!ok) return false;\n\
+\n\
         return true;\n\
       })()",
     )?;

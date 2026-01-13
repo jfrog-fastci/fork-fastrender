@@ -141,12 +141,6 @@ impl DomInterface {
         if tag_name.eq_ignore_ascii_case("script") {
           return Self::HTMLScriptElement;
         }
-        if tag_name.eq_ignore_ascii_case("video") {
-          return Self::HTMLVideoElement;
-        }
-        if tag_name.eq_ignore_ascii_case("audio") {
-          return Self::HTMLAudioElement;
-        }
 
         Self::HTMLElement
       }
@@ -1882,8 +1876,9 @@ mod tests {
     // HTMLMediaElement inherits from HTMLElement, and video/audio inherit from HTMLMediaElement.
     let html_media_element_proto =
       install_stub_interface(scope, global, "HTMLMediaElement", html_element_proto)?;
-    let _ = install_stub_interface(scope, global, "HTMLVideoElement", html_media_element_proto)?;
-    let _ = install_stub_interface(scope, global, "HTMLAudioElement", html_media_element_proto)?;
+    for name in ["HTMLVideoElement", "HTMLAudioElement"] {
+      let _ = install_stub_interface(scope, global, name, html_media_element_proto)?;
+    }
     for name in [
       "HTMLInputElement",
       "HTMLSelectElement",
