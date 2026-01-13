@@ -4268,6 +4268,57 @@ fn plan_start_new_session_for_window(
   }
 }
 
+/// After starting a fresh session, collapse the window list to a single active window.
+///
+/// This matches typical crash-recovery UX in mainstream browsers: "start new session" should leave
+/// the user with one clean window rather than resetting every restored window independently.
+#[cfg(any(test, feature = "browser_ui"))]
+fn collapse_windows_to_single_active<K, V, F>(
+  windows: &mut std::collections::HashMap<K, V>,
+  window_order: &mut Vec<K>,
+  active_window_id: &mut Option<K>,
+  mut on_close: F,
+) where
+  K: Copy + Eq + std::hash::Hash,
+  F: FnMut(V),
+{
+  if windows.len() <= 1 {
+    if windows.len() == 1 {
+      let only_id = windows.keys().next().copied();
+      if let Some(id) = only_id {
+        window_order.clear();
+        window_order.push(id);
+        *active_window_id = Some(id);
+      }
+    }
+    return;
+  }
+
+  // Determine which window to keep.
+  let mut keep_id = active_window_id.filter(|id| windows.contains_key(id));
+  if keep_id.is_none() {
+    keep_id = window_order.iter().copied().find(|id| windows.contains_key(id));
+  }
+  if keep_id.is_none() {
+    keep_id = windows.keys().next().copied();
+  }
+  let Some(keep_id) = keep_id else {
+    return;
+  };
+
+  // Close every other window.
+  let to_close: Vec<K> = windows.keys().copied().filter(|id| *id != keep_id).collect();
+  for id in to_close {
+    if let Some(win) = windows.remove(&id) {
+      on_close(win);
+    }
+  }
+
+  window_order.clear();
+  window_order.push(keep_id);
+  *active_window_id = Some(keep_id);
+}
+
 #[cfg(test)]
 mod crash_recovery_prompt_tests {
   use super::*;
@@ -4341,6 +4392,79 @@ mod crash_recovery_prompt_tests {
       session.windows[0].tabs[0].url,
       fastrender::ui::about_pages::ABOUT_NEWTAB
     );
+  }
+
+  #[test]
+  fn start_new_session_collapses_to_single_window_and_persists_single_window_session() {
+    use fastrender::ui::session::BrowserSessionWindow;
+    use fastrender::ui::{appearance::AppearanceSettings, BrowserAppState, BrowserTabState, TabId};
+    use std::collections::HashMap;
+
+    let mut win_a = BrowserAppState::new();
+    win_a.push_tab(
+      BrowserTabState::new(TabId::new(), "https://example.com".to_string()),
+      true,
+    );
+    win_a.push_tab(
+      BrowserTabState::new(TabId::new(), "https://example.net".to_string()),
+      false,
+    );
+
+    let mut win_b = BrowserAppState::new();
+    win_b.push_tab(
+      BrowserTabState::new(TabId::new(), "https://b.example".to_string()),
+      true,
+    );
+    // Ensure we can distinguish the kept window from the session module's fallback window. The
+    // fallback uses `default_show_menu_bar()`, so pick the opposite.
+    win_b.chrome.show_menu_bar = cfg!(target_os = "macos");
+
+    let mut windows: HashMap<u64, BrowserAppState> = HashMap::new();
+    windows.insert(1, win_a);
+    windows.insert(2, win_b);
+    let mut window_order = vec![1u64, 2u64];
+    let mut active_window_id = Some(2u64);
+
+    for app in windows.values_mut() {
+      let _ = plan_start_new_session_for_window(app);
+    }
+
+    let mut closed = 0usize;
+    collapse_windows_to_single_active(
+      &mut windows,
+      &mut window_order,
+      &mut active_window_id,
+      |_| closed += 1,
+    );
+
+    assert_eq!(closed, 1);
+    assert_eq!(windows.len(), 1);
+    assert_eq!(window_order, vec![2u64]);
+    assert_eq!(active_window_id, Some(2u64));
+
+    let active_window_index = active_window_id
+      .and_then(|id| window_order.iter().position(|other| *other == id))
+      .unwrap_or(0)
+      .min(window_order.len().saturating_sub(1));
+    let session_windows: Vec<BrowserSessionWindow> = window_order
+      .iter()
+      .filter_map(|id| windows.get(id))
+      .map(BrowserSessionWindow::from_app_state)
+      .collect();
+    let session = fastrender::ui::session::BrowserSession::from_windows(
+      session_windows,
+      active_window_index,
+      AppearanceSettings::default(),
+    );
+
+    assert_eq!(session.windows.len(), 1);
+    assert_eq!(session.active_window_index, 0);
+    assert_eq!(session.windows[0].tabs.len(), 1);
+    assert_eq!(
+      session.windows[0].tabs[0].url,
+      fastrender::ui::about_pages::ABOUT_NEWTAB
+    );
+    assert_eq!(session.windows[0].show_menu_bar, cfg!(target_os = "macos"));
   }
 }
 
@@ -7347,6 +7471,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for win in windows.values_mut() {
           win.app.start_new_session();
         }
+
+        // Match Chrome/Firefox crash-recovery UX: "start new session" should discard all restored
+        // windows and leave the user with a single clean window.
+        collapse_windows_to_single_active(
+          &mut windows,
+          &mut window_order,
+          &mut active_window_id,
+          |win| win.shutdown(),
+        );
 
         request_autosave(&windows, &window_order, active_window_id);
       }
