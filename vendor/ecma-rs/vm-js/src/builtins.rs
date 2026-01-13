@@ -11101,6 +11101,51 @@ pub fn array_prototype_at(
   // Spec: https://tc39.es/ecma262/#sec-array.prototype.at
   let mut scope = scope.reborrow();
 
+  // `Array.prototype.at` is generic and must work on String values via `ToObject` + indexed
+  // property access. `vm-js` does not currently model String exotic objects, so handle String
+  // primitives (and boxed String objects created by `ToObject`) explicitly.
+  //
+  // Note: string indexing uses UTF-16 code unit indices (i.e. it does not decode surrogate pairs).
+  scope.push_root(this)?;
+  let string_data = match this {
+    Value::String(s) => Some(s),
+    Value::Object(obj) => {
+      let marker_sym = match scope.heap().internal_string_data_symbol() {
+        Some(sym) => sym,
+        None => scope.heap_mut().ensure_internal_string_data_symbol()?,
+      };
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      match get_data_property_value(vm, &mut scope, obj, &marker_key)? {
+        Some(Value::String(s)) => Some(s),
+        _ => None,
+      }
+    }
+    _ => None,
+  };
+  if let Some(s) = string_data {
+    let len = scope.heap().get_string(s)?.as_code_units().len();
+
+    let index_val = args.get(0).copied().unwrap_or(Value::Undefined);
+    let relative = scope.to_integer_or_infinity(vm, host, hooks, index_val)?;
+    if !relative.is_finite() {
+      return Ok(Value::Undefined);
+    }
+
+    let k = if relative < 0.0 {
+      (len as f64) + relative
+    } else {
+      relative
+    };
+    if k < 0.0 || k >= (len as f64) {
+      return Ok(Value::Undefined);
+    }
+
+    let idx = k as usize;
+    let unit = scope.heap().get_string(s)?.as_code_units()[idx];
+    let out = scope.alloc_string_from_code_units(&[unit])?;
+    return Ok(Value::String(out));
+  }
+
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 

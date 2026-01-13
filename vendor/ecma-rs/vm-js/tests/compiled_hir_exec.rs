@@ -8568,6 +8568,70 @@ fn compiled_optional_chain_continuation_short_circuits_to_undefined() -> Result<
 }
 
 #[test]
+fn compiled_optional_chain_continuation_propagates_through_function_call() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(a) { return a?.b.c; }
+      f(null) === undefined && f({ b: { c: 1 } }) === 1
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_optional_chain_continuation_skips_computed_key_side_effects() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(a) {
+        let hit = 0;
+        function key() { hit = hit + 1; return 'c'; }
+        a?.b[key()];
+        return hit;
+      }
+      f(null)
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_optional_chain_continuation_skips_call_args_side_effects() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(a) {
+        let hit = 0;
+        function arg() { hit = hit + 1; return 1; }
+        a?.b.c(arg());
+        return hit;
+      }
+      f(null)
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_optional_chain_call_continuation_short_circuits_to_undefined() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
