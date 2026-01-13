@@ -59,7 +59,8 @@ impl TrackCounts {
 
   /// Count the total number of tracks in the axis
   pub fn len(&self) -> usize {
-    (self.negative_implicit + self.explicit + self.positive_implicit) as usize
+    // Avoid u16 overflow when explicit tracks are large.
+    (self.negative_implicit as usize) + (self.explicit as usize) + (self.positive_implicit as usize)
   }
 
   /// The OriginZeroLine representing the start of the implicit grid

@@ -53,19 +53,23 @@ pub(crate) fn compute_grid_size_estimate<'a, S: GridItemStyle + 'a>(
 
   // In each axis, adjust positive track estimate if any items have a span that does not fit within
   // the total number of tracks in the estimate
-  let tot_inline_tracks =
-    negative_implicit_inline_tracks + explicit_inline_tracks + positive_implicit_inline_tracks;
-  if tot_inline_tracks < col_max_span {
+  let tot_inline_tracks = (negative_implicit_inline_tracks as u32)
+    + (explicit_inline_tracks as u32)
+    + (positive_implicit_inline_tracks as u32);
+  if tot_inline_tracks < col_max_span as u32 {
     positive_implicit_inline_tracks =
-      col_max_span - explicit_inline_tracks - negative_implicit_inline_tracks;
+      (col_max_span as u32 - (explicit_inline_tracks as u32) - (negative_implicit_inline_tracks as u32))
+        as u16;
   }
   positive_implicit_inline_tracks = positive_implicit_inline_tracks.min(implicit_track_limit);
 
-  let tot_block_tracks =
-    negative_implicit_block_tracks + explicit_block_tracks + positive_implicit_block_tracks;
-  if tot_block_tracks < row_max_span {
+  let tot_block_tracks = (negative_implicit_block_tracks as u32)
+    + (explicit_block_tracks as u32)
+    + (positive_implicit_block_tracks as u32);
+  if tot_block_tracks < row_max_span as u32 {
     positive_implicit_block_tracks =
-      row_max_span - explicit_block_tracks - negative_implicit_block_tracks;
+      (row_max_span as u32 - (explicit_block_tracks as u32) - (negative_implicit_block_tracks as u32))
+        as u16;
   }
   positive_implicit_block_tracks = positive_implicit_block_tracks.min(implicit_track_limit);
 
