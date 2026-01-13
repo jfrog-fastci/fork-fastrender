@@ -17,6 +17,169 @@ pub const MAX_IPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FrameId(pub u64);
 
+/// Referrer policy applied when generating the `Referer` header for navigation/subresource requests.
+///
+/// This is intentionally aligned with FastRender's in-process [`crate::resource::ReferrerPolicy`]
+/// enum so that browser/renderer processes can communicate the effective policy deterministically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReferrerPolicy {
+  /// Empty-string / unspecified referrer policy ("use default").
+  EmptyString,
+  NoReferrer,
+  NoReferrerWhenDowngrade,
+  Origin,
+  OriginWhenCrossOrigin,
+  SameOrigin,
+  StrictOrigin,
+  StrictOriginWhenCrossOrigin,
+  UnsafeUrl,
+}
+
+impl Default for ReferrerPolicy {
+  fn default() -> Self {
+    Self::EmptyString
+  }
+}
+
+impl ReferrerPolicy {
+  /// Parse a referrer policy token (case-insensitive, trims ASCII whitespace).
+  pub fn parse(raw: &str) -> Option<Self> {
+    let token = raw.trim_matches(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    });
+    if token.is_empty() {
+      return Some(Self::EmptyString);
+    }
+    if token.eq_ignore_ascii_case("no-referrer") {
+      Some(Self::NoReferrer)
+    } else if token.eq_ignore_ascii_case("no-referrer-when-downgrade") {
+      Some(Self::NoReferrerWhenDowngrade)
+    } else if token.eq_ignore_ascii_case("origin") {
+      Some(Self::Origin)
+    } else if token.eq_ignore_ascii_case("origin-when-cross-origin") {
+      Some(Self::OriginWhenCrossOrigin)
+    } else if token.eq_ignore_ascii_case("same-origin") {
+      Some(Self::SameOrigin)
+    } else if token.eq_ignore_ascii_case("strict-origin") {
+      Some(Self::StrictOrigin)
+    } else if token.eq_ignore_ascii_case("strict-origin-when-cross-origin") {
+      Some(Self::StrictOriginWhenCrossOrigin)
+    } else if token.eq_ignore_ascii_case("unsafe-url") {
+      Some(Self::UnsafeUrl)
+    } else {
+      None
+    }
+  }
+
+  /// Parse a `referrerpolicy` attribute value.
+  ///
+  /// Returns `None` when the attribute is missing, empty, or invalid, which signals that the
+  /// request should use the document's default referrer policy.
+  pub fn from_attribute(value: &str) -> Option<Self> {
+    match Self::parse(value)? {
+      Self::EmptyString => None,
+      other => Some(other),
+    }
+  }
+}
+
+/// Parsed sandbox flags for an `<iframe sandbox>` attribute.
+///
+/// This is a conservative subset of the HTML sandboxing flags, represented as "allow-*" bits. The
+/// empty value means the sandbox attribute is present with no allowances (maximum restrictions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct SandboxFlags(pub u32);
+
+impl SandboxFlags {
+  pub const NONE: Self = Self(0);
+  pub const ALLOW_SAME_ORIGIN: Self = Self(1 << 0);
+  pub const ALLOW_SCRIPTS: Self = Self(1 << 1);
+  pub const ALLOW_FORMS: Self = Self(1 << 2);
+  pub const ALLOW_POPUPS: Self = Self(1 << 3);
+  pub const ALLOW_TOP_NAVIGATION: Self = Self(1 << 4);
+
+  #[inline]
+  pub const fn contains(self, other: Self) -> bool {
+    (self.0 & other.0) == other.0
+  }
+
+  #[inline]
+  pub fn insert(&mut self, other: Self) {
+    self.0 |= other.0;
+  }
+
+  #[inline]
+  pub const fn is_empty(self) -> bool {
+    self.0 == 0
+  }
+}
+
+/// Origin-like tuple used to scope documents to renderer processes.
+///
+/// This is used by the browser to deterministically convey:
+/// - inherited origins (about:blank, srcdoc), and
+/// - opaque origins (sandboxed, data:, etc.)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DocumentOrigin {
+  pub scheme: String,
+  pub host: Option<String>,
+  pub port: Option<u16>,
+}
+
+/// Site isolation key used by the browser to decide which renderer process hosts a frame.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SiteKey {
+  Origin(DocumentOrigin),
+  /// Unique per-document opaque origin key.
+  Opaque(u64),
+}
+
+impl Default for SiteKey {
+  fn default() -> Self {
+    // Keep `0` reserved as an "invalid/unspecified" opaque key.
+    Self::Opaque(0)
+  }
+}
+
+/// Contextual metadata for a navigation request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NavigationContext {
+  /// URL used to populate the `Referer` header, when allowed by `referrer_policy`.
+  pub referrer_url: Option<String>,
+  pub referrer_policy: ReferrerPolicy,
+  /// Site isolation / origin key computed by the browser for this navigation.
+  pub site_key: SiteKey,
+}
+
+impl Default for NavigationContext {
+  fn default() -> Self {
+    Self {
+      referrer_url: None,
+      referrer_policy: ReferrerPolicy::default(),
+      site_key: SiteKey::default(),
+    }
+  }
+}
+
+impl NavigationContext {
+  /// Construct a navigation context for a child-frame navigation.
+  ///
+  /// `iframe_referrer_policy` is sourced from the `<iframe referrerpolicy>` attribute when
+  /// present; when it is `None`, the embedding document's policy is used instead.
+  pub fn for_subframe_navigation(
+    referrer_url: String,
+    parent_referrer_policy: ReferrerPolicy,
+    iframe_referrer_policy: Option<ReferrerPolicy>,
+    site_key: SiteKey,
+  ) -> Self {
+    Self {
+      referrer_url: Some(referrer_url),
+      referrer_policy: iframe_referrer_policy.unwrap_or(parent_referrer_policy),
+      site_key,
+    }
+  }
+}
+
 /// Axis-aligned rectangle in the embedder's coordinate space.
 ///
 /// All units are in the coordinate space implied by the embedding metadata (typically parent
@@ -118,6 +281,13 @@ pub struct SubframeInfo {
   pub clip_stack: Vec<ClipItem>,
   /// Stable key that defines z-order between subframes.
   pub z_index: u64,
+  /// Optional `<iframe referrerpolicy>` attribute override.
+  pub referrer_policy: Option<ReferrerPolicy>,
+  /// Parsed sandbox allowlist flags for the `<iframe sandbox>` attribute.
+  pub sandbox_flags: SandboxFlags,
+  /// True when the subframe's origin must be treated as opaque (e.g. sandbox without
+  /// `allow-same-origin`).
+  pub opaque_origin: bool,
 }
 
 /// Pixel buffer for a fully-rendered frame.
@@ -144,7 +314,11 @@ pub enum BrowserToRenderer {
   /// Destroy per-frame state for `frame_id`.
   DestroyFrame { frame_id: FrameId },
   /// Navigate the given frame to `url`.
-  Navigate { frame_id: FrameId, url: String },
+  Navigate {
+    frame_id: FrameId,
+    url: String,
+    context: NavigationContext,
+  },
   /// Resize the viewport for the given frame (CSS pixels).
   Resize {
     frame_id: FrameId,
@@ -435,6 +609,9 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 0,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
     };
 
     let out = composite_subframes(parent, [(&info, &child)]).unwrap();
@@ -473,6 +650,9 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 0,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
     };
 
     let out = composite_subframes(parent, [(&info, &child)]).unwrap();
@@ -509,6 +689,9 @@ mod compositor_tests {
         },
       }],
       z_index: 0,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
     };
 
     let out = composite_subframes(parent, [(&info, &child)]).unwrap();
@@ -547,6 +730,9 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 1,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
     };
 
     let info_blue = SubframeInfo {
@@ -562,6 +748,9 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 2,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
     };
 
     // Provide in reverse input order; blue should still end up on top due to z_index sorting.
@@ -593,6 +782,9 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 0,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
     };
 
     let err = composite_subframe(&mut parent, &child, &info).unwrap_err();
@@ -624,6 +816,46 @@ mod compositor_tests {
     // src-over premultiplied with alpha=128 over opaque green:
     // out.r = 128, out.g = 127 (rounded), out.a = 255.
     assert_eq!(pixel(&out, 0, 0), [128, 127, 0, 255]);
+  }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+  use super::*;
+
+  #[test]
+  fn subframe_referrer_policy_is_forwarded_into_child_navigation_context() {
+    let subframe = SubframeInfo {
+      child: FrameId(2),
+      transform: AffineTransform::IDENTITY,
+      clip_stack: vec![],
+      z_index: 0,
+      referrer_policy: Some(ReferrerPolicy::NoReferrer),
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
+    };
+
+    let ctx = NavigationContext::for_subframe_navigation(
+      "https://parent.example/".to_string(),
+      ReferrerPolicy::StrictOriginWhenCrossOrigin,
+      subframe.referrer_policy,
+      SiteKey::Opaque(1),
+    );
+
+    assert_eq!(ctx.referrer_url.as_deref(), Some("https://parent.example/"));
+    assert_eq!(ctx.referrer_policy, ReferrerPolicy::NoReferrer);
+  }
+
+  #[test]
+  fn subframe_without_override_inherits_parent_referrer_policy() {
+    let ctx = NavigationContext::for_subframe_navigation(
+      "https://parent.example/".to_string(),
+      ReferrerPolicy::OriginWhenCrossOrigin,
+      None,
+      SiteKey::Opaque(1),
+    );
+
+    assert_eq!(ctx.referrer_policy, ReferrerPolicy::OriginWhenCrossOrigin);
   }
 }
 
