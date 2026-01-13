@@ -178,6 +178,10 @@ The browser persists a lightweight session file for restoring state across resta
   `~/.config/fastrender/fastrender_session.json` on Linux.
 - Override: `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json`.
 
+To avoid corrupting the session file, the `browser` process also acquires a lock file for the
+session path. If another `browser` process is already running with the same session path, a second
+instance will refuse to start. Use `FASTR_BROWSER_SESSION_PATH` to run multiple isolated instances.
+
 The session file format is versioned (currently v2) and includes:
 
 - One or more windows (each with tabs + active tab index)
