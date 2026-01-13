@@ -63,9 +63,18 @@ fn sandboxed_child_entrypoint() {
       // reject sandbox installation). This keeps the test usable across a wide range of Linux CI
       // hosts while still exercising the sandbox where possible.
       let errno = match &err {
+        fastrender::sandbox::SandboxError::SetParentDeathSignalFailed { source } => {
+          source.raw_os_error()
+        }
         fastrender::sandbox::SandboxError::SetDumpableFailed { source }
         | fastrender::sandbox::SandboxError::DisableCoreDumpsFailed { source }
         | fastrender::sandbox::SandboxError::EnableNoNewPrivsFailed { source } => source.raw_os_error(),
+        fastrender::sandbox::SandboxError::LandlockFailed { source } => match source {
+          fastrender::sandbox::linux_landlock::LandlockError::SetNoNewPrivsFailed { source } => {
+            source.raw_os_error()
+          }
+          _ => None,
+        },
         fastrender::sandbox::SandboxError::SeccompInstallRejected { errno, .. } => Some(*errno),
         fastrender::sandbox::SandboxError::SeccompInstallFailed { errno, .. } => Some(*errno),
         _ => None,
