@@ -10800,7 +10800,7 @@ impl App {
       | UiToWorker::FilePickerCancel { tab_id }
       | UiToWorker::TextInput { tab_id, .. }
       | UiToWorker::A11ySetTextValue { tab_id, .. }
-      | UiToWorker::A11ySetTextSelection { tab_id, .. }
+      | UiToWorker::A11ySetTextSelectionRange { tab_id, .. }
       | UiToWorker::ImePreedit { tab_id, .. }
       | UiToWorker::ImeCommit { tab_id, .. }
       | UiToWorker::ImeCancel { tab_id }
@@ -10921,7 +10921,7 @@ impl App {
           | UiToWorker::FilePickerCancel { .. }
           | UiToWorker::TextInput { .. }
           | UiToWorker::A11ySetTextValue { .. }
-          | UiToWorker::A11ySetTextSelection { .. }
+          | UiToWorker::A11ySetTextSelectionRange { .. }
           | UiToWorker::ImePreedit { .. }
           | UiToWorker::ImeCommit { .. }
           | UiToWorker::ImeCancel { .. }
