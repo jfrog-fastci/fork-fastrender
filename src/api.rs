@@ -5818,6 +5818,52 @@ fn viewport_scrollport_inset_for_scrollbar_gutter(
   };
   Point::new(inset_x, inset_y)
 }
+
+/// Returns whether the viewport is reserving classic scrollbar gutter space on each axis.
+///
+/// When `scrollbar-gutter: stable[/both-edges]` is active, FastRender performs layout in a reduced
+/// scrollport viewport (`scrollport_viewport`) while keeping the outer paint surface
+/// (`paint_viewport`) unchanged. This implies that some pixels (the gutter regions) are fixed with
+/// respect to scrolling.
+///
+/// The returned tuple is `(reserved_x, reserved_y)`, where:
+/// - `reserved_x` means the paint surface is wider than the scrollport (vertical scrollbar gutters).
+/// - `reserved_y` means the paint surface is taller than the scrollport (horizontal scrollbar gutters).
+///
+/// Note: this helper is intentionally conservative. If the viewports differ but do not match the
+/// expected `scrollbar_width * multiplier` math (within epsilon), we still treat the axis as
+/// reserved so scroll-blit optimizations can fall back to a full repaint.
+pub(crate) fn viewport_scrollbar_gutter_reserved_axes(
+  styled_tree: &StyledNode,
+  scrollport_viewport: Size,
+  paint_viewport: Size,
+) -> (bool, bool) {
+  let params = resolve_viewport_scrollbar_params(styled_tree);
+  let gutter = params.scrollbar_width_px.max(0.0);
+  let multiplier = if params.scrollbar_gutter.both_edges {
+    2.0
+  } else {
+    1.0
+  };
+
+  let diff_x = paint_viewport.width - scrollport_viewport.width;
+  let diff_y = paint_viewport.height - scrollport_viewport.height;
+
+  // Keep this in sync with `viewport_scrollport_inset_for_scrollbar_gutter` (used for centering the
+  // scrollport under `stable both-edges`). We use a generous epsilon to tolerate meta viewport zoom
+  // and rounding between integer layout viewports and fractional visual viewports.
+  let epsilon = 0.51;
+
+  let expected = gutter * multiplier;
+  let matches_expected = |diff: f32| -> bool {
+    params.scrollbar_gutter.stable && gutter > 0.0 && (diff - expected).abs() <= epsilon
+  };
+
+  let reserved_x = matches_expected(diff_x) || diff_x.abs() > epsilon;
+  let reserved_y = matches_expected(diff_y) || diff_y.abs() > epsilon;
+
+  (reserved_x, reserved_y)
+}
 fn force_box_overflow_visible(node: &mut BoxNode, styled_node_id: usize) {
   // Box trees can be arbitrarily deep; avoid recursion to prevent stack overflow on degenerate inputs.
   let mut stack: Vec<*mut BoxNode> = vec![node as *mut _];

@@ -1,4 +1,7 @@
 use crate::debug::runtime::RuntimeToggles;
+use crate::geometry::{Point, Size};
+use crate::paint::display_list_renderer::DisplayListRenderer;
+use crate::text::font_loader::FontContext;
 use crate::{FastRender, FastRenderConfig};
 use std::collections::HashMap;
 
@@ -308,4 +311,113 @@ fn viewport_fixed_elements_paint_into_scrollbar_gutter_both_edges() {
     right.blue(),
     right.alpha()
   );
+}
+
+#[test]
+fn scroll_blit_disabled_when_viewport_reserves_scrollbar_gutter_space() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer should construct");
+
+  // This document reserves classic scrollbar gutters on both axes because `overflow: auto` applies
+  // to both inline and block directions. The reserved space shrinks the scrollport while keeping
+  // the painted surface at the requested viewport size.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; }
+      html {
+        background: rgb(0, 0, 0);
+        overflow: auto;
+        scrollbar-gutter: stable;
+      }
+      body { background: transparent; }
+      .spacer { height: 120px; background: rgb(255, 0, 0); }
+      .marker { height: 20px; background: rgb(0, 255, 0); }
+    </style>
+    <div class="spacer"></div>
+    <div class="marker"></div>
+    <div class="spacer"></div>
+  "#;
+
+  let viewport_w = 100u32;
+  let viewport_h = 100u32;
+  let scale = 1.0;
+
+  // Render the first frame and capture enough artifacts to detect scrollbar-gutter reservation.
+  let mut artifacts = crate::RenderArtifacts::new(crate::RenderArtifactRequest {
+    styled_tree: true,
+    fragment_tree: true,
+    ..crate::RenderArtifactRequest::none()
+  });
+  let options = crate::RenderOptions::new()
+    .with_viewport(viewport_w, viewport_h)
+    .with_device_pixel_ratio(scale)
+    .with_scroll(0.0, 0.0);
+  let pixmap_before = renderer
+    .render_html_with_options_and_artifacts(html, options, &mut artifacts)
+    .expect("first frame render should succeed");
+
+  let styled_tree = artifacts.styled_tree.as_ref().expect("styled tree");
+  let fragment_tree = artifacts.fragment_tree.as_ref().expect("fragment tree");
+  let scrollport_viewport = fragment_tree.viewport_size();
+  let paint_viewport = Size::new(viewport_w as f32, viewport_h as f32);
+  let (gutter_x, gutter_y) = crate::api::viewport_scrollbar_gutter_reserved_axes(
+    styled_tree,
+    scrollport_viewport,
+    paint_viewport,
+  );
+  assert!(
+    gutter_y,
+    "expected viewport scrollbar-gutter to reserve horizontal gutter space (scrollport height should be smaller than paint height)"
+  );
+
+  // Render the second frame with a vertical scroll delta and capture the display list used for
+  // repaint.
+  let scroll_delta_y = 10.0;
+  let mut artifacts_after = crate::RenderArtifacts::new(crate::RenderArtifactRequest {
+    display_list: true,
+    ..crate::RenderArtifactRequest::none()
+  });
+  let options_after = crate::RenderOptions::new()
+    .with_viewport(viewport_w, viewport_h)
+    .with_device_pixel_ratio(scale)
+    .with_scroll(0.0, scroll_delta_y)
+    .with_scroll_delta(0.0, scroll_delta_y);
+  let pixmap_after_full = renderer
+    .render_html_with_options_and_artifacts(html, options_after, &mut artifacts_after)
+    .expect("second frame render should succeed");
+  let list_after = artifacts_after
+    .display_list
+    .as_ref()
+    .expect("display list should be captured");
+
+  // Attempt the scroll-blit optimization. When the viewport reserves scrollbar gutters on the
+  // scroll axis (here: bottom gutter reducing the scrollport height), a full-surface blit is not
+  // correct. The renderer should fall back to a full repaint with a clear reason.
+  let background = renderer.background_color();
+  let font_ctx = FontContext::new();
+  let mut blit_renderer = DisplayListRenderer::new_scaled_from_existing_pixmap(
+    pixmap_before,
+    background,
+    font_ctx,
+    scale,
+  )
+  .expect("scroll blit renderer should construct");
+  blit_renderer.set_viewport_scrollbar_gutter_reserved_axes(gutter_x, gutter_y);
+  let report = blit_renderer
+    .render_scroll_blit_with_report(list_after, Point::new(0.0, scroll_delta_y))
+    .expect("scroll blit operation should succeed");
+
+  assert!(
+    !report.scroll_blit_used,
+    "scroll blit must be disabled when viewport scrollbar-gutter reserves space along the scroll axis"
+  );
+  assert_eq!(
+    report.fallback_reason.as_deref(),
+    Some("viewport scrollbar-gutter reserved space")
+  );
+  assert_eq!(report.pixmap.data(), pixmap_after_full.data());
 }

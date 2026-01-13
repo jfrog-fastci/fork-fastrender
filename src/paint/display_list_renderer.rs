@@ -4118,6 +4118,21 @@ pub struct DisplayListRenderer {
   blend_stack: Vec<BlendMode>,
   opacity_stack: Vec<OpacityRecord>,
   scale: f32,
+  /// Whether the viewport has reserved classic scrollbar gutter space on each axis (CSS Overflow 3
+  /// `scrollbar-gutter: stable[/both-edges]`).
+  ///
+  /// When the viewport reserves gutters, layout is performed in a reduced scrollport while the
+  /// paint surface includes the gutter regions. A naive full-surface scroll blit is incorrect in
+  /// that configuration because the newly exposed strip occurs at the scrollport edge (not the
+  /// outer paint edge).
+  ///
+  /// These flags are **axis-aligned**:
+  /// - `viewport_scrollbar_gutter_reserved_x`: paint surface wider than the scrollport (vertical
+  ///   scrollbar gutter(s)).
+  /// - `viewport_scrollbar_gutter_reserved_y`: paint surface taller than the scrollport (horizontal
+  ///   scrollbar gutter(s)).
+  viewport_scrollbar_gutter_reserved_x: bool,
+  viewport_scrollbar_gutter_reserved_y: bool,
   transform_stack: Vec<Transform3D>,
   perspective_stack: Vec<Transform3D>,
   culled_depth: usize,
@@ -5682,6 +5697,34 @@ impl DisplayListRenderer {
     self.paint_parallelism = parallelism;
   }
 
+  /// Configure whether the viewport reserves classic scrollbar gutter space (CSS Overflow 3
+  /// `scrollbar-gutter: stable[/both-edges]`).
+  ///
+  /// When gutters are reserved, scroll-driven repaint optimizations such as scroll blitting are not
+  /// generally correct unless they are implemented in scrollport space (leaving gutter pixels
+  /// untouched). Callers that attempt scroll blits should set these flags based on the prepared
+  /// layout viewport vs paint viewport sizes.
+  pub fn with_viewport_scrollbar_gutter_reserved_axes(
+    mut self,
+    reserved_x: bool,
+    reserved_y: bool,
+  ) -> Self {
+    self.viewport_scrollbar_gutter_reserved_x = reserved_x;
+    self.viewport_scrollbar_gutter_reserved_y = reserved_y;
+    self
+  }
+
+  /// Like [`DisplayListRenderer::with_viewport_scrollbar_gutter_reserved_axes`], but mutates an
+  /// existing renderer.
+  pub fn set_viewport_scrollbar_gutter_reserved_axes(
+    &mut self,
+    reserved_x: bool,
+    reserved_y: bool,
+  ) {
+    self.viewport_scrollbar_gutter_reserved_x = reserved_x;
+    self.viewport_scrollbar_gutter_reserved_y = reserved_y;
+  }
+
   fn new_with_canvas(
     canvas: Canvas,
     background: Rgba,
@@ -5716,6 +5759,8 @@ impl DisplayListRenderer {
       blend_stack: Vec::new(),
       opacity_stack: Vec::new(),
       scale,
+      viewport_scrollbar_gutter_reserved_x: false,
+      viewport_scrollbar_gutter_reserved_y: false,
       transform_stack: vec![Transform3D::identity()],
       perspective_stack: vec![Transform3D::identity()],
       culled_depth: 0,
@@ -11006,6 +11051,34 @@ impl DisplayListRenderer {
         scroll_blit_used: false,
         partial_repaint_used: false,
         fallback_reason: Some("scroll delta unsupported; full repaint".to_string()),
+      });
+    }
+
+    // When the viewport reserves classic scrollbar gutters (`scrollbar-gutter: stable[/both-edges]`)
+    // the scrollport is smaller than the painted surface. This means the newly exposed strip is
+    // at the scrollport edge (not the outer paint edge), so a full-surface scroll blit would copy
+    // gutter pixels into the scrollport boundary and leave seams. Disable the optimization until a
+    // scrollport-only blit path exists.
+    if (dy != 0 && self.viewport_scrollbar_gutter_reserved_y)
+      || (dx != 0 && self.viewport_scrollbar_gutter_reserved_x)
+    {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(ScrollBlitReport {
+        pixmap,
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: Some("viewport scrollbar-gutter reserved space".to_string()),
       });
     }
 
