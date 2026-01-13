@@ -413,7 +413,7 @@ fn find_windows_posix_shell(target: &str, host: &str) -> String {
     for candidate in ["sh", "bash"] {
         match Command::new(candidate).arg("-c").arg("exit 0").status() {
             Ok(status) if status.success() => return candidate.to_string(),
-            Ok(_) => return candidate.to_string(),
+            Ok(_) => continue,
             Err(_) => {}
         }
     }
@@ -550,5 +550,34 @@ fn tool_in_path(tool: &str) -> bool {
         Some(p) => p,
         None => return false,
     };
-    env::split_paths(&path).any(|dir| dir.join(tool).exists())
+    // Windows uses PATHEXT to find executables when the extension is omitted (e.g. `make.exe` when
+    // invoked as `make`). `Path::exists` does not apply PATHEXT, so emulate it here for robustness.
+    let pathext = if cfg!(windows) {
+        env::var_os("PATHEXT")
+            .and_then(|s| s.into_string().ok())
+            .map(|s| {
+                s.split(';')
+                    .filter(|ext| !ext.is_empty())
+                    .map(|ext| ext.to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec![".exe".to_string(), ".cmd".to_string(), ".bat".to_string()])
+    } else {
+        Vec::new()
+    };
+
+    let has_ext = Path::new(tool).extension().is_some();
+    for dir in env::split_paths(&path) {
+        if dir.join(tool).exists() {
+            return true;
+        }
+        if cfg!(windows) && !has_ext {
+            for ext in &pathext {
+                if dir.join(format!("{tool}{ext}")).exists() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
