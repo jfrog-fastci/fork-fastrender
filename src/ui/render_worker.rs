@@ -4740,6 +4740,10 @@ impl BrowserRuntime {
       tab.last_hovered_dom2_node = None;
       return;
     };
+    let cancel_snapshot = tab.cancel.snapshot_paint();
+    let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
+    let deadline = deadline_for(cancel_callback, None);
+    let _deadline_guard = DeadlineGuard::install(Some(&deadline));
     let js_mutation_generation_before_dispatch = js_tab.dom().mutation_generation();
     let mut dispatched_dom_event = false;
 
@@ -5119,6 +5123,13 @@ impl BrowserRuntime {
         tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
       let mut dispatched_dom_event = false;
       if let Some(js_tab) = tab.js_tab.as_mut() {
+        let cancel_snapshot = tab.cancel.snapshot_paint();
+        let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
+        let deadline = deadline_for(cancel_callback.clone(), None);
+        let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+        if cancel_callback() {
+          // Soft-stop: skip dispatch if this paint generation has already been pre-empted.
+        } else {
         let target = js_dom_node_for_preorder_id_with_log(
           &self.ui_tx,
           tab_id,
@@ -5155,13 +5166,14 @@ impl BrowserRuntime {
             },
             mouse,
           ) {
-            if self.debug_log_enabled {
+            if self.debug_log_enabled && !cancel_callback() {
               let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                 tab_id,
                 line: format!("js mousedown event dispatch failed: {err}"),
               });
             }
           }
+        }
         }
       }
       if dispatched_dom_event {
@@ -5195,6 +5207,8 @@ impl BrowserRuntime {
     };
     tab.pointer_buttons &= !mouse_buttons_mask_for_button(button);
     let click_count = tab.last_pointer_click_count;
+    let js_cancel_snapshot = tab.cancel.snapshot_paint();
+    let js_cancel_callback = js_cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
 
     if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
       // Right-click/etc: no default interaction engine actions, but still dispatch a DOM `mouseup`
@@ -5235,6 +5249,11 @@ impl BrowserRuntime {
 
       if let Some(target_id) = target_id {
         if let Some(js_tab) = tab.js_tab.as_mut() {
+          let deadline = deadline_for(js_cancel_callback.clone(), None);
+          let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+          if js_cancel_callback() {
+            return;
+          }
           let target = js_dom_node_for_preorder_id_with_log(
             &self.ui_tx,
             tab_id,
@@ -5271,7 +5290,7 @@ impl BrowserRuntime {
               },
               mouse,
             ) {
-              if self.debug_log_enabled {
+              if self.debug_log_enabled && !js_cancel_callback() {
                 let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                   tab_id,
                   line: format!("js mouseup event dispatch failed: {err}"),
@@ -5531,202 +5550,238 @@ impl BrowserRuntime {
       tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
     let mut dispatched_dom_event = false;
 
-    if let Some(target_id) = mouseup_target {
-      if let Some(js_tab) = tab.js_tab.as_mut() {
-        let target = js_dom_node_for_preorder_id_with_log(
-          &self.ui_tx,
-          tab_id,
-          self.debug_log_enabled,
-          js_tab,
-          target_id,
-          mouseup_target_element_id.as_deref(),
-          &mut tab.js_dom_mapping_generation,
-          &mut tab.js_dom_mapping,
-          &mut tab.js_dom_mapping_miss_log_last,
-          "mouseup",
-        );
-        if let Some(node_id) = target {
-          dispatched_dom_event = true;
-          let mouse = web_events::MouseEvent {
-            client_x: mouse_client_coord(pos_css.0),
-            client_y: mouse_client_coord(pos_css.1),
-            button: mouse_event_button(button),
-            buttons: pointer_buttons,
-            detail: click_count as i32,
-            ctrl_key: modifiers.ctrl(),
-            shift_key: modifiers.shift(),
-            alt_key: modifiers.alt(),
-            meta_key: modifiers.meta(),
-            related_target: None,
-          };
-          if let Err(err) = js_tab.dispatch_mouse_event(
-            node_id,
-            "mouseup",
-            web_events::EventInit {
-              bubbles: true,
-              cancelable: true,
-              composed: false,
-            },
-            mouse,
-          ) {
-            if self.debug_log_enabled {
-              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                tab_id,
-                line: format!("js mouseup event dispatch failed: {err}"),
-              });
-            }
-          }
-        }
-      }
-    }
-
     let mut default_allowed = true;
-    if let Some(target_id) = click_target {
-      if let Some(js_tab) = tab.js_tab.as_mut() {
-        let click_type: &'static str = match button {
-          PointerButton::Middle => "auxclick",
-          _ => "click",
-        };
+    {
+      let deadline = deadline_for(js_cancel_callback.clone(), None);
+      let _deadline_guard = DeadlineGuard::install(Some(&deadline));
 
-        let target = js_dom_node_for_preorder_id_with_log(
-          &self.ui_tx,
-          tab_id,
-          self.debug_log_enabled,
-          js_tab,
-          target_id,
-          click_target_element_id.as_deref(),
-          &mut tab.js_dom_mapping_generation,
-          &mut tab.js_dom_mapping,
-          &mut tab.js_dom_mapping_miss_log_last,
-          click_type,
-        );
-
-        if let Some(node_id) = target {
-          dispatched_dom_event = true;
-          let mouse = web_events::MouseEvent {
-            client_x: mouse_client_coord(pos_css.0),
-            client_y: mouse_client_coord(pos_css.1),
-            button: mouse_event_button(button),
-            buttons: pointer_buttons,
-            detail: click_count as i32,
-            ctrl_key: modifiers.ctrl(),
-            shift_key: modifiers.shift(),
-            alt_key: modifiers.alt(),
-            meta_key: modifiers.meta(),
-            related_target: None,
-          };
-          match js_tab.dispatch_mouse_event(
-            node_id,
-            click_type,
-            web_events::EventInit {
-              bubbles: true,
-              cancelable: true,
-              composed: false,
-            },
-            mouse,
-          ) {
-            Ok(allowed) => default_allowed = allowed,
-            Err(err) => {
-              if self.debug_log_enabled {
-                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                  tab_id,
-                  line: format!("js {click_type} event dispatch failed: {err}"),
-                });
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Double click: after dispatching the second click, dispatch `dblclick` at the same target.
-    //
-    // Note: this is a best-effort approximation driven by the UI-provided click_count.
-    if click_count == 2 && matches!(button, PointerButton::Primary) {
-      if let Some(target_id) = click_target {
-        if let Some(js_tab) = tab.js_tab.as_mut() {
-          let target = js_dom_node_for_preorder_id_with_log(
-            &self.ui_tx,
-            tab_id,
-            self.debug_log_enabled,
-            js_tab,
-            target_id,
-            click_target_element_id.as_deref(),
-            &mut tab.js_dom_mapping_generation,
-            &mut tab.js_dom_mapping,
-            &mut tab.js_dom_mapping_miss_log_last,
-            "dblclick",
-          );
-          if let Some(node_id) = target {
-            dispatched_dom_event = true;
-            let mouse = web_events::MouseEvent {
-              client_x: mouse_client_coord(pos_css.0),
-              client_y: mouse_client_coord(pos_css.1),
-              button: mouse_event_button(button),
-              buttons: pointer_buttons,
-              detail: 2,
-              ctrl_key: modifiers.ctrl(),
-              shift_key: modifiers.shift(),
-              alt_key: modifiers.alt(),
-              meta_key: modifiers.meta(),
-              related_target: None,
-            };
-            if let Err(err) = js_tab.dispatch_mouse_event(
-              node_id,
-              "dblclick",
-              web_events::EventInit {
-                bubbles: true,
-                cancelable: true,
-                composed: false,
-              },
-              mouse,
-            ) {
-              if self.debug_log_enabled {
-                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                  tab_id,
-                  line: format!("js dblclick event dispatch failed: {err}"),
-                });
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // If a click triggers a form submission attempt, dispatch a cancelable `"submit"` event on the
-    // form owner and honor `preventDefault()` before committing the navigation.
-    if default_allowed {
-      if let Some(submitter_id) = form_submitter {
-        if let Some(js_tab) = tab.js_tab.as_mut() {
-          let submitter_node = js_dom_node_for_preorder_id_with_log(
-            &self.ui_tx,
-            tab_id,
-            self.debug_log_enabled,
-            js_tab,
-            submitter_id,
-            form_submitter_element_id.as_deref(),
-            &mut tab.js_dom_mapping_generation,
-            &mut tab.js_dom_mapping,
-            &mut tab.js_dom_mapping_miss_log_last,
-            "submit",
-          );
-          if let Some(submitter_node) = submitter_node {
-            if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node)
-            {
+      if js_cancel_callback() {
+        // Soft-stop: treat cancellation as `preventDefault()` so we don't commit navigation or
+        // other default actions when we couldn't finish dispatching JS events.
+        default_allowed = false;
+      } else {
+        if let Some(target_id) = mouseup_target {
+          if let Some(js_tab) = tab.js_tab.as_mut() {
+            let target = js_dom_node_for_preorder_id_with_log(
+              &self.ui_tx,
+              tab_id,
+              self.debug_log_enabled,
+              js_tab,
+              target_id,
+              mouseup_target_element_id.as_deref(),
+              &mut tab.js_dom_mapping_generation,
+              &mut tab.js_dom_mapping,
+              &mut tab.js_dom_mapping_miss_log_last,
+              "mouseup",
+            );
+            if let Some(node_id) = target {
               dispatched_dom_event = true;
-              match js_tab.dispatch_submit_event(form_node) {
-                Ok(allowed) => default_allowed = allowed,
-                Err(err) => {
-                  if self.debug_log_enabled {
+              let mouse = web_events::MouseEvent {
+                client_x: mouse_client_coord(pos_css.0),
+                client_y: mouse_client_coord(pos_css.1),
+                button: mouse_event_button(button),
+                buttons: pointer_buttons,
+                detail: click_count as i32,
+                ctrl_key: modifiers.ctrl(),
+                shift_key: modifiers.shift(),
+                alt_key: modifiers.alt(),
+                meta_key: modifiers.meta(),
+                related_target: None,
+              };
+              if let Err(err) = js_tab.dispatch_mouse_event(
+                node_id,
+                "mouseup",
+                web_events::EventInit {
+                  bubbles: true,
+                  cancelable: true,
+                  composed: false,
+                },
+                mouse,
+              ) {
+                if self.debug_log_enabled && !js_cancel_callback() {
+                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                    tab_id,
+                    line: format!("js mouseup event dispatch failed: {err}"),
+                  });
+                }
+              }
+              if js_cancel_callback() {
+                default_allowed = false;
+              }
+            }
+          }
+        }
+
+        if !js_cancel_callback() {
+          if let Some(target_id) = click_target {
+            if let Some(js_tab) = tab.js_tab.as_mut() {
+              let click_type: &'static str = match button {
+                PointerButton::Middle => "auxclick",
+                _ => "click",
+              };
+
+              let target = js_dom_node_for_preorder_id_with_log(
+                &self.ui_tx,
+                tab_id,
+                self.debug_log_enabled,
+                js_tab,
+                target_id,
+                click_target_element_id.as_deref(),
+                &mut tab.js_dom_mapping_generation,
+                &mut tab.js_dom_mapping,
+                &mut tab.js_dom_mapping_miss_log_last,
+                click_type,
+              );
+
+              if let Some(node_id) = target {
+                dispatched_dom_event = true;
+                let mouse = web_events::MouseEvent {
+                  client_x: mouse_client_coord(pos_css.0),
+                  client_y: mouse_client_coord(pos_css.1),
+                  button: mouse_event_button(button),
+                  buttons: pointer_buttons,
+                  detail: click_count as i32,
+                  ctrl_key: modifiers.ctrl(),
+                  shift_key: modifiers.shift(),
+                  alt_key: modifiers.alt(),
+                  meta_key: modifiers.meta(),
+                  related_target: None,
+                };
+                match js_tab.dispatch_mouse_event(
+                  node_id,
+                  click_type,
+                  web_events::EventInit {
+                    bubbles: true,
+                    cancelable: true,
+                    composed: false,
+                  },
+                  mouse,
+                ) {
+                  Ok(allowed) => default_allowed = allowed,
+                  Err(err) => {
+                    if js_cancel_callback() {
+                      default_allowed = false;
+                    } else if self.debug_log_enabled {
+                      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                        tab_id,
+                        line: format!("js {click_type} event dispatch failed: {err}"),
+                      });
+                    }
+                  }
+                }
+                if js_cancel_callback() {
+                  default_allowed = false;
+                }
+              }
+            }
+          }
+        } else {
+          default_allowed = false;
+        }
+
+        // Double click: after dispatching the second click, dispatch `dblclick` at the same target.
+        //
+        // Note: this is a best-effort approximation driven by the UI-provided click_count.
+        if !js_cancel_callback() && click_count == 2 && matches!(button, PointerButton::Primary) {
+          if let Some(target_id) = click_target {
+            if let Some(js_tab) = tab.js_tab.as_mut() {
+              let target = js_dom_node_for_preorder_id_with_log(
+                &self.ui_tx,
+                tab_id,
+                self.debug_log_enabled,
+                js_tab,
+                target_id,
+                click_target_element_id.as_deref(),
+                &mut tab.js_dom_mapping_generation,
+                &mut tab.js_dom_mapping,
+                &mut tab.js_dom_mapping_miss_log_last,
+                "dblclick",
+              );
+              if let Some(node_id) = target {
+                dispatched_dom_event = true;
+                let mouse = web_events::MouseEvent {
+                  client_x: mouse_client_coord(pos_css.0),
+                  client_y: mouse_client_coord(pos_css.1),
+                  button: mouse_event_button(button),
+                  buttons: pointer_buttons,
+                  detail: 2,
+                  ctrl_key: modifiers.ctrl(),
+                  shift_key: modifiers.shift(),
+                  alt_key: modifiers.alt(),
+                  meta_key: modifiers.meta(),
+                  related_target: None,
+                };
+                if let Err(err) = js_tab.dispatch_mouse_event(
+                  node_id,
+                  "dblclick",
+                  web_events::EventInit {
+                    bubbles: true,
+                    cancelable: true,
+                    composed: false,
+                  },
+                  mouse,
+                ) {
+                  if self.debug_log_enabled && !js_cancel_callback() {
                     let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                       tab_id,
-                      line: format!("js submit event dispatch failed: {err}"),
+                      line: format!("js dblclick event dispatch failed: {err}"),
                     });
+                  }
+                }
+                if js_cancel_callback() {
+                  default_allowed = false;
+                }
+              }
+            }
+          }
+        } else if js_cancel_callback() {
+          default_allowed = false;
+        }
+
+        // If a click triggers a form submission attempt, dispatch a cancelable `"submit"` event on
+        // the form owner and honor `preventDefault()` before committing the navigation.
+        if default_allowed && !js_cancel_callback() {
+          if let Some(submitter_id) = form_submitter {
+            if let Some(js_tab) = tab.js_tab.as_mut() {
+              let submitter_node = js_dom_node_for_preorder_id_with_log(
+                &self.ui_tx,
+                tab_id,
+                self.debug_log_enabled,
+                js_tab,
+                submitter_id,
+                form_submitter_element_id.as_deref(),
+                &mut tab.js_dom_mapping_generation,
+                &mut tab.js_dom_mapping,
+                &mut tab.js_dom_mapping_miss_log_last,
+                "submit",
+              );
+              if let Some(submitter_node) = submitter_node {
+                if let Some(form_node) =
+                  js_find_form_owner_for_submitter(js_tab.dom(), submitter_node)
+                {
+                  dispatched_dom_event = true;
+                  match js_tab.dispatch_submit_event(form_node) {
+                    Ok(allowed) => default_allowed = allowed,
+                    Err(err) => {
+                      if js_cancel_callback() {
+                        default_allowed = false;
+                      } else if self.debug_log_enabled {
+                        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                          tab_id,
+                          line: format!("js submit event dispatch failed: {err}"),
+                        });
+                      }
+                    }
+                  }
+                  if js_cancel_callback() {
+                    default_allowed = false;
                   }
                 }
               }
             }
           }
+        } else if js_cancel_callback() {
+          default_allowed = false;
         }
       }
     }
@@ -5797,6 +5852,11 @@ impl BrowserRuntime {
         let mut dispatched_dom_event = false;
         if drop_default_allowed {
           if let Some(js_tab) = tab.js_tab.as_mut() {
+            let deadline = deadline_for(js_cancel_callback.clone(), None);
+            let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+            if js_cancel_callback() {
+              drop_default_allowed = false;
+            } else {
             let target = js_dom_node_for_preorder_id_with_log(
               &self.ui_tx,
               tab_id,
@@ -5838,7 +5898,9 @@ impl BrowserRuntime {
               ) {
                 Ok(allowed) => drop_default_allowed = allowed,
                 Err(err) => {
-                  if self.debug_log_enabled {
+                  if js_cancel_callback() {
+                    drop_default_allowed = false;
+                  } else if self.debug_log_enabled {
                     let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                       tab_id,
                       line: format!("js drop event dispatch failed: {err}"),
@@ -5846,6 +5908,10 @@ impl BrowserRuntime {
                   }
                 }
               }
+              if js_cancel_callback() {
+                drop_default_allowed = false;
+              }
+            }
             }
           }
         }
@@ -6096,6 +6162,14 @@ impl BrowserRuntime {
     let mut dispatched_dom_event = false;
     let mut drop_default_allowed = true;
     if let Some(js_tab) = tab.js_tab.as_mut() {
+      let cancel_snapshot = tab.cancel.snapshot_paint();
+      let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
+      let deadline = deadline_for(cancel_callback.clone(), None);
+      let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+      if cancel_callback() {
+        // Soft-stop: if JS dispatch would be cancelled, skip the default drop behavior.
+        return;
+      }
       if let Some(target_id) = drop_target_id {
         let target = js_dom_node_for_preorder_id_with_log(
           &self.ui_tx,
@@ -6117,6 +6191,9 @@ impl BrowserRuntime {
             }
             Err(err) => {
               // Best-effort: keep default behavior working even when JS event dispatch fails.
+              if cancel_callback() {
+                return;
+              }
               let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                 tab_id,
                 line: format!("js drop event dispatch failed: {err}"),
@@ -6193,6 +6270,8 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    let js_cancel_snapshot = tab.cancel.snapshot_paint();
+    let js_cancel_callback = js_cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
 
     let base_url =
       base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
@@ -6402,54 +6481,67 @@ impl BrowserRuntime {
     let mut dispatched_dom_event = false;
     if let Some(target_id) = hit_info.dispatch_target_id {
       if let Some(js_tab) = tab.js_tab.as_mut() {
-        let target = js_dom_node_for_preorder_id_with_log(
-          &self.ui_tx,
-          tab_id,
-          self.debug_log_enabled,
-          js_tab,
-          target_id,
-          hit_info.dispatch_target_element_id.as_deref(),
-          &mut tab.js_dom_mapping_generation,
-          &mut tab.js_dom_mapping,
-          &mut tab.js_dom_mapping_miss_log_last,
-          "contextmenu",
-        );
-        if let Some(node_id) = target {
-          dispatched_dom_event = true;
-          let mouse = web_events::MouseEvent {
-            client_x: mouse_client_coord(pos_css.0),
-            client_y: mouse_client_coord(pos_css.1),
-            button: mouse_event_button(PointerButton::Secondary),
-            buttons: tab.pointer_buttons | mouse_buttons_mask_for_button(PointerButton::Secondary),
-            detail: 0,
-            ctrl_key: modifiers.ctrl(),
-            shift_key: modifiers.shift(),
-            alt_key: modifiers.alt(),
-            meta_key: modifiers.meta(),
-            related_target: None,
-          };
-          match js_tab.dispatch_mouse_event(
-            node_id,
+        let deadline = deadline_for(js_cancel_callback.clone(), None);
+        let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+        if js_cancel_callback() {
+          // Soft-stop: treat cancellation as `preventDefault()` so UIs avoid showing the default
+          // context menu when JS dispatch could not complete.
+          default_prevented = true;
+        } else {
+          let target = js_dom_node_for_preorder_id_with_log(
+            &self.ui_tx,
+            tab_id,
+            self.debug_log_enabled,
+            js_tab,
+            target_id,
+            hit_info.dispatch_target_element_id.as_deref(),
+            &mut tab.js_dom_mapping_generation,
+            &mut tab.js_dom_mapping,
+            &mut tab.js_dom_mapping_miss_log_last,
             "contextmenu",
-            web_events::EventInit {
-              bubbles: true,
-              cancelable: true,
-              composed: false,
-            },
-            mouse,
-          ) {
-            Ok(allowed) => {
-              if !allowed {
-                default_prevented = true;
+          );
+          if let Some(node_id) = target {
+            dispatched_dom_event = true;
+            let mouse = web_events::MouseEvent {
+              client_x: mouse_client_coord(pos_css.0),
+              client_y: mouse_client_coord(pos_css.1),
+              button: mouse_event_button(PointerButton::Secondary),
+              buttons: tab.pointer_buttons | mouse_buttons_mask_for_button(PointerButton::Secondary),
+              detail: 0,
+              ctrl_key: modifiers.ctrl(),
+              shift_key: modifiers.shift(),
+              alt_key: modifiers.alt(),
+              meta_key: modifiers.meta(),
+              related_target: None,
+            };
+            match js_tab.dispatch_mouse_event(
+              node_id,
+              "contextmenu",
+              web_events::EventInit {
+                bubbles: true,
+                cancelable: true,
+                composed: false,
+              },
+              mouse,
+            ) {
+              Ok(allowed) => {
+                if !allowed {
+                  default_prevented = true;
+                }
+              }
+              Err(err) => {
+                if js_cancel_callback() {
+                  default_prevented = true;
+                } else if self.debug_log_enabled {
+                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                    tab_id,
+                    line: format!("js contextmenu event dispatch failed: {err}"),
+                  });
+                }
               }
             }
-            Err(err) => {
-              if self.debug_log_enabled {
-                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                  tab_id,
-                  line: format!("js contextmenu event dispatch failed: {err}"),
-                });
-              }
+            if js_cancel_callback() {
+              default_prevented = true;
             }
           }
         }
@@ -7513,73 +7605,98 @@ impl BrowserRuntime {
           tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
         }
       }
-
       let js_mutation_generation_before_dispatch =
         tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
 
-      if let Some(target_id) = click_target_id {
-        if let Some(js_tab) = tab.js_tab.as_mut() {
-          let target = js_dom_node_for_preorder_id_with_log(
-            &self.ui_tx,
-            tab_id,
-            self.debug_log_enabled,
-            js_tab,
-            target_id,
-            click_target_element_id,
-            &mut tab.js_dom_mapping_generation,
-            &mut tab.js_dom_mapping,
-            &mut tab.js_dom_mapping_miss_log_last,
-            "click",
-          );
-          if let Some(node_id) = target {
-            dispatched_dom_event = true;
-            match js_tab.dispatch_click_event(node_id) {
-              Ok(allowed) => default_allowed = allowed,
-              Err(err) => {
-                if self.debug_log_enabled {
-                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                    tab_id,
-                    line: format!("js click event dispatch failed: {err}"),
-                  });
-                }
-              }
-            }
-          }
-        }
-      }
+      let cancel_snapshot = tab.cancel.snapshot_paint();
+      let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
+      {
+        let deadline = deadline_for(cancel_callback.clone(), None);
+        let _deadline_guard = DeadlineGuard::install(Some(&deadline));
 
-      if default_allowed {
-        if let Some(source_id) = submit_source_id {
-          if let Some(js_tab) = tab.js_tab.as_mut() {
-            let source_node =
-              js_dom_node_for_preorder_id_with_log(
+        if cancel_callback() {
+          // Soft-stop: treat cancellation as `preventDefault()` so we don't commit navigation or
+          // other default actions when we couldn't finish dispatching JS events.
+          default_allowed = false;
+        } else {
+          if let Some(target_id) = click_target_id {
+            if let Some(js_tab) = tab.js_tab.as_mut() {
+              let target = js_dom_node_for_preorder_id_with_log(
                 &self.ui_tx,
                 tab_id,
                 self.debug_log_enabled,
                 js_tab,
-                source_id,
-                submit_source_element_id,
+                target_id,
+                click_target_element_id,
                 &mut tab.js_dom_mapping_generation,
                 &mut tab.js_dom_mapping,
                 &mut tab.js_dom_mapping_miss_log_last,
-              "submit",
-            );
-            if let Some(source_node) = source_node {
-              if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), source_node) {
+                "click",
+              );
+              if let Some(node_id) = target {
                 dispatched_dom_event = true;
-                match js_tab.dispatch_submit_event(form_node) {
+                match js_tab.dispatch_click_event(node_id) {
                   Ok(allowed) => default_allowed = allowed,
                   Err(err) => {
-                    if self.debug_log_enabled {
+                    if cancel_callback() {
+                      default_allowed = false;
+                    } else if self.debug_log_enabled {
                       let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                         tab_id,
-                        line: format!("js submit event dispatch failed: {err}"),
+                        line: format!("js click event dispatch failed: {err}"),
                       });
+                    }
+                  }
+                }
+                if cancel_callback() {
+                  default_allowed = false;
+                }
+              }
+            }
+          }
+
+          if default_allowed && !cancel_callback() {
+            if let Some(source_id) = submit_source_id {
+              if let Some(js_tab) = tab.js_tab.as_mut() {
+                let source_node = js_dom_node_for_preorder_id_with_log(
+                  &self.ui_tx,
+                  tab_id,
+                  self.debug_log_enabled,
+                  js_tab,
+                  source_id,
+                  submit_source_element_id,
+                  &mut tab.js_dom_mapping_generation,
+                  &mut tab.js_dom_mapping,
+                  &mut tab.js_dom_mapping_miss_log_last,
+                  "submit",
+                );
+                if let Some(source_node) = source_node {
+                  if let Some(form_node) =
+                    js_find_form_owner_for_submitter(js_tab.dom(), source_node)
+                  {
+                    dispatched_dom_event = true;
+                    match js_tab.dispatch_submit_event(form_node) {
+                      Ok(allowed) => default_allowed = allowed,
+                      Err(err) => {
+                        if cancel_callback() {
+                          default_allowed = false;
+                        } else if self.debug_log_enabled {
+                          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                            tab_id,
+                            line: format!("js submit event dispatch failed: {err}"),
+                          });
+                        }
+                      }
+                    }
+                    if cancel_callback() {
+                      default_allowed = false;
                     }
                   }
                 }
               }
             }
+          } else if cancel_callback() {
+            default_allowed = false;
           }
         }
       }
