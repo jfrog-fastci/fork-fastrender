@@ -1527,19 +1527,14 @@ impl TextItem {
                   axis
                 });
 
-                let last_glyph_idx = glyph_end.saturating_sub(1);
-                if let Some(glyph) = run
-                  .glyphs
-                  .get_mut(last_glyph_idx)
-                  .or_else(|| run.glyphs.last_mut())
-                {
-                  let before = glyph_inline_advance(glyph, axis);
-                  add_inline_advance(glyph, axis, extra);
-                  let after = glyph_inline_advance(glyph, axis);
-                  run.advance += after - before;
-                } else {
-                  run.advance += extra;
-                }
+                let last_glyph_idx = glyph_end
+                  .saturating_sub(1)
+                  .min(run.glyphs.len().saturating_sub(1));
+                let glyph = &mut run.glyphs[last_glyph_idx];
+                let before = glyph_inline_advance(glyph, axis);
+                add_inline_advance(glyph, axis, extra);
+                let after = glyph_inline_advance(glyph, axis);
+                run.advance += after - before;
               }
             }
           }
@@ -1576,19 +1571,14 @@ impl TextItem {
           if let Some((prev_end, prev_is_space)) = prev_cluster.take() {
             let extra = letter_spacing + if prev_is_space { word_spacing } else { 0.0 };
             if extra != 0.0 {
-              let last_glyph_idx = prev_end.saturating_sub(1);
-              if let Some(glyph) = run
-                .glyphs
-                .get_mut(last_glyph_idx)
-                .or_else(|| run.glyphs.last_mut())
-              {
-                let before = glyph_inline_advance(glyph, axis);
-                add_inline_advance(glyph, axis, extra);
-                let after = glyph_inline_advance(glyph, axis);
-                run.advance += after - before;
-              } else {
-                run.advance += extra;
-              }
+              let last_glyph_idx = prev_end
+                .saturating_sub(1)
+                .min(run.glyphs.len().saturating_sub(1));
+              let glyph = &mut run.glyphs[last_glyph_idx];
+              let before = glyph_inline_advance(glyph, axis);
+              add_inline_advance(glyph, axis, extra);
+              let after = glyph_inline_advance(glyph, axis);
+              run.advance += after - before;
             }
           }
 
