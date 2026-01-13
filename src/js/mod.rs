@@ -104,6 +104,8 @@ pub mod window_css;
 pub mod window_file;
 #[path = "vmjs/window_file_reader.rs"]
 pub mod window_file_reader;
+#[path = "vmjs/window_media.rs"]
+pub mod window_media;
 #[path = "vmjs/window_dom_rect.rs"]
 pub mod window_dom_rect;
 #[path = "vmjs/window_indexed_db.rs"]

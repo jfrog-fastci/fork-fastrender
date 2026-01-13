@@ -27,6 +27,7 @@ use crate::js::window_env::{
   install_window_shims_vm_js, set_match_media_env_media, unregister_match_media_env, MatchMediaEnvGuard,
   WindowEnv,
 };
+use crate::js::window_media::MediaElementStateRegistry;
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, hooks_have_event_loop, VmJsEventLoopHooks,
 };
@@ -328,6 +329,7 @@ pub(crate) struct WindowRealmUserData {
   /// Cached native call handler id for `import.meta.resolve`.
   pub(crate) import_meta_resolve_call_id: Option<NativeFunctionId>,
   pub(crate) worker_registry: crate::js::window_worker::WorkerRegistry,
+  media_element_state_registry: MediaElementStateRegistry,
   dom_platform: Option<DomPlatform>,
   /// Registry of realm-owned (non-host) `dom2::Document` instances keyed by their document ID.
   ///
@@ -424,6 +426,10 @@ impl std::fmt::Debug for WindowRealmUserData {
         &self.import_meta_resolve_call_id.is_some(),
       )
       .field("worker_count", &self.worker_registry.len())
+      .field(
+        "media_element_state_registry_len",
+        &self.media_element_state_registry.len(),
+      )
       .field("has_dom_platform", &self.dom_platform.is_some())
       .field("crypto_rng_state", &self.crypto_rng_state)
       .field("has_window_obj", &self.window_obj.is_some())
@@ -495,6 +501,7 @@ impl WindowRealmUserData {
       module_graph: None,
       import_meta_resolve_call_id: None,
       worker_registry: crate::js::window_worker::WorkerRegistry::default(),
+      media_element_state_registry: MediaElementStateRegistry::default(),
       dom_platform: None,
       owned_dom2_documents: Rc::new(RefCell::new(HashMap::new())),
       pending_dataset_mutation_observer_microtasks: Rc::new(RefCell::new(HashSet::new())),
@@ -526,6 +533,31 @@ impl WindowRealmUserData {
   pub(crate) fn document_obj(&self) -> Option<GcObject> {
     self.document_obj
   }
+
+  pub(crate) fn media_element_state_registry_len(&self) -> usize {
+    self.media_element_state_registry.len()
+  }
+
+  pub(crate) fn media_element_state_registry_mut(&mut self) -> &mut MediaElementStateRegistry {
+    &mut self.media_element_state_registry
+  }
+
+  pub(crate) fn sweep_media_element_state_registry_if_needed(
+    &mut self,
+    heap: &Heap,
+    host: &mut dyn VmHost,
+  ) -> bool {
+    let host_dom = dom_from_vm_host(host);
+    let owned_dom2_documents = self.owned_dom2_documents.borrow();
+    let dom_platform = self.dom_platform.as_mut();
+    self.media_element_state_registry.sweep_if_needed(
+      heap,
+      dom_platform,
+      host_dom,
+      Some(&*owned_dom2_documents),
+    )
+  }
+
   pub(crate) fn dom_platform_mut(&mut self) -> Option<&mut DomPlatform> {
     self.dom_platform.as_mut()
   }
@@ -54607,6 +54639,91 @@ mod tests {
     assert_eq!(data.window_obj(), Some(global));
     assert_eq!(data.document_obj(), Some(document_obj));
     assert!(data.dom_platform_mut().is_some());
+    Ok(())
+  }
+
+  #[test]
+  fn media_element_state_registry_sweeps_on_gc() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let (vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+
+    let document_obj = vm
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| data.document_obj())
+      .expect("expected cached document object");
+
+    let document_id = {
+      let data = vm
+        .user_data_mut::<WindowRealmUserData>()
+        .expect("expected WindowRealmUserData");
+      let platform = data
+        .dom_platform
+        .as_mut()
+        .expect("expected dom platform to be installed");
+      platform
+        .require_document_handle(heap, Value::Object(document_obj))?
+        .document_id
+    };
+
+    let mut host = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+
+    const PER_CYCLE: usize = 128;
+    for _cycle in 0..2 {
+      let base_len = vm
+        .user_data::<WindowRealmUserData>()
+        .expect("expected WindowRealmUserData")
+        .media_element_state_registry_len();
+      let mut roots: Vec<RootId> = Vec::with_capacity(PER_CYCLE);
+      {
+        let data = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .expect("expected WindowRealmUserData");
+        let platform = data
+          .dom_platform
+          .as_mut()
+          .expect("expected dom platform to be installed");
+        let registry = &mut data.media_element_state_registry;
+
+        let mut scope = heap.scope();
+        for _ in 0..PER_CYCLE {
+          let node_id = host
+            .dom_mut()
+            .create_element("video", crate::dom::HTML_NAMESPACE);
+          let wrapper = platform.get_or_create_wrapper_for_document_id(
+            &mut scope,
+            document_id,
+            node_id,
+            DomInterface::HTMLElement,
+          )?;
+          roots.push(scope.heap_mut().add_root(Value::Object(wrapper))?);
+          registry.get_or_create(DomNodeKey::new(document_id, node_id));
+        }
+      }
+
+      let after_insert = vm
+        .user_data::<WindowRealmUserData>()
+        .expect("expected WindowRealmUserData")
+        .media_element_state_registry_len();
+      assert_eq!(after_insert, base_len + PER_CYCLE);
+
+      for root in roots {
+        heap.remove_root(root);
+      }
+      let prev_gc_runs = heap.gc_runs();
+      heap.collect_garbage();
+      assert!(
+        heap.gc_runs() > prev_gc_runs,
+        "expected explicit GC to increment gc run counter"
+      );
+
+      let data = vm
+        .user_data_mut::<WindowRealmUserData>()
+        .expect("expected WindowRealmUserData");
+      data.sweep_media_element_state_registry_if_needed(heap, &mut host);
+      let after_sweep = data.media_element_state_registry_len();
+      assert!(after_sweep < after_insert);
+      assert!(after_sweep <= base_len);
+    }
     Ok(())
   }
 
