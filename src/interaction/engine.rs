@@ -78,6 +78,10 @@ pub enum InteractionAction {
   OpenInNewTab {
     href: String,
   },
+  /// Request that the URL be opened in a new browser window (e.g. Shift+click on a link).
+  OpenInNewWindow {
+    href: String,
+  },
   /// Trigger a download for the resolved URL (typically from `<a download>`).
   Download {
     href: String,
@@ -9810,14 +9814,22 @@ impl InteractionEngine {
                     trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank")
                   });
 
+                // Match browser conventions for link activation gestures:
+                // - middle-click or Ctrl/Cmd-click => open in new tab
+                // - Shift+click => open in new window
+                // - Ctrl/Cmd+Shift+click typically still opens in a new tab
                 let gesture_new_tab = matches!(button, PointerButton::Middle)
                   || (matches!(button, PointerButton::Primary) && modifiers.command());
+                let gesture_new_window =
+                  matches!(button, PointerButton::Primary) && modifiers.shift() && !gesture_new_tab;
 
                 action = if is_download {
                   InteractionAction::Download {
                     href: resolved,
                     file_name: download_name,
                   }
+                } else if gesture_new_window {
+                  InteractionAction::OpenInNewWindow { href: resolved }
                 } else if target_blank || gesture_new_tab {
                   InteractionAction::OpenInNewTab { href: resolved }
                 } else {

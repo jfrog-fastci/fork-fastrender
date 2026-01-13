@@ -1037,6 +1037,14 @@ pub enum WorkerToUi {
     tab_id: TabId,
     url: String,
   },
+  /// Request that the UI open `url` in a new **window** (e.g. Shift+click on a link).
+  ///
+  /// Like [`WorkerToUi::RequestOpenInNewTab`], the worker does not allocate window/tab ids; the UI
+  /// is responsible for creating the new window and navigating its initial tab.
+  RequestOpenInNewWindow {
+    tab_id: TabId,
+    url: String,
+  },
   /// Request that the UI open a new tab and perform the provided navigation request.
   ///
   /// This is used for form submissions with `target=_blank` when the submission is not a plain GET
@@ -1280,6 +1288,7 @@ impl WorkerToUi {
       | WorkerToUi::NavigationCommitted { tab_id, .. }
       | WorkerToUi::NavigationFailed { tab_id, .. }
       | WorkerToUi::RequestOpenInNewTab { tab_id, .. }
+      | WorkerToUi::RequestOpenInNewWindow { tab_id, .. }
       | WorkerToUi::RequestOpenInNewTabRequest { tab_id, .. }
       | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::ScrollStateUpdated { tab_id, .. }

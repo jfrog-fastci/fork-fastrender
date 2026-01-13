@@ -7556,6 +7556,7 @@ impl BrowserRuntime {
     let mut navigate_to: Option<String> = None;
     let mut navigate_request: Option<FormSubmission> = None;
     let mut open_in_new_tab: Option<String> = None;
+    let mut open_in_new_window: Option<String> = None;
     let mut open_in_new_tab_request: Option<FormSubmission> = None;
     let mut download_to_start: Option<(String, Option<String>)> = None;
 
@@ -7570,6 +7571,14 @@ impl BrowserRuntime {
       InteractionAction::OpenInNewTab { href } => {
         if default_allowed {
           open_in_new_tab = Some(href);
+        }
+        if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
+      }
+      InteractionAction::OpenInNewWindow { href } => {
+        if default_allowed {
+          open_in_new_window = Some(href);
         }
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
@@ -7940,6 +7949,14 @@ impl BrowserRuntime {
       let _ = self
         .ui_tx
         .send(WorkerToUiMsg::Single(WorkerToUi::RequestOpenInNewTab {
+          tab_id,
+          url,
+        }));
+    }
+    if let Some(url) = open_in_new_window {
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::RequestOpenInNewWindow {
           tab_id,
           url,
         }));
@@ -9723,6 +9740,7 @@ impl BrowserRuntime {
         action,
         InteractionAction::Navigate { .. }
           | InteractionAction::OpenInNewTab { .. }
+          | InteractionAction::OpenInNewWindow { .. }
           | InteractionAction::OpenInNewTabRequest { .. }
           | InteractionAction::Download { .. }
           | InteractionAction::NavigateRequest { .. }
@@ -9914,6 +9932,20 @@ impl BrowserRuntime {
             let _ = self
               .ui_tx
               .send(WorkerToUiMsg::Single(WorkerToUi::RequestOpenInNewTab {
+                tab_id,
+                url: href,
+              }));
+          }
+          if changed || scroll_changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
+        }
+        InteractionAction::OpenInNewWindow { href } => {
+          if default_allowed {
+            let _ = self
+              .ui_tx
+              .send(WorkerToUiMsg::Single(WorkerToUi::RequestOpenInNewWindow {
                 tab_id,
                 url: href,
               }));

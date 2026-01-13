@@ -1144,6 +1144,16 @@ impl BrowserTabController {
         }
         Ok(out)
       }
+      InteractionAction::OpenInNewWindow { href } => {
+        let mut out = vec![WorkerToUi::RequestOpenInNewWindow {
+          tab_id: self.tab_id,
+          url: href,
+        }];
+        if changed {
+          out.extend(self.paint_if_needed()?);
+        }
+        Ok(out)
+      }
       InteractionAction::OpenInNewTabRequest { request } => {
         let mut out = vec![WorkerToUi::RequestOpenInNewTabRequest {
           tab_id: self.tab_id,
@@ -1956,6 +1966,12 @@ impl BrowserTabController {
       }
       InteractionAction::OpenInNewTab { href } => {
         out.push(WorkerToUi::RequestOpenInNewTab {
+          tab_id: self.tab_id,
+          url: href,
+        });
+      }
+      InteractionAction::OpenInNewWindow { href } => {
+        out.push(WorkerToUi::RequestOpenInNewWindow {
           tab_id: self.tab_id,
           url: href,
         });

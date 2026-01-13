@@ -2130,6 +2130,10 @@ fn sanitize_worker_to_ui_untrusted_payloads(
       tab_id,
       url: sanitize_untrusted_text(&url, MAX_URL_BYTES),
     }),
+    WorkerToUi::RequestOpenInNewWindow { tab_id, url } => Some(WorkerToUi::RequestOpenInNewWindow {
+      tab_id,
+      url: sanitize_untrusted_text(&url, MAX_URL_BYTES),
+    }),
     WorkerToUi::ContextMenu {
       tab_id,
       pos_css,
@@ -17348,6 +17352,40 @@ impl App {
     self.open_url_in_new_tab_with_reason(url, fastrender::ui::NavigationReason::LinkClick)
   }
 
+  fn open_url_in_new_window(&mut self, url: String) {
+    let url = match fastrender::ui::untrusted::validate_untrusted_navigation_url(&url) {
+      Ok(url) => url,
+      Err(_) => {
+        self.show_chrome_toast_kind(
+          fastrender::ui::ToastKind::Warning,
+          "Blocked attempt to open an invalid URL",
+        );
+        return;
+      }
+    };
+
+    let session_window = fastrender::ui::BrowserSessionWindow {
+      tabs: vec![fastrender::ui::BrowserSessionTab {
+        url,
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: None,
+      }],
+      tab_groups: Vec::new(),
+      active_tab_index: 0,
+      show_menu_bar: self.browser_state.chrome.show_menu_bar,
+      window_state: None,
+    };
+
+    let _ = self
+      .event_loop_proxy
+      .send_event(UserEvent::RequestNewWindowWithSession {
+        from_id: self.window.id(),
+        window: session_window,
+      });
+  }
+
   fn open_url_in_new_tab_with_reason(
     &mut self,
     url: String,
@@ -17540,6 +17578,21 @@ impl App {
           tab.unresponsive = false;
         }
         self.open_url_in_new_tab(url);
+        if let Some(monitor) = self.idle_repaint_monitor.as_mut() {
+          monitor.note_worker_activity();
+        }
+        return WorkerMessageResult {
+          request_redraw: true,
+          history_deltas: Vec::new(),
+        };
+      }
+      fastrender::ui::WorkerToUi::RequestOpenInNewWindow { tab_id, url } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.last_worker_msg_at = std::time::SystemTime::now();
+          tab.watchdog_armed = false;
+          tab.unresponsive = false;
+        }
+        self.open_url_in_new_window(url);
         if let Some(monitor) = self.idle_repaint_monitor.as_mut() {
           monitor.note_worker_activity();
         }
