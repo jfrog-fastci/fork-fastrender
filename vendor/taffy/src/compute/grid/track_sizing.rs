@@ -296,19 +296,48 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
   columns: &[GridTrack],
   rows: &[GridTrack],
 ) {
+  #[inline(always)]
+  fn build_prefix_counts(
+    tracks: &[GridTrack],
+    mut predicate: impl FnMut(&GridTrack) -> bool,
+  ) -> Vec<u32> {
+    let mut prefix = Vec::with_capacity(tracks.len() + 1);
+    prefix.push(0);
+    let mut count = 0u32;
+    for track in tracks {
+      if predicate(track) {
+        count += 1;
+      }
+      prefix.push(count);
+    }
+    prefix
+  }
+
+  #[inline(always)]
+  fn range_has_match(prefix: &[u32], start: usize, end: usize) -> bool {
+    // `GridItem::track_range_excluding_lines()` can return an empty range for degenerate spans.
+    // This mirrors `Range::any()` which would also return `false` for empty ranges.
+    start < end && (prefix[end] - prefix[start]) > 0
+  }
+
+  let column_flexible_prefix = build_prefix_counts(columns, |track| track.is_flexible());
+  let column_intrinsic_prefix =
+    build_prefix_counts(columns, |track| track.has_intrinsic_sizing_function());
+  let row_flexible_prefix = build_prefix_counts(rows, |track| track.is_flexible());
+  let row_intrinsic_prefix = build_prefix_counts(rows, |track| track.has_intrinsic_sizing_function());
+
   for item in items {
-    item.crosses_flexible_column = item
-      .track_range_excluding_lines(AbstractAxis::Inline)
-      .any(|i| columns[i].is_flexible());
-    item.crosses_intrinsic_column = item
-      .track_range_excluding_lines(AbstractAxis::Inline)
-      .any(|i| columns[i].has_intrinsic_sizing_function());
-    item.crosses_flexible_row = item
-      .track_range_excluding_lines(AbstractAxis::Block)
-      .any(|i| rows[i].is_flexible());
-    item.crosses_intrinsic_row = item
-      .track_range_excluding_lines(AbstractAxis::Block)
-      .any(|i| rows[i].has_intrinsic_sizing_function());
+    let col_range = item.track_range_excluding_lines(AbstractAxis::Inline);
+    item.crosses_flexible_column =
+      range_has_match(&column_flexible_prefix, col_range.start, col_range.end);
+    item.crosses_intrinsic_column =
+      range_has_match(&column_intrinsic_prefix, col_range.start, col_range.end);
+
+    let row_range = item.track_range_excluding_lines(AbstractAxis::Block);
+    item.crosses_flexible_row =
+      range_has_match(&row_flexible_prefix, row_range.start, row_range.end);
+    item.crosses_intrinsic_row =
+      range_has_match(&row_intrinsic_prefix, row_range.start, row_range.end);
   }
 }
 
@@ -338,14 +367,31 @@ fn update_item_crosses_intrinsic_tracks_for_axis(
   UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS.with(|c| c.set(c.get() + 1));
 
   let treat_percentage_as_intrinsic = axis_inner_node_size.is_none();
-  for item in items.iter_mut() {
-    let crosses_intrinsic = item.track_range_excluding_lines(axis).any(|i| {
-      let track = &axis_tracks[i];
-      track.has_intrinsic_sizing_function()
+  let intrinsic_prefix = {
+    let mut prefix = Vec::with_capacity(axis_tracks.len() + 1);
+    prefix.push(0u32);
+    let mut count = 0u32;
+    for track in axis_tracks {
+      if track.has_intrinsic_sizing_function()
         || (treat_percentage_as_intrinsic
           && track.kind == GridTrackKind::Track
           && track.uses_percentage())
-    });
+      {
+        count += 1;
+      }
+      prefix.push(count);
+    }
+    prefix
+  };
+
+  #[inline(always)]
+  fn range_has_match(prefix: &[u32], start: usize, end: usize) -> bool {
+    start < end && (prefix[end] - prefix[start]) > 0
+  }
+
+  for item in items.iter_mut() {
+    let range = item.track_range_excluding_lines(axis);
+    let crosses_intrinsic = range_has_match(&intrinsic_prefix, range.start, range.end);
 
     match axis {
       AbstractAxis::Inline => item.crosses_intrinsic_column = crosses_intrinsic,
@@ -1875,7 +1921,9 @@ mod tests {
   use crate::tree::MeasureOutput;
 
   use crate::geometry::Point;
+  use crate::geometry::AbstractAxis;
   use crate::style::{MaxTrackSizingFunction, MinTrackSizingFunction};
+  use super::super::types::OriginZeroLine;
 
   fn build_grid_baseline_tree() -> (TaffyTree<()>, NodeId, [NodeId; 2]) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -2172,5 +2220,189 @@ mod tests {
       .unwrap();
 
     assert_eq!(intrinsic_probe_count, 0);
+  }
+
+  #[test]
+  fn crosses_flexible_and_intrinsic_flags_match_track_ranges_and_percentage_rules() {
+    fn make_item(
+      node: NodeId,
+      column_indexes: Line<u16>,
+      row_indexes: Line<u16>,
+    ) -> super::GridItem {
+      let style: Style = Style::default();
+      let mut item = super::GridItem::new_with_placement_style_and_order(
+        node,
+        Line {
+          start: OriginZeroLine(0),
+          end: OriginZeroLine(1),
+        },
+        Line {
+          start: OriginZeroLine(0),
+          end: OriginZeroLine(1),
+        },
+        style,
+        AlignItems::Stretch,
+        AlignItems::Stretch,
+        0,
+      );
+      item.column_indexes = column_indexes;
+      item.row_indexes = row_indexes;
+      item
+    }
+
+    // Track vector indices use the pattern:
+    //   [gutter, track, gutter, track, ..., gutter]
+    //
+    // Columns include:
+    // - a percentage gutter (must *not* be treated as intrinsic due to percentage)
+    // - a flexible track
+    // - a percentage track (treated as intrinsic only when container size is indefinite)
+    // - an intrinsic track
+    let mut columns = vec![
+      super::GridTrack::gutter(LengthPercentage::ZERO), // 0
+      super::GridTrack::new(
+        MinTrackSizingFunction::length(10.0),
+        MaxTrackSizingFunction::length(10.0),
+      ), // 1 fixed
+      super::GridTrack::gutter(LengthPercentage::percent(0.1)), // 2 percentage gutter
+      super::GridTrack::new(
+        MinTrackSizingFunction::ZERO,
+        MaxTrackSizingFunction::fr(1.0),
+      ), // 3 flexible
+      super::GridTrack::gutter(LengthPercentage::ZERO), // 4
+      super::GridTrack::new(
+        MinTrackSizingFunction::percent(0.2),
+        MaxTrackSizingFunction::length(20.0),
+      ), // 5 percentage track
+      super::GridTrack::gutter(LengthPercentage::ZERO), // 6
+      super::GridTrack::new(
+        MinTrackSizingFunction::MIN_CONTENT,
+        MaxTrackSizingFunction::length(0.0),
+      ), // 7 intrinsic track
+      super::GridTrack::gutter(LengthPercentage::ZERO), // 8
+    ];
+
+    // Make a gutter intrinsically-sized to ensure `track_range_excluding_lines()` correctly
+    // excludes bounding grid lines (off-by-one would incorrectly mark item 2 as intrinsic).
+    columns[6].min_track_sizing_function = MinTrackSizingFunction::MIN_CONTENT;
+
+    // Rows include one flexible track and one intrinsic track.
+    let rows = vec![
+      super::GridTrack::gutter(LengthPercentage::ZERO), // 0
+      super::GridTrack::new(
+        MinTrackSizingFunction::length(10.0),
+        MaxTrackSizingFunction::length(10.0),
+      ), // 1 fixed
+      super::GridTrack::gutter(LengthPercentage::ZERO), // 2
+      super::GridTrack::new(
+        MinTrackSizingFunction::ZERO,
+        MaxTrackSizingFunction::fr(1.0),
+      ), // 3 flexible
+      super::GridTrack::gutter(LengthPercentage::ZERO), // 4
+      super::GridTrack::new(
+        MinTrackSizingFunction::MIN_CONTENT,
+        MaxTrackSizingFunction::length(0.0),
+      ), // 5 intrinsic
+      super::GridTrack::gutter(LengthPercentage::ZERO), // 6
+    ];
+
+    let mut items = vec![
+      // Spans only the first fixed track in each axis.
+      make_item(
+        NodeId::new(0),
+        Line { start: 0, end: 2 },
+        Line { start: 0, end: 2 },
+      ),
+      // Spans fixed + (percentage gutter) + flexible. Percentage gutter must not count as intrinsic.
+      make_item(
+        NodeId::new(1),
+        Line { start: 0, end: 4 },
+        Line { start: 0, end: 4 },
+      ),
+      // Spans flexible + fixed gutter + percentage track. Percentage track is intrinsic only when size is indefinite.
+      // Note: end line is 6; we ensure the intrinsically-sized gutter at index 6 is excluded.
+      make_item(
+        NodeId::new(2),
+        Line { start: 2, end: 6 },
+        Line { start: 2, end: 6 },
+      ),
+      // Spans only the intrinsic track in each axis.
+      make_item(
+        NodeId::new(3),
+        Line { start: 6, end: 8 },
+        Line { start: 4, end: 6 },
+      ),
+    ];
+
+    super::determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
+
+    // Item 0: fixed-only
+    assert!(!items[0].crosses_flexible_column);
+    assert!(!items[0].crosses_intrinsic_column);
+    assert!(!items[0].crosses_flexible_row);
+    assert!(!items[0].crosses_intrinsic_row);
+
+    // Item 1: spans a flexible track, but no intrinsic tracks.
+    assert!(items[1].crosses_flexible_column);
+    assert!(!items[1].crosses_intrinsic_column);
+    assert!(items[1].crosses_flexible_row);
+    assert!(!items[1].crosses_intrinsic_row);
+
+    // Item 2: spans a flexible track + a percentage track (percentage is *not* intrinsic yet).
+    assert!(items[2].crosses_flexible_column);
+    assert!(!items[2].crosses_intrinsic_column);
+    assert!(items[2].crosses_flexible_row);
+    assert!(items[2].crosses_intrinsic_row);
+
+    // Item 3: intrinsic-only
+    assert!(!items[3].crosses_flexible_column);
+    assert!(items[3].crosses_intrinsic_column);
+    assert!(!items[3].crosses_flexible_row);
+    assert!(items[3].crosses_intrinsic_row);
+
+    // Indefinite inline size: percentage tracks behave as intrinsic.
+    super::update_item_crosses_intrinsic_tracks_for_axis(
+      AbstractAxis::Inline,
+      &mut items,
+      &columns,
+      None,
+    );
+    assert_eq!(
+      items.iter().map(|it| it.crosses_intrinsic_column).collect::<Vec<_>>(),
+      vec![false, false, true, true]
+    );
+    // Row flags were not updated by the inline-axis call.
+    assert_eq!(
+      items.iter().map(|it| it.crosses_intrinsic_row).collect::<Vec<_>>(),
+      vec![false, false, true, true]
+    );
+
+    // Definite inline size: percentage tracks behave as fixed.
+    super::update_item_crosses_intrinsic_tracks_for_axis(
+      AbstractAxis::Inline,
+      &mut items,
+      &columns,
+      Some(100.0),
+    );
+    assert_eq!(
+      items.iter().map(|it| it.crosses_intrinsic_column).collect::<Vec<_>>(),
+      vec![false, false, false, true]
+    );
+
+    // Sanity-check the block-axis update path as well (no percentage rows, so it should be stable).
+    super::update_item_crosses_intrinsic_tracks_for_axis(
+      AbstractAxis::Block,
+      &mut items,
+      &rows,
+      None,
+    );
+    assert_eq!(
+      items.iter().map(|it| it.crosses_intrinsic_row).collect::<Vec<_>>(),
+      vec![false, false, true, true]
+    );
+    assert_eq!(
+      items.iter().map(|it| it.crosses_intrinsic_column).collect::<Vec<_>>(),
+      vec![false, false, false, true]
+    );
   }
 }
