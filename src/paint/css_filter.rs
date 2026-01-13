@@ -231,8 +231,7 @@ pub(crate) fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> Result<(), Rende
     }
   }
 
-  let mut scratch =
-    DROP_SHADOW_SPREAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+  let mut scratch = DROP_SHADOW_SPREAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
   let result = (|| -> Result<(), RenderError> {
     scratch
       .alpha0
@@ -551,16 +550,38 @@ pub(crate) fn apply_drop_shadow(
   let Some((min_x, min_y, bounds_w, bounds_h)) = alpha_bounds(pixmap) else {
     return Ok(());
   };
-  let blur_pad = (blur_radius.abs() * 3.0).ceil() as u32;
+  let blur_pad = (blur_radius.abs() * 3.0).ceil() as u64;
   // Negative spread is an erosion pass. Even though it shrinks the shadow, we still need a
   // transparent margin so edge pixels can observe transparent neighbors; otherwise a tight
   // alpha-bounds crop would clamp-to-edge and prevent the erosion from taking effect.
   //
   // Positive spread already needs padding to avoid clipping the dilation.
-  let spread_pad = spread.abs().ceil() as u32;
-  let pad = blur_pad + spread_pad;
+  let spread_pad = spread.abs().ceil() as u64;
+  let pad = match blur_pad.checked_add(spread_pad) {
+    Some(pad) => match u32::try_from(pad) {
+      Ok(pad) => pad,
+      Err(_) => return Ok(()),
+    },
+    None => return Ok(()),
+  };
+  let pad_i32 = match i32::try_from(pad) {
+    Ok(pad) => pad,
+    Err(_) => return Ok(()),
+  };
+  let pad2 = match pad.checked_mul(2) {
+    Some(pad2) => pad2,
+    None => return Ok(()),
+  };
+  let shadow_w = match bounds_w.checked_add(pad2) {
+    Some(w) => w,
+    None => return Ok(()),
+  };
+  let shadow_h = match bounds_h.checked_add(pad2) {
+    Some(h) => h,
+    None => return Ok(()),
+  };
 
-  let mut shadow = match new_pixmap(bounds_w + pad * 2, bounds_h + pad * 2) {
+  let mut shadow = match new_pixmap(shadow_w, shadow_h) {
     Some(p) => p,
     None => return Ok(()),
   };
@@ -610,8 +631,14 @@ pub(crate) fn apply_drop_shadow(
     apply_gaussian_blur(&mut shadow, blur_radius)?;
   }
 
-  let dest_x = min_x as i32 - pad as i32;
-  let dest_y = min_y as i32 - pad as i32;
+  let dest_x = match i32::try_from(min_x) {
+    Ok(min_x) => min_x - pad_i32,
+    Err(_) => return Ok(()),
+  };
+  let dest_y = match i32::try_from(min_y) {
+    Ok(min_y) => min_y - pad_i32,
+    Err(_) => return Ok(()),
+  };
   let mut paint = PixmapPaint::default();
   paint.blend_mode = SkiaBlendMode::DestinationOver;
   pixmap.draw_pixmap(
@@ -801,14 +828,10 @@ mod tests {
       let stride = pixmap.width() as usize;
       {
         let pixels = pixmap.pixels_mut();
-        pixels[1 * stride + 1] =
-          PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("pixel");
-        pixels[2 * stride + 4] =
-          PremultipliedColorU8::from_rgba(128, 0, 0, 128).expect("pixel");
-        pixels[5 * stride + 2] =
-          PremultipliedColorU8::from_rgba(0, 128, 0, 128).expect("pixel");
-        pixels[3 * stride + 7] =
-          PremultipliedColorU8::from_rgba(0, 0, 64, 64).expect("pixel");
+        pixels[1 * stride + 1] = PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("pixel");
+        pixels[2 * stride + 4] = PremultipliedColorU8::from_rgba(128, 0, 0, 128).expect("pixel");
+        pixels[5 * stride + 2] = PremultipliedColorU8::from_rgba(0, 128, 0, 128).expect("pixel");
+        pixels[3 * stride + 7] = PremultipliedColorU8::from_rgba(0, 0, 64, 64).expect("pixel");
       }
 
       let mut fast = pixmap.clone();
@@ -869,5 +892,27 @@ mod tests {
       "expected timeout, got {result:?}"
     );
     assert!(calls.load(Ordering::SeqCst) >= 4);
+  }
+
+  #[test]
+  fn drop_shadow_huge_spread_does_not_panic() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let mut pixmap = new_pixmap(10, 10).expect("pixmap");
+    pixmap.data_mut().fill(0);
+    pixmap.pixels_mut()[0] = PremultipliedColorU8::from_rgba(0, 0, 0, 255).expect("pixel");
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+      apply_drop_shadow(
+        &mut pixmap,
+        0.0,
+        0.0,
+        0.0,
+        1.0e30,
+        Rgba::from_rgba8(0, 0, 0, 255),
+      )
+    }));
+    assert!(result.is_ok(), "expected no panic, got {result:?}");
+    assert!(result.unwrap().is_ok());
   }
 }
