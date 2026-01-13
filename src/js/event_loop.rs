@@ -39,7 +39,7 @@ pub enum TaskSource {
   IdleCallback,
 }
 
-const TASK_SOURCE_COUNT: usize = 7;
+const TASK_SOURCE_COUNT: usize = 8;
 
 impl TaskSource {
   #[inline]
@@ -51,9 +51,10 @@ impl TaskSource {
       TaskSource::Microtask => 1,
       TaskSource::Networking => 2,
       TaskSource::DOMManipulation => 3,
-      TaskSource::Timer => 4,
-      TaskSource::MediaQueryList => 5,
-      TaskSource::IdleCallback => 6,
+      TaskSource::UserInteraction => 4,
+      TaskSource::Timer => 5,
+      TaskSource::MediaQueryList => 6,
+      TaskSource::IdleCallback => 7,
     }
   }
 }
@@ -680,6 +681,13 @@ impl<Host: 'static> EventLoop<Host> {
         task.source
       };
 
+      // External tasks indicate that the event loop is not idle, so discard any active idle period
+      // deadline (unless the external task itself is an idle callback task, which is considered
+      // part of an idle period).
+      if source != TaskSource::IdleCallback {
+        self.idle_period_deadline = None;
+      }
+
       // Mirror `queue_task`'s failure modes, but ensure the external task stays queued if we
       // cannot accept more work right now.
       if self.pending_task_count() >= self.queue_limits.max_pending_tasks {
@@ -692,7 +700,7 @@ impl<Host: 'static> EventLoop<Host> {
       // Reserve space up-front so we can safely move the `FnOnce` out of the external queue
       // without risking it being dropped on enqueue failure.
       {
-        let queue = self.task_queues.entry(source).or_default();
+        let queue = &mut self.task_queues[source.as_usize()];
         queue
           .try_reserve(1)
           .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
@@ -718,13 +726,12 @@ impl<Host: 'static> EventLoop<Host> {
       let source = task.source;
       let runnable = task.runnable;
       // `EventLoop::queue_task` does not require `Send`, so wrap the Send task in a local closure.
-      self
-        .task_queues
-        .entry(source)
-        .or_default()
-        .push_back(Task::new_with_seq(source, seq, move |host, event_loop| {
-          runnable(host, event_loop)
-        }));
+      self.task_queues[source.as_usize()].push_back(Task::new_with_seq(
+        source,
+        seq,
+        move |host, event_loop| runnable(host, event_loop),
+      ));
+      self.pending_tasks += 1;
     }
 
     Ok(())
