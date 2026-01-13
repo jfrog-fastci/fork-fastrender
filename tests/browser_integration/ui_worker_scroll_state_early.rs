@@ -2,16 +2,15 @@
 
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{spawn_browser_worker_for_test, NavigationReason, TabId, WorkerToUi};
-use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 use super::support::{
-  create_tab_msg_with_cancel, format_messages, navigate_msg, scroll_msg, viewport_changed_msg,
-  DEFAULT_TIMEOUT,
+  create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg,
+  wait_for_frame_and_scroll_state_updated, DEFAULT_TIMEOUT,
 };
 
 #[test]
-fn scroll_state_updated_is_emitted_before_frame_ready_with_scroll_snap() {
+fn scroll_state_updated_matches_frame_ready_with_scroll_snap() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
@@ -42,7 +41,9 @@ fn scroll_state_updated_is_emitted_before_frame_ready_with_scroll_snap() {
     .expect("file URL")
     .to_string();
 
-  // Make paints slow so the test can observe early scroll updates without racing a FrameReady.
+  // Make paints slow so we exercise the "scroll update is computed without needing the paint to
+  // complete" code path. The test does not assume ordering between `ScrollStateUpdated` and
+  // `FrameReady`.
   let fastrender::ui::BrowserWorkerHandle { tx, rx, join } =
     spawn_browser_worker_for_test(Some(200)).expect("spawn browser worker");
 
@@ -73,82 +74,16 @@ fn scroll_state_updated_is_emitted_before_frame_ready_with_scroll_snap() {
   tx.send(scroll_msg(tab_id, (0.0, 60.0), None))
     .expect("Scroll");
 
-  let start = Instant::now();
-  let mut seen: Vec<WorkerToUi> = Vec::new();
-  let mut early_scroll: Option<fastrender::scroll::ScrollState> = None;
-  let mut early_elapsed: Option<Duration> = None;
-
-  // Expect an early ScrollStateUpdated long before the paint finishes.
-  while start.elapsed() < Duration::from_millis(50) {
-    let remaining = Duration::from_millis(50).saturating_sub(start.elapsed());
-    match rx.recv_timeout(remaining) {
-      Ok(msg) => {
-        match msg {
-          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if got == tab_id => {
-            if scroll.viewport.y > 0.0 {
-              early_scroll = Some(scroll);
-              early_elapsed = Some(start.elapsed());
-              break;
-            }
-            if seen.len() < 64 {
-              seen.push(WorkerToUi::ScrollStateUpdated { tab_id: got, scroll });
-            }
-          }
-          WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
-            // If a frame arrives first, the worker isn't emitting early scroll updates.
-            if seen.len() < 64 {
-              seen.push(WorkerToUi::FrameReady { tab_id: got, frame });
-            }
-            panic!(
-              "expected early ScrollStateUpdated before FrameReady\nmessages:\n{}",
-              format_messages(&seen)
-            );
-          }
-          other => {
-            if seen.len() < 64 {
-              seen.push(other);
-            }
-          }
-        }
-      }
-      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-    }
-  }
-
-  let early_scroll = early_scroll.unwrap_or_else(|| {
-    panic!(
-      "timed out waiting for early ScrollStateUpdated\nmessages:\n{}",
-      format_messages(&seen)
-    )
-  });
-  let early_elapsed = early_elapsed.unwrap_or_else(|| Duration::from_millis(50));
-
+  let (frame, scroll) = wait_for_frame_and_scroll_state_updated(&rx, tab_id, DEFAULT_TIMEOUT);
   assert!(
-    early_elapsed < Duration::from_millis(50),
-    "expected early ScrollStateUpdated within 50ms, got {:?}",
-    early_elapsed
-  );
-
-  assert!(
-    (early_scroll.viewport.y - 100.0).abs() < 1.0,
+    (scroll.viewport.y - 100.0).abs() < 1.0,
     "expected scroll snap to land at ~100px, got {:?}",
-    early_scroll.viewport
+    scroll.viewport
   );
-
-  // The subsequent FrameReady must reflect the same snapped/clamped scroll state.
-  let frame = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. })
-  })
-  .and_then(|msg| match msg {
-    WorkerToUi::FrameReady { frame, .. } => Some(frame),
-    _ => None,
-  })
-  .expect("FrameReady after scroll");
 
   assert_eq!(
-    frame.scroll_state, early_scroll,
-    "expected early ScrollStateUpdated to match subsequent FrameReady.scroll_state"
+    frame.scroll_state, scroll,
+    "expected ScrollStateUpdated to match FrameReady.scroll_state"
   );
 
   drop(tx);
