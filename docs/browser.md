@@ -47,6 +47,10 @@ can compile without pulling in the GUI stack.
 
 For build/run commands, platform prerequisites, and MSRV constraints, see [browser_ui.md](browser_ui.md).
 
+For cross-platform manual chrome QA (shortcuts + UX parity), see:
+[`docs/chrome_test_matrix.md`](chrome_test_matrix.md) (quick) and
+[`docs/browser_chrome_manual_test_matrix.md`](browser_chrome_manual_test_matrix.md) (full).
+
 ### Headless smoke / crash-smoke (CI + multiprocess seam)
 
 The `browser` entrypoint also has **headless** smoke modes intended for CI and quick validation on
