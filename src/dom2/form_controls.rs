@@ -938,7 +938,22 @@ impl Document {
             .get(dom2_id.index())
             .and_then(|s| s.as_ref())
           {
-            node.set_attribute("value", &state.value);
+            // Preserve authored `value=` attribute presence semantics:
+            // - Avoid injecting `value=""` when the input has no value attribute and the current
+            //   value is empty (the renderer treats missing as empty anyway).
+            // - Avoid injecting `value="on"` for checkbox/radio inputs when the value attribute is
+            //   missing and the value hasn't been dirtied: "on" is the default IDL value, not an
+            //   authored attribute.
+            let has_value_attr = node.get_attribute_ref("value").is_some();
+            let is_default_checkable_value_without_attr =
+              is_checkable && !has_value_attr && !state.dirty_value && state.value == "on";
+            let should_set_value_attr = !is_default_checkable_value_without_attr
+              && (has_value_attr || !state.value.is_empty() || state.dirty_value);
+            if should_set_value_attr {
+              node.set_attribute("value", &state.value);
+            } else {
+              node.remove_attribute("value");
+            }
           }
         }
 

@@ -1441,12 +1441,25 @@ impl Document {
         .unwrap_or("text");
       let is_file_input = input_type.eq_ignore_ascii_case("file");
       let is_checkable = is_input_checkable(Some(input_type));
+
       if is_file_input {
         // File inputs never expose pre-filled value strings from markup.
         remove_attr_ci(&mut attrs, "value");
       } else {
-        // Mirror the input's *current value* into the snapshot attribute.
-        upsert_attr_ci(&mut attrs, "value", state.value.clone());
+        // HTML: checkbox/radio inputs default to `.value == "on"` even when the `value` content
+        // attribute is missing. Do *not* synthesize `value="on"` into markup attributes in that
+        // case: it breaks selector semantics like `input[value]` (attribute presence) and diverges
+        // from browsers, where the default value is an IDL property detail, not an authored
+        // attribute.
+        let has_value_attr = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("value"));
+        let is_default_checkable_value_without_attr =
+          is_checkable && !has_value_attr && !state.dirty_value && state.value == "on";
+        if is_default_checkable_value_without_attr {
+          remove_attr_ci(&mut attrs, "value");
+        } else {
+          // Mirror the input's *current value* into the snapshot attribute.
+          upsert_attr_ci(&mut attrs, "value", state.value.clone());
+        }
       }
 
       if is_checkable {

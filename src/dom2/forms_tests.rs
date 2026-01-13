@@ -375,6 +375,11 @@ fn renderer_dom_snapshot_projects_runtime_form_control_state() {
   assert_eq!(text_node.get_attribute_ref("value"), Some("bar"));
 
   let checkbox_node = find_dom_by_id(&snapshot.dom, "c").expect("checkbox snapshot");
+  assert_eq!(
+    checkbox_node.get_attribute_ref("value"),
+    None,
+    "default checkbox value should not synthesize a `value` attribute when missing"
+  );
   assert!(
     checkbox_node.get_attribute_ref("checked").is_some(),
     "checkedness should be projected into `checked` attribute"
