@@ -6,6 +6,7 @@ use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::tick::DEFAULT_TICK_EVERY;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{EnvBinding, GcEnv, GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use std::collections::HashSet;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
@@ -295,6 +296,13 @@ impl<'vm> HirEvaluator<'vm> {
       scope
         .heap_mut()
         .set_function_script_or_module_token(func_obj, Some(token))?;
+    }
+
+    // Ordinary functions are constructors and get a `.prototype` object. This is required for
+    // `instanceof` and user code that accesses `F.prototype` (even though `new` is not yet
+    // implemented in the compiled path).
+    if !is_arrow {
+      let _ = crate::function_properties::make_constructor(&mut scope, func_obj)?;
     }
 
     Ok(func_obj)
@@ -1906,6 +1914,7 @@ impl<'vm> HirEvaluator<'vm> {
             >= crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?,
         ))
       }
+      hir_js::BinaryOp::Instanceof => Ok(Value::Bool(self.instanceof_operator(scope, l, r)?)),
       hir_js::BinaryOp::Comma => {
         let _ = l;
         Ok(r)
@@ -1946,6 +1955,192 @@ impl<'vm> HirEvaluator<'vm> {
       (Object(ax), Object(by)) => ax == by,
       _ => false,
     })
+  }
+
+  fn instanceof_operator(
+    &mut self,
+    scope: &mut Scope<'_>,
+    object: Value,
+    mut constructor: Value,
+  ) -> Result<bool, VmError> {
+    // Root inputs for the duration of the operation: `instanceof` can allocate when performing
+    // `GetMethod`/`Get`/`Call`.
+    let mut scope = scope.reborrow();
+    scope.push_roots(&[object, constructor])?;
+
+    // InstanceofOperator(O, C) (ECMA-262).
+    //
+    // Spec: https://tc39.es/ecma262/#sec-instanceofoperator
+    let has_instance_sym = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
+      .well_known_symbols()
+      .has_instance;
+    let has_instance_key = PropertyKey::from_symbol(has_instance_sym);
+
+    // Bound functions (`C.[[BoundTargetFunction]]`) delegate to `InstanceofOperator(O, BC)` as part
+    // of `OrdinaryHasInstance`. Implement that delegation here (iteratively) so `instanceof` never
+    // recurses through a deep `.bind()` chain and so the bound target's `@@hasInstance` is consulted
+    // per spec.
+    let mut bound_steps = 0usize;
+
+    loop {
+      // Root inputs for the duration of this iteration: `instanceof` can allocate when performing
+      // `GetMethod`/`Get`/`Call`.
+      let mut iter_scope = scope.reborrow();
+      // Root the *current* constructor value (which can change when delegating bound functions).
+      iter_scope.push_root(constructor)?;
+
+      // 1. If Type(C) is not Object, throw a TypeError exception.
+      let Value::Object(constructor_obj) = constructor else {
+        return Err(VmError::TypeError(
+          "Right-hand side of 'instanceof' is not an object",
+        ));
+      };
+
+      // 2. GetMethod(C, @@hasInstance).
+      let method = crate::spec_ops::get_method_with_host_and_hooks(
+        self.vm,
+        &mut iter_scope,
+        &mut *self.host,
+        &mut *self.hooks,
+        Value::Object(constructor_obj),
+        has_instance_key,
+      )?;
+
+      if let Some(method) = method {
+        // Root `method` across the call. When `C` is a Proxy, `GetMethod(C, @@hasInstance)` can
+        // return a function that is not reachable from any rooted object (it can be synthesized by
+        // the Proxy's `get` trap), and we must keep it alive until the call begins.
+        iter_scope.push_root(method)?;
+
+        let result = self.vm.call_with_host_and_hooks(
+          &mut *self.host,
+          &mut iter_scope,
+          &mut *self.hooks,
+          method,
+          Value::Object(constructor_obj),
+          &[object],
+        )?;
+        return Ok(iter_scope.heap().to_boolean(result)?);
+      }
+
+      // 3. If IsCallable(C) is false, throw a TypeError exception.
+      if !iter_scope.heap().is_callable(constructor)? {
+        return Err(VmError::TypeError(
+          "Right-hand side of 'instanceof' is not callable",
+        ));
+      }
+
+      // `OrdinaryHasInstance` step 2 (bound function delegation):
+      //
+      // If `C` has `[[BoundTargetFunction]]`, delegate to `InstanceofOperator(O, BC)` which will
+      // consult `BC[@@hasInstance]` (including Proxy `get` traps).
+      if let Ok(func) = iter_scope.heap().get_function(constructor_obj) {
+        if let Some(bound_target) = func.bound_target {
+          // Budget extremely deep bound chains and prevent hangs if an invariant is violated.
+          const TICK_EVERY: usize = 32;
+          if bound_steps != 0 && bound_steps % TICK_EVERY == 0 {
+            self.vm.tick()?;
+          }
+          if bound_steps >= crate::MAX_PROTOTYPE_CHAIN {
+            return Err(VmError::PrototypeChainTooDeep);
+          }
+          bound_steps += 1;
+          constructor = Value::Object(bound_target);
+          continue;
+        }
+      }
+
+      return self.ordinary_has_instance(&mut iter_scope, constructor_obj, object);
+    }
+  }
+
+  fn ordinary_has_instance(
+    &mut self,
+    scope: &mut Scope<'_>,
+    constructor: GcObject,
+    object: Value,
+  ) -> Result<bool, VmError> {
+    // If the LHS is not an object, `instanceof` is `false` without further observable actions.
+    let Value::Object(object) = object else {
+      return Ok(false);
+    };
+
+    // P = Get(C, "prototype").
+    let prototype_s = scope.alloc_string("prototype")?;
+    scope.push_root(Value::String(prototype_s))?;
+    let prototype = scope.get_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      constructor,
+      PropertyKey::from_string(prototype_s),
+      Value::Object(constructor),
+    )?;
+
+    let Value::Object(prototype) = prototype else {
+      return Err(VmError::TypeError(
+        "Function has non-object prototype in instanceof check",
+      ));
+    };
+
+    // Root `prototype` for the duration of the algorithm. For Proxy constructors, `Get(C,
+    // "prototype")` can return an object that is not reachable from the constructor/target, and we
+    // must keep it alive across the prototype-chain walk.
+    scope.push_root(Value::Object(prototype))?;
+
+    // Walk `object`'s prototype chain until we find `prototype` or reach the end.
+    let mut current = scope.get_prototype_of_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      object,
+    )?;
+    let mut steps = 0usize;
+    let mut visited: HashSet<GcObject> = HashSet::new();
+    while let Some(obj) = current {
+      // Budget the prototype traversal: hostile inputs can synthesize extremely deep chains (up to
+      // the engine hard limit) inside a single `instanceof` expression. Observe fuel/deadline /
+      // interrupt budgets periodically while walking.
+      //
+      // Note: avoid ticking on the first iteration so shallow `instanceof` checks don't
+      // effectively double-charge fuel (the surrounding expression evaluation already ticks).
+      const TICK_EVERY: usize = 32;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        self.vm.tick()?;
+      }
+
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      if !visited.insert(obj) {
+        return Err(VmError::PrototypeCycle);
+      }
+
+      // Root this prototype step. A Proxy `getPrototypeOf` trap can return an arbitrary object that
+      // is not necessarily reachable from the original LHS, and the VM must keep it alive until
+      // the algorithm completes.
+      scope.push_root(Value::Object(obj))?;
+
+      if obj == prototype {
+        return Ok(true);
+      }
+      current = scope.get_prototype_of_with_host_and_hooks(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        obj,
+      )?;
+    }
+
+    Ok(false)
   }
 
   /// ECMA-262 Abstract Equality Comparison (`==`) for the VM's supported value types.

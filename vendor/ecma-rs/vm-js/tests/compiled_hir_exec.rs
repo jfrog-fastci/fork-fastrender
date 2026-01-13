@@ -1109,3 +1109,58 @@ fn compiled_shift_left_operator_works() -> Result<(), VmError> {
   assert_eq!(result, Value::Number(8.0));
   Ok(())
 }
+
+#[test]
+fn compiled_instanceof_true_object_create_prototype() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function C() {}
+      let o = Object.create(C.prototype);
+      o instanceof C
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_instanceof_false_plain_object() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function C() {}
+      ({}) instanceof C
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(false));
+  Ok(())
+}
+
+#[test]
+fn compiled_instanceof_rhs_not_object_throws() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", "1 instanceof 2")?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::ThrowWithStack { .. } | VmError::Throw(_) | VmError::TypeError(_) => Ok(()),
+    other => panic!("expected TypeError, got {other:?}"),
+  }
+}
