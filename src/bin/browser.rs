@@ -7109,6 +7109,13 @@ struct OpenMediaControls {
   /// is open should close it without forwarding the click back to the page (preventing immediate
   /// reopen).
   anchor_css: fastrender::geometry::Rect,
+  /// Bounding box of the media element in **page-space** CSS coordinates.
+  ///
+  /// The worker supplies `anchor_css` in viewport-local coordinates (0,0 at the top-left of the
+  /// rendered viewport). When the page scrolls, the media element's viewport rect changes, but its
+  /// page-space rect stays stable. Store the page-space rect so we can keep the egui overlay
+  /// attached to the same element across scroll/viewport changes.
+  anchor_page: fastrender::geometry::Rect,
   kind: fastrender::ui::messages::MediaElementKind,
   /// Cached anchor rect in egui points (used as a fallback when CSS→points mapping is stale).
   anchor_rect_points: egui::Rect,
@@ -12321,6 +12328,13 @@ impl App {
     } = &msg
     {
       if self.browser_state.active_tab_id() == Some(*tab_id) {
+        let scroll_offset = self
+          .browser_state
+          .tab(*tab_id)
+          .map(|tab| tab.scroll_state.viewport)
+          .unwrap_or(fastrender::Point::ZERO);
+        let anchor_page = anchor_css.translate(scroll_offset);
+
         let mut anchor_rect_points: Option<egui::Rect> = None;
         if self.page_input_tab == Some(*tab_id) {
           if let Some(mapping) = self.page_input_mapping {
@@ -12344,6 +12358,7 @@ impl App {
           media_node_id: *node_id,
           kind: *kind,
           anchor_css: *anchor_css,
+          anchor_page,
           anchor_rect_points,
           seek_seconds: 0.0,
           volume: 1.0,
@@ -15534,25 +15549,21 @@ impl App {
       self.media_controls_overlay_pointer_capture = false;
     }
 
-    let (tab_id, node_id, anchor_css, mut anchor_rect_points, mut seek_seconds, mut volume) =
-      match self.open_media_controls.as_ref() {
-        Some(controls) => (
-          controls.tab_id,
-          controls.media_node_id,
-          controls.anchor_css,
-          controls.anchor_rect_points,
-          controls.seek_seconds,
-          controls.volume,
-        ),
-        None => {
-          // Defensive: ensure stale rect/pointer-capture state cannot linger if some code path drops
-          // the overlay without calling `close_media_controls`.
-          if self.open_media_controls_rect.is_some() || self.media_controls_overlay_pointer_capture {
-            self.close_media_controls();
-          }
-          return;
-        }
-      };
+    let Some(open_controls) = self.open_media_controls.as_ref() else {
+      // Defensive: ensure stale rect/pointer-capture state cannot linger if some code path drops the
+      // overlay without calling `close_media_controls`.
+      if self.open_media_controls_rect.is_some() || self.media_controls_overlay_pointer_capture {
+        self.close_media_controls();
+      }
+      return;
+    };
+
+    let tab_id = open_controls.tab_id;
+    let node_id = open_controls.media_node_id;
+    let anchor_page = open_controls.anchor_page;
+    let mut anchor_rect_points = open_controls.anchor_rect_points;
+    let mut seek_seconds = open_controls.seek_seconds;
+    let mut volume = open_controls.volume;
 
     // Media controls are page-scoped; close them if the active tab changes.
     if self.browser_state.active_tab_id() != Some(tab_id) {
@@ -15561,13 +15572,33 @@ impl App {
       return;
     }
 
-    if self.page_input_tab == Some(tab_id) {
-      if let Some(mapping) = self.page_input_mapping {
-        if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
-          anchor_rect_points = rect_points;
-        }
-      }
+    // Recompute the viewport-local anchor rect from the stored page-space rect so the overlay stays
+    // attached while scrolling / resizing.
+    let scroll_offset = self
+      .browser_state
+      .tab(tab_id)
+      .map(|tab| tab.scroll_state.viewport)
+      .unwrap_or(fastrender::Point::ZERO);
+    let anchor_css =
+      anchor_page.translate(fastrender::Point::new(-scroll_offset.x, -scroll_offset.y));
+    if let Some(controls) = self.open_media_controls.as_mut() {
+      controls.anchor_css = anchor_css;
     }
+
+    // When the page mapping isn't available (no frame / degenerate viewport), close rather than
+    // leaving the controls "stuck" at an old screen position.
+    let Some(mapping) = (self.page_input_tab == Some(tab_id))
+      .then_some(self.page_input_mapping)
+      .flatten()
+    else {
+      self.close_media_controls();
+      return;
+    };
+    let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) else {
+      self.close_media_controls();
+      return;
+    };
+    anchor_rect_points = rect_points;
 
     // If the anchor rect is degenerate (e.g. stale mapping), don't try to render a bar.
     let anchor_finite = anchor_rect_points.min.x.is_finite()
@@ -15575,7 +15606,7 @@ impl App {
       && anchor_rect_points.max.x.is_finite()
       && anchor_rect_points.max.y.is_finite();
     if !anchor_finite || anchor_rect_points.width() <= 0.0 || anchor_rect_points.height() <= 0.0 {
-      self.open_media_controls_rect = None;
+      self.close_media_controls();
       return;
     }
 
@@ -15583,7 +15614,7 @@ impl App {
     let mut bar_h = 44.0_f32;
     bar_h = bar_h.min(anchor_rect_points.height());
     if bar_h < 18.0 {
-      self.open_media_controls_rect = None;
+      self.close_media_controls();
       return;
     }
 
@@ -15594,7 +15625,7 @@ impl App {
 
     bar_rect = bar_rect.intersect(ctx.screen_rect());
     if bar_rect.width() <= 0.0 || bar_rect.height() <= 0.0 {
-      self.open_media_controls_rect = None;
+      self.close_media_controls();
       return;
     }
 
