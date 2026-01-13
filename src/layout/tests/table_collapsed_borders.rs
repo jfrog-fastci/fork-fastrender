@@ -364,6 +364,110 @@ fn collapsed_table_borders_use_fragment_local_origin_with_repeated_thead_in_prin
 }
 
 #[test]
+fn collapsed_table_borders_include_outer_edge_spill_with_repeated_thead() {
+  // When table header rows are repeated across pages (`display: table-header-group` / `<thead>`),
+  // fragmentation builds a derived `TableCollapsedBorders` for each continuation fragment (see
+  // `layout::fragmentation::inject_table_headers_and_footers`).
+  //
+  // This derived border set must compute `paint_bounds` from the *actual* outer-edge segments
+  // included in the slice. Otherwise, a later row with a thicker outer border can be culled/clipped
+  // when the continuation fragment is painted (CSS 2.1 §17.6.2; WPT `border-collapse-basic-001`).
+  const EPSILON: f32 = 0.1;
+
+  let body_rows = (0..12)
+    .map(|idx| {
+      if idx == 8 {
+        r#"<tr><td class="thick"></td></tr>"#.to_string()
+      } else {
+        "<tr><td></td></tr>".to_string()
+      }
+    })
+    .collect::<Vec<_>>()
+    .join("");
+
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 120px; margin: 0; }}
+          html, body {{ margin: 0; padding: 0; }}
+          table {{ border-collapse: collapse; box-decoration-break: slice; width: 100%; }}
+          th, td {{
+            height: 30px;
+            padding: 0;
+            border-left: 2px solid black;
+            /* Ensure corner joins don't capture the thick outer segment. */
+            border-top: 2px hidden black;
+            border-bottom: 2px hidden black;
+            border-right: 2px hidden black;
+          }}
+          td.thick {{ border-left-width: 20px; border-left-style: solid; border-left-color: black; }}
+        </style>
+      </head>
+      <body>
+        <table>
+          <thead><tr><th></th></tr></thead>
+          <tbody>{body_rows}</tbody>
+        </table>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() > 1, "table should span multiple pages");
+
+  let mut saw_thick_spill = false;
+  for page_root in page_roots {
+    let page_offset = Point::new(-page_root.bounds.origin.x, -page_root.bounds.origin.y);
+    let translated_page = page_root.translate(page_offset);
+    let (table_fragment, _) =
+      find_table_fragment(&translated_page, Point::ZERO).expect("table fragment");
+
+    if table_fragment.slice_info.slice_offset <= EPSILON {
+      continue;
+    }
+
+    let borders = table_fragment
+      .table_borders
+      .as_deref()
+      .expect("expected collapsed border metadata");
+    assert!(
+      borders.fragment_local,
+      "expected fragment-local borders on continuation pages"
+    );
+
+    let has_thick_left = (0..borders.row_count).any(|row| {
+      borders
+        .vertical_segment(0, row)
+        .is_some_and(|seg| seg.is_visible() && seg.width >= 19.9)
+    });
+    if !has_thick_left {
+      continue;
+    }
+
+    saw_thick_spill = true;
+    assert!(
+      borders.paint_bounds.min_x() <= -9.9,
+      "expected paint bounds to include thick outer spill on continuation fragment (min_x={})",
+      borders.paint_bounds.min_x()
+    );
+  }
+
+  assert!(
+    saw_thick_spill,
+    "expected to find a continuation fragment containing the thick outer border row"
+  );
+}
+
+#[test]
 fn collapsed_table_borders_use_fragment_local_origin_with_repeated_tfoot_in_print_pagination() {
   const EPSILON: f32 = 0.1;
 
