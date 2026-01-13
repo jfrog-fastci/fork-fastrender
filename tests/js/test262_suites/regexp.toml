@@ -66,6 +66,9 @@ include = [
   # --- Annex B: Legacy octal escapes ---
   "annexB/language/literals/regexp/legacy-octal-escape.js",
   "annexB/language/literals/regexp/identity-escape.js",
+  # --- Annex B: Non-Unicode malformed named backreferences (`\\k<...>`) ---
+  "annexB/built-ins/RegExp/named-groups/non-unicode-malformed.js",
+  "annexB/built-ins/RegExp/named-groups/non-unicode-malformed-lookbehind.js",
 
   # --- Parse-time early errors for RegExp literals in UnicodeMode ---
   "language/literals/regexp/u-invalid-legacy-octal-escape.js",
