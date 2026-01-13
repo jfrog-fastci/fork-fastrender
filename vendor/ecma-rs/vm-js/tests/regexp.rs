@@ -58,12 +58,36 @@ fn regexp_flags_parsing_rejects_uv_combination() {
 }
 
 #[test]
-fn regexp_unicode_mode_rejects_standalone_right_bracket() {
+fn regexp_unicode_mode_rejects_standalone_brackets_and_braces() {
   let mut rt = new_runtime();
   let value = rt
-    .exec_script(r#"try { new RegExp("]", "u"); "no"; } catch (e) { e.name }"#)
+    .exec_script(
+      r#"
+        function err(pat, flags) {
+          try { new RegExp(pat, flags); return "no"; } catch (e) { return e.name; }
+        }
+        [
+          err("(", "u"),
+          err(")", "u"),
+          err("[", "u"),
+          err("]", "u"),
+          err("{", "u"),
+          err("}", "u"),
+          err("(", "v"),
+          err(")", "v"),
+          err("[", "v"),
+          err("]", "v"),
+          err("{", "v"),
+          err("}", "v"),
+        ].join(",")
+      "#,
+    )
     .unwrap();
-  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,\
+SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError"
+  );
 }
 
 #[test]
