@@ -1727,7 +1727,7 @@ impl DomShimError {
     match self {
       DomShimError::HierarchyRequestError => "HierarchyRequestError",
       DomShimError::NotFoundError => "NotFoundError",
-      DomShimError::InvalidNodeType => "InvalidNodeType",
+      DomShimError::InvalidNodeType => "InvalidNodeTypeError",
     }
   }
 }
