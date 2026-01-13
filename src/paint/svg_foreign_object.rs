@@ -17,6 +17,7 @@ use crate::resource::data_url;
 use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
 use crate::style::types::{Direction, FontStyle as CssFontStyle, Overflow, WritingMode};
+use crate::string_match::contains_ascii_case_insensitive;
 use crate::svg::{
   parse_svg_view_box, svg_markup_for_roxmltree, SvgMeetOrSlice, SvgPreserveAspectRatio,
 };
@@ -813,14 +814,6 @@ pub(crate) fn foreign_object_image_tag(
   fn escape_upper_bound(value: &str) -> usize {
     // Worst case: every byte is escaped to a 6-byte entity (e.g. `'` -> `&apos;`).
     value.len().saturating_mul(6)
-  }
-
-  fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
-    let needle = needle.as_bytes();
-    let bytes = haystack.as_bytes();
-    bytes
-      .windows(needle.len())
-      .any(|window| window.eq_ignore_ascii_case(needle))
   }
 
   fn write_escaped_attr_value<W: std::io::Write>(out: &mut W, value: &str) -> std::io::Result<()> {

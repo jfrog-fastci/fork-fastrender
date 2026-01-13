@@ -21,8 +21,8 @@ use std::time::SystemTime;
 use smallvec::SmallVec;
 
 use super::about_pages;
-use super::string_match::contains_ascii_case_insensitive;
 use super::GlobalHistoryStore;
+use super::string_match::contains_ascii_case_insensitive;
 
 /// Default maximum number of unique visited URLs stored in-memory.
 ///

@@ -4438,21 +4438,8 @@ fn inline_svg_external_url_fragment_references<'a>(
   ctx: Option<&ResourceContext>,
   subresource_cache: Option<&SvgSubresourceCache>,
 ) -> Result<Cow<'a, str>> {
-  fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
-    let bytes = haystack.as_bytes();
-    if bytes.len() < needle.len() {
-      return false;
-    }
-    bytes.windows(needle.len()).any(|window| {
-      window
-        .iter()
-        .zip(needle)
-        .all(|(a, b)| a.to_ascii_lowercase() == *b)
-    })
-  }
-
   // Avoid scanning unless we plausibly have url() tokens.
-  if !contains_ascii_case_insensitive(svg_content, b"url(") {
+  if !crate::string_match::contains_ascii_case_insensitive(svg_content, "url(") {
     return Ok(Cow::Borrowed(svg_content));
   }
 

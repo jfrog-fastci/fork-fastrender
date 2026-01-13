@@ -58,12 +58,12 @@ use rustc_hash::FxHashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
-use super::string_match::contains_ascii_case_insensitive;
 use crate::ui::html_escape::escape_html;
 use crate::ui::theme_parsing::{
   RgbaColor, ENV_BROWSER_ACCENT, ENV_BROWSER_HIGH_CONTRAST, ENV_BROWSER_THEME,
 };
 use crate::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE;
+use super::string_match::contains_ascii_case_insensitive;
 #[cfg(any(test, feature = "browser_ui"))]
 use crate::ui::HistoryVisitDelta;
 use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryEntry, GlobalHistoryStore};

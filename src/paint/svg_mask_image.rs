@@ -1,4 +1,5 @@
 use crate::dom::SVG_NAMESPACE;
+use crate::string_match::contains_ascii_case_insensitive;
 use crate::svg::svg_markup_for_roxmltree;
 use roxmltree::Document;
 use std::borrow::Cow;
@@ -361,17 +362,8 @@ pub(crate) fn defs_injection_for_svg_fragment(
 
   // Avoid parsing unless it looks like there are fragment references.
   // This must be case-insensitive because HTML/SVG serialization preserves attribute casing.
-  fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
-    let bytes = haystack.as_bytes();
-    bytes.windows(needle.len()).any(|window| {
-      window
-        .iter()
-        .zip(needle)
-        .all(|(a, b)| a.to_ascii_lowercase() == *b)
-    })
-  }
-  if !contains_ascii_case_insensitive(svg_fragment, b"href")
-    && !contains_ascii_case_insensitive(svg_fragment, b"url(")
+  if !contains_ascii_case_insensitive(svg_fragment, "href")
+    && !contains_ascii_case_insensitive(svg_fragment, "url(")
   {
     return None;
   }

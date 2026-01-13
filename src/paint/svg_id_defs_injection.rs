@@ -1,4 +1,5 @@
 use crate::dom::SVG_NAMESPACE;
+use crate::string_match::contains_ascii_case_insensitive;
 use roxmltree::Document;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -14,16 +15,6 @@ fn parse_svg_fragment(fragment: &str) -> Option<Document<'_>> {
 
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
-}
-
-fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
-  let bytes = haystack.as_bytes();
-  bytes.windows(needle.len()).any(|window| {
-    window
-      .iter()
-      .zip(needle)
-      .all(|(a, b)| a.to_ascii_lowercase() == *b)
-  })
 }
 
 fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
@@ -270,9 +261,7 @@ pub(crate) fn inject_svg_id_defs_raw(
   }
 
   // Avoid parsing unless it looks like there might be fragment references.
-  if !contains_ascii_case_insensitive(svg, b"href")
-    && !contains_ascii_case_insensitive(svg, b"url(")
-  {
+  if !contains_ascii_case_insensitive(svg, "href") && !contains_ascii_case_insensitive(svg, "url(") {
     return None;
   }
 

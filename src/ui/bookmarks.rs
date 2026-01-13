@@ -19,8 +19,8 @@ use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::string_match::contains_ascii_case_insensitive;
 use crate::ui::url::validate_user_navigation_url_scheme;
+use super::string_match::contains_ascii_case_insensitive;
 
 pub const BOOKMARK_STORE_VERSION: u32 = 1;
 
