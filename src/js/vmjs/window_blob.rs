@@ -82,6 +82,24 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
+fn usize_to_str_buf(buf: &mut [u8; 24], mut n: usize) -> &str {
+  // Enough for `usize::MAX` (20 digits on 64-bit), plus slack.
+  let mut start = buf.len();
+  if n == 0 {
+    start -= 1;
+    buf[start] = b'0';
+  } else {
+    while n != 0 {
+      start -= 1;
+      buf[start] = b'0' + ((n % 10) as u8);
+      n /= 10;
+    }
+  }
+
+  // Safety: we only write ASCII digits, which are valid UTF-8.
+  unsafe { std::str::from_utf8_unchecked(&buf[start..]) }
+}
+
 fn realm_id_from_slot(value: Value) -> Option<RealmId> {
   let Value::Number(n) = value else {
     return None;
@@ -357,8 +375,9 @@ fn blob_ctor_construct(
         parts
           .try_reserve_exact(len)
           .map_err(|_| VmError::OutOfMemory)?;
+        let mut index_buf = [0u8; 24];
         for i in 0..len {
-          let key = alloc_key(scope, &i.to_string())?;
+          let key = alloc_key(scope, usize_to_str_buf(&mut index_buf, i))?;
           let v = vm.get_with_host_and_hooks(host, scope, hooks, parts_obj, key)?;
           parts.push(v);
         }
