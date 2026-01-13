@@ -14,14 +14,53 @@ use std::time::UNIX_EPOCH;
 
 const IPC_FRAME_LEN_BYTES: usize = 4;
 
-/// Maximum frame size accepted by the IPC client.
+/// Environment variable used by [`IpcResourceFetcher::new`] to read the IPC auth token.
+pub const IPC_AUTH_TOKEN_ENV: &str = "FASTR_NETWORK_AUTH_TOKEN";
+
+/// Maximum inbound frame size (renderer → network process) in bytes.
+///
+/// This is a security limit: the network process must reject any request frame exceeding this size
+/// **before** allocating.
+pub const IPC_MAX_INBOUND_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+
+/// Maximum outbound frame size (network process → renderer) in bytes.
 ///
 /// Responses include base64-encoded bodies, so this limit must exceed the underlying fetcher's
-/// `max_response_bytes` budget. The default `ResourcePolicy` cap is 50MB, which expands to ~67MB
+/// `max_response_bytes` budget. The default `ResourcePolicy` cap is 50 MiB, which expands to ~67 MiB
 /// when base64-encoded; keep a comfortable margin.
-const IPC_MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
+pub const IPC_MAX_OUTBOUND_FRAME_BYTES: usize = 80 * 1024 * 1024; // 80 MiB
 
-fn write_ipc_frame(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
+/// Maximum URL string length accepted by the network process (in bytes).
+pub const IPC_MAX_URL_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Maximum number of request headers accepted by the network process.
+pub const IPC_MAX_HEADER_COUNT: usize = 1024;
+
+/// Maximum byte length for a single request header name.
+pub const IPC_MAX_HEADER_NAME_BYTES: usize = 1024;
+
+/// Maximum byte length for a single request header value.
+pub const IPC_MAX_HEADER_VALUE_BYTES: usize = 16 * 1024;
+
+/// Maximum byte length for the auth token string.
+pub const IPC_MAX_AUTH_TOKEN_BYTES: usize = 1024;
+
+fn write_ipc_frame(stream: &mut TcpStream, payload: &[u8], max_frame_bytes: usize) -> io::Result<()> {
+  if payload.is_empty() {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "IPC frame payload cannot be empty",
+    ));
+  }
+  if payload.len() > max_frame_bytes {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      format!(
+        "IPC frame too large: {} bytes (max {max_frame_bytes})",
+        payload.len()
+      ),
+    ));
+  }
   if payload.len() > u32::MAX as usize {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
@@ -35,19 +74,121 @@ fn write_ipc_frame(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
   Ok(())
 }
 
-fn read_ipc_frame(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+fn read_ipc_frame(stream: &mut TcpStream, max_frame_bytes: usize) -> io::Result<Vec<u8>> {
   let mut len_buf = [0u8; IPC_FRAME_LEN_BYTES];
   stream.read_exact(&mut len_buf)?;
   let len = u32::from_le_bytes(len_buf) as usize;
-  if len > IPC_MAX_FRAME_BYTES {
+  if len == 0 {
     return Err(io::Error::new(
       io::ErrorKind::InvalidData,
-      format!("IPC frame too large: {len} bytes"),
+      "IPC frame declared length is zero",
+    ));
+  }
+  if len > max_frame_bytes {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      format!("IPC frame too large: {len} bytes (max {max_frame_bytes})"),
     ));
   }
   let mut buf = vec![0u8; len];
   stream.read_exact(&mut buf)?;
   Ok(buf)
+}
+
+fn validate_ipc_url(url: &str) -> std::result::Result<(), String> {
+  if url.len() > IPC_MAX_URL_BYTES {
+    return Err(format!(
+      "URL exceeds max length ({} > {})",
+      url.len(),
+      IPC_MAX_URL_BYTES
+    ));
+  }
+  Ok(())
+}
+
+fn validate_ipc_headers(headers: &[(String, String)]) -> std::result::Result<(), String> {
+  if headers.len() > IPC_MAX_HEADER_COUNT {
+    return Err(format!(
+      "header count exceeds max ({} > {})",
+      headers.len(),
+      IPC_MAX_HEADER_COUNT
+    ));
+  }
+  for (name, value) in headers {
+    if name.len() > IPC_MAX_HEADER_NAME_BYTES {
+      return Err(format!(
+        "header name exceeds max length ({} > {})",
+        name.len(),
+        IPC_MAX_HEADER_NAME_BYTES
+      ));
+    }
+    if value.len() > IPC_MAX_HEADER_VALUE_BYTES {
+      return Err(format!(
+        "header value exceeds max length ({} > {})",
+        value.len(),
+        IPC_MAX_HEADER_VALUE_BYTES
+      ));
+    }
+  }
+  Ok(())
+}
+
+fn validate_ipc_fetch_request(req: &IpcFetchRequest) -> std::result::Result<(), String> {
+  validate_ipc_url(&req.url)?;
+  if let Some(referrer) = &req.referrer_url {
+    validate_ipc_url(referrer)?;
+  }
+  Ok(())
+}
+
+/// Validate an incoming [`IpcRequest`] against hard protocol limits.
+///
+/// The network process must treat any violation as a protocol error and close the connection.
+pub fn validate_ipc_request(request: &IpcRequest) -> std::result::Result<(), String> {
+  match request {
+    IpcRequest::Hello { token } => {
+      if token.is_empty() {
+        return Err("auth token is empty".to_string());
+      }
+      if token.len() > IPC_MAX_AUTH_TOKEN_BYTES {
+        return Err(format!(
+          "auth token exceeds max length ({} > {})",
+          token.len(),
+          IPC_MAX_AUTH_TOKEN_BYTES
+        ));
+      }
+      Ok(())
+    }
+    IpcRequest::Fetch { url }
+    | IpcRequest::CookieHeaderValue { url }
+    | IpcRequest::FetchPartialWithContext { url, .. }
+    | IpcRequest::ReadCacheArtifact { url, .. }
+    | IpcRequest::WriteCacheArtifact { url, .. }
+    | IpcRequest::RemoveCacheArtifact { url, .. } => validate_ipc_url(url),
+    IpcRequest::StoreCookieFromDocument { url, .. } => validate_ipc_url(url),
+    IpcRequest::FetchWithRequest { req }
+    | IpcRequest::FetchWithRequestAndValidation { req, .. }
+    | IpcRequest::FetchPartialWithRequest { req, .. }
+    | IpcRequest::ReadCacheArtifactWithRequest { req, .. }
+    | IpcRequest::WriteCacheArtifactWithRequest { req, .. }
+    | IpcRequest::RemoveCacheArtifactWithRequest { req, .. } => validate_ipc_fetch_request(req),
+    IpcRequest::FetchHttpRequest { req } => {
+      validate_ipc_fetch_request(&req.fetch)?;
+      validate_ipc_headers(&req.headers)?;
+      Ok(())
+    }
+    IpcRequest::RequestHeaderValue { req, header_name } => {
+      validate_ipc_fetch_request(req)?;
+      if header_name.len() > IPC_MAX_HEADER_NAME_BYTES {
+        return Err(format!(
+          "header_name exceeds max length ({} > {})",
+          header_name.len(),
+          IPC_MAX_HEADER_NAME_BYTES
+        ));
+      }
+      Ok(())
+    }
+  }
 }
 
 #[doc(hidden)]
@@ -351,12 +492,10 @@ pub enum IpcResult<T> {
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IpcRequest {
-  Fetch {
-    url: String,
-  },
-  FetchWithRequest {
-    req: IpcFetchRequest,
-  },
+  /// Authentication handshake. Must be the first message sent by a client after connecting.
+  Hello { token: String },
+  Fetch { url: String },
+  FetchWithRequest { req: IpcFetchRequest },
   FetchWithRequestAndValidation {
     req: IpcFetchRequest,
     etag: Option<String>,
@@ -421,6 +560,8 @@ pub enum IpcRequest {
 #[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IpcResponse {
+  /// Authentication handshake acknowledgement.
+  HelloAck,
   Fetched(IpcResult<IpcFetchedResource>),
   MaybeFetched(IpcResult<Option<IpcFetchedResource>>),
   MaybeString(IpcResult<Option<String>>),
@@ -447,8 +588,42 @@ impl IpcResourceFetcher {
   ///
   /// `socket_name` is currently interpreted as a TCP address (e.g. `"127.0.0.1:1234"`).
   pub fn new(socket_name: impl Into<String>) -> Result<Self> {
+    let token = std::env::var(IPC_AUTH_TOKEN_ENV).map_err(|_| {
+      Error::Resource(ResourceError::new(
+        "<ipc>",
+        format!(
+          "missing IPC auth token: set {IPC_AUTH_TOKEN_ENV} or use IpcResourceFetcher::new_with_auth_token"
+        ),
+      ))
+    })?;
+    Self::new_with_auth_token(socket_name, token)
+  }
+
+  /// Connect to the network process at `socket_name`, authenticating with `auth_token`.
+  pub fn new_with_auth_token(
+    socket_name: impl Into<String>,
+    auth_token: impl Into<String>,
+  ) -> Result<Self> {
+    let auth_token = auth_token.into();
+    if auth_token.is_empty() {
+      return Err(Error::Resource(ResourceError::new(
+        "<ipc>",
+        "IPC auth token is empty".to_string(),
+      )));
+    }
+    if auth_token.len() > IPC_MAX_AUTH_TOKEN_BYTES {
+      return Err(Error::Resource(ResourceError::new(
+        "<ipc>",
+        format!(
+          "IPC auth token too large: {} bytes (max {})",
+          auth_token.len(),
+          IPC_MAX_AUTH_TOKEN_BYTES
+        ),
+      )));
+    }
+
     let endpoint = socket_name.into();
-    let stream = TcpStream::connect(&endpoint).map_err(|err| {
+    let mut stream = TcpStream::connect(&endpoint).map_err(|err| {
       Error::Resource(ResourceError::new(
         "<ipc>",
         format!(
@@ -457,6 +632,41 @@ impl IpcResourceFetcher {
       ))
     })?;
     let _ = stream.set_nodelay(true);
+
+    // Authenticate immediately; the network process must ignore any traffic until it receives the
+    // correct token.
+    let hello = IpcRequest::Hello { token: auth_token };
+    let payload = serde_json::to_vec(&hello).map_err(|err| {
+      Error::Resource(ResourceError::new(
+        "<ipc>",
+        format!("failed to serialize IPC hello request: {err}"),
+      ))
+    })?;
+    write_ipc_frame(&mut stream, &payload, IPC_MAX_INBOUND_FRAME_BYTES).map_err(|err| {
+      Error::Resource(ResourceError::new(
+        "<ipc>",
+        format!("IPC hello write to network process at {endpoint} failed: {err}"),
+      ))
+    })?;
+    let response_bytes = read_ipc_frame(&mut stream, IPC_MAX_OUTBOUND_FRAME_BYTES).map_err(|err| {
+      Error::Resource(ResourceError::new(
+        "<ipc>",
+        format!("IPC hello read from network process at {endpoint} failed: {err}"),
+      ))
+    })?;
+    let response: IpcResponse = serde_json::from_slice(&response_bytes).map_err(|err| {
+      Error::Resource(ResourceError::new(
+        "<ipc>",
+        format!("failed to deserialize IPC hello response: {err}"),
+      ))
+    })?;
+    if !matches!(response, IpcResponse::HelloAck) {
+      return Err(Error::Resource(ResourceError::new(
+        "<ipc>",
+        format!("unexpected IPC hello response: {response:?}"),
+      )));
+    }
+
     Ok(Self {
       inner: Arc::new(IpcResourceFetcherInner {
         endpoint,
@@ -466,6 +676,12 @@ impl IpcResourceFetcher {
   }
 
   fn rpc(&self, url: &str, request: &IpcRequest) -> Result<IpcResponse> {
+    if let Err(err) = validate_ipc_request(request) {
+      return Err(Error::Resource(ResourceError::new(
+        url,
+        format!("IPC request rejected by local validation: {err}"),
+      )));
+    }
     let payload = serde_json::to_vec(request).map_err(|err| {
       Error::Resource(ResourceError::new(
         url,
@@ -478,32 +694,41 @@ impl IpcResourceFetcher {
       Err(poisoned) => poisoned.into_inner(),
     };
 
-    write_ipc_frame(&mut guard, &payload).map_err(|err| {
-      Error::Resource(ResourceError::new(
+    if let Err(err) = write_ipc_frame(&mut guard, &payload, IPC_MAX_INBOUND_FRAME_BYTES) {
+      let _ = guard.shutdown(std::net::Shutdown::Both);
+      return Err(Error::Resource(ResourceError::new(
         url,
         format!(
           "IPC write to network process at {} failed: {err}",
           self.inner.endpoint
         ),
-      ))
-    })?;
+      )));
+    }
 
-    let response_bytes = read_ipc_frame(&mut guard).map_err(|err| {
-      Error::Resource(ResourceError::new(
-        url,
-        format!(
-          "IPC read from network process at {} failed: {err}",
-          self.inner.endpoint
-        ),
-      ))
-    })?;
+    let response_bytes = match read_ipc_frame(&mut guard, IPC_MAX_OUTBOUND_FRAME_BYTES) {
+      Ok(bytes) => bytes,
+      Err(err) => {
+        let _ = guard.shutdown(std::net::Shutdown::Both);
+        return Err(Error::Resource(ResourceError::new(
+          url,
+          format!(
+            "IPC read from network process at {} failed: {err}",
+            self.inner.endpoint
+          ),
+        )));
+      }
+    };
 
-    serde_json::from_slice(&response_bytes).map_err(|err| {
-      Error::Resource(ResourceError::new(
-        url,
-        format!("failed to deserialize IPC response: {err}"),
-      ))
-    })
+    match serde_json::from_slice(&response_bytes) {
+      Ok(res) => Ok(res),
+      Err(err) => {
+        let _ = guard.shutdown(std::net::Shutdown::Both);
+        Err(Error::Resource(ResourceError::new(
+          url,
+          format!("failed to deserialize IPC response: {err}"),
+        )))
+      }
+    }
   }
 
   fn rpc_fetched(&self, url: &str, request: &IpcRequest) -> Result<FetchedResource> {

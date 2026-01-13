@@ -1,5 +1,5 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
-use fastrender::resource::ipc_fetcher::{IpcRequest, IpcResponse, IpcResult};
+use fastrender::resource::ipc_fetcher::{validate_ipc_request, IpcRequest, IpcResponse, IpcResult};
 use fastrender::resource::HttpFetcher;
 use fastrender::{IpcResourceFetcher, ResourceFetcher};
 use std::collections::HashMap;
@@ -10,6 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
+const TEST_AUTH_TOKEN: &str = "fastrender-ipc-test-token";
 
 fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
   let len = (payload.len() as u32).to_le_bytes();
@@ -112,10 +113,23 @@ fn spawn_network_process(listener: TcpListener, expected_requests: usize) -> thr
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
+    // Auth handshake must precede any other IPC request.
+    let hello_bytes = read_frame(&mut stream).expect("read ipc hello frame");
+    let hello: IpcRequest = serde_json::from_slice(&hello_bytes).expect("decode ipc hello request");
+    match hello {
+      IpcRequest::Hello { token } => {
+        assert_eq!(token, TEST_AUTH_TOKEN, "unexpected IPC auth token");
+      }
+      other => panic!("expected IPC hello request, got {other:?}"),
+    }
+    let hello_ack = serde_json::to_vec(&IpcResponse::HelloAck).expect("encode ipc hello ack");
+    write_frame(&mut stream, &hello_ack).expect("write ipc hello ack");
+
     let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
     for _ in 0..expected_requests {
       let req_bytes = read_frame(&mut stream).expect("read ipc frame");
       let req: IpcRequest = serde_json::from_slice(&req_bytes).expect("decode ipc request");
+      validate_ipc_request(&req).expect("validate ipc request");
       let response = match req {
         IpcRequest::Fetch { url } => match fetcher.fetch(&url) {
           Ok(res) => IpcResponse::Fetched(IpcResult::Ok(res.into())),
@@ -178,7 +192,8 @@ fn ipc_fetcher_basic_get_matches_http_fetcher_bytes_and_content_type() {
 
   let ipc_handle = spawn_network_process(ipc_listener, 1);
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = format!("http://{addr}/");
   let res = fetcher.fetch(&url).expect("ipc fetch");
   assert_eq!(res.bytes, b"hello");
@@ -242,7 +257,8 @@ fn ipc_fetcher_cookies_round_trip_between_fetch_and_cookie_header_value() {
   // Fetch, cookie_header_value, fetch.
   let ipc_handle = spawn_network_process(ipc_listener, 3);
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = format!("http://{addr}/cookie");
 
   let res1 = fetcher.fetch(&url).expect("first fetch");
@@ -288,7 +304,8 @@ fn ipc_fetcher_store_cookie_from_document_round_trips_into_cookie_header_value()
   // store_cookie_from_document, cookie_header_value.
   let ipc_handle = spawn_network_process(ipc_listener, 2);
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = "http://127.0.0.1/".to_string();
   fetcher.store_cookie_from_document(&url, "c=d; Path=/");
   let cookies = fetcher.cookie_header_value(&url).unwrap_or_default();

@@ -1,5 +1,5 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
-use fastrender::resource::ipc_fetcher::{IpcRequest, IpcResponse, IpcResult};
+use fastrender::resource::ipc_fetcher::{validate_ipc_request, IpcRequest, IpcResponse, IpcResult};
 use fastrender::resource::{FetchDestination, FetchRequest, HttpFetcher};
 use fastrender::{IpcResourceFetcher, ResourceFetcher};
 use std::io::{self, Read, Write};
@@ -7,6 +7,8 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+
+const TEST_AUTH_TOKEN: &str = "fastrender-ipc-test-token";
 
 fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
   let len = (payload.len() as u32).to_le_bytes();
@@ -56,8 +58,18 @@ fn ipc_fetcher_fetch_partial_with_request_truncates() {
       .set_read_timeout(Some(Duration::from_secs(5)))
       .unwrap();
 
+    let hello_bytes = read_frame(&mut stream).unwrap();
+    let hello: IpcRequest = serde_json::from_slice(&hello_bytes).unwrap();
+    match hello {
+      IpcRequest::Hello { token } => assert_eq!(token, TEST_AUTH_TOKEN, "unexpected IPC auth token"),
+      other => panic!("expected IPC hello request, got {other:?}"),
+    }
+    let hello_ack = serde_json::to_vec(&IpcResponse::HelloAck).unwrap();
+    write_frame(&mut stream, &hello_ack).unwrap();
+
     let req_bytes = read_frame(&mut stream).unwrap();
     let req: IpcRequest = serde_json::from_slice(&req_bytes).unwrap();
+    validate_ipc_request(&req).unwrap();
     ipc_tx.send(req.clone()).unwrap();
 
     let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
@@ -77,7 +89,8 @@ fn ipc_fetcher_fetch_partial_with_request_truncates() {
     write_frame(&mut stream, &out).unwrap();
   });
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = format!("http://{addr}/partial");
   let req = FetchRequest::new(&url, FetchDestination::Fetch);
   let res = fetcher
@@ -98,4 +111,3 @@ fn ipc_fetcher_fetch_partial_with_request_truncates() {
   http_handle.join().unwrap();
   ipc_handle.join().unwrap();
 }
-

@@ -109,6 +109,7 @@ ci = [
 [dependencies]
 fastrender-ipc = { path = "crates/fastrender-ipc" }
 base64 = "0.22"
+getrandom = "0.2"
 fastrender-shmem = { path = "crates/fastrender-shmem" }
 avif-decode = { version = "1.0", default-features = false, optional = true }
 avif-parse = { version = "1.4", optional = true }
@@ -258,7 +259,6 @@ win-sandbox = { path = "crates/win-sandbox" }
 [dev-dependencies]
 criterion = "0.5"
 filetime = "0.2"
-getrandom = "0.2"
 usvg = "0.43"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }

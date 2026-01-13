@@ -3,10 +3,10 @@ use fastrender::resource::{HttpFetcher, ResourceFetcher};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 
-fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher) -> io::Result<()> {
+fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) -> io::Result<()> {
   stream.set_nodelay(true)?;
 
-  let req: ipc::NetworkRequest = match ipc::read_frame(&mut stream) {
+  let hello: ipc::NetworkRequest = match ipc::read_request_frame(&mut stream) {
     Ok(req) => req,
     Err(err) => {
       // If we cannot deserialize the request, just close the connection. This keeps the wire
@@ -15,16 +15,45 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher) -> io::Result<()> 
     }
   };
 
+  match hello {
+    ipc::NetworkRequest::Hello { token } => {
+      if token.len() > ipc::MAX_AUTH_TOKEN_BYTES || token != auth_token {
+        // Wrong token: close the connection without sending a response.
+        return Ok(());
+      }
+      ipc::write_response_frame(&mut stream, &ipc::NetworkResponse::HelloAck)?;
+    }
+    _ => {
+      // Protocol violation: first frame must be Hello.
+      return Ok(());
+    }
+  }
+
+  let req: ipc::NetworkRequest = match ipc::read_request_frame(&mut stream) {
+    Ok(req) => req,
+    Err(err) => return Err(err),
+  };
+
   match req {
+    ipc::NetworkRequest::Hello { .. } => Ok(()),
     ipc::NetworkRequest::Fetch { url } => {
+      if url.len() > ipc::MAX_URL_BYTES {
+        let _ = ipc::write_response_frame(
+          &mut stream,
+          &ipc::NetworkResponse::Error {
+            message: format!("url too long: {} bytes (max {})", url.len(), ipc::MAX_URL_BYTES),
+          },
+        );
+        return Ok(());
+      }
       match fetcher.fetch(&url) {
-        Ok(resource) => ipc::write_frame(
+        Ok(resource) => ipc::write_response_frame(
           &mut stream,
           &ipc::NetworkResponse::FetchOk {
             resource: ipc::IpcFetchedResource::from_fetched(resource),
           },
         )?,
-        Err(err) => ipc::write_frame(
+        Err(err) => ipc::write_response_frame(
           &mut stream,
           &ipc::NetworkResponse::Error {
             message: err.to_string(),
@@ -33,7 +62,7 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher) -> io::Result<()> 
       }
     }
     ipc::NetworkRequest::Shutdown => {
-      let _ = ipc::write_frame(&mut stream, &ipc::NetworkResponse::Ok);
+      let _ = ipc::write_response_frame(&mut stream, &ipc::NetworkResponse::Ok);
       // Exit immediately; the parent process may also SIGKILL as a fallback.
       std::process::exit(0);
     }
@@ -43,8 +72,9 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher) -> io::Result<()> 
 }
 
 fn main() -> io::Result<()> {
-  // Minimal arg parser: `network --bind 127.0.0.1:0`
+  // Minimal arg parser: `network --bind 127.0.0.1:0 --auth-token <token>`
   let mut bind_addr = "127.0.0.1:0".to_string();
+  let mut auth_token: Option<String> = None;
   let mut args = std::env::args().skip(1);
   while let Some(arg) = args.next() {
     match arg.as_str() {
@@ -53,8 +83,13 @@ fn main() -> io::Result<()> {
           .next()
           .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--bind requires a value"))?;
       }
+      "--auth-token" => {
+        auth_token = Some(args.next().ok_or_else(|| {
+          io::Error::new(io::ErrorKind::InvalidInput, "--auth-token requires a value")
+        })?);
+      }
       "--help" | "-h" => {
-        eprintln!("Usage: network [--bind <addr>]");
+        eprintln!("Usage: network [--bind <addr>] [--auth-token <token>]");
         return Ok(());
       }
       other => {
@@ -64,6 +99,31 @@ fn main() -> io::Result<()> {
         ));
       }
     }
+  }
+
+  let auth_token = auth_token
+    .or_else(|| std::env::var("FASTR_NETWORK_AUTH_TOKEN").ok())
+    .ok_or_else(|| {
+      io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "missing --auth-token (or FASTR_NETWORK_AUTH_TOKEN)",
+      )
+    })?;
+  if auth_token.is_empty() {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "auth token is empty",
+    ));
+  }
+  if auth_token.len() > ipc::MAX_AUTH_TOKEN_BYTES {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      format!(
+        "auth token too large: {} bytes (max {})",
+        auth_token.len(),
+        ipc::MAX_AUTH_TOKEN_BYTES
+      ),
+    ));
   }
 
   let listener = TcpListener::bind(&bind_addr)?;
@@ -79,8 +139,9 @@ fn main() -> io::Result<()> {
     match conn {
       Ok(stream) => {
         let fetcher = fetcher.clone();
+        let auth_token = auth_token.clone();
         std::thread::spawn(move || {
-          let _ = handle_client(stream, fetcher);
+          let _ = handle_client(stream, fetcher, &auth_token);
         });
       }
       Err(err) => {

@@ -1,5 +1,5 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
-use fastrender::resource::ipc_fetcher::{IpcRequest, IpcResponse, IpcResult};
+use fastrender::resource::ipc_fetcher::{validate_ipc_request, IpcRequest, IpcResponse, IpcResult};
 use fastrender::resource::web_fetch::RequestRedirect;
 use fastrender::resource::{origin_from_url, FetchDestination, FetchRequest, HttpFetcher, HttpRequest, ReferrerPolicy};
 use fastrender::{IpcResourceFetcher, ResourceFetcher};
@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
+const TEST_AUTH_TOKEN: &str = "fastrender-ipc-test-token";
 
 #[derive(Debug)]
 struct CapturedRequest {
@@ -139,8 +140,18 @@ fn spawn_ipc_server(listener: TcpListener, request_tx: mpsc::Sender<IpcRequest>)
       .set_read_timeout(Some(Duration::from_secs(5)))
       .unwrap();
 
+    let hello_bytes = read_frame(&mut stream).unwrap();
+    let hello: IpcRequest = serde_json::from_slice(&hello_bytes).unwrap();
+    match hello {
+      IpcRequest::Hello { token } => assert_eq!(token, TEST_AUTH_TOKEN, "unexpected IPC auth token"),
+      other => panic!("expected IPC hello request, got {other:?}"),
+    }
+    let hello_ack = serde_json::to_vec(&IpcResponse::HelloAck).unwrap();
+    write_frame(&mut stream, &hello_ack).unwrap();
+
     let req_bytes = read_frame(&mut stream).unwrap();
     let req: IpcRequest = serde_json::from_slice(&req_bytes).unwrap();
+    validate_ipc_request(&req).unwrap();
     request_tx.send(req.clone()).unwrap();
 
     let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
@@ -208,7 +219,8 @@ fn ipc_fetcher_http_request_post_sends_method_headers_and_body() {
   let (ipc_tx, ipc_rx) = mpsc::channel::<IpcRequest>();
   let ipc_handle = spawn_ipc_server(ipc_listener, ipc_tx);
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = format!("http://{addr}/submit");
   // Use a same-origin client origin so we don't trigger CORS enforcement in this basic request test.
   let origin = origin_from_url(&url).unwrap();
@@ -325,7 +337,8 @@ fn ipc_fetcher_http_request_redirect_updates_final_url() {
   let (ipc_tx, _ipc_rx) = mpsc::channel::<IpcRequest>();
   let ipc_handle = spawn_ipc_server(ipc_listener, ipc_tx);
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = format!("http://{addr}/redirect");
   let fetch = FetchRequest::new(&url, FetchDestination::Fetch);
   let req = HttpRequest {
@@ -423,7 +436,8 @@ fn ipc_fetcher_fetch_with_request_redirect_propagates_final_url_and_cookie() {
   let (ipc_tx, _ipc_rx) = mpsc::channel::<IpcRequest>();
   let ipc_handle = spawn_ipc_server(ipc_listener, ipc_tx);
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = format!("http://{addr}/start");
   let origin = origin_from_url(&url).unwrap();
   let fetch = FetchRequest::new(&url, FetchDestination::Fetch)

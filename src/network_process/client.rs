@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::ipc::websocket as websocket_ipc;
 use crate::resource::{FetchedResource, ResourceFetcher};
+use getrandom::getrandom;
 use std::io::BufRead;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -85,6 +86,24 @@ fn resolve_network_binary_path(config: &NetworkProcessConfig) -> Result<PathBuf>
   ))
 }
 
+const AUTH_TOKEN_BYTES: usize = 32;
+
+fn hex_encode(bytes: &[u8]) -> String {
+  const HEX: &[u8; 16] = b"0123456789abcdef";
+  let mut out = String::with_capacity(bytes.len() * 2);
+  for &b in bytes {
+    out.push(HEX[(b >> 4) as usize] as char);
+    out.push(HEX[(b & 0x0F) as usize] as char);
+  }
+  out
+}
+
+fn generate_auth_token() -> Result<Arc<str>> {
+  let mut bytes = [0u8; AUTH_TOKEN_BYTES];
+  getrandom(&mut bytes).map_err(|err| Error::Other(format!("failed to generate auth token: {err}")))?;
+  Ok(Arc::from(hex_encode(&bytes)))
+}
+
 /// Spawn the `network` subprocess and return a handle to manage it.
 ///
 /// This is a convenience wrapper that panics on failure (suitable for tests).
@@ -97,8 +116,11 @@ pub fn spawn_network_process(config: NetworkProcessConfig) -> NetworkProcessHand
 pub fn try_spawn_network_process(config: NetworkProcessConfig) -> Result<NetworkProcessHandle> {
   let binary_path = resolve_network_binary_path(&config)?;
 
+  let auth_token = generate_auth_token()?;
+
   let mut cmd = Command::new(binary_path);
   cmd.arg("--bind").arg("127.0.0.1:0");
+  cmd.arg("--auth-token").arg(auth_token.as_ref());
   cmd.stdin(Stdio::null());
   cmd.stdout(Stdio::piped());
   if config.inherit_stderr {
@@ -137,6 +159,7 @@ pub fn try_spawn_network_process(config: NetworkProcessConfig) -> Result<Network
     addr,
     connect_timeout: config.connect_timeout,
     pid,
+    auth_token,
     child: Mutex::new(Some(child)),
   })
 }
@@ -148,6 +171,7 @@ pub struct NetworkProcessHandle {
   addr: SocketAddr,
   connect_timeout: Duration,
   pid: u32,
+  auth_token: Arc<str>,
   child: Mutex<Option<Child>>,
 }
 
@@ -157,6 +181,7 @@ impl NetworkProcessHandle {
     NetworkClient {
       addr: self.addr,
       connect_timeout: self.connect_timeout,
+      auth_token: self.auth_token.clone(),
     }
   }
 
@@ -168,6 +193,11 @@ impl NetworkProcessHandle {
   /// PID of the spawned network process.
   pub fn pid(&self) -> u32 {
     self.pid
+  }
+
+  /// Authentication token required to connect to this network process instance.
+  pub fn auth_token(&self) -> &str {
+    self.auth_token.as_ref()
   }
 }
 
@@ -187,7 +217,14 @@ impl Drop for NetworkProcessHandle {
       stream
         .set_nodelay(true)
         .unwrap_or_else(|_| ()); // ignore
-      let _ = ipc::write_frame(&mut stream, &ipc::NetworkRequest::Shutdown);
+      // Authenticate before issuing the shutdown command.
+      let _ = ipc::write_request_frame(
+        &mut stream,
+        &ipc::NetworkRequest::Hello {
+          token: self.auth_token.to_string(),
+        },
+      );
+      let _ = ipc::write_request_frame(&mut stream, &ipc::NetworkRequest::Shutdown);
       Ok(())
     });
 
@@ -198,10 +235,11 @@ impl Drop for NetworkProcessHandle {
 }
 
 /// Client factory for network-process services (resource fetcher, WebSocket backend, downloads).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct NetworkClient {
   addr: SocketAddr,
   connect_timeout: Duration,
+  auth_token: Arc<str>,
 }
 
 impl NetworkClient {
@@ -210,6 +248,7 @@ impl NetworkClient {
     Arc::new(IpcResourceFetcher {
       addr: self.addr,
       connect_timeout: self.connect_timeout,
+      auth_token: self.auth_token.clone(),
     })
   }
 
@@ -230,10 +269,11 @@ impl NetworkClient {
 }
 
 /// IPC-backed resource fetcher used by [`NetworkClient`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct IpcResourceFetcher {
   addr: SocketAddr,
   connect_timeout: Duration,
+  auth_token: Arc<str>,
 }
 
 impl IpcResourceFetcher {
@@ -242,8 +282,25 @@ impl IpcResourceFetcher {
       TcpStream::connect_timeout(&self.addr, self.connect_timeout).map_err(Error::Io)?;
     stream.set_nodelay(true).map_err(Error::Io)?;
 
-    ipc::write_frame(&mut stream, &req).map_err(Error::Io)?;
-    let res: ipc::NetworkResponse = ipc::read_frame(&mut stream).map_err(Error::Io)?;
+    ipc::write_request_frame(
+      &mut stream,
+      &ipc::NetworkRequest::Hello {
+        token: self.auth_token.to_string(),
+      },
+    )
+    .map_err(Error::Io)?;
+    let hello_ack: ipc::NetworkResponse = ipc::read_response_frame(&mut stream).map_err(Error::Io)?;
+    match hello_ack {
+      ipc::NetworkResponse::HelloAck => {}
+      other => {
+        return Err(Error::Other(format!(
+          "network process returned unexpected response to Hello: {other:?}"
+        )))
+      }
+    }
+
+    ipc::write_request_frame(&mut stream, &req).map_err(Error::Io)?;
+    let res: ipc::NetworkResponse = ipc::read_response_frame(&mut stream).map_err(Error::Io)?;
     Ok(res)
   }
 }
