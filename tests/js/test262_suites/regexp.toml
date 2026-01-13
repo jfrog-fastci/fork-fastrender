@@ -39,6 +39,10 @@ include = [
   # --- Unicode property escapes (`\\p{…}`) ---
   "built-ins/RegExp/property-escapes/**/*.js",
 
+  # --- UnicodeMode (`/u`) disallow-extended-pattern restrictions (Annex B disabled) ---
+  "built-ins/RegExp/unicode_restricted_*.js",
+  "staging/sm/RegExp/unicode-disallow-extended.js",
+
   # --- String methods that exercise RegExp integration ---
   "built-ins/String/prototype/match/**/*.js",
   "built-ins/String/prototype/matchAll/**/*.js",
