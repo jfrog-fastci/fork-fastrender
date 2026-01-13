@@ -369,9 +369,27 @@ fn let_newline_await_disambiguates_to_lexical_decl_syntax_error_in_async_fn() {
 }
 
 #[test]
+fn let_newline_await_disambiguates_to_lexical_decl_syntax_error_in_async_generator_fn() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function* g(){ let\nawait 0; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn let_newline_yield_disambiguates_to_lexical_decl_syntax_error_in_generator_fn() {
   let mut rt = new_runtime();
   let err = rt.exec_script("function* g(){ let\nyield 0; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn let_newline_yield_disambiguates_to_lexical_decl_syntax_error_in_async_generator_fn() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function* g(){ let\nyield 0; }")
+    .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
@@ -456,7 +474,7 @@ fn await_using_declaration_in_switch_clause_is_syntax_error() {
 }
 
 #[test]
-fn await_using_declaration_in_for_in_head_is_syntax_error() {
+fn await_using_declaration_in_for_in_head_singleton_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script("async function f(){ for (await using x in [1]) {} }")
