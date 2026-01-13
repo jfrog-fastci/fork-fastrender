@@ -14210,7 +14210,7 @@ fn get_substitution(
     buf
       .try_reserve_exact(units.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    buf.extend_from_slice(units);
+    vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, units)?;
     buf
   };
 
