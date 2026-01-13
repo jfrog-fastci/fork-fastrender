@@ -2635,11 +2635,14 @@ pub fn chrome_ui_with_bookmarks(
 
         ui.add_space(8.0);
         ui.label("UI scale");
-        ui.add(
+        let ui_scale_resp = ui.add(
           egui::Slider::new(&mut app.appearance.ui_scale, MIN_UI_SCALE..=MAX_UI_SCALE)
             .clamp_to_range(true)
             .show_value(true),
         );
+        ui_scale_resp.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Slider, "UI scale")
+        });
         if ui.button("Reset scale (1.0)").clicked() {
           app.appearance.ui_scale = DEFAULT_UI_SCALE;
         }
@@ -2773,7 +2776,7 @@ pub fn chrome_ui_with_bookmarks(
                   .size()
                   .x
                   .min(max_width);
-                ui.add(
+                let hovered_url_resp = ui.add(
                   egui::TextEdit::singleline(&mut url_owned)
                     .id(ui.make_persistent_id("hovered_url_status_text"))
                     .font(egui::TextStyle::Small)
@@ -2781,6 +2784,9 @@ pub fn chrome_ui_with_bookmarks(
                     .interactive(false)
                     .frame(false),
                 );
+                hovered_url_resp.widget_info(|| {
+                  egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Hovered link URL")
+                });
               });
             } else {
               // Preserve the bar height even when no URL is displayed.
