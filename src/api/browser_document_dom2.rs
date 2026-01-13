@@ -2716,6 +2716,100 @@ mod tests {
   }
 
   #[test]
+  fn incremental_restyle_scope_includes_wbr_synthetic_zwsp_text_nodes() -> Result<()> {
+    use crate::style::color::Rgba;
+
+    // Parse directly into dom2 so `<wbr>` remains a void element with no text children. The renderer
+    // snapshot taken during layout injects an implicit ZWSP text node, which is then "synthetic"
+    // from the dom2 perspective and maps back to the `<wbr>` element `NodeId`.
+    let html = concat!(
+      "<!doctype html>",
+      "<html><head><style>#p { color: rgb(255,0,0); }</style></head>",
+      "<body><p id=p>Hi<wbr>There</p></body></html>",
+    );
+
+    let renderer = renderer_for_tests();
+    let dom = renderer.parse_html_dom2(html)?;
+
+    let options = RenderOptions::new().with_viewport(64, 64);
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><head></head><body></body></html>",
+      options.clone(),
+    )?;
+    doc.reset_with_dom(dom, options.clone());
+
+    doc.render_frame()?;
+    let prepared = doc.prepared.as_ref().expect("prepared layout");
+    let mapping = doc.last_dom_mapping.as_ref().expect("dom mapping");
+
+    // Find the styled text node injected for `<wbr>` (ZWSP, U+200B).
+    let mut zwsp_preorders: Vec<usize> = Vec::new();
+    let mut stack: Vec<&StyledNode> = vec![prepared.styled_tree()];
+    while let Some(node) = stack.pop() {
+      if let crate::dom::DomNodeType::Text { content } = &node.node.node_type {
+        if content == "\u{200B}" {
+          zwsp_preorders.push(node.node_id);
+        }
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    assert_eq!(
+      zwsp_preorders.len(),
+      1,
+      "expected exactly one synthetic ZWSP text node"
+    );
+    let zwsp_preorder = zwsp_preorders[0];
+
+    let mapped_dom2_id = mapping
+      .node_id_for_preorder(zwsp_preorder)
+      .expect("ZWSP preorder should map back to a dom2 node");
+    match &doc.dom().node(mapped_dom2_id).kind {
+      crate::dom2::NodeKind::Element { tag_name, .. } => {
+        assert!(tag_name.eq_ignore_ascii_case("wbr"));
+      }
+      other => panic!("expected ZWSP preorder to map to a <wbr> element, got {other:?}"),
+    }
+    let wbr_preorder = mapping
+      .preorder_for_node_id(mapped_dom2_id)
+      .expect("<wbr> should have a renderer preorder id");
+    assert_ne!(
+      wbr_preorder, zwsp_preorder,
+      "expected ZWSP preorder to be synthetic (map to <wbr> but not round-trip)"
+    );
+
+    let before_color = styled_tree_style_for_preorder_id(prepared.styled_tree(), zwsp_preorder)
+      .expect("ZWSP style")
+      .color;
+    assert_eq!(before_color, Rgba::rgb(255, 0, 0));
+
+    let p = doc.dom().get_element_by_id("p").expect("<p id=p>");
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_attribute(p, "style", "color: rgb(0,255,0)")
+        .expect("set p[style]")
+    });
+    assert!(changed);
+
+    doc.render_frame()?;
+    let prepared_after = doc.prepared.as_ref().expect("prepared layout after mutation");
+
+    let after_color =
+      styled_tree_style_for_preorder_id(prepared_after.styled_tree(), zwsp_preorder)
+        .expect("ZWSP style after mutation")
+        .color;
+    assert_eq!(
+      after_color,
+      Rgba::rgb(0, 255, 0),
+      "synthetic ZWSP text node should inherit updated color after incremental restyle"
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn mutate_dom_false_does_not_invalidate() {
     let renderer = renderer_for_tests();
     let mut doc = BrowserDocumentDom2::new(
