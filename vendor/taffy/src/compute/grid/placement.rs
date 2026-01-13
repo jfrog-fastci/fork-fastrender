@@ -125,7 +125,9 @@ fn normalize_resolved_span(span: Line<OriginZeroLine>) -> Line<OriginZeroLine> {
     core::mem::swap(&mut start, &mut end);
   }
   if start == end {
-    end = start + 1;
+    // Use clamped arithmetic so we don't panic in debug builds when `start` is already at
+    // `i16::MAX` (in which case `start + 1` would overflow/wrap).
+    end = add_i32_clamped(start, 1);
   }
   Line { start, end }
 }
@@ -1636,6 +1638,41 @@ mod tests {
         expected_rows,
         flow,
       );
+    }
+
+    #[test]
+    fn test_overlarge_grid_indefinite_resolution_does_not_panic_at_i16_max() {
+      // Regression: `normalize_resolved_span` used `start + 1` (i16) which can overflow when the
+      // candidate line is already clamped to `i16::MAX`, causing debug builds to panic before the
+      // overlarge-grid clamp can reposition the span.
+      use crate::geometry::AbsoluteAxis;
+      use crate::compute::grid::OriginZeroLine;
+      use crate::style::OriginZeroGridPlacementWithNamedSpan as GP;
+
+      let placement = Line {
+        start: GP::Auto,
+        end: GP::Auto,
+      };
+
+      // Use a huge explicit grid size so the limited grid's max line is clamped to i16::MAX.
+      let explicit_tracks = i16::MAX as u16;
+      let resolver = NamedLineResolver::<String>::from_line_names(
+        Vec::<Vec<String>>::new(),
+        Vec::<Vec<String>>::new(),
+        explicit_tracks,
+        explicit_tracks,
+      );
+
+      let resolved = super::super::resolve_indefinite_grid_lines(
+        &placement,
+        OriginZeroLine(i16::MAX),
+        &resolver,
+        AbsoluteAxis::Horizontal,
+        explicit_tracks,
+      );
+
+      assert_eq!(resolved.start.0, i16::MAX - 1);
+      assert_eq!(resolved.end.0, i16::MAX);
     }
   }
 }

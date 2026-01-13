@@ -46,6 +46,7 @@ impl GridLine {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::geometry::Line;
 
   #[test]
   fn into_origin_zero_line_does_not_overflow_on_u16_max_explicit_tracks() {
@@ -56,6 +57,17 @@ mod tests {
     // With an enormous explicit grid, `-1` resolves to a large positive origin-zero line that is
     // clamped into the representable i16 range.
     assert_eq!(oz, OriginZeroLine(i16::MAX));
+  }
+
+  #[test]
+  fn origin_zero_line_span_does_not_overflow_i16_subtraction() {
+    // Regression: `end.0 - start.0` can overflow i16 when spans cross a large portion of the i16
+    // range. This used to panic in debug builds.
+    let span = Line {
+      start: OriginZeroLine(-1000),
+      end: OriginZeroLine(i16::MAX),
+    };
+    assert_eq!(span.span(), 33_767);
   }
 }
 
@@ -185,7 +197,9 @@ impl OriginZeroLine {
 impl Line<OriginZeroLine> {
   /// The number of tracks between the start and end lines
   pub(crate) fn span(self) -> u16 {
-    max(self.end.0 - self.start.0, 0) as u16
+    // Use i32 arithmetic to avoid i16 overflow when spans cross a large portion of the i16 range.
+    let diff = (self.end.0 as i32) - (self.start.0 as i32);
+    max(diff, 0) as u16
   }
 }
 
