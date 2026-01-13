@@ -109,12 +109,16 @@ impl CellOccupancyMatrix {
     let mut data = Vec::with_capacity(new_row_count * new_col_count);
 
     // Push new negative rows
-    for _ in 0..(req_negative_rows as usize * new_col_count) {
-      data.push(CellOccupancyState::Unoccupied);
+    for _ in 0..req_negative_rows as usize {
+      check_layout_abort();
+      for _ in 0..new_col_count {
+        data.push(CellOccupancyState::Unoccupied);
+      }
     }
 
     // Push existing rows
     for row in 0..old_row_count {
+      check_layout_abort();
       // Push new negative columns
       for _ in 0..req_negative_cols {
         data.push(CellOccupancyState::Unoccupied);
@@ -130,8 +134,11 @@ impl CellOccupancyMatrix {
     }
 
     // Push new negative rows
-    for _ in 0..(req_positive_rows as usize * new_col_count) {
-      data.push(CellOccupancyState::Unoccupied);
+    for _ in 0..req_positive_rows as usize {
+      check_layout_abort();
+      for _ in 0..new_col_count {
+        data.push(CellOccupancyState::Unoccupied);
+      }
     }
 
     // Update self with new data
