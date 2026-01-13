@@ -7704,6 +7704,14 @@ impl BrowserHud {
     now: std::time::Instant,
     active_tab_id: Option<fastrender::ui::TabId>,
   ) {
+    // Resize→present latency is meaningful even when we didn't upload a new page pixmap this frame
+    // (e.g. egui can scale the existing page texture immediately). Record it on the next present
+    // unconditionally.
+    if let Some(input_at) = self.pending_resize_input_at.take() {
+      self.last_resize_to_present_ms =
+        Some(now.saturating_duration_since(input_at).as_millis() as u64);
+    }
+
     let Some(active_tab_id) = active_tab_id else {
       return;
     };
@@ -7724,10 +7732,6 @@ impl BrowserHud {
     }
     if let Some(input_at) = self.pending_scroll_input_at.take() {
       self.last_scroll_to_present_ms = Some(now.saturating_duration_since(input_at).as_millis() as u64);
-    }
-    if let Some(input_at) = self.pending_resize_input_at.take() {
-      self.last_resize_to_present_ms =
-        Some(now.saturating_duration_since(input_at).as_millis() as u64);
     }
   }
 
@@ -11032,11 +11036,22 @@ impl App {
 
     if let Some(frame_ready) = update.frame_ready {
       if self.browser_state.tab(frame_ready.tab_id).is_some() {
+        if let Some(hud) = self.hud.as_mut() {
+          if self.pending_frame_uploads.has_pending_for_tab(frame_ready.tab_id) {
+            hud.coalesced_frames_total = hud.coalesced_frames_total.saturating_add(1);
+          }
+        }
         self.pending_frame_uploads.push(frame_ready);
-        self.pending_frame_uploads.evict_to_budget(
+        let evicted = self.pending_frame_uploads.evict_to_budget(
           self.max_pending_frame_bytes,
           self.browser_state.active_tab_id(),
         );
+        if evicted > 0 {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.coalesced_frames_total =
+              hud.coalesced_frames_total.saturating_add(evicted as u64);
+          }
+        }
         // `flush_pending_frame_uploads` already ran at the start of this UI frame; flush again so
         // the newly rendered pixmap becomes visible immediately.
         self.flush_pending_frame_uploads();
@@ -12551,10 +12566,16 @@ impl App {
           }
         }
         self.pending_frame_uploads.push(frame_ready);
-        self.pending_frame_uploads.evict_to_budget(
+        let evicted = self.pending_frame_uploads.evict_to_budget(
           self.max_pending_frame_bytes,
           self.browser_state.active_tab_id(),
         );
+        if evicted > 0 {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.coalesced_frames_total =
+              hud.coalesced_frames_total.saturating_add(evicted as u64);
+          }
+        }
       }
     }
 
