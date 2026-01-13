@@ -4,6 +4,9 @@
 
 **STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
 
+See also: [`docs/runtime_stacks.md`](../docs/runtime_stacks.md) for a concrete map of which public API
+types currently include JavaScript execution, an event loop, and live DOM mutation → rerendering.
+
 ### Assume every process can misbehave
 
 **Every command must have hard external limits:**

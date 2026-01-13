@@ -14,6 +14,14 @@ pixmap.save_png("out.png")?;
 
 Use `FastRender::builder()` to set defaults (viewport size, background color, base URL, etc.) when constructing a renderer.
 
+## Live documents, JS, and “tabs”
+
+In addition to the one-shot `FastRender::render_*` APIs, FastRender exposes stateful, multi-frame
+“document/tab” containers (some with JavaScript + an event loop).
+
+To avoid confusion between similarly-named types, start with:
+[`docs/runtime_stacks.md`](runtime_stacks.md).
+
 ## Resource fetch policy
 
 Resource loading is controlled by a `ResourcePolicy` (`FetchPolicy` is an alias) configured on `FastRenderConfig` or via `FastRenderBuilder::resource_policy(...)`. The default mirrors the historical behavior: allow `http`, `https`, `file`, and `data` URLs; a 50 MB per-response cap; a 30 second timeout; up to 10 redirects; and no host allow/deny rules or total budget.

@@ -26,8 +26,9 @@ Notes:
 - “Live DOM mutation + rerender” means: if you mutate the live DOM, the next `render_if_needed()` /
   `tick_frame()` will rerun the render pipeline and produce a new `Pixmap`.
 - “HTML `<script>` processing” means: parser-inserted scripts execute at parse time, and script
-  scheduling follows FastRender’s current HTML-integration implementation (see `docs/js_embedding.md`
-  and `docs/html_script_processing.md`).
+  scheduling follows FastRender’s current HTML-integration implementation (see
+  [`docs/js_embedding.md`](js_embedding.md) and
+  [`docs/html_script_processing.md`](html_script_processing.md)).
 
 ## `api::BrowserDocument` (renderer DOM, no JS)
 
