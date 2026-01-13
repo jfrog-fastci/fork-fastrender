@@ -116,7 +116,7 @@ set -e
 echo "capture_browser_perf_log: browser exit status=${browser_status}, tee exit status=${tee_status}" >&2
 
 echo "capture_browser_perf_log: to summarize:" >&2
-echo "  browser_perf_log_summary \"${out_path}\"" >&2
+echo "  browser_perf_log_summary --input \"${out_path}\"" >&2
 echo "  (or re-run with: --summary)" >&2
 
 find_summary_bin() {
@@ -141,13 +141,13 @@ find_summary_bin() {
 
 if [[ "${run_summary}" -eq 1 ]]; then
   if summary_bin="$(find_summary_bin)"; then
-    echo "capture_browser_perf_log: running ${summary_bin} \"${out_path}\"" >&2
-    bash "${repo_root}/scripts/run_limited.sh" --as 64G -- "${summary_bin}" "${out_path}" >&2
+    echo "capture_browser_perf_log: running ${summary_bin} --input \"${out_path}\"" >&2
+    bash "${repo_root}/scripts/run_limited.sh" --as 64G -- "${summary_bin}" --input "${out_path}"
   else
     echo "capture_browser_perf_log: --summary requested but browser_perf_log_summary was not found." >&2
     echo "capture_browser_perf_log: build + run it with:" >&2
     echo "  bash \"${repo_root}/scripts/run_limited.sh\" --as 64G -- \\" >&2
-    echo "    bash \"${repo_root}/scripts/cargo_agent.sh\" run --release --bin browser_perf_log_summary -- \"${out_path}\"" >&2
+    echo "    bash \"${repo_root}/scripts/cargo_agent.sh\" run --release --bin browser_perf_log_summary -- --input \"${out_path}\"" >&2
   fi
 fi
 
