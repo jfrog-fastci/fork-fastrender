@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use fastrender::layout::float_context::{FloatContext, FloatSide};
+use fastrender::layout::inline::float_integration::{InlineFloatIntegration, LineSpaceOptions};
 
 mod common;
 
@@ -53,6 +54,26 @@ fn bench_available_width_in_range(c: &mut Criterion) {
       let mut y = 0.0f32;
       while y < 5_000.0 {
         black_box(ctx.available_width_in_range(y, y + 20.0));
+        y += 0.5;
+      }
+    })
+  });
+}
+
+fn bench_inline_find_line_space(c: &mut Criterion) {
+  common::bench_print_config_once("float_bench", &[]);
+  let ctx = build_float_context(5_000);
+  let integration = InlineFloatIntegration::new(&ctx);
+  // Use a positive `line_height` so inline layout triggers the float fit search. With the dense
+  // alternating float pattern above, the requested width always fits immediately, so each call
+  // should scan float ranges exactly once (previously the call site would re-query the same range
+  // to recover the edges).
+  let opts = LineSpaceOptions::with_min_width(100.0).line_height(20.0);
+  c.bench_function("float_inline_find_line_space_dense", |b| {
+    b.iter(|| {
+      let mut y = 0.0f32;
+      while y < 5_000.0 {
+        black_box(integration.find_line_space(y, opts));
         y += 0.5;
       }
     })
@@ -176,6 +197,7 @@ criterion_group!(
   float_benches,
   bench_available_width,
   bench_available_width_in_range,
+  bench_inline_find_line_space,
   bench_find_fit_dense_boundaries,
   bench_compute_float_position,
   bench_compute_float_position_overlap_stress,
