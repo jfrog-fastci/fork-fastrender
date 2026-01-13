@@ -166,9 +166,10 @@ test).
 - Time-based behavior is driven by an explicit UI tick loop:
   - Each rendered frame reports `RenderedFrame.next_tick` (in
     [`WorkerToUi::FrameReady`](../src/ui/messages.rs)).
-  - While `next_tick` is `Some(_)`, the UI sends periodic `UiToWorker::Tick { tab_id, delta }`
-    messages to advance time-based effects (CSS animations/transitions, animated images, JS timers,
-    and `requestAnimationFrame`) and repaint when needed.
+  - While `next_tick` is `Some(delay)`, the UI sends `UiToWorker::Tick { tab_id, delta }` messages to
+    advance time-based effects (CSS animations/transitions, animated images, JS timers, and
+    `requestAnimationFrame`) and repaint when needed. `delta` is the elapsed time since the previous
+    tick delivered for the tab.
 
 For the message-level protocol and scheduling details, see the “Tick loop” section in
 [`docs/browser_ui.md`](browser_ui.md). For the library embedding surface and JS execution budgets,

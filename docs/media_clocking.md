@@ -268,12 +268,14 @@ Importantly, this message is a **wake-up mechanism**, not a master time source:
   can advance deterministic time-based effects like CSS animations and JS timers.
 * It does **not** carry an authoritative “media time” timestamp. Audio/video playback must still
   query its own clocks (audio device time when available) rather than inferring time from tick
-  frequency/jitter.
+  cadence/jitter.
 
-Where it comes from: the windowed `browser` app schedules these ticks using winit timers
+Where it comes from: the windowed `browser` app schedules ticks using winit timers
 (`ControlFlow::WaitUntil`) based on per-tab `RenderedFrame.next_tick` schedule hints from the worker
-(see `App::drive_animation_tick` in `src/bin/browser.rs`). That cadence is best-effort (it can jitter,
-coalesce, or pause), so it must never be treated as the master media timeline clock.
+(see `App::drive_animation_tick` in `src/bin/browser.rs`). For media, the worker may additionally
+send `WorkerToUi::RequestWakeAfter` to request one-shot wakeups (the UI typically responds by waking
+and delivering a `Tick` with `delta=Duration::ZERO`). Tick delivery is best-effort: it can jitter,
+coalesce, or pause/reset entirely, so it must never be treated as the master media timeline clock.
 
 What the tick does:
 
@@ -288,8 +290,9 @@ What the tick does:
 What the tick must **not** do:
 
 * **Do not** treat tick `delta` (or “time since last tick”) as progress on the media timeline.
-  * Ticks can jitter, coalesce, or pause entirely (window moved, system under load, backgrounded).
-  * Accumulating `dt` from ticks is a classic way to create drift.
+  * Ticks can jitter, coalesce, or pause/reset entirely (window moved, system under load,
+    backgrounded).
+  * Accumulating `delta` from ticks is a classic way to create drift.
 * **Do not** advance media time by a fixed amount per tick (e.g. “+16ms each tick”).
   * This is a tempting pattern because ticks carry a `delta` and can be driven deterministically in
     tests, and the worker does use the tick delta for **CSS animation sampling**.
