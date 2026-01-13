@@ -4437,8 +4437,12 @@ impl GridFormattingContext {
     // Grid container properties
     if is_grid {
       let has_parent_grid = containing_grid_axis.is_some();
-      let css_row_subgrid = style.grid_row_subgrid && has_parent_grid;
-      let css_column_subgrid = style.grid_column_subgrid && has_parent_grid;
+      // Per CSS Grid 2 §9.7 ("Subgrid"), subgrid is disabled when the grid container is forced to
+      // establish an independent formatting context. Layout containment implies such a context, so
+      // treat `grid-template-*: subgrid` as used value `none` across this boundary.
+      let disables_subgrid = style.containment.layout;
+      let css_row_subgrid = style.grid_row_subgrid && has_parent_grid && !disables_subgrid;
+      let css_column_subgrid = style.grid_column_subgrid && has_parent_grid && !disables_subgrid;
       let css_column_line_names_omitted =
         css_column_subgrid && subgrid_line_name_list_is_omitted(&style.subgrid_column_line_names);
       let css_row_line_names_omitted =

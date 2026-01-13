@@ -677,6 +677,134 @@ fn column_subgrid_aligns_with_parent_tracks() {
 }
 
 #[test]
+fn layout_containment_disables_column_subgrid_track_inheritance() {
+  // Per CSS Grid 2 §9.7 ("Subgrid"), layout containment forces an independent formatting context,
+  // which disables subgrid and makes the used value `grid-template-columns/none`.
+  //
+  // The child grid requests `grid-template-columns: subgrid`, but has `contain: layout`, so it must
+  // fall back to its own implicit tracks (from `grid-auto-columns`) rather than inheriting the
+  // parent grid's fixed track sizes.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(40.0)),
+    GridTrack::Length(Length::px(60.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Auto];
+  parent_style.width = Some(Length::px(100.0));
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Grid;
+  child_style.grid_column_subgrid = true;
+  child_style.containment.layout = true;
+  child_style.grid_column_start = 1;
+  child_style.grid_column_end = 3;
+  child_style.grid_row_start = 1;
+  child_style.grid_row_end = 2;
+  child_style.grid_auto_columns = vec![GridTrack::Length(Length::px(15.0))].into();
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  item_style.width = Some(Length::px(5.0));
+  item_style.height = Some(Length::px(5.0));
+  item_style.grid_column_start = 2;
+  item_style.grid_column_end = 3;
+  item_style.grid_row_start = 1;
+  item_style.grid_row_end = 2;
+  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
+
+  let child = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let child_fragment = &fragment.children[0];
+  let item_fragment = &child_fragment.children[0];
+  assert_approx(
+    item_fragment.bounds.x(),
+    15.0,
+    "contained subgrid uses grid-auto-columns, not the parent track size",
+  );
+}
+
+#[test]
+fn layout_containment_disables_column_subgrid_axis_inheritance() {
+  // `GridAxisStyle::effective_for_grid_container` inherits the parent writing-mode for active
+  // subgrids so their track coordinates stay in the parent axis space. With layout containment the
+  // subgrid is disabled, so the grid must use its own writing-mode.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![GridTrack::Length(Length::px(60.0))];
+  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(60.0))];
+  parent_style.width = Some(Length::px(60.0));
+  parent_style.height = Some(Length::px(60.0));
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Grid;
+  child_style.grid_column_subgrid = true;
+  child_style.containment.layout = true;
+  child_style.writing_mode = WritingMode::VerticalLr;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(30.0));
+  child_style.grid_column_start = 1;
+  child_style.grid_column_end = 2;
+  child_style.grid_row_start = 1;
+  child_style.grid_row_end = 2;
+  child_style.grid_auto_columns = vec![GridTrack::Length(Length::px(15.0))].into();
+  child_style.grid_auto_rows = vec![GridTrack::Length(Length::px(10.0))].into();
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  item_style.width = Some(Length::px(5.0));
+  item_style.height = Some(Length::px(5.0));
+  item_style.grid_column_start = 2;
+  item_style.grid_column_end = 3;
+  item_style.grid_row_start = 1;
+  item_style.grid_row_end = 2;
+  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
+
+  let child = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let child_fragment = &fragment.children[0];
+  let item_fragment = &child_fragment.children[0];
+  assert_approx(
+    item_fragment.bounds.x(),
+    0.0,
+    "vertical writing-mode maps grid rows to the physical x-axis",
+  );
+  assert_approx(
+    item_fragment.bounds.y(),
+    15.0,
+    "vertical writing-mode maps grid columns to the physical y-axis",
+  );
+}
+
+#[test]
 fn subgrid_autoplacement_uses_parent_rows_and_gaps() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
