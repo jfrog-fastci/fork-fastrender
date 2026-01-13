@@ -3199,9 +3199,9 @@ impl<'a> Evaluator<'a> {
   /// Implements `IteratorClose` error precedence for operations that return `Result<_, VmError>`.
   ///
   /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, errors thrown while getting/calling
-  /// `iterator.return` are ignored when the incoming completion is a throw completion, and the
-  /// incoming throw completion is preserved. The only other special-case for throw completions is
-  /// that the non-object return-result TypeError check is skipped.
+  /// `iterator.return` override the incoming completion. The only special-case for throw
+  /// completions is that the non-object return-result TypeError check is skipped after a
+  /// successful close.
   ///
   /// `vm-js` also has non-catchable VM failures (termination, OOM, etc) which must never be
   /// replaced by a JavaScript catchable exception from iterator closing.
