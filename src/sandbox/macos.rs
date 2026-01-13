@@ -492,7 +492,7 @@ pub(crate) const RELAXED_SYSTEM_ALLOWLIST_PROFILE: &str = r#"(version 1)
   (subpath "/usr/share")
   (subpath "/Library")
   (subpath "/dev")
-(subpath "/private/var/db")
+  (subpath "/private/var/db")
 )
 "#;
 

@@ -4675,7 +4675,7 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
     child_ids: Vec<accesskit::NodeId>,
   }
 
-  let mut classes = accesskit::NodeClassSet::default();
+  let mut classes = accesskit::NodeClassSet::new();
   let mut nodes: Vec<(accesskit::NodeId, accesskit::Node)> = Vec::new();
   let mut stack: Vec<Frame<'_>> = Vec::new();
 
@@ -4729,10 +4729,7 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
   let root_id = accesskit_node_id(root.node_id);
   accesskit::TreeUpdate {
     nodes,
-    tree: Some(accesskit::Tree {
-      root: root_id,
-      root_scroller: Some(root_id),
-    }),
+    tree: Some(accesskit::Tree::new(root_id)),
     focus: None,
   }
 }
@@ -4741,7 +4738,10 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
 mod accesskit_lang_dir_tests {
   use super::*;
 
-  fn find_node_by_name<'a>(update: &'a accesskit::TreeUpdate, name: &str) -> Option<&'a accesskit::Node> {
+  fn find_node_by_name<'a>(
+    update: &'a accesskit::TreeUpdate,
+    name: &str,
+  ) -> Option<&'a accesskit::Node> {
     update
       .nodes
       .iter()

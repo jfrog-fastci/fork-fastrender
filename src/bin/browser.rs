@@ -20796,6 +20796,7 @@ impl App {
           bookmarks_panel_open: self.bookmarks_panel_open,
           page_bookmarked,
         },
+        self.chrome_has_text_focus,
       );
       if !menu_commands.is_empty() {
         let mut chrome_actions = Vec::new();
@@ -20963,6 +20964,7 @@ impl App {
         &ctx,
         &mut self.browser_state,
         Some(&self.bookmarks),
+        self.chrome_has_text_focus,
         !self.clear_browsing_data_dialog_open,
         |tab_id| {
           if let Some(tex) = self.tab_favicons.get(&tab_id) {

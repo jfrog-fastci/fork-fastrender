@@ -177,10 +177,11 @@ mod enabled {
           bookmarks_panel_open: false,
           page_bookmarked: false,
         },
+        ctx.wants_keyboard_input(),
       );
     }
 
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let output = ctx.end_frame();
 
     let update = output.platform_output.accesskit_update.as_ref().ok_or_else(|| {

@@ -170,6 +170,7 @@ pub fn menu_bar_ui(
   ctx: &egui::Context,
   app: &BrowserAppState,
   state: MenuBarState,
+  chrome_has_text_focus: bool,
 ) -> Vec<MenuCommand> {
   let mut commands = Vec::new();
   let has_active_tab = app.active_tab_id().is_some();
@@ -183,7 +184,7 @@ pub fn menu_bar_ui(
     .active_tab()
     .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()))
     .is_some();
-  let chrome_text_input_expected = ctx.wants_keyboard_input()
+  let chrome_text_input_expected = chrome_has_text_focus
     || app.chrome.address_bar_has_focus
     || app.chrome.tab_search.open
     || state.history_panel_open
@@ -714,7 +715,7 @@ mod tests {
     events: Vec<egui::Event>,
   ) -> (Vec<MenuCommand>, egui::FullOutput) {
     begin_frame(ctx, events);
-    let cmds = menu_bar_ui(ctx, app, MenuBarState::default());
+    let cmds = menu_bar_ui(ctx, app, MenuBarState::default(), ctx.wants_keyboard_input());
     let output = ctx.end_frame();
     (cmds, output)
   }
@@ -981,7 +982,7 @@ mod tests {
 
     let app = BrowserAppState::new();
     begin_frame(&ctx, Vec::new());
-    let _cmds = menu_bar_ui(&ctx, &app, MenuBarState::default());
+    let _cmds = menu_bar_ui(&ctx, &app, MenuBarState::default(), ctx.wants_keyboard_input());
     let output = ctx.end_frame();
 
     let names = a11y_test_util::accesskit_names_from_full_output(&output);
