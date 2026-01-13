@@ -502,7 +502,11 @@ impl PcmF32QueueInner {
 
     let samples_to_read = (frames_to_read as usize) * channels;
 
-    // If gain is 0, we can discard without touching `dst`.
+    // `gain == 0.0` represents a muted sink. Muting must *not* behave like pausing: we still drain
+    // buffered audio so timestamps/backpressure remain meaningful.
+    //
+    // Defensively treat non-finite/denormal gains as silence so we never poison the mix.
+    let gain = if gain.is_finite() && gain.is_normal() { gain } else { 0.0 };
     if gain == 0.0 {
       self
         .read_frame
@@ -525,7 +529,15 @@ impl PcmF32QueueInner {
       let src_ptr = buf_ptr.add(read_idx_frames * channels);
       for i in 0..first_part_samples {
         let sample = *src_ptr.add(i);
-        *dst_ptr.add(i) += sample * gain;
+        // Avoid NaN poisoning and denormal slow paths:
+        // - treat non-normal samples (NaN/Inf/0/subnormals) as silence
+        // - flush any non-normal scaled output to silence too
+        if sample.is_normal() {
+          let scaled = sample * gain;
+          if scaled.is_normal() {
+            *dst_ptr.add(i) += scaled;
+          }
+        }
       }
 
       // Wrap-around region.
@@ -533,7 +545,12 @@ impl PcmF32QueueInner {
         let src_ptr = buf_ptr;
         for i in 0..second_part_samples {
           let sample = *src_ptr.add(i);
-          *dst_ptr.add(first_part_samples + i) += sample * gain;
+          if sample.is_normal() {
+            let scaled = sample * gain;
+            if scaled.is_normal() {
+              *dst_ptr.add(first_part_samples + i) += scaled;
+            }
+          }
         }
       }
     }
@@ -605,7 +622,7 @@ mod tests {
 
   #[test]
   fn pop_into_sanitizes_nan_and_subnormals() {
-    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 8);
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 8).expect("queue");
     let sub = f32::from_bits(1);
     assert!(!sub.is_normal());
 
@@ -751,7 +768,9 @@ mod tests {
   fn rejects_capacity_above_buffered_duration_cap() {
     let cap_frames_u64 = crate::media::audio::duration_to_frames_floor(48_000, MAX_BUFFERED_DURATION);
     let cap_frames = usize::try_from(cap_frames_u64).unwrap();
-    let err = pcm_f32_queue(1, 48_000, cap_frames + 1).unwrap_err();
+    let err = pcm_f32_queue(1, 48_000, cap_frames + 1)
+      .err()
+      .expect("expected invalid spec");
     assert!(matches!(err, AudioError::InvalidSpec { .. }));
   }
 
@@ -764,5 +783,29 @@ mod tests {
     let samples = vec![0.0f32; MAX_FRAMES_PER_PUSH + 1];
     let err = prod.push_pcm_f32(&samples, None).unwrap_err();
     assert!(matches!(err, AudioError::InvalidBuffer { .. }));
+  }
+
+  #[test]
+  fn pop_add_into_sanitizes_non_normal_samples_and_gains() {
+    let q = PcmF32Queue::new(1, 48_000, 8).unwrap();
+    assert_eq!(
+      q.push_without_pts(&[f32::NAN, 1.0, f32::INFINITY, 2.0]),
+      4
+    );
+
+    let mut out = [0.0f32; 4];
+    assert_eq!(q.pop_add_into(&mut out, 1.0), 4);
+    assert_eq!(out[0].to_bits(), 0.0f32.to_bits());
+    assert_eq!(out[1], 1.0);
+    assert_eq!(out[2].to_bits(), 0.0f32.to_bits());
+    assert_eq!(out[3], 2.0);
+    assert_eq!(q.buffered_frames(), 0);
+
+    // Non-finite gains should act like mute (drain but do not touch dst).
+    assert_eq!(q.push_without_pts(&[1.0, 1.0]), 2);
+    let mut out2 = [0.0f32; 2];
+    assert_eq!(q.pop_add_into(&mut out2, f32::NAN), 2);
+    assert_eq!(out2, [0.0, 0.0]);
+    assert_eq!(q.buffered_frames(), 0);
   }
 }
