@@ -1982,14 +1982,19 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   fn maybe_compact_animation_frame_queue(&mut self) {
+    let live = self.animation_frame_callbacks.len();
+    if live == 0 {
+      // If all callbacks are canceled we can drop any queued IDs eagerly.
+      self.animation_frame_queue.clear();
+      return;
+    }
+
     // `animation_frame_queue` can contain stale IDs for canceled callbacks. Since `VecDeque` does
     // not support removal-by-key, those stale entries would otherwise accumulate unboundedly if
-    // attacker-controlled JS repeatedly schedules/cancels animation frame callbacks while keeping
-    // at least one callback pending (so the queue is not cleared).
+    // attacker-controlled JS repeatedly schedules/cancels animation frame callbacks.
     //
     // Compact opportunistically when the queue grows noticeably larger than the set of live
     // callbacks.
-    let live = self.animation_frame_callbacks.len();
     let queue_len = self.animation_frame_queue.len();
     let should_compact = queue_len > self.queue_limits.max_pending_animation_frame_callbacks
       || queue_len > live.saturating_mul(2).max(64);
@@ -2026,31 +2031,6 @@ impl<Host: 'static> EventLoop<Host> {
         .is_some_and(|timer| timer.schedule_seq == *schedule_seq)
     });
     self.timer_queue = BinaryHeap::from(entries);
-  }
-
-  fn maybe_compact_animation_frame_queue(&mut self) {
-    // `animation_frame_queue` can contain stale entries for cancelled callbacks. If attacker-controlled
-    // JS repeatedly schedules/cancels rAF callbacks without ever allowing the embedder to drive
-    // `run_animation_frame`, those stale IDs would otherwise accumulate without bound.
-    //
-    // Compact opportunistically when the queue grows noticeably larger than the set of live
-    // callbacks (or exceeds the configured max pending callback count).
-    let live = self.animation_frame_callbacks.len();
-    if live == 0 {
-      self.animation_frame_queue.clear();
-      return;
-    }
-
-    let queue_len = self.animation_frame_queue.len();
-    let should_compact = queue_len > self.queue_limits.max_pending_animation_frame_callbacks
-      || queue_len > live.saturating_mul(2).max(64);
-    if !should_compact {
-      return;
-    }
-
-    self
-      .animation_frame_queue
-      .retain(|id| self.animation_frame_callbacks.contains_key(id));
   }
 
   fn pop_next_task(&mut self) -> Option<Task<Host>> {
