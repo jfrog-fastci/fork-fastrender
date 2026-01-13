@@ -9454,8 +9454,11 @@ impl FastRender {
         scroll_delta,
         element_scroll_deltas,
       );
-      let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
-      scroll_state = scroll_result.state;
+      scroll_state = crate::scroll::resolve_effective_scroll_state_for_paint_mut(
+        &mut fragment_tree,
+        scroll_state,
+        viewport_size,
+      );
       let scroll = scroll_state.viewport;
 
       // Apply sticky offsets before sampling scroll-driven animations so view timelines use the
