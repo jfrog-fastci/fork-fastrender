@@ -617,6 +617,13 @@ struct BrowserCliArgs {
   #[arg(long = "headless-smoke", action = clap::ArgAction::SetTrue)]
   headless_smoke: bool,
 
+  /// Run a minimal headless crash-isolation smoke test (no window / wgpu init)
+  ///
+  /// This mode spawns a UI worker, opens a tab, navigates to `crash://panic`, and asserts the
+  /// worker terminates while the browser process stays alive.
+  #[arg(long = "headless-crash-smoke", action = clap::ArgAction::SetTrue)]
+  headless_crash_smoke: bool,
+
   /// Enable JavaScript execution (experimental)
   ///
   /// Note: the windowed browser UI worker does not execute author scripts yet. Today this flag is
@@ -1425,6 +1432,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // Or (legacy):
   //   FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 bash scripts/run_limited.sh --as 64G -- \
   //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser
+  //
+  // Crash-isolation smoke test (worker crash should not kill the browser process):
+  //   bash scripts/run_limited.sh --as 64G -- \
+  //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-crash-smoke
+  if cli.headless_crash_smoke {
+    return run_headless_crash_smoke_mode(download_dir);
+  }
   if cli.headless_smoke || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
     if cli.js_enabled {
       return run_headless_vmjs_smoke_mode();
@@ -2705,6 +2719,109 @@ fn run_headless_smoke_mode(
     viewport_css.0, viewport_css.1, dpr, pixmap_w, pixmap_h
   );
 
+  Ok(())
+}
+
+#[cfg(feature = "browser_ui")]
+fn run_headless_crash_smoke_mode(
+  download_dir: std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+  use fastrender::ui::cancel::CancelGens;
+  use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+  use std::sync::mpsc::RecvTimeoutError;
+  use std::time::{Duration, Instant};
+
+  // Keep the smoke test cheap and deterministic. See `run_headless_smoke_mode` for rationale.
+  const RAYON_NUM_THREADS_ENV: &str = "RAYON_NUM_THREADS";
+  if !std::env::var_os(RAYON_NUM_THREADS_ENV).is_some_and(|value| !value.is_empty()) {
+    let _ = rayon::ThreadPoolBuilder::new()
+      .num_threads(1)
+      .build_global();
+  }
+
+  // Bounded but generous: under debug builds / CI contention the worker may take a while to spin up
+  // before hitting the crash URL.
+  const TIMEOUT: Duration = Duration::from_secs(60);
+  const VIEWPORT_CSS: (u32, u32) = (64, 64);
+  const DPR: f32 = 1.0;
+
+  let crash_url = "crash://panic".to_string();
+
+  let (ui_to_worker_tx, worker_to_ui_rx, join) =
+    fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-crash-smoke-worker")?;
+
+  // Not strictly needed for the crash smoke test, but keeps parity with other headless harnesses.
+  ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
+
+  let tab_id = TabId::new();
+  ui_to_worker_tx.send(UiToWorker::CreateTab {
+    tab_id,
+    initial_url: None,
+    cancel: CancelGens::new(),
+  })?;
+  ui_to_worker_tx.send(UiToWorker::ViewportChanged {
+    tab_id,
+    viewport_css: VIEWPORT_CSS,
+    dpr: DPR,
+  })?;
+  ui_to_worker_tx.send(UiToWorker::SetActiveTab { tab_id })?;
+  ui_to_worker_tx.send(UiToWorker::Navigate {
+    tab_id,
+    url: crash_url.clone(),
+    reason: NavigationReason::TypedUrl,
+  })?;
+
+  let deadline = Instant::now() + TIMEOUT;
+  let mut last_msg_debug: Option<String> = None;
+
+  loop {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match worker_to_ui_rx.recv_timeout(remaining) {
+      Ok(msg) => {
+        // If the worker stays alive long enough to report a navigation failure, that's a strong
+        // signal that the crash URL isn't wired up (or the crash did not trigger).
+        if let WorkerToUi::NavigationFailed { url, error, .. } = &msg {
+          if url == &crash_url {
+            return Err(
+              format!(
+                "headless crash smoke: worker reported NavigationFailed for {crash_url:?}: {error}"
+              )
+              .into(),
+            );
+          }
+        }
+        last_msg_debug = Some(format!("{msg:?}"));
+      }
+      Err(RecvTimeoutError::Disconnected) => break,
+      Err(RecvTimeoutError::Timeout) => {
+        let hint = match last_msg_debug.as_deref() {
+          Some(msg) => format!(" (last WorkerToUi message: {msg})"),
+          None => " (received no WorkerToUi messages)".to_string(),
+        };
+        return Err(format!(
+          "timed out after {TIMEOUT:?} waiting for UI worker to crash/disconnect after navigating to {crash_url:?}{hint}"
+        )
+        .into());
+      }
+    }
+  }
+
+  // Best-effort: join the worker thread so the smoke test doesn't race process teardown.
+  let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
+  let _ = std::thread::spawn(move || {
+    let _ = done_tx.send(join.join());
+  });
+  match done_rx.recv_timeout(Duration::from_secs(10)) {
+    Ok(_join_outcome) => {}
+    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+      return Err("timed out waiting for crash smoke worker thread to terminate".into());
+    }
+    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+      return Err("crash smoke worker join helper thread disconnected".into());
+    }
+  }
+
+  println!("HEADLESS_CRASH_SMOKE_OK");
   Ok(())
 }
 

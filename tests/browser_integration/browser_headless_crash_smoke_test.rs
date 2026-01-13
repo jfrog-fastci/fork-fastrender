@@ -1,0 +1,35 @@
+#![cfg(all(target_os = "linux", feature = "browser_ui"))]
+
+use std::process::Command;
+
+#[test]
+fn browser_headless_crash_smoke_mode_runs_and_reports_success() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/run_limited.sh");
+  let output = Command::new("bash")
+    .arg(run_limited)
+    .args(["--as", "64G", "--"])
+    .arg(env!("CARGO_BIN_EXE_browser"))
+    .arg("--headless-crash-smoke")
+    // Keep the smoke test cheap/deterministic even if the parent environment has a larger Rayon
+    // pool configured.
+    .env("RAYON_NUM_THREADS", "1")
+    .output()
+    .expect("spawn browser");
+
+  assert!(
+    output.status.success(),
+    "browser exited non-zero: {:?}\nstderr:\n{}\nstdout:\n{}",
+    output.status.code(),
+    String::from_utf8_lossy(&output.stderr),
+    String::from_utf8_lossy(&output.stdout)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("HEADLESS_CRASH_SMOKE_OK"),
+    "expected headless crash smoke success marker, got stdout:\n{stdout}"
+  );
+}
+

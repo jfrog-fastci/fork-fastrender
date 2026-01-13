@@ -6,6 +6,7 @@ mod browser_cli_help;
 mod browser_cli_start_url_scheme;
 mod browser_cli_search_fallback;
 mod browser_headless_smoke_test;
+mod browser_headless_crash_smoke_test;
 mod headless_chrome_media_features;
 mod browser_mem_limit_env;
 mod browser_bookmarks_history_restore;

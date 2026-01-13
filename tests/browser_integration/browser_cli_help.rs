@@ -53,6 +53,7 @@ fn browser_help_exits_successfully_without_startup_logs() {
     "--force-fallback-adapter",
     "--wgpu-backends",
     "--headless-smoke",
+    "--headless-crash-smoke",
     "--exit-immediately",
   ] {
     assert!(
