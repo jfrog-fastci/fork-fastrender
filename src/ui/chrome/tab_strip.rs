@@ -1718,7 +1718,7 @@ pub(super) fn tab_strip_ui(
         egui::Layout::left_to_right(egui::Align::Center),
       );
       pinned_ui.set_clip_rect(pinned_viewport_rect);
-      let mut restore_scroll_deltas: Option<(Vec2, Vec2)> = None;
+      let mut restore_scroll_delta: Option<Vec2> = None;
       // Match the unpinned segment ergonomics: treat vertical wheel scroll as horizontal scroll
       // while the pointer is over the pinned strip.
       let pointer_over_strip = pinned_ui.input(|i| {
@@ -1727,14 +1727,11 @@ pub(super) fn tab_strip_ui(
           .is_some_and(|pos| pinned_viewport_rect.contains(pos))
       });
       if pointer_over_strip {
-        let has_vertical_scroll =
-          pinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0 || i.smooth_scroll_delta.y.abs() > 0.0);
+        let has_vertical_scroll = pinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0);
         if has_vertical_scroll {
           pinned_ui.ctx().input_mut(|i| {
-            restore_scroll_deltas = Some((i.scroll_delta, i.smooth_scroll_delta));
+            restore_scroll_delta = Some(i.scroll_delta);
             i.scroll_delta = Vec2::new(i.scroll_delta.x + i.scroll_delta.y, 0.0);
-            i.smooth_scroll_delta =
-              Vec2::new(i.smooth_scroll_delta.x + i.smooth_scroll_delta.y, 0.0);
           });
         }
       }
@@ -1813,10 +1810,9 @@ pub(super) fn tab_strip_ui(
         (scroll_output.content_size.x - scroll_output.inner_rect.width()).max(0.0);
       let pinned_scroll_rect = scroll_output.inner_rect;
       pinned_scroll_viewport_rect = Some(pinned_scroll_rect);
-      if let Some((scroll_delta, smooth_scroll_delta)) = restore_scroll_deltas {
+      if let Some(scroll_delta) = restore_scroll_delta {
         pinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
-          i.smooth_scroll_delta = smooth_scroll_delta;
         });
       }
 
@@ -1856,7 +1852,7 @@ pub(super) fn tab_strip_ui(
       let clamp_anim_id = scroll_clamp_id.with("scroll_clamp_anim");
       let scroll_state_id_key = scroll_clamp_id.with("scroll_state_id");
 
-      let mut restore_scroll_deltas: Option<(Vec2, Vec2)> = None;
+      let mut restore_scroll_delta: Option<Vec2> = None;
       // Browser-like ergonomics: treat vertical wheel scrolling as horizontal scrolling when the
       // pointer is over the tab strip (so users don't need a trackpad horizontal gesture).
       let pointer_over_strip = unpinned_ui.input(|i| {
@@ -1865,14 +1861,11 @@ pub(super) fn tab_strip_ui(
           .is_some_and(|pos| unpinned_viewport_rect.contains(pos))
       });
       if pointer_over_strip {
-        let has_vertical_scroll = unpinned_ui
-          .input(|i| i.scroll_delta.y.abs() > 0.0 || i.smooth_scroll_delta.y.abs() > 0.0);
+        let has_vertical_scroll = unpinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0);
         if has_vertical_scroll {
           unpinned_ui.ctx().input_mut(|i| {
-            restore_scroll_deltas = Some((i.scroll_delta, i.smooth_scroll_delta));
+            restore_scroll_delta = Some(i.scroll_delta);
             i.scroll_delta = Vec2::new(i.scroll_delta.x + i.scroll_delta.y, 0.0);
-            i.smooth_scroll_delta =
-              Vec2::new(i.smooth_scroll_delta.x + i.smooth_scroll_delta.y, 0.0);
           });
         }
       }
@@ -1889,11 +1882,7 @@ pub(super) fn tab_strip_ui(
         .ctx()
         .data(|d| d.get_temp::<egui::Id>(scroll_state_id_key));
       let mut current_offset_x = stored_scroll_state_id
-        .map(|id| {
-          egui::scroll_area::ScrollAreaState::load(unpinned_ui.ctx(), id)
-            .offset
-            .x
-        })
+        .and_then(|id| egui::scroll_area::State::load(unpinned_ui.ctx(), id).map(|state| state.offset.x))
         .unwrap_or(0.0);
       if !current_offset_x.is_finite() {
         current_offset_x = 0.0;
@@ -1958,10 +1947,10 @@ pub(super) fn tab_strip_ui(
 
         // Programmatically set the scroll offset for this frame.
         if let Some(scroll_state_id) = stored_scroll_state_id {
-          let mut scroll_state =
-            egui::scroll_area::ScrollAreaState::load(unpinned_ui.ctx(), scroll_state_id);
-          scroll_state.offset.x = desired_scroll_offset_x;
-          scroll_state.store(unpinned_ui.ctx(), scroll_state_id);
+          if let Some(mut scroll_state) = egui::scroll_area::State::load(unpinned_ui.ctx(), scroll_state_id) {
+            scroll_state.offset.x = desired_scroll_offset_x;
+            scroll_state.store(unpinned_ui.ctx(), scroll_state_id);
+          }
         }
       } else {
         // Not clamping: ensure any previous clamp animation is inactive.
@@ -2186,10 +2175,9 @@ pub(super) fn tab_strip_ui(
         (scroll_output.content_size.x - scroll_output.inner_rect.width()).max(0.0);
       let unpinned_scroll_rect = scroll_output.inner_rect;
       unpinned_scroll_viewport_rect = Some(unpinned_scroll_rect);
-      if let Some((scroll_delta, smooth_scroll_delta)) = restore_scroll_deltas {
+      if let Some(scroll_delta) = restore_scroll_delta {
         unpinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
-          i.smooth_scroll_delta = smooth_scroll_delta;
         });
       }
 

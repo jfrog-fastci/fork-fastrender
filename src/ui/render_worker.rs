@@ -4691,7 +4691,7 @@ impl BrowserRuntime {
   }
 
   fn sync_js_tab_for_committed_navigation(
-    &self,
+    runtime_toggles: &Arc<RuntimeToggles>,
     tab_id: TabId,
     tab: &mut TabState,
     committed_url: &str,
@@ -4713,7 +4713,7 @@ impl BrowserRuntime {
     let mut options = RenderOptions::default()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
-    options.runtime_toggles = Some(Arc::clone(&self.runtime_toggles));
+    options.runtime_toggles = Some(Arc::clone(runtime_toggles));
     let fetcher = doc.fetcher();
     let blank_html =
       "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
@@ -5100,7 +5100,8 @@ impl BrowserRuntime {
           tab.last_committed_url = Some(committed_url.clone());
           tab.last_base_url = base_url.clone();
 
-          self.sync_js_tab_for_committed_navigation(
+          Self::sync_js_tab_for_committed_navigation(
+            &self.runtime_toggles,
             tab_id,
             tab,
             &committed_url,
@@ -5229,7 +5230,8 @@ impl BrowserRuntime {
     tab.last_committed_url = Some(committed_url.clone());
     tab.last_base_url = base_url.clone();
 
-    self.sync_js_tab_for_committed_navigation(
+    Self::sync_js_tab_for_committed_navigation(
+      &self.runtime_toggles,
       tab_id,
       tab,
       &committed_url,
