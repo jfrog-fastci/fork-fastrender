@@ -24,8 +24,19 @@
 //! - deny executing new programs (`execve/execveat`)
 //!
 //! Additional restrictions can be layered over time (namespaces, Landlock, etc.).
+//!
+//! ## Inherited file descriptors
+//!
+//! Sandbox policies that block filesystem and network syscalls do not automatically revoke access
+//! already granted via inherited file descriptors (e.g. a pre-opened file or socket). Use
+//! [`close_fds_except`] as a defense-in-depth measure when spawning a sandboxed renderer to ensure
+//! only explicitly-whitelisted FDs (stdio + IPC endpoints) remain open.
 
 use std::io;
+
+pub mod fd_sanitizer;
+
+pub use fd_sanitizer::close_fds_except;
 
 #[cfg(target_os = "linux")]
 mod linux_prelude;
