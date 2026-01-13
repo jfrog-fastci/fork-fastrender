@@ -13591,6 +13591,22 @@ mod content_range_tests {
       parse_content_range("bytes */1000"),
       Some(ParsedContentRange::Unsatisfied { size: Some(1000) })
     );
+
+    // Unsatisfied range with unknown size is allowed by RFC 9110 (`complete-length = "*"`)
+    assert_eq!(
+      parse_content_range("bytes */*"),
+      Some(ParsedContentRange::Unsatisfied { size: None })
+    );
+
+    // Unit is ASCII case-insensitive.
+    assert_eq!(
+      parse_content_range("BYTES 0-0/1"),
+      Some(ParsedContentRange::Range {
+        start: 0,
+        end: 0,
+        size: Some(1)
+      })
+    );
   }
 
   #[test]
@@ -13613,6 +13629,10 @@ mod content_range_tests {
 
     // Garbage suffix.
     assert_eq!(parse_content_range("bytes 0-99/1000 trailing"), None);
+    assert_eq!(parse_content_range("bytes */1000 trailing"), None);
+
+    // Multiple ranges are not supported.
+    assert_eq!(parse_content_range("bytes 0-99/1000, 100-199/1000"), None);
 
     // Claimed size must be consistent with the returned range.
     assert_eq!(parse_content_range("bytes 0-99/50"), None);
