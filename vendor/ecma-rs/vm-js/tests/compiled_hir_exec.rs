@@ -12952,51 +12952,37 @@ fn compiled_module_throw_stack_has_statement_location() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
 
-  // We don't currently have a compiled-module entry point. Simulate module execution by pushing an
-  // `ExecutionContext` whose active ScriptOrModule is a module id.
-  let module = rt
-    .modules_mut()
-    .add_module(vm_js::SourceTextModuleRecord::default())?;
-
-  let script = CompiledScript::compile_module(
-    rt.heap_mut(),
-    "test.js",
-    "function f() {\n  1;\n  throw \"x\";\n}\n",
-  )?;
-  let f_body = find_function_body(&script, "f");
-
+  let realm_id = rt.realm().id();
+  let global_object = rt.realm().global_object();
   let mut hooks = vm_js::MicrotaskQueue::new();
   let mut host = ();
-  let realm_id = rt.realm().id();
 
-  let mut scope = rt.heap.scope();
-  let name = scope.alloc_string("f")?;
-  let f = scope.alloc_user_function(
-    CompiledFunctionRef {
-      script: script.clone(),
-      body: f_body,
-    },
-    name,
-    0,
-  )?;
-  scope.push_root(Value::Object(f))?;
+  // Execute a compiled module via `ModuleGraph` so the VM has a real module id in its active
+  // `ScriptOrModule` context and module-scoped stack reporting can resolve statement locations.
+  let err = {
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
 
-  let exec_ctx = vm_js::ExecutionContext {
-    realm: realm_id,
-    script_or_module: Some(vm_js::ScriptOrModule::Module(module)),
+    let source = Arc::new(vm_js::SourceText::new_charged(
+      heap,
+      "test.js",
+      "function f() {\n  1;\n  throw \"x\";\n}\nf();\n",
+    )?);
+    let record = vm_js::SourceTextModuleRecord::compile_source(heap, source)?;
+    let module = modules.add_module(record)?;
+
+    let mut scope = heap.scope();
+    modules
+      .evaluate_sync_with_scope(
+        vm,
+        &mut scope,
+        global_object,
+        realm_id,
+        module,
+        &mut host,
+        &mut hooks,
+      )
+      .unwrap_err()
   };
-  let mut vm_ctx = rt.vm.execution_context_guard(exec_ctx)?;
-
-  let err = vm_ctx
-    .call_with_host_and_hooks(
-      &mut host,
-      &mut scope,
-      &mut hooks,
-      Value::Object(f),
-      Value::Undefined,
-      &[],
-    )
-    .unwrap_err();
 
   let VmError::ThrowWithStack { stack, .. } = err else {
     return Err(err);
@@ -13006,6 +12992,10 @@ fn compiled_module_throw_stack_has_statement_location() -> Result<(), VmError> {
   assert_eq!(stack[0].source.as_ref(), "test.js");
   // `throw "x"` starts at line 3, column 3.
   assert_eq!((stack[0].line, stack[0].col), (3, 3));
+
+  // Discard any jobs enqueued by Promise resolution/rejection so `Job` persistent roots are cleaned
+  // up before the test ends.
+  hooks.teardown(&mut rt);
   Ok(())
 }
 
