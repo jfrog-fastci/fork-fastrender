@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc};
 
 use super::protocol::BrowserToRenderer;
 
-pub type FrameReleaseCallback = Box<dyn FnOnce(u64, u32) + Send + 'static>;
+pub type FrameReleaseCallback = Box<dyn FnOnce(u64) + Send + 'static>;
 
 /// Metadata describing a rendered frame that lives in a shared frame-buffer pool.
 ///
@@ -86,7 +86,7 @@ impl std::fmt::Debug for ShmemSliceView {
 /// via `on_drop_release` (unless disarmed or stale).
 pub struct ReceivedFrame {
   pub generation: u64,
-  pub buffer_index: u32,
+  pub frame_seq: u64,
   pub meta: FrameMeta,
   pub bytes: ShmemSliceView,
   /// Optional generation tracker used to suppress releases for stale generations.
@@ -100,7 +100,7 @@ pub struct ReceivedFrame {
 impl ReceivedFrame {
   pub fn new(
     generation: u64,
-    buffer_index: u32,
+    frame_seq: u64,
     meta: FrameMeta,
     bytes: ShmemSliceView,
     current_generation: Option<Arc<AtomicU64>>,
@@ -108,7 +108,7 @@ impl ReceivedFrame {
   ) -> Self {
     Self {
       generation,
-      buffer_index,
+      frame_seq,
       meta,
       bytes,
       current_generation,
@@ -117,16 +117,13 @@ impl ReceivedFrame {
   }
 
   /// Convenience helper for building a release callback that forwards
-  /// [`BrowserToRenderer::ReleaseFrameBuffer`] onto an IPC sender.
+  /// [`BrowserToRenderer::FrameAck`] onto an IPC sender.
   pub fn release_callback_to_sender(
     sender: mpsc::Sender<BrowserToRenderer>,
   ) -> FrameReleaseCallback {
-    Box::new(move |generation, buffer_index| {
+    Box::new(move |frame_seq| {
       // Drop must never panic; ignore send failures (renderer gone, channel closed, etc).
-      let _ = sender.send(BrowserToRenderer::ReleaseFrameBuffer {
-        generation,
-        buffer_index,
-      });
+      let _ = sender.send(BrowserToRenderer::FrameAck { frame_seq });
     })
   }
 
@@ -153,7 +150,7 @@ impl ReceivedFrame {
     };
 
     if self.generation_is_current() {
-      cb(self.generation, self.buffer_index);
+      cb(self.frame_seq);
     }
   }
 }
@@ -168,7 +165,7 @@ impl std::fmt::Debug for ReceivedFrame {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("ReceivedFrame")
       .field("generation", &self.generation)
-      .field("buffer_index", &self.buffer_index)
+      .field("frame_seq", &self.frame_seq)
       .field("meta", &self.meta)
       .field("bytes", &self.bytes)
       .finish_non_exhaustive()
@@ -183,13 +180,13 @@ mod tests {
 
   fn make_frame(
     generation: u64,
-    buffer_index: u32,
+    frame_seq: u64,
     current_generation: Arc<AtomicU64>,
     sender: mpsc::Sender<BrowserToRenderer>,
   ) -> ReceivedFrame {
     ReceivedFrame::new(
       generation,
-      buffer_index,
+      frame_seq,
       FrameMeta::rgba8(2, 2),
       ShmemSliceView::from_vec(vec![0; 16]),
       Some(current_generation),
@@ -207,10 +204,7 @@ mod tests {
 
     assert_eq!(
       rx.try_recv().unwrap(),
-      BrowserToRenderer::ReleaseFrameBuffer {
-        generation: 7,
-        buffer_index: 3
-      }
+      BrowserToRenderer::FrameAck { frame_seq: 3 }
     );
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
@@ -230,19 +224,13 @@ mod tests {
 
     assert_eq!(
       rx.try_recv().unwrap(),
-      BrowserToRenderer::ReleaseFrameBuffer {
-        generation: 1,
-        buffer_index: 10
-      }
+      BrowserToRenderer::FrameAck { frame_seq: 10 }
     );
 
     drop(map);
     assert_eq!(
       rx.try_recv().unwrap(),
-      BrowserToRenderer::ReleaseFrameBuffer {
-        generation: 1,
-        buffer_index: 11
-      }
+      BrowserToRenderer::FrameAck { frame_seq: 11 }
     );
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
@@ -258,10 +246,7 @@ mod tests {
 
     assert_eq!(
       rx.try_recv().unwrap(),
-      BrowserToRenderer::ReleaseFrameBuffer {
-        generation: 9,
-        buffer_index: 42
-      }
+      BrowserToRenderer::FrameAck { frame_seq: 42 }
     );
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
