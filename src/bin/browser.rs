@@ -1278,70 +1278,28 @@ fn bookmark_reorder_failure_toast(
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
-const PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_CHARS: usize = 160;
-
-#[cfg(any(test, feature = "browser_ui"))]
-fn truncate_chars_with_ellipsis(value: &str, max_chars: usize) -> String {
-  if max_chars == 0 {
-    return String::new();
-  }
-  let mut chars = value.chars();
-  let mut out = String::new();
-  for _ in 0..max_chars {
-    let Some(ch) = chars.next() else {
-      return value.to_string();
-    };
-    out.push(ch);
-  }
-  if chars.next().is_some() {
-    out.push('…');
-  } else {
-    return value.to_string();
-  }
-  out
-}
-
-#[cfg(any(test, feature = "browser_ui"))]
-fn sanitize_single_line_error_summary(raw: &str) -> String {
-  let mut out = String::new();
-  let mut prev_space = false;
-  for ch in raw.chars() {
-    if ch.is_whitespace() {
-      if !prev_space && !out.is_empty() {
-        out.push(' ');
-        prev_space = true;
-      }
-      continue;
-    }
-    if ch.is_control() {
-      continue;
-    }
-    out.push(ch);
-    prev_space = false;
-  }
-  out.trim().to_string()
-}
+const PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES: usize = 160;
 
 #[cfg(any(test, feature = "browser_ui"))]
 fn format_profile_autosave_spawn_failure_toast(err: &str) -> String {
-  let summary = sanitize_single_line_error_summary(err);
   let base = "Failed to start profile autosave\nBookmarks/history changes may not be saved.";
-  if summary.is_empty() {
+  let Some(summary) =
+    sanitize_toast_detail_single_line(err, PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES)
+  else {
     return base.to_string();
-  }
-  let summary = truncate_chars_with_ellipsis(&summary, PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_CHARS);
+  };
   format!("Failed to start profile autosave: {summary}\nBookmarks/history changes may not be saved.")
 }
 
 #[cfg(test)]
 mod profile_autosave_toast_tests {
   use super::{
-    format_profile_autosave_spawn_failure_toast, PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_CHARS,
+    format_profile_autosave_spawn_failure_toast, PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES,
   };
 
   #[test]
   fn profile_autosave_toast_truncates_extremely_long_errors() {
-    let long_error = "x".repeat(PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_CHARS * 10);
+    let long_error = "x".repeat(PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES * 10);
     let toast = format_profile_autosave_spawn_failure_toast(&long_error);
     let (first, second) = toast
       .split_once('\n')
@@ -1353,9 +1311,9 @@ mod profile_autosave_toast_tests {
       .unwrap_or("");
     assert!(summary.ends_with('…'));
     assert!(
-      summary.chars().count() <= PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_CHARS + 1,
-      "summary was not truncated: {} chars",
-      summary.chars().count()
+      summary.len() <= PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES,
+      "summary was not truncated: {} bytes",
+      summary.len()
     );
   }
 
@@ -6484,15 +6442,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       active_idx,
     );
 
-    if let Some(toast_text) = profile_autosave_failure_toast.as_deref() {
-      // Only relevant for windowed UI (headless modes return before reaching this point).
-      let now = std::time::Instant::now();
-      app.chrome_toast.show(
-        fastrender::ui::ToastKind::Warning,
-        toast_text.to_string(),
-        now,
-        std::time::Duration::from_secs(8),
-      );
+    // Surface autosave startup failures via a toast. Prefer the active window when multiple windows
+    // are restored so we don't spam the user with the same warning.
+    if idx == active_idx {
+      if let Some(toast_text) = profile_autosave_failure_toast.as_deref() {
+        // Only relevant for windowed UI (headless modes return before reaching this point).
+        let now = std::time::Instant::now();
+        app.chrome_toast.show(
+          fastrender::ui::ToastKind::Warning,
+          toast_text.to_string(),
+          now,
+          std::time::Duration::from_secs(8),
+        );
+      }
     }
 
     let window_id = app.window.id();
