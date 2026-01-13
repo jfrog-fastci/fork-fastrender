@@ -785,6 +785,7 @@ Front-ends are encouraged to print these to stderr while developing new protocol
   - text input is intentionally minimal
     - basic caret movement + selection are supported for focused `<input>`/`<textarea>` (arrow keys,
       Home/End, Shift+Arrow, Ctrl/Cmd+A)
+    - Undo/Redo are supported for focused `<input>`/`<textarea>` (Ctrl/Cmd+Z; Ctrl+Shift+Z/Ctrl+Y)
     - basic clipboard shortcuts (Ctrl/Cmd+C/X/V) are supported for focused `<input>`/`<textarea>`
   - `<select>` support is basic (listbox clicks + dropdown popup selection; keyboard navigation and
     simple typeahead are supported; no multi-select yet)
