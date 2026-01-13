@@ -1106,6 +1106,7 @@ impl<'vm> HirEvaluator<'vm> {
         body_id,
         name_str,
         /* is_arrow */ false,
+        /* is_constructable */ true,
         /* name_binding */ None,
       )?;
 
