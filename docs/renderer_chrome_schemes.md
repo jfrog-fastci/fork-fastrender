@@ -98,6 +98,8 @@ Implementation reference (existing pattern): repo-owned UI assets are already em
 Security requirements for the resolver/fetcher:
 
 - No directory traversal: reject `..`, empty segments, and ambiguous percent-encodings.
+- Reject or ignore query/fragment deterministically (prefer rejecting `?` / `#` entirely). Asset
+  identity should be based only on the allowlisted `(host, path)` pair.
 - No fallback to network or filesystem on cache miss: unknown assets must fail closed.
 - Deterministic MIME types (no sniffing); no redirects; no cookies/auth.
 
@@ -149,6 +151,7 @@ unsupported navigation scheme (see the enforcement section above).
 
 - Parsing must be strict: unknown actions must fail closed (ignore or surface a clear error), and
   must never fall back to “navigate to it anyway”.
+- Prefer a narrow grammar such as `chrome-action:<action>` (no `//` authority form, no redirects).
 - Arguments (if any) must be explicitly parsed/validated; no eval; no shell-like escaping rules.
 - Dispatch must be reachable only from the trusted chrome renderer context.
 
