@@ -80,10 +80,16 @@ fn network_process_smoke() {
     "network process (pid {pid}) should exit when handle is dropped"
   );
 
-  // And the listening socket should be gone too.
-  assert!(
-    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_err(),
-    "expected network process listener {addr} to be closed after drop"
-  );
+  // And the listening socket should be gone too (give it a moment; some platforms may still accept
+  // connections briefly after we drop/kill the child).
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_err() {
+      break;
+    }
+    if Instant::now() >= deadline {
+      panic!("expected network process listener {addr} to be closed after drop");
+    }
+    std::thread::sleep(Duration::from_millis(10));
+  }
 }
-

@@ -292,7 +292,8 @@ impl Drop for NetworkProcessHandle {
 
     // Best-effort graceful shutdown first. We keep this bounded (short timeouts) because `Drop`
     // should never hang indefinitely.
-    let _ = TcpStream::connect_timeout(&self.addr, self.connect_timeout).and_then(|stream| {
+    let shutdown_connect_timeout = self.connect_timeout.min(Duration::from_millis(200));
+    let _ = TcpStream::connect_timeout(&self.addr, shutdown_connect_timeout).and_then(|stream| {
       let _ = stream.set_nodelay(true);
       let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
       let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
