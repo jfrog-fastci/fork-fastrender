@@ -1333,6 +1333,7 @@ impl WindowRealm {
     source_text: impl Into<Arc<str>>,
   ) -> Result<Value, VmError> {
     let webidl_bindings_host = self.webidl_bindings_host;
+    let webidl_limits = self.js_execution_options.webidl_limits;
 
     // The `vm-js` default `exec_script` path uses the VM-owned microtask queue as the active
     // `VmHostHooks` implementation. That queue does not provide FastRender's DOM shims (like
@@ -1459,6 +1460,7 @@ impl WindowRealm {
       // `loading` → `interactive` → `complete` transitions.
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(&mut host_ctx);
+      any.set_webidl_limits(webidl_limits);
       let mut fallback_webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
       if let Some(mut host_ptr) = webidl_bindings_host {
         // SAFETY: The pointer is only installed via `WindowRealm::with_webidl_bindings_host` for the
@@ -1508,6 +1510,7 @@ impl WindowRealm {
 
   pub fn perform_microtask_checkpoint(&mut self) -> Result<(), VmError> {
     let webidl_bindings_host = self.webidl_bindings_host;
+    let webidl_limits = self.js_execution_options.webidl_limits;
     self.with_vm_budget(|rt| {
       // `vm-js`'s built-in `Vm::perform_microtask_checkpoint` runs queued jobs using a lightweight
       // internal `VmHostHooks` implementation that only supports Promise job chaining. FastRender's
@@ -1528,9 +1531,14 @@ impl WindowRealm {
       }
 
       impl DomShimMicrotaskHooks {
-        fn new(host_ctx: &mut dyn VmHost, dataset_ctx: DatasetExoticContext) -> Self {
+        fn new(
+          host_ctx: &mut dyn VmHost,
+          dataset_ctx: DatasetExoticContext,
+          webidl_limits: webidl::WebIdlLimits,
+        ) -> Self {
           let mut any = VmJsHostHooksPayload::default();
           any.set_vm_host(host_ctx);
+          any.set_webidl_limits(webidl_limits);
           Self {
             any,
             pending: Vec::new(),
@@ -1727,7 +1735,7 @@ impl WindowRealm {
       // fallback path can still observe/override `currentScript` when needed.
       let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
       let dataset_ctx = DatasetExoticContext::for_vm(&rt.vm);
-      let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx, dataset_ctx);
+      let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx, dataset_ctx, webidl_limits);
       let mut fallback_webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
       if let Some(mut host_ptr) = webidl_bindings_host {
         // SAFETY: The pointer is only installed via `WindowRealm::with_webidl_bindings_host` around
@@ -46467,9 +46475,14 @@ mod tests {
   }
 
   impl DomShimHostHooks {
-    fn new(host_ctx: &mut dyn VmHost, dataset_ctx: DatasetExoticContext) -> Self {
+    fn new(
+      host_ctx: &mut dyn VmHost,
+      dataset_ctx: DatasetExoticContext,
+      webidl_limits: webidl::WebIdlLimits,
+    ) -> Self {
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(host_ctx);
+      any.set_webidl_limits(webidl_limits);
       Self { any, dataset_ctx }
     }
 
@@ -46602,7 +46615,8 @@ mod tests {
     source: &str,
   ) -> Result<Value, VmError> {
     let dataset_ctx = realm.dataset_exotic_context();
-    let mut hooks = DomShimHostHooks::new(host, dataset_ctx);
+    let mut hooks =
+      DomShimHostHooks::new(host, dataset_ctx, realm.js_execution_options().webidl_limits);
     realm.exec_script_with_host_and_hooks(host, &mut hooks, source)
   }
 
@@ -46612,7 +46626,8 @@ mod tests {
     source: &str,
   ) -> Result<Value, VmError> {
     let dataset_ctx = realm.dataset_exotic_context();
-    let mut hooks = DomShimHostHooks::new(host, dataset_ctx);
+    let mut hooks =
+      DomShimHostHooks::new(host, dataset_ctx, realm.js_execution_options().webidl_limits);
     let mut webidl_host =
       VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
     hooks.set_webidl_bindings_host(&mut webidl_host);
@@ -46649,7 +46664,11 @@ mod tests {
 
     fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
       let dataset_ctx = self.window.dataset_exotic_context();
-      let mut hooks = DomShimHostHooks::new(&mut self.document, dataset_ctx);
+      let mut hooks = DomShimHostHooks::new(
+        &mut self.document,
+        dataset_ctx,
+        self.window.js_execution_options().webidl_limits,
+      );
       hooks.set_webidl_bindings_host(&mut self.webidl_bindings_host);
       hooks.any.set_embedder_state(self);
       self
@@ -46883,7 +46902,8 @@ mod tests {
     };
 
     let dataset_ctx = realm.dataset_exotic_context();
-    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx);
+    let mut hooks =
+      DomShimHostHooks::new(&mut host, dataset_ctx, realm.js_execution_options().webidl_limits);
     realm.dispatch_media_event(
       &mut host,
       &mut hooks,
@@ -52727,7 +52747,8 @@ mod tests {
     };
 
     let dataset_ctx = realm.dataset_exotic_context();
-    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx);
+    let mut hooks =
+      DomShimHostHooks::new(&mut host, dataset_ctx, realm.js_execution_options().webidl_limits);
     hooks.set_webidl_bindings_host(&mut webidl_host);
 
     let dataset_value =

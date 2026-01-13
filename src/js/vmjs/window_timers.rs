@@ -743,6 +743,9 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     let mut hooks = {
       let (host_ctx, window_realm) = host.vm_host_and_window_realm()?;
       let mut hooks = Self::new(host_ctx);
+      hooks
+        .any
+        .set_webidl_limits(window_realm.js_execution_options().webidl_limits);
       hooks.dataset_ctx = window_realm.dataset_exotic_context();
       hooks.heap_ptr = Some(NonNull::from(window_realm.heap_mut()));
       hooks.heap_alive = Some(Arc::clone(window_realm.heap_alive_flag()));
@@ -778,6 +781,9 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     webidl_bindings_host: Option<&mut dyn WebIdlBindingsHost>,
   ) -> Self {
     let mut hooks = Self::new(vm_host);
+    hooks
+      .any
+      .set_webidl_limits(window_realm.js_execution_options().webidl_limits);
     hooks.dataset_ctx = window_realm.dataset_exotic_context();
     hooks.heap_ptr = Some(NonNull::from(window_realm.heap_mut()));
     hooks.heap_alive = Some(Arc::clone(window_realm.heap_alive_flag()));

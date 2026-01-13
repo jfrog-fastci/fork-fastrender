@@ -3,6 +3,7 @@ use crate::render_control;
 use std::time::Duration;
 use std::time::Instant;
 use vm_js::Budget as VmJsBudget;
+use webidl::WebIdlLimits;
 
 use super::import_maps::ImportMapLimits;
 use super::{QueueLimits, RunLimits};
@@ -87,6 +88,14 @@ pub struct JsExecutionOptions {
   /// These apply when processing `<script type="importmap">` and when embedders register import maps
   /// via `WindowHostState`.
   pub import_map_limits: ImportMapLimits,
+
+  /// WebIDL conversion limits used by generated bindings and conversion helpers.
+  ///
+  /// These bounds apply to potentially unbounded conversions such as:
+  /// - `DOMString`/`USVString`/etc string conversions (UTF-16 code units)
+  /// - `sequence<T>` / `FrozenArray<T>` conversions (length)
+  /// - `record<K, V>` conversions (entry count)
+  pub webidl_limits: WebIdlLimits,
 
   /// Maximum number of simultaneously pending render-blocking stylesheets that can block
   /// parser-blocking script execution.
@@ -292,6 +301,8 @@ impl Default for JsExecutionOptions {
       max_script_bytes: 2 * 1024 * 1024,
 
       import_map_limits: ImportMapLimits::default(),
+
+      webidl_limits: WebIdlLimits::default(),
 
       // `document.write` budgets (hostile-input hard caps).
       //
