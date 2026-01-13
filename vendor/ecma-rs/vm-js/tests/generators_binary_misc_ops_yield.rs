@@ -107,6 +107,24 @@ fn bigint_left_shift_with_yield_in_rhs() {
 }
 
 #[test]
+fn bigint_right_shift_with_yield_in_rhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return 8n >> (yield 1n); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(2n);
+        r1.value === 1n && r1.done === false &&
+        r2.done === true && r2.value === 2n
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn left_shift_with_yield_in_rhs() {
   let mut rt = new_runtime();
   let value = rt
@@ -315,6 +333,27 @@ fn bigint_bitwise_or_mixing_error_is_catchable_under_yield() {
         var it = g();
         var r1 = it.next();
         var r2 = it.next(1);
+        r1.value === 0 && r1.done === false &&
+        r2.done === true && r2.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn bigint_left_shift_mixing_error_is_catchable_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){
+          try { return 1n << (yield 0); }
+          catch (e) { return e && e.name === "TypeError"; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(1); // shift count is a Number -> mixing error
         r1.value === 0 && r1.done === false &&
         r2.done === true && r2.value === true
       "#,
