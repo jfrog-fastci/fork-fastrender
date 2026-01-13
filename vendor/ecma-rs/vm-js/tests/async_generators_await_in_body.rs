@@ -189,3 +189,94 @@ fn next_requests_queue_across_internal_await_after_first_yield() -> Result<(), V
   rt.teardown_microtasks();
   result
 }
+
+#[test]
+fn return_request_is_queued_across_internal_await_before_first_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let result: Result<(), VmError> = (|| {
+    let value = match rt.exec_script(
+      r#"
+        var log = "";
+
+        async function* g() {
+          log += "s";
+          await Promise.resolve().then(() => { log += "a"; });
+          yield 1;
+          log += "y"; // must not run if a queued return closes the generator after the yield
+        }
+
+        var it = g();
+        it.next().then(r => { log += "|n:" + r.value + ":" + r.done; });
+        it.return("x").then(r => { log += "|r:" + r.value + ":" + r.done; });
+
+        log
+      "#,
+    ) {
+      Ok(v) => v,
+      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) => return Err(err),
+    };
+    assert_eq!(value_to_string(&rt, value), "s");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    assert!(
+      rt.vm.microtask_queue().is_empty(),
+      "expected microtask queue to be empty after checkpoint"
+    );
+
+    let value = rt.exec_script("log")?;
+    assert_eq!(value_to_string(&rt, value), "sa|n:1:false|r:x:true");
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
+
+#[test]
+fn throw_request_is_queued_across_internal_await_before_first_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let result: Result<(), VmError> = (|| {
+    let value = match rt.exec_script(
+      r#"
+        var log = "";
+
+        async function* g() {
+          log += "s";
+          await Promise.resolve().then(() => { log += "a"; });
+          yield 1;
+          log += "y"; // must not run if a queued throw closes the generator after the yield
+        }
+
+        var it = g();
+        it.next().then(r => { log += "|n:" + r.value + ":" + r.done; });
+        it.throw("boom").then(
+          r => { log += "|t:" + r.value + ":" + r.done; },
+          e => { log += "|t:" + e; }
+        );
+
+        log
+      "#,
+    ) {
+      Ok(v) => v,
+      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) => return Err(err),
+    };
+    assert_eq!(value_to_string(&rt, value), "s");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    assert!(
+      rt.vm.microtask_queue().is_empty(),
+      "expected microtask queue to be empty after checkpoint"
+    );
+
+    let value = rt.exec_script("log")?;
+    assert_eq!(value_to_string(&rt, value), "sa|n:1:false|t:boom");
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
