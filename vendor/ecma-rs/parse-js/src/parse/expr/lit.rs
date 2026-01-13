@@ -1822,7 +1822,6 @@ fn validate_regex_pattern(
           if esc == '-' {
             return Ok((i + esc_len, Some('-' as u32), false));
           }
-
           // CharacterClassEscape (not valid as range endpoint).
           if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
             return Ok((i + esc_len, None, false));

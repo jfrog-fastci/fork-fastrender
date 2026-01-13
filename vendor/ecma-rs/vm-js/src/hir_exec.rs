@@ -3813,22 +3813,17 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(Value::Number(to_int32(a).wrapping_shl(shift) as f64))
           }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let shift = {
-              let b = scope.heap().get_bigint(b)?;
-              if b.is_negative() {
-                return Err(VmError::RangeError("BigInt shift count must be >= 0"));
-              }
-              let Some(shift) = b.try_to_i128() else {
-                return Err(VmError::OutOfMemory);
-              };
-              if shift > u64::MAX as i128 {
-                return Err(VmError::OutOfMemory);
-              }
-              shift as u64
-            };
             let out = {
               let a = scope.heap().get_bigint(a)?;
-              a.shl(shift)?
+              let b = scope.heap().get_bigint(b)?;
+              // Match interpreter semantics: negative shift counts reverse direction and extremely
+              // large magnitudes saturate to `u64::MAX`.
+              let (shift_negative, shift) = bigint_shift_count(b);
+              if shift_negative {
+                a.shr(shift)?
+              } else {
+                a.shl(shift)?
+              }
             };
             let out = scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
@@ -3847,22 +3842,17 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(Value::Number(to_int32(a).wrapping_shr(shift) as f64))
           }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let shift = {
-              let b = scope.heap().get_bigint(b)?;
-              if b.is_negative() {
-                return Err(VmError::RangeError("BigInt shift count must be >= 0"));
-              }
-              let Some(shift) = b.try_to_i128() else {
-                return Err(VmError::OutOfMemory);
-              };
-              if shift > u64::MAX as i128 {
-                return Err(VmError::OutOfMemory);
-              }
-              shift as u64
-            };
             let out = {
               let a = scope.heap().get_bigint(a)?;
-              a.shr(shift)?
+              let b = scope.heap().get_bigint(b)?;
+              // Match interpreter semantics: negative shift counts reverse direction and extremely
+              // large magnitudes saturate to `u64::MAX`.
+              let (shift_negative, shift) = bigint_shift_count(b);
+              if shift_negative {
+                a.shl(shift)?
+              } else {
+                a.shr(shift)?
+              }
             };
             let out = scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
@@ -3871,13 +3861,20 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::BinaryOp::ShiftRightUnsigned => {
-        // `>>>` always performs `ToNumber` and does not support BigInt.
         let mut scope = scope.reborrow();
         scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_uint32(ln).wrapping_shr(shift) as f64))
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number((to_uint32(a) >> shift) as f64))
+          }
+          (NumericValue::BigInt(_), NumericValue::BigInt(_)) => Err(VmError::TypeError(
+            "BigInt does not support unsigned right shift",
+          )),
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::BitOr => {
         let mut scope = scope.reborrow();
@@ -3947,32 +3944,30 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::BinaryOp::StrictEquality => Ok(Value::Bool(self.strict_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::StrictInequality => Ok(Value::Bool(!self.strict_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::LessThan => {
-        let mut scope = scope.reborrow();
-        scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Bool(ln < rn))
+        Ok(Value::Bool(
+          self
+            .abstract_relational_comparison(scope, l, r, /* left_first */ true)?
+            .unwrap_or(false),
+        ))
       }
       hir_js::BinaryOp::LessEqual => {
-        let mut scope = scope.reborrow();
-        scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Bool(ln <= rn))
+        Ok(Value::Bool(match self.abstract_relational_comparison(scope, r, l, /* left_first */ false)? {
+          None => false,
+          Some(r) => !r,
+        }))
       }
       hir_js::BinaryOp::GreaterThan => {
-        let mut scope = scope.reborrow();
-        scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Bool(ln > rn))
+        Ok(Value::Bool(
+          self
+            .abstract_relational_comparison(scope, r, l, /* left_first */ false)?
+            .unwrap_or(false),
+        ))
       }
       hir_js::BinaryOp::GreaterEqual => {
-        let mut scope = scope.reborrow();
-        scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        Ok(Value::Bool(ln >= rn))
+        Ok(Value::Bool(match self.abstract_relational_comparison(scope, l, r, /* left_first */ true)? {
+          None => false,
+          Some(r) => !r,
+        }))
       }
       hir_js::BinaryOp::Instanceof => Ok(Value::Bool(self.instanceof_operator(scope, l, r)?)),
       hir_js::BinaryOp::Comma => {
@@ -4316,6 +4311,111 @@ impl<'vm> HirEvaluator<'vm> {
     }
   }
 
+  /// ECMA-262 Abstract Relational Comparison.
+  ///
+  /// Returns `Ok(None)` for the spec's `undefined` result (e.g. when comparing NaN).
+  fn abstract_relational_comparison(
+    &mut self,
+    scope: &mut Scope<'_>,
+    x: Value,
+    y: Value,
+    left_first: bool,
+  ) -> Result<Option<bool>, VmError> {
+    // Root inputs for the duration of the comparison: `ToPrimitive`/`ToNumeric` can allocate.
+    let mut scope = scope.reborrow();
+    scope.push_roots(&[x, y])?;
+
+    // 1. ToPrimitive, hint Number (order depends on `left_first`).
+    let (px, py) = if left_first {
+      let px = scope.to_primitive(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        x,
+        ToPrimitiveHint::Number,
+      )?;
+      scope.push_root(px)?;
+      let py = scope.to_primitive(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        y,
+        ToPrimitiveHint::Number,
+      )?;
+      scope.push_root(py)?;
+      (px, py)
+    } else {
+      let py = scope.to_primitive(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        y,
+        ToPrimitiveHint::Number,
+      )?;
+      scope.push_root(py)?;
+      let px = scope.to_primitive(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        x,
+        ToPrimitiveHint::Number,
+      )?;
+      scope.push_root(px)?;
+      (px, py)
+    };
+
+    // 2. String/string => lexicographic code-unit comparison.
+    if let (Value::String(sx), Value::String(sy)) = (px, py) {
+      let a = scope.heap().get_string(sx)?.as_code_units();
+      let b = scope.heap().get_string(sy)?.as_code_units();
+      let ord = crate::tick::code_units_cmp_with_ticks(a, b, || self.vm.tick())?;
+      return Ok(Some(ord == Ordering::Less));
+    }
+
+    // 2.b. BigInt/string => parse the string as a BigInt (StringToBigInt).
+    match (px, py) {
+      (Value::BigInt(a), Value::String(bs)) => {
+        let mut tick = || self.vm.tick();
+        let Some(bi) = string_to_bigint(scope.heap(), bs, &mut tick)? else {
+          return Ok(None);
+        };
+        return Ok(Some(scope.heap().get_bigint(a)? < &bi));
+      }
+      (Value::String(as_), Value::BigInt(b)) => {
+        let mut tick = || self.vm.tick();
+        let Some(ai) = string_to_bigint(scope.heap(), as_, &mut tick)? else {
+          return Ok(None);
+        };
+        return Ok(Some(&ai < scope.heap().get_bigint(b)?));
+      }
+      _ => {}
+    }
+
+    // 3. Otherwise => ToNumeric then numeric comparison.
+    let nx = self.to_numeric(&mut scope, px)?;
+    let ny = self.to_numeric(&mut scope, py)?;
+    Ok(match (nx, ny) {
+      (NumericValue::Number(a), NumericValue::Number(b)) => {
+        if a.is_nan() || b.is_nan() {
+          None
+        } else {
+          Some(a < b)
+        }
+      }
+      (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+        let a = scope.heap().get_bigint(a)?;
+        let b = scope.heap().get_bigint(b)?;
+        Some(a < b)
+      }
+      (NumericValue::BigInt(a), NumericValue::Number(b)) => {
+        bigint_compare_number(scope.heap(), a, b)?.map(|ord| ord == Ordering::Less)
+      }
+      (NumericValue::Number(a), NumericValue::BigInt(b)) => {
+        bigint_compare_number(scope.heap(), b, a)?.map(|ord| ord == Ordering::Greater)
+      }
+    })
+  }
+
   fn eval_assignment(
     &mut self,
     scope: &mut Scope<'_>,
@@ -4340,20 +4440,20 @@ impl<'vm> HirEvaluator<'vm> {
 
             let v = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(v)?;
-             self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
-             self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
-             Ok(v)
-           }
-           _ => {
-             // Root the RHS across pattern assignment evaluation in case it allocates and triggers GC.
-             let mut scope = scope.reborrow();
-             let v = self.eval_expr(&mut scope, body, value)?;
-             scope.push_root(v)?;
-             self.assign_to_pat(&mut scope, body, target, v)?;
-             Ok(v)
-           }
-         }
-       }
+            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
+            self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
+            Ok(v)
+          }
+          _ => {
+            // Root the RHS across pattern assignment evaluation in case it allocates and triggers GC.
+            let mut scope = scope.reborrow();
+            let v = self.eval_expr(&mut scope, body, value)?;
+            scope.push_root(v)?;
+            self.assign_to_pat(&mut scope, body, target, v)?;
+            Ok(v)
+          }
+        }
+      }
       hir_js::AssignOp::AddAssign
       | hir_js::AssignOp::SubAssign
       | hir_js::AssignOp::MulAssign
@@ -4765,6 +4865,7 @@ impl<'vm> HirEvaluator<'vm> {
         scope.push_root(left)?;
         let right = self.eval_expr(&mut scope, body, value)?;
         scope.push_root(right)?;
+        maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
         self.env.set_resolved_binding(
           self.vm,
           &mut *self.host,
@@ -4799,6 +4900,7 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
+            maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
             self.env.set_resolved_binding(
               self.vm,
               &mut *self.host,
@@ -4843,6 +4945,8 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
+            let reference = AssignmentReference::Property { base, key };
+            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, right)?;
 
             let ok = crate::spec_ops::internal_set_with_host_and_hooks(
               self.vm,
@@ -4992,47 +5096,135 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::AssignOp::ShiftLeftAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_int32(ln).wrapping_shl(shift) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number(to_int32(a).wrapping_shl(shift) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              let (shift_negative, shift) = bigint_shift_count(b);
+              if shift_negative {
+                a.shr(shift)?
+              } else {
+                a.shl(shift)?
+              }
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::ShiftRightAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_int32(ln).wrapping_shr(shift) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number(to_int32(a).wrapping_shr(shift) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              let (shift_negative, shift) = bigint_shift_count(b);
+              if shift_negative {
+                a.shl(shift)?
+              } else {
+                a.shr(shift)?
+              }
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::ShiftRightUnsignedAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_uint32(ln).wrapping_shr(shift) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number(to_uint32(a).wrapping_shr(shift) as f64))
+          }
+          (NumericValue::BigInt(_), NumericValue::BigInt(_)) => Err(VmError::TypeError(
+            "BigInt does not support unsigned right shift",
+          )),
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::BitOrAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        Ok(Value::Number((to_int32(ln) | to_int32(rn)) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number((to_int32(a) | to_int32(b)) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.bitwise_or(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::BitAndAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        Ok(Value::Number((to_int32(ln) & to_int32(rn)) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number((to_int32(a) & to_int32(b)) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.bitwise_and(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::BitXorAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        Ok(Value::Number((to_int32(ln) ^ to_int32(rn)) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number((to_int32(a) ^ to_int32(b)) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.bitwise_xor(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       _ => Err(VmError::Unimplemented(
         "compound assignment operator (hir-js compiled path)",
@@ -6900,6 +7092,28 @@ fn bigint_compare_number(
   } else {
     Ordering::Greater
   }))
+}
+
+fn bigint_shift_count(value: &crate::JsBigInt) -> (bool, u64) {
+  match value.try_to_i128() {
+    Some(shift_i) => {
+      // `(-i128::MIN)` overflows, so handle it explicitly.
+      let shift_mag: u128 = if shift_i == i128::MIN {
+        1u128 << 127
+      } else if shift_i < 0 {
+        (-shift_i) as u128
+      } else {
+        shift_i as u128
+      };
+      let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
+      (shift_i < 0, shift)
+    }
+    // If the shift count does not fit into an i128, it is either extremely large or extremely
+    // negative. Saturate to `u64::MAX` so:
+    // - huge right shifts quickly produce 0/-1,
+    // - huge left shifts attempt to allocate and surface OOM.
+    None => (value.is_negative(), u64::MAX),
+  }
 }
 
 fn to_int32(n: f64) -> i32 {

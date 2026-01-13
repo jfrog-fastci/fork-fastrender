@@ -7931,6 +7931,19 @@ fn compiled_bigint_shift_left_assign_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_bigint_shift_left_assign_with_negative_count_shifts_right() -> Result<(), VmError> {
+  // Match interpreter semantics: `x <<= -y` is `x >>= y`.
+  assert_compiled_script_bigint(
+    r#"
+      let x = 8n;
+      x <<= -1n;
+      x
+    "#,
+    4,
+  )
+}
+
+#[test]
 fn compiled_bigint_shift_right_assign_with_negative_count_shifts_left() -> Result<(), VmError> {
   assert_compiled_script_bigint(
     r#"
