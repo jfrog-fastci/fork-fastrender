@@ -1033,11 +1033,13 @@ impl RegExpProgram {
                 stack_try_push(&mut stack, &mut stack_mem, exec_mem, empty_state)?;
               }
 
-              if let Some(&u) = input.get(start_pos) {
-                if cls.single.matches(u.into(), flags) {
+              if let Some((cp, len)) =
+                decode_code_point(input, start_pos, flags.has_either_unicode_flag())
+              {
+                if cls.single.matches(cp, flags) {
                   let mut char_state = state.try_clone(exec_mem)?;
                   char_state.pc = next_pc;
-                  char_state.pos = start_pos.saturating_add(1);
+                  char_state.pos = start_pos.saturating_add(len);
                   stack_try_push(&mut stack, &mut stack_mem, exec_mem, char_state)?;
                 }
               }
@@ -1081,15 +1083,17 @@ impl RegExpProgram {
             }
 
             // --- 2) Single-code-unit elements ---
-            if let Some(&u) = input.get(start_pos) {
-              if cls.single.matches(u.into(), flags) {
+            if let Some((cp, len)) =
+              decode_code_point(input, start_pos, flags.has_either_unicode_flag())
+            {
+              if cls.single.matches(cp, flags) {
                 // Keep empty as a lower-priority alternative.
                 if cls.has_empty {
                   let mut empty_state = state.try_clone(exec_mem)?;
                   empty_state.pc = next_pc;
                   stack_try_push(&mut stack, &mut stack_mem, exec_mem, empty_state)?;
                 }
-                state.pos = start_pos.saturating_add(1);
+                state.pos = start_pos.saturating_add(len);
                 state.pc = next_pc;
                 continue;
               }
