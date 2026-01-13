@@ -267,14 +267,14 @@ fn tla_evaluate_is_idempotent_for_importer_without_tla() -> Result<(), VmError> 
     graph.add_module_with_specifier(
       "dep.js",
       SourceTextModuleRecord::parse(&mut heap, "export const v = await Promise.resolve(1);")?,
-    );
+    )?;
     let main = graph.add_module_with_specifier(
       "main.js",
       SourceTextModuleRecord::parse(
         &mut heap,
         "import { v } from 'dep.js'; export const out = v + 1;",
       )?,
-    );
+    )?;
     graph.link_all_by_specifier();
 
     let promise1 = graph.evaluate(
@@ -358,7 +358,7 @@ fn tla_async_parent_order_follows_import_order_not_module_id() -> Result<(), VmE
           export const x = 1;
         "#,
       )?,
-    );
+    )?;
     graph.add_module_with_specifier(
       "./c.js",
       SourceTextModuleRecord::parse(
@@ -369,7 +369,7 @@ fn tla_async_parent_order_follows_import_order_not_module_id() -> Result<(), VmE
           export {};
         "#,
       )?,
-    );
+    )?;
     graph.add_module_with_specifier(
       "./b.js",
       SourceTextModuleRecord::parse(
@@ -380,7 +380,7 @@ fn tla_async_parent_order_follows_import_order_not_module_id() -> Result<(), VmE
           export {};
         "#,
       )?,
-    );
+    )?;
     let main = graph.add_module_with_specifier(
       "./main.js",
       SourceTextModuleRecord::parse(
@@ -391,7 +391,7 @@ fn tla_async_parent_order_follows_import_order_not_module_id() -> Result<(), VmE
           export const order = globalThis.order.join(',');
         "#,
       )?,
-    );
+    )?;
     graph.link_all_by_specifier();
 
     let promise = graph.evaluate(

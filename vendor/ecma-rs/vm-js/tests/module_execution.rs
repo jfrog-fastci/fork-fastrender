@@ -124,7 +124,7 @@ fn module_evaluate_sync_rejects_top_level_await_in_dependencies() -> Result<(), 
         export const v = await Promise.resolve(1);
       "#,
     )?,
-  );
+  )?;
   let main = graph.add_module_with_specifier(
     "main.js",
     SourceTextModuleRecord::parse(
@@ -134,7 +134,7 @@ fn module_evaluate_sync_rejects_top_level_await_in_dependencies() -> Result<(), 
         export const out = v + 1;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let err = graph
