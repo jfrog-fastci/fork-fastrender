@@ -623,11 +623,14 @@ jobs:
             exit 1
           fi
 
-          # The Seatbelt sandbox assertions live in the `sandbox` module unit tests, so run a
-          # library-scoped test filter instead of expecting a separate integration test binary.
+          # Run the macOS renderer Seatbelt integration test plus the sandbox unit tests.
+          #
+          # We keep this scoped to the sandbox surface to avoid running the full (heavy) test suite
+          # on macOS runners while still catching regressions where sandboxing silently breaks.
+          #
           # Keep this job lightweight: the sandbox checks do not require default features (AVIF,
           # preserve3d_warp, etc).
-          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --lib sandbox
+          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --lib --test macos_renderer_sandbox sandbox
 
   # ===========================================================================
   # Browser UI - Cross-platform compile + Linux headless smoke (no display/GPU)
