@@ -4,41 +4,15 @@
 //! launches a child test process wrapped in `/usr/bin/sandbox-exec` so the sandbox is applied
 //! *before* the Rust test harness starts.
 
-use fastrender::sandbox::macos_spawn::wrap_command_with_sandbox_exec;
+use fastrender::sandbox::macos_spawn::{sandbox_exec_command, SandboxExecError};
+use std::ffi::OsString;
 use std::io;
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_CHILD";
 const PORT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_LOCALHOST_PORT";
-const READ_PATH_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_READ_PATH";
 const WRITE_PATH_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_WRITE_PATH";
-
-fn sandbox_exec_path() -> &'static Path {
-  Path::new("/usr/bin/sandbox-exec")
-}
-
-fn sandbox_profile(read_path: &Path, write_path: &Path) -> String {
-  fn escape_sbpl_string(value: &str) -> String {
-    // SBPL uses C-like string literals. The generated temp paths should be "boring", but escape
-    // `\"` defensively so the profile remains parseable.
-    value.replace('"', "\\\"")
-  }
-
-  let read_path = escape_sbpl_string(&read_path.to_string_lossy());
-  let write_path = escape_sbpl_string(&write_path.to_string_lossy());
-
-  // Default policy for sandbox-exec profiles is allow; we install a few targeted denies so the
-  // child process remains runnable while still proving sandbox enforcement.
-  format!(
-    "(version 1)\n\
-     (deny file-read* (literal \"{read_path}\"))\n\
-     (deny file-write* (literal \"{write_path}\"))\n\
-     (deny network-outbound)\n\
-     (deny network-inbound)\n"
-  )
-}
 
 fn is_permission_denied(err: &io::Error) -> bool {
   matches!(err.kind(), io::ErrorKind::PermissionDenied)
@@ -58,10 +32,17 @@ fn assert_denied<T>(result: io::Result<T>, context: &str) {
   }
 }
 
+fn read_passwd() -> io::Result<Vec<u8>> {
+  std::fs::read("/private/etc/passwd").or_else(|err| {
+    if err.kind() == io::ErrorKind::NotFound {
+      std::fs::read("/etc/passwd")
+    } else {
+      Err(err)
+    }
+  })
+}
+
 fn run_child() {
-  let read_path = PathBuf::from(
-    std::env::var_os(READ_PATH_ENV).expect("missing read probe path env var"),
-  );
   let write_path = PathBuf::from(
     std::env::var_os(WRITE_PATH_ENV).expect("missing write probe path env var"),
   );
@@ -70,7 +51,7 @@ fn run_child() {
     .parse()
     .expect("parse localhost port");
 
-  assert_denied(std::fs::read(&read_path), &format!("read {}", read_path.display()));
+  assert_denied(read_passwd(), "read /etc/passwd");
   assert_denied(
     std::fs::write(&write_path, b"probe"),
     &format!("write {}", write_path.display()),
@@ -88,14 +69,13 @@ fn sandbox_exec_wrapper_enforces_sandbox() {
     return;
   }
 
-  let sandbox_exec = sandbox_exec_path();
-  if !sandbox_exec.is_file() {
-    eprintln!(
-      "skipping macos sandbox-exec enforcement test: {} is missing",
-      sandbox_exec.display()
-    );
-    return;
-  }
+  // Ensure the sandbox isn't disabled by a developer's env overrides, and restore the previous
+  // environment so the consolidated test binary remains deterministic.
+  let _env_guard = crate::common::EnvVarsGuard::remove(&[
+    "FASTR_DISABLE_RENDERER_SANDBOX",
+    "FASTR_RENDERER_SANDBOX",
+    "FASTR_MACOS_RENDERER_SANDBOX",
+  ]);
 
   let _net_lock = crate::common::net_test_lock();
   let Some(listener) = crate::common::try_bind_localhost("macos sandbox-exec enforcement test") else {
@@ -106,35 +86,52 @@ fn sandbox_exec_wrapper_enforces_sandbox() {
     .expect("localhost listener addr")
     .port();
 
+  // Ensure the environment can reach localhost so `PermissionDenied` failures in the sandboxed
+  // child are meaningful (not `ECONNREFUSED`).
+  if TcpStream::connect(("127.0.0.1", port)).is_err() {
+    eprintln!("skipping macos sandbox-exec test: cannot connect to localhost in parent process");
+    return;
+  }
+
+  if read_passwd().is_err() {
+    eprintln!("skipping macos sandbox-exec test: cannot read /etc/passwd in parent process");
+    return;
+  }
+
   let tempdir = tempfile::tempdir().expect("create temp dir for sandbox probes");
-  let read_probe_path = tempdir.path().join("read_probe.txt");
-  std::fs::write(&read_probe_path, b"read-probe").expect("create read probe file in parent");
   let write_probe_path = tempdir.path().join("write_probe.txt");
 
-  let profile = sandbox_profile(&read_probe_path, &write_probe_path);
   let exe = std::env::current_exe().expect("current test exe path");
   let test_name =
     crate::common::libtest::exact_test_name(module_path!(), stringify!(sandbox_exec_wrapper_enforces_sandbox));
 
-  let mut child_cmd = Command::new(&exe);
-  child_cmd
-    .arg("--exact")
-    .arg(&test_name)
-    .arg("--nocapture");
-  let Some(mut wrapped) = wrap_command_with_sandbox_exec(&child_cmd, &profile)
-    .expect("wrap command with sandbox-exec")
-  else {
-    eprintln!("skipping: renderer sandbox disabled via env vars");
-    return;
+  let args = vec![
+    OsString::from("--exact"),
+    OsString::from(&test_name),
+    OsString::from("--test-threads=1"),
+    OsString::from("--nocapture"),
+  ];
+  let mut cmd = match sandbox_exec_command(&exe, &args) {
+    Ok(Some(cmd)) => cmd,
+    Ok(None) => {
+      eprintln!("skipping macos sandbox-exec enforcement test: renderer sandbox disabled");
+      return;
+    }
+    Err(SandboxExecError::MissingSandboxExec { path }) => {
+      eprintln!(
+        "skipping macos sandbox-exec enforcement test: {} is missing",
+        path.display()
+      );
+      return;
+    }
+    Err(err) => panic!("failed to construct sandbox-exec command: {err}"),
   };
-  wrapped
-    .command_mut()
+
+  let output = cmd
     .env(CHILD_ENV, "1")
     .env(PORT_ENV, port.to_string())
-    .env(READ_PATH_ENV, &read_probe_path)
-    .env(WRITE_PATH_ENV, &write_probe_path);
-
-  let output = wrapped
+    .env(WRITE_PATH_ENV, &write_probe_path)
+    .env("RUST_TEST_THREADS", "1")
     .output()
     .expect("spawn sandbox-exec child test process");
 
