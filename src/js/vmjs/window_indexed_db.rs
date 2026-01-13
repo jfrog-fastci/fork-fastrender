@@ -211,6 +211,14 @@ pub(crate) const INDEXED_DB_SHIM_JS: &str = r#"
     g.IDBKeyRange = IDBKeyRange;
     g.IDBVersionChangeEvent = IDBVersionChangeEvent;
 
+    // Vendor-prefixed constructor aliases (legacy IndexedDB shims).
+    //
+    // Many older libraries probe `webkitIDBKeyRange`/`mozIDBKeyRange`/`msIDBKeyRange` even when
+    // `IDBKeyRange` exists.
+    g.webkitIDBKeyRange = IDBKeyRange;
+    g.mozIDBKeyRange = IDBKeyRange;
+    g.msIDBKeyRange = IDBKeyRange;
+
     g.indexedDB = factory;
     g.webkitIndexedDB = factory;
     g.mozIndexedDB = factory;
@@ -219,3 +227,58 @@ pub(crate) const INDEXED_DB_SHIM_JS: &str = r#"
   })();
 "#;
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::dom2;
+  use crate::error::{Error, Result};
+  use crate::js::window::WindowHost;
+  use crate::resource::{FetchedResource, ResourceFetcher};
+  use selectors::context::QuirksMode;
+  use std::sync::Arc;
+  use vm_js::Value;
+
+  #[derive(Clone, Copy)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+      Err(Error::Other("NoFetchResourceFetcher".to_string()))
+    }
+  }
+
+  #[test]
+  fn indexed_db_vendor_prefixed_globals_are_exposed() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new_with_fetcher(
+      dom,
+      "https://example.invalid/",
+      Arc::new(NoFetchResourceFetcher),
+    )?;
+
+    let ok = host.exec_script("typeof webkitIndexedDB === 'object' && webkitIndexedDB === indexedDB")?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let ok = host.exec_script(
+      "typeof webkitIDBKeyRange === 'function' && webkitIDBKeyRange === IDBKeyRange",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn indexed_db_shim_is_guarded() -> Result<()> {
+    // Ensure running the shim twice is a no-op and does not throw.
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new_with_fetcher(
+      dom,
+      "https://example.invalid/",
+      Arc::new(NoFetchResourceFetcher),
+    )?;
+    let ok = host.exec_script(INDEXED_DB_SHIM_JS)?;
+    // Script returns undefined; we only care that it runs without throwing.
+    assert_eq!(ok, Value::Undefined);
+    Ok(())
+  }
+}
