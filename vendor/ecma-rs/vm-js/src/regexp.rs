@@ -604,6 +604,10 @@ pub struct RegExpFlags {
   pub(crate) multiline: bool,
   pub(crate) dot_all: bool,
   pub(crate) unicode: bool,
+  /// Enables ECMAScript "Unicode sets" (`/v`) mode.
+  ///
+  /// Note: `/v` is mutually exclusive with `/u` in the spec. The RegExp parser uses
+  /// [`RegExpFlags::has_either_unicode_flag`] for "UnicodeMode" behaviour.
   pub(crate) unicode_sets: bool,
   pub(crate) sticky: bool,
 }
@@ -834,6 +838,9 @@ impl RegExpProgram {
         Inst::Class(cls) => {
           total = total.saturating_add(cls.heap_size_bytes());
         }
+        Inst::UnicodeSet(cls) => {
+          total = total.saturating_add(cls.heap_size_bytes());
+        }
         Inst::LookAhead { program, .. } => {
           total = total.saturating_add(mem::size_of::<RegExpProgram>());
           total = total.saturating_add(program.heap_size_bytes());
@@ -946,6 +953,123 @@ impl RegExpProgram {
             }
             state.pos += 1;
             state.pc += 1;
+          }
+          Inst::UnicodeSet(cls) => {
+            let next_pc = state.pc.saturating_add(1);
+            let start_pos = state.pos;
+
+            // --- 1) Try multi-code-unit string elements (length > 1), longest first ---
+            let mut best_len: usize = 0;
+            if !cls.strings.is_empty() {
+              let mut node = cls.strings.root();
+              let mut pos = start_pos;
+              let mut depth: usize = 0;
+              let mut step_i: usize = 0;
+              while let Some(&u_raw) = input.get(pos) {
+                // Tick within the trie traversal to bound hostile long strings.
+                if step_i != 0 {
+                  tick_every(step_i, DEFAULT_TICK_EVERY, tick)?;
+                }
+                step_i = step_i.wrapping_add(1);
+
+                let u = if flags.ignore_case {
+                  ascii_lower(u_raw)
+                } else {
+                  u_raw
+                };
+                let Some(next_node) = cls.strings.step(node, u) else {
+                  break;
+                };
+                node = next_node;
+                pos += 1;
+                depth = depth.wrapping_add(1);
+                // `/v` ordering prefers string elements with length > 1 over single-code-unit
+                // elements. The trie is constructed to only contain strings of length > 1.
+                if depth > 1 && cls.strings.node_is_terminal(node) {
+                  best_len = depth;
+                }
+              }
+            }
+
+            if best_len != 0 {
+              // Push lower-priority alternatives in *reverse* order so the VM pops them in the
+              // correct spec order:
+              //   strings (longest..shortest) -> single -> empty
+              if cls.has_empty {
+                let mut empty_state = state.try_clone(exec_mem)?;
+                empty_state.pc = next_pc;
+                stack_try_push(&mut stack, &mut stack_mem, exec_mem, empty_state)?;
+              }
+
+              if let Some(&u) = input.get(start_pos) {
+                if cls.single.matches(u, flags) {
+                  let mut char_state = state.try_clone(exec_mem)?;
+                  char_state.pc = next_pc;
+                  char_state.pos = start_pos.saturating_add(1);
+                  stack_try_push(&mut stack, &mut stack_mem, exec_mem, char_state)?;
+                }
+              }
+
+              // Push the other matching string lengths (excluding the longest) so they are tried
+              // after the current branch.
+              if !cls.strings.is_empty() {
+                let mut node = cls.strings.root();
+                let mut pos = start_pos;
+                let mut depth: usize = 0;
+                let mut step_i: usize = 0;
+                while let Some(&u_raw) = input.get(pos) {
+                  if step_i != 0 {
+                    tick_every(step_i, DEFAULT_TICK_EVERY, tick)?;
+                  }
+                  step_i = step_i.wrapping_add(1);
+
+                  let u = if flags.ignore_case {
+                    ascii_lower(u_raw)
+                  } else {
+                    u_raw
+                  };
+                  let Some(next_node) = cls.strings.step(node, u) else {
+                    break;
+                  };
+                  node = next_node;
+                  pos += 1;
+                  depth = depth.wrapping_add(1);
+                  if depth > 1 && cls.strings.node_is_terminal(node) && depth != best_len {
+                    let mut alt = state.try_clone(exec_mem)?;
+                    alt.pc = next_pc;
+                    alt.pos = start_pos.saturating_add(depth);
+                    stack_try_push(&mut stack, &mut stack_mem, exec_mem, alt)?;
+                  }
+                }
+              }
+
+              state.pos = start_pos.saturating_add(best_len);
+              state.pc = next_pc;
+              continue;
+            }
+
+            // --- 2) Single-code-unit elements ---
+            if let Some(&u) = input.get(start_pos) {
+              if cls.single.matches(u, flags) {
+                // Keep empty as a lower-priority alternative.
+                if cls.has_empty {
+                  let mut empty_state = state.try_clone(exec_mem)?;
+                  empty_state.pc = next_pc;
+                  stack_try_push(&mut stack, &mut stack_mem, exec_mem, empty_state)?;
+                }
+                state.pos = start_pos.saturating_add(1);
+                state.pc = next_pc;
+                continue;
+              }
+            }
+
+            // --- 3) Empty string element ---
+            if cls.has_empty {
+              state.pc = next_pc;
+              continue;
+            }
+
+            break;
           }
           Inst::AssertStart => {
             if state.pos == 0 {
@@ -1246,6 +1370,14 @@ impl RegExpProgram {
           }
           RegExpCompileError::Vm(err) => err,
         })?),
+        Inst::UnicodeSet(cls) => Inst::UnicodeSet(cls.try_clone().map_err(|e| match e {
+          RegExpCompileError::OutOfMemory => VmError::OutOfMemory,
+          // Cloning an already-compiled class should never fail with a syntax error.
+          RegExpCompileError::Syntax(_) => {
+            VmError::InvariantViolation("RegExpProgram clone syntax error")
+          }
+          RegExpCompileError::Vm(err) => err,
+        })?),
         Inst::AssertStart => Inst::AssertStart,
         Inst::AssertEnd => Inst::AssertEnd,
         Inst::WordBoundary { negated } => Inst::WordBoundary { negated: *negated },
@@ -1442,6 +1574,12 @@ enum Inst {
   Char(u16),
   Any,
   Class(CharClass),
+  /// UnicodeSets-mode (`/v`) character class that can match either a single code unit or a string
+  /// of multiple code units.
+  ///
+  /// This is intentionally a single VM instruction to avoid exploding large properties-of-strings
+  /// (e.g. `\p{RGI_Emoji}`) into tens of thousands of `Split` + `Char` instructions.
+  UnicodeSet(UnicodeSetClass),
   AssertStart,
   AssertEnd,
   WordBoundary { negated: bool },
@@ -1505,6 +1643,229 @@ impl CharClass {
     }
     if self.negated { !any } else { any }
   }
+}
+
+#[derive(Debug, Clone)]
+struct UnicodeSetClass {
+  /// String elements with length > 1 (UTF-16 code units), compiled into a trie for fast prefix
+  /// matching.
+  strings: StringTrie,
+  /// Single-code-unit elements (including `\q{...}` entries of length 1).
+  single: CharClass,
+  /// Whether the class contains the empty-string element.
+  has_empty: bool,
+}
+
+impl UnicodeSetClass {
+  fn heap_size_bytes(&self) -> usize {
+    self
+      .strings
+      .heap_size_bytes()
+      .saturating_add(self.single.heap_size_bytes())
+  }
+
+  fn try_clone(&self) -> Result<Self, RegExpCompileError> {
+    Ok(Self {
+      strings: self.strings.try_clone()?,
+      single: self.single.try_clone()?,
+      has_empty: self.has_empty,
+    })
+  }
+}
+
+/// A compact trie over UTF-16 code units used to match string elements inside `/v` character
+/// classes.
+#[derive(Debug, Clone)]
+struct StringTrie {
+  nodes: Vec<StringTrieNode>,
+  edges: Vec<StringTrieEdge>,
+}
+
+impl StringTrie {
+  /// Builds a trie from the provided string elements.
+  ///
+  /// `strings` should contain only elements with length > 1 (empty and single-unit strings are
+  /// handled separately by the `/v` class wrapper).
+  fn try_build_from_slices<'s>(
+    ctx: &mut CompileCtx<'_>,
+    strings: impl IntoIterator<Item = &'s [u16]>,
+    ignore_case: bool,
+  ) -> Result<Self, RegExpCompileError> {
+    #[derive(Debug)]
+    struct BuildNode {
+      terminal: bool,
+      // Sorted by `unit`.
+      edges: Vec<(u16, usize)>,
+    }
+
+    let mut nodes: Vec<BuildNode> = Vec::new();
+    ctx.vec_try_push(
+      &mut nodes,
+      BuildNode {
+        terminal: false,
+        edges: Vec::new(),
+      },
+    )?;
+
+    for (s_i, s) in strings.into_iter().enumerate() {
+      if s_i != 0 {
+        ctx.tick_every(s_i)?;
+      }
+
+      let mut node_idx: usize = 0;
+      for (u_i, &u_raw) in s.iter().enumerate() {
+        if u_i != 0 {
+          ctx.tick_every(u_i)?;
+        }
+
+        let u = if ignore_case {
+          ascii_lower(u_raw)
+        } else {
+          u_raw
+        };
+
+        let (edge_pos, existing_target) = {
+          let node = nodes.get(node_idx).ok_or(RegExpCompileError::OutOfMemory)?;
+          match node.edges.binary_search_by_key(&u, |(unit, _)| *unit) {
+            Ok(pos) => (pos, Some(node.edges[pos].1)),
+            Err(pos) => (pos, None),
+          }
+        };
+
+        if let Some(target) = existing_target {
+          node_idx = target;
+          continue;
+        }
+
+        let new_idx = nodes.len();
+        ctx.vec_try_push(
+          &mut nodes,
+          BuildNode {
+            terminal: false,
+            edges: Vec::new(),
+          },
+        )?;
+
+        let node = nodes.get_mut(node_idx).ok_or(RegExpCompileError::OutOfMemory)?;
+        let required_len = node
+          .edges
+          .len()
+          .checked_add(1)
+          .ok_or(RegExpCompileError::OutOfMemory)?;
+        ctx.reserve_vec_to_len(&mut node.edges, required_len)?;
+        node.edges.insert(edge_pos, (u, new_idx));
+        node_idx = new_idx;
+      }
+
+      if let Some(node) = nodes.get_mut(node_idx) {
+        node.terminal = true;
+      }
+    }
+
+    // Flatten the builder nodes into the compact `nodes` + `edges` representation.
+    let mut total_edges: usize = 0;
+    for (i, n) in nodes.iter().enumerate() {
+      if i != 0 {
+        ctx.tick_every(i)?;
+      }
+      total_edges = total_edges.saturating_add(n.edges.len());
+    }
+
+    let mut out_nodes: Vec<StringTrieNode> = Vec::new();
+    ctx.reserve_vec_to_len(&mut out_nodes, nodes.len())?;
+    let mut out_edges: Vec<StringTrieEdge> = Vec::new();
+    ctx.reserve_vec_to_len(&mut out_edges, total_edges)?;
+
+    for (n_i, n) in nodes.into_iter().enumerate() {
+      if n_i != 0 {
+        ctx.tick_every(n_i)?;
+      }
+
+      let edge_start = out_edges.len();
+      let edge_len = n.edges.len();
+      for (e_i, (unit, target)) in n.edges.into_iter().enumerate() {
+        if e_i != 0 {
+          ctx.tick_every(e_i)?;
+        }
+        out_edges.push(StringTrieEdge { unit, target });
+      }
+
+      out_nodes.push(StringTrieNode {
+        edge_start,
+        edge_len,
+        terminal: n.terminal,
+      });
+    }
+
+    Ok(Self {
+      nodes: out_nodes,
+      edges: out_edges,
+    })
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    self
+      .nodes
+      .capacity()
+      .saturating_mul(mem::size_of::<StringTrieNode>())
+      .saturating_add(self.edges.capacity().saturating_mul(mem::size_of::<StringTrieEdge>()))
+  }
+
+  fn try_clone(&self) -> Result<Self, RegExpCompileError> {
+    let mut nodes: Vec<StringTrieNode> = Vec::new();
+    nodes
+      .try_reserve_exact(self.nodes.len())
+      .map_err(|_| RegExpCompileError::OutOfMemory)?;
+    nodes.extend_from_slice(&self.nodes);
+
+    let mut edges: Vec<StringTrieEdge> = Vec::new();
+    edges
+      .try_reserve_exact(self.edges.len())
+      .map_err(|_| RegExpCompileError::OutOfMemory)?;
+    edges.extend_from_slice(&self.edges);
+
+    Ok(Self { nodes, edges })
+  }
+
+  #[inline]
+  fn is_empty(&self) -> bool {
+    self.edges.is_empty()
+  }
+
+  #[inline]
+  fn root(&self) -> usize {
+    0
+  }
+
+  #[inline]
+  fn node_is_terminal(&self, node: usize) -> bool {
+    self.nodes.get(node).is_some_and(|n| n.terminal)
+  }
+
+  #[inline]
+  fn step(&self, node: usize, unit: u16) -> Option<usize> {
+    let node = self.nodes.get(node)?;
+    let start = node.edge_start;
+    let end = start.saturating_add(node.edge_len);
+    let slice = self.edges.get(start..end)?;
+    match slice.binary_search_by_key(&unit, |e| e.unit) {
+      Ok(i) => Some(slice[i].target),
+      Err(_) => None,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StringTrieNode {
+  edge_start: usize,
+  edge_len: usize,
+  terminal: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StringTrieEdge {
+  unit: u16,
+  target: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1624,6 +1985,15 @@ fn canonicalize_utf16_unit(flags: RegExpFlags, unit: u16) -> u32 {
 #[inline]
 fn canonical_eq(a: u16, b: u16, flags: RegExpFlags) -> bool {
   canonicalize_utf16_unit(flags, a) == canonicalize_utf16_unit(flags, b)
+}
+
+#[inline]
+fn ascii_lower(u: u16) -> u16 {
+  if (b'A' as u16..=b'Z' as u16).contains(&u) {
+    u + 32
+  } else {
+    u
+  }
 }
 
 fn is_regexp_identifier_start_ascii(u: u16) -> bool {
@@ -1748,6 +2118,7 @@ enum Atom {
   Literal(u16),
   Any,
   Class(CharClass),
+  UnicodeSet(UnicodeSetClass),
   Group {
     capture: Option<u32>,
     /// Inclusive range of capture-group indices contained within this group.
@@ -3022,6 +3393,9 @@ impl ProgramBuilder {
       Atom::Class(cls) => {
         self.emit(ctx, Inst::Class(cls))?;
       }
+      Atom::UnicodeSet(cls) => {
+        self.emit(ctx, Inst::UnicodeSet(cls))?;
+      }
       Atom::BackRef(n) => {
         self.emit(ctx, Inst::BackRef(n))?;
       }
@@ -3275,5 +3649,107 @@ mod unicode_set_tests {
     assert!(comp.contains_char(b'c' as u16));
     assert!(comp.contains_string(&[]));
     assert!(!comp.contains_string(&[b'x' as u16, b'y' as u16]));
+  }
+}
+
+#[cfg(test)]
+mod unicode_set_vm_tests {
+  use super::*;
+
+  fn build_trie(strings: &[&[u16]]) -> StringTrie {
+    let heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 32 * 1024 * 1024));
+    let mut tick = || Ok(());
+    let mut ctx = CompileCtx::new(&heap, &mut tick);
+    StringTrie::try_build_from_slices(&mut ctx, strings.iter().copied(), false).unwrap()
+  }
+
+  #[test]
+  fn unicode_set_matches_strings_longest_first_then_char_then_empty() {
+    // Class elements: "ab" (string), "a" (single), "" (empty).
+    // Then literal 'b' must match.
+    //
+    // On input "ab":
+    // - Try "ab" first (consumes 2) => next 'b' fails (OOB)
+    // - Backtrack to "a" (consumes 1) => 'b' matches
+    // - Empty is last resort.
+    let ab: [u16; 2] = [b'a' as u16, b'b' as u16];
+    let trie = build_trie(&[&ab]);
+    let single = CharClass {
+      negated: false,
+      items: vec![CharClassItem::Char(b'a' as u16)],
+    };
+    let cls = UnicodeSetClass {
+      strings: trie,
+      single,
+      has_empty: true,
+    };
+
+    let program = RegExpProgram {
+      insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'b' as u16), Inst::Match],
+      capture_count: 1,
+      repeat_count: 0,
+      named_capture_groups: vec![],
+    };
+
+    let exec_mem = RegExpExecMemoryBudget::new(1024 * 1024);
+    let mut tick = || Ok(());
+
+    let flags = RegExpFlags::default();
+
+    // Backtracking should find the single-character alternative.
+    let input_ab: Vec<u16> = [b'a' as u16, b'b' as u16].to_vec();
+    let m = program
+      .exec_at(&input_ab, 0, flags, &mut tick, &exec_mem, None)
+      .unwrap()
+      .unwrap();
+    assert_eq!(m.end, 2);
+
+    // Empty-string alternative should still work as a last resort.
+    let input_b: Vec<u16> = [b'b' as u16].to_vec();
+    let m = program
+      .exec_at(&input_b, 0, flags, &mut tick, &exec_mem, None)
+      .unwrap()
+      .unwrap();
+    assert_eq!(m.end, 1);
+  }
+
+  #[test]
+  fn unicode_set_pushes_multiple_string_alternatives() {
+    // Class elements: "abc" | "ab".
+    // Then literal 'c' must match.
+    //
+    // On input "abc":
+    // - Try "abc" first (longer) => fails at trailing 'c' (OOB)
+    // - Backtrack to "ab" => 'c' matches
+    let ab: [u16; 2] = [b'a' as u16, b'b' as u16];
+    let abc: [u16; 3] = [b'a' as u16, b'b' as u16, b'c' as u16];
+    let trie = build_trie(&[&ab, &abc]);
+    let single = CharClass {
+      negated: false,
+      items: vec![],
+    };
+    let cls = UnicodeSetClass {
+      strings: trie,
+      single,
+      has_empty: false,
+    };
+
+    let program = RegExpProgram {
+      insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'c' as u16), Inst::Match],
+      capture_count: 1,
+      repeat_count: 0,
+      named_capture_groups: vec![],
+    };
+
+    let exec_mem = RegExpExecMemoryBudget::new(1024 * 1024);
+    let mut tick = || Ok(());
+    let flags = RegExpFlags::default();
+
+    let input: Vec<u16> = [b'a' as u16, b'b' as u16, b'c' as u16].to_vec();
+    let m = program
+      .exec_at(&input, 0, flags, &mut tick, &exec_mem, None)
+      .unwrap()
+      .unwrap();
+    assert_eq!(m.end, 3);
   }
 }
