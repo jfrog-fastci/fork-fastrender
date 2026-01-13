@@ -2546,18 +2546,26 @@ impl<'vm> HirEvaluator<'vm> {
         is_arrow,
         ..
       } => {
-        let name_str = name
+        let mut name_str = name
           .as_ref()
           .and_then(|id| self.hir().names.resolve(*id))
           .unwrap_or("")
           .to_owned();
+        // `hir-js` currently assigns arrow functions a placeholder name `"<arrow>"` so they can be
+        // referenced in diagnostics. At runtime, arrow functions are anonymous unless a surrounding
+        // expression applies `SetFunctionName` name inference.
+        if *is_arrow {
+          name_str.clear();
+        }
         let func_obj = self.alloc_user_function_object(
           scope,
           *func_body,
           name_str.as_str(),
           *is_arrow,
           /* is_constructable */ !*is_arrow,
-          /* name_binding */ (!name_str.is_empty()).then_some(name_str.as_str()),
+          // Named function expressions create an inner binding for their own name.
+          // Arrow functions are always anonymous at the syntax level.
+          /* name_binding */ (!*is_arrow && !name_str.is_empty()).then_some(name_str.as_str()),
         )?;
         Ok(Value::Object(func_obj))
       }
@@ -5249,7 +5257,12 @@ impl<'vm> HirEvaluator<'vm> {
       // Keep per-member roots local so large object literals do not accumulate stack roots.
       let mut member_scope = scope.reborrow();
       match prop {
-        hir_js::ObjectProperty::KeyValue { key, value, method, .. } => {
+        hir_js::ObjectProperty::KeyValue {
+          key,
+          value,
+          method,
+          ..
+        } => {
           // Spec-ish name inference: for methods and anonymous function definitions used as property
           // values, apply `SetFunctionName` with the property key.
           //
@@ -5268,43 +5281,55 @@ impl<'vm> HirEvaluator<'vm> {
           root_property_key(&mut member_scope, key)?;
 
           let v = if *method {
-            // Object literal method definitions (`{ m() {} }`) produce function objects that:
-            // - are **not** constructable (`[[Construct]]` is absent), and
-            // - do **not** have an own `"prototype"` property.
+            // Object literal method definitions (`{ m() {} }`) produce function objects that are not
+            // constructable and therefore do not have an own `"prototype"` property.
             //
             // hir-js lowers these as `ObjectProperty::KeyValue { method: true, value: FunctionExpr }`,
-            // so we can allocate the function object with the correct constructability here.
+            // so allocate the function object with the correct constructability here.
             match &self.get_expr(body, *value)?.kind {
               hir_js::ExprKind::FunctionExpr {
                 body: func_body,
                 is_arrow,
                 ..
-              } => {
-                let func_obj = self.alloc_user_function_object(
-                  &mut member_scope,
-                  *func_body,
-                  "",
-                  *is_arrow,
-                  /* is_constructable */ false,
-                  /* name_binding */ None,
-                )?;
-                // Set the function's `name` based on the property key (best-effort).
-                crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
-                Value::Object(func_obj)
-              }
+              } => Value::Object(self.alloc_user_function_object(
+                &mut member_scope,
+                *func_body,
+                "",
+                *is_arrow,
+                /* is_constructable */ false,
+                /* name_binding */ None,
+              )?),
               _ => self.eval_expr(&mut member_scope, body, *value)?,
             }
           } else {
-            let v = self.eval_expr(&mut member_scope, body, *value)?;
-            if is_anonymous_function_def {
-              if let Value::Object(func_obj) = v {
-                if member_scope.heap().get_function(func_obj).is_ok() {
+            self.eval_expr(&mut member_scope, body, *value)?
+          };
+
+          // Root the value across `SetFunctionName` and `CreateDataProperty`.
+          member_scope.push_root(v)?;
+
+          if *method || is_anonymous_function_def {
+            if let Value::Object(func_obj) = v {
+              // `SetFunctionName` only applies to actual Function objects (not callable Proxies).
+              let func_name = match member_scope.heap().get_function(func_obj) {
+                Ok(f) => Some(f.name),
+                Err(VmError::NotCallable) => None,
+                Err(err) => return Err(err),
+              };
+
+              if let Some(current_name) = func_name {
+                // Only infer a name for empty-name functions.
+                if member_scope
+                  .heap()
+                  .get_string(current_name)?
+                  .as_code_units()
+                  .is_empty()
+                {
                   crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
                 }
               }
             }
-            v
-          };
+          }
           let _ = member_scope.create_data_property(obj_val, key, v)?;
         }
         hir_js::ObjectProperty::Spread(expr_id) => {
