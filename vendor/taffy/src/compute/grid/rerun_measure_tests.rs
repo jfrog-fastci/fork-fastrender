@@ -6,9 +6,156 @@
 
 #[cfg(all(test, feature = "taffy_tree"))]
 mod tests {
+  use crate::compute::{compute_grid_layout, compute_leaf_layout, compute_root_layout};
   use crate::geometry::Point;
   use crate::prelude::*;
-  use crate::tree::MeasureOutput;
+  use crate::sys::DefaultCheapStr;
+  use crate::tree::{
+    Layout, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, MeasureOutput,
+    NodeId, TaffyTree, TraversePartialTree,
+  };
+  use std::cell::Cell;
+
+  /// Minimal test tree that avoids the high-level `TaffyTree` leaf-measure cache canonicalization.
+  ///
+  /// The perf regression we care about here is extra *tree* measurement fanout caused by the grid
+  /// rerun probes. `TaffyTree::compute_layout_with_measure` intentionally deduplicates many of these
+  /// probes for leaf nodes; for this unit test we want to observe the raw `measure_child_size`
+  /// fanout.
+  struct TestTree {
+    nodes: Vec<TestNode>,
+    intrinsic_probe_count: Cell<usize>,
+  }
+
+  struct TestNode {
+    style: Style,
+    children: Vec<NodeId>,
+    layout: Layout,
+  }
+
+  impl TestTree {
+    fn new() -> Self {
+      Self { nodes: Vec::new(), intrinsic_probe_count: Cell::new(0) }
+    }
+
+    fn new_leaf(&mut self, style: Style) -> NodeId {
+      let id = NodeId::from(self.nodes.len());
+      self.nodes.push(TestNode { style, children: Vec::new(), layout: Layout::new() });
+      id
+    }
+
+    fn new_with_children(&mut self, style: Style, children: Vec<NodeId>) -> NodeId {
+      let id = NodeId::from(self.nodes.len());
+      self.nodes.push(TestNode { style, children, layout: Layout::new() });
+      id
+    }
+  }
+
+  impl TraversePartialTree for TestTree {
+    type ChildIter<'a>
+      = core::iter::Copied<core::slice::Iter<'a, NodeId>>
+    where
+      Self: 'a;
+
+    fn child_ids(&self, parent_node_id: NodeId) -> Self::ChildIter<'_> {
+      let idx: usize = parent_node_id.into();
+      self.nodes[idx].children.iter().copied()
+    }
+
+    fn child_count(&self, parent_node_id: NodeId) -> usize {
+      let idx: usize = parent_node_id.into();
+      self.nodes[idx].children.len()
+    }
+
+    fn get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> NodeId {
+      let idx: usize = parent_node_id.into();
+      self.nodes[idx].children[child_index]
+    }
+  }
+
+  impl LayoutPartialTree for TestTree {
+    type CoreContainerStyle<'a>
+      = &'a Style
+    where
+      Self: 'a;
+
+    type CustomIdent = DefaultCheapStr;
+
+    fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_> {
+      let idx: usize = node_id.into();
+      &self.nodes[idx].style
+    }
+
+    fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
+      let idx: usize = node_id.into();
+      self.nodes[idx].layout = *layout;
+    }
+
+    fn compute_child_layout(&mut self, node_id: NodeId, inputs: LayoutInput) -> LayoutOutput {
+      let idx: usize = node_id.into();
+      let style = self.nodes[idx].style.clone();
+      let has_children = !self.nodes[idx].children.is_empty();
+
+      match (style.display, has_children) {
+        (Display::Grid, _) => compute_grid_layout(self, node_id, inputs),
+        (_, false) => {
+          let counter = &self.intrinsic_probe_count;
+          compute_leaf_layout(inputs, &style, |_, _| 0.0, |known_dimensions, available_space| {
+            let is_intrinsic_probe = matches!(
+              available_space.width,
+              AvailableSpace::MinContent | AvailableSpace::MaxContent
+            ) || matches!(
+              available_space.height,
+              AvailableSpace::MinContent | AvailableSpace::MaxContent
+            );
+            if is_intrinsic_probe {
+              counter.set(counter.get() + 1);
+            }
+
+            MeasureOutput {
+              size: Size {
+                width: known_dimensions.width.unwrap_or(10.0),
+                height: known_dimensions.height.unwrap_or(10.0),
+              },
+              first_baselines: Point::NONE,
+            }
+          })
+        }
+        // Not needed for this test.
+        (_, true) => compute_leaf_layout(inputs, &style, |_, _| 0.0, |_, _| {
+          MeasureOutput::from_size(Size::ZERO)
+        }),
+      }
+    }
+  }
+
+  impl LayoutGridContainer for TestTree {
+    type GridContainerStyle<'a>
+      = &'a Style
+    where
+      Self: 'a;
+
+    type GridItemStyle<'a>
+      = &'a Style
+    where
+      Self: 'a;
+
+    fn get_grid_container_style(&self, node_id: NodeId) -> Self::GridContainerStyle<'_> {
+      self.get_core_container_style(node_id)
+    }
+
+    fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_> {
+      self.get_core_container_style(child_node_id)
+    }
+
+    fn clone_grid_container_style(&self, node_id: NodeId) -> Style {
+      self.get_core_container_style(node_id).clone()
+    }
+
+    fn clone_grid_child_style(&self, child_node_id: NodeId) -> Style {
+      self.get_core_container_style(child_node_id).clone()
+    }
+  }
 
   #[test]
   fn grid_intrinsic_rerun_scan_skips_non_aspect_ratio_items() {
@@ -16,66 +163,39 @@ mod tests {
     const COLUMN_COUNT: usize = 8;
     const CHILD_COUNT: usize = 128;
 
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut tree = TestTree::new();
 
     let child_style = Style { ..Default::default() };
     let mut children = Vec::with_capacity(CHILD_COUNT);
     for _ in 0..CHILD_COUNT {
-      children.push(taffy.new_leaf(child_style.clone()).unwrap());
+      children.push(tree.new_leaf(child_style.clone()));
     }
 
-    let root = taffy
-      .new_with_children(
-        Style {
-          display: Display::Grid,
-          // Make the container size definite to reduce unrelated intrinsic sizing work.
-          size: Size::from_lengths(800.0, 600.0),
-          // Intrinsic columns: forces the inline-axis track sizing pass to query min-content sizes.
-          grid_template_columns: vec![min_content(); COLUMN_COUNT],
-          // Intrinsic implicit rows: ensures the initial inline-axis measurements happen with
-          // unknown block-axis sizes (so the rerun scan would historically remeasure every item).
-          grid_auto_rows: vec![min_content()],
-          ..Default::default()
-        },
-        &children,
-      )
-      .unwrap();
+    let root = tree.new_with_children(
+      Style {
+        display: Display::Grid,
+        // Make the container size definite to reduce unrelated intrinsic sizing work.
+        size: Size::from_lengths(800.0, 600.0),
+        // Intrinsic columns: forces the inline-axis track sizing pass to query min-content sizes.
+        grid_template_columns: vec![min_content(); COLUMN_COUNT],
+        // Intrinsic implicit rows: ensures the initial inline-axis measurements happen with unknown
+        // block-axis sizes (so the rerun scan would historically remeasure every item).
+        grid_auto_rows: vec![min_content()],
+        ..Default::default()
+      },
+      children,
+    );
 
-    let mut intrinsic_probe_count = 0usize;
+    compute_root_layout(
+      &mut tree,
+      root,
+      Size {
+        width: AvailableSpace::Definite(800.0),
+        height: AvailableSpace::Definite(600.0),
+      },
+    );
 
-    taffy
-      .compute_layout_with_measure(
-        root,
-        Size {
-          width: AvailableSpace::Definite(800.0),
-          height: AvailableSpace::Definite(600.0),
-        },
-        |known_dimensions, available_space, _, _, _| {
-          let is_intrinsic_probe = matches!(
-            available_space.width,
-            AvailableSpace::MinContent | AvailableSpace::MaxContent
-          ) || matches!(
-            available_space.height,
-            AvailableSpace::MinContent | AvailableSpace::MaxContent
-          );
-
-          if is_intrinsic_probe {
-            intrinsic_probe_count += 1;
-          }
-
-          // A simple, deterministic leaf measure function.
-          let measured = Size {
-            width: known_dimensions.width.unwrap_or(10.0),
-            height: known_dimensions.height.unwrap_or(10.0),
-          };
-
-          MeasureOutput {
-            size: measured,
-            first_baselines: Point { x: None, y: None },
-          }
-        },
-      )
-      .unwrap();
+    let intrinsic_probe_count = tree.intrinsic_probe_count.get();
 
     // With no aspect-ratio children, the rerun scan should be skipped, avoiding an additional
     // intrinsic measurement per child in the inline axis.
