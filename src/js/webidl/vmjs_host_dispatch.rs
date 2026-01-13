@@ -27,6 +27,7 @@ use vm_js::{
   GcObject, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, RootId,
   Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
+use crate::web::dom::DomException;
 use webidl_vm_js::bindings_runtime::BindingValue;
 use webidl_vm_js::{IterableKind, VmJsHostHooksPayload, WebIdlBindingsHost};
 
@@ -907,6 +908,45 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     VmError::Throw(Value::Undefined)
   }
 
+  fn dom_exception_to_vm_error(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    err: DomException,
+  ) -> VmError {
+    let (name, message) = match &err {
+      DomException::SyntaxError { message } => ("SyntaxError", message.as_str()),
+      DomException::NotSupportedError { message } => ("NotSupportedError", message.as_str()),
+      DomException::InvalidStateError { message } => ("InvalidStateError", message.as_str()),
+      DomException::NoModificationAllowedError { message } => {
+        ("NoModificationAllowedError", message.as_str())
+      }
+    };
+
+    if let Some(intr) = vm.intrinsics() {
+      let global = self.global.or_else(|| {
+        vm.user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| data.window_obj())
+      });
+
+      if let Some(global) = global {
+        if let Ok(dom_exception) =
+          DomExceptionClassVmJs::install_for_global(vm, scope, global, intr)
+        {
+          return crate::js::bindings::throw_dom_exception(scope, dom_exception, name, message);
+        }
+      }
+
+      // Fall back to a plain `Error` object if DOMException isn't available.
+      return crate::js::bindings::dom_exception_vmjs::throw_dom_exception_like_error(
+        scope, intr, name, message,
+      );
+    }
+
+    // No realm intrinsics; best-effort throw.
+    VmError::Throw(Value::Undefined)
+  }
+
   fn url_proto_from_global(&self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<GcObject, VmError> {
     let global = self
       .global
@@ -1487,6 +1527,49 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           scope.alloc_object()?
         };
         Ok(Value::Object(wrapper))
+      }
+      ("Document", "querySelector", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let selectors =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<Option<(NodeId, DomInterface)>, DomException> = self.with_dom_host(vm, |host| {
+          Ok(dom2_bindings::query_selector(host, &selectors, None).map(|found| {
+            found.map(|node_id| {
+              let primary = host.with_dom(|dom| {
+                if node_id.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+                }
+              });
+              (node_id, primary)
+            })
+          }))
+        })?;
+
+        match result {
+          Ok(Some((node_id, primary_interface))) => {
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+              scope,
+              document_id,
+              node_id,
+              primary_interface,
+            )?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Ok(None) => Ok(Value::Null),
+          Err(err) => Err(self.dom_exception_to_vm_error(vm, scope, err)),
+        }
       }
       ("EventTarget", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
@@ -2928,6 +3011,108 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Object(wrapper))
       }
 
+      ("Element", "matches", 0) => {
+        let element_obj = Self::require_receiver_object(receiver)?;
+        let element_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_element_handle(scope.heap(), Value::Object(element_obj))?
+            .node_id
+        };
+
+        let selectors =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<bool, DomException> = self.with_dom_host(vm, |host| {
+          Ok(dom2_bindings::matches_selector(host, element_id, &selectors))
+        })?;
+        match result {
+          Ok(found) => Ok(Value::Bool(found)),
+          Err(err) => Err(self.dom_exception_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Element", "closest", 0) => {
+        let element_obj = Self::require_receiver_object(receiver)?;
+        let (document_id, element_id) = {
+          let platform = require_dom_platform_mut(vm)?;
+          let handle = platform.require_element_handle(scope.heap(), Value::Object(element_obj))?;
+          (handle.document_id, handle.node_id)
+        };
+
+        let selectors =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<Option<(NodeId, DomInterface)>, DomException> = self.with_dom_host(vm, |host| {
+          Ok(dom2_bindings::closest(host, element_id, &selectors).map(|found| {
+            found.map(|node_id| {
+              let primary = host.with_dom(|dom| {
+                if node_id.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+                }
+              });
+              (node_id, primary)
+            })
+          }))
+        })?;
+
+        match result {
+          Ok(Some((node_id, primary_interface))) => {
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+              scope,
+              document_id,
+              node_id,
+              primary_interface,
+            )?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Ok(None) => Ok(Value::Null),
+          Err(err) => Err(self.dom_exception_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Element", "querySelector", 0) => {
+        let element_obj = Self::require_receiver_object(receiver)?;
+        let (document_id, element_id) = {
+          let platform = require_dom_platform_mut(vm)?;
+          let handle = platform.require_element_handle(scope.heap(), Value::Object(element_obj))?;
+          (handle.document_id, handle.node_id)
+        };
+
+        let selectors =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<Option<(NodeId, DomInterface)>, DomException> = self.with_dom_host(vm, |host| {
+          Ok(dom2_bindings::query_selector(host, &selectors, Some(element_id)).map(|found| {
+            found.map(|node_id| {
+              let primary = host.with_dom(|dom| {
+                if node_id.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+                }
+              });
+              (node_id, primary)
+            })
+          }))
+        })?;
+
+        match result {
+          Ok(Some((node_id, primary_interface))) => {
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+              scope,
+              document_id,
+              node_id,
+              primary_interface,
+            )?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Ok(None) => Ok(Value::Null),
+          Err(err) => Err(self.dom_exception_to_vm_error(vm, scope, err)),
+        }
+      }
       ("Element", "id", 0) => {
         let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
         if args.is_empty() {
@@ -3656,6 +3841,133 @@ mod document_node_creation_tests {
       get_own_string_property(&mut scope, obj, "name")?,
       "InvalidCharacterError"
     );
+
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod selector_api_tests {
+  use super::*;
+  use crate::js::window_realm::{DomBindingsBackend, WindowRealm, WindowRealmConfig};
+  use std::any::Any;
+  use vm_js::{Job, Value, VmError, VmHostHooks};
+
+  #[derive(Default)]
+  struct TestHooks {
+    payload: VmJsHostHooksPayload,
+  }
+
+  impl VmHostHooks for TestHooks {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {
+      panic!("unexpected promise job in selector_api_tests");
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+      Some(&mut self.payload)
+    }
+  }
+
+  fn assert_script(
+    window: &mut WindowRealm,
+    host: &mut DocumentHostState,
+    hooks: &mut TestHooks,
+    script: &str,
+  ) -> Result<(), VmError> {
+    let out = window.exec_script_with_host_and_hooks(host, hooks, script)?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_selector_apis_are_wired_through_host_dispatch() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+
+    let root = crate::dom::parse_html(
+      "<!doctype html><div id=a><span id=b></span></div>",
+    )
+    .expect("parse_html");
+    let mut dom_host = DocumentHostState::from_renderer_dom(&root);
+
+    let mut dispatch =
+      VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new(window.global_object());
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut dom_host);
+    hooks
+      .payload
+      .webidl_bindings_host_slot_mut()
+      .set(&mut dispatch);
+
+    assert_script(
+      &mut window,
+      &mut dom_host,
+      &mut hooks,
+      r#"
+        (function () {
+          var el = document.getElementById('a');
+          return Element.prototype.matches.call(el, '#a') === true;
+        })()
+      "#,
+    )?;
+
+    assert_script(
+      &mut window,
+      &mut dom_host,
+      &mut hooks,
+      r#"
+        (function () {
+          var el = document.getElementById('a');
+          var b = Element.prototype.querySelector.call(el, '#b');
+          return b !== null && b.id === 'b';
+        })()
+      "#,
+    )?;
+
+    assert_script(
+      &mut window,
+      &mut dom_host,
+      &mut hooks,
+      r#"
+        (function () {
+          var b = document.getElementById('b');
+          var a = Element.prototype.closest.call(b, '#a');
+          return a !== null && a.id === 'a';
+        })()
+      "#,
+    )?;
+
+    assert_script(
+      &mut window,
+      &mut dom_host,
+      &mut hooks,
+      r#"
+        (function () {
+          var a = Document.prototype.querySelector.call(document, '#a');
+          return a !== null && a.id === 'a';
+        })()
+      "#,
+    )?;
+
+    assert_script(
+      &mut window,
+      &mut dom_host,
+      &mut hooks,
+      r#"
+        (function () {
+          var el = document.getElementById('a');
+          try {
+            Element.prototype.matches.call(el, '???');
+            return false;
+          } catch (e) {
+            return e && e.name === 'SyntaxError';
+          }
+        })()
+      "#,
+    )?;
 
     Ok(())
   }
