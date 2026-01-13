@@ -6811,7 +6811,11 @@ fn prepare_fragment_tree_paint_state(
                     0.0
                   };
 
-                  let preedit = control.ime_preedit.as_deref().filter(|t| !t.is_empty());
+                  let preedit = control
+                    .ime_preedit
+                    .as_ref()
+                    .map(|preedit| preedit.text.as_str())
+                    .filter(|t| !t.is_empty());
                   let committed_is_empty = value.is_empty();
                   let display_is_empty = committed_is_empty && preedit.is_none();
                   let mut display_text_owned: Option<String> = None;
