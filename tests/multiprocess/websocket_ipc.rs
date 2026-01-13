@@ -384,6 +384,251 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
 }
 
 #[test]
+fn websocket_ipc_responds_to_ping_frames() -> Result<()> {
+  let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
+    // Some sandboxed CI environments may forbid binding sockets; skip in that case.
+    return Ok(());
+  };
+  listener.set_nonblocking(true).expect("set_nonblocking");
+  let addr = listener.local_addr().expect("local_addr");
+
+  let ping_payload: Vec<u8> = b"fastrender-ipc-ping".to_vec();
+  let ping_payload_server = ping_payload.clone();
+
+  let server = std::thread::spawn(move || {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      match listener.accept() {
+        Ok((stream, _)) => {
+          let mut stream = stream;
+          let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+          let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+          let mut ws = tungstenite::accept(stream).expect("accept websocket");
+
+          ws.write_message(tungstenite::protocol::Message::Ping(
+            ping_payload_server.clone(),
+          ))
+            .expect("server ping write failed");
+
+          let read_deadline = Instant::now() + Duration::from_secs(5);
+          loop {
+            match ws.read_message() {
+              Ok(tungstenite::protocol::Message::Pong(payload)) => {
+                assert_eq!(payload, ping_payload_server, "pong payload mismatch");
+                break;
+              }
+              Ok(other) => panic!("expected pong, got {other:?}"),
+              Err(tungstenite::Error::Io(ref err))
+                if matches!(
+                  err.kind(),
+                  std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+              {
+                if Instant::now() >= read_deadline {
+                  panic!("server pong read timed out");
+                }
+              }
+              Err(err) => panic!("server pong read failed: {err}"),
+            }
+          }
+
+          let _ = ws.close(None);
+          break;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+          if Instant::now() >= deadline {
+            panic!("accept timed out");
+          }
+          std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(e) => panic!("accept failed: {e}"),
+      }
+    }
+  });
+
+  let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WebSocketIpcCommand>(16);
+  let (event_tx, event_rx) = mpsc::channel::<WebSocketIpcEvent>();
+
+  let network = std::thread::spawn(move || {
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::protocol::Message;
+
+    let connect_deadline = Instant::now() + Duration::from_secs(5);
+    let (ws_id, url, protocols) = loop {
+      match cmd_rx.recv_timeout(Duration::from_millis(50)) {
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => match cmd {
+          WebSocketCommand::Connect { params } => break (conn_id, params.url, params.protocols),
+          other => panic!("unexpected command before connect: {other:?}"),
+        },
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+          if Instant::now() >= connect_deadline {
+            panic!("network process timed out waiting for connect command");
+          }
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => return,
+      }
+    };
+
+    let mut req = url.into_client_request().expect("into_client_request");
+    if !protocols.is_empty() {
+      let header = protocols.join(", ");
+      req
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", header.parse().unwrap());
+    }
+
+    let (mut socket, response) = tungstenite::connect(req).expect("connect");
+    let selected_protocol =
+      validate_ws_subprotocol_handshake_response(&protocols, response.headers()).unwrap_or_default();
+    event_tx
+      .send(WebSocketIpcEvent::WebSocket {
+        conn_id: ws_id,
+        event: WebSocketEvent::Open { selected_protocol },
+      })
+      .expect("send open event");
+
+    // Poll both the command channel and the websocket so we can respond to pings even when JS isn't
+    // sending anything.
+    let poll_timeout = Duration::from_millis(50);
+    match socket.get_ref() {
+      tungstenite::stream::MaybeTlsStream::Plain(stream) => {
+        let _ = stream.set_read_timeout(Some(poll_timeout));
+      }
+      tungstenite::stream::MaybeTlsStream::Rustls(stream) => {
+        let _ = stream.get_ref().set_read_timeout(Some(poll_timeout));
+      }
+      #[allow(unreachable_patterns)]
+      _ => {}
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      // Drain any pending commands.
+      loop {
+        match cmd_rx.try_recv() {
+          Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => {
+            assert_eq!(conn_id, ws_id);
+            match cmd {
+              WebSocketCommand::Close { .. } | WebSocketCommand::Shutdown => {
+                let _ = socket.close(None);
+                return;
+              }
+              WebSocketCommand::SendText { .. } | WebSocketCommand::SendBinary { .. } => {
+                panic!("send not used by ping test");
+              }
+              WebSocketCommand::Connect { .. } => panic!("unexpected second connect"),
+            }
+          }
+          Err(mpsc::TryRecvError::Empty) => break,
+          Err(mpsc::TryRecvError::Disconnected) => return,
+        }
+      }
+
+      match socket.read_message() {
+        Ok(Message::Ping(payload)) => {
+          // RFC 6455: reply to pings with a pong containing the same payload.
+          let _ = socket.write_message(Message::Pong(payload));
+        }
+        Ok(Message::Pong(_)) => {}
+        Ok(Message::Close(frame)) => {
+          let (code, reason) = frame
+            .as_ref()
+            .map(|f| (u16::from(f.code), f.reason.to_string()))
+            .unwrap_or((1000, "".to_string()));
+          let _ = event_tx.send(WebSocketIpcEvent::WebSocket {
+            conn_id: ws_id,
+            event: WebSocketEvent::Close { code, reason },
+          });
+          return;
+        }
+        Ok(Message::Text(text)) => {
+          let _ = event_tx.send(WebSocketIpcEvent::WebSocket {
+            conn_id: ws_id,
+            event: WebSocketEvent::MessageText { text },
+          });
+        }
+        Ok(Message::Binary(data)) => {
+          let _ = event_tx.send(WebSocketIpcEvent::WebSocket {
+            conn_id: ws_id,
+            event: WebSocketEvent::MessageBinary { data },
+          });
+        }
+        Err(tungstenite::Error::Io(ref err))
+          if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+        Err(err) => panic!("network process read failed: {err}"),
+        _ => {}
+      }
+
+      if Instant::now() >= deadline {
+        panic!("network process timed out");
+      }
+    }
+  });
+
+  let dom = dom2::Document::new(QuirksMode::NoQuirks);
+  let mut host = make_host(dom, "http://example.invalid/")?;
+
+  let _ipc_bindings = {
+    let window = host.host_mut().window_mut();
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+    install_window_websocket_ipc_bindings_with_guard::<WindowHostState>(
+      vm,
+      realm,
+      heap,
+      WindowWebSocketIpcEnv {
+        fetcher: Arc::new(NoFetchResourceFetcher),
+        document_url: Some("http://example.invalid/".to_string()),
+        cmd_tx,
+        event_rx,
+      },
+    )
+    .map_err(|err| Error::Other(err.to_string()))?
+  };
+
+  host.exec_script(&format!(
+    r#"
+    globalThis.__done = false;
+    globalThis.__err = "";
+    globalThis.__messageCount = 0;
+    globalThis.__ws = new WebSocket("ws://{addr}/");
+    const ws = globalThis.__ws;
+    ws.onopen = function () {{
+      // No-op: server sends ping immediately after handshake.
+    }};
+    ws.onmessage = function () {{
+      globalThis.__messageCount++;
+    }};
+    ws.onerror = function () {{
+      globalThis.__err = "error";
+      globalThis.__done = true;
+    }};
+    ws.onclose = function () {{
+      globalThis.__done = true;
+    }};
+    "#,
+  ))?;
+
+  pump_until_done(&mut host, Instant::now() + Duration::from_secs(5))?;
+
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+    "",
+    "unexpected websocket error: {:?}",
+    get_global_prop_utf8(&mut host, "__err")
+  );
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__messageCount").as_deref(),
+    Some("0"),
+    "ping/pong frames must not surface as JS message events"
+  );
+
+  network.join().expect("network thread panicked");
+  server.join().expect("server thread panicked");
+
+  Ok(())
+}
+
+#[test]
 fn websocket_ipc_rejects_unrequested_protocol_selected_by_server() -> Result<()> {
   let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
     // Some sandboxed CI environments may forbid binding sockets; skip in that case.
