@@ -147,6 +147,8 @@ pub enum KeyAction {
   ShiftSpace,
   PageUp,
   PageDown,
+  ShiftPageUp,
+  ShiftPageDown,
   ArrowLeft,
   ArrowRight,
   WordLeft,
@@ -11564,6 +11566,7 @@ impl InteractionEngine {
       self.ensure_form_default_snapshot_for_control(&index, focused);
 
       // `<input type=number>` uses ArrowUp/ArrowDown to increment/decrement (like browsers).
+      // PageUp/PageDown should step by a larger delta.
       if focused_is_text_input
         && matches!(
           key,
@@ -11571,6 +11574,10 @@ impl InteractionEngine {
             | KeyAction::ArrowDown
             | KeyAction::ShiftArrowUp
             | KeyAction::ShiftArrowDown
+            | KeyAction::PageUp
+            | KeyAction::PageDown
+            | KeyAction::ShiftPageUp
+            | KeyAction::ShiftPageDown
         )
         && index
           .node(focused)
@@ -11579,10 +11586,12 @@ impl InteractionEngine {
         if !can_edit_value {
           return changed;
         }
-        let delta_steps = if matches!(key, KeyAction::ArrowUp | KeyAction::ShiftArrowUp) {
-          1
-        } else {
-          -1
+        let delta_steps = match key {
+          KeyAction::ArrowUp | KeyAction::ShiftArrowUp => 1,
+          KeyAction::ArrowDown | KeyAction::ShiftArrowDown => -1,
+          KeyAction::PageUp | KeyAction::ShiftPageUp => 10,
+          KeyAction::PageDown | KeyAction::ShiftPageDown => -10,
+          _ => 0,
         };
         changed |= self.step_number_input(&mut index, focused, delta_steps);
         return changed;
@@ -12396,7 +12405,10 @@ impl InteractionEngine {
             }
           }
         }
-        KeyAction::PageUp | KeyAction::PageDown => {
+        KeyAction::PageUp
+        | KeyAction::PageDown
+        | KeyAction::ShiftPageUp
+        | KeyAction::ShiftPageDown => {
           // Native text controls typically consume PageUp/PageDown for internal scrolling/caret
           // navigation. We do not implement textarea scrolling yet, so treat these keys as a no-op
           // rather than falling back to viewport scrolling.
@@ -12444,6 +12456,10 @@ impl InteractionEngine {
       | KeyAction::ArrowDown
       | KeyAction::ArrowLeft
       | KeyAction::ArrowRight
+      | KeyAction::PageUp
+      | KeyAction::PageDown
+      | KeyAction::ShiftPageUp
+      | KeyAction::ShiftPageDown
       | KeyAction::Home
       | KeyAction::End => {
         if focused_is_range_input {
@@ -12461,12 +12477,10 @@ impl InteractionEngine {
           self.ensure_form_default_snapshot_for_control(&index, focused);
           if let Some(node_mut) = index.node_mut(focused) {
             let dom_changed = match key {
-              KeyAction::ArrowUp | KeyAction::ArrowRight => {
-                dom_mutation::step_range_value(node_mut, 1)
-              }
-              KeyAction::ArrowDown | KeyAction::ArrowLeft => {
-                dom_mutation::step_range_value(node_mut, -1)
-              }
+              KeyAction::ArrowUp | KeyAction::ArrowRight => dom_mutation::step_range_value(node_mut, 1),
+              KeyAction::ArrowDown | KeyAction::ArrowLeft => dom_mutation::step_range_value(node_mut, -1),
+              KeyAction::PageUp | KeyAction::ShiftPageUp => dom_mutation::step_range_value(node_mut, 10),
+              KeyAction::PageDown | KeyAction::ShiftPageDown => dom_mutation::step_range_value(node_mut, -10),
               KeyAction::Home => bounds
                 .map(|(min, _)| dom_mutation::set_range_value(node_mut, min))
                 .unwrap_or(false),
@@ -12482,7 +12496,14 @@ impl InteractionEngine {
           }
         } else if matches!(
           key,
-          KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End
+          KeyAction::ArrowUp
+            | KeyAction::ArrowDown
+            | KeyAction::PageUp
+            | KeyAction::PageDown
+            | KeyAction::ShiftPageUp
+            | KeyAction::ShiftPageDown
+            | KeyAction::Home
+            | KeyAction::End
         ) && focused_is_select
           && !is_disabled_or_inert(&index, focused)
         {
@@ -12575,6 +12596,46 @@ impl InteractionEngine {
                 }
               }
               found.unwrap_or(first_enabled_idx)
+            }
+            KeyAction::PageDown | KeyAction::ShiftPageDown => {
+              let mut pos = anchor_idx;
+              for _ in 0..10 {
+                let mut found = None;
+                for idx in (pos + 1)..options.len() {
+                  if !options[idx].1 {
+                    found = Some(idx);
+                    break;
+                  }
+                }
+                match found {
+                  Some(next) => pos = next,
+                  None => {
+                    pos = last_enabled_idx;
+                    break;
+                  }
+                }
+              }
+              pos
+            }
+            KeyAction::PageUp | KeyAction::ShiftPageUp => {
+              let mut pos = anchor_idx;
+              for _ in 0..10 {
+                let mut found = None;
+                for idx in (0..pos).rev() {
+                  if !options[idx].1 {
+                    found = Some(idx);
+                    break;
+                  }
+                }
+                match found {
+                  Some(next) => pos = next,
+                  None => {
+                    pos = first_enabled_idx;
+                    break;
+                  }
+                }
+              }
+              pos
             }
             KeyAction::Home => first_enabled_idx,
             KeyAction::End => last_enabled_idx,
@@ -12708,10 +12769,12 @@ impl InteractionEngine {
       KeyAction::Space | KeyAction::ShiftSpace => {}
       KeyAction::ArrowUp
       | KeyAction::ArrowDown
-      | KeyAction::Home
-      | KeyAction::End
       | KeyAction::PageUp
-      | KeyAction::PageDown => {
+      | KeyAction::PageDown
+      | KeyAction::ShiftPageUp
+      | KeyAction::ShiftPageDown
+      | KeyAction::Home
+      | KeyAction::End => {
         return (
           self.key_action_with_box_tree(dom, box_tree, key),
           InteractionAction::None,
@@ -13195,10 +13258,12 @@ impl InteractionEngine {
       KeyAction::Space | KeyAction::ShiftSpace => {}
       KeyAction::ArrowUp
       | KeyAction::ArrowDown
-      | KeyAction::Home
-      | KeyAction::End
       | KeyAction::PageUp
-      | KeyAction::PageDown => {
+      | KeyAction::PageDown
+      | KeyAction::ShiftPageUp
+      | KeyAction::ShiftPageDown
+      | KeyAction::Home
+      | KeyAction::End => {
         return (
           self.key_action_with_layout_artifacts(dom, box_tree, fragment_tree, key),
           InteractionAction::None,

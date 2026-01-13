@@ -10473,9 +10473,10 @@ impl BrowserRuntime {
               | crate::interaction::KeyAction::End
               | crate::interaction::KeyAction::ShiftHome
               | crate::interaction::KeyAction::ShiftEnd => !focus_consumes_home_end,
-              crate::interaction::KeyAction::PageUp | crate::interaction::KeyAction::PageDown => {
-                !focus_consumes_page
-              }
+              crate::interaction::KeyAction::PageUp
+              | crate::interaction::KeyAction::PageDown
+              | crate::interaction::KeyAction::ShiftPageUp
+              | crate::interaction::KeyAction::ShiftPageDown => !focus_consumes_page,
               _ => false,
             };
 
@@ -10893,13 +10894,16 @@ impl BrowserRuntime {
                   crate::interaction::KeyAction::Space
                   | crate::interaction::KeyAction::ShiftSpace
                   | crate::interaction::KeyAction::PageDown
-                  | crate::interaction::KeyAction::PageUp => {
+                  | crate::interaction::KeyAction::ShiftPageDown
+                  | crate::interaction::KeyAction::PageUp
+                  | crate::interaction::KeyAction::ShiftPageUp => {
                     let h = tab.viewport_css.1.max(1) as f32;
                     let mut dy = (h * 0.9).max(1.0);
                     if matches!(
                       key,
                       crate::interaction::KeyAction::ShiftSpace
                         | crate::interaction::KeyAction::PageUp
+                        | crate::interaction::KeyAction::ShiftPageUp
                     ) {
                       dy = -dy;
                     }

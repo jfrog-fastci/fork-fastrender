@@ -286,6 +286,8 @@ fn rand_key_action(rng: &mut SplitMix64) -> KeyAction {
   const KEYS: &[KeyAction] = &[
     KeyAction::Backspace,
     KeyAction::Delete,
+    KeyAction::WordBackspace,
+    KeyAction::WordDelete,
     KeyAction::Enter,
     KeyAction::Tab,
     KeyAction::ShiftTab,
@@ -299,11 +301,17 @@ fn rand_key_action(rng: &mut SplitMix64) -> KeyAction {
     KeyAction::ShiftArrowDown,
     KeyAction::ArrowUp,
     KeyAction::ArrowDown,
+    KeyAction::PageUp,
+    KeyAction::PageDown,
+    KeyAction::ShiftPageUp,
+    KeyAction::ShiftPageDown,
     KeyAction::Home,
     KeyAction::End,
     KeyAction::ShiftHome,
     KeyAction::ShiftEnd,
     KeyAction::SelectAll,
+    KeyAction::Undo,
+    KeyAction::Redo,
   ];
   KEYS[rng.next_usize(KEYS.len())]
 }
