@@ -389,3 +389,17 @@ fn aria_description_empty_blocks_title_fallback() {
   assert_eq!(y.name.as_deref(), Some("Name"));
   assert_eq!(y.description, None);
 }
+
+#[test]
+fn aria_describedby_missing_ids_blocks_title_fallback() {
+  let html = r#"
+    <html><body>
+      <input id="x" aria-label="Name" aria-describedby="missing" title="Tooltip" />
+    </body></html>
+  "#;
+
+  let tree = render_accessibility_tree(html);
+  let x = find_by_id(&tree, "x").expect("input x");
+  assert_eq!(x.name.as_deref(), Some("Name"));
+  assert_eq!(x.description, None);
+}
