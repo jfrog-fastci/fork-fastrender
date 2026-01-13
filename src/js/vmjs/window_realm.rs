@@ -6204,6 +6204,8 @@ fn history_state_change_native(
     )?;
   }
 
+  }
+
   {
     // Keep `history.length` in sync with the per-realm session history.
     //
