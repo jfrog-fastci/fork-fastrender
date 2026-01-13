@@ -1344,13 +1344,15 @@ fn folder_combo_box(
   value: &mut Option<BookmarkId>,
   a11y_label: &'static str,
 ) {
+  // Ensure a stable ID for both the combo box and its virtualized scroll area.
+  let combo_id = ui.make_persistent_id(id_source);
   let selected = options
     .iter()
     .find(|(id, _)| id == value)
     .map(|(_, label)| label.as_str())
     .unwrap_or("Root");
   let selected = truncate_middle(selected, 48);
-  let response = egui::ComboBox::from_id_source(id_source)
+  let response = egui::ComboBox::from_id_source(combo_id)
     .selected_text(selected)
     .show_ui(ui, |ui| {
       // Virtualize the dropdown: large bookmark trees can contain thousands of folders and rendering
@@ -1359,7 +1361,7 @@ fn folder_combo_box(
       egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .max_height(row_height * 12.0)
-        .id_source(("bookmarks_manager_folder_combo_box", a11y_label))
+        .id_source((combo_id, "popup"))
         .show_rows(ui, row_height, options.len(), |ui, row_range| {
           for idx in row_range {
             let (id, label) = &options[idx];
