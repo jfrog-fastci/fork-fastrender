@@ -220,6 +220,20 @@ mod tests {
       SiteKey::from_url("file:///tmp/a.html#x").unwrap(),
       SiteKey::from_url("file:///tmp/a.html#y").unwrap()
     );
+
+    // Query is also ignored for file URLs so in-document state does not churn processes.
+    assert_eq!(
+      SiteKey::from_url("file:///tmp/a.html?q=1").unwrap(),
+      SiteKey::from_url("file:///tmp/a.html?q=2").unwrap()
+    );
+  }
+
+  #[test]
+  fn opaque_schemes_ignore_fragments() {
+    assert_eq!(
+      SiteKey::from_url("foo:bar#x").unwrap(),
+      SiteKey::from_url("foo:bar#y").unwrap()
+    );
   }
 
   #[test]
