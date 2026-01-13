@@ -16965,11 +16965,16 @@ fn apply_spread_alpha_horizontal(
     .map_err(|err| RenderError::InvalidParameters {
       message: format!("drop shadow spread: window buffer allocation failed: {err}"),
     })?;
-  let mut checked = 0usize;
+  let mut deadline_counter = 0usize;
   for y in 0..height {
     queue.clear();
     let row_start = y * width;
     for j in 0..extended_len {
+      check_active_periodic(
+        &mut deadline_counter,
+        LEGACY_FILTER_DEADLINE_STRIDE,
+        RenderStage::Paint,
+      )?;
       let src_x = if j < radius {
         0
       } else if j >= radius + width {
@@ -17010,10 +17015,6 @@ fn apply_spread_alpha_horizontal(
       if j + 1 >= window_size {
         let out_x = j + 1 - window_size;
         dst[row_start + out_x] = queue.front().map(|(_, v)| *v).unwrap_or(0);
-        checked += 1;
-        if checked % LEGACY_FILTER_DEADLINE_STRIDE == 0 {
-          check_active(RenderStage::Paint)?;
-        }
       }
     }
   }
@@ -17065,10 +17066,15 @@ fn apply_spread_alpha_vertical(
     .map_err(|err| RenderError::InvalidParameters {
       message: format!("drop shadow spread: window buffer allocation failed: {err}"),
     })?;
-  let mut checked = 0usize;
+  let mut deadline_counter = 0usize;
   for x in 0..width {
     queue.clear();
     for j in 0..extended_len {
+      check_active_periodic(
+        &mut deadline_counter,
+        LEGACY_FILTER_DEADLINE_STRIDE,
+        RenderStage::Paint,
+      )?;
       let src_y = if j < radius {
         0
       } else if j >= radius + height {
@@ -17109,10 +17115,6 @@ fn apply_spread_alpha_vertical(
       if j + 1 >= window_size {
         let out_y = j + 1 - window_size;
         dst[out_y * width + x] = queue.front().map(|(_, v)| *v).unwrap_or(0);
-        checked += 1;
-        if checked % LEGACY_FILTER_DEADLINE_STRIDE == 0 {
-          check_active(RenderStage::Paint)?;
-        }
       }
     }
   }
