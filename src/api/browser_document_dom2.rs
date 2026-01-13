@@ -2484,13 +2484,6 @@ impl BrowserDocumentDom2 {
       }
     }
 
-    for node in mutations.form_state_changed {
-      if self.dom.is_connected_for_scripting(node) {
-        render_affecting = true;
-        self.dirty_style_nodes.insert(node);
-      }
-    }
-
     for parent in mutations.child_list_changed {
       if self.dom.is_connected_for_scripting(parent) {
         render_affecting = true;
