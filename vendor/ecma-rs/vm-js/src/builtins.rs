@@ -13104,11 +13104,19 @@ pub fn regexp_prototype_source_get(
   // appear in the output.
   const SLASH: u16 = 0x002F;
   const BACKSLASH: u16 = 0x005C;
+  const BRACKET_OPEN: u16 = 0x005B;
+  const BRACKET_CLOSE: u16 = 0x005D;
   let (needs_escape, escaped_len) = {
     let units = scope.heap().get_string(source)?.as_code_units();
     let mut needs_escape = false;
     let mut escaped_len: usize = 0;
     let mut escaped = false;
+    // Classic RegExp character classes are not nestable; track whether we're inside `[...]` so we
+    // only escape `/` when it could terminate a RegExp literal.
+    //
+    // Note: this uses the same classic (non-`v`) semantics as RegExp literal scanning: `[` inside a
+    // class is a literal character and does not increase the depth.
+    let mut class_depth: usize = 0;
     for (i, &cu) in units.iter().enumerate() {
       tick::tick_every(i, tick::DEFAULT_TICK_EVERY, &mut || vm.tick())?;
 
@@ -13135,9 +13143,22 @@ pub fn regexp_prototype_source_get(
           escaped = true;
           escaped_len = escaped_len.saturating_add(1);
         }
+        BRACKET_OPEN if class_depth == 0 => {
+          class_depth = 1;
+          escaped_len = escaped_len.saturating_add(1);
+        }
+        BRACKET_CLOSE if class_depth > 0 => {
+          class_depth = 0;
+          escaped_len = escaped_len.saturating_add(1);
+        }
         SLASH | 0x000A | 0x000D => {
-          needs_escape = true;
-          escaped_len = escaped_len.saturating_add(2);
+          if cu == SLASH && class_depth > 0 {
+            // `/` inside a character class does not need escaping to remain a valid RegExp literal.
+            escaped_len = escaped_len.saturating_add(1);
+          } else {
+            needs_escape = true;
+            escaped_len = escaped_len.saturating_add(2);
+          }
         }
         0x2028 | 0x2029 => {
           needs_escape = true;
@@ -13161,6 +13182,7 @@ pub fn regexp_prototype_source_get(
   {
     let units = scope.heap().get_string(source)?.as_code_units();
     let mut escaped = false;
+    let mut class_depth: usize = 0;
     for (i, &cu) in units.iter().enumerate() {
       tick::tick_every(i, tick::DEFAULT_TICK_EVERY, &mut || vm.tick())?;
 
@@ -13193,9 +13215,21 @@ pub fn regexp_prototype_source_get(
           escaped = true;
           vec_try_push(&mut out, cu)?;
         }
+        BRACKET_OPEN if class_depth == 0 => {
+          class_depth = 1;
+          vec_try_push(&mut out, cu)?;
+        }
+        BRACKET_CLOSE if class_depth > 0 => {
+          class_depth = 0;
+          vec_try_push(&mut out, cu)?;
+        }
         SLASH => {
-          vec_try_push(&mut out, b'\\' as u16)?;
-          vec_try_push(&mut out, b'/' as u16)?;
+          if class_depth > 0 {
+            vec_try_push(&mut out, cu)?;
+          } else {
+            vec_try_push(&mut out, b'\\' as u16)?;
+            vec_try_push(&mut out, b'/' as u16)?;
+          }
         }
         0x000A => {
           vec_try_push(&mut out, b'\\' as u16)?;
