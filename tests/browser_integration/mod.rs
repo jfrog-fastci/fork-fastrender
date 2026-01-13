@@ -103,6 +103,7 @@ mod ui_worker_dpr;
 mod ui_worker_favicon;
 mod ui_worker_focus_scroll;
 mod ui_worker_image_input_submit;
+mod ui_worker_image_maps;
 mod ui_worker_form_submit;
 mod ui_worker_file_input_submit_multipart;
 mod ui_worker_form_target_blank;
