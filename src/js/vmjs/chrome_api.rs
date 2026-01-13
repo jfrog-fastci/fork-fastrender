@@ -4,6 +4,13 @@
 //! must explicitly call [`install_chrome_api_bindings_vm_js`] for the target realm. Untrusted
 //! content pages should never have this API installed.
 //!
+//! The installed API surface is intentionally hardened so trusted chrome UI code cannot
+//! accidentally clobber it:
+//! - `chrome`, `chrome.navigation`, and `chrome.tabs` are installed as non-writable,
+//!   non-configurable properties.
+//! - Methods are installed as non-writable, non-configurable data properties.
+//! - The API objects are made non-extensible (best-effort).
+//!
 //! # Tab id representation
 //!
 //! Rust tab ids are `u64`, but JavaScript numbers are IEEE-754 doubles. To avoid silent precision
@@ -517,6 +524,12 @@ where
     non_configurable_read_only_data_desc(Value::Object(chrome_obj)),
   )?;
 
+  // Best-effort hardening: the property descriptors above should still be installed even if these
+  // operations fail (e.g. due to resource exhaustion).
+  let _ = scope.object_prevent_extensions(chrome_obj);
+  let _ = scope.object_prevent_extensions(navigation_obj);
+  let _ = scope.object_prevent_extensions(tabs_obj);
+
   Ok(())
 }
 
@@ -661,5 +674,46 @@ mod tests {
     }
     let got = js_value_to_utf8(realm.heap(), v);
     assert_eq!(got, "TypeError");
+  }
+
+  #[test]
+  fn chrome_api_objects_are_hardened() {
+    let mut host = TestHost::new();
+    {
+      let (vm, realm, heap) = host.realm.vm_realm_and_heap_mut();
+      install_chrome_api_bindings_vm_js::<TestHost>(vm, heap, realm).expect("install should succeed");
+    }
+
+    let value = host
+      .realm
+      .exec_script(
+        r#"
+          (() => {
+            'use strict';
+            try { chrome.newProp = 1; return false; } catch (e) { return true; }
+          })()
+        "#,
+      )
+      .expect("script should run");
+    assert_eq!(value, Value::Bool(true));
+
+    let value = host
+      .realm
+      .exec_script(
+        r#"
+          (() => {
+            'use strict';
+            try { chrome.navigation.navigate = () => {}; return false; } catch (e) { return true; }
+          })()
+        "#,
+      )
+      .expect("script should run");
+    assert_eq!(value, Value::Bool(true));
+
+    let value = host
+      .realm
+      .exec_script("Object.isExtensible(chrome) === false")
+      .expect("script should run");
+    assert_eq!(value, Value::Bool(true));
   }
 }
