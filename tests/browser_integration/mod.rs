@@ -152,6 +152,7 @@ mod ui_scroll_wheel_sticky_hit_test;
 mod ui_scrolling;
 mod ui_select_dropdown_choose;
 mod ui_select_dropdown_keyboard_open;
+mod ui_datalist_value_vs_label;
 mod ui_date_time_picker_choose;
 mod ui_select_listbox_click;
 mod ui_select_listbox_click_after_wheel_scroll;
