@@ -7717,20 +7717,36 @@ impl App {
           // Also drop any coalesced pointer move from earlier CursorMoved events in this frame so
           // we don't forward a stale hover update when the cursor leaves the overlay before the
           // next redraw flush.
+          let active_tab_id = self.browser_state.active_tab_id();
+          let should_clear = self.cursor_in_page
+            || active_tab_id.is_some_and(|tab_id| {
+              self.browser_state.tab(tab_id).is_some_and(|tab| {
+                tab.hovered_url.is_some()
+                  || !matches!(tab.cursor, fastrender::ui::CursorKind::Default)
+              })
+            });
+
           self.pending_pointer_move = None;
-          if self.cursor_in_page {
-            self.cursor_in_page = false;
-            if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
+          self.cursor_in_page = false;
+
+          if should_clear {
+            if let Some(tab) = active_tab_id.and_then(|tab_id| self.browser_state.tab_mut(tab_id)) {
+              tab.hovered_url = None;
+              tab.cursor = fastrender::ui::CursorKind::Default;
+            }
+
+            if let Some(tab_id) = self.page_input_tab.or(active_tab_id) {
               self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
                 tab_id,
                 pos_css: (-1.0, -1.0),
                 button: fastrender::ui::PointerButton::None,
                 modifiers: map_modifiers(self.modifiers),
               });
-              self.window.request_redraw();
             }
-          } else {
-            self.cursor_in_page = false;
+
+            // Ensure hovered URL and cursor updates paint immediately, even if the worker doesn't
+            // send an updated hover state until the next frame.
+            self.window.request_redraw();
           }
           return;
         }
@@ -7957,15 +7973,34 @@ impl App {
           // overlay (this can happen if the overlay appears under a stationary cursor, e.g. when
           // toggled via menu/shortcut).
           if matches!(state, ElementState::Pressed) {
+            let active_tab_id = self.browser_state.active_tab_id();
+            let should_clear = self.cursor_in_page
+              || active_tab_id.is_some_and(|tab_id| {
+                self.browser_state.tab(tab_id).is_some_and(|tab| {
+                  tab.hovered_url.is_some()
+                    || !matches!(tab.cursor, fastrender::ui::CursorKind::Default)
+                })
+              });
             self.pending_pointer_move = None;
             self.cursor_in_page = false;
-            if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
-              self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
-                tab_id,
-                pos_css: (-1.0, -1.0),
-                button: fastrender::ui::PointerButton::None,
-                modifiers: map_modifiers(self.modifiers),
-              });
+
+            if should_clear {
+              if let Some(tab) =
+                active_tab_id.and_then(|tab_id| self.browser_state.tab_mut(tab_id))
+              {
+                tab.hovered_url = None;
+                tab.cursor = fastrender::ui::CursorKind::Default;
+              }
+
+              if let Some(tab_id) = self.page_input_tab.or(active_tab_id) {
+                self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
+                  tab_id,
+                  pos_css: (-1.0, -1.0),
+                  button: fastrender::ui::PointerButton::None,
+                  modifiers: map_modifiers(self.modifiers),
+                });
+              }
+
               self.window.request_redraw();
             }
           }
