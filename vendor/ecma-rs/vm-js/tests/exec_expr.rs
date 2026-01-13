@@ -836,7 +836,17 @@ fn string_prototype_trim_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
-      r#"(" \n\t\u2000abc\u2000 \r").trim() === "abc" && String.prototype.trim.call({toString:function(){return "\u3000x\u3000";}}) === "x""#,
+      r#"
+        var threwNull = false;
+        try { String.prototype.trim.call(null); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.trim.call(undefined); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+
+        (" \n\t\u2000abc\u2000 \r").trim() === "abc"
+          && String.prototype.trim.call({toString:function(){return "\u3000x\u3000";}}) === "x"
+          && threwNull
+          && threwUndef
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
@@ -847,12 +857,27 @@ fn string_prototype_trim_start_end_work_and_are_generic() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
-      r#"(" \n\t\u2000abc\u2000 \r").trimStart() === "abc\u2000 \r"
+      r#"
+        var threwStartNull = false;
+        try { String.prototype.trimStart.call(null); } catch (e) { threwStartNull = e && e.name === "TypeError"; }
+        var threwStartUndef = false;
+        try { String.prototype.trimStart.call(undefined); } catch (e) { threwStartUndef = e && e.name === "TypeError"; }
+        var threwEndNull = false;
+        try { String.prototype.trimEnd.call(null); } catch (e) { threwEndNull = e && e.name === "TypeError"; }
+        var threwEndUndef = false;
+        try { String.prototype.trimEnd.call(undefined); } catch (e) { threwEndUndef = e && e.name === "TypeError"; }
+
+        (" \n\t\u2000abc\u2000 \r").trimStart() === "abc\u2000 \r"
         && (" \n\t\u2000abc\u2000 \r").trimEnd() === " \n\t\u2000abc"
         && String.prototype.trimStart.call({toString:function(){return "\u3000x\u3000";}}) === "x\u3000"
         && String.prototype.trimEnd.call({toString:function(){return "\u3000x\u3000";}}) === "\u3000x"
         && (" \n\t\u2000abc\u2000 \r").trimLeft() === "abc\u2000 \r"
-        && (" \n\t\u2000abc\u2000 \r").trimRight() === " \n\t\u2000abc""#,
+        && (" \n\t\u2000abc\u2000 \r").trimRight() === " \n\t\u2000abc"
+        && threwStartNull
+        && threwStartUndef
+        && threwEndNull
+        && threwEndUndef
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
@@ -903,15 +928,21 @@ fn string_prototype_repeat_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
-      r#"var ok = "ab".repeat(3) === "ababab"
+      r#"
+      var ok = "ab".repeat(3) === "ababab"
         && "ab".repeat(0) === ""
         && String.prototype.repeat.call(123, 2) === "123123"
         && "a".repeat(Number.NaN) === "";
+      var threwNull = false;
+      try { String.prototype.repeat.call(null, 2); } catch (e) { threwNull = e && e.name === "TypeError"; }
+      var threwUndef = false;
+      try { String.prototype.repeat.call(undefined, 2); } catch (e) { threwUndef = e && e.name === "TypeError"; }
       var neg = false;
       try { "a".repeat(-1); } catch(e) { neg = e.name === "RangeError"; }
       var inf = false;
       try { "a".repeat(1e999); } catch(e) { inf = e.name === "RangeError"; }
-      ok && neg && inf"#,
+      ok && neg && inf && threwNull && threwUndef
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
@@ -922,7 +953,19 @@ fn string_prototype_substr_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
-      r#""abcd".substr(1, 2) === "bc" && "abcd".substr(-2) === "cd" && "abcd".substr(1, -1) === "" && String.prototype.substr.call(123, 1) === "23""#,
+      r#"
+        var threwNull = false;
+        try { String.prototype.substr.call(null, 1); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.substr.call(undefined, 1); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+
+        "abcd".substr(1, 2) === "bc"
+          && "abcd".substr(-2) === "cd"
+          && "abcd".substr(1, -1) === ""
+          && String.prototype.substr.call(123, 1) === "23"
+          && threwNull
+          && threwUndef
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));

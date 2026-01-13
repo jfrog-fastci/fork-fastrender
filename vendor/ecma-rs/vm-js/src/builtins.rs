@@ -17908,7 +17908,8 @@ pub fn string_prototype_trim(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let (len, start, end) = {
@@ -17970,7 +17971,8 @@ pub fn string_prototype_trim_start(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let (len, start) = {
@@ -18021,7 +18023,8 @@ pub fn string_prototype_trim_end(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let (len, end) = {
@@ -18119,7 +18122,8 @@ pub fn string_prototype_substr(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let len = {
