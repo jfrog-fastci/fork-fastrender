@@ -2,7 +2,7 @@ use fastrender::scroll::{ScrollBounds, ScrollState};
 use fastrender::ui::browser_limits::DEFAULT_MAX_DIM_PX;
 use fastrender::ui::messages::{CursorKind, RenderedFrame, ScrollMetrics, WorkerToUi};
 use fastrender::ui::protocol_limits::{MAX_ERROR_BYTES, MAX_TITLE_BYTES, MAX_URL_BYTES};
-use fastrender::ui::untrusted::validate_untrusted_navigation_url;
+use fastrender::ui::url::sanitize_worker_url_for_ui;
 use fastrender::ui::BrowserAppState;
 
 fn make_overlong_url(max_bytes: usize) -> String {
@@ -100,17 +100,17 @@ fn hover_changed_rejects_disallowed_schemes() {
 #[test]
 fn context_menu_urls_reject_disallowed_schemes() {
   assert_eq!(
-    validate_untrusted_navigation_url("javascript:alert(1)").ok(),
+    sanitize_worker_url_for_ui("javascript:alert(1)"),
     None,
     "expected javascript: context menu URLs to be ignored"
   );
   assert_eq!(
-    validate_untrusted_navigation_url("data:text/plain,hello").ok(),
+    sanitize_worker_url_for_ui("data:text/plain,hello"),
     None,
     "expected data: context menu URLs to be ignored"
   );
   assert_eq!(
-    validate_untrusted_navigation_url("https://example.com/").ok().as_deref(),
+    sanitize_worker_url_for_ui("https://example.com/").as_deref(),
     Some("https://example.com/"),
     "expected https URLs to be accepted"
   );
