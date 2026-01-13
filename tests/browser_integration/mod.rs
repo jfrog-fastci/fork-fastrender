@@ -8,6 +8,7 @@ mod browser_cli_session_path;
 mod browser_cli_start_url_scheme;
 mod browser_cli_search_fallback;
 mod browser_headless_smoke_test;
+mod browser_headless_download_smoke_test;
 mod browser_headless_crash_smoke_test;
 mod browser_headless_smoke_trusted_about;
 mod browser_perf_log_frame_breakdown;

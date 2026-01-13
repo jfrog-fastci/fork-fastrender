@@ -4464,6 +4464,13 @@ struct BrowserCliArgs {
   #[arg(long = "headless-smoke", action = clap::ArgAction::SetTrue)]
   headless_smoke: bool,
 
+  /// Run a minimal headless download smoke test (no window / wgpu init).
+  ///
+  /// This mode is intended for CI: it navigates to the provided `file://` URL, clicks a download
+  /// link, and asserts the downloaded file lands under the configured download directory.
+  #[arg(long = "headless-download-smoke", action = clap::ArgAction::SetTrue)]
+  headless_download_smoke: bool,
+
   /// Run a minimal headless crash-isolation smoke test (no window / wgpu init)
   ///
   /// This mode spawns a UI worker, opens a tab, navigates to `crash://panic`, and asserts the
@@ -6391,6 +6398,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   //   bash scripts/run_limited.sh --as 64G -- \
   //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-crash-smoke
   //
+  // Download wiring smoke test (download directory plumbing + `<a download>` handling):
+  //   bash scripts/run_limited.sh --as 64G -- \
+  //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
+  //       --headless-download-smoke --download-dir /tmp/downloads file:///tmp/site/page.html
+  //
   // Or:
   //   FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE=1 bash scripts/run_limited.sh --as 64G -- \
   //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser
@@ -6398,6 +6410,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE").is_some()
   {
     return run_headless_crash_smoke_mode(download_dir);
+  }
+  if cli.headless_download_smoke
+    || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_DOWNLOAD_SMOKE").is_some()
+  {
+    let page_url = cli_url.or_else(|| {
+      std::env::var("FASTR_TEST_BROWSER_HEADLESS_DOWNLOAD_SMOKE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    });
+    let Some(page_url) = page_url else {
+      return Err(
+        "headless download smoke mode requires a start URL (positional `<URL>` or FASTR_TEST_BROWSER_HEADLESS_DOWNLOAD_SMOKE_URL)"
+          .into(),
+      );
+    };
+    return run_headless_download_smoke_mode(download_dir, page_url);
   }
   if cli.headless_smoke || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
     if cli.js_enabled {
@@ -9563,6 +9591,275 @@ fn run_headless_smoke_mode(
     writer.borrow_mut().emit(&event);
   }
 
+  Ok(())
+}
+
+#[cfg(feature = "browser_ui")]
+fn run_headless_download_smoke_mode(
+  download_dir: std::path::PathBuf,
+  page_url: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+  use fastrender::ui::cancel::CancelGens;
+  use fastrender::ui::messages::{
+    DownloadOutcome, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker,
+    WorkerToUi,
+  };
+  use std::sync::mpsc::RecvTimeoutError;
+  use std::time::{Duration, Instant};
+
+  // Keep the smoke test cheap and deterministic. See `run_headless_smoke_mode` for rationale.
+  const RAYON_NUM_THREADS_ENV: &str = "RAYON_NUM_THREADS";
+  if !std::env::var_os(RAYON_NUM_THREADS_ENV).is_some_and(|value| !value.is_empty()) {
+    let _ = rayon::ThreadPoolBuilder::new()
+      .num_threads(1)
+      .build_global();
+  }
+
+  // Bounded but generous: under debug builds / CI contention the worker may take a while to spin up
+  // before producing a frame or completing a download.
+  const TIMEOUT: Duration = Duration::from_secs(60);
+  const VIEWPORT_CSS: (u32, u32) = (240, 80);
+  const DPR: f32 = 1.0;
+  const CLICK_POS_CSS: (f32, f32) = (10.0, 10.0);
+
+  let (ui_to_worker_tx, worker_to_ui_rx, join) =
+    fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-download-smoke-worker")?;
+
+  ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory {
+    path: download_dir.clone(),
+  })?;
+
+  let tab_id = TabId::new();
+  ui_to_worker_tx.send(UiToWorker::CreateTab {
+    tab_id,
+    initial_url: None,
+    cancel: CancelGens::new(),
+  })?;
+  ui_to_worker_tx.send(UiToWorker::ViewportChanged {
+    tab_id,
+    viewport_css: VIEWPORT_CSS,
+    dpr: DPR,
+  })?;
+  ui_to_worker_tx.send(UiToWorker::SetActiveTab { tab_id })?;
+  ui_to_worker_tx.send(UiToWorker::Navigate {
+    tab_id,
+    url: page_url.clone(),
+    reason: NavigationReason::TypedUrl,
+  })?;
+
+  let deadline = Instant::now() + TIMEOUT;
+  let mut last_msg_debug: Option<String> = None;
+  let mut got_frame = false;
+  loop {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match worker_to_ui_rx.recv_timeout(remaining) {
+      Ok(msg) => {
+        if let WorkerToUi::FrameReady { tab_id: t, .. } = &msg {
+          if *t == tab_id {
+            got_frame = true;
+            break;
+          }
+        }
+        if let WorkerToUi::NavigationFailed { tab_id: t, url, error, .. } = &msg {
+          if *t == tab_id && url == &page_url {
+            return Err(
+              format!("headless download smoke: navigation failed for {page_url:?}: {error}").into(),
+            );
+          }
+        }
+        last_msg_debug = Some(format!("{msg:?}"));
+      }
+      Err(RecvTimeoutError::Timeout) => break,
+      Err(RecvTimeoutError::Disconnected) => {
+        return Err("headless download smoke worker disconnected before FrameReady".into());
+      }
+    }
+  }
+
+  if !got_frame {
+    let hint = match last_msg_debug.as_deref() {
+      Some(msg) => format!(" (last WorkerToUi message: {msg})"),
+      None => " (received no WorkerToUi messages)".to_string(),
+    };
+    return Err(
+      format!(
+        "timed out after {TIMEOUT:?} waiting for WorkerToUi::FrameReady after navigating to {page_url:?}{hint}"
+      )
+      .into(),
+    );
+  }
+
+  // Drain a small slice of pending messages so the download wait loop isn't cluttered with
+  // navigation-related stage heartbeats.
+  let drain_deadline = Instant::now() + Duration::from_millis(100);
+  loop {
+    let remaining = drain_deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+      break;
+    }
+    match worker_to_ui_rx.recv_timeout(remaining) {
+      Ok(_) => {}
+      Err(RecvTimeoutError::Timeout) => break,
+      Err(RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  // Click the download link.
+  ui_to_worker_tx.send(UiToWorker::PointerDown {
+    tab_id,
+    pos_css: CLICK_POS_CSS,
+    button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
+    click_count: 1,
+  })?;
+  ui_to_worker_tx.send(UiToWorker::PointerUp {
+    tab_id,
+    pos_css: CLICK_POS_CSS,
+    button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
+  })?;
+
+  let deadline = Instant::now() + TIMEOUT;
+  let mut download_id: Option<fastrender::ui::messages::DownloadId> = None;
+  let mut download_path: Option<std::path::PathBuf> = None;
+  let mut download_file_name: Option<String> = None;
+  let mut last_download_msg: Option<String> = None;
+
+  loop {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match worker_to_ui_rx.recv_timeout(remaining) {
+      Ok(msg) => {
+        last_download_msg = Some(format!("{msg:?}"));
+        match msg {
+          WorkerToUi::DownloadStarted {
+            tab_id: t,
+            download_id: id,
+            file_name,
+            path,
+            ..
+          } if t == tab_id => {
+            download_id = Some(id);
+            download_path = Some(path);
+            download_file_name = Some(file_name);
+          }
+          WorkerToUi::DownloadFinished {
+            tab_id: t,
+            download_id: id,
+            outcome,
+          } if t == tab_id => {
+            if download_id.is_none() {
+              download_id = Some(id);
+            }
+            if download_id.is_some_and(|expected| expected != id) {
+              // Ignore completion for a different tab-local download (should not happen in this
+              // harness, but keep the loop robust).
+              continue;
+            }
+            match outcome {
+              DownloadOutcome::Completed => break,
+              DownloadOutcome::Cancelled => {
+                return Err("headless download smoke: download was cancelled".into());
+              }
+              DownloadOutcome::Failed { error } => {
+                return Err(format!("headless download smoke: download failed: {error}").into());
+              }
+            }
+          }
+          WorkerToUi::NavigationFailed { tab_id: t, url, error, .. } if t == tab_id => {
+            // If the click incorrectly triggered navigation instead of a download, surface it as a
+            // clearer error rather than waiting for the download timeout.
+            return Err(format!(
+              "headless download smoke: got NavigationFailed for {url:?} while waiting for download: {error}"
+            )
+            .into());
+          }
+          _ => {}
+        }
+      }
+      Err(RecvTimeoutError::Timeout) => {
+        let hint = match last_download_msg.as_deref() {
+          Some(msg) => format!(" (last WorkerToUi message: {msg})"),
+          None => " (received no WorkerToUi download messages)".to_string(),
+        };
+        return Err(
+          format!(
+            "timed out after {TIMEOUT:?} waiting for WorkerToUi::DownloadFinished after clicking download link on {page_url:?}{hint}"
+          )
+          .into(),
+        );
+      }
+      Err(RecvTimeoutError::Disconnected) => {
+        return Err("headless download smoke worker disconnected before download finished".into());
+      }
+    }
+  }
+
+  let download_path = download_path.ok_or("headless download smoke: missing DownloadStarted path")?;
+  let download_file_name = download_file_name
+    .as_deref()
+    .unwrap_or("<unknown>")
+    .to_string();
+
+  if !download_path.exists() {
+    return Err(
+      format!(
+        "headless download smoke: download completed but file does not exist at {}",
+        download_path.display()
+      )
+      .into(),
+    );
+  }
+
+  let download_dir_abs = std::fs::canonicalize(&download_dir).unwrap_or(download_dir.clone());
+  let download_path_abs =
+    std::fs::canonicalize(&download_path).unwrap_or(download_path.clone());
+  if !download_path_abs.starts_with(&download_dir_abs) {
+    return Err(
+      format!(
+        "headless download smoke: download path {} is not under download dir {}",
+        download_path_abs.display(),
+        download_dir_abs.display()
+      )
+      .into(),
+    );
+  }
+
+  let size = std::fs::metadata(&download_path)
+    .map(|m| m.len())
+    .unwrap_or(0);
+  if size == 0 {
+    return Err(
+      format!(
+        "headless download smoke: downloaded file {} is empty",
+        download_path.display()
+      )
+      .into(),
+    );
+  }
+
+  // Close the channel so the worker thread exits promptly.
+  drop(ui_to_worker_tx);
+
+  // Best-effort: join the worker thread so the smoke test doesn't race process teardown.
+  let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
+  let _ = std::thread::spawn(move || {
+    let _ = done_tx.send(join.join());
+  });
+  match done_rx.recv_timeout(Duration::from_secs(10)) {
+    Ok(Ok(())) => {}
+    Ok(Err(_)) => return Err("headless download smoke worker panicked".into()),
+    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+      return Err("timed out waiting for download smoke worker thread to terminate".into());
+    }
+    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+      return Err("download smoke worker join helper thread disconnected".into());
+    }
+  }
+
+  println!(
+    "HEADLESS_DOWNLOAD_SMOKE_OK file_name={download_file_name} path={} bytes={size}",
+    download_path.display()
+  );
   Ok(())
 }
 
