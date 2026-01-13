@@ -117,8 +117,8 @@ fn compiled_constructor_body_construct(
 enum Flow {
   Normal(Option<Value>),
   Return(Value),
-  Break(Option<hir_js::NameId>),
-  Continue(Option<hir_js::NameId>),
+  Break(Option<hir_js::NameId>, Option<Value>),
+  Continue(Option<hir_js::NameId>, Option<Value>),
 }
 
 impl Flow {
@@ -130,9 +130,20 @@ impl Flow {
     Flow::Normal(None)
   }
 
+  fn value(&self) -> Option<Value> {
+    match self {
+      Flow::Normal(v) => *v,
+      Flow::Return(v) => Some(*v),
+      Flow::Break(_, v) => *v,
+      Flow::Continue(_, v) => *v,
+    }
+  }
+
   fn update_empty(self, value: Option<Value>) -> Self {
     match self {
       Flow::Normal(None) => Flow::Normal(value),
+      Flow::Break(label, None) => Flow::Break(label, value),
+      Flow::Continue(label, None) => Flow::Continue(label, value),
       other => other,
     }
   }
@@ -1135,11 +1146,11 @@ impl<'vm> HirEvaluator<'vm> {
           }
           match self.eval_stmt(scope, body, *inner)? {
             Flow::Normal(_) => {}
-            Flow::Continue(None) => {}
-            Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
-            Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
-            Flow::Break(None) => return Ok(Flow::empty()),
-            Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
+            Flow::Continue(None, _) => {}
+            Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
+            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+            Flow::Break(None, _) => return Ok(Flow::empty()),
+            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
             Flow::Return(v) => return Ok(Flow::Return(v)),
           }
         }
@@ -1149,11 +1160,11 @@ impl<'vm> HirEvaluator<'vm> {
           self.vm.tick()?;
           match self.eval_stmt(scope, body, *inner)? {
             Flow::Normal(_) => {}
-            Flow::Continue(None) => {}
-            Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
-            Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
-            Flow::Break(None) => return Ok(Flow::empty()),
-            Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
+            Flow::Continue(None, _) => {}
+            Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
+            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+            Flow::Break(None, _) => return Ok(Flow::empty()),
+            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
             Flow::Return(v) => return Ok(Flow::Return(v)),
           }
           let test_value = self.eval_expr(scope, body, *test)?;
@@ -1229,11 +1240,11 @@ impl<'vm> HirEvaluator<'vm> {
 
               match self.eval_stmt(scope, body, *inner)? {
                 Flow::Normal(_) => {}
-                Flow::Continue(None) => {}
-                Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
-                Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
-                Flow::Break(None) => return Ok(Flow::empty()),
-                Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
+                Flow::Continue(None, _) => {}
+                Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
+                Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+                Flow::Break(None, _) => return Ok(Flow::empty()),
+                Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
                 Flow::Return(v) => return Ok(Flow::Return(v)),
               }
 
@@ -1276,11 +1287,11 @@ impl<'vm> HirEvaluator<'vm> {
 
           match self.eval_stmt(scope, body, *inner)? {
             Flow::Normal(_) => {}
-            Flow::Continue(None) => {}
-            Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
-            Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
-            Flow::Break(None) => return Ok(Flow::empty()),
-            Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
+            Flow::Continue(None, _) => {}
+            Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
+            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+            Flow::Break(None, _) => return Ok(Flow::empty()),
+            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
             Flow::Return(v) => return Ok(Flow::Return(v)),
           }
 
@@ -1413,9 +1424,12 @@ impl<'vm> HirEvaluator<'vm> {
 
             match flow {
               Flow::Normal(_) => {}
-              Flow::Continue(None) => {}
-              Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
-              Flow::Continue(Some(label)) => {
+              Flow::Continue(None, _) => {}
+              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
+              Flow::Continue(Some(label), value) => {
+                if let Some(v) = value {
+                  iter_scope.push_root(v)?;
+                }
                 if let Err(err) = iterator::iterator_close(
                   self.vm,
                   &mut *self.host,
@@ -1426,9 +1440,9 @@ impl<'vm> HirEvaluator<'vm> {
                 ) {
                   return Err(err);
                 }
-                return Ok(Flow::Continue(Some(label)));
+                return Ok(Flow::Continue(Some(label), value));
               }
-              Flow::Break(None) => {
+              Flow::Break(None, _) => {
                 if let Err(err) = iterator::iterator_close(
                   self.vm,
                   &mut *self.host,
@@ -1441,7 +1455,10 @@ impl<'vm> HirEvaluator<'vm> {
                 }
                 return Ok(Flow::empty());
               }
-              Flow::Break(Some(label)) => {
+              Flow::Break(Some(label), value) => {
+                if let Some(v) = value {
+                  iter_scope.push_root(v)?;
+                }
                 if let Err(err) = iterator::iterator_close(
                   self.vm,
                   &mut *self.host,
@@ -1452,7 +1469,7 @@ impl<'vm> HirEvaluator<'vm> {
                 ) {
                   return Err(err);
                 }
-                return Ok(Flow::Break(Some(label)));
+                return Ok(Flow::Break(Some(label), value));
               }
               Flow::Return(v) => {
                 // Root the return value across iterator closing.
@@ -1554,11 +1571,11 @@ impl<'vm> HirEvaluator<'vm> {
 
             match flow {
               Flow::Normal(_) => {}
-              Flow::Continue(None) => {}
-              Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
-              Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
-              Flow::Break(None) => return Ok(Flow::empty()),
-              Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
+              Flow::Continue(None, _) => {}
+              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
+              Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+              Flow::Break(None, _) => return Ok(Flow::empty()),
+              Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
               Flow::Return(v) => return Ok(Flow::Return(v)),
             }
           }
@@ -1648,10 +1665,28 @@ impl<'vm> HirEvaluator<'vm> {
                     }
                   }
                   // Unlabeled `break` exits the switch.
-                  Flow::Break(None) => return Ok(Flow::Normal(Some(v))),
+                  Flow::Break(None, break_value) => {
+                    if let Some(value) = break_value {
+                      v = value;
+                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
+                    }
+                    return Ok(Flow::Normal(Some(v)));
+                  }
                   // Labeled control flow propagates.
-                  Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
-                  Flow::Continue(label) => return Ok(Flow::Continue(label)),
+                  Flow::Break(Some(label), break_value) => {
+                    if let Some(value) = break_value {
+                      v = value;
+                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
+                    }
+                    return Ok(Flow::Break(Some(label), break_value).update_empty(Some(v)));
+                  }
+                  Flow::Continue(label, continue_value) => {
+                    if let Some(value) = continue_value {
+                      v = value;
+                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
+                    }
+                    return Ok(Flow::Continue(label, continue_value).update_empty(Some(v)));
+                  }
                   Flow::Return(value) => return Ok(Flow::Return(value)),
                 }
               }
@@ -1665,8 +1700,8 @@ impl<'vm> HirEvaluator<'vm> {
         self.env.set_lexical_env(switch_scope.heap_mut(), outer);
         result
       }
-      hir_js::StmtKind::Break(label) => Ok(Flow::Break(*label)),
-      hir_js::StmtKind::Continue(label) => Ok(Flow::Continue(*label)),
+      hir_js::StmtKind::Break(label) => Ok(Flow::Break(*label, None)),
+      hir_js::StmtKind::Continue(label) => Ok(Flow::Continue(*label, None)),
       hir_js::StmtKind::Var(decl) => {
         self.eval_var_decl(scope, body, decl)?;
         Ok(Flow::empty())
@@ -1807,11 +1842,7 @@ impl<'vm> HirEvaluator<'vm> {
           // Root the pending completion's value (if any) while evaluating `finally`, which may
           // allocate and trigger GC.
           let pending_value: Option<Value> = match &pending {
-            Ok(flow) => match flow {
-              Flow::Normal(v) => *v,
-              Flow::Return(v) => Some(*v),
-              Flow::Break(_) | Flow::Continue(_) => None,
-            },
+            Ok(flow) => flow.value(),
             Err(err) => err.thrown_value(),
           };
           if let Some(v) = pending_value {
@@ -1845,7 +1876,7 @@ impl<'vm> HirEvaluator<'vm> {
         new_label_set.push(*label);
         let flow = self.eval_stmt_labelled(scope, body, *inner, new_label_set.as_slice())?;
         match flow {
-          Flow::Break(Some(target)) if target == *label => Ok(Flow::empty()),
+          Flow::Break(Some(target), value) if target == *label => Ok(Flow::Normal(value)),
           other => Ok(other),
         }
       }
@@ -1890,8 +1921,6 @@ impl<'vm> HirEvaluator<'vm> {
     match head {
       hir_js::ForHead::Pat(pat_id) => {
         // Reuse `assign_to_pat` so assignment targets like `for (obj.x of iterable) {}` work.
-        //
-        // Note: destructuring patterns are still unimplemented in the compiled path.
         self.assign_to_pat(scope, body, *pat_id, value)
       }
       hir_js::ForHead::Var(var_decl) => {

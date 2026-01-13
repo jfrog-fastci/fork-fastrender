@@ -3092,6 +3092,28 @@ fn compiled_switch_default_path() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_switch_labeled_break_preserves_value() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The `break label` should propagate out of the switch with the running completion value.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      label: switch (0) {
+        case 0: 1; break label;
+      }
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_switch_instantiates_lexical_decls_for_tdz() -> Result<(), VmError> {
   // The `let x` inside the switch should create a TDZ binding for the whole case block, so the
   // case selector expression `x` resolves to the uninitialized binding and throws (instead of
