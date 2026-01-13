@@ -9,6 +9,7 @@
 //! `e instanceof DOMException`.
 
 use crate::js::bindings::DomExceptionClassVmJs;
+use crate::js::bindings::dom_exception_vmjs::legacy_code_for_dom_exception_name;
 use crate::js::dom_internal_keys::{NODE_ID_KEY, WRAPPER_DOCUMENT_KEY};
 use vm_js::{
   GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind,
@@ -88,9 +89,12 @@ fn make_dom_exception_instance(
 
   let name_key = alloc_key(&mut scope, "name")?;
   let message_key = alloc_key(&mut scope, "message")?;
+  let code_key = alloc_key(&mut scope, "code")?;
 
   scope.define_property(obj, name_key, data_desc(Value::String(name_s)))?;
   scope.define_property(obj, message_key, data_desc(Value::String(message_s)))?;
+  let code = legacy_code_for_dom_exception_name(name);
+  scope.define_property(obj, code_key, data_desc(Value::Number(code as f64)))?;
 
   Ok(Value::Object(obj))
 }
@@ -353,15 +357,20 @@ mod tests {
       r#"
       (() => {
         const bad = document.createComment('--');
-        try {
-          new XMLSerializer().serializeToString(bad);
-          return false;
-        } catch (e) {
-          return e instanceof DOMException && e.name === 'InvalidStateError';
-        }
-      })()
-      "#,
-    )?;
+         try {
+           new XMLSerializer().serializeToString(bad);
+           return false;
+         } catch (e) {
+          return (
+            e instanceof DOMException &&
+            e.name === 'InvalidStateError' &&
+            e.code === 11 &&
+            DOMException.INVALID_STATE_ERR === 11
+          );
+         }
+       })()
+       "#,
+     )?;
 
     assert_eq!(value, Value::Bool(true));
     Ok(())

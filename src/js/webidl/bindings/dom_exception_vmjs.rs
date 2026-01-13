@@ -44,7 +44,7 @@ fn method_desc(value: Value) -> PropertyDescriptor {
 /// DOMException "legacy codes" as specified by the DOM Standard.
 ///
 /// <https://dom.spec.whatwg.org/#dom-domexception-code>
-fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
+pub(crate) fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
   match name {
     // Keep the mapping table reasonably complete so callers can use `new_instance` for other
     // DOMException names (e.g. DataCloneError).
