@@ -63,7 +63,7 @@ A change counts if it lands at least one of:
 ### Profiling tools
 
 ```bash
-# Enable performance logging (JSONL)
+# Manual run: write perf JSONL directly to a file.
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
@@ -88,6 +88,8 @@ timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_l
 # CPU profiling (Linux): reproduce resize/scroll jank, then close the window to finish recording.
 timeout -k 10 600 bash scripts/profile_browser_samply.sh --url about:test-layout-stress
 ```
+
+See [`docs/perf-logging.md#browser-responsiveness`](../docs/perf-logging.md#browser-responsiveness) for the JSONL schema and summary flags.
 
 ## Priority order
 
