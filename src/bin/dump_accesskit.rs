@@ -18,6 +18,7 @@ mod enabled {
   use common::args::parse_viewport;
   use fastrender::ui::browser_app::{BrowserAppState, BrowserTabState};
   use fastrender::ui::chrome::chrome_ui;
+  use fastrender::ui::{menu_bar_ui, MenuBarState};
   use fastrender::ui::messages::TabId;
 
   /// Snapshot-friendly summary of a single AccessKit node.
@@ -107,6 +108,21 @@ mod enabled {
     raw.pixels_per_point = Some(args.pixels_per_point);
     ctx.begin_frame(raw);
 
+    // Mirror the real windowed `browser` app: the menu bar is rendered before `chrome_ui` so it can
+    // inject egui input events for text fields and so the chrome panel is laid out beneath it.
+    if args.show_menu_bar {
+      let _commands = menu_bar_ui(
+        &ctx,
+        &app,
+        MenuBarState {
+          debug_log_open: false,
+          history_panel_open: false,
+          bookmarks_panel_open: false,
+          page_bookmarked: false,
+        },
+      );
+    }
+
     let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let output = ctx.end_frame();
 
@@ -156,4 +172,3 @@ mod enabled {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   enabled::main()
 }
-

@@ -233,7 +233,6 @@ pub(crate) mod xml;
 pub mod system;
 pub(crate) mod thread_pool_cache;
 pub(crate) mod url_normalize;
-pub mod sandbox;
 pub mod web;
 pub mod webidl;
 
