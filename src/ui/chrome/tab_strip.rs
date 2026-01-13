@@ -588,6 +588,58 @@ pub(super) fn compute_tab_strip_sizing_with_fixed_width(
   }
 }
 
+/// Sizing helper for the unpinned tab strip when some "tabs" are partially collapsed.
+///
+/// `tab_units` represents the effective number of full-width tabs. For example, a tab rendered at
+/// `tab_width * 0.5` contributes `0.5` units.
+///
+/// `total_gap_width` is the total *actual* spacing between rendered items (after any scaling),
+/// rather than assuming a fixed `TAB_GAP * (item_count - 1)`.
+fn compute_tab_strip_sizing_with_scaled_tabs(
+  available_width: f32,
+  tab_units: f32,
+  extra_item_width: f32,
+  total_gap_width: f32,
+) -> TabStripSizing {
+  let available_width = if available_width.is_finite() {
+    available_width.max(0.0)
+  } else {
+    0.0
+  };
+  let extra_item_width = if extra_item_width.is_finite() {
+    extra_item_width.max(0.0)
+  } else {
+    0.0
+  };
+  let total_gap_width = if total_gap_width.is_finite() {
+    total_gap_width.max(0.0)
+  } else {
+    0.0
+  };
+  let tab_units = if tab_units.is_finite() {
+    tab_units.max(0.0)
+  } else {
+    0.0
+  };
+
+  let tab_width = if tab_units <= 0.0 {
+    0.0
+  } else {
+    let available_for_tabs = (available_width - total_gap_width - extra_item_width).max(0.0);
+    let ideal_width = (available_for_tabs / tab_units).max(0.0);
+    ideal_width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+  };
+
+  let total_content_width = extra_item_width + total_gap_width + tab_width * tab_units;
+  let overflow = total_content_width > available_width + 0.01;
+
+  TabStripSizing {
+    tab_width,
+    overflow,
+    total_content_width,
+  }
+}
+
 pub(super) fn compute_tab_strip_sizing(available_width: f32, tab_count: usize) -> TabStripSizing {
   compute_tab_strip_sizing_with_fixed_width(
     available_width,
@@ -1412,48 +1464,80 @@ pub(super) fn tab_strip_ui(
     ui.ctx().request_repaint();
   }
 
-  let mut visible_unpinned_count = 0usize;
-  let mut group_chip_count = 0usize;
-  let mut group_chip_total_width = 0.0f32;
+  // Precompute tab strip sizing for the unpinned segment.
+  //
+  // While a tab group is collapsing/expanding we treat its member tabs as "fractional tabs" so the
+  // base `tab_width` (and therefore the widths of *other* tabs) can adjust smoothly instead of
+  // jumping at the end of the animation.
+  let mut tab_units: f32 = 0.0;
+  let mut group_chip_total_width: f32 = 0.0;
+  let mut total_gap_width: f32 = 0.0;
+  let mut prev_scale: Option<f32> = None;
   {
     let mut idx = pinned_len;
     while idx < app.tabs.len() {
-      if let Some(group_id) = app.tabs[idx].group {
-        if let Some(group) = app.tab_groups.get(&group_id) {
-          let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
-          if is_first {
-            let title = if group.title.trim().is_empty() {
-              "Group"
-            } else {
-              group.title.as_str()
-            };
-            group_chip_total_width += group_chip_width(ui, title);
-            group_chip_count += 1;
-          }
-
-          let t = group_expand_t
-            .get(&group_id)
-            .copied()
-            .unwrap_or(if group.collapsed { 0.0 } else { 1.0 });
-
-          if group.collapsed && t <= 0.001 {
-            while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
-              idx += 1;
-            }
-            continue;
-          }
+      let tab = &app.tabs[idx];
+      let Some(group_id) = tab.group else {
+        if let Some(prev) = prev_scale {
+          total_gap_width += TAB_GAP * prev.min(1.0);
         }
+        tab_units += 1.0;
+        prev_scale = Some(1.0);
+        idx += 1;
+        continue;
+      };
+
+      // If the group metadata is missing, treat the tab as ungrouped so we stay robust.
+      let Some(group) = app.tab_groups.get(&group_id) else {
+        if let Some(prev) = prev_scale {
+          total_gap_width += TAB_GAP * prev.min(1.0);
+        }
+        tab_units += 1.0;
+        prev_scale = Some(1.0);
+        idx += 1;
+        continue;
+      };
+
+      let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
+      if is_first {
+        let title = if group.title.trim().is_empty() {
+          "Group"
+        } else {
+          group.title.as_str()
+        };
+        group_chip_total_width += group_chip_width(ui, title);
+        if let Some(prev) = prev_scale {
+          total_gap_width += TAB_GAP * prev.min(1.0);
+        }
+        prev_scale = Some(1.0);
       }
-      visible_unpinned_count += 1;
+
+      let group_t = group_expand_t
+        .get(&group_id)
+        .copied()
+        .unwrap_or(if group.collapsed { 0.0 } else { 1.0 })
+        .clamp(0.0, 1.0);
+
+      if group.collapsed && group_t <= 0.001 {
+        while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
+          idx += 1;
+        }
+        continue;
+      }
+
+      if let Some(prev) = prev_scale {
+        total_gap_width += TAB_GAP * prev.min(group_t);
+      }
+      tab_units += group_t;
+      prev_scale = Some(group_t);
       idx += 1;
     }
   }
-  let total_item_count = visible_unpinned_count.saturating_add(group_chip_count);
-  let sizing = compute_tab_strip_sizing_with_fixed_width(
+  let sizing = compute_tab_strip_sizing_with_scaled_tabs(
     unpinned_viewport_width,
-    visible_unpinned_count,
+    tab_units,
     group_chip_total_width,
-    total_item_count.saturating_sub(1),
+    total_gap_width,
   );
 
   let mut ops: Vec<TabStripOp> = Vec::new();
@@ -2290,7 +2374,9 @@ mod tests {
       compute_tab_strip_sizing_with_fixed_width(available, tabs, 0.0, tabs.saturating_sub(1));
     assert!((sizing_tabs.tab_width - sizing_extras.tab_width).abs() < f32::EPSILON);
     assert_eq!(sizing_tabs.overflow, sizing_extras.overflow);
-    assert!((sizing_tabs.total_content_width - sizing_extras.total_content_width).abs() < f32::EPSILON);
+    assert!(
+      (sizing_tabs.total_content_width - sizing_extras.total_content_width).abs() < f32::EPSILON
+    );
   }
 
   #[test]
@@ -2303,7 +2389,8 @@ mod tests {
     assert!((sizing_no_chips.tab_width - 196.0).abs() < 0.01);
 
     // 3 tabs + 1 chip => 4 items => 3 gaps.
-    let sizing_with_chip = compute_tab_strip_sizing_with_fixed_width(available, tabs, chip_width, tabs);
+    let sizing_with_chip =
+      compute_tab_strip_sizing_with_fixed_width(available, tabs, chip_width, tabs);
     assert!((sizing_with_chip.tab_width - 154.0).abs() < 0.01);
     assert!(!sizing_with_chip.overflow);
   }
