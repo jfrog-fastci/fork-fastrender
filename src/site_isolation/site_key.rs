@@ -130,6 +130,22 @@ impl SiteKeyFactory {
     raw | (1u64 << 63)
   }
 
+  fn stable_about_hash_u64(&self, bytes: &[u8]) -> u64 {
+    // Domain-separated hash so `about:`-derived opaque IDs don't collide with other stable hashes.
+    let mut hasher = Sha256::new();
+    hasher.update(b"fastrender:about-site-key:v1\0");
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+
+    let mut first8 = [0u8; 8];
+    first8.copy_from_slice(&digest[..8]);
+    let raw = u64::from_le_bytes(first8);
+
+    // Tag into the high bit so these stable IDs cannot collide with the sequential `new_opaque()`
+    // IDs unless a session performs ~2^63 opaque navigations.
+    raw | (1u64 << 63)
+  }
+
   fn site_key_for_file_url(&self, parsed: &Url) -> SiteKey {
     match self.file_url_isolation {
       FileUrlSiteIsolation::SingleSite => SiteKey::Origin(Self::file_origin().clone()),
@@ -138,7 +154,10 @@ impl SiteKeyFactory {
           let id = self.stable_file_hash_u64(path.as_os_str().to_string_lossy().as_bytes());
           SiteKey::Opaque(id)
         } else {
-          let id = self.stable_file_hash_u64(parsed.as_str().as_bytes());
+          let mut normalized = parsed.clone();
+          normalized.set_query(None);
+          normalized.set_fragment(None);
+          let id = self.stable_file_hash_u64(normalized.as_str().as_bytes());
           SiteKey::Opaque(id)
         }
       }
@@ -149,7 +168,10 @@ impl SiteKeyFactory {
           SiteKey::Opaque(id)
         } else {
           // If we can't map the URL into a platform file path, fall back to per-URL hashing.
-          let id = self.stable_file_hash_u64(parsed.as_str().as_bytes());
+          let mut normalized = parsed.clone();
+          normalized.set_query(None);
+          normalized.set_fragment(None);
+          let id = self.stable_file_hash_u64(normalized.as_str().as_bytes());
           SiteKey::Opaque(id)
         }
       }
@@ -214,11 +236,15 @@ impl SiteKeyFactory {
       }
       "file" => self.site_key_for_file_url(&parsed),
       "about" => {
-        let path = parsed.path();
-        if path.eq_ignore_ascii_case("blank") || path.eq_ignore_ascii_case("srcdoc") {
+        let page = parsed.path().trim_start_matches('/');
+        if page.eq_ignore_ascii_case("blank") || page.eq_ignore_ascii_case("srcdoc") {
           parent.cloned().unwrap_or_else(|| self.new_opaque())
         } else {
-          self.new_opaque()
+          // Treat internal `about:*` pages as opaque but stable per page identifier (case
+          // insensitive) so query/fragment state does not cause process churn.
+          let page = page.to_ascii_lowercase();
+          let id = self.stable_about_hash_u64(page.as_bytes());
+          SiteKey::Opaque(id)
         }
       }
       "data" => self.new_opaque(),
@@ -342,6 +368,23 @@ mod tests {
   }
 
   #[test]
+  fn internal_about_pages_are_stable_and_ignore_query_and_fragment() {
+    let factory = SiteKeyFactory::new_with_seed(1);
+
+    let base = factory.site_key_for_navigation("about:history", None);
+    let query = factory.site_key_for_navigation("about:history?q=rust", None);
+    let frag = factory.site_key_for_navigation("about:history#foo", None);
+    let mixed_case = factory.site_key_for_navigation("ABOUT:History?q=ignored#bar", None);
+
+    assert_eq!(base, query);
+    assert_eq!(base, frag);
+    assert_eq!(base, mixed_case);
+
+    let other = factory.site_key_for_navigation("about:newtab", None);
+    assert_ne!(base, other);
+  }
+
+  #[test]
   fn blob_child_frame_site_key_matches_embedded_origin() {
     let factory = SiteKeyFactory::new_with_seed(1);
 
@@ -379,6 +422,25 @@ mod tests {
 
     assert!(matches!(a, SiteKey::Opaque(5)));
     assert!(matches!(b, SiteKey::Opaque(6)));
+  }
+
+  #[test]
+  fn file_url_site_keys_ignore_fragment_and_query_in_fallback_hash() {
+    let factory = SiteKeyFactory::new_with_seed_and_file_url_isolation(
+      1,
+      FileUrlSiteIsolation::OpaquePerUrl,
+    );
+
+    // Use a non-local file URL host to force `Url::to_file_path()` to fail so the implementation
+    // falls back to hashing the URL string. Fragment/query differences must not change the key.
+    let base = factory.site_key_for_navigation("file://example.com/tmp/a.html", None);
+    let frag = factory.site_key_for_navigation("file://example.com/tmp/a.html#x", None);
+    let query = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1", None);
+    let both = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1#y", None);
+
+    assert_eq!(base, frag);
+    assert_eq!(base, query);
+    assert_eq!(base, both);
   }
 
   #[test]
