@@ -20,6 +20,18 @@
 //! shared memory and pass the FD to the renderer using FD inheritance (or future SCM_RIGHTS
 //! passing).
 //!
+//! ## Linux memfd sealing policy
+//!
+//! When a shared-memory file descriptor crosses an IPC boundary it must be treated as untrusted.
+//! In particular, if the receiver `mmap`s a file and the sender later `ftruncate`s it, the receiver
+//! can crash with `SIGBUS` on access. To avoid that, the Linux memfd backend applies file seals:
+//!
+//! - `F_SEAL_SHRINK | F_SEAL_GROW` to lock the region size, and then
+//! - `F_SEAL_SEAL` to lock the seal set.
+//!
+//! Locking the seal set is security-sensitive: an untrusted peer could otherwise add `F_SEAL_WRITE`
+//! and permanently break reuse of pooled frame buffers (a persistent denial-of-service).
+//!
 //! ## FD inheritance notes (Linux)
 //!
 //! The Linux memfd backend creates the FD with `CLOEXEC` set by default (to avoid accidental FD
@@ -538,5 +550,32 @@ mod tests {
 
     other.as_mut_slice()[1] = b'!';
     assert_eq!(&region.as_slice()[0..4], b"F!SH");
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn linux_memfd_backend_locks_seals_to_prevent_mutation() {
+    let (_region, handle) =
+      ShmemRegion::create(ShmemBackend::LinuxMemfd, 4096).expect("create memfd shmem");
+    let fd = handle.fd().expect("memfd handle fd");
+
+    // SAFETY: `fcntl(F_GET_SEALS)` takes no extra arguments.
+    let seals = unsafe { libc::fcntl(fd, libc::F_GET_SEALS) };
+    if seals < 0 {
+      // Seals may be unavailable due to kernel limitations (e.g. memfd without sealing) or
+      // restrictive sandbox policy. Treat this as best-effort: other tests cover the happy path.
+      return;
+    }
+    assert_eq!(
+      seals & (libc::F_SEAL_SHRINK | libc::F_SEAL_GROW),
+      libc::F_SEAL_SHRINK | libc::F_SEAL_GROW,
+      "expected size seals to be applied"
+    );
+    assert_ne!(seals & libc::F_SEAL_SEAL, 0, "expected seals to be locked");
+
+    // Once the seal set is locked, untrusted peers must not be able to add F_SEAL_WRITE.
+    let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, libc::F_SEAL_WRITE) };
+    assert_eq!(rc, -1);
+    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
   }
 }
