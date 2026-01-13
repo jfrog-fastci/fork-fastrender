@@ -29,6 +29,8 @@ mod no_merge_markers;
 mod no_orphan_test_modules;
 mod no_path_shims_in_tests;
 mod no_production_panics;
+#[cfg(target_os = "macos")]
+mod macos_relaxed_sandbox_home_guard;
 mod resource_net_helpers_guard;
 mod scroll_unit_tests_live_in_src;
 mod stage_listener_guard_tests;
