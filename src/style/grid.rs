@@ -930,40 +930,66 @@ fn build_area_matrix(rows: &[String]) -> Option<Vec<Vec<Option<String>>>> {
 }
 
 fn split_once_unquoted(input: &str, delim: char) -> (&str, Option<&str>) {
+  let delim_byte = delim as u8;
+  let bytes = input.as_bytes();
   let mut paren_depth: usize = 0;
   let mut bracket_depth: usize = 0;
-  let mut in_string: Option<char> = None;
+  let mut in_string: Option<u8> = None;
   let mut escape = false;
 
-  for (idx, ch) in input.char_indices() {
-    if let Some(quote) = in_string {
-      if escape {
-        escape = false;
-        continue;
-      }
-      if ch == '\\' {
-        escape = true;
-        continue;
-      }
-      if ch == quote {
-        in_string = None;
-      }
+  let mut idx = 0usize;
+  while idx < bytes.len() {
+    let b = bytes[idx];
+
+    if escape {
+      escape = false;
+      idx += 1;
       continue;
     }
 
-    match ch {
-      '"' | '\'' => in_string = Some(ch),
-      '(' => paren_depth += 1,
-      ')' => paren_depth = paren_depth.saturating_sub(1),
-      '[' if paren_depth == 0 => bracket_depth += 1,
-      ']' if paren_depth == 0 => bracket_depth = bracket_depth.saturating_sub(1),
-      d if d == delim && paren_depth == 0 && bracket_depth == 0 => {
+    if let Some(q) = in_string {
+      if b == b'\\' {
+        escape = true;
+        idx += 1;
+        continue;
+      }
+      if b == q {
+        in_string = None;
+      }
+      idx += 1;
+      continue;
+    }
+
+    if b == b'"' || b == b'\'' {
+      in_string = Some(b);
+      idx += 1;
+      continue;
+    }
+
+    // Treat CSS comments as whitespace so delimiters inside comments are ignored.
+    if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+      idx += 2;
+      while idx + 1 < bytes.len() && !(bytes[idx] == b'*' && bytes[idx + 1] == b'/') {
+        idx += 1;
+      }
+      idx = idx.saturating_add(2).min(bytes.len());
+      continue;
+    }
+
+    match b {
+      b'(' => paren_depth += 1,
+      b')' => paren_depth = paren_depth.saturating_sub(1),
+      b'[' if paren_depth == 0 => bracket_depth += 1,
+      b']' if paren_depth == 0 => bracket_depth = bracket_depth.saturating_sub(1),
+      b if b == delim_byte && paren_depth == 0 && bracket_depth == 0 => {
         let (left, right) = input.split_at(idx);
         let right = right.get(delim.len_utf8()..).unwrap_or("");
         return (left, Some(right));
       }
       _ => {}
     }
+
+    idx += 1;
   }
   (input, None)
 }
@@ -1180,12 +1206,26 @@ impl<'a> TrackListParser<'a> {
     }
 
     let rem = self.input.get(after_name..)?;
+    let bytes = rem.as_bytes();
     let mut depth: i32 = 0;
     let mut end_paren: Option<usize> = None;
-    for (idx, ch) in rem.char_indices() {
-      match ch {
-        '(' => depth += 1,
-        ')' => {
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+      let b = bytes[idx];
+
+      // Comments act like whitespace; ignore any parentheses inside them.
+      if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+        idx += 2;
+        while idx + 1 < bytes.len() && !(bytes[idx] == b'*' && bytes[idx + 1] == b'/') {
+          idx += 1;
+        }
+        idx = idx.saturating_add(2).min(bytes.len());
+        continue;
+      }
+
+      match b {
+        b'(' => depth += 1,
+        b')' => {
           depth -= 1;
           if depth == 0 {
             end_paren = Some(idx);
@@ -1197,6 +1237,8 @@ impl<'a> TrackListParser<'a> {
         }
         _ => {}
       }
+
+      idx += 1;
     }
     let end_paren = end_paren?;
     let inner = rem.get('('.len_utf8()..end_paren)?.to_string();
