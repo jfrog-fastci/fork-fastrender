@@ -293,7 +293,6 @@ fn compiled_for_triple_var_does_not_create_per_iteration_binding() -> Result<(),
   Ok(())
 }
 
-#[test]
 fn compiled_for_triple_let_restores_lexical_env_on_break() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

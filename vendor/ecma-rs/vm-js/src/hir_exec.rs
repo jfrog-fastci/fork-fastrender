@@ -146,6 +146,16 @@ impl Flow {
       other => other,
     }
   }
+
+  /// Converts an unlabelled `break` completion from a breakable statement into a normal completion
+  /// (ECMA-262 `BreakableStatement` / `LabelledEvaluation` semantics).
+  fn normalise_iteration_break(self) -> Self {
+    match self {
+      Flow::Break(None, value) => Flow::Normal(Some(value.unwrap_or(Value::Undefined))),
+      other => other,
+    }
+  }
+
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1296,39 +1306,58 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::StmtKind::While { test, body: inner } => {
+        // Root `V` across the loop so the value can't be collected between iterations.
+        let mut scope = scope.reborrow();
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(Value::Undefined)?;
+        let mut v = Value::Undefined;
+
         loop {
           // Ensure empty loops still consume budget.
           self.vm.tick()?;
-          let test_value = self.eval_expr(scope, body, *test)?;
+          let test_value = self.eval_expr(&mut scope, body, *test)?;
           if !scope.heap().to_boolean(test_value)? {
-            return Ok(Flow::empty());
+            return Ok(Flow::normal(v));
           }
-          match self.eval_stmt(scope, body, *inner)? {
-            Flow::Normal(_) => {}
-            Flow::Continue(None, _) => {}
+
+          let stmt_result = self.eval_stmt(&mut scope, body, *inner)?;
+          match stmt_result {
+            Flow::Normal(_) | Flow::Continue(None, _) => {}
             Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-            Flow::Break(None, _) => return Ok(Flow::empty()),
-            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
-            Flow::Return(v) => return Ok(Flow::Return(v)),
+            abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
+          }
+
+          if let Some(value) = stmt_result.value() {
+            v = value;
+            scope.heap_mut().root_stack[v_root_idx] = value;
           }
         }
       }
       hir_js::StmtKind::DoWhile { test, body: inner } => {
+        // Root `V` across the loop so the value can't be collected between iterations.
+        let mut scope = scope.reborrow();
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(Value::Undefined)?;
+        let mut v = Value::Undefined;
+
         loop {
           self.vm.tick()?;
-          match self.eval_stmt(scope, body, *inner)? {
-            Flow::Normal(_) => {}
-            Flow::Continue(None, _) => {}
+
+          let stmt_result = self.eval_stmt(&mut scope, body, *inner)?;
+          match stmt_result {
+            Flow::Normal(_) | Flow::Continue(None, _) => {}
             Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-            Flow::Break(None, _) => return Ok(Flow::empty()),
-            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
-            Flow::Return(v) => return Ok(Flow::Return(v)),
+            abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
           }
-          let test_value = self.eval_expr(scope, body, *test)?;
+
+          if let Some(value) = stmt_result.value() {
+            v = value;
+            scope.heap_mut().root_stack[v_root_idx] = value;
+          }
+
+          let test_value = self.eval_expr(&mut scope, body, *test)?;
           if !scope.heap().to_boolean(test_value)? {
-            return Ok(Flow::empty());
+            return Ok(Flow::normal(v));
           }
         }
       }
@@ -1338,6 +1367,12 @@ impl<'vm> HirEvaluator<'vm> {
         update,
         body: inner,
       } => {
+        // Root `V` across the loop so the value can't be collected between iterations.
+        let mut scope = scope.reborrow();
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(Value::Undefined)?;
+        let mut v = Value::Undefined;
+
         // Lexically-declared `for` loops require per-iteration environments so closures capture the
         // correct binding value (ECMA-262 `CreatePerIterationEnvironment`).
         let lexical_init = match init {
@@ -1383,10 +1418,11 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             // Evaluate initializer(s) and initialize the bindings.
-            self.eval_var_decl(scope, body, init_decl)?;
+            self.eval_var_decl(&mut scope, body, init_decl)?;
 
             // Enter the first per-iteration environment.
-            let mut iter_env = self.create_for_triple_per_iteration_env(scope, outer_lex, loop_env)?;
+            let mut iter_env =
+              self.create_for_triple_per_iteration_env(&mut scope, outer_lex, loop_env)?;
             self.env.set_lexical_env(scope.heap_mut(), iter_env);
 
             loop {
@@ -1394,29 +1430,32 @@ impl<'vm> HirEvaluator<'vm> {
               self.vm.tick()?;
 
               if let Some(test) = test {
-                let test_value = self.eval_expr(scope, body, *test)?;
+                let test_value = self.eval_expr(&mut scope, body, *test)?;
                 if !scope.heap().to_boolean(test_value)? {
-                  return Ok(Flow::empty());
+                  return Ok(Flow::normal(v));
                 }
               }
 
-              match self.eval_stmt(scope, body, *inner)? {
-                Flow::Normal(_) => {}
-                Flow::Continue(None, _) => {}
+              let body_result = self.eval_stmt(&mut scope, body, *inner)?;
+              match body_result {
+                Flow::Normal(_) | Flow::Continue(None, _) => {}
                 Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-                Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-                Flow::Break(None, _) => return Ok(Flow::empty()),
-                Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
-                Flow::Return(v) => return Ok(Flow::Return(v)),
+                abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
+              }
+
+              if let Some(value) = body_result.value() {
+                v = value;
+                scope.heap_mut().root_stack[v_root_idx] = value;
               }
 
               // Create the next iteration's environment *before* evaluating the update expression so
               // closures created in the body do not observe the post-update value.
-              iter_env = self.create_for_triple_per_iteration_env(scope, outer_lex, iter_env)?;
+              iter_env =
+                self.create_for_triple_per_iteration_env(&mut scope, outer_lex, iter_env)?;
               self.env.set_lexical_env(scope.heap_mut(), iter_env);
 
               if let Some(update) = update {
-                let _ = self.eval_expr(scope, body, *update)?;
+                let _ = self.eval_expr(&mut scope, body, *update)?;
               }
             }
           })();
@@ -1429,10 +1468,10 @@ impl<'vm> HirEvaluator<'vm> {
         if let Some(init) = init {
           match init {
             hir_js::ForInit::Expr(expr) => {
-              let _ = self.eval_expr(scope, body, *expr)?;
+              let _ = self.eval_expr(&mut scope, body, *expr)?;
             }
             hir_js::ForInit::Var(decl) => {
-              self.eval_var_decl(scope, body, decl)?;
+              self.eval_var_decl(&mut scope, body, decl)?;
             }
           }
         }
@@ -1441,24 +1480,26 @@ impl<'vm> HirEvaluator<'vm> {
           // Ensure empty loops still consume budget.
           self.vm.tick()?;
           if let Some(test) = test {
-            let test_value = self.eval_expr(scope, body, *test)?;
+            let test_value = self.eval_expr(&mut scope, body, *test)?;
             if !scope.heap().to_boolean(test_value)? {
-              return Ok(Flow::empty());
+              return Ok(Flow::normal(v));
             }
           }
 
-          match self.eval_stmt(scope, body, *inner)? {
-            Flow::Normal(_) => {}
-            Flow::Continue(None, _) => {}
+          let stmt_result = self.eval_stmt(&mut scope, body, *inner)?;
+          match stmt_result {
+            Flow::Normal(_) | Flow::Continue(None, _) => {}
             Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-            Flow::Break(None, _) => return Ok(Flow::empty()),
-            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
-            Flow::Return(v) => return Ok(Flow::Return(v)),
+            abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
+          }
+
+          if let Some(value) = stmt_result.value() {
+            v = value;
+            scope.heap_mut().root_stack[v_root_idx] = value;
           }
 
           if let Some(update) = update {
-            let _ = self.eval_expr(scope, body, *update)?;
+            let _ = self.eval_expr(&mut scope, body, *update)?;
           }
         }
       }
@@ -1493,6 +1534,11 @@ impl<'vm> HirEvaluator<'vm> {
           // Root the current iteration value across binding + body evaluation.
           let iter_value_root_idx = iter_scope.heap().root_stack.len();
           iter_scope.push_root(Value::Undefined)?;
+
+          // Root `V` across the loop so the value can't be collected between iterations.
+          let v_root_idx = iter_scope.heap().root_stack.len();
+          iter_scope.push_root(Value::Undefined)?;
+          let mut v = Value::Undefined;
 
           // Per-iteration lexical environments for `let`/`const` in the head.
           let outer_lex: GcEnv = self.env.lexical_env();
@@ -1585,41 +1631,23 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             match flow {
-              Flow::Normal(_) => {}
-              Flow::Continue(None, _) => {}
-              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-              Flow::Continue(Some(label), value) => {
-                if let Some(v) = value {
-                  iter_scope.push_root(v)?;
+              Flow::Normal(_) | Flow::Continue(None, _) => {
+                if let Some(value) = flow.value() {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
                 }
-                if let Err(err) = iterator::iterator_close(
-                  self.vm,
-                  &mut *self.host,
-                  &mut *self.hooks,
-                  &mut iter_scope,
-                  &iterator_record,
-                  iterator::CloseCompletionKind::NonThrow,
-                ) {
-                  return Err(err);
-                }
-                return Ok(Flow::Continue(Some(label), value));
               }
-              Flow::Break(None, _) => {
-                if let Err(err) = iterator::iterator_close(
-                  self.vm,
-                  &mut *self.host,
-                  &mut *self.hooks,
-                  &mut iter_scope,
-                  &iterator_record,
-                  iterator::CloseCompletionKind::NonThrow,
-                ) {
-                  return Err(err);
+              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {
+                if let Some(value) = flow.value() {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
                 }
-                return Ok(Flow::empty());
               }
-              Flow::Break(Some(label), value) => {
-                if let Some(v) = value {
-                  iter_scope.push_root(v)?;
+              abrupt => {
+                let abrupt = abrupt.update_empty(Some(v));
+                // Root the completion's value (if any) across iterator closing, which can allocate / GC.
+                if let Some(value) = abrupt.value() {
+                  iter_scope.push_root(value)?;
                 }
                 if let Err(err) = iterator::iterator_close(
                   self.vm,
@@ -1631,27 +1659,12 @@ impl<'vm> HirEvaluator<'vm> {
                 ) {
                   return Err(err);
                 }
-                return Ok(Flow::Break(Some(label), value));
-              }
-              Flow::Return(v) => {
-                // Root the return value across iterator closing.
-                iter_scope.push_root(v)?;
-                if let Err(err) = iterator::iterator_close(
-                  self.vm,
-                  &mut *self.host,
-                  &mut *self.hooks,
-                  &mut iter_scope,
-                  &iterator_record,
-                  iterator::CloseCompletionKind::NonThrow,
-                ) {
-                  return Err(err);
-                }
-                return Ok(Flow::Return(v));
+                return Ok(abrupt.normalise_iteration_break());
               }
             }
           }
 
-          Ok(Flow::empty())
+          Ok(Flow::normal(v))
         } else {
           // --- for..in ---
           let rhs_value = self.eval_expr(scope, body, *right)?;
@@ -1676,6 +1689,11 @@ impl<'vm> HirEvaluator<'vm> {
           // Root the current key value across binding + body evaluation.
           let key_value_root_idx = iter_scope.heap().root_stack.len();
           iter_scope.push_root(Value::Undefined)?;
+
+          // Root `V` across the loop so the value can't be collected between iterations.
+          let v_root_idx = iter_scope.heap().root_stack.len();
+          iter_scope.push_root(Value::Undefined)?;
+          let mut v = Value::Undefined;
 
           // Per-iteration lexical environments for `let`/`const` in the head.
           let outer_lex: GcEnv = self.env.lexical_env();
@@ -1732,17 +1750,23 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             match flow {
-              Flow::Normal(_) => {}
-              Flow::Continue(None, _) => {}
-              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-              Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-              Flow::Break(None, _) => return Ok(Flow::empty()),
-              Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
-              Flow::Return(v) => return Ok(Flow::Return(v)),
+              Flow::Normal(_) | Flow::Continue(None, _) => {
+                if let Some(value) = flow.value() {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
+                }
+              }
+              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {
+                if let Some(value) = flow.value() {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
+                }
+              }
+              abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
             }
           }
 
-          Ok(Flow::empty())
+          Ok(Flow::normal(v))
         }
       }
       hir_js::StmtKind::Switch { discriminant, cases } => {
@@ -1832,37 +1856,15 @@ impl<'vm> HirEvaluator<'vm> {
                 self.vm.tick()?;
               }
               for stmt_id in &case.consequent {
-                match self.eval_stmt(&mut switch_scope, body, *stmt_id)? {
+                let stmt_result = self.eval_stmt(&mut switch_scope, body, *stmt_id)?;
+                match stmt_result {
                   Flow::Normal(value) => {
                     if let Some(value) = value {
                       v = value;
                       switch_scope.heap_mut().root_stack[v_root_idx] = value;
                     }
                   }
-                  // Unlabeled `break` exits the switch.
-                  Flow::Break(None, break_value) => {
-                    if let Some(value) = break_value {
-                      v = value;
-                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
-                    }
-                    return Ok(Flow::Normal(Some(v)));
-                  }
-                  // Labeled control flow propagates.
-                  Flow::Break(Some(label), break_value) => {
-                    if let Some(value) = break_value {
-                      v = value;
-                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
-                    }
-                    return Ok(Flow::Break(Some(label), break_value).update_empty(Some(v)));
-                  }
-                  Flow::Continue(label, continue_value) => {
-                    if let Some(value) = continue_value {
-                      v = value;
-                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
-                    }
-                    return Ok(Flow::Continue(label, continue_value).update_empty(Some(v)));
-                  }
-                  Flow::Return(value) => return Ok(Flow::Return(value)),
+                  abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
                 }
               }
             }
