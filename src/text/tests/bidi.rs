@@ -7,6 +7,7 @@ use crate::text::pipeline::Direction;
 use crate::text::pipeline::ShapingPipeline;
 use crate::FontConfig;
 use crate::FontContext;
+use std::sync::Arc;
 
 fn analyze(text: &str, base: Direction) -> BidiAnalysis {
   let style = ComputedStyle::default();
@@ -87,4 +88,62 @@ fn inline_bidi_runs_position_in_visual_order() {
       cursor += shaped_run.advance;
     }
   }
+}
+
+#[test]
+fn rtl_measure_width_is_physical_and_advances_are_sane() {
+  let pipeline = ShapingPipeline::new();
+  let font_context = FontContext::with_config(FontConfig::bundled_only());
+  let style = ComputedStyle::default();
+
+  let text = "שלום";
+
+  let runs = pipeline
+    .shape(text, &style, &font_context)
+    .expect("shape RTL text");
+  assert!(!runs.is_empty(), "expected shaped runs for RTL text");
+
+  for run in &runs {
+    assert!(
+      run.advance.is_finite(),
+      "run advance should be finite, got {}",
+      run.advance
+    );
+  }
+
+  let sum_advances: f32 = runs.iter().map(|r| r.advance).sum();
+  let physical_sum_advances: f32 = runs.iter().map(|r| r.advance.abs()).sum();
+
+  let measured = pipeline
+    .measure_width(text, &style, &font_context)
+    .expect("measure RTL width");
+  assert!(
+    measured.is_finite() && measured > 0.0,
+    "expected a positive measured width for RTL text, got {}",
+    measured
+  );
+  assert!(
+    (measured - physical_sum_advances).abs() < 0.01,
+    "measure_width should return physical width; expected {}, got {} (logical sum={})",
+    physical_sum_advances,
+    measured,
+    sum_advances
+  );
+
+  let item = crate::layout::contexts::inline::line_builder::TextItem::new(
+    runs,
+    text.to_string(),
+    crate::layout::contexts::inline::baseline::BaselineMetrics::new(0.0, 0.0, 0.0, 0.0),
+    Vec::new(),
+    Vec::new(),
+    Arc::new(style.clone()),
+    style.direction,
+  );
+
+  assert!(
+    (item.advance - sum_advances).abs() < 0.01,
+    "TextItem advance should equal the cumulative cluster advance; expected {}, got {}",
+    sum_advances,
+    item.advance
+  );
 }

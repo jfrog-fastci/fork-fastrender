@@ -6719,7 +6719,10 @@ impl ShapingPipeline {
     font_context: &FontContext,
   ) -> Result<f32> {
     let runs = self.shape(text, style, font_context)?;
-    Ok(runs.iter().map(|r| r.advance).sum())
+    // Shaping backends may express inline advances with negative values for RTL runs (e.g.
+    // HarfBuzz uses a leftward pen direction). Callers expect a physical width, so sum the
+    // magnitude of each run's advance.
+    Ok(runs.iter().map(|r| r.advance.abs()).sum())
   }
 
   fn shape_small_caps(
