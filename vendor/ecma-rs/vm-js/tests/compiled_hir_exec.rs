@@ -4540,6 +4540,131 @@ fn compiled_class_extends_null_sets_constructor_and_instance_prototypes() -> Res
 }
 
 #[test]
+fn compiled_class_base_constructor_inherits_from_function_prototype() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      class C {}
+      Object.getPrototypeOf(C) === Function.prototype
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_class_extends_undefined_throws_type_error_message() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = false;
+      try {
+        class D extends undefined {}
+      } catch (e) {
+        ok = e instanceof TypeError && e.message === "Class extends value is not a constructor";
+      }
+      ok
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_class_extends_non_constructor_throws_type_error_message() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = false;
+      try {
+        class D extends ({}) {}
+      } catch (e) {
+        ok = e instanceof TypeError && e.message === "Class extends value is not a constructor";
+      }
+      ok
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_class_extends_invalid_prototype_throws_type_error_message() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = false;
+      function B() {}
+      B.prototype = 1;
+      try {
+        class D extends B {}
+      } catch (e) {
+        ok = e instanceof TypeError &&
+          e.message === "Class extends value does not have a valid prototype property";
+      }
+      ok
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_class_inheritance_is_gc_safe_under_stress() -> Result<(), VmError> {
+  // Force a GC on every allocation.
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The superclass is produced by a class expression in the `extends` clause; it must be rooted
+  // across allocations during derived-class construction.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      class D extends (class B { constructor() { this.x = 1; } }) {}
+      (new D()).x
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  assert!(
+    rt.heap().gc_runs() > 0,
+    "expected at least one GC cycle to run"
+  );
+  Ok(())
+}
+
+#[test]
 fn compiled_class_constructor_can_return_object() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
