@@ -3073,6 +3073,15 @@ fn url_looks_like_font_asset(url: &str) -> bool {
     .any(|suffix| ends_with_ignore_ascii_case(url, suffix))
 }
 
+fn url_looks_like_media_asset(url: &str) -> bool {
+  let url = url_without_query_fragment(url);
+  [
+    ".mp4", ".webm", ".weba", ".mp3", ".m4a", ".ogg", ".oga", ".opus", ".wav",
+  ]
+  .into_iter()
+  .any(|suffix| ends_with_ignore_ascii_case(url, suffix))
+}
+
 fn url_looks_like_svg_or_html(url: &str) -> bool {
   url_looks_like_suffix(url, ".svg")
     || url_looks_like_suffix(url, ".svgz")
@@ -3318,6 +3327,40 @@ pub fn ensure_script_mime_sane(resource: &FetchedResource, requested_url: &str) 
         format!("unexpected content-type {mime}"),
       ));
     }
+  }
+
+  Ok(())
+}
+
+/// Best-effort MIME sanity check for fetched media (audio/video) bytes.
+///
+/// When enabled, this prevents common bot-mitigation HTML responses from being passed to media
+/// decoders, surfacing a `ResourceError` instead.
+pub fn ensure_media_mime_sane(resource: &FetchedResource, requested_url: &str) -> Result<()> {
+  if !strict_mime_checks_enabled() || resource.status.is_none() {
+    return Ok(());
+  }
+
+  if let Some(content_type) = resource.content_type.as_deref() {
+    let mime = content_type_mime(content_type);
+    if mime_is_html(mime) || starts_with_ignore_ascii_case(mime, "text/plain") {
+      return Err(response_resource_error(
+        resource,
+        requested_url,
+        format!("unexpected content-type {mime}"),
+      ));
+    }
+  }
+
+  let final_url = resource.final_url.as_deref().unwrap_or(requested_url);
+  if (url_looks_like_media_asset(requested_url) || url_looks_like_media_asset(final_url))
+    && file_payload_looks_like_markup_but_not_svg(&resource.bytes)
+  {
+    return Err(response_resource_error(
+      resource,
+      requested_url,
+      "unexpected markup response body",
+    ));
   }
 
   Ok(())
@@ -14136,6 +14179,67 @@ mod tests {
       let url = "https://example.com/icon.svg";
       ensure_image_mime_sane(&resource, url)
         .expect("expected .svg URLs to be exempt from image MIME sanity checks");
+    });
+  }
+
+  #[test]
+  fn media_mime_sanity_rejects_html_content_type() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut resource =
+        FetchedResource::new(Vec::new(), Some("text/html; charset=utf-8".to_string()));
+      resource.status = Some(200);
+      let url = "https://example.com/video.mp4";
+      let err = ensure_media_mime_sane(&resource, url)
+        .expect_err("expected media MIME sanity check to reject HTML content-type");
+      assert!(
+        err.to_string().contains("unexpected content-type"),
+        "unexpected error: {err}"
+      );
+    });
+  }
+
+  #[test]
+  fn media_mime_sanity_rejects_markup_bodies_for_mp4_urls() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut resource = FetchedResource::new(
+        b"<!doctype html><html><title>blocked</title></html>".to_vec(),
+        Some("video/mp4".to_string()),
+      );
+      resource.status = Some(200);
+      let url = "https://example.com/video.mp4";
+      let err = ensure_media_mime_sane(&resource, url)
+        .expect_err("expected markup payload to be rejected for media URLs");
+      assert!(
+        err.to_string().contains("unexpected markup response body"),
+        "unexpected error: {err}"
+      );
+    });
+  }
+
+  #[test]
+  fn media_mime_sanity_allows_application_octet_stream_when_bytes_are_binary() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      // MP4 ftyp box signature.
+      let mut resource = FetchedResource::new(
+        b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom".to_vec(),
+        Some("application/octet-stream".to_string()),
+      );
+      resource.status = Some(200);
+      let url = "https://example.com/video.mp4";
+      ensure_media_mime_sane(&resource, url)
+        .expect("expected binary octet-stream payload to be allowed for media URLs");
     });
   }
 
