@@ -6,32 +6,138 @@ pub(crate) fn format_tab_accessible_label(
   has_error: bool,
   has_warning: bool,
 ) -> String {
-  let mut parts: Vec<&'static str> = Vec::new();
+  let any_flags = is_active || is_pinned || loading || has_error || has_warning;
+  if !any_flags {
+    return title.to_string();
+  }
+
+  let mut part_count = 0usize;
+  let mut cap = title.len() + 3; // " (" + ")"
   if is_active {
-    parts.push("current tab");
+    part_count += 1;
+    cap += "current tab".len();
   }
   if is_pinned {
-    parts.push("pinned");
+    part_count += 1;
+    cap += "pinned".len();
   }
   if loading {
-    parts.push("loading");
+    part_count += 1;
+    cap += "loading".len();
   }
   if has_error {
-    parts.push("error");
+    part_count += 1;
+    cap += "error".len();
   }
   if has_warning {
-    parts.push("warning");
+    part_count += 1;
+    cap += "warning".len();
   }
-  if parts.is_empty() {
-    title.to_string()
-  } else {
-    format!("{title} ({})", parts.join(", "))
+  // ", " separators between parts.
+  if part_count > 1 {
+    cap += (part_count - 1) * 2;
+  }
+
+  let mut label = String::with_capacity(cap);
+  label.push_str(title);
+  label.push_str(" (");
+  let mut first = true;
+  let mut push_part = |part: &'static str| {
+    if !first {
+      label.push_str(", ");
+    } else {
+      first = false;
+    }
+    label.push_str(part);
+  };
+  if is_active {
+    push_part("current tab");
+  }
+  if is_pinned {
+    push_part("pinned");
+  }
+  if loading {
+    push_part("loading");
+  }
+  if has_error {
+    push_part("error");
+  }
+  if has_warning {
+    push_part("warning");
+  }
+  label.push(')');
+  label
+}
+
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TabAccessibleLabelCache {
+  entry: Option<TabAccessibleLabelCacheEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct TabAccessibleLabelCacheEntry {
+  title: Arc<str>,
+  flags: u8,
+  label: Arc<str>,
+}
+
+impl TabAccessibleLabelCache {
+  pub(crate) fn get_or_update(
+    &mut self,
+    title: &str,
+    is_active: bool,
+    is_pinned: bool,
+    loading: bool,
+    has_error: bool,
+    has_warning: bool,
+  ) -> Arc<str> {
+    let mut flags: u8 = 0;
+    if is_active {
+      flags |= 1 << 0;
+    }
+    if is_pinned {
+      flags |= 1 << 1;
+    }
+    if loading {
+      flags |= 1 << 2;
+    }
+    if has_error {
+      flags |= 1 << 3;
+    }
+    if has_warning {
+      flags |= 1 << 4;
+    }
+
+    if let Some(entry) = &self.entry {
+      if entry.flags == flags && entry.title.as_ref() == title {
+        return Arc::clone(&entry.label);
+      }
+    }
+
+    // Update cache.
+    let title_arc: Arc<str> = Arc::from(title);
+    let label_arc: Arc<str> = if flags == 0 {
+      Arc::clone(&title_arc)
+    } else {
+      let label =
+        format_tab_accessible_label(title, is_active, is_pinned, loading, has_error, has_warning);
+      Arc::from(label)
+    };
+    self.entry = Some(TabAccessibleLabelCacheEntry {
+      title: title_arc,
+      flags,
+      label: Arc::clone(&label_arc),
+    });
+    label_arc
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::sync::Arc;
 
   #[test]
   fn format_tab_accessible_label_formats_active_pinned_loading_error_warning_states() {
@@ -102,5 +208,35 @@ mod tests {
         expected
       );
     }
+  }
+
+  #[test]
+  fn tab_accessible_label_cache_updates_and_is_stable_when_inputs_unchanged() {
+    let mut cache = TabAccessibleLabelCache::default();
+
+    let a = cache.get_or_update("Example", false, false, false, false, false);
+    let b = cache.get_or_update("Example", false, false, false, false, false);
+    assert!(
+      Arc::ptr_eq(&a, &b),
+      "expected cache hit to reuse allocation"
+    );
+    assert_eq!(a.as_ref(), "Example");
+
+    let c = cache.get_or_update("Example", true, false, false, false, false);
+    assert!(
+      !Arc::ptr_eq(&a, &c),
+      "expected cache miss when active flag changes"
+    );
+    assert_eq!(c.as_ref(), "Example (current tab)");
+
+    let d = cache.get_or_update("Example", true, false, false, false, false);
+    assert!(Arc::ptr_eq(&c, &d), "expected cache hit after recompute");
+
+    let e = cache.get_or_update("Example 2", true, false, false, false, false);
+    assert!(
+      !Arc::ptr_eq(&d, &e),
+      "expected cache miss when title changes"
+    );
+    assert_eq!(e.as_ref(), "Example 2 (current tab)");
   }
 }

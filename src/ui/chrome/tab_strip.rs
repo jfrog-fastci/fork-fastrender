@@ -266,24 +266,6 @@ fn tab_status_messages(tab: &BrowserTabState) -> (Option<&str>, Option<&str>) {
   (err, warn)
 }
 
-fn tab_a11y_label(
-  title: &str,
-  is_active: bool,
-  is_pinned: bool,
-  loading: bool,
-  has_error: bool,
-  has_warning: bool,
-) -> String {
-  crate::ui::tab_accessible_label::format_tab_accessible_label(
-    title,
-    is_active,
-    is_pinned,
-    loading,
-    has_error,
-    has_warning,
-  )
-}
-
 fn paint_tab_status_badges(
   painter: &egui::Painter,
   icon_rect: Rect,
@@ -639,13 +621,13 @@ fn unpinned_tab_preview_ui(
   let err_t = motion.animate_bool(
     ui.ctx(),
     tab_id.with("status_error"),
-    err.is_some(),
+    has_error,
     motion.durations.progress_fade,
   );
   let warn_t = motion.animate_bool(
     ui.ctx(),
     tab_id.with("status_warning"),
-    warn.is_some(),
+    has_warning,
     motion.durations.progress_fade,
   );
   paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t, warn_t);
@@ -766,13 +748,13 @@ fn pinned_tab_preview_ui(
   let err_t = motion.animate_bool(
     ui.ctx(),
     tab_id.with("status_error"),
-    err.is_some(),
+    has_error,
     motion.durations.progress_fade,
   );
   let warn_t = motion.animate_bool(
     ui.ctx(),
     tab_id.with("status_warning"),
-    warn.is_some(),
+    has_warning,
     motion.durations.progress_fade,
   );
   paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t, warn_t);
@@ -1483,7 +1465,7 @@ fn group_chip_ui(
 fn tab_ui(
   ui: &mut egui::Ui,
   motion: UiMotion,
-  tab: &BrowserTabState,
+  tab: &mut BrowserTabState,
   is_active: bool,
   interactive: bool,
   can_close_tabs: bool,
@@ -1506,7 +1488,6 @@ fn tab_ui(
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = tab_strip_tab_widget_id(tab.id);
   let title = tab.display_title();
-  let (err, warn) = tab_status_messages(tab);
   let mut response = ui.interact(
     tab_rect,
     tab_id,
@@ -1517,41 +1498,38 @@ fn tab_ui(
     },
   );
   let hovered = interactive && response.hovered();
-  if hovered {
-    if err.is_none() && warn.is_none() {
-      response = response.on_hover_text(title);
-    } else {
-      let mut lines = vec![title.to_string()];
-      if let Some(err) = err {
-        lines.push(format!("Error: {err}"));
+  let (has_error, has_warning) = {
+    let (err, warn) = tab_status_messages(tab);
+    let has_error = err.is_some();
+    let has_warning = warn.is_some();
+    if hovered {
+      if err.is_none() && warn.is_none() {
+        response = response.on_hover_text(title);
+      } else {
+        let mut lines = vec![title.to_string()];
+        if let Some(err) = err {
+          lines.push(format!("Error: {err}"));
+        }
+        if let Some(warn) = warn {
+          lines.push(format!("Warning: {warn}"));
+        }
+        response = response.on_hover_text(lines.join("\n"));
       }
-      if let Some(warn) = warn {
-        lines.push(format!("Warning: {warn}"));
-      }
-      response = response.on_hover_text(lines.join("\n"));
     }
-  }
-  let a11y_label = tab_a11y_label(
-    title,
-    is_active,
-    tab.pinned,
-    tab.loading,
-    err.is_some(),
-    warn.is_some(),
-  );
+    (has_error, has_warning)
+  };
+  let a11y_label = tab.tab_accessible_label(title, is_active, has_error, has_warning);
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
-  let _ = ui
-    .ctx()
-    .accesskit_node_builder(response.id, |builder| {
-      builder.set_role(accesskit::Role::Tab);
-      builder.set_selected(is_active);
-      if !interactive {
-        builder.set_disabled();
-      }
-    });
+  let _ = ui.ctx().accesskit_node_builder(response.id, |builder| {
+    builder.set_role(accesskit::Role::Tab);
+    builder.set_selected(is_active);
+    if !interactive {
+      builder.set_disabled();
+    }
+  });
   if interactive {
     super::show_tooltip_on_focus(ui, &response, title);
   }
@@ -1860,7 +1838,7 @@ fn tab_ui(
 fn pinned_tab_ui(
   ui: &mut egui::Ui,
   motion: UiMotion,
-  tab: &BrowserTabState,
+  tab: &mut BrowserTabState,
   is_active: bool,
   can_close_tabs: bool,
   tab_width: f32,
@@ -1880,7 +1858,6 @@ fn pinned_tab_ui(
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = tab_strip_tab_widget_id(tab.id);
   let title = tab.display_title();
-  let (err, warn) = tab_status_messages(tab);
   let mut response = ui.interact(
     tab_rect,
     tab_id,
@@ -1890,41 +1867,38 @@ fn pinned_tab_ui(
       Sense::click_and_drag()
     },
   );
-  if !closing && response.hovered() {
-    if err.is_none() && warn.is_none() {
-      response = response.on_hover_text(title);
-    } else {
-      let mut lines = vec![title.to_string()];
-      if let Some(err) = err {
-        lines.push(format!("Error: {err}"));
+  let (has_error, has_warning) = {
+    let (err, warn) = tab_status_messages(tab);
+    let has_error = err.is_some();
+    let has_warning = warn.is_some();
+    if !closing && response.hovered() {
+      if err.is_none() && warn.is_none() {
+        response = response.on_hover_text(title);
+      } else {
+        let mut lines = vec![title.to_string()];
+        if let Some(err) = err {
+          lines.push(format!("Error: {err}"));
+        }
+        if let Some(warn) = warn {
+          lines.push(format!("Warning: {warn}"));
+        }
+        response = response.on_hover_text(lines.join("\n"));
       }
-      if let Some(warn) = warn {
-        lines.push(format!("Warning: {warn}"));
-      }
-      response = response.on_hover_text(lines.join("\n"));
     }
-  }
-  let a11y_label = tab_a11y_label(
-    title,
-    is_active,
-    tab.pinned,
-    tab.loading,
-    err.is_some(),
-    warn.is_some(),
-  );
+    (has_error, has_warning)
+  };
+  let a11y_label = tab.tab_accessible_label(title, is_active, has_error, has_warning);
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
-  let _ = ui
-    .ctx()
-    .accesskit_node_builder(response.id, |builder| {
-      builder.set_role(accesskit::Role::Tab);
-      builder.set_selected(is_active);
-      if closing {
-        builder.set_disabled();
-      }
-    });
+  let _ = ui.ctx().accesskit_node_builder(response.id, |builder| {
+    builder.set_role(accesskit::Role::Tab);
+    builder.set_selected(is_active);
+    if closing {
+      builder.set_disabled();
+    }
+  });
   if !closing {
     super::show_tooltip_on_focus(ui, &response, title);
   }
@@ -2701,7 +2675,7 @@ pub(super) fn tab_strip_ui(
                 gap
               };
 
-            let (tabs, chrome) = (&app.tabs, &mut app.chrome);
+            let chrome = &mut app.chrome;
             let mut inserted_source_placeholder = false;
             let source_placeholder_index = pin_anim_render
               .filter(|anim| anim.kind == TabPinAnimKind::Unpin)
@@ -2722,7 +2696,7 @@ pub(super) fn tab_strip_ui(
                 }
               }
 
-              let tab = &tabs[idx];
+              let tab = &mut app.tabs[idx];
               let tab_id = tab.id;
 
               // Pinning: the tab is already in the pinned segment (at its final position). Replace
@@ -3167,7 +3141,7 @@ pub(super) fn tab_strip_ui(
                   let (_, rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
                   (rect, None, None)
                 } else {
-                  let tab = &app.tabs[idx];
+                  let tab = &mut app.tabs[idx];
                   let group_border = tab
                     .group
                     .and_then(|gid| app.tab_groups.get(&gid).map(|g| group_color_egui(g.color)));
@@ -3295,7 +3269,7 @@ pub(super) fn tab_strip_ui(
                 let (_, rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
                 (rect, None, None)
               } else {
-                let tab = &app.tabs[idx];
+                let tab = &mut app.tabs[idx];
                 let group_border = tab
                   .group
                   .and_then(|gid| app.tab_groups.get(&gid).map(|g| group_color_egui(g.color)));
@@ -4152,8 +4126,7 @@ pub(super) fn tab_strip_ui(
     })
     .inner;
   #[cfg(test)]
-  ui
-    .ctx()
+  ui.ctx()
     .data_mut(|d| d.insert_temp(egui::Id::new("test_tab_strip_new_tab_id"), new_tab_resp.id));
   new_tab_resp.widget_info(|| {
     egui::WidgetInfo::labeled(egui::WidgetType::Button, BrowserIcon::NewTab.a11y_label())
@@ -4279,7 +4252,11 @@ mod tests {
       .expect("expected test_tab_strip_new_tab_id")
   }
 
-  fn assert_tab_traversal_forward(ctx: &egui::Context, app: &mut BrowserAppState, order: &[egui::Id]) {
+  fn assert_tab_traversal_forward(
+    ctx: &egui::Context,
+    app: &mut BrowserAppState,
+    order: &[egui::Id],
+  ) {
     assert!(!order.is_empty(), "expected non-empty traversal order");
     // Frame 1: focus the first widget.
     ctx.memory_mut(|mem| mem.request_focus(order[0]));
@@ -4310,7 +4287,11 @@ mod tests {
     }
   }
 
-  fn assert_tab_traversal_reverse(ctx: &egui::Context, app: &mut BrowserAppState, order: &[egui::Id]) {
+  fn assert_tab_traversal_reverse(
+    ctx: &egui::Context,
+    app: &mut BrowserAppState,
+    order: &[egui::Id],
+  ) {
     assert!(!order.is_empty(), "expected non-empty traversal order");
     let reverse: Vec<_> = order.iter().rev().copied().collect();
 
@@ -4640,7 +4621,9 @@ mod tests {
     ];
     for (is_active, pinned, loading, err, warn, expected) in cases {
       assert_eq!(
-        tab_a11y_label(title, is_active, pinned, loading, err, warn),
+        crate::ui::tab_accessible_label::format_tab_accessible_label(
+          title, is_active, pinned, loading, err, warn
+        ),
         expected
       );
     }
@@ -5435,16 +5418,15 @@ mod tests {
     ctx.enable_accesskit();
 
     let find_tab_node = |output: &egui::FullOutput, name_prefix: &str| {
-      let update = output.platform_output.accesskit_update.as_ref().expect(
-        "egui did not emit an AccessKit update (did you forget ctx.enable_accesskit()?)",
-      );
-      let mut matches = update.nodes.iter().filter(|(_id, node)| {
-        node
-          .name()
-          .unwrap_or("")
-          .trim()
-          .starts_with(name_prefix)
-      });
+      let update = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("egui did not emit an AccessKit update (did you forget ctx.enable_accesskit()?)");
+      let mut matches = update
+        .nodes
+        .iter()
+        .filter(|(_id, node)| node.name().unwrap_or("").trim().starts_with(name_prefix));
       let (id, node) = matches
         .next()
         .unwrap_or_else(|| panic!("expected AccessKit node with name prefix {name_prefix:?}"));
