@@ -27,6 +27,7 @@ const DEFAULT_FRAME_BUDGET: Duration = Duration::from_millis(16);
 /// This enum is intentionally small for now, but designed to be extended as more
 /// web APIs are implemented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum TaskSource {
   Script,
   Microtask,
