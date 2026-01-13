@@ -22285,26 +22285,37 @@ fn intersection_observer_observe_native(
     }
   };
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let (target_id, init) = {
+    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+      "IntersectionObserver.observe requires a DOM-backed element",
+    ))?;
+    let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
+      return Err(VmError::TypeError(
+        "IntersectionObserver.observe requires a DOM-backed element",
+      ));
+    };
+    match dom.node(target_id).kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+      _ => {
+        return Err(VmError::TypeError(
+          "IntersectionObserver.observe: target must be an Element",
+        ));
+      }
+    }
+
+    (target_id, intersection_observer_init_from_obj(scope, dom, observer_obj)?)
+  };
+
+  let result = mutate_dom_for_vm_host(host, |dom| {
+    (
+      dom.intersection_observer_observe(observer_id, target_id, init),
+      false,
+    )
+  })
+  .ok_or(VmError::TypeError(
     "IntersectionObserver.observe requires a DOM-backed element",
   ))?;
-  let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
-    return Err(VmError::TypeError(
-      "IntersectionObserver.observe requires a DOM-backed element",
-    ));
-  };
-  match dom.node(target_id).kind {
-    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
-    _ => {
-      return Err(VmError::TypeError(
-        "IntersectionObserver.observe: target must be an Element",
-      ));
-    }
-  }
-
-  let init = intersection_observer_init_from_obj(scope, dom, observer_obj)?;
-
-  if let Err(err) = dom.intersection_observer_observe(observer_id, target_id, init) {
+  if let Err(err) = result {
     return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
@@ -22348,24 +22359,33 @@ fn intersection_observer_unobserve_native(
     ));
   };
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let target_id = {
+    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+      "IntersectionObserver.unobserve requires a DOM-backed element",
+    ))?;
+    let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
+      return Err(VmError::TypeError(
+        "IntersectionObserver.unobserve requires a DOM-backed element",
+      ));
+    };
+    match dom.node(target_id).kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+      _ => {
+        return Err(VmError::TypeError(
+          "IntersectionObserver.unobserve: target must be an Element",
+        ));
+      }
+    }
+    target_id
+  };
+
+  mutate_dom_for_vm_host(host, |dom| {
+    dom.intersection_observer_unobserve(observer_id, target_id);
+    ((), false)
+  })
+  .ok_or(VmError::TypeError(
     "IntersectionObserver.unobserve requires a DOM-backed element",
   ))?;
-  let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
-    return Err(VmError::TypeError(
-      "IntersectionObserver.unobserve requires a DOM-backed element",
-    ));
-  };
-  match dom.node(target_id).kind {
-    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
-    _ => {
-      return Err(VmError::TypeError(
-        "IntersectionObserver.unobserve: target must be an Element",
-      ));
-    }
-  }
-
-  dom.intersection_observer_unobserve(observer_id, target_id);
   Ok(Value::Undefined)
 }
 
@@ -22387,9 +22407,10 @@ fn intersection_observer_disconnect_native(
     return Ok(Value::Undefined);
   };
 
-  if let Some(dom) = dom_from_vm_host_mut(host) {
+  let _ = mutate_dom_for_vm_host(host, |dom| {
     dom.intersection_observer_disconnect(observer_id);
-  }
+    ((), false)
+  });
 
   if let Ok(registry) = intersection_observer_registry_from_document(scope, document_obj) {
     scope.push_root(Value::Object(registry))?;
@@ -22536,12 +22557,15 @@ fn intersection_observer_take_records_native(
     return Ok(Value::Object(empty));
   };
 
-  let Some(dom) = dom_from_vm_host_mut(host) else {
+  let Some(records) =
+    mutate_dom_for_vm_host(host, |dom| (dom.intersection_observer_take_records(observer_id), false))
+  else {
     let empty = alloc_empty_array(vm, scope)?;
     return Ok(Value::Object(empty));
   };
-  let records = dom.intersection_observer_take_records(observer_id);
-  let array = alloc_intersection_observer_entries_array(vm, scope, document_obj, Some(dom), &records)?;
+  let dom_for_wrappers = dom_from_vm_host(host);
+  let array =
+    alloc_intersection_observer_entries_array(vm, scope, document_obj, dom_for_wrappers, &records)?;
   Ok(Value::Object(array))
 }
 
@@ -22564,11 +22588,10 @@ fn intersection_observer_notify_native(
     _ => return Ok(Value::Undefined),
   };
 
-  let deliveries = {
-    let Some(dom) = dom_from_vm_host_mut(host) else {
-      return Ok(Value::Undefined);
-    };
-    dom.intersection_observer_take_deliveries()
+  let Some(deliveries) =
+    mutate_dom_for_vm_host(host, |dom| (dom.intersection_observer_take_deliveries(), false))
+  else {
+    return Ok(Value::Undefined);
   };
   if deliveries.is_empty() {
     return Ok(Value::Undefined);
@@ -22810,24 +22833,33 @@ fn resize_observer_observe_native(
     }
   }
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let target_id = {
+    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+      "ResizeObserver.observe requires a DOM-backed element",
+    ))?;
+    let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
+      return Err(VmError::TypeError(
+        "ResizeObserver.observe requires a DOM-backed element",
+      ));
+    };
+    match dom.node(target_id).kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+      _ => {
+        return Err(VmError::TypeError(
+          "ResizeObserver.observe: target must be an Element",
+        ));
+      }
+    }
+    target_id
+  };
+
+  let result = mutate_dom_for_vm_host(host, |dom| {
+    (dom.resize_observer_observe(observer_id, target_id, box_opt), false)
+  })
+  .ok_or(VmError::TypeError(
     "ResizeObserver.observe requires a DOM-backed element",
   ))?;
-  let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
-    return Err(VmError::TypeError(
-      "ResizeObserver.observe requires a DOM-backed element",
-    ));
-  };
-  match dom.node(target_id).kind {
-    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
-    _ => {
-      return Err(VmError::TypeError(
-        "ResizeObserver.observe: target must be an Element",
-      ));
-    }
-  }
-
-  if let Err(err) = dom.resize_observer_observe(observer_id, target_id, box_opt) {
+  if let Err(err) = result {
     return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
@@ -22868,24 +22900,33 @@ fn resize_observer_unobserve_native(
     ));
   };
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let target_id = {
+    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
+      "ResizeObserver.unobserve requires a DOM-backed element",
+    ))?;
+    let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
+      return Err(VmError::TypeError(
+        "ResizeObserver.unobserve requires a DOM-backed element",
+      ));
+    };
+    match dom.node(target_id).kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+      _ => {
+        return Err(VmError::TypeError(
+          "ResizeObserver.unobserve: target must be an Element",
+        ));
+      }
+    }
+    target_id
+  };
+
+  mutate_dom_for_vm_host(host, |dom| {
+    dom.resize_observer_unobserve(observer_id, target_id);
+    ((), false)
+  })
+  .ok_or(VmError::TypeError(
     "ResizeObserver.unobserve requires a DOM-backed element",
   ))?;
-  let Some(target_id) = dom_node_id_from_obj(scope, dom, target_obj)? else {
-    return Err(VmError::TypeError(
-      "ResizeObserver.unobserve requires a DOM-backed element",
-    ));
-  };
-  match dom.node(target_id).kind {
-    NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
-    _ => {
-      return Err(VmError::TypeError(
-        "ResizeObserver.unobserve: target must be an Element",
-      ));
-    }
-  }
-
-  dom.resize_observer_unobserve(observer_id, target_id);
   Ok(Value::Undefined)
 }
 
@@ -22907,9 +22948,10 @@ fn resize_observer_disconnect_native(
     return Ok(Value::Undefined);
   };
 
-  if let Some(dom) = dom_from_vm_host_mut(host) {
+  let _ = mutate_dom_for_vm_host(host, |dom| {
     dom.resize_observer_disconnect(observer_id);
-  }
+    ((), false)
+  });
 
   if let Ok(registry) = resize_observer_registry_from_document(scope, document_obj) {
     scope.push_root(Value::Object(registry))?;
@@ -23090,12 +23132,14 @@ fn resize_observer_take_records_native(
     return Ok(Value::Object(empty));
   };
 
-  let Some(dom) = dom_from_vm_host_mut(host) else {
+  let Some(records) =
+    mutate_dom_for_vm_host(host, |dom| (dom.resize_observer_take_records(observer_id), false))
+  else {
     let empty = alloc_empty_array(vm, scope)?;
     return Ok(Value::Object(empty));
   };
-  let records = dom.resize_observer_take_records(observer_id);
-  let array = alloc_resize_observer_entries_array(vm, scope, document_obj, Some(dom), &records)?;
+  let dom_for_wrappers = dom_from_vm_host(host);
+  let array = alloc_resize_observer_entries_array(vm, scope, document_obj, dom_for_wrappers, &records)?;
   Ok(Value::Object(array))
 }
 
@@ -23118,11 +23162,10 @@ fn resize_observer_notify_native(
     _ => return Ok(Value::Undefined),
   };
 
-  let deliveries = {
-    let Some(dom) = dom_from_vm_host_mut(host) else {
-      return Ok(Value::Undefined);
-    };
-    dom.resize_observer_take_deliveries()
+  let Some(deliveries) =
+    mutate_dom_for_vm_host(host, |dom| (dom.resize_observer_take_deliveries(), false))
+  else {
+    return Ok(Value::Undefined);
   };
   if deliveries.is_empty() {
     return Ok(Value::Undefined);

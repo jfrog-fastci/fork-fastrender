@@ -6741,6 +6741,76 @@ mod tests {
   }
 
   #[test]
+  fn intersection_observer_bookkeeping_does_not_invalidate_renderer() {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+    doc.render_frame().expect("render");
+
+    let mut realm = crate::js::window_realm::WindowRealm::new(
+      crate::js::window_realm::WindowRealmConfig::new("https://example.invalid/"),
+    )
+    .expect("WindowRealm");
+    let mut hooks = vm_js::MicrotaskQueue::new();
+
+    realm
+      .exec_script_with_host_and_hooks(
+        &mut doc,
+        &mut hooks,
+        "const io = new IntersectionObserver(() => {});\n\
+         io.observe(document.body);\n\
+         io.unobserve(document.body);\n\
+         io.disconnect();\n\
+         io.takeRecords();",
+      )
+      .expect("execute IntersectionObserver script");
+
+    assert!(
+      doc.render_if_needed().unwrap().is_none(),
+      "IntersectionObserver observe/unobserve/disconnect/takeRecords should not invalidate style/layout/paint"
+    );
+  }
+
+  #[test]
+  fn resize_observer_bookkeeping_does_not_invalidate_renderer() {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+    doc.render_frame().expect("render");
+
+    let mut realm = crate::js::window_realm::WindowRealm::new(
+      crate::js::window_realm::WindowRealmConfig::new("https://example.invalid/"),
+    )
+    .expect("WindowRealm");
+    let mut hooks = vm_js::MicrotaskQueue::new();
+
+    realm
+      .exec_script_with_host_and_hooks(
+        &mut doc,
+        &mut hooks,
+        "const ro = new ResizeObserver(() => {});\n\
+         ro.observe(document.body);\n\
+         ro.unobserve(document.body);\n\
+         ro.disconnect();\n\
+         ro.takeRecords();",
+      )
+      .expect("execute ResizeObserver script");
+
+    assert!(
+      doc.render_if_needed().unwrap().is_none(),
+      "ResizeObserver observe/unobserve/disconnect/takeRecords should not invalidate style/layout/paint"
+    );
+  }
+
+  #[test]
   fn detached_node_creation_does_not_invalidate_renderer() {
     let renderer = renderer_for_tests();
     let mut doc = BrowserDocumentDom2::new(
