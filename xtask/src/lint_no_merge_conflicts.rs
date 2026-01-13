@@ -50,7 +50,7 @@ pub fn run_lint_no_merge_conflicts(repo_root: &Path, _args: LintNoMergeConflicts
 
       bail!(
         "lint-no-merge-conflicts: found unresolved git merge-conflict markers in tracked Rust sources:\n{details}\n\
-         hint: resolve the conflict and delete the <<<<<<< / ======= / >>>>>>> lines before committing."
+         hint: resolve the conflict and delete the <<<<<<< / ||||||| / ======= / >>>>>>> lines before committing."
       );
     }
     Some(1) => {

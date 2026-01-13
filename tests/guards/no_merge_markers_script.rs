@@ -40,10 +40,11 @@ fn merge_conflict_marker_script_reports_offenders() {
     String::from_utf8_lossy(&clean.stdout)
   );
 
-  // A directory containing conflict markers should fail and print file:line diagnostics.
+  // A directory containing conflict markers should fail and print file:line diagnostics (including
+  // diff3-style `|||||||` markers).
   fs::write(
     dir.path().join("bad.txt"),
-    "<<<<<<< HEAD\nleft\n=======\nright\n>>>>>>> branch\n",
+    "<<<<<<< HEAD\nleft\n||||||| base\nbase\n=======\nright\n>>>>>>> branch\n",
   )
   .expect("write bad.txt fixture");
   fs::write(dir.path().join("good.txt"), "hello world\n").expect("write good.txt fixture");
@@ -70,10 +71,14 @@ fn merge_conflict_marker_script_reports_offenders() {
   );
   assert!(
     stderr.contains("bad.txt:3:"),
-    "expected stderr to include ======= marker line, got:\n{stderr}"
+    "expected stderr to include ||||||| marker line, got:\n{stderr}"
   );
   assert!(
     stderr.contains("bad.txt:5:"),
+    "expected stderr to include ======= marker line, got:\n{stderr}"
+  );
+  assert!(
+    stderr.contains("bad.txt:7:"),
     "expected stderr to include >>>>>>> marker line, got:\n{stderr}"
   );
   assert!(
