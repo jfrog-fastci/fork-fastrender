@@ -159,6 +159,27 @@ Best practices:
 - Ensure global listeners/singletons are unregistered/reset on completion (or scope them to the job)
   to avoid cross-test interference.
 
+## ScrollStateUpdated vs FrameReady (ordering + presence)
+
+The UI worker can report scroll state in two places:
+
+- `WorkerToUi::ScrollStateUpdated { tab_id, scroll }` — may be sent *immediately* on scroll input so
+  UIs can async-scroll the last painted texture while waiting for repaint.
+- `WorkerToUi::FrameReady { frame }` — always carries the canonical *painted* scroll state as
+  `frame.scroll_state`.
+
+Important implications for tests:
+
+- Do **not** assume ordering between `ScrollStateUpdated` and `FrameReady` (either can arrive first).
+- Do **not** assume a standalone `ScrollStateUpdated` is always emitted:
+  - navigation-driven scroll changes (e.g. same-document fragment jumps) may only be observable via
+    the next `FrameReady`,
+  - clamped/no-op scroll requests may schedule a repaint without changing scroll state (so no scroll
+    update is sent).
+- If a test needs to associate a `ScrollStateUpdated` with the corresponding painted frame, prefer
+  `support::wait_for_frame_and_scroll_state_updated(...)` (pairs by viewport + element scroll
+  offsets).
+
 ## Existing / expected modules
 
 Existing modules:
