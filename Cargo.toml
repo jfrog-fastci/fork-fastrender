@@ -33,6 +33,9 @@ resolver = "2"
 # should disable them and provide a `ResourceFetcher` that proxies over IPC.
 default = ["preserve3d_warp", "avif", "direct_network", "direct_websocket", "direct_filesystem"]
 a11y_debug = []
+# Lightweight AccessKit support (types only). This is separate from `browser_ui_base`/`browser_ui`
+# so core DOM/unit tests can exercise accessibility behaviors without pulling in the full desktop UI
+# stack.
 a11y_accesskit = ["dep:accesskit"]
 avif = ["dep:avif-decode", "dep:avif-parse"]
 audio_cpal = ["dep:cpal"]

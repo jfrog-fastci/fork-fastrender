@@ -34,6 +34,10 @@ use crate::ui::{PointerButton, PointerModifiers};
 
 use encoding_rs::{Encoding, UTF_8};
 
+#[cfg(feature = "a11y_accesskit")]
+use accesskit::{Action as AccessKitAction, NodeId as AccessKitNodeId};
+#[cfg(feature = "a11y_accesskit")]
+use std::num::NonZeroU128;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -77,6 +81,122 @@ pub enum SelectionAction {
   AddToSelection,
   /// Remove the target item from the current selection (no-op when it is already unselected).
   RemoveFromSelection,
+}
+
+#[cfg(all(test, feature = "a11y_accesskit"))]
+mod accesskit_expand_collapse_tests {
+  use super::*;
+
+  fn limits() -> RunLimits {
+    RunLimits {
+      max_tasks: 1024,
+      max_microtasks: 1024,
+      max_wall_time: None,
+    }
+  }
+
+  fn options() -> RenderOptions {
+    RenderOptions::new()
+      .with_viewport(320, 200)
+      .with_layout_parallelism(crate::LayoutParallelism::disabled())
+      .with_paint_parallelism(crate::PaintParallelism::disabled())
+  }
+
+  #[test]
+  fn accesskit_expand_collapse_toggles_details_open_and_fires_toggle_event() -> Result<()> {
+    let html = r#"
+      <details id=d>
+        <summary id=s>More</summary>
+        <div>Body</div>
+      </details>
+      <script>
+        document.body.setAttribute('data-toggle-count', '0');
+        document.getElementById('d').addEventListener('toggle', () => {
+          const current = Number(document.body.getAttribute('data-toggle-count') || '0');
+          document.body.setAttribute('data-toggle-count', String(current + 1));
+        });
+      </script>
+    "#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs(html, options())?;
+    // Ensure the inline script has executed so the event listener is installed.
+    let _ = tab.run_event_loop_until_idle(limits())?;
+
+    // Ensure we have a renderer↔dom2 mapping so AccessKit NodeIds can be decoded.
+    let _ = tab.render_frame()?;
+
+    let summary = tab
+      .dom()
+      .get_element_by_id("s")
+      .expect("summary element should exist");
+    let details = tab
+      .dom()
+      .get_element_by_id("d")
+      .expect("details element should exist");
+    let body = tab.dom().body().expect("body element should exist");
+
+    let summary_accesskit = tab
+      .accesskit_node_id_for_dom2_node(summary)
+      .expect("summary should map to an AccessKit node");
+
+    tab.dispatch_accesskit_action(summary_accesskit, accesskit::Action::Expand)?;
+    assert!(
+      tab.dom().has_attribute(details, "open").unwrap_or(false),
+      "expected <details> to be opened via AccessKit expand"
+    );
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-toggle-count")
+        .unwrap()
+        .unwrap_or(""),
+      "1",
+      "expected toggle event to fire on expand"
+    );
+
+    tab.dispatch_accesskit_action(summary_accesskit, accesskit::Action::Collapse)?;
+    assert!(
+      !tab.dom().has_attribute(details, "open").unwrap_or(true),
+      "expected <details> open attribute to be removed via AccessKit collapse"
+    );
+    assert_eq!(
+      tab.dom()
+        .get_attribute(body, "data-toggle-count")
+        .unwrap()
+        .unwrap_or(""),
+      "2",
+      "expected toggle event to fire on collapse"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn accesskit_expand_updates_aria_expanded_when_present() -> Result<()> {
+    let html = r#"<div id=x role=button aria-expanded=false></div>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs(html, options())?;
+    let _ = tab.run_event_loop_until_idle(limits())?;
+    let _ = tab.render_frame()?;
+
+    let x = tab
+      .dom()
+      .get_element_by_id("x")
+      .expect("aria-expanded element should exist");
+    let x_accesskit = tab
+      .accesskit_node_id_for_dom2_node(x)
+      .expect("aria-expanded element should map to an AccessKit node");
+
+    tab.dispatch_accesskit_action(x_accesskit, accesskit::Action::Expand)?;
+    assert_eq!(
+      tab.dom()
+        .get_attribute(x, "aria-expanded")
+        .unwrap()
+        .unwrap_or(""),
+      "true",
+      "expected aria-expanded to update to true"
+    );
+
+    Ok(())
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5930,6 +6050,30 @@ impl BrowserTab {
     )
   }
 
+  /// Dispatch a trusted `toggle` DOM event to `node_id` (used by `<details>`).
+  ///
+  /// HTML fires `toggle` when a `<details>` element is opened/closed. This helper allows host-driven
+  /// UI actions (e.g. accessibility expand/collapse) to mirror that behavior.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_toggle_event(&mut self, node_id: NodeId) -> Result<bool> {
+    let mut event = Event::new(
+      "toggle",
+      EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(node_id).normalize(),
+      event,
+      event_loop,
+    )
+  }
+
   /// Dispatch a trusted bubbling `input` DOM event to `node_id`.
   ///
   /// Returns `true` when the event's default was **not** prevented.
@@ -6278,6 +6422,140 @@ impl BrowserTab {
       Action::Click => self.perform_selection_action(target, SelectionAction::SetSelection),
       _ => Ok(false),
     }
+  }
+
+  /// Route an AccessKit accessibility action to a DOM mutation/event.
+  ///
+  /// Currently this supports disclosure-style expand/collapse semantics for:
+  /// - HTML `<details>` / `<summary>`, and
+  /// - elements with `aria-expanded`.
+  ///
+  /// Node IDs are expected to be renderer preorder IDs (`crate::dom::enumerate_dom_ids`) encoded as
+  /// AccessKit `NodeId`s (see `BrowserDocumentDom2::dom2_node_for_renderer_preorder`).
+  #[cfg(feature = "a11y_accesskit")]
+  pub fn dispatch_accesskit_action(
+    &mut self,
+    target: AccessKitNodeId,
+    action: AccessKitAction,
+  ) -> Result<()> {
+    let expand = match action {
+      AccessKitAction::Expand => true,
+      AccessKitAction::Collapse => false,
+      _ => return Ok(()),
+    };
+
+    let Some(target_node_id) = self.dom2_node_for_accesskit_node_id(target) else {
+      return Ok(());
+    };
+
+    let (details_target, aria_expanded_target) = {
+      let dom = self.dom();
+
+      let is_html_element_tag = |id: NodeId, tag: &str| -> bool {
+        let node = dom.node(id);
+        match &node.kind {
+          NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          } => {
+            tag_name.eq_ignore_ascii_case(tag)
+              && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+          }
+          _ => false,
+        }
+      };
+
+      let details_target = if is_html_element_tag(target_node_id, "details") {
+        Some(target_node_id)
+      } else if is_html_element_tag(target_node_id, "summary") {
+        match dom.parent_node(target_node_id) {
+          Some(parent) if is_html_element_tag(parent, "details") => {
+            // Only the first `<summary>` child participates in `<details>` toggling.
+            let details_node = dom.node(parent);
+            let mut first_summary: Option<NodeId> = None;
+            for &child in &details_node.children {
+              if is_html_element_tag(child, "summary") {
+                first_summary = Some(child);
+                break;
+              }
+            }
+            if first_summary == Some(target_node_id) {
+              Some(parent)
+            } else {
+              None
+            }
+          }
+          _ => None,
+        }
+      } else {
+        None
+      };
+
+      let aria_expanded_target = if details_target.is_some() {
+        None
+      } else if dom
+        .get_attribute(target_node_id, "aria-expanded")
+        .ok()
+        .flatten()
+        .is_some()
+      {
+        Some(target_node_id)
+      } else {
+        None
+      };
+
+      (details_target, aria_expanded_target)
+    };
+
+    if let Some(details_id) = details_target {
+      let changed = self.host.mutate_dom(|dom| {
+        let changed = dom
+          .set_bool_attribute(details_id, "open", expand)
+          .unwrap_or(false);
+        (changed, changed)
+      });
+
+      // Optional but recommended: fire `toggle` when the open state changes.
+      if changed {
+        self.dispatch_toggle_event(details_id)?;
+      }
+
+      return Ok(());
+    }
+
+    if let Some(aria_id) = aria_expanded_target {
+      let value = if expand { "true" } else { "false" };
+      let _changed = self.host.mutate_dom(|dom| {
+        // Do not create `aria-expanded` when absent.
+        if dom.get_attribute(aria_id, "aria-expanded").ok().flatten().is_none() {
+          return (false, false);
+        }
+        let changed = dom
+          .set_attribute(aria_id, "aria-expanded", value)
+          .unwrap_or(false);
+        (changed, changed)
+      });
+    }
+
+    Ok(())
+  }
+
+  #[cfg(feature = "a11y_accesskit")]
+  pub fn dom2_node_for_accesskit_node_id(&self, node_id: AccessKitNodeId) -> Option<NodeId> {
+    let preorder_id = usize::try_from(node_id.0.get()).ok()?;
+    self
+      .host
+      .document
+      .dom2_node_for_renderer_preorder(preorder_id)
+  }
+
+  #[cfg(feature = "a11y_accesskit")]
+  pub fn accesskit_node_id_for_dom2_node(&self, node_id: NodeId) -> Option<AccessKitNodeId> {
+    let mapping = self.host.document.last_dom_mapping()?;
+    let preorder = mapping.preorder_for_node_id(node_id)?;
+    let raw = NonZeroU128::new(preorder as u128)?;
+    Some(AccessKitNodeId(raw))
   }
 
   /// Simulate a user click on `node_id` and return the resolved navigation target URL if the
