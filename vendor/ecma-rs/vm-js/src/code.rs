@@ -69,8 +69,8 @@ impl CompiledScript {
     };
 
     let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-       parse_with_options(source.text.as_ref(), opts)
-     }))
+      parse_with_options(source.text.as_ref(), opts)
+    }))
     .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a script"))?
     .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
 

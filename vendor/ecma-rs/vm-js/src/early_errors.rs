@@ -101,6 +101,7 @@ where
     super_call_allowed: false,
     arguments_allowed: true,
     return_allowed: false,
+    using_allowed: opts.is_module,
     loop_depth: 0,
     breakable_depth: 0,
     labels: Vec::new(),
@@ -164,6 +165,15 @@ struct ControlContext {
   /// This is true only inside function bodies. (Notably, class static blocks are **not** function
   /// bodies.)
   return_allowed: bool,
+  /// Whether `using` / `await using` declarations are permitted in the current context.
+  ///
+  /// In classic scripts, `using` declarations are early errors unless they are contained within
+  /// specific syntactic containers (Blocks, for-statements, function bodies, etc). We model this
+  /// by toggling `using_allowed` as the walker enters and exits those containers.
+  ///
+  /// This flag is also used to enforce container-specific restrictions such as switch-clause
+  /// statement lists.
+  using_allowed: bool,
   loop_depth: u32,
   breakable_depth: u32,
   labels: Vec<LabelInfo>,
@@ -183,6 +193,7 @@ struct SavedFunctionContext {
   super_call_allowed: bool,
   arguments_allowed: bool,
   return_allowed: bool,
+  using_allowed: bool,
   loop_depth: u32,
   breakable_depth: u32,
   labels: Vec<LabelInfo>,
@@ -216,8 +227,10 @@ struct EarlyErrorWalker<'a, F: FnMut() -> Result<(), VmError>> {
 enum StmtListKind {
   /// A statement list that forms a var scope (ScriptBody / FunctionBody).
   VarScope,
-  /// A statement list that forms a block-like lexical scope (Block / Catch / switch clause bodies).
+  /// A statement list that forms a block-like lexical scope (Block / Catch / etc).
   BlockLike,
+  /// A `CaseClause` / `DefaultClause` StatementList within a switch.
+  SwitchClause,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -340,6 +353,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       super_call_allowed: ctx.super_call_allowed,
       arguments_allowed: ctx.arguments_allowed,
       return_allowed: ctx.return_allowed,
+      using_allowed: ctx.using_allowed,
       loop_depth: ctx.loop_depth,
       breakable_depth: ctx.breakable_depth,
       labels: std::mem::take(&mut ctx.labels),
@@ -352,6 +366,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.super_call_allowed = super_call_allowed;
     ctx.arguments_allowed = arguments_allowed;
     ctx.return_allowed = true;
+    ctx.using_allowed = true;
     ctx.loop_depth = 0;
     ctx.breakable_depth = 0;
     ctx.labels.clear();
@@ -367,6 +382,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.super_call_allowed = saved.super_call_allowed;
     ctx.arguments_allowed = saved.arguments_allowed;
     ctx.return_allowed = saved.return_allowed;
+    ctx.using_allowed = saved.using_allowed;
     ctx.loop_depth = saved.loop_depth;
     ctx.breakable_depth = saved.breakable_depth;
     ctx.labels = saved.labels;
@@ -392,10 +408,24 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     kind: StmtListKind,
     stmts: &[Node<Stmt>],
   ) -> Result<(), VmError> {
+    let saved_using_allowed = ctx.using_allowed;
+    match kind {
+      StmtListKind::VarScope => {}
+      // Block-like statement lists are valid `using` containers.
+      StmtListKind::BlockLike => {
+        ctx.using_allowed = true;
+      }
+      // Switch clause bodies disallow `using` declarations directly within the clause's StatementList.
+      StmtListKind::SwitchClause => {
+        ctx.using_allowed = false;
+      }
+    }
+
     self.check_declaration_early_errors_in_stmt_list(ctx, kind, stmts)?;
     for stmt in stmts {
       self.visit_stmt(ctx, stmt)?;
     }
+    ctx.using_allowed = saved_using_allowed;
     Ok(())
   }
 
@@ -490,7 +520,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             &var_names,
           )?;
         }
-        Stmt::FunctionDecl(decl) if kind == StmtListKind::BlockLike => {
+        Stmt::FunctionDecl(decl) if matches!(kind, StmtListKind::BlockLike | StmtListKind::SwitchClause) => {
           let Some(name) = decl.stx.name.as_ref() else {
             if decl.stx.export_default {
               continue;
@@ -1222,35 +1252,56 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       }
     }
 
-    match &stmt.init {
-      ForTripleStmtInit::None => {}
-      ForTripleStmtInit::Expr(expr) => self.visit_expr(ctx, expr)?,
-      ForTripleStmtInit::Decl(decl) => self.visit_var_decl(ctx, &decl.stx)?,
-    }
-    if let Some(cond) = &stmt.cond {
-      self.visit_expr(ctx, cond)?;
-    }
-    if let Some(post) = &stmt.post {
-      self.visit_expr(ctx, post)?;
-    }
-    ctx.loop_depth = ctx.loop_depth.saturating_add(1);
-    ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
-    let result = self.visit_for_body(ctx, &stmt.body.stx);
-    ctx.loop_depth = ctx.loop_depth.saturating_sub(1);
-    ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+    let saved_using_allowed = ctx.using_allowed;
+    // `ForStatement` is a valid `using` container (for classic Script goal symbol restrictions).
+    ctx.using_allowed = true;
+    let result = (|| {
+      match &stmt.init {
+        ForTripleStmtInit::None => {}
+        ForTripleStmtInit::Expr(expr) => self.visit_expr(ctx, expr)?,
+        ForTripleStmtInit::Decl(decl) => self.visit_var_decl(ctx, &decl.stx)?,
+      }
+      if let Some(cond) = &stmt.cond {
+        self.visit_expr(ctx, cond)?;
+      }
+      if let Some(post) = &stmt.post {
+        self.visit_expr(ctx, post)?;
+      }
+      ctx.loop_depth = ctx.loop_depth.saturating_add(1);
+      ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
+      let result = self.visit_for_body(ctx, &stmt.body.stx);
+      ctx.loop_depth = ctx.loop_depth.saturating_sub(1);
+      ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+      result
+    })();
+    ctx.using_allowed = saved_using_allowed;
     result
   }
 
   fn visit_for_in(&mut self, ctx: &mut ControlContext, stmt: &ForInStmt) -> Result<(), VmError> {
-    self.for_in_of_decl_header_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
-    self.visit_for_in_of_lhs(ctx, &stmt.lhs)?;
-    self.visit_expr(ctx, &stmt.rhs)?;
-    self.check_for_in_of_decl_head_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
-    ctx.loop_depth = ctx.loop_depth.saturating_add(1);
-    ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
-    let result = self.visit_for_body(ctx, &stmt.body.stx);
-    ctx.loop_depth = ctx.loop_depth.saturating_sub(1);
-    ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+    let saved_using_allowed = ctx.using_allowed;
+    // `ForInOfStatement` is a valid `using` container (for classic Script goal symbol restrictions).
+    ctx.using_allowed = true;
+    let result = (|| {
+      // `using` / `await using` declarations are syntactically invalid in `for-in` heads.
+      if let ForInOfLhs::Decl((mode, pat)) = &stmt.lhs {
+        if matches!(*mode, VarDeclMode::Using | VarDeclMode::AwaitUsing) {
+          self.push_error(pat.loc, "using declarations are not allowed in for-in heads")?;
+        }
+      }
+
+      self.for_in_of_decl_header_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
+      self.visit_for_in_of_lhs(ctx, &stmt.lhs)?;
+      self.visit_expr(ctx, &stmt.rhs)?;
+      self.check_for_in_of_decl_head_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
+      ctx.loop_depth = ctx.loop_depth.saturating_add(1);
+      ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
+      let result = self.visit_for_body(ctx, &stmt.body.stx);
+      ctx.loop_depth = ctx.loop_depth.saturating_sub(1);
+      ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+      result
+    })();
+    ctx.using_allowed = saved_using_allowed;
     result
   }
 
@@ -1260,21 +1311,28 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     loc: Loc,
     stmt: &ForOfStmt,
   ) -> Result<(), VmError> {
-    if stmt.await_ && !ctx.await_allowed {
-      self.push_error(
-        loc,
-        "for-await-of is only valid in async functions and modules",
-      )?;
-    }
-    self.for_in_of_decl_header_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
-    self.visit_for_in_of_lhs(ctx, &stmt.lhs)?;
-    self.visit_expr(ctx, &stmt.rhs)?;
-    self.check_for_in_of_decl_head_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
-    ctx.loop_depth = ctx.loop_depth.saturating_add(1);
-    ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
-    let result = self.visit_for_body(ctx, &stmt.body.stx);
-    ctx.loop_depth = ctx.loop_depth.saturating_sub(1);
-    ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+    let saved_using_allowed = ctx.using_allowed;
+    // `ForInOfStatement` is a valid `using` container (for classic Script goal symbol restrictions).
+    ctx.using_allowed = true;
+    let result = (|| {
+      if stmt.await_ && !ctx.await_allowed {
+        self.push_error(
+          loc,
+          "for-await-of is only valid in async functions and modules",
+        )?;
+      }
+      self.for_in_of_decl_header_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
+      self.visit_for_in_of_lhs(ctx, &stmt.lhs)?;
+      self.visit_expr(ctx, &stmt.rhs)?;
+      self.check_for_in_of_decl_head_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
+      ctx.loop_depth = ctx.loop_depth.saturating_add(1);
+      ctx.breakable_depth = ctx.breakable_depth.saturating_add(1);
+      let result = self.visit_for_body(ctx, &stmt.body.stx);
+      ctx.loop_depth = ctx.loop_depth.saturating_sub(1);
+      ctx.breakable_depth = ctx.breakable_depth.saturating_sub(1);
+      result
+    })();
+    ctx.using_allowed = saved_using_allowed;
     result
   }
 
@@ -1405,7 +1463,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if let Some(case) = &branch.case {
       self.visit_expr(ctx, case)?;
     }
-    self.visit_stmt_list(ctx, StmtListKind::BlockLike, &branch.body)
+    self.visit_stmt_list(ctx, StmtListKind::SwitchClause, &branch.body)
   }
 
   fn visit_label(
@@ -1815,6 +1873,19 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       decl.mode,
       VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
     );
+    let using_mode = matches!(decl.mode, VarDeclMode::Using | VarDeclMode::AwaitUsing);
+    if using_mode && !ctx.using_allowed {
+      // Explicit Resource Management early error (tc39/proposal-explicit-resource-management):
+      // - In Script goal, `using` declarations are only permitted within specific syntactic containers.
+      // - Additionally, `using` / `await using` declarations are disallowed directly within
+      //   CaseClause/DefaultClause statement lists.
+      //
+      // We model this via `ctx.using_allowed`, which is toggled by the walker when entering/exiting
+      // those containers.
+      if let Some(first) = decl.declarators.first() {
+        self.push_error(first.pattern.loc, "using declarations are not allowed in this context")?;
+      }
+    }
     for declarator in &decl.declarators {
       if lexical_mode {
         let mut names: Vec<(String, Loc)> = Vec::new();
@@ -1825,11 +1896,26 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           }
         }
       }
+
+      // Explicit Resource Management: `using` / `await using` only permit BindingIdentifier in each
+      // declarator (no destructuring patterns).
+      if using_mode && !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+        self.push_error(
+          declarator.pattern.loc,
+          "using declarations may not use destructuring patterns",
+        )?;
+      }
+
       if declarator.initializer.is_none() {
         if decl.mode == VarDeclMode::Const {
           self.push_error(
             declarator.pattern.loc,
             "Missing initializer in const declaration",
+          )?;
+        } else if using_mode {
+          self.push_error(
+            declarator.pattern.loc,
+            "Missing initializer in using declaration",
           )?;
         } else {
           // Destructuring `var`/`let` declarations require an initializer (early error).
