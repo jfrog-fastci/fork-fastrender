@@ -432,6 +432,49 @@ fn range_offsets_ignore_shadow_root_pseudo_child() {
 }
 
 #[test]
+fn range_offsets_ignore_shadow_root_when_shadow_template_is_not_first_child() {
+  // Ensure tree-child offset semantics are correct even when the declarative shadow root template is
+  // not the first light DOM child (the shadow root is still stored at index 0 in dom2).
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>",
+    "<p id=before></p>",
+    "<template shadowrootmode=open></template>",
+    "<p id=after></p>",
+    "</div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let before = doc.get_element_by_id("before").expect("before node not found");
+  let after = doc.get_element_by_id("after").expect("after node not found");
+
+  let shadow_root = doc.node(host).children[0];
+  assert!(
+    matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }),
+    "expected host to have an attached ShadowRoot"
+  );
+  assert_eq!(doc.node(host).children[1], before);
+  assert_eq!(doc.node(host).children[2], after);
+
+  // Offset=1 refers to the boundary after the first light child (`before`), not after the ShadowRoot.
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 1).unwrap();
+  doc.range_set_end(range, before, 0).unwrap();
+  assert_range_collapsed(&doc, range, before, 0);
+
+  // Offset 2 is after both light DOM children; offset 3 must be rejected (ShadowRoot does not count).
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 2).unwrap();
+  assert!(matches!(
+    doc.range_set_start(range, host, 3),
+    Err(DomError::IndexSizeError)
+  ));
+}
+
+#[test]
 fn live_range_pre_insert_increments_offsets_and_remove_roundtrips() {
   let html = "<!doctype html><html><body><div id=c><span id=a></span><span id=b></span></div></body></html>";
   let mut doc: Document = parse_html(html).unwrap();
