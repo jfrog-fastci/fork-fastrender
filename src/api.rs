@@ -2860,6 +2860,10 @@ impl PreparedDocument {
   /// offset, or viewport-relative units (vw/vh). The returned pixmap contains the pixels that would
   /// appear in the full-frame render within `region` (after clamping to the output viewport).
   ///
+  /// Note: for non-integer device pixel ratios, the effective painted region may be snapped outward
+  /// to device-pixel boundaries so the returned pixmap can be composited as a direct crop of a
+  /// full-frame render without introducing subpixel shifts.
+  ///
   /// This is suitable for incremental repaint compositing, where the caller wants to repaint only
   /// a sub-rectangle of an existing viewport.
   ///
@@ -5277,6 +5281,82 @@ mod prepared_document_region_paint_tests {
       "region paint output must match full-frame crop"
     );
   }
+
+  #[test]
+  fn prepared_document_region_paint_matches_full_frame_crop_with_fractional_dpr() {
+    let renderer = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+    let pool = FastRenderPool::with_config(
+      FastRenderPoolConfig::new()
+        .with_renderer_config(renderer)
+        .with_pool_size(1),
+    )
+    .expect("pool");
+
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; background: white; }
+      body { height: 2000px; }
+      .spacer { height: 50px; }
+      #sticky { position: sticky; top: 0; height: 20px; background: rgb(0, 200, 0); }
+      #vw { position: absolute; left: 0; top: 200px; width: 50vw; height: 10px; background: rgb(200, 0, 0); }
+      #blur { position: absolute; left: 40px; top: 120px; width: 80px; height: 80px; background: rgb(0, 0, 0); filter: blur(20px); }
+    </style>
+  </head>
+  <body>
+    <div class="spacer"></div>
+    <div id="sticky"></div>
+    <div id="vw"></div>
+    <div id="blur"></div>
+  </body>
+</html>
+"#;
+
+    // Use a fractional device pixel ratio to exercise device-pixel snapping in the region paint
+    // path.
+    let dpr = 1.5;
+    let prepared = pool
+      .prepare_html_document(
+        html,
+        RenderOptions::new()
+          .with_viewport(200, 200)
+          .with_device_pixel_ratio(dpr),
+      )
+      .expect("prepare");
+
+    let options = PreparedPaintOptions::new().with_scroll(0.0, 80.0);
+    let full = prepared
+      .paint_with_options_frame(options.clone())
+      .expect("paint full");
+
+    // Intentionally choose a region whose device-pixel boundaries land on fractional CSS
+    // coordinates to catch subpixel alignment bugs.
+    let region = Rect::from_xywh(21.0, 3.0, 159.0, 157.0);
+    let (region_frame, effective_region) = prepared
+      .paint_with_options_region_frame(options, region)
+      .expect("paint region");
+
+    assert_eq!(
+      region_frame.scroll_state, full.scroll_state,
+      "expected region paint to apply the same effective scroll state as full-frame paint"
+    );
+
+    let crop_x = ((effective_region.x() * dpr).round().max(0.0)) as u32;
+    let crop_y = ((effective_region.y() * dpr).round().max(0.0)) as u32;
+    let crop_w = ((effective_region.width() * dpr).round().max(1.0)) as u32;
+    let crop_h = ((effective_region.height() * dpr).round().max(1.0)) as u32;
+    let expected =
+      crop_pixmap_device(&full.pixmap, crop_x, crop_y, crop_w, crop_h).expect("crop full frame");
+
+    assert_eq!(region_frame.pixmap.width(), expected.width());
+    assert_eq!(region_frame.pixmap.height(), expected.height());
+    assert_eq!(
+      region_frame.pixmap.data(),
+      expected.data(),
+      "region paint output must match full-frame crop (fractional dpr)"
+    );
+  }
 }
 
 #[cfg(test)]
@@ -7099,19 +7179,6 @@ fn paint_fragment_tree_with_state(
   })
 }
 
-fn snap_rect_outward_to_int(rect: Rect) -> Rect {
-  let min_x = rect.min_x().floor();
-  let min_y = rect.min_y().floor();
-  let max_x = rect.max_x().ceil();
-  let max_y = rect.max_y().ceil();
-  Rect::from_xywh(
-    min_x,
-    min_y,
-    (max_x - min_x).max(1.0),
-    (max_y - min_y).max(1.0),
-  )
-}
-
 fn crop_pixmap_device(pixmap: &Pixmap, x: u32, y: u32, width: u32, height: u32) -> Result<Pixmap> {
   let src_w = pixmap.width();
   let src_h = pixmap.height();
@@ -7199,7 +7266,37 @@ fn paint_fragment_tree_region_with_state(
       message: format!("Region is empty: {region:?}"),
     }));
   }
-  let region = snap_rect_outward_to_int(region);
+  let scale = if device_pixel_ratio.is_finite() && device_pixel_ratio > 0.0 {
+    device_pixel_ratio
+  } else {
+    1.0
+  };
+  let viewport_device_w = ((target_width as f32) * scale).round().max(1.0) as i64;
+  let viewport_device_h = ((target_height as f32) * scale).round().max(1.0) as i64;
+
+  // Convert the requested CSS rect to a device-pixel-aligned rectangle so the resulting pixmap can
+  // be composited as a direct byte-for-byte crop of a full-frame render, even when
+  // `device_pixel_ratio` is fractional.
+  let region_device_min_x =
+    ((region.min_x() * scale).floor() as i64).clamp(0, viewport_device_w);
+  let region_device_min_y =
+    ((region.min_y() * scale).floor() as i64).clamp(0, viewport_device_h);
+  let region_device_max_x =
+    ((region.max_x() * scale).ceil() as i64).clamp(0, viewport_device_w);
+  let region_device_max_y =
+    ((region.max_y() * scale).ceil() as i64).clamp(0, viewport_device_h);
+
+  if region_device_max_x <= region_device_min_x || region_device_max_y <= region_device_min_y {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!("Region is empty after device-pixel snapping: {region:?}"),
+    }));
+  }
+  let effective_region = Rect::from_xywh(
+    region_device_min_x as f32 / scale,
+    region_device_min_y as f32 / scale,
+    (region_device_max_x - region_device_min_x) as f32 / scale,
+    (region_device_max_y - region_device_min_y) as f32 / scale,
+  );
 
   // Compute a conservative halo so effects that sample outside the target region (blur,
   // backdrop-filter, etc) produce byte-identical output with a full-frame render.
@@ -7230,27 +7327,36 @@ fn paint_fragment_tree_region_with_state(
     halo_list.append(build_list_for_root(extra, &paint_image_cache)?);
   }
   let halo_px = conservative_tile_halo_px(&halo_list, device_pixel_ratio)?;
-  let halo_css = if device_pixel_ratio.is_finite() && device_pixel_ratio > 0.0 {
-    halo_px as f32 / device_pixel_ratio
-  } else {
-    halo_px as f32
-  };
+  let halo_i64 = i64::try_from(halo_px).unwrap_or(i64::MAX);
+  let expanded_device_min_x = region_device_min_x.saturating_sub(halo_i64).max(0);
+  let expanded_device_min_y = region_device_min_y.saturating_sub(halo_i64).max(0);
+  let expanded_device_max_x = region_device_max_x.saturating_add(halo_i64).min(viewport_device_w);
+  let expanded_device_max_y = region_device_max_y.saturating_add(halo_i64).min(viewport_device_h);
 
-  let expanded = if halo_css.is_finite() && halo_css > 0.0 {
-    region.inflate(halo_css)
-  } else {
-    region
-  };
-  let Some(expanded) = expanded.intersection(viewport_bounds) else {
+  if expanded_device_max_x <= expanded_device_min_x || expanded_device_max_y <= expanded_device_min_y
+  {
     return Err(Error::Render(RenderError::InvalidParameters {
       message: "Expanded region does not intersect viewport".to_string(),
     }));
-  };
-  let expanded = snap_rect_outward_to_int(expanded);
+  }
 
-  let expanded_width_css = expanded.width().max(1.0).round() as u32;
-  let expanded_height_css = expanded.height().max(1.0).round() as u32;
-  let offset = Point::new(base_offset.x - expanded.x(), base_offset.y - expanded.y());
+  let expanded_device_w = (expanded_device_max_x - expanded_device_min_x) as u32;
+  let expanded_device_h = (expanded_device_max_y - expanded_device_min_y) as u32;
+
+  // Request a CSS viewport size large enough to cover the desired device-pixel rectangle (the
+  // painter rounds `(css * scale)` when allocating the backing pixmap). We'll crop down to the
+  // exact device rectangle afterward.
+  let expanded_width_css = ((expanded_device_w as f32) / scale).ceil().max(1.0) as u32;
+  let expanded_height_css = ((expanded_device_h as f32) / scale).ceil().max(1.0) as u32;
+
+  let expanded_origin_css = Point::new(
+    expanded_device_min_x as f32 / scale,
+    expanded_device_min_y as f32 / scale,
+  );
+  let offset = Point::new(
+    base_offset.x - expanded_origin_css.x,
+    base_offset.y - expanded_origin_css.y,
+  );
   let pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
     &fragment_tree,
     expanded_width_css,
@@ -7267,18 +7373,37 @@ fn paint_fragment_tree_region_with_state(
     max_iframe_depth,
   )?;
 
-  let pixmap = if expanded == region {
+  if pixmap.width() < expanded_device_w || pixmap.height() < expanded_device_h {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!(
+        "Expanded region render produced pixmap {}x{} smaller than expected {}x{}",
+        pixmap.width(),
+        pixmap.height(),
+        expanded_device_w,
+        expanded_device_h
+      ),
+    }));
+  }
+
+  let expanded_pixmap = if pixmap.width() == expanded_device_w && pixmap.height() == expanded_device_h
+  {
     pixmap
   } else {
-    let crop_x_css = (region.x() - expanded.x()).max(0.0);
-    let crop_y_css = (region.y() - expanded.y()).max(0.0);
-    let crop_w_css = region.width().max(1.0);
-    let crop_h_css = region.height().max(1.0);
-    let crop_x = ((crop_x_css * device_pixel_ratio).round().max(0.0)) as u32;
-    let crop_y = ((crop_y_css * device_pixel_ratio).round().max(0.0)) as u32;
-    let crop_w = ((crop_w_css * device_pixel_ratio).round().max(1.0)) as u32;
-    let crop_h = ((crop_h_css * device_pixel_ratio).round().max(1.0)) as u32;
-    crop_pixmap_device(&pixmap, crop_x, crop_y, crop_w, crop_h)?
+    crop_pixmap_device(&pixmap, 0, 0, expanded_device_w, expanded_device_h)?
+  };
+
+  let crop_x = (region_device_min_x - expanded_device_min_x) as u32;
+  let crop_y = (region_device_min_y - expanded_device_min_y) as u32;
+  let crop_w = (region_device_max_x - region_device_min_x) as u32;
+  let crop_h = (region_device_max_y - region_device_min_y) as u32;
+  let pixmap = if crop_x == 0
+    && crop_y == 0
+    && crop_w == expanded_device_w
+    && crop_h == expanded_device_h
+  {
+    expanded_pixmap
+  } else {
+    crop_pixmap_device(&expanded_pixmap, crop_x, crop_y, crop_w, crop_h)?
   };
 
   Ok((
@@ -7286,7 +7411,7 @@ fn paint_fragment_tree_region_with_state(
       pixmap,
       scroll_state,
     },
-    region,
+    effective_region,
   ))
 }
 
