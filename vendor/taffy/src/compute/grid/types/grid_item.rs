@@ -285,10 +285,10 @@ impl GridItem {
     let aspect_ratio = self.aspect_ratio;
     let padding = self
       .padding
-      .resolve_or_zero(grid_area_size, |val, basis| tree.calc(val, basis));
+      .resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
     let border = self
       .border
-      .resolve_or_zero(grid_area_size, |val, basis| tree.calc(val, basis));
+      .resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
     let padding_border_size = (padding + border).sum_axes();
     let box_sizing_adjustment = if self.box_sizing == BoxSizing::ContentBox {
       padding_border_size
@@ -1113,5 +1113,66 @@ mod tests {
         }
       ))
     );
+  }
+
+  #[test]
+  fn grid_item_percentage_padding_border_resolve_against_width() {
+    let mut tree = DummyTree {
+      style: Style::default(),
+    };
+
+    let style = Style::<DefaultCheapStr> {
+      box_sizing: BoxSizing::ContentBox,
+      size: Size {
+        width: Dimension::auto(),
+        height: Dimension::length(10.0),
+      },
+      padding: Rect {
+        left: LengthPercentage::length(0.0),
+        right: LengthPercentage::length(0.0),
+        top: LengthPercentage::percent(0.1),
+        bottom: LengthPercentage::percent(0.1),
+      },
+      border: Rect {
+        left: LengthPercentage::length(0.0),
+        right: LengthPercentage::length(0.0),
+        top: LengthPercentage::percent(0.05),
+        bottom: LengthPercentage::percent(0.05),
+      },
+      ..Default::default()
+    };
+
+    let mut item = GridItem::new_with_placement_style_and_order(
+      NodeId::new(1),
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      style,
+      AlignItems::Stretch,
+      AlignItems::Stretch,
+      0,
+    );
+
+    // Width and height are deliberately different so that incorrectly resolving vertical
+    // percentage padding/border against height will change the result.
+    let grid_area_size = Size {
+      width: Some(200.0),
+      height: Some(100.0),
+    };
+    let inner_node_size = Size {
+      width: Some(200.0),
+      height: Some(100.0),
+    };
+
+    let known = item.known_dimensions(&mut tree, inner_node_size, grid_area_size);
+    // top/bottom padding = 10% of width (200) => 20 each => 40 total
+    // top/bottom border = 5% of width (200) => 10 each => 20 total
+    // content-box height = 10 => border-box height = 10 + 40 + 20 = 70
+    assert_eq!(known.height, Some(70.0));
   }
 }
