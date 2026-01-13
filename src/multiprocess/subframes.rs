@@ -13,11 +13,19 @@ use super::registry::{FrameId, ProcessHandle, ProcessSpawner, RendererProcessId,
 /// This is not a `FrameId`: it is tied to the DOM node identity (as observed by the renderer) so
 /// the browser can keep `FrameId` stable across geometry/navigation updates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SubframeId(u64);
+pub struct SubframeToken(u64);
 
-impl SubframeId {
+impl SubframeToken {
   pub const fn new(raw: u64) -> Self {
     Self(raw)
+  }
+
+  /// MVP token generation: reuse the DOM pre-order id (`StyledNode.node_id`) for the `<iframe>`
+  /// element.
+  ///
+  /// This is stable across paints as long as the DOM structure is unchanged.
+  pub const fn from_styled_node_id(node_id: usize) -> Self {
+    Self(node_id as u64)
   }
 
   pub const fn raw(self) -> u64 {
@@ -52,7 +60,7 @@ pub enum BrowserToRendererFrame {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveredSubframe {
-  pub id: SubframeId,
+  pub subframe_token: SubframeToken,
   pub url: String,
   /// True when the iframe's origin is forced to be opaque regardless of URL.
   ///
@@ -147,7 +155,7 @@ pub struct FrameNode {
   pub force_opaque_origin: bool,
   pub process_id: RendererProcessId,
   pub embedding: Option<FrameEmbedding>,
-  children_by_subframe: HashMap<SubframeId, FrameId>,
+  children_by_subframe: HashMap<SubframeToken, FrameId>,
 }
 
 impl FrameNode {
@@ -185,20 +193,22 @@ impl FrameNode {
     }
   }
 
-  pub fn child_frame_id(&self, subframe_id: SubframeId) -> Option<FrameId> {
-    self.children_by_subframe.get(&subframe_id).copied()
+  pub fn child_frame_id(&self, subframe_token: SubframeToken) -> Option<FrameId> {
+    self.children_by_subframe.get(&subframe_token).copied()
   }
 
   pub fn child_count(&self) -> usize {
     self.children_by_subframe.len()
   }
 
-  fn set_child_mapping(&mut self, subframe_id: SubframeId, child_frame_id: FrameId) {
-    self.children_by_subframe.insert(subframe_id, child_frame_id);
+  fn set_child_mapping(&mut self, subframe_token: SubframeToken, child_frame_id: FrameId) {
+    self
+      .children_by_subframe
+      .insert(subframe_token, child_frame_id);
   }
 
-  fn remove_child_mapping(&mut self, subframe_id: SubframeId) -> Option<FrameId> {
-    self.children_by_subframe.remove(&subframe_id)
+  fn remove_child_mapping(&mut self, subframe_token: SubframeToken) -> Option<FrameId> {
+    self.children_by_subframe.remove(&subframe_token)
   }
 
   fn child_frame_ids(&self) -> Vec<FrameId> {
@@ -224,18 +234,22 @@ impl FrameTree {
     self.frames.insert(node.id, node);
   }
 
-  pub fn insert_child(&mut self, parent: FrameId, subframe_id: SubframeId, node: FrameNode) {
+  pub fn insert_child(&mut self, parent: FrameId, subframe_token: SubframeToken, node: FrameNode) {
     if let Some(parent_node) = self.frames.get_mut(&parent) {
-      parent_node.set_child_mapping(subframe_id, node.id);
+      parent_node.set_child_mapping(subframe_token, node.id);
     }
     self.frames.insert(node.id, node);
   }
 
-  pub fn detach_child(&mut self, parent: FrameId, subframe_id: SubframeId) -> Option<FrameId> {
+  pub fn detach_child(
+    &mut self,
+    parent: FrameId,
+    subframe_token: SubframeToken,
+  ) -> Option<FrameId> {
     self
       .frames
       .get_mut(&parent)
-      .and_then(|node| node.remove_child_mapping(subframe_id))
+      .and_then(|node| node.remove_child_mapping(subframe_token))
   }
 
   /// Remove a subtree rooted at `frame_id`, returning removed nodes in postorder (children first).
@@ -275,16 +289,18 @@ impl FrameTree {
       return frame_id;
     };
 
-    // `children_by_subframe` is a HashMap; sort by SubframeId so hit testing is deterministic.
-    let mut children: Vec<(SubframeId, FrameId)> = node
+    // `children_by_subframe` is a HashMap; sort by `SubframeToken` so hit testing is deterministic.
+    let mut children: Vec<(SubframeToken, FrameId)> = node
       .children_by_subframe
       .iter()
-      .map(|(&subframe_id, &child_frame_id)| (subframe_id, child_frame_id))
+      .map(|(&subframe_token, &child_frame_id)| (subframe_token, child_frame_id))
       .collect();
-    children.sort_by_key(|(subframe_id, child_frame_id)| (subframe_id.raw(), child_frame_id.raw()));
+    children.sort_by_key(|(subframe_token, child_frame_id)| {
+      (subframe_token.raw(), child_frame_id.raw())
+    });
 
     // Assume later DOM ids are painted above earlier ones; hit-test in reverse order (topmost first).
-    for (_subframe_id, child_frame_id) in children.into_iter().rev() {
+    for (_subframe_token, child_frame_id) in children.into_iter().rev() {
       let Some(child_node) = self.frames.get(&child_frame_id) else {
         continue;
       };
@@ -472,21 +488,21 @@ where
 
     let parent_dpr = sanitize_dpr(parent_dpr);
 
-    let existing_children: HashMap<SubframeId, FrameId> = self
+    let existing_children: HashMap<SubframeToken, FrameId> = self
       .frame_tree
       .frame(parent_frame_id)
       .map(|node| node.children_by_subframe.clone())
       .unwrap_or_default();
 
-    let mut reported_ids: HashSet<SubframeId> = HashSet::new();
+    let mut reported_ids: HashSet<SubframeToken> = HashSet::new();
     for subframe in &subframes {
-      reported_ids.insert(subframe.id);
+      reported_ids.insert(subframe.subframe_token);
     }
 
     // Destroy any existing frames that disappeared.
-    for (subframe_id, child_frame_id) in &existing_children {
-      if !reported_ids.contains(subframe_id) {
-        let _ = self.frame_tree.detach_child(parent_frame_id, *subframe_id);
+    for (subframe_token, child_frame_id) in &existing_children {
+      if !reported_ids.contains(subframe_token) {
+        let _ = self.frame_tree.detach_child(parent_frame_id, *subframe_token);
         self.destroy_frame_subtree(*child_frame_id);
       }
     }
@@ -501,7 +517,7 @@ where
       let already_exists = self
         .frame_tree
         .frame(parent_frame_id)
-        .and_then(|node| node.child_frame_id(subframe.id))
+        .and_then(|node| node.child_frame_id(subframe.subframe_token))
         .is_some();
 
       if !already_exists && current_child_count >= self.max_subframes_per_parent {
@@ -518,7 +534,7 @@ where
       let existing_child_frame_id = self
         .frame_tree
         .frame(parent_frame_id)
-        .and_then(|node| node.child_frame_id(subframe.id));
+        .and_then(|node| node.child_frame_id(subframe.subframe_token));
 
         if let Some(child_frame_id) = existing_child_frame_id {
           // Existing child frame: update geometry and handle potential process changes.
@@ -660,7 +676,7 @@ where
 
         self.frame_tree.insert_child(
           parent_frame_id,
-          subframe.id,
+          subframe.subframe_token,
           FrameNode::new_child(
             frame_id,
             parent_frame_id,
@@ -893,7 +909,7 @@ mod tests {
 
   fn test_subframe(id: u64, url: &str, w: f32, h: f32) -> DiscoveredSubframe {
     DiscoveredSubframe {
-      id: SubframeId::new(id),
+      subframe_token: SubframeToken::new(id),
       url: url.to_string(),
       force_opaque_origin: false,
       rect: Rect::from_xywh(0.0, 0.0, w, h),
@@ -928,7 +944,7 @@ mod tests {
     ));
     tree.insert_child(
       root,
-      SubframeId::new(1),
+      SubframeToken::new(1),
       FrameNode::new_child(
         child,
         root,
@@ -966,7 +982,7 @@ mod tests {
     ));
     tree.insert_child(
       root,
-      SubframeId::new(1),
+      SubframeToken::new(1),
       FrameNode::new_child(
         child,
         root,
@@ -1027,12 +1043,12 @@ mod tests {
     let child1_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(1)))
       .expect("child1 frame exists");
     let child2_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(2)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(2)))
       .expect("child2 frame exists");
 
     let child1_process = browser
@@ -1110,7 +1126,7 @@ mod tests {
     let child_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(1)))
       .expect("child frame exists");
     let child_process = browser
       .frame_tree
@@ -1127,6 +1143,159 @@ mod tests {
           if *frame_id == child_frame && *pid == root
       )),
       "expected CreateFrame on the parent process, got {parent_msgs:?}"
+    );
+  }
+
+  #[test]
+  fn stable_subframe_tokens_reuse_frame_ids_and_only_update_geometry() {
+    let log: Arc<Mutex<HashMap<RendererProcessId, Vec<BrowserToRendererFrame>>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let terminate_count = Arc::new(AtomicUsize::new(0));
+
+    let spawner = FakeSpawner::new(Arc::clone(&log), Arc::clone(&terminate_count));
+    let processes = RendererProcessRegistry::new(spawner);
+    let mut browser = SubframesController::new(processes);
+    browser.set_max_subframes_per_parent(8);
+
+    let root = browser.create_root_frame("https://example.test/");
+    let parent_process = browser
+      .frame_tree
+      .frame(root)
+      .expect("root frame exists")
+      .process_id;
+
+    let token = SubframeToken::new(1);
+    let url = "https://example.test/inner";
+
+    let rect_a = Rect::from_xywh(0.0, 0.0, 100.0, 50.0);
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: root,
+      parent_dpr: 1.0,
+      subframes: vec![DiscoveredSubframe {
+        subframe_token: token,
+        url: url.to_string(),
+        force_opaque_origin: false,
+        rect: rect_a,
+        clip: rect_a,
+        hit_testable: true,
+      }],
+    });
+
+    let child_a = browser
+      .frame_tree
+      .frame(root)
+      .and_then(|n| n.child_frame_id(token))
+      .expect("child frame exists");
+    let embedding_a = browser
+      .frame_tree
+      .frame(child_a)
+      .and_then(|n| n.embedding.as_ref())
+      .expect("child embedding exists");
+    assert_eq!(embedding_a.rect, rect_a);
+
+    let msgs_after_first = logged_msgs(&log, parent_process);
+    let create_count_first = msgs_after_first
+      .iter()
+      .filter(|msg| matches!(
+        msg,
+        BrowserToRendererFrame::CreateFrame { frame_id, .. } if *frame_id == child_a
+      ))
+      .count();
+    let destroy_count_first = msgs_after_first
+      .iter()
+      .filter(|msg| matches!(
+        msg,
+        BrowserToRendererFrame::DestroyFrame { frame_id } if *frame_id == child_a
+      ))
+      .count();
+    let resize_count_first = msgs_after_first
+      .iter()
+      .filter(|msg| matches!(
+        msg,
+        BrowserToRendererFrame::Resize { frame_id, .. } if *frame_id == child_a
+      ))
+      .count();
+    assert_eq!(create_count_first, 1);
+    assert_eq!(destroy_count_first, 0);
+    assert_eq!(resize_count_first, 1);
+
+    // Send the same token again with a different rect (e.g. reflow/scroll). The FrameId should be
+    // reused and no Create/Destroy churn should occur.
+    let rect_b = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: root,
+      parent_dpr: 1.0,
+      subframes: vec![DiscoveredSubframe {
+        subframe_token: token,
+        url: url.to_string(),
+        force_opaque_origin: false,
+        rect: rect_b,
+        clip: rect_b,
+        hit_testable: true,
+      }],
+    });
+
+    let child_b = browser
+      .frame_tree
+      .frame(root)
+      .and_then(|n| n.child_frame_id(token))
+      .expect("child frame still exists");
+    assert_eq!(child_b, child_a, "expected stable token to reuse FrameId");
+
+    let embedding_b = browser
+      .frame_tree
+      .frame(child_b)
+      .and_then(|n| n.embedding.as_ref())
+      .expect("child embedding exists");
+    assert_eq!(embedding_b.rect, rect_b);
+
+    let msgs_after_second = logged_msgs(&log, parent_process);
+    let create_count_second = msgs_after_second
+      .iter()
+      .filter(|msg| matches!(
+        msg,
+        BrowserToRendererFrame::CreateFrame { frame_id, .. } if *frame_id == child_a
+      ))
+      .count();
+    let destroy_count_second = msgs_after_second
+      .iter()
+      .filter(|msg| matches!(
+        msg,
+        BrowserToRendererFrame::DestroyFrame { frame_id } if *frame_id == child_a
+      ))
+      .count();
+    let resize_count_second = msgs_after_second
+      .iter()
+      .filter(|msg| matches!(
+        msg,
+        BrowserToRendererFrame::Resize { frame_id, .. } if *frame_id == child_a
+      ))
+      .count();
+    assert_eq!(create_count_second, 1);
+    assert_eq!(destroy_count_second, 0);
+    assert_eq!(
+      resize_count_second, 1,
+      "expected only geometry updates, not additional resizes"
+    );
+
+    assert_eq!(
+      browser.processes.process_count(),
+      1,
+      "expected child to reuse the parent process for same-site URLs"
+    );
+    assert_eq!(
+      browser
+        .frame_tree
+        .frame(root)
+        .map(|n| n.child_count())
+        .unwrap_or(0),
+      1,
+      "expected only one child frame"
+    );
+    assert_eq!(
+      terminate_count.load(Ordering::Relaxed),
+      0,
+      "expected no process churn for geometry-only updates"
     );
   }
 
@@ -1157,7 +1326,7 @@ mod tests {
     let child_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(1)))
       .expect("child frame exists");
     let child_process = browser
       .frame_tree
@@ -1245,17 +1414,17 @@ mod tests {
     let child0_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(0)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(0)))
       .expect("child0 frame exists");
     let child1_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(1)))
       .expect("child1 frame exists");
     let child2_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(2)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(2)))
       .expect("child2 frame exists");
 
     let child0_process = browser
@@ -1517,7 +1686,7 @@ mod tests {
     let child_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(1)))
       .expect("child frame exists");
     let child_process = browser
       .frame_tree

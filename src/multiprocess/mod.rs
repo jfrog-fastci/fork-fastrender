@@ -24,7 +24,7 @@ pub use registry::{
 
 pub use subframes::{
   should_isolate_child_frame, BrowserToRendererFrame, DiscoveredSubframe, FrameEmbedding, FrameNode,
-  FrameTree, RendererToBrowserFrame, SubframeId, SubframesController,
+  FrameTree, RendererToBrowserFrame, SubframeToken, SubframesController,
 };
 
 #[cfg(any(test, feature = "browser_ui"))]
