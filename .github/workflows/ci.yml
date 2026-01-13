@@ -566,6 +566,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Ensure timeout command is available (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+            exit 0
+          fi
+          # `timeout` is provided by GNU coreutils (`gtimeout` on macOS). Install it so we can
+          # enforce hard-kill timeouts like the Linux CI jobs do.
+          brew install coreutils
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
