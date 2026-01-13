@@ -2581,6 +2581,39 @@ mod tests {
   }
 
   #[test]
+  fn drag_autoscroll_delta_x_is_zero_outside_edge_zone() {
+    let rect = Rect::from_min_max(Pos2::new(100.0, 0.0), Pos2::new(200.0, 10.0));
+    assert_eq!(drag_autoscroll_delta_x(Pos2::new(150.0, 5.0), rect, 0.016), 0.0);
+  }
+
+  #[test]
+  fn drag_autoscroll_delta_x_points_left_and_right() {
+    let rect = Rect::from_min_max(Pos2::new(100.0, 0.0), Pos2::new(200.0, 10.0));
+
+    let left = drag_autoscroll_delta_x(Pos2::new(100.0, 5.0), rect, 1.0);
+    assert!((left + DRAG_AUTOSCROLL_MAX_SPEED_PX_PER_S).abs() < 0.01);
+
+    let right = drag_autoscroll_delta_x(Pos2::new(200.0, 5.0), rect, 1.0);
+    assert!((right - DRAG_AUTOSCROLL_MAX_SPEED_PX_PER_S).abs() < 0.01);
+  }
+
+  #[test]
+  fn drag_autoscroll_delta_x_ramps_quadratically_with_proximity() {
+    let rect = Rect::from_min_max(Pos2::new(100.0, 0.0), Pos2::new(200.0, 10.0));
+    let zone = DRAG_AUTOSCROLL_EDGE_ZONE_PX.min(rect.width() * 0.5);
+    assert!((zone - DRAG_AUTOSCROLL_EDGE_ZONE_PX).abs() < f32::EPSILON);
+
+    // Half-way into the edge zone => t=0.5 => t^2=0.25.
+    let x = rect.left() + zone * 0.5;
+    let dx = drag_autoscroll_delta_x(Pos2::new(x, 5.0), rect, 1.0);
+    assert!((dx + DRAG_AUTOSCROLL_MAX_SPEED_PX_PER_S * 0.25).abs() < 0.01);
+
+    // dt should scale the delta linearly.
+    let dx_half_dt = drag_autoscroll_delta_x(Pos2::new(x, 5.0), rect, 0.5);
+    assert!((dx_half_dt - dx * 0.5).abs() < 0.01);
+  }
+
+  #[test]
   fn sizing_without_overflow_prefers_max_width() {
     let sizing = compute_tab_strip_sizing(1200.0, 3);
     assert!(!sizing.overflow);
