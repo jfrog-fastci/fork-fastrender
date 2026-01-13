@@ -219,7 +219,20 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         .unwrap_or(0);
 
       let data = std::mem::take(&mut self.frame.data);
-      let is_keyframe = self.frame.is_keyframe.unwrap_or(false);
+      let is_keyframe = match self.frame.is_keyframe {
+        Some(is_keyframe) => is_keyframe,
+        None => {
+          let is_vp9 = self
+            .tracks
+            .iter()
+            .any(|track| track.id == self.frame.track && track.codec == MediaCodec::Vp9);
+          if is_vp9 {
+            vp9_is_keyframe(&data).unwrap_or(false)
+          } else {
+            false
+          }
+        }
+      };
 
       return Ok(Some(MediaPacket {
         track_id: self.frame.track,
@@ -344,6 +357,71 @@ fn map_demux_error(err: DemuxError) -> MediaError {
       MediaError::Io(err)
     }
     other => MediaError::Demux(other.to_string()),
+  }
+}
+
+fn vp9_is_keyframe(frame: &[u8]) -> MediaResult<bool> {
+  let mut bits = BitReader::new(frame);
+  let frame_marker = bits.read_bits_u8(2)?;
+  if frame_marker != 0b10 {
+    return Err(MediaError::Demux(format!(
+      "invalid VP9 frame marker: {frame_marker:#b}"
+    )));
+  }
+
+  let profile_low = bits.read_bits_u8(1)?;
+  let profile_high = bits.read_bits_u8(1)?;
+  let profile = profile_low | (profile_high << 1);
+  if profile == 3 {
+    let reserved = bits.read_bits_u8(1)?;
+    if reserved != 0 {
+      return Err(MediaError::Demux("invalid VP9 reserved profile bit".to_string()));
+    }
+  }
+
+  let show_existing_frame = bits.read_bits_u8(1)?;
+  if show_existing_frame == 1 {
+    return Ok(false);
+  }
+
+  let frame_type = bits.read_bits_u8(1)?;
+  Ok(frame_type == 0)
+}
+
+struct BitReader<'a> {
+  data: &'a [u8],
+  byte: usize,
+  bit: u8,
+}
+
+impl<'a> BitReader<'a> {
+  fn new(data: &'a [u8]) -> Self {
+    Self { data, byte: 0, bit: 0 }
+  }
+
+  fn read_bits_u8(&mut self, bits: u8) -> MediaResult<u8> {
+    let mut value = 0_u8;
+    for _ in 0..bits {
+      value <<= 1;
+      value |= self.read_bit()?;
+    }
+    Ok(value)
+  }
+
+  fn read_bit(&mut self) -> MediaResult<u8> {
+    let byte = self
+      .data
+      .get(self.byte)
+      .copied()
+      .ok_or(MediaError::Demux("VP9 header truncated".to_string()))?;
+    let shift = 7_u8.saturating_sub(self.bit);
+    let bit = (byte >> shift) & 1;
+    self.bit += 1;
+    if self.bit >= 8 {
+      self.bit = 0;
+      self.byte += 1;
+    }
+    Ok(bit)
   }
 }
 
@@ -496,5 +574,43 @@ mod tests {
       }
       last_pts_ns = Some(pkt.pts_ns);
     }
+  }
+
+  #[test]
+  fn vp9_keyframe_detection_reports_keyframe() {
+    // frame_marker=0b10, profile=0, show_existing_frame=0, frame_type=0 (keyframe)
+    let data = [0x82_u8];
+    assert_eq!(vp9_is_keyframe(&data).unwrap(), true);
+  }
+
+  #[test]
+  fn vp9_keyframe_detection_reports_interframe() {
+    // frame_marker=0b10, profile=0, show_existing_frame=0, frame_type=1 (interframe)
+    let data = [0x86_u8];
+    assert_eq!(vp9_is_keyframe(&data).unwrap(), false);
+  }
+
+  #[test]
+  fn vp9_keyframe_detection_reports_show_existing_frame_as_non_keyframe() {
+    // frame_marker=0b10, profile=0, show_existing_frame=1
+    let data = [0x88_u8];
+    assert_eq!(vp9_is_keyframe(&data).unwrap(), false);
+  }
+
+  #[test]
+  fn vp9_keyframe_detection_handles_profile3_bit_packing() {
+    // frame_marker=0b10, profile=3 (11), reserved=0, show_existing_frame=0, frame_type=0
+    let keyframe = [0xB0_u8];
+    assert_eq!(vp9_is_keyframe(&keyframe).unwrap(), true);
+
+    // frame_type=1
+    let interframe = [0xB2_u8];
+    assert_eq!(vp9_is_keyframe(&interframe).unwrap(), false);
+  }
+
+  #[test]
+  fn vp9_keyframe_detection_rejects_invalid_frame_marker() {
+    let err = vp9_is_keyframe(&[0x00_u8]).expect_err("invalid marker should error");
+    assert!(matches!(err, MediaError::Demux(_)));
   }
 }
