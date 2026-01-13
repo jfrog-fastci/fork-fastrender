@@ -37,6 +37,20 @@ static NEXT_TAB_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabGroupId(pub u64);
 
+/// Identifier for a renderer process assigned by the browser process manager.
+///
+/// This is browser-side state used for compositor/IPC routing; it is not persisted as part of the
+/// browsing session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RendererProcessId(pub u64);
+
+/// Debug-friendly key representing the "site" a tab is currently assigned to.
+///
+/// This is intended to support future site isolation (process-per-site) policies. The exact
+/// semantics are currently opaque to the UI layer and are owned by the browser process manager.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SiteKey(pub String);
+
 impl TabGroupId {
   /// Generate a new process-unique tab group id.
   pub fn new() -> Self {
@@ -369,6 +383,15 @@ impl std::fmt::Debug for FrameReadyUpdate {
 #[derive(Debug)]
 pub struct BrowserTabState {
   pub id: TabId,
+  /// Which renderer process (if any) is currently responsible for this tab.
+  ///
+  /// Renderer process assignment is owned by the browser process manager; newly created tabs start
+  /// unassigned and are expected to be assigned later.
+  pub renderer_process: Option<RendererProcessId>,
+  /// Optional site key recorded alongside renderer process assignment.
+  ///
+  /// This is primarily for debugging and future site isolation policies.
+  pub site_key: Option<SiteKey>,
   /// Whether this tab is pinned in the tab strip.
   ///
   /// Invariant (enforced by [`BrowserAppState`]): all pinned tabs are stored contiguously at the
@@ -441,6 +464,8 @@ impl BrowserTabState {
     let committed_url = initial_url.clone();
     Self {
       id: tab_id,
+      renderer_process: None,
+      site_key: None,
       pinned: false,
       group: None,
       cancel: CancelGens::new(),
@@ -1097,6 +1122,31 @@ impl BrowserAppState {
 
   pub fn tab_mut(&mut self, tab_id: TabId) -> Option<&mut BrowserTabState> {
     self.tabs.iter_mut().find(|t| t.id == tab_id)
+  }
+
+  /// Record the renderer process assignment for `tab_id`.
+  ///
+  /// This is intentionally not part of the persisted browser session; it is owned by the browser
+  /// process manager and can change across runs.
+  ///
+  /// Returns `true` if `tab_id` existed and was updated.
+  pub fn set_tab_renderer(
+    &mut self,
+    tab_id: TabId,
+    process_id: RendererProcessId,
+    site_key: Option<SiteKey>,
+  ) -> bool {
+    let Some(tab) = self.tab_mut(tab_id) else {
+      return false;
+    };
+    tab.renderer_process = Some(process_id);
+    tab.site_key = site_key;
+    true
+  }
+
+  /// Get the renderer process currently assigned to `tab_id`, if any.
+  pub fn tab_renderer(&self, tab_id: TabId) -> Option<RendererProcessId> {
+    self.tab(tab_id).and_then(|t| t.renderer_process)
   }
 
   pub fn active_tab(&self) -> Option<&BrowserTabState> {
@@ -2428,6 +2478,55 @@ mod browser_app_tests {
       "active tab must exist (active={active:?}, tabs={:?})",
       app.tabs.iter().map(|t| t.id).collect::<Vec<_>>()
     );
+  }
+
+  #[test]
+  fn newly_created_tabs_have_no_renderer_process_until_assigned() {
+    let tab = BrowserTabState::new(TabId(1_000_000), about_pages::ABOUT_NEWTAB.to_string());
+    assert_eq!(tab.renderer_process, None);
+    assert_eq!(tab.site_key, None);
+  }
+
+  #[test]
+  fn set_tab_renderer_updates_target_tab_and_is_noop_for_missing_tab() {
+    let mut app = BrowserAppState::new();
+
+    let a = TabId(1_000_000);
+    let b = TabId(1_000_001);
+
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+
+    assert_eq!(app.tab_renderer(a), None);
+    assert_eq!(app.tab_renderer(b), None);
+
+    let pid_a = RendererProcessId(10);
+    assert!(app.set_tab_renderer(
+      a,
+      pid_a,
+      Some(SiteKey("https://a.test".to_string()))
+    ));
+    assert_eq!(app.tab_renderer(a), Some(pid_a));
+    assert_eq!(app.tab(a).unwrap().site_key, Some(SiteKey("https://a.test".to_string())));
+    assert_eq!(app.tab_renderer(b), None);
+
+    // Missing tab id should not mutate existing tabs.
+    let pid_missing = RendererProcessId(11);
+    assert!(!app.set_tab_renderer(
+      TabId(9_999_999),
+      pid_missing,
+      Some(SiteKey("https://missing.test".to_string()))
+    ));
+    assert_eq!(app.tab_renderer(a), Some(pid_a));
+    assert_eq!(app.tab(a).unwrap().site_key, Some(SiteKey("https://a.test".to_string())));
+    assert_eq!(app.tab_renderer(b), None);
+    assert_eq!(app.tab(b).unwrap().site_key, None);
   }
 
   #[test]
