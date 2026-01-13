@@ -355,24 +355,24 @@ fn rapid_scroll_cancels_stale_paint() {
     support::format_messages(&captured)
   );
 
-  let latest = captured
+  let matching_scroll = captured
     .iter()
     .rev()
     .find_map(|msg| match msg {
       WorkerToUi::ScrollStateUpdated {
         tab_id: got,
         scroll,
-      } if *got == tab_id => Some(scroll.clone()),
+      } if *got == tab_id && scroll.viewport == frame_scroll.viewport => Some(scroll.clone()),
       _ => None,
     })
     .unwrap_or_else(|| {
       panic!(
-        "expected at least one ScrollStateUpdated; messages:\n{}",
+        "expected a ScrollStateUpdated matching the latest scroll frame; messages:\n{}",
         support::format_messages(&captured)
       )
     });
   assert_eq!(
-    latest.viewport,
+    matching_scroll.viewport,
     frame_scroll.viewport,
     "expected FrameReady scroll_state to match ScrollStateUpdated; messages:\n{}",
     support::format_messages(&captured)
