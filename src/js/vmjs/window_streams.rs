@@ -130,28 +130,76 @@ const READABLE_STREAM_TEE_SLOT_BRANCH1: usize = 3;
 const READABLE_STREAM_TEE_BRANCH_CANCEL_SLOT_READER: usize = 1;
 const READABLE_STREAM_TEE_BRANCH_CANCEL_SLOT_OTHER_BRANCH: usize = 2;
 
-fn chunk_sizes_for_len(mut len: usize) -> VecDeque<usize> {
-  let mut queue = VecDeque::new();
-  while len > 0 {
-    let take = len.min(STREAM_CHUNK_BYTES);
-    queue.push_back(take);
-    len -= take;
+fn push_byte_chunks(
+  queue: &mut VecDeque<Vec<u8>>,
+  buffered_len: &mut usize,
+  bytes: Vec<u8>,
+) -> Result<(), VmError> {
+  // For dynamic streams, enqueue boundaries must be preserved even for empty chunks.
+  if bytes.is_empty() {
+    queue
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    queue.push_back(Vec::new());
+    return Ok(());
   }
+
+  let len = bytes.len();
+  let new_buffered_len = buffered_len.checked_add(len).ok_or(VmError::OutOfMemory)?;
+
+  if len <= STREAM_CHUNK_BYTES {
+    queue
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    queue.push_back(bytes);
+    *buffered_len = new_buffered_len;
+    return Ok(());
+  }
+
+  let chunk_count = len
+    .checked_add(STREAM_CHUNK_BYTES - 1)
+    .ok_or(VmError::OutOfMemory)?
+    / STREAM_CHUNK_BYTES;
+  let mut new_chunks: VecDeque<Vec<u8>> = VecDeque::new();
+  new_chunks
+    .try_reserve(chunk_count)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut offset = 0;
+  while offset < len {
+    let end = (offset + STREAM_CHUNK_BYTES).min(len);
+    let slice = &bytes[offset..end];
+    let mut chunk = Vec::new();
+    chunk
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    chunk.extend_from_slice(slice);
+    new_chunks.push_back(chunk);
+    offset = end;
+  }
+
+  // Reserve on the destination queue only after chunk allocation succeeds, so we don't partially
+  // mutate the stream state on allocation failure.
   queue
+    .try_reserve(chunk_count)
+    .map_err(|_| VmError::OutOfMemory)?;
+  queue.append(&mut new_chunks);
+  *buffered_len = new_buffered_len;
+
+  Ok(())
 }
 
-fn push_chunk_sizes(queue: &mut VecDeque<usize>, len: usize) {
-  if len == 0 {
-    queue.push_back(0);
-    return;
+fn chunk_bytes(bytes: Vec<u8>) -> Result<(VecDeque<Vec<u8>>, usize), VmError> {
+  // Fixed streams treat a zero-length buffer as immediately closed, not as an empty chunk.
+  if bytes.is_empty() {
+    return Ok((VecDeque::new(), 0));
   }
-
-  let mut remaining = len;
-  while remaining > 0 {
-    let take = remaining.min(STREAM_CHUNK_BYTES);
-    queue.push_back(take);
-    remaining -= take;
-  }
+  let mut queue = VecDeque::new();
+  let mut buffered_len = 0;
+  // `push_byte_chunks` enqueues empty chunks for empty buffers, but we already handled the empty
+  // case above.
+  push_byte_chunks(&mut queue, &mut buffered_len, bytes)?;
+  Ok((queue, buffered_len))
 }
 
 fn utf8_len_from_utf16_units(units: &[u16]) -> Result<usize, VmError> {
@@ -216,16 +264,17 @@ struct StreamState {
   /// by internal close/terminate paths.
   close_requested: bool,
   error_message: Option<String>,
-  bytes: Vec<u8>,
-  /// Queue of chunk sizes (in bytes) remaining in the stream.
+  /// Byte chunks remaining in the stream.
   ///
-  /// For dynamic streams (`TransformStream.readable`), this preserves enqueue boundaries and
-  /// ensures empty chunks (`Uint8Array(0)`) still resolve pending reads.
-  queue: VecDeque<usize>,
+  /// For dynamic streams (`TransformStream.readable`), this preserves enqueue boundaries (after
+  /// internal `STREAM_CHUNK_BYTES` chunking) and ensures empty chunks (`Uint8Array(0)`) still
+  /// resolve pending reads.
+  byte_queue: VecDeque<Vec<u8>>,
+  /// Total number of bytes currently buffered across `byte_queue`.
+  buffered_byte_len: usize,
   /// Queue of string chunks (only used when `kind == StreamKind::Strings`).
   strings: VecDeque<String>,
   init: Option<LazyInit>,
-  offset: usize,
   /// A pending `reader.read()` call waiting for bytes (only used for dynamic streams).
   pending_reader: Option<WeakGcObject>,
   pending_read_roots: Option<PendingReadRoots>,
@@ -240,11 +289,10 @@ impl StreamState {
       high_water_mark,
       close_requested: false,
       error_message: None,
-      bytes: Vec::new(),
-      queue: VecDeque::new(),
+      byte_queue: VecDeque::new(),
+      buffered_byte_len: 0,
       strings: VecDeque::new(),
       init: None,
-      offset: 0,
       pending_reader: None,
       pending_read_roots: None,
       kind: StreamKind::Bytes,
@@ -258,11 +306,10 @@ impl StreamState {
       high_water_mark,
       close_requested: false,
       error_message: None,
-      bytes: Vec::new(),
-      queue: VecDeque::new(),
+      byte_queue: VecDeque::new(),
+      buffered_byte_len: 0,
       strings: VecDeque::new(),
       init: None,
-      offset: 0,
       pending_reader: None,
       pending_read_roots: None,
       kind: StreamKind::Strings,
@@ -276,34 +323,32 @@ impl StreamState {
       high_water_mark,
       close_requested: false,
       error_message: None,
-      bytes: Vec::new(),
-      queue: VecDeque::new(),
+      byte_queue: VecDeque::new(),
+      buffered_byte_len: 0,
       strings: VecDeque::new(),
       init: None,
-      offset: 0,
       pending_reader: None,
       pending_read_roots: None,
       kind: StreamKind::Uninitialized,
     }
   }
 
-  fn new_from_bytes(bytes: Vec<u8>, high_water_mark: f64) -> Self {
-    let queue = chunk_sizes_for_len(bytes.len());
-    Self {
+  fn new_from_bytes(bytes: Vec<u8>, high_water_mark: f64) -> Result<Self, VmError> {
+    let (byte_queue, buffered_byte_len) = chunk_bytes(bytes)?;
+    Ok(Self {
       locked: false,
       state: StreamLifecycleState::Readable,
       high_water_mark,
       close_requested: true,
       error_message: None,
-      bytes,
-      queue,
+      byte_queue,
+      buffered_byte_len,
       strings: VecDeque::new(),
       init: None,
-      offset: 0,
       pending_reader: None,
       pending_read_roots: None,
       kind: StreamKind::Bytes,
-    }
+    })
   }
 
   fn new_lazy(init: LazyInit, high_water_mark: f64) -> Self {
@@ -313,11 +358,10 @@ impl StreamState {
       high_water_mark,
       close_requested: true,
       error_message: None,
-      bytes: Vec::new(),
-      queue: VecDeque::new(),
+      byte_queue: VecDeque::new(),
+      buffered_byte_len: 0,
       strings: VecDeque::new(),
       init: Some(init),
-      offset: 0,
       pending_reader: None,
       pending_read_roots: None,
       kind: StreamKind::Bytes,
@@ -756,11 +800,10 @@ fn readable_stream_cancel_native(
     stream_state.state = StreamLifecycleState::Closed;
     stream_state.close_requested = true;
     stream_state.error_message = None;
-    stream_state.bytes.clear();
-    stream_state.queue.clear();
+    stream_state.byte_queue.clear();
+    stream_state.buffered_byte_len = 0;
     stream_state.strings.clear();
     stream_state.init = None;
-    stream_state.offset = 0;
     stream_state.pending_reader = None;
     stream_state.pending_read_roots = None;
     Ok(())
@@ -3319,10 +3362,7 @@ fn readable_stream_controller_desired_size_get_native(
     }
 
     let queue_size: f64 = match stream_state.kind {
-      StreamKind::Bytes => stream_state
-        .bytes
-        .len()
-        .saturating_sub(stream_state.offset) as f64,
+      StreamKind::Bytes => stream_state.buffered_byte_len as f64,
       StreamKind::Strings => stream_state.strings.len() as f64,
       StreamKind::Uninitialized => 0.0,
     };
@@ -3630,9 +3670,9 @@ fn reader_read_native(
         if let Some(init) = stream_state.init.take() {
           match init() {
             Ok(bytes) => {
-              stream_state.bytes = bytes;
-              stream_state.offset = 0;
-              stream_state.queue = chunk_sizes_for_len(stream_state.bytes.len());
+              let (byte_queue, buffered_byte_len) = chunk_bytes(bytes)?;
+              stream_state.byte_queue = byte_queue;
+              stream_state.buffered_byte_len = buffered_byte_len;
             }
             Err(err) => {
               stream_state.state = StreamLifecycleState::Errored;
@@ -3643,7 +3683,7 @@ fn reader_read_native(
           }
         }
 
-        if stream_state.queue.is_empty() {
+        if stream_state.byte_queue.is_empty() {
           if stream_state.close_requested {
             stream_state.state = StreamLifecycleState::Closed;
             return Ok((ReadOutcome::Done, None));
@@ -3654,24 +3694,22 @@ fn reader_read_native(
           return Ok((ReadOutcome::Pending, Some(stream_weak)));
         }
 
-        let Some(next_size) = stream_state.queue.pop_front() else {
+        let Some(chunk) = stream_state.byte_queue.pop_front() else {
           return Ok((
             ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
             None,
           ));
         };
+        if chunk.len() > stream_state.buffered_byte_len {
+          stream_state.buffered_byte_len = 0;
+          return Ok((
+            ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
+            None,
+          ));
+        }
+        stream_state.buffered_byte_len -= chunk.len();
 
-        let chunk = if next_size == 0 {
-          Vec::new()
-        } else {
-          let start = stream_state.offset;
-          let end = start + next_size;
-          let chunk = stream_state.bytes.get(start..end).unwrap_or(&[]).to_vec();
-          stream_state.offset = end;
-          chunk
-        };
-
-        if stream_state.close_requested && stream_state.queue.is_empty() {
+        if stream_state.close_requested && stream_state.byte_queue.is_empty() {
           stream_state.state = StreamLifecycleState::Closed;
         }
 
@@ -3889,11 +3927,10 @@ fn reader_cancel_native(
     stream_state.state = StreamLifecycleState::Closed;
     stream_state.close_requested = true;
     stream_state.error_message = None;
-    stream_state.bytes.clear();
-    stream_state.queue.clear();
+    stream_state.byte_queue.clear();
+    stream_state.buffered_byte_len = 0;
     stream_state.strings.clear();
     stream_state.init = None;
-    stream_state.offset = 0;
     let pending_reader = stream_state.pending_reader.take();
 
     let pending_read = pending_reader.map(|reader| PendingReadSettle {
@@ -4007,15 +4044,11 @@ fn enqueue_bytes_into_readable_stream(
       return Err(VmError::TypeError("ReadableStream is closed"));
     }
 
-    // Append bytes (may be empty).
-    if !bytes.is_empty() {
-      stream_state
-        .bytes
-        .try_reserve(bytes.len())
-        .map_err(|_| VmError::OutOfMemory)?;
-      stream_state.bytes.extend_from_slice(&bytes);
-    }
-    push_chunk_sizes(&mut stream_state.queue, bytes.len());
+    push_byte_chunks(
+      &mut stream_state.byte_queue,
+      &mut stream_state.buffered_byte_len,
+      bytes,
+    )?;
 
     let Some(pending_reader) = stream_state.pending_reader.take() else {
       debug_assert!(stream_state.pending_read_roots.is_none());
@@ -4023,23 +4056,22 @@ fn enqueue_bytes_into_readable_stream(
     };
     let pending_roots = stream_state.pending_read_roots.take();
 
-    let Some(next_size) = stream_state.queue.pop_front() else {
+    let Some(chunk) = stream_state.byte_queue.pop_front() else {
       return Ok(Some(PendingReadSettle {
         reader: pending_reader,
         roots: pending_roots,
         outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
       }));
     };
-
-    let chunk = if next_size == 0 {
-      Vec::new()
-    } else {
-      let start = stream_state.offset;
-      let end = start + next_size;
-      let chunk = stream_state.bytes.get(start..end).unwrap_or(&[]).to_vec();
-      stream_state.offset = end;
-      chunk
-    };
+    if chunk.len() > stream_state.buffered_byte_len {
+      stream_state.buffered_byte_len = 0;
+      return Ok(Some(PendingReadSettle {
+        reader: pending_reader,
+        roots: pending_roots,
+        outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
+      }));
+    }
+    stream_state.buffered_byte_len -= chunk.len();
 
     Ok(Some(PendingReadSettle {
       reader: pending_reader,
@@ -4126,7 +4158,7 @@ fn close_readable_stream(
 
     stream_state.close_requested = true;
     let queue_is_empty = match stream_state.kind {
-      StreamKind::Bytes => stream_state.queue.is_empty(),
+      StreamKind::Bytes => stream_state.byte_queue.is_empty(),
       StreamKind::Strings => stream_state.strings.is_empty(),
       StreamKind::Uninitialized => true,
     };
@@ -4165,11 +4197,10 @@ fn error_readable_stream(
     stream_state.state = StreamLifecycleState::Errored;
     stream_state.close_requested = true;
     stream_state.error_message = Some(error_message.clone());
-    stream_state.bytes.clear();
-    stream_state.queue.clear();
+    stream_state.byte_queue.clear();
+    stream_state.buffered_byte_len = 0;
     stream_state.strings.clear();
     stream_state.init = None;
-    stream_state.offset = 0;
 
     let pending_reader = stream_state.pending_reader.take();
     if let Some(reader) = pending_reader {
@@ -4212,7 +4243,7 @@ pub(crate) fn create_readable_byte_stream_from_bytes(
       .streams
       .insert(
         WeakGcObject::from(obj),
-        StreamState::new_from_bytes(bytes, DEFAULT_READABLE_STREAM_HIGH_WATER_MARK),
+        StreamState::new_from_bytes(bytes, DEFAULT_READABLE_STREAM_HIGH_WATER_MARK)?,
       );
     Ok(())
   })?;
@@ -6986,6 +7017,64 @@ mod tests {
       let value = read_result_prop(&mut scope, result2_obj, "value")?;
       assert!(matches!(value, Value::Undefined));
     }
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_byte_buffer_drops_consumed_chunks() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let realm_id = realm.realm().id();
+
+    let _ = realm.exec_script(
+      r#"
+        globalThis.stream = new ReadableStream({
+          start(controller) { globalThis.controller = controller; }
+        });
+        globalThis.reader = stream.getReader();
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.enqueue(new Uint8Array([4, 5, 6, 7]));
+      "#,
+    )?;
+
+    let stream_val = realm.exec_script("stream")?;
+    let Value::Object(stream_obj) = stream_val else {
+      return Err(VmError::InvariantViolation("expected stream object"));
+    };
+
+    let buffered_before = {
+      let registry = registry().lock().unwrap_or_else(|err| err.into_inner());
+      let state = registry
+        .realms
+        .get(&realm_id)
+        .ok_or(VmError::InvariantViolation("missing realm stream registry"))?;
+      let stream_state = state
+        .streams
+        .get(&WeakGcObject::from(stream_obj))
+        .ok_or(VmError::InvariantViolation("missing stream state"))?;
+      stream_state.buffered_byte_len
+    };
+
+    assert_eq!(buffered_before, 7);
+
+    let _ = realm.exec_script("globalThis.readPromise = reader.read();")?;
+
+    let buffered_after = {
+      let registry = registry().lock().unwrap_or_else(|err| err.into_inner());
+      let state = registry
+        .realms
+        .get(&realm_id)
+        .ok_or(VmError::InvariantViolation("missing realm stream registry"))?;
+      let stream_state = state
+        .streams
+        .get(&WeakGcObject::from(stream_obj))
+        .ok_or(VmError::InvariantViolation("missing stream state"))?;
+      stream_state.buffered_byte_len
+    };
+
+    assert_eq!(buffered_after, 4);
+    assert!(buffered_after < buffered_before);
 
     realm.teardown();
     Ok(())
