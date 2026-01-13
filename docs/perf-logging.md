@@ -84,7 +84,7 @@ include:
 
 - `schema_version` (integer) — currently `2` (omitted on some legacy/diagnostic events).
 - `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`, `stage`; plus
-  periodic diagnostics like `idle_summary` / `worker_wake_summary` / `cpu_summary`).
+  periodic diagnostics like `idle_sample` (legacy alias: `idle_summary`) / `worker_wake_summary` / `cpu_summary`).
 - `ts_ms` (integer) — monotonic timestamp in milliseconds since process start (some legacy/diagnostic
   events use `t_ms`).
 - `window_id` (string) — identifier for the window instance (or `"process"` for process-wide
@@ -208,7 +208,7 @@ Event payload fields (current schema in `src/bin/browser.rs`, `perf_log::PerfEve
 - `event=ttfp`: `tab_id`, `navigation_seqno`, `ttfp_ms`.
 - `event=cpu_summary`: `cpu_time_ms_total`, `cpu_percent_recent` (process CPU time over the last interval)
 
-Other JSONL diagnostics may be emitted (for example `event=idle_summary` and `event=worker_wake_summary`);
+Other JSONL diagnostics may be emitted (for example `event=idle_sample` (legacy: `idle_summary`) and `event=worker_wake_summary`);
 `browser_perf_log_summary` ignores unknown event types.
 
 To turn a captured JSONL log into p50/p95/max summary numbers, pipe it into the helper:
@@ -229,7 +229,7 @@ timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_l
 Filtering options (see `browser_perf_log_summary --help`):
 
 - `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
-- `--only-event frame|input|resize|ttfp|idle_summary|cpu_summary`: summarize one event type (unknown events are ignored for forward compatibility).
+- `--only-event frame|input|resize|ttfp|idle_sample|cpu_summary`: summarize one event type (unknown events are ignored for forward compatibility). (`idle_summary` is accepted as a legacy alias.)
 
 ## Interactive profiling (windowed browser UI)
 

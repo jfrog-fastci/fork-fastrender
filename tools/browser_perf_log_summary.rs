@@ -14,8 +14,11 @@ enum OnlyEvent {
   Input,
   Resize,
   Ttfp,
-  #[value(name = "idle_summary", alias = "idle-summary")]
-  IdleSummary,
+  #[value(
+    name = "idle_sample",
+    aliases = ["idle-sample", "idle_summary", "idle-summary"]
+  )]
+  IdleSample,
   #[value(name = "cpu_summary", alias = "cpu-summary")]
   CpuSummary,
 }
@@ -27,8 +30,20 @@ impl OnlyEvent {
       OnlyEvent::Input => "input",
       OnlyEvent::Resize => "resize",
       OnlyEvent::Ttfp => "ttfp",
-      OnlyEvent::IdleSummary => "idle_summary",
+      OnlyEvent::IdleSample => "idle_sample",
       OnlyEvent::CpuSummary => "cpu_summary",
+    }
+  }
+
+  fn matches(self, event: &str) -> bool {
+    match self {
+      OnlyEvent::Frame => event == "frame",
+      OnlyEvent::Input => event == "input",
+      OnlyEvent::Resize => event == "resize",
+      OnlyEvent::Ttfp => event == "ttfp",
+      // Backward compatibility: older logs emitted `idle_summary`.
+      OnlyEvent::IdleSample => event == "idle_sample" || event == "idle_summary",
+      OnlyEvent::CpuSummary => event == "cpu_summary",
     }
   }
 }
@@ -314,7 +329,7 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
     }
 
     if let Some(only) = filter.only_event {
-      if event != only.as_str() {
+      if !only.matches(event) {
         continue;
       }
     }
@@ -358,14 +373,15 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
           parse_required_ms(obj, "ttfp_ms").map_err(|err| format!("line {line_no}: {err}"))?;
         ttfp_ms.push(ttfp);
       }
-      "idle_summary" => {
-        let value = parse_optional_ms(obj, "idle_frames_per_sec")
+      "idle_sample" | "idle_summary" => {
+        let value = parse_optional_ms(obj, "idle_fps")
+          .or_else(|| parse_optional_ms(obj, "idle_frames_per_sec"))
           .or_else(|| parse_optional_ms(obj, "idle_frames"))
           .or_else(|| parse_optional_ms(obj, "idle_frame_count"))
           .or_else(|| parse_optional_ms(obj, "idle_frames_total"))
           .ok_or_else(|| {
             format!(
-              "line {line_no}: idle_summary event missing numeric field \"idle_frames_per_sec\" (or legacy \"idle_frames\"/\"idle_frame_count\"/\"idle_frames_total\")"
+              "line {line_no}: idle_sample event missing numeric field \"idle_fps\" (or legacy \"idle_frames_per_sec\"/\"idle_frames\"/\"idle_frame_count\"/\"idle_frames_total\")"
             )
           })?;
         idle_frames.push(value);
@@ -593,7 +609,7 @@ mod tests {
 {"schema_version":1,"event":"input","ts_ms":40,"window_id":"WindowId(1)","input_kind":"mouse","input_to_present_ms":50}
 {"schema_version":1,"event":"resize","ts_ms":50,"window_id":"WindowId(1)","resize_to_present_ms":60}
 {"schema_version":1,"event":"ttfp","ts_ms":70,"window_id":"WindowId(1)","ttfp_ms":80}
-{"event":"idle_summary","t_ms":90,"window_id":"WindowId(1)","idle_frames_per_sec":100}
+{"schema_version":1,"event":"idle_sample","t_ms":90,"window_id":"WindowId(1)","rolling_window_ms":2000,"idle_fps":100,"idle_frames_total":100,"idle_frames_window":200}
 {"schema_version":1,"event":"cpu_summary","ts_ms":100,"window_id":"process","cpu_time_ms_total":1234,"cpu_percent_recent":1.5}
 "#;
 
