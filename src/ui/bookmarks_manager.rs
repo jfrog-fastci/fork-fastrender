@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::{panel_header, panel_search_field, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon};
+use crate::ui::motion::UiMotion;
+
+use super::{icon_button, icon_tinted, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon};
 
 #[derive(Debug, Clone)]
 pub enum BookmarksManagerAction {
@@ -83,184 +85,124 @@ pub fn bookmarks_manager_side_panel(
     .resizable(true)
     .default_width(360.0)
     .show(ctx, |ui| {
-      panel_header(ui, BrowserIcon::BookmarkFilled, "Bookmarks", || {
-        out.close_requested = true;
+      // -----------------------------------------------------------------------
+      // Header
+      // -----------------------------------------------------------------------
+      ui.horizontal(|ui| {
+        icon_tinted(
+          ui,
+          BrowserIcon::BookmarkFilled,
+          ui.spacing().icon_width,
+          ui.visuals().hyperlink_color,
+        );
+        ui.heading("Bookmarks");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+          let close_resp = icon_button(ui, BrowserIcon::Close, "Close", true);
+          close_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close bookmarks manager")
+          });
+          if close_resp.clicked() {
+            out.close_requested = true;
+          }
+        });
       });
-      ui.separator();
-
-      if let Some(msg) = state.message.as_deref().filter(|s| !s.trim().is_empty()) {
-        ui.label(msg);
-      }
-      if let Some(err) = state.error.as_deref().filter(|s| !s.trim().is_empty()) {
-        ui.colored_label(ui.visuals().error_fg_color, err);
-      }
 
       let folder_options = folder_options(store);
       let folder_labels: HashMap<Option<BookmarkId>, String> =
         folder_options.iter().cloned().collect::<HashMap<_, _>>();
 
+      ui.add_space(ui.spacing().item_spacing.y.max(6.0));
+
+      // -----------------------------------------------------------------------
+      // Messages / errors (callouts)
+      // -----------------------------------------------------------------------
+      if let Some(msg) = state.message.as_deref().filter(|s| !s.trim().is_empty()) {
+        callout(ui, CalloutKind::Message, msg);
+        ui.add_space(ui.spacing().item_spacing.y.max(6.0));
+      }
+      if let Some(err) = state.error.as_deref().filter(|s| !s.trim().is_empty()) {
+        callout(ui, CalloutKind::Error, err);
+        ui.add_space(ui.spacing().item_spacing.y.max(6.0));
+      }
+
       // -----------------------------------------------------------------------
       // Search + toolbar
       // -----------------------------------------------------------------------
-      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let new_folder_resp = ui.button("New folder");
-        new_folder_resp
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Create new folder"));
-        if new_folder_resp.clicked() {
-          state.creating_folder = Some(CreateFolderState {
-            title: String::new(),
-            parent: None,
-            error: None,
-            request_focus_title: true,
-          });
-        }
+      search_bar(ui, state, &mut out);
+      ui.add_space(ui.spacing().item_spacing.y.max(6.0));
 
-        ui.add_space(6.0);
-
-        let search_out = panel_search_field(
-          ui,
-          "bookmarks_manager_search",
-          &mut state.search,
-          "Filter by title or URL…",
-          &mut state.request_focus_search,
-          "Search bookmarks",
-        );
-        if search_out.focus_requested
-          || search_out.response.has_focus()
-          || search_out.response.clicked()
-          || search_out
-            .clear_response
-            .as_ref()
-            .is_some_and(|resp| resp.clicked())
-        {
-          out.unfocus_page = true;
-        }
-      });
-
-      // Create-folder inline form.
-      if let Some(mut create) = state.creating_folder.take() {
-        ui.add_space(4.0);
-        let mut create_clicked = false;
-        let mut cancel_clicked = false;
-
-        ui.group(|ui| {
-          ui.label(egui::RichText::new("Create folder").strong());
-          ui.horizontal(|ui| {
-            ui.label("Title:");
-            let resp = ui.text_edit_singleline(&mut create.title);
-            resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Folder title")
-            });
-            if create.request_focus_title {
-              resp.request_focus();
-              create.request_focus_title = false;
-              out.unfocus_page = true;
-            }
-            if resp.has_focus() || resp.clicked() {
-              out.unfocus_page = true;
-            }
-          });
-          ui.horizontal(|ui| {
-            ui.label("Parent:");
-            folder_combo_box(
-              ui,
-              "create_folder_parent",
-              &folder_options,
-              &mut create.parent,
-              "Parent folder",
-            );
-          });
-          if let Some(err) = create.error.as_deref().filter(|s| !s.trim().is_empty()) {
-            ui.colored_label(ui.visuals().error_fg_color, err);
-          }
-          ui.horizontal(|ui| {
-            let create_resp = ui.button("Create");
-            create_resp
-              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Create folder"));
-            if create_resp.clicked() {
-              create_clicked = true;
-            }
-            let cancel_resp = ui.button("Cancel");
-            cancel_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel create folder")
-            });
-            if cancel_resp.clicked() {
-              cancel_clicked = true;
-            }
-          });
+      let new_folder_clicked = ui
+        .add_sized(
+          egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+          egui::Button::new("New folder"),
+        )
+        .clicked();
+      if new_folder_clicked {
+        state.creating_folder = Some(CreateFolderState {
+          title: String::new(),
+          parent: None,
+          error: None,
+          request_focus_title: true,
         });
-
-        if cancel_clicked {
-          state.creating_folder = None;
-        } else if create_clicked {
-          match store.create_folder(create.title.clone(), create.parent) {
-            Ok(_) => {
-              out.changed = true;
-              state.error = None;
-              state.message = Some("Folder created.".to_string());
-              state.creating_folder = None;
-            }
-            Err(err) => {
-              create.error = Some(format!("{err:?}"));
-              state.creating_folder = Some(create);
-            }
-          }
-        } else {
-          state.creating_folder = Some(create);
-        }
       }
 
-      ui.add_space(6.0);
-      ui.separator();
+      ui.add_space(ui.spacing().item_spacing.y.max(6.0));
+
+      // -----------------------------------------------------------------------
+      // Create folder / edit bookmark flows (cards)
+      // -----------------------------------------------------------------------
+      if state.creating_folder.is_some() {
+        create_folder_card(ui, state, store, &folder_options, &mut out);
+        ui.add_space(ui.spacing().item_spacing.y.max(8.0));
+      }
+
+      if state.editing_bookmark.is_some() {
+        edit_bookmark_card(ui, state, store, &folder_options, &mut out);
+        ui.add_space(ui.spacing().item_spacing.y.max(8.0));
+      }
 
       // -----------------------------------------------------------------------
       // Import / export
       // -----------------------------------------------------------------------
-      ui.collapsing("Import / Export (JSON)", |ui| {
+      ui.collapsing("Import / Export", |ui| {
         let profile_path = crate::ui::bookmarks_path();
-        ui.label(format!(
-          "Profile bookmarks file: {}",
-          profile_path.display()
-        ));
-        ui.add_space(4.0);
+        ui.label(
+          egui::RichText::new(format!("Profile file: {}", profile_path.display()))
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
 
-        ui.horizontal(|ui| {
-          let export_clipboard_resp = ui.button("Export (copy to clipboard)");
-          export_clipboard_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(
-              egui::WidgetType::Button,
-              "Export bookmarks JSON to clipboard",
-            )
+        ui.add_space(6.0);
+
+        section_card(ui, "Export", |ui| {
+          ui.horizontal_wrapped(|ui| {
+            if ui.button("Copy JSON to clipboard").clicked() {
+              match serde_json::to_string_pretty(store) {
+                Ok(json) => {
+                  state.export_json = Some(json.clone());
+                  ctx.output_mut(|o| o.copied_text = json);
+                  state.error = None;
+                  state.message = Some("Exported bookmarks JSON copied to clipboard.".to_string());
+                }
+                Err(err) => {
+                  state.error = Some(format!("Failed to export bookmarks: {err}"));
+                }
+              }
+            }
+            if let Some(json) = state.export_json.as_ref() {
+              if ui.button("Copy last export").clicked() {
+                ctx.output_mut(|o| o.copied_text = json.clone());
+              }
+            }
           });
-          if export_clipboard_resp.clicked() {
-            match serde_json::to_string_pretty(store) {
-              Ok(json) => {
-                state.export_json = Some(json.clone());
-                ctx.output_mut(|o| o.copied_text = json);
-                state.error = None;
-                state.message = Some("Exported bookmarks JSON copied to clipboard.".to_string());
-              }
-              Err(err) => {
-                state.error = Some(format!("Failed to export bookmarks: {err}"));
-              }
-            }
-          }
-          if let Some(json) = state.export_json.as_ref() {
-            let copy_last_export_resp = ui.button("Copy last export");
-            copy_last_export_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                "Copy last exported bookmarks JSON to clipboard",
-              )
-            });
-            if copy_last_export_resp.clicked() {
-              ctx.output_mut(|o| o.copied_text = json.clone());
-            }
-          }
-        });
 
-        ui.horizontal(|ui| {
-          ui.label("Export path:");
+          ui.add_space(6.0);
+          ui.label(
+            egui::RichText::new("Export path (optional)")
+              .small()
+              .color(ui.visuals().weak_text_color()),
+          );
+
           let resp = ui.add(
             egui::TextEdit::singleline(&mut state.export_path)
               .hint_text(profile_path.display().to_string())
@@ -271,57 +213,65 @@ pub fn bookmarks_manager_side_panel(
             out.unfocus_page = true;
           }
 
-          let use_profile_path_resp = ui.button("Use profile path");
-          use_profile_path_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Use profile path for export")
-          });
-          if use_profile_path_resp.clicked() {
-            state.export_path = profile_path.display().to_string();
-          }
+          ui.horizontal_wrapped(|ui| {
+            if ui.button("Use profile path").clicked() {
+              state.export_path = profile_path.display().to_string();
+            }
 
-          let export_file_resp = ui.button("Export file");
-          export_file_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Export bookmarks to file")
-          });
-          if export_file_resp.clicked() {
-            let raw = state.export_path.trim();
-            if raw.is_empty() {
-              state.error = Some("Export path is empty.".to_string());
-            } else {
-              match crate::ui::save_bookmarks_atomic(Path::new(raw), store) {
-                Ok(()) => {
-                  state.error = None;
-                  state.message = Some(format!("Exported bookmarks to {}.", raw));
-                }
-                Err(err) => {
-                  state.error = Some(format!("Failed to export bookmarks: {err}"));
+            if ui.button("Export file").clicked() {
+              let raw = state.export_path.trim();
+              if raw.is_empty() {
+                state.error = Some("Export path is empty.".to_string());
+              } else {
+                match crate::ui::save_bookmarks_atomic(Path::new(raw), store) {
+                  Ok(()) => {
+                    state.error = None;
+                    state.message = Some(format!("Exported bookmarks to {}.", raw));
+                  }
+                  Err(err) => {
+                    state.error = Some(format!("Failed to export bookmarks: {err}"));
+                  }
                 }
               }
             }
+          });
+
+          if let Some(json) = state.export_json.as_mut() {
+            ui.add_space(6.0);
+            ui.collapsing("Show exported JSON", |ui| {
+              let resp = ui.add(
+                egui::TextEdit::multiline(json)
+                  .code_editor()
+                  .desired_rows(6)
+                  .lock_focus(true)
+                  .desired_width(f32::INFINITY),
+              );
+              resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Exported bookmarks JSON")
+              });
+              if resp.has_focus() || resp.clicked() {
+                out.unfocus_page = true;
+              }
+            });
           }
         });
 
-        if let Some(json) = state.export_json.as_mut() {
-          let resp = ui.add(
-            egui::TextEdit::multiline(json)
-              .code_editor()
-              .desired_rows(6)
-              .lock_focus(true)
-              .desired_width(f32::INFINITY),
-          );
-          resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Exported bookmarks JSON")
-          });
-          if resp.has_focus() || resp.clicked() {
-            out.unfocus_page = true;
-          }
-        }
-
         ui.add_space(8.0);
-        ui.label("Import (replaces all bookmarks):");
 
-        ui.horizontal(|ui| {
-          ui.label("Import path:");
+        section_card(ui, "Import", |ui| {
+          ui.label(
+            egui::RichText::new("Import replaces all bookmarks.")
+              .small()
+              .color(ui.visuals().warn_fg_color),
+          );
+
+          ui.add_space(6.0);
+          ui.label(
+            egui::RichText::new("Import path (optional)")
+              .small()
+              .color(ui.visuals().weak_text_color()),
+          );
+
           let resp = ui.add(
             egui::TextEdit::singleline(&mut state.import_path)
               .hint_text(profile_path.display().to_string())
@@ -332,145 +282,87 @@ pub fn bookmarks_manager_side_panel(
             out.unfocus_page = true;
           }
 
-          let use_profile_path_resp = ui.button("Use profile path");
-          use_profile_path_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Use profile path for import")
-          });
-          if use_profile_path_resp.clicked() {
-            state.import_path = profile_path.display().to_string();
-          }
+          ui.horizontal_wrapped(|ui| {
+            if ui.button("Use profile path").clicked() {
+              state.import_path = profile_path.display().to_string();
+            }
 
-          let import_file_resp = ui.button("Import file");
-          import_file_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Import bookmarks from file")
-          });
-          if import_file_resp.clicked() {
-            let raw = state.import_path.trim();
-            if raw.is_empty() {
-              state.error = Some("Import path is empty.".to_string());
-            } else {
-              match std::fs::read_to_string(raw) {
-                Ok(json) => match BookmarkStore::from_json_str_migrating(&json) {
-                  Ok((imported, migration)) => {
-                    *store = imported;
-                    out.changed = true;
-                    out.request_flush = true;
-                    state.error = None;
-                    state.message = Some(format!("Imported bookmarks from file ({migration:?})."));
-                    state.import_json.clear();
-                    state.clear_transient();
-                  }
+            if ui.button("Import file").clicked() {
+              let raw = state.import_path.trim();
+              if raw.is_empty() {
+                state.error = Some("Import path is empty.".to_string());
+              } else {
+                match std::fs::read_to_string(raw) {
+                  Ok(json) => match BookmarkStore::from_json_str_migrating(&json) {
+                    Ok((imported, migration)) => {
+                      *store = imported;
+                      out.changed = true;
+                      out.request_flush = true;
+                      state.error = None;
+                      state.message =
+                        Some(format!("Imported bookmarks from file ({migration:?})."));
+                      state.import_json.clear();
+                      state.clear_transient();
+                    }
+                    Err(err) => {
+                      state.error = Some(format!("Failed to import bookmarks: {err:?}"));
+                    }
+                  },
                   Err(err) => {
-                    state.error = Some(format!("Failed to import bookmarks: {err:?}"));
+                    state.error = Some(format!("Failed to read {raw:?}: {err}"));
                   }
-                },
-                Err(err) => {
-                  state.error = Some(format!("Failed to read {raw:?}: {err}"));
                 }
               }
             }
-          }
-        });
-
-        let resp = ui.add(
-          egui::TextEdit::multiline(&mut state.import_json)
-            .code_editor()
-            .desired_rows(6)
-            .hint_text("Paste bookmarks JSON here…")
-            .desired_width(f32::INFINITY),
-        );
-        resp.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Import bookmarks JSON")
-        });
-        if resp.has_focus() || resp.clicked() {
-          out.unfocus_page = true;
-        }
-
-        ui.horizontal(|ui| {
-          let import_resp = ui.button("Import");
-          import_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Import bookmarks from JSON")
           });
-          if import_resp.clicked() {
-            match BookmarkStore::from_json_str_migrating(&state.import_json) {
-              Ok((imported, migration)) => {
-                *store = imported;
-                out.changed = true;
-                out.request_flush = true;
-                state.error = None;
-                state.message = Some(format!("Imported bookmarks ({migration:?})."));
-                state.import_json.clear();
-                state.clear_transient();
-              }
-              Err(err) => {
-                state.error = Some(format!("Failed to import bookmarks: {err:?}"));
+
+          ui.add_space(6.0);
+
+          let resp = ui.add(
+            egui::TextEdit::multiline(&mut state.import_json)
+              .code_editor()
+              .desired_rows(6)
+              .hint_text("Paste bookmarks JSON here…")
+              .desired_width(f32::INFINITY),
+          );
+          resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Import bookmarks JSON")
+          });
+          if resp.has_focus() || resp.clicked() {
+            out.unfocus_page = true;
+          }
+
+          ui.horizontal_wrapped(|ui| {
+            if ui.button("Import").clicked() {
+              match BookmarkStore::from_json_str_migrating(&state.import_json) {
+                Ok((imported, migration)) => {
+                  *store = imported;
+                  out.changed = true;
+                  out.request_flush = true;
+                  state.error = None;
+                  state.message = Some(format!("Imported bookmarks ({migration:?})."));
+                  state.import_json.clear();
+                  state.clear_transient();
+                }
+                Err(err) => {
+                  state.error = Some(format!("Failed to import bookmarks: {err:?}"));
+                }
               }
             }
-          }
-          let clear_resp = ui.button("Clear");
-          clear_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear import JSON")
+            if ui.button("Clear").clicked() {
+              state.import_json.clear();
+            }
           });
-          if clear_resp.clicked() {
-            state.import_json.clear();
-          }
         });
       });
 
-      ui.add_space(6.0);
+      ui.add_space(ui.spacing().item_spacing.y.max(6.0));
       ui.separator();
 
       // -----------------------------------------------------------------------
       // Bookmarks list
       // -----------------------------------------------------------------------
-      if store.roots.is_empty() {
-        ui.label("No bookmarks yet. Press Ctrl/Cmd+D to bookmark the current page.");
-        return;
-      }
-
-      let query = state.search.trim().to_string();
-      egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-          if query.is_empty() {
-            let roots = store.roots.clone();
-            render_nodes(
-              ui,
-              state,
-              store,
-              &roots,
-              &folder_options,
-              &folder_labels,
-              &mut out,
-            );
-          } else {
-            let results = store.search(&query, usize::MAX);
-            if results.is_empty() {
-              ui.label("No matching bookmarks.");
-              return;
-            }
-            for id in results {
-              let Some(BookmarkNode::Bookmark(entry)) = store.nodes.get(&id).cloned() else {
-                continue;
-              };
-              let parent_label = folder_labels
-                .get(&entry.parent)
-                .map(String::as_str)
-                .unwrap_or("Root");
-              ui.group(|ui| {
-                render_bookmark_row(
-                  ui,
-                  state,
-                  store,
-                  entry,
-                  &folder_options,
-                  parent_label,
-                  &mut out,
-                );
-              });
-            }
-          }
-        });
+      bookmarks_list(ui, state, store, &folder_options, &folder_labels, &mut out);
     });
 
   // Clear edit state if the underlying node disappeared.
@@ -484,6 +376,410 @@ pub fn bookmarks_manager_side_panel(
 
   out
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalloutKind {
+  Message,
+  Error,
+}
+
+fn callout(ui: &mut egui::Ui, kind: CalloutKind, text: &str) {
+  let visuals = ui.visuals();
+  let (icon, stroke, fill) = match kind {
+    CalloutKind::Message => {
+      let stroke = visuals.selection.stroke;
+      let fill = visuals.selection.bg_fill;
+      (BrowserIcon::Info, stroke, fill)
+    }
+    CalloutKind::Error => {
+      let color = visuals.error_fg_color;
+      let fill = with_alpha(color, 0.12);
+      let stroke = egui::Stroke::new(visuals.selection.stroke.width.max(1.0), color);
+      (BrowserIcon::Error, stroke, fill)
+    }
+  };
+
+  egui::Frame::none()
+    .fill(fill)
+    .stroke(stroke)
+    .rounding(visuals.widgets.inactive.rounding)
+    .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+    .show(ui, |ui| {
+      ui.horizontal(|ui| {
+        icon_tinted(ui, icon, ui.spacing().icon_width, stroke.color);
+        ui.label(text);
+      });
+    });
+}
+
+fn section_card(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+  let visuals = ui.visuals();
+  egui::Frame::none()
+    .fill(visuals.widgets.inactive.bg_fill)
+    .stroke(visuals.widgets.inactive.bg_stroke)
+    .rounding(visuals.widgets.inactive.rounding)
+    .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+    .show(ui, |ui| {
+      ui.label(egui::RichText::new(title).strong());
+      ui.add_space(6.0);
+      add_contents(ui);
+    });
+}
+
+fn search_bar(
+  ui: &mut egui::Ui,
+  state: &mut BookmarksManagerState,
+  out: &mut BookmarksManagerOutput,
+) {
+  let search_id = ui.make_persistent_id("bookmarks_manager_search");
+  if state.request_focus_search {
+    // Apply focus *before* building the `TextEdit` so it takes effect in the same frame.
+    ui.memory_mut(|mem| mem.request_focus(search_id));
+    state.request_focus_search = false;
+    out.unfocus_page = true;
+  }
+
+  let mut clear_clicked = false;
+  let visuals = ui.visuals();
+  egui::Frame::none()
+    .fill(visuals.widgets.inactive.bg_fill)
+    .stroke(visuals.widgets.inactive.bg_stroke)
+    .rounding(visuals.widgets.inactive.rounding)
+    .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+    .show(ui, |ui| {
+      ui.spacing_mut().item_spacing.x = ui.spacing().item_spacing.x.min(8.0);
+
+      icon_tinted(
+        ui,
+        BrowserIcon::Search,
+        ui.spacing().icon_width,
+        ui.visuals().weak_text_color(),
+      );
+
+      let resp = ui.add(
+        egui::TextEdit::singleline(&mut state.search)
+          .id(search_id)
+          .hint_text("Search bookmarks…")
+          .desired_width(f32::INFINITY)
+          .frame(false),
+      );
+      resp
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search bookmarks"));
+      if resp.has_focus() || resp.clicked() {
+        out.unfocus_page = true;
+      }
+
+      if !state.search.trim().is_empty() {
+        let clear = icon_button(ui, BrowserIcon::Close, "Clear search", true);
+        clear.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear search"));
+        if clear.clicked() {
+          clear_clicked = true;
+        }
+      }
+    });
+
+  if clear_clicked {
+    state.search.clear();
+    // Keep focus in the search field after clearing.
+    state.request_focus_search = true;
+    out.unfocus_page = true;
+  }
+}
+
+fn create_folder_card(
+  ui: &mut egui::Ui,
+  state: &mut BookmarksManagerState,
+  store: &mut BookmarkStore,
+  folder_options: &[(Option<BookmarkId>, String)],
+  out: &mut BookmarksManagerOutput,
+) {
+  let Some(mut create) = state.creating_folder.take() else {
+    return;
+  };
+
+  let mut create_clicked = false;
+  let mut cancel_clicked = false;
+
+  section_card(ui, "Create folder", |ui| {
+    ui.label(
+      egui::RichText::new("Folder name")
+        .small()
+        .color(ui.visuals().weak_text_color()),
+    );
+
+    let title_id = ui.make_persistent_id("create_folder_title");
+    if create.request_focus_title {
+      ui.memory_mut(|mem| mem.request_focus(title_id));
+      create.request_focus_title = false;
+      out.unfocus_page = true;
+    }
+    let resp = ui.add(
+      egui::TextEdit::singleline(&mut create.title)
+        .id(title_id)
+        .hint_text("Untitled folder")
+        .desired_width(f32::INFINITY),
+    );
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Folder name"));
+    if resp.has_focus() || resp.clicked() {
+      out.unfocus_page = true;
+    }
+
+    ui.add_space(6.0);
+    ui.label(
+      egui::RichText::new("Parent folder")
+        .small()
+        .color(ui.visuals().weak_text_color()),
+    );
+    folder_combo_box(
+      ui,
+      "create_folder_parent",
+      folder_options,
+      &mut create.parent,
+      "Parent folder",
+    );
+
+    if let Some(err) = create.error.as_deref().filter(|s| !s.trim().is_empty()) {
+      ui.add_space(6.0);
+      callout(ui, CalloutKind::Error, err);
+    }
+
+    ui.add_space(8.0);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+      let primary = primary_button(ui, "Create", !create.title.trim().is_empty());
+      if primary.clicked() {
+        create_clicked = true;
+      }
+      if ui.button("Cancel").clicked() {
+        cancel_clicked = true;
+      }
+    });
+  });
+
+  if cancel_clicked {
+    state.creating_folder = None;
+  } else if create_clicked {
+    match store.create_folder(create.title.clone(), create.parent) {
+      Ok(_) => {
+        out.changed = true;
+        state.error = None;
+        state.message = Some("Folder created.".to_string());
+        state.creating_folder = None;
+      }
+      Err(err) => {
+        create.error = Some(format!("{err:?}"));
+        state.creating_folder = Some(create);
+      }
+    }
+  } else {
+    state.creating_folder = Some(create);
+  }
+}
+
+fn edit_bookmark_card(
+  ui: &mut egui::Ui,
+  state: &mut BookmarksManagerState,
+  store: &mut BookmarkStore,
+  folder_options: &[(Option<BookmarkId>, String)],
+  out: &mut BookmarksManagerOutput,
+) {
+  let Some(mut edit) = state.editing_bookmark.take() else {
+    return;
+  };
+
+  let mut save_clicked = false;
+  let mut cancel_clicked = false;
+
+  section_card(ui, "Edit bookmark", |ui| {
+    ui.label(
+      egui::RichText::new("Title")
+        .small()
+        .color(ui.visuals().weak_text_color()),
+    );
+    let title_id = ui.make_persistent_id(("edit_bookmark_title", edit.id.0));
+    if edit.request_focus_title {
+      ui.memory_mut(|mem| mem.request_focus(title_id));
+      edit.request_focus_title = false;
+      out.unfocus_page = true;
+    }
+    let resp = ui.add(
+      egui::TextEdit::singleline(&mut edit.title)
+        .id(title_id)
+        .hint_text("Optional")
+        .desired_width(f32::INFINITY),
+    );
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Bookmark title"));
+    if resp.has_focus() || resp.clicked() {
+      out.unfocus_page = true;
+    }
+
+    ui.add_space(6.0);
+    ui.label(
+      egui::RichText::new("URL")
+        .small()
+        .color(ui.visuals().weak_text_color()),
+    );
+    let url_id = ui.make_persistent_id(("edit_bookmark_url", edit.id.0));
+    let resp = ui.add(
+      egui::TextEdit::singleline(&mut edit.url)
+        .id(url_id)
+        .desired_width(f32::INFINITY),
+    );
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Bookmark URL"));
+    if resp.has_focus() || resp.clicked() {
+      out.unfocus_page = true;
+    }
+
+    ui.add_space(6.0);
+    ui.label(
+      egui::RichText::new("Folder")
+        .small()
+        .color(ui.visuals().weak_text_color()),
+    );
+    folder_combo_box(
+      ui,
+      format!("edit_parent_{}", edit.id.0),
+      folder_options,
+      &mut edit.parent,
+      "Folder",
+    );
+
+    if let Some(err) = edit.error.as_deref().filter(|s| !s.trim().is_empty()) {
+      ui.add_space(6.0);
+      callout(ui, CalloutKind::Error, err);
+    }
+
+    ui.add_space(8.0);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+      let primary = primary_button(ui, "Save", true);
+      if primary.clicked() {
+        save_clicked = true;
+      }
+      if ui.button("Cancel").clicked() {
+        cancel_clicked = true;
+      }
+    });
+  });
+
+  if cancel_clicked {
+    state.editing_bookmark = None;
+    return;
+  }
+
+  if save_clicked {
+    let title = normalize_optional_string(&edit.title);
+    match store.update(edit.id, title, edit.url.clone(), edit.parent) {
+      Ok(()) => {
+        out.changed = true;
+        state.editing_bookmark = None;
+        state.error = None;
+        state.message = Some("Bookmark updated.".to_string());
+      }
+      Err(err) => {
+        edit.error = Some(format!("{err:?}"));
+        state.editing_bookmark = Some(edit);
+      }
+    }
+    return;
+  }
+
+  state.editing_bookmark = Some(edit);
+}
+
+fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+  let visuals = ui.visuals();
+  ui.add_enabled(
+    enabled,
+    egui::Button::new(label)
+      .fill(visuals.selection.bg_fill)
+      .stroke(visuals.selection.stroke),
+  )
+}
+
+fn bookmarks_list(
+  ui: &mut egui::Ui,
+  state: &mut BookmarksManagerState,
+  store: &mut BookmarkStore,
+  folder_options: &[(Option<BookmarkId>, String)],
+  folder_labels: &HashMap<Option<BookmarkId>, String>,
+  out: &mut BookmarksManagerOutput,
+) {
+  let visuals = ui.visuals();
+  let frame = egui::Frame::none()
+    .fill(visuals.widgets.inactive.bg_fill)
+    .stroke(visuals.widgets.inactive.bg_stroke)
+    .rounding(visuals.widgets.inactive.rounding)
+    .inner_margin(egui::Margin::same(0.0));
+
+  frame.show(ui, |ui| {
+    if store.roots.is_empty() {
+      ui.add_space(24.0);
+      ui.vertical_centered(|ui| {
+        icon_tinted(
+          ui,
+          BrowserIcon::BookmarkOutline,
+          32.0,
+          ui.visuals().weak_text_color(),
+        );
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("No bookmarks").strong());
+        ui.label(
+          egui::RichText::new("Press Ctrl/Cmd+D to bookmark the current page.")
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+      });
+      ui.add_space(24.0);
+      return;
+    }
+
+    let query = state.search.trim().to_string();
+    egui::ScrollArea::vertical()
+      .auto_shrink([false, false])
+      .show(ui, |ui| {
+        if query.is_empty() {
+          let roots = store.roots.clone();
+          render_nodes(ui, state, store, &roots, folder_options, folder_labels, out);
+        } else {
+          let results = store.search(&query, usize::MAX);
+          if results.is_empty() {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+              icon_tinted(
+                ui,
+                BrowserIcon::Search,
+                28.0,
+                ui.visuals().weak_text_color(),
+              );
+              ui.add_space(8.0);
+              ui.label(egui::RichText::new("No matches").strong());
+              ui.label(
+                egui::RichText::new("Try a different search.")
+                  .small()
+                  .color(ui.visuals().weak_text_color()),
+              );
+            });
+            ui.add_space(24.0);
+            return;
+          }
+
+          for id in results {
+            let Some(BookmarkNode::Bookmark(entry)) = store.nodes.get(&id).cloned() else {
+              continue;
+            };
+            let parent_label = folder_labels
+              .get(&entry.parent)
+              .map(String::as_str)
+              .unwrap_or("Root");
+            render_bookmark_row(ui, state, store, entry, folder_options, parent_label, out);
+          }
+        }
+      });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tree rendering
+// ---------------------------------------------------------------------------
 
 fn render_nodes(
   ui: &mut egui::Ui,
@@ -508,32 +804,85 @@ fn render_nodes(
       }
       BookmarkNode::Folder(folder) => {
         let children = folder.children.clone();
-        ui.collapsing(folder.title.clone(), |ui| {
-          ui.horizontal(|ui| {
-            let delete_a11y_label = format!("Delete folder: {}", folder.title);
-            let delete_resp = ui.small_button("Delete folder");
-            delete_resp.widget_info({
-              let label = delete_a11y_label.clone();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-            });
-            if delete_resp.clicked() {
-              if store.remove_by_id(folder.id) {
-                out.changed = true;
-                out.request_flush = true;
-                state.clear_transient();
-              }
+        let folder_id = folder.id;
+
+        let open_id = ui.make_persistent_id(("bookmarks_folder_open", folder_id.0));
+        let mut open = ui
+          .ctx()
+          .data_mut(|d| d.get_persisted::<bool>(open_id))
+          .unwrap_or(false);
+
+        let mut delete_clicked = false;
+
+        let title = folder.title.clone();
+        let item_count = children.len();
+
+        let row_resp = list_row(ui, ("folder_row", folder_id.0), false, |ui| {
+          ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let del = compact_button(ui, "Delete");
+            if del.clicked() {
+              delete_clicked = true;
             }
+
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+              ui.set_width(ui.available_width());
+              let arrow = if open { "▾" } else { "▸" };
+              ui.label(egui::RichText::new(format!("{arrow} {title}")).strong());
+              ui.label(
+                egui::RichText::new(format!(
+                  "{item_count} item{}",
+                  if item_count == 1 { "" } else { "s" }
+                ))
+                .small()
+                .color(ui.visuals().weak_text_color()),
+              );
+            });
           });
-          render_nodes(
-            ui,
-            state,
-            store,
-            &children,
-            folder_options,
-            folder_labels,
-            out,
-          );
         });
+
+        row_resp.widget_info({
+          let title = folder.title.clone();
+          move || {
+            egui::WidgetInfo::labeled(
+              egui::WidgetType::Button,
+              if open {
+                format!("Collapse folder: {title}")
+              } else {
+                format!("Expand folder: {title}")
+              },
+            )
+          }
+        });
+
+        if delete_clicked {
+          if store.remove_by_id(folder_id) {
+            out.changed = true;
+            out.request_flush = true;
+            state.clear_transient();
+          }
+          continue;
+        }
+
+        if row_resp.clicked() {
+          open = !open;
+          ui.ctx().data_mut(|d| d.insert_persisted(open_id, open));
+        }
+
+        if open {
+          ui.indent(open_id.with("indent"), |ui| {
+            ui.add_space(2.0);
+            render_nodes(
+              ui,
+              state,
+              store,
+              &children,
+              folder_options,
+              folder_labels,
+              out,
+            );
+          });
+        }
       }
     }
   }
@@ -544,94 +893,16 @@ fn render_bookmark_row(
   state: &mut BookmarksManagerState,
   store: &mut BookmarkStore,
   entry: super::bookmarks::BookmarkEntry,
-  folder_options: &[(Option<BookmarkId>, String)],
+  _folder_options: &[(Option<BookmarkId>, String)],
   parent_label: &str,
   out: &mut BookmarksManagerOutput,
 ) {
-  if state
+  let editing_this = state
     .editing_bookmark
     .as_ref()
-    .is_some_and(|edit| edit.id == entry.id)
-  {
-    let mut edit = state
-      .editing_bookmark
-      .take()
-      .expect("edit state must exist");
-    ui.label(egui::RichText::new("Edit bookmark").strong());
-    ui.horizontal(|ui| {
-      ui.label("Title:");
-      let resp = ui.text_edit_singleline(&mut edit.title);
-      resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Bookmark title"));
-      if edit.request_focus_title {
-        resp.request_focus();
-        edit.request_focus_title = false;
-        out.unfocus_page = true;
-      }
-      if resp.has_focus() || resp.clicked() {
-        out.unfocus_page = true;
-      }
-    });
-    ui.horizontal(|ui| {
-      ui.label("URL:");
-      let resp = ui.text_edit_singleline(&mut edit.url);
-      resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Bookmark URL"));
-      if resp.has_focus() || resp.clicked() {
-        out.unfocus_page = true;
-      }
-    });
-    ui.horizontal(|ui| {
-      ui.label("Folder:");
-      folder_combo_box(
-        ui,
-        format!("edit_parent_{}", entry.id.0),
-        folder_options,
-        &mut edit.parent,
-        "Folder",
-      );
-    });
-    if let Some(err) = edit.error.as_deref().filter(|s| !s.trim().is_empty()) {
-      ui.colored_label(ui.visuals().error_fg_color, err);
-    }
-    let mut save_clicked = false;
-    let mut cancel_clicked = false;
-    ui.horizontal(|ui| {
-      let save_resp = ui.button("Save");
-      save_resp
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Save bookmark"));
-      if save_resp.clicked() {
-        save_clicked = true;
-      }
-      let cancel_resp = ui.button("Cancel");
-      cancel_resp.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel edit bookmark")
-      });
-      if cancel_resp.clicked() {
-        cancel_clicked = true;
-      }
-    });
-    if cancel_clicked {
-      state.editing_bookmark = None;
-    } else if save_clicked {
-      let title = normalize_optional_string(&edit.title);
-      match store.update(edit.id, title, edit.url.clone(), edit.parent) {
-        Ok(()) => {
-          out.changed = true;
-          state.editing_bookmark = None;
-          state.error = None;
-          state.message = Some("Bookmark updated.".to_string());
-        }
-        Err(err) => {
-          edit.error = Some(format!("{err:?}"));
-          state.editing_bookmark = Some(edit);
-        }
-      }
-    } else {
-      state.editing_bookmark = Some(edit);
-    }
-    return;
-  }
+    .is_some_and(|edit| edit.id == entry.id);
 
-  let label = entry
+  let title = entry
     .title
     .as_deref()
     .map(str::trim)
@@ -639,75 +910,103 @@ fn render_bookmark_row(
     .unwrap_or(entry.url.as_str())
     .to_string();
 
-  ui.horizontal(|ui| {
-    let open_a11y_label = format!("Open bookmark: {label}");
-    let new_tab_a11y_label =
-      super::a11y_labels::bookmark_open_in_new_tab_label(entry.title.as_deref(), entry.url.as_str());
-    let edit_a11y_label =
-      super::a11y_labels::bookmark_edit_label(entry.title.as_deref(), entry.url.as_str());
-    let delete_a11y_label =
-      super::a11y_labels::bookmark_delete_label(entry.title.as_deref(), entry.url.as_str());
+  let url_display = crate::ui::url_display::truncate_url_middle(&entry.url, 80);
+  let folder_display = truncate_middle(parent_label, 48);
 
-    let resp = ui.button(label).on_hover_text(entry.url.clone());
-    resp.widget_info({
-      let label = open_a11y_label.clone();
-      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-    });
-    if resp.clicked() {
-      out
-        .actions
-        .push(BookmarksManagerAction::Open(entry.url.clone()));
-    }
+  let mut open_new_tab_clicked = false;
+  let mut edit_clicked = false;
+  let mut delete_clicked = false;
 
-    let new_tab_resp = ui.small_button("New tab");
-    new_tab_resp.widget_info({
-      let label = new_tab_a11y_label.clone();
-      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-    });
-    if new_tab_resp.clicked() {
-      out
-        .actions
-        .push(BookmarksManagerAction::OpenInNewTab(entry.url.clone()));
-    }
-    let edit_resp = ui.small_button("Edit");
-    edit_resp.widget_info({
-      let label = edit_a11y_label.clone();
-      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-    });
-    if edit_resp.clicked() {
-      state.editing_bookmark = Some(EditBookmarkState {
-        id: entry.id,
-        title: entry.title.unwrap_or_default(),
-        url: entry.url.clone(),
-        parent: entry.parent,
-        error: None,
-        request_focus_title: true,
-      });
-      out.unfocus_page = true;
-    }
-    let delete_resp = ui.small_button("Delete");
-    delete_resp.widget_info({
-      let label = delete_a11y_label.clone();
-      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-    });
-    if delete_resp.clicked() {
-      if store.remove_by_id(entry.id) {
-        out.changed = true;
-        out.request_flush = true;
-        state.clear_transient();
+  let row_resp = list_row(ui, ("bookmark_row", entry.id.0), editing_this, |ui| {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+      let del = compact_button(ui, "Delete");
+      if del.clicked() {
+        delete_clicked = true;
       }
+
+      let edit_btn = compact_button(ui, "Edit");
+      if edit_btn.clicked() {
+        edit_clicked = true;
+      }
+
+      let new_tab = icon_button(ui, BrowserIcon::OpenInNewTab, "Open in new tab", true);
+      new_tab.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open bookmark in new tab")
+      });
+      if new_tab.clicked() {
+        open_new_tab_clicked = true;
+      }
+
+      ui.add_space(8.0);
+
+      ui.vertical(|ui| {
+        ui.set_width(ui.available_width());
+
+        let title_text = if editing_this {
+          egui::RichText::new(title.clone())
+            .strong()
+            .color(ui.visuals().selection.stroke.color)
+        } else {
+          egui::RichText::new(title.clone()).strong()
+        };
+        ui.label(title_text);
+        ui.label(
+          egui::RichText::new(url_display.clone())
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+        ui.label(
+          egui::RichText::new(folder_display.clone())
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+      });
+    });
+  })
+  .on_hover_text(entry.url.clone());
+
+  row_resp.widget_info({
+    let title = title.clone();
+    let url = entry.url.clone();
+    move || {
+      egui::WidgetInfo::labeled(
+        egui::WidgetType::Button,
+        format!("Open bookmark: {title} ({url})"),
+      )
     }
   });
-  ui.label(
-    egui::RichText::new(entry.url)
-      .small()
-      .color(ui.visuals().weak_text_color()),
-  );
-  ui.label(
-    egui::RichText::new(format!("Folder: {parent_label}"))
-      .small()
-      .color(ui.visuals().weak_text_color()),
-  );
+
+  if row_resp.clicked() {
+    out
+      .actions
+      .push(BookmarksManagerAction::Open(entry.url.clone()));
+  }
+
+  if open_new_tab_clicked {
+    out
+      .actions
+      .push(BookmarksManagerAction::OpenInNewTab(entry.url.clone()));
+  }
+
+  if edit_clicked {
+    state.editing_bookmark = Some(EditBookmarkState {
+      id: entry.id,
+      title: entry.title.unwrap_or_default(),
+      url: entry.url.clone(),
+      parent: entry.parent,
+      error: None,
+      request_focus_title: true,
+    });
+    out.unfocus_page = true;
+  }
+
+  if delete_clicked {
+    if store.remove_by_id(entry.id) {
+      out.changed = true;
+      out.request_flush = true;
+      state.clear_transient();
+    }
+  }
 }
 
 fn folder_options(store: &BookmarkStore) -> Vec<(Option<BookmarkId>, String)> {
@@ -732,6 +1031,7 @@ fn folder_combo_box(
     .find(|(id, _)| id == value)
     .map(|(_, label)| label.as_str())
     .unwrap_or("Root");
+  let selected = truncate_middle(selected, 48);
   let response = egui::ComboBox::from_id_source(id_source)
     .selected_text(selected)
     .show_ui(ui, |ui| {
@@ -750,4 +1050,121 @@ fn normalize_optional_string(raw: &str) -> Option<String> {
   } else {
     Some(trimmed.to_string())
   }
+}
+
+fn truncate_middle(s: &str, max_chars: usize) -> String {
+  let s = s.trim();
+  if max_chars == 0 || s.is_empty() {
+    return String::new();
+  }
+  let chars: Vec<char> = s.chars().collect();
+  if chars.len() <= max_chars {
+    return s.to_string();
+  }
+  if max_chars <= 1 {
+    return "…".to_string();
+  }
+  let head = max_chars / 2;
+  let tail = max_chars - head - 1;
+  let mut out = String::new();
+  out.extend(chars.iter().take(head));
+  out.push('…');
+  out.extend(chars.iter().skip(chars.len().saturating_sub(tail)));
+  out
+}
+
+fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
+  let [r, g, b, a] = color.to_array();
+  let a = ((a as f32) * alpha).round().clamp(0.0, 255.0) as u8;
+  egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+  a + (b - a) * t
+}
+
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+  lerp(a as f32, b as f32, t).round().clamp(0.0, 255.0) as u8
+}
+
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+  let [ar, ag, ab, aa] = a.to_array();
+  let [br, bg, bb, ba] = b.to_array();
+  egui::Color32::from_rgba_unmultiplied(
+    lerp_u8(ar, br, t),
+    lerp_u8(ag, bg, t),
+    lerp_u8(ab, bb, t),
+    lerp_u8(aa, ba, t),
+  )
+}
+
+fn list_row(
+  ui: &mut egui::Ui,
+  id_source: impl std::hash::Hash,
+  selected: bool,
+  add_contents: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+  let row_id = ui.make_persistent_id(id_source);
+  let width = ui.available_width().max(0.0);
+  let min_height = (ui.spacing().interact_size.y * 2.2).max(56.0);
+  let (_alloc_id, rect) = ui.allocate_space(egui::vec2(width, min_height));
+  let response = ui.interact(rect, row_id, egui::Sense::click());
+
+  let visuals = ui.visuals();
+  let motion = UiMotion::from_ctx(ui.ctx());
+  let hover_t = motion.animate_bool(
+    ui.ctx(),
+    row_id.with("hover"),
+    ui.is_enabled() && response.hovered(),
+    motion.durations.hover_fade,
+  );
+
+  let base_fill = if selected {
+    visuals.selection.bg_fill
+  } else {
+    visuals.widgets.inactive.bg_fill
+  };
+  let hover_fill = if selected {
+    visuals.selection.bg_fill
+  } else {
+    visuals.widgets.hovered.bg_fill
+  };
+  let fill = lerp_color(base_fill, hover_fill, hover_t);
+
+  if ui.is_rect_visible(rect) {
+    ui.painter().rect_filled(rect, 0.0, fill);
+    ui.painter().line_segment(
+      [
+        egui::pos2(rect.left(), rect.bottom()),
+        egui::pos2(rect.right(), rect.bottom()),
+      ],
+      egui::Stroke::new(1.0, visuals.widgets.inactive.bg_stroke.color),
+    );
+
+    if response.has_focus() {
+      let stroke = visuals.selection.stroke;
+      ui.painter()
+        .rect_stroke(rect.shrink(1.0), egui::Rounding::same(0.0), stroke);
+    }
+  }
+
+  let inner = rect.shrink2(egui::vec2(12.0, 8.0));
+  ui.allocate_ui_at_rect(inner, |ui| {
+    ui.set_width(inner.width());
+    add_contents(ui);
+  });
+
+  response
+}
+
+fn compact_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+  ui.add(
+    egui::Button::new(label)
+      .small()
+      .min_size(egui::vec2(
+        ui.spacing().interact_size.y,
+        ui.spacing().interact_size.y,
+      ))
+      .wrap(false),
+  )
 }
