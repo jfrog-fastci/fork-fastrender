@@ -6,6 +6,9 @@ small set of syscalls are permitted once the sandbox is active.
 This doc describes a practical workflow for deriving/maintaining that allowlist as the renderer
 evolves.
 
+Related:
+- Linux IPC checklist (shared memory + FD passing): [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
+
 ## Trace syscalls locally
 
 Prereqs:

@@ -144,6 +144,22 @@ References:
 - `fstat(2)`: https://man7.org/linux/man-pages/man2/fstat.2.html
 - `mmap(2)`: https://man7.org/linux/man-pages/man2/mmap.2.html
 
+### 5) Size your control buffer correctly (to avoid accidental `MSG_CTRUNC`)
+
+If you expect up to `N` file descriptors in a message, size the `msg_control` buffer using
+`CMSG_SPACE(N * sizeof(int))` (not `CMSG_LEN`).
+
+If the control buffer is too small:
+- the kernel sets `MSG_CTRUNC`, and
+- some FDs may be dropped (Linux will close “excess” FDs in the receiver, but your protocol state is
+  now ambiguous).
+
+Treat `MSG_CTRUNC` as a hard error (see above) and consider it a bug if it ever happens in normal
+operation.
+
+References:
+- `cmsg(3)`: https://man7.org/linux/man-pages/man3/cmsg.3.html
+
 ---
 
 ## Strongly recommended receiver checks (defense-in-depth)
