@@ -10,8 +10,10 @@ use std::time::Duration;
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
     other => panic!("unexpected message while waiting for FrameReady: {other:?}"),
@@ -19,8 +21,10 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
 }
 
 fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::SetClipboardText { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for SetClipboardText for tab {tab_id:?}"));
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::SetClipboardText { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for SetClipboardText for tab {tab_id:?}"));
   match msg {
     WorkerToUi::SetClipboardText { text, .. } => text,
     other => panic!("unexpected message while waiting for SetClipboardText: {other:?}"),
@@ -33,7 +37,8 @@ fn run_copy(html: &str) -> String {
   let site = support::TempSite::new();
   let url = site.write("index.html", html);
 
-  let handle = spawn_ui_worker("fastr-ui-worker-document-selection-clipboard").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-document-selection-clipboard").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();
@@ -115,6 +120,15 @@ fn ui_document_selection_copy_preserves_preformatted_newlines() {
   let text = run_copy(
     r#"<!doctype html><meta charset="utf-8"><style>html,body{margin:0;padding:0}</style><pre>hello
 world</pre>"#,
+  );
+  assert_eq!(text, "hello\nworld");
+}
+
+#[test]
+fn ui_document_selection_copy_does_not_double_newline_after_pre_trailing_newline() {
+  let text = run_copy(
+    r#"<!doctype html><meta charset="utf-8"><style>html,body{margin:0;padding:0}</style><pre>hello
+</pre><p>world</p>"#,
   );
   assert_eq!(text, "hello\nworld");
 }

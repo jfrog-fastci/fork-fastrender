@@ -123,7 +123,10 @@ impl TextBuilder {
   }
 
   fn push_newline(&mut self) {
-    if matches!(self.last(), Some(LastToken::StructuralNewline)) {
+    if matches!(
+      self.last(),
+      Some(LastToken::StructuralNewline | LastToken::PreservedNewline)
+    ) {
       return;
     }
     self.trim_trailing_collapsible_spaces_and_tabs();
@@ -400,7 +403,9 @@ fn before_enter_box(builder: &mut TextBuilder, ctx: &mut WalkCtx, node: &BoxNode
     && !builder.out.is_empty()
     && !matches!(
       builder.last(),
-      Some(LastToken::StructuralNewline | LastToken::StructuralTab)
+      Some(
+        LastToken::StructuralNewline | LastToken::PreservedNewline | LastToken::StructuralTab
+      )
     )
   {
     builder.push_newline();
