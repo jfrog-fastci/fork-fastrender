@@ -7385,6 +7385,74 @@ impl DisplayListBuilder {
             }
           }
 
+          if let ReplacedType::Video { src, .. } = replaced_type {
+            if let Some(provider) = self.media_provider.as_ref() {
+              let (content_rect, clip_radii) =
+                self.replaced_content_rect_and_radii(rect, style_for_image);
+              let size_hint = Some(crate::media::MediaFrameSizeHint::new(
+                Size::new(content_rect.width().max(0.0), content_rect.height().max(0.0)),
+                self.device_pixel_ratio,
+              ));
+              if let Some(frame) = provider.video_frame(fragment.box_id(), src, size_hint) {
+                let image = frame;
+                let (dest_x, dest_y, dest_w, dest_h) = {
+                  let (fit, position, font_size, root_font_size) =
+                    if let Some(style) = fragment.style.as_deref() {
+                      (
+                        style.object_fit,
+                        style.object_position,
+                        style.font_size,
+                        style.root_font_size,
+                      )
+                    } else {
+                      (ObjectFit::Fill, default_object_position(), 16.0, 16.0)
+                    };
+
+                  compute_object_fit(
+                    fit,
+                    position,
+                    content_rect.width(),
+                    content_rect.height(),
+                    image.css_width,
+                    image.css_height,
+                    image.has_intrinsic_ratio,
+                    font_size,
+                    root_font_size,
+                    self.viewport,
+                  )
+                  .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
+                };
+
+                let dest_rect = Rect::from_xywh(
+                  content_rect.x() + dest_x,
+                  content_rect.y() + dest_y,
+                  dest_w,
+                  dest_h,
+                );
+
+                let clip_contents = Self::replaced_content_clip_item(
+                  style_for_image,
+                  content_rect,
+                  dest_rect,
+                  clip_radii,
+                );
+                if let Some(clip) = clip_contents.as_ref() {
+                  self.list.push(DisplayItem::PushClip(clip.clone()));
+                }
+                self.list.push(DisplayItem::Image(ImageItem {
+                  dest_rect,
+                  image,
+                  filter_quality: Self::image_filter_quality(fragment.style.as_deref()),
+                  src_rect: None,
+                }));
+                if clip_contents.is_some() {
+                  self.list.push(DisplayItem::PopClip);
+                }
+                break 'paint;
+              }
+            }
+          }
+
           let media_ctx = self.viewport.map(|(w, h)| {
             crate::style::media::MediaContext::screen(w, h)
               .with_device_pixel_ratio(self.device_pixel_ratio)
@@ -16071,6 +16139,75 @@ mod tests {
       slotted_node_ids: Vec::new(),
       children: vec![],
     }
+  }
+
+  #[test]
+  fn fork_preserves_media_provider_for_parallel_build() {
+    // Parallel display list building is clamped by `crate::system::cpu_budget()` (e.g. cgroup CPU
+    // quotas). When the budget is single-threaded, `DisplayListBuilder` will correctly fall back to
+    // serial traversal and will not exercise the `fork()` path.
+    if crate::system::cpu_budget() <= 1 {
+      return;
+    }
+
+    struct MockProvider;
+
+    impl crate::media::MediaFrameProvider for MockProvider {
+      fn video_frame(
+        &self,
+        _box_id: Option<usize>,
+        src: &str,
+        _size_hint: Option<crate::media::MediaFrameSizeHint>,
+      ) -> Option<Arc<ImageData>> {
+        if src == "v.mp4" {
+          Some(Arc::new(ImageData::new_pixels(1, 1, vec![0, 255, 0, 255])))
+        } else {
+          None
+        }
+      }
+    }
+
+    let video = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 0.0, 16.0, 16.0),
+      ReplacedType::Video {
+        src: "v.mp4".to_string(),
+        poster: None,
+        controls: false,
+      },
+    );
+    let sibling = FragmentNode::new_block(Rect::from_xywh(16.0, 0.0, 16.0, 16.0), vec![]);
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 32.0, 16.0), vec![video, sibling]);
+
+    let mut raw = HashMap::new();
+    raw.insert("FASTR_DISPLAY_LIST_PARALLEL".to_string(), "1".to_string());
+    let toggles = Arc::new(RuntimeToggles::from_map(raw));
+
+    let list = crate::debug::runtime::with_thread_runtime_toggles(toggles, || {
+      let parallel = PaintParallelism {
+        mode: PaintParallelismMode::Enabled,
+        min_build_fragments: 1,
+        build_chunk_size: 1,
+        ..PaintParallelism::enabled()
+      };
+      let mock =
+        Some(Arc::new(MockProvider) as Arc<dyn crate::media::MediaFrameProvider>);
+      let builder = DisplayListBuilder::new()
+        .with_parallelism(&parallel)
+        .with_media_provider(mock);
+
+      let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .expect("rayon thread pool");
+      pool.install(|| builder.build(&root))
+    });
+
+    assert!(
+      list.items()
+        .iter()
+        .any(|item| matches!(item, DisplayItem::Image(_))),
+      "expected display list to contain an Image item from the video frame provider"
+    );
   }
 
   mod fixed_position_ignores_viewport_scroll_test {
