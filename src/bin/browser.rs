@@ -4217,7 +4217,8 @@ impl App {
     let theme_colors = self.theme.colors.clone();
     let theme_sizing = self.theme.sizing.clone();
 
-    // Position relative to the central content area so the toast doesn't cover the status bar.
+    // Position relative to the central content area so the toast stays within the page viewport
+    // (and avoids any side panels / chrome insets).
     let screen_rect = ctx.screen_rect();
     let content_rect = self.content_rect_points.unwrap_or(screen_rect);
     let bottom_inset = (screen_rect.max.y - content_rect.max.y).max(0.0);
@@ -8991,7 +8992,11 @@ impl App {
 
     self.render_hud(&ctx);
     self.render_debug_log_overlay(&ctx);
-    // Hovered-link URLs are rendered by `ui::chrome_ui` in the bottom status bar.
+    fastrender::ui::chrome::hover_status_overlay_ui(
+      &ctx,
+      &self.browser_state,
+      central_response.response.rect,
+    );
     self.render_select_dropdown(&ctx);
     self.render_date_time_picker(&ctx);
     session_dirty |= self.render_context_menu(&ctx);

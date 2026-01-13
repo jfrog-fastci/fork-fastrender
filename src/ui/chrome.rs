@@ -2828,121 +2828,10 @@ pub fn chrome_ui_with_bookmarks(
   // Hovered-link status
   // ---------------------------------------------------------------------------
   //
-  // Canonical UX: show hovered URLs in a dedicated bottom status bar (browser-like).
-  //
-  // We intentionally avoid also rendering an in-page hover overlay: it duplicates the URL and can
-  // look messy on top of page content.
-  //
-  // Always reserve space for the status bar so showing/hiding the hovered URL doesn't change the
-  // page viewport size (which would trigger needless repaints and can cause hover flicker).
-  const STATUS_BAR_HEIGHT: f32 = 24.0;
-  let (hovered_url, status_loading, status_stage, status_zoom) = app
-    .active_tab()
-    .map(|t| {
-      (
-        t.hovered_url
-          .as_deref()
-          .map(str::trim)
-          .filter(|s| !s.is_empty()),
-        t.loading,
-        t.stage,
-        t.zoom,
-      )
-    })
-    .unwrap_or((None, false, None, zoom::DEFAULT_ZOOM));
-
-  let loading_text = if status_loading {
-    let stage = status_stage.filter(|s| *s != StageHeartbeat::Done);
-    match stage {
-      Some(stage) => Some(format!("Loading… {}", stage.as_str())),
-      None => Some("Loading…".to_string()),
-    }
-  } else {
-    None
-  };
-
-  let zoom_text = if (status_zoom - zoom::DEFAULT_ZOOM).abs() > 1e-3 {
-    Some(format!("{}%", zoom::zoom_percent(status_zoom)))
-  } else {
-    None
-  };
-
-  egui::TopBottomPanel::bottom("status_bar")
-    .resizable(false)
-    .default_height(STATUS_BAR_HEIGHT)
-    .min_height(STATUS_BAR_HEIGHT)
-    .max_height(STATUS_BAR_HEIGHT)
-    .show(ctx, |ui| {
-      // Use right-to-left layout so we can add right-side fields (zoom/loading) and then allocate
-      // the remaining space to the hovered URL preview, which will elide when it doesn't fit.
-      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        // Right (optional): zoom level.
-        if let Some(zoom_text) = zoom_text.as_deref() {
-          ui.add(egui::Label::new(egui::RichText::new(zoom_text).small()).wrap(false));
-        }
-
-        // Right (optional): loading stage/progress.
-        if let Some(loading_text) = loading_text.as_deref() {
-          ui.add_space(8.0);
-          ui.add(
-            egui::Label::new(egui::RichText::new(loading_text).small()).wrap(false),
-          );
-        }
-
-        ui.add_space(8.0);
-
-        // Left: hovered URL preview.
-        ui.allocate_ui_with_layout(
-          egui::vec2(ui.available_width(), ui.available_height()),
-          egui::Layout::left_to_right(egui::Align::Center),
-          |ui| {
-            ui.add_space(4.0);
-
-            if let Some(url) = hovered_url {
-              let visuals = ui.visuals();
-              let frame = egui::Frame::none()
-                .fill(visuals.widgets.inactive.bg_fill)
-                .stroke(visuals.widgets.inactive.bg_stroke)
-                .rounding(egui::Rounding::same(
-                  (visuals.widgets.inactive.rounding.nw * 0.6).clamp(3.0, 6.0),
-                ))
-                .inner_margin({
-                  let pad = ui.spacing().button_padding;
-                  egui::Margin::symmetric(pad.x, pad.y * 0.4)
-                });
-              frame.show(ui, |ui| {
-                // Use a read-only `TextEdit` so the hovered URL is selectable/copyable.
-                let mut url_owned = url.to_string();
-                let max_width = ui.available_width().min(600.0);
-                let desired_width = ui
-                  .fonts(|f| {
-                    let font_id = egui::TextStyle::Small.resolve(ui.style());
-                    f.layout_no_wrap(url_owned.clone(), font_id, ui.visuals().text_color())
-                  })
-                  .size()
-                  .x
-                  .min(max_width);
-                let hovered_url_resp = ui.add(
-                  egui::TextEdit::singleline(&mut url_owned)
-                    .id(ui.make_persistent_id("hovered_url_status_text"))
-                    .font(egui::TextStyle::Small)
-                    .desired_width(desired_width)
-                    .interactive(false)
-                    .frame(false),
-                );
-                hovered_url_resp.widget_info(|| {
-                  egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Hovered link URL")
-                });
-              });
-            } else {
-              // Preserve the bar height even when no URL is displayed.
-              ui.add(egui::Label::new(egui::RichText::new(" ").small()));
-            }
-          },
-        );
-      });
-    });
-
+  // Hovered link URLs are displayed via a non-intrusive overlay bubble rendered by
+  // `hover_status_overlay_ui` (called by the windowed browser frontend once it knows the central
+  // content rect). This keeps the page viewport size stable while reclaiming the old status bar
+  // height.
   // -----------------------------------------------------------------------------
   // Tab strip context menu popup
   // -----------------------------------------------------------------------------
@@ -3261,6 +3150,144 @@ pub fn chrome_ui_with_bookmarks(
   actions
 }
 
+const HOVER_STATUS_OVERLAY_MAX_WIDTH: f32 = 600.0;
+const HOVER_STATUS_OVERLAY_MARGIN: f32 = 10.0;
+const HOVER_STATUS_OVERLAY_SLIDE_PX: f32 = 6.0;
+
+fn hover_status_overlay_anchor_offset(
+  screen_rect: egui::Rect,
+  content_rect: egui::Rect,
+  margin: f32,
+) -> egui::Vec2 {
+  egui::vec2(
+    (content_rect.left() - screen_rect.left()) + margin,
+    (content_rect.bottom() - screen_rect.bottom()) - margin,
+  )
+}
+
+fn hover_status_overlay_max_width(content_rect: egui::Rect, margin: f32) -> f32 {
+  (content_rect.width() - margin * 2.0)
+    .max(0.0)
+    .min(HOVER_STATUS_OVERLAY_MAX_WIDTH)
+}
+
+/// Hovered-link status UI: a small bottom overlay "URL bubble" (modern browser style).
+///
+/// This should be rendered after the page/content area is known so it can anchor to the bottom-left
+/// of the viewport without affecting layout.
+pub fn hover_status_overlay_ui(
+  ctx: &egui::Context,
+  app: &BrowserAppState,
+  content_rect_points: egui::Rect,
+) {
+  let hovered_url_now = app
+    .active_tab()
+    .and_then(|t| t.hovered_url.as_deref())
+    .map(str::trim)
+    .filter(|s| !s.is_empty());
+
+  let motion = UiMotion::from_ctx(ctx);
+  let overlay_id = egui::Id::new("fastr_hover_status_overlay");
+  let open_t = motion.animate_bool(
+    ctx,
+    overlay_id.with("open"),
+    hovered_url_now.is_some(),
+    motion.durations.hover_fade,
+  );
+  let open_opacity = open_t.clamp(0.0, 1.0);
+
+  if hovered_url_now.is_none() && open_opacity <= 0.0 {
+    return;
+  }
+
+  // Cache the last hovered URL so fade-out stays readable even after hover clears.
+  let cached_url_id = overlay_id.with("cached_url");
+  if let Some(url) = hovered_url_now {
+    ctx.data_mut(|d| {
+      d.insert_temp(cached_url_id, url.to_string());
+    });
+  }
+  let url = hovered_url_now
+    .map(str::to_string)
+    .or_else(|| ctx.data(|d| d.get_temp::<String>(cached_url_id)))
+    .unwrap_or_default();
+  if url.trim().is_empty() {
+    return;
+  }
+
+  let margin = HOVER_STATUS_OVERLAY_MARGIN;
+  let max_width = hover_status_overlay_max_width(content_rect_points, margin);
+  if max_width <= 0.0 {
+    return;
+  }
+
+  let screen_rect = ctx.screen_rect();
+  let mut anchor_offset = hover_status_overlay_anchor_offset(screen_rect, content_rect_points, margin);
+  if motion.enabled {
+    // Micro-interaction: subtle slide from the bottom edge.
+    anchor_offset.y += (1.0 - open_opacity) * HOVER_STATUS_OVERLAY_SLIDE_PX;
+  }
+
+  egui::Area::new(overlay_id)
+    // Keep this under popups/menus (select dropdown, context menus, etc.) while still drawing above
+    // the page content.
+    .order(egui::Order::Middle)
+    .anchor(egui::Align2::LEFT_BOTTOM, anchor_offset)
+    // This is purely informational: don't intercept pointer events intended for the page.
+    .interactable(false)
+    .show(ctx, |ui| {
+      ui.visuals_mut().override_text_color =
+        Some(with_alpha(ui.visuals().text_color(), open_opacity));
+
+      let high_contrast = theme::high_contrast_enabled();
+      let visuals = ui.visuals().clone();
+
+      let fill = {
+        let base = visuals.widgets.inactive.bg_fill;
+        let alpha = if high_contrast { 255 } else { 240 };
+        with_alpha(
+          egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha),
+          open_opacity,
+        )
+      };
+
+      let stroke = {
+        let mut stroke = visuals.window_stroke;
+        if high_contrast {
+          stroke.width = stroke.width.max(2.0);
+        }
+        stroke.color = with_alpha(stroke.color, open_opacity);
+        stroke
+      };
+
+      let rounding = egui::Rounding::same(
+        (visuals.widgets.inactive.rounding.nw * 0.6)
+          .clamp(4.0, 8.0),
+      );
+
+      let mut frame = egui::Frame::none()
+        .fill(fill)
+        .stroke(stroke)
+        .rounding(rounding)
+        .inner_margin(egui::Margin::symmetric(10.0, 6.0));
+
+      if !high_contrast {
+        let mut shadow = visuals.popup_shadow;
+        shadow.color = with_alpha(shadow.color, open_opacity);
+        frame.shadow = shadow;
+      }
+
+      ui.set_max_width(max_width);
+      frame.show(ui, |ui| {
+        ui.add(
+          egui::Label::new(egui::RichText::new(url.as_str()).small())
+            .wrap(false)
+            .truncate(true),
+        );
+      });
+    });
+}
+
 #[cfg(test)]
 fn store_test_rect(ctx: &egui::Context, key: &'static str, rect: egui::Rect) {
   ctx.data_mut(|d| {
@@ -3404,19 +3431,31 @@ mod tests {
     }
   }
 
-  fn status_bar_texts(output: &egui::FullOutput) -> Vec<String> {
+  fn hover_status_overlay_texts(output: &egui::FullOutput) -> Vec<String> {
     let mut texts = Vec::new();
     for clipped in &output.shapes {
       collect_text_shapes(&clipped.shape, &mut texts);
     }
 
-    // `new_context` uses an 800x600 screen rect, and the status bar panel is anchored at the
-    // bottom. Filter by Y position to avoid matching the zoom percent button in the top chrome.
+    // `new_context` uses an 800x600 screen rect. The hover-status overlay is anchored near the
+    // bottom edge; filter by Y position to avoid matching top-chrome labels/buttons.
     texts
       .into_iter()
-      .filter(|(_text, pos)| pos.y > 560.0)
+      .filter(|(_text, pos)| pos.y > 520.0)
       .map(|(text, _pos)| text)
       .collect()
+  }
+
+  #[test]
+  fn hover_status_overlay_anchor_offset_targets_content_rect_bottom_left() {
+    let screen = egui::Rect::from_min_size(egui::Pos2::new(0.0, 0.0), egui::vec2(800.0, 600.0));
+    let content = egui::Rect::from_min_max(egui::pos2(120.0, 40.0), egui::pos2(740.0, 500.0));
+    let margin = 10.0;
+
+    let offset = super::hover_status_overlay_anchor_offset(screen, content, margin);
+    let anchored = screen.left_bottom() + offset;
+    assert_eq!(anchored.x, content.left() + margin);
+    assert_eq!(anchored.y, content.bottom() - margin);
   }
 
   fn count_drawn_glyph_in_rect(output: &egui::FullOutput, glyph: &str, rect: egui::Rect) -> usize {
@@ -3704,7 +3743,7 @@ mod tests {
   }
 
   #[test]
-  fn status_bar_shows_hovered_url() {
+  fn hover_status_overlay_shows_hovered_url() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
     app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
@@ -3712,17 +3751,18 @@ mod tests {
 
     let ctx = new_context();
     let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    super::hover_status_overlay_ui(&ctx, &app, ctx.screen_rect());
     let output = ctx.end_frame();
 
-    let texts = status_bar_texts(&output);
+    let texts = hover_status_overlay_texts(&output);
     assert!(
       texts.iter().any(|t| t.contains("https://example.com/")),
-      "expected hovered URL in status bar texts, got {texts:?}"
+      "expected hovered URL in hover-status overlay texts, got {texts:?}"
     );
   }
 
   #[test]
-  fn status_bar_shows_zoom_percent_when_non_default() {
+  fn chrome_shows_zoom_percent_when_non_default() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
     app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
@@ -3736,10 +3776,10 @@ mod tests {
     let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let output = ctx.end_frame();
 
-    let texts = status_bar_texts(&output);
+    let texts = collect_text_strings(&output.shapes);
     assert!(
       texts.iter().any(|t| t.contains(&expected)),
-      "expected zoom percent {expected:?} in status bar texts, got {texts:?}"
+      "expected zoom percent {expected:?} in chrome texts, got {texts:?}"
     );
   }
 
