@@ -6,7 +6,11 @@ When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetc
 
 ## Browser perf JSONL logs (`FASTR_PERF_LOG`)
 
-The windowed `browser` UI can emit newline-delimited JSON (`.jsonl`) perf events when `FASTR_PERF_LOG` is enabled. The event schema is defined in Rust in [`fastrender::perf_log_schema`](../src/perf_log_schema.rs) and versioned by `fastrender::perf_log_schema::PERF_LOG_VERSION`. `run_start` events must include the current schema version so offline tooling can validate compatibility.
+The windowed `browser` UI can emit newline-delimited JSON (`.jsonl`) perf events when
+`FASTR_PERF_LOG=1`.
+
+See [Browser responsiveness](#browser-responsiveness) below for the capture wrapper
+(`scripts/capture_browser_perf_log.sh`) and `browser_perf_log_summary` usage.
 
 - `FASTR_CASCADE_PROFILE=1`
   - Enables cascade profiling. Logs node count, candidate/match counts, and timing breakdown for selector matching, declaration application, and pseudo computation at the end of `apply_styles`.
