@@ -8,6 +8,16 @@ This doc is for:
 - **Chrome-page authors**: what globals exist and how to use them.
 - **Maintainers**: what the trust boundary is and where the privileged surface is installed.
 
+## Status
+
+This bridge is part of the *renderer chrome* workstream (UI rendered by FastRender).
+Embeddings that do not support renderer chrome will not install the `chrome` object, so chrome-page
+code should be prepared for:
+
+```js
+typeof chrome === "undefined"
+```
+
 ---
 
 ## Trust boundary / security model
@@ -41,7 +51,8 @@ The `chrome` bridge is the trust boundary: it is effectively “native code capa
 
 `globalThis.chrome` is **not** present by default.
 
-An embedder must explicitly install the bridge into a specific JS realm by calling:
+An embedder must explicitly install the bridge into a specific JS realm (the chrome/UI realm)
+by calling:
 
 ```rust
 install_chrome_api_bindings_vm_js(/* realm + host state */);
