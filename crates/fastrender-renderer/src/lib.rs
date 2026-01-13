@@ -93,6 +93,13 @@ impl<T: IpcTransport> RendererMainLoop<T> {
     while let Some(msg) = self.transport.recv()? {
       match msg {
         BrowserToRenderer::CreateFrame { frame_id } => {
+          if self.frames.contains_key(&frame_id) {
+            let _ = self.transport.send(RendererToBrowser::Error {
+              frame_id: Some(frame_id),
+              message: "CreateFrame for existing frame".to_string(),
+            });
+            continue;
+          }
           self.frames.insert(frame_id, FrameState::new());
         }
         BrowserToRenderer::DestroyFrame { frame_id } => {
@@ -374,6 +381,98 @@ mod tests {
       }
       other => panic!("expected Error for destroyed frame, got {other:?}"),
     }
+
+    to_renderer_tx.send(BrowserToRenderer::Shutdown).unwrap();
+    join.join().unwrap();
+  }
+
+  #[test]
+  fn create_frame_is_not_destructive_when_repeated() {
+    let (to_renderer_tx, to_renderer_rx) = mpsc::channel();
+    let (to_browser_tx, to_browser_rx) = mpsc::channel();
+
+    let join = std::thread::spawn(move || {
+      let transport = ChannelTransport {
+        rx: to_renderer_rx,
+        tx: to_browser_tx,
+      };
+      RendererMainLoop::new(transport).run().unwrap();
+    });
+
+    let frame = FrameId(9);
+    to_renderer_tx
+      .send(BrowserToRenderer::CreateFrame { frame_id: frame })
+      .unwrap();
+    to_renderer_tx
+      .send(BrowserToRenderer::Resize {
+        frame_id: frame,
+        width: 1,
+        height: 1,
+        dpr: 1.0,
+      })
+      .unwrap();
+    to_renderer_tx
+      .send(BrowserToRenderer::Navigate {
+        frame_id: frame,
+        url: "https://example.test/a".to_string(),
+      })
+      .unwrap();
+    to_renderer_tx
+      .send(BrowserToRenderer::RequestRepaint { frame_id: frame })
+      .unwrap();
+    let first = match to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+      RendererToBrowser::FrameReady {
+        frame_id,
+        buffer,
+        subframes,
+      } => {
+        assert_eq!(frame_id, frame);
+        assert!(subframes.is_empty());
+        buffer
+      }
+      other => panic!("unexpected message: {other:?}"),
+    };
+
+    // Re-sending CreateFrame should not reset per-frame state.
+    to_renderer_tx
+      .send(BrowserToRenderer::CreateFrame { frame_id: frame })
+      .unwrap();
+    to_renderer_tx
+      .send(BrowserToRenderer::RequestRepaint { frame_id: frame })
+      .unwrap();
+
+    let msg = to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    match msg {
+      RendererToBrowser::Error {
+        frame_id: Some(got),
+        message,
+      } => {
+        assert_eq!(got, frame);
+        assert!(
+          message.contains("CreateFrame"),
+          "unexpected error message: {message}"
+        );
+      }
+      other => panic!("expected Error for duplicate CreateFrame, got {other:?}"),
+    }
+
+    let second = match to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+      RendererToBrowser::FrameReady {
+        frame_id,
+        buffer,
+        subframes,
+      } => {
+        assert_eq!(frame_id, frame);
+        assert!(subframes.is_empty());
+        buffer
+      }
+      other => panic!("unexpected message: {other:?}"),
+    };
+
+    assert_eq!(
+      first.rgba8, second.rgba8,
+      "duplicate CreateFrame should not reset frame render output"
+    );
 
     to_renderer_tx.send(BrowserToRenderer::Shutdown).unwrap();
     join.join().unwrap();
