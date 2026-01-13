@@ -13143,6 +13143,60 @@ mod gc_invariant_arraybuffer_view_tests {
 
     scope.heap_mut().collect_garbage();
   }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "kind=Free")]
+  fn gc_invariant_panics_on_typed_array_with_stale_viewed_array_buffer_handle() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab_live = scope.alloc_array_buffer(8).unwrap();
+    let ta = scope.alloc_uint8_array(ab_live, 0, 8).unwrap();
+    scope.push_root(Value::Object(ta)).unwrap();
+
+    // Allocate an ArrayBuffer that will be freed by the next collection.
+    let ab_dead = scope.alloc_array_buffer(4).unwrap();
+    let stale_id = ab_dead.0;
+
+    // Only the typed array is rooted; the `ab_dead` handle becomes stale after GC.
+    scope.heap_mut().collect_garbage();
+
+    // Corrupt the internal `viewed_array_buffer` slot to the stale heap id.
+    match scope.heap_mut().get_heap_object_mut(ta.0).unwrap() {
+      HeapObject::TypedArray(arr) => arr.viewed_array_buffer = GcObject(stale_id),
+      _ => panic!("expected TypedArray allocation"),
+    }
+
+    // Avoid `Tracer::validate` panics by running the invariant check directly.
+    scope.heap().debug_validate_no_stale_internal_handles();
+  }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "kind=Free")]
+  fn gc_invariant_panics_on_dataview_with_stale_viewed_array_buffer_handle() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab_live = scope.alloc_array_buffer(8).unwrap();
+    let dv = scope.alloc_data_view(ab_live, 0, 8).unwrap();
+    scope.push_root(Value::Object(dv)).unwrap();
+
+    // Allocate an ArrayBuffer that will be freed by the next collection.
+    let ab_dead = scope.alloc_array_buffer(4).unwrap();
+    let stale_id = ab_dead.0;
+
+    scope.heap_mut().collect_garbage();
+
+    match scope.heap_mut().get_heap_object_mut(dv.0).unwrap() {
+      HeapObject::DataView(view) => view.viewed_array_buffer = GcObject(stale_id),
+      _ => panic!("expected DataView allocation"),
+    }
+
+    // Avoid `Tracer::validate` panics by running the invariant check directly.
+    scope.heap().debug_validate_no_stale_internal_handles();
+  }
 }
 
 #[cfg(test)]
