@@ -295,6 +295,8 @@ fn rand_key_action(rng: &mut SplitMix64) -> KeyAction {
     KeyAction::ArrowRight,
     KeyAction::ShiftArrowLeft,
     KeyAction::ShiftArrowRight,
+    KeyAction::ShiftArrowUp,
+    KeyAction::ShiftArrowDown,
     KeyAction::ArrowUp,
     KeyAction::ArrowDown,
     KeyAction::Home,

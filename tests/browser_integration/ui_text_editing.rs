@@ -380,6 +380,96 @@ fn textarea_home_moves_to_start_of_current_line_not_document() -> Result<()> {
 }
 
 #[test]
+fn textarea_shift_arrow_up_down_extends_selection_and_typing_replaces_it() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (500, 220);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; height: 2000px; }
+          #ta { position: absolute; left: 0; top: 0; width: 420px; height: 120px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <textarea id="ta">abc
+def</textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the textarea and move the caret to the start.
+  let click = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+
+  let scroll_before = controller.scroll_state().viewport;
+
+  // Shift+ArrowDown: extend selection to the next line.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowDown))?;
+  let ta_id = node_id_by_id_attr(controller.document().dom(), "ta");
+  let edit = controller
+    .interaction_state()
+    .text_edit_for(ta_id)
+    .expect("expected text edit state for textarea");
+  assert_eq!(edit.caret, 4);
+  assert_eq!(edit.selection, Some((0, 4)));
+  assert_eq!(
+    controller.scroll_state().viewport,
+    scroll_before,
+    "shift+arrow selection should not trigger viewport scrolling when a textarea is focused"
+  );
+
+  // Shift+ArrowUp should shrink the selection back to a caret.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowUp))?;
+  let edit = controller
+    .interaction_state()
+    .text_edit_for(ta_id)
+    .expect("expected text edit state for textarea");
+  assert_eq!(edit.caret, 0);
+  assert_eq!(edit.selection, None);
+
+  // Re-create the selection and confirm typing replaces it.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowDown))?;
+  let edit = controller
+    .interaction_state()
+    .text_edit_for(ta_id)
+    .expect("expected text edit state for textarea");
+  assert_eq!(edit.selection, Some((0, 4)));
+
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  assert_eq!(
+    textarea.get_attribute_ref("data-fastr-value"),
+    Some("Xdef"),
+    "expected typing to replace the shift-selected range"
+  );
+  let edit = controller
+    .interaction_state()
+    .text_edit_for(ta_id)
+    .expect("expected text edit state for textarea");
+  assert_eq!(edit.selection, None);
+
+  Ok(())
+}
+
+#[test]
 fn textarea_end_moves_to_end_of_current_visual_line_when_wrapped() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();

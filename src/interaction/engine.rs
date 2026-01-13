@@ -143,6 +143,8 @@ pub enum KeyAction {
   WordSelectRight,
   ShiftArrowLeft,
   ShiftArrowRight,
+  ShiftArrowUp,
+  ShiftArrowDown,
   ArrowUp,
   ArrowDown,
   Home,
@@ -10622,7 +10624,13 @@ impl InteractionEngine {
 
       // `<input type=number>` uses ArrowUp/ArrowDown to increment/decrement (like browsers).
       if focused_is_text_input
-        && matches!(key, KeyAction::ArrowUp | KeyAction::ArrowDown)
+        && matches!(
+          key,
+          KeyAction::ArrowUp
+            | KeyAction::ArrowDown
+            | KeyAction::ShiftArrowUp
+            | KeyAction::ShiftArrowDown
+        )
         && index
           .node(focused)
           .is_some_and(|node| input_type(node).eq_ignore_ascii_case("number"))
@@ -10630,7 +10638,11 @@ impl InteractionEngine {
         if !can_edit_value {
           return changed;
         }
-        let delta_steps = if matches!(key, KeyAction::ArrowUp) { 1 } else { -1 };
+        let delta_steps = if matches!(key, KeyAction::ArrowUp | KeyAction::ShiftArrowUp) {
+          1
+        } else {
+          -1
+        };
         changed |= self.step_number_input(&mut index, focused, delta_steps);
         return changed;
       }
@@ -11141,11 +11153,17 @@ impl InteractionEngine {
             edit.caret_affinity = CaretAffinity::Downstream;
           }
         }
-        KeyAction::ArrowUp | KeyAction::ArrowDown => {
-          if let Some((start, end)) = edit.selection() {
+        KeyAction::ArrowUp
+        | KeyAction::ArrowDown
+        | KeyAction::ShiftArrowUp
+        | KeyAction::ShiftArrowDown => {
+          let move_up = matches!(key, KeyAction::ArrowUp | KeyAction::ShiftArrowUp);
+          let extend_selection = matches!(key, KeyAction::ShiftArrowUp | KeyAction::ShiftArrowDown);
+
+          if let Some((start, end)) = edit.selection().filter(|_| !extend_selection) {
             // Like ArrowLeft/Right, ArrowUp/Down should collapse an active selection to the
             // boundary in the direction of travel before attempting any further movement.
-            let (next, next_affinity) = if matches!(key, KeyAction::ArrowUp) {
+            let (next, next_affinity) = if move_up {
               (start, CaretAffinity::Downstream)
             } else {
               // Selection end should attach to the preceding text, which maps to the upstream side
@@ -11164,6 +11182,11 @@ impl InteractionEngine {
               edit.set_caret_with_affinity_and_maybe_extend_selection(next, next_affinity, false);
             }
           } else if focused_is_textarea {
+            if extend_selection && edit.selection_anchor.is_none() {
+              // When beginning a Shift selection, keep the anchor at the caret's original position.
+              edit.selection_anchor = Some(edit.caret);
+            }
+
             let mut moved = false;
 
             if let (Some(box_tree), Some(fragment_tree)) = (box_tree, fragment_tree) {
@@ -11201,11 +11224,11 @@ impl InteractionEngine {
                       let line_idx =
                         crate::textarea::textarea_visual_line_index_for_caret(&current, &layout, caret);
 
-                      let target_idx = match key {
-                        KeyAction::ArrowUp => line_idx.checked_sub(1),
-                        KeyAction::ArrowDown => Some(line_idx.saturating_add(1)),
-                        _ => None,
-                      }
+                      let target_idx = (if move_up {
+                        line_idx.checked_sub(1)
+                      } else {
+                        Some(line_idx.saturating_add(1))
+                      })
                       .filter(|idx| *idx < layout.lines.len());
 
                       if let Some(target_idx) = target_idx {
@@ -11253,7 +11276,9 @@ impl InteractionEngine {
                         edit.caret =
                           target_line.start_char.saturating_add(caret_in_line).min(total_chars);
                         edit.caret_affinity = affinity;
-                        edit.selection_anchor = None;
+                        if !extend_selection {
+                          edit.selection_anchor = None;
+                        }
                         moved = true;
                       }
                     }
@@ -11290,11 +11315,11 @@ impl InteractionEngine {
                 .and_then(|x| (x / char_advance).is_finite().then_some((x / char_advance).round() as usize))
                 .unwrap_or(col);
 
-              let target_line = match key {
-                KeyAction::ArrowUp => line_idx.checked_sub(1),
-                KeyAction::ArrowDown => Some(line_idx + 1),
-                _ => None,
-              }
+              let target_line = (if move_up {
+                line_idx.checked_sub(1)
+              } else {
+                Some(line_idx + 1)
+              })
               .filter(|&idx| idx < line_starts.len());
 
               if let Some(target_idx) = target_line {
@@ -11307,7 +11332,9 @@ impl InteractionEngine {
                 let target_len = target_end.saturating_sub(target_start);
                 edit.caret = target_start + preferred_col.min(target_len);
                 edit.caret_affinity = CaretAffinity::Downstream;
-                edit.selection_anchor = None;
+                if !extend_selection {
+                  edit.selection_anchor = None;
+                }
                 edit.preferred_x = Some(preferred_col as f32 * char_advance);
               }
             }
@@ -11534,6 +11561,8 @@ impl InteractionEngine {
       | KeyAction::WordSelectRight
       | KeyAction::ShiftArrowLeft
       | KeyAction::ShiftArrowRight
+      | KeyAction::ShiftArrowUp
+      | KeyAction::ShiftArrowDown
       | KeyAction::ShiftHome
       | KeyAction::ShiftEnd
       | KeyAction::SelectAll
@@ -11989,6 +12018,8 @@ impl InteractionEngine {
       | KeyAction::WordSelectRight
       | KeyAction::ShiftArrowLeft
       | KeyAction::ShiftArrowRight
+      | KeyAction::ShiftArrowUp
+      | KeyAction::ShiftArrowDown
       | KeyAction::ShiftHome
       | KeyAction::ShiftEnd
       | KeyAction::SelectAll
