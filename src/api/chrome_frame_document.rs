@@ -64,6 +64,40 @@ impl ChromeFrameDocument {
     )
   }
 
+  /// Returns `true` when the most recently prepared fragment tree contains any time-based effects
+  /// (currently CSS animations/transitions) that require periodic ticking.
+  pub fn wants_ticks(&self) -> bool {
+    self.document.prepared().is_some_and(|prepared| {
+      let tree = prepared.fragment_tree();
+      !tree.keyframes.is_empty() || tree.transition_state.is_some()
+    })
+  }
+
+  /// Advance the chrome document's animation timeline.
+  ///
+  /// - When `now_ms` is `Some(t)`, CSS animations/transitions are sampled at `t` milliseconds since
+  ///   load by calling [`BrowserDocument::set_animation_time_ms`]. This only invalidates paint, so
+  ///   the next render can repaint from cached layout artifacts.
+  /// - When `now_ms` is `None`, real-time animation sampling is enabled and callers should only
+  ///   repaint when [`BrowserDocument::needs_animation_frame`] reports that the animation clock has
+  ///   advanced.
+  ///
+  /// Returns `true` when callers should render a new frame.
+  pub fn tick(&mut self, now_ms: Option<f32>) -> bool {
+    match now_ms {
+      Some(ms) => {
+        self.document.set_animation_time_ms(ms);
+        true
+      }
+      None => {
+        // Ensure explicit timelines are cleared so real-time sampling is active.
+        self.document.set_animation_time(None);
+        self.document.set_realtime_animations_enabled(true);
+        self.document.needs_animation_frame()
+      }
+    }
+  }
+
   /// Update hover state for a pointer move in viewport CSS pixels.
   ///
   /// This is a convenience wrapper around [`InteractionEngine::pointer_move`]. The document must
@@ -126,6 +160,8 @@ impl ChromeFrameDocument {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::collections::hash_map::DefaultHasher;
+  use std::hash::{Hash, Hasher};
 
   fn rgba_at(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
     let width = pixmap.width();
@@ -137,6 +173,14 @@ mod tests {
     let idx = (y as usize * width as usize + x as usize) * 4;
     let data = pixmap.data();
     [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
+  }
+
+  fn pixmap_hash(pixmap: &Pixmap) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    pixmap.width().hash(&mut hasher);
+    pixmap.height().hash(&mut hasher);
+    pixmap.data().hash(&mut hasher);
+    hasher.finish()
   }
 
   #[test]
@@ -214,6 +258,66 @@ mod tests {
       rgba_at(&cleared, 10, 10),
       [0, 0, 0, 255],
       "expected :hover rule to clear after pointer_leave"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn chrome_frame_tick_advances_css_keyframes_animation() -> Result<()> {
+    let _lock = crate::testing::global_test_lock();
+
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #box {
+        width: 32px;
+        height: 32px;
+        background: rgb(255, 0, 0);
+        animation: bg 1000ms linear infinite;
+      }
+      @keyframes bg {
+        from { background: rgb(255, 0, 0); }
+        to   { background: rgb(0, 0, 255); }
+      }
+    </style>
+  </head>
+  <body><div id="box"></div></body>
+</html>"#;
+
+    let options = RenderOptions::new().with_viewport(32, 32);
+    let mut doc = ChromeFrameDocument::from_html(html, options)?;
+
+    assert!(
+      !doc.wants_ticks(),
+      "expected wants_ticks to be false before first render (no prepared fragment tree)"
+    );
+
+    // Prime layout/paint cache so wants_ticks inspects the prepared fragment tree.
+    doc.render_frame()?;
+    assert!(
+      doc.wants_ticks(),
+      "expected wants_ticks to be true after first render for document with @keyframes"
+    );
+
+    assert!(doc.tick(Some(0.0)), "tick(Some) should request a repaint");
+    let first = doc
+      .render_if_needed()?
+      .expect("expected repaint after tick(Some(0.0))");
+    let first_hash = pixmap_hash(&first);
+
+    assert!(doc.tick(Some(500.0)), "tick(Some) should request a repaint");
+    let second = doc
+      .render_if_needed()?
+      .expect("expected repaint after tick(Some(500.0))");
+    let second_hash = pixmap_hash(&second);
+
+    assert_ne!(
+      first_hash, second_hash,
+      "expected keyframes animation sampling to change rendered output between two times"
     );
 
     Ok(())
