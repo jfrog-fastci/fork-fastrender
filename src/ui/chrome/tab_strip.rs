@@ -918,7 +918,9 @@ fn group_chip_ui(
       Pos2::new(title_start_x, chip_rect.min.y),
       Pos2::new(title_end_x, chip_rect.max.y),
     );
-    let label = egui::Label::new(egui::RichText::new(title.clone()))
+    let label = egui::Label::new(
+      egui::RichText::new(title.clone()).text_style(egui::TextStyle::Button),
+    )
       .truncate(true)
       .wrap(false);
     let _ = ui.put(title_rect, label);
