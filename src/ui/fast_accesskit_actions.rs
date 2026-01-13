@@ -8,7 +8,7 @@ use crate::interaction::{InteractionAction, InteractionEngine, KeyAction};
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
-use crate::ui::decode_page_node_id;
+use crate::ui::{dom_node_id_for_current_page_action, TabId};
 
 /// Shared context for routing AccessKit [`accesskit::ActionRequest`]s into FastRender's interaction
 /// engine.
@@ -81,7 +81,12 @@ impl ChromeDocumentContext<'_> {
         // Last resort: treat preorder ids as a dom2 node allocation index. This can be incorrect
         // when the document contains non-renderable nodes (doctype/comments) or synthetic renderer
         // nodes (e.g. `<wbr>` ZWSP), and when DOM mutations shift preorder ids.
-        .or_else(|| js_tab.dom().node_id_from_index(preorder_id.saturating_sub(1)).ok())
+        .or_else(|| {
+          js_tab
+            .dom()
+            .node_id_from_index(preorder_id.saturating_sub(1))
+            .ok()
+        })
     }
 
     let prev_element_id = prev.and_then(|id| element_id_for_node(self.dom, id));
@@ -110,17 +115,28 @@ impl ChromeDocumentContext<'_> {
 
   fn focus_node_id(&mut self, node_id: usize) -> (bool, InteractionAction) {
     let prev = self.interaction.focused_node_id();
-    let (changed, action) = self.interaction.focus_node_id(self.dom, Some(node_id), true);
+    let (changed, action) = self
+      .interaction
+      .focus_node_id(self.dom, Some(node_id), true);
     let next = self.interaction.focused_node_id();
     self.dispatch_focus_change_to_js(prev, next);
     (changed, action)
   }
 }
 
-/// Decode an AccessKit [`accesskit::NodeId`] into a FastRender DOM pre-order node id.
-pub fn fastrender_node_id_from_accesskit(node_id: accesskit::NodeId) -> Option<usize> {
-  let (_tab_id, _generation, dom_node_id) = decode_page_node_id(node_id)?;
-  Some(dom_node_id)
+/// Decode an AccessKit [`accesskit::NodeId`] into a FastRender DOM pre-order node id, but only when
+/// the request targets the currently active page (tab + document generation).
+///
+/// This uses the namespaced encoding produced by [`crate::ui::encode_page_node_id`] and rejects:
+/// - egui/chrome `NodeId`s (which do not decode as page ids),
+/// - ids for other tabs,
+/// - stale ids targeting a previous document generation.
+pub fn fastrender_node_id_from_accesskit(
+  node_id: accesskit::NodeId,
+  current_tab_id: TabId,
+  current_document_generation: u32,
+) -> Option<usize> {
+  dom_node_id_for_current_page_action(node_id, current_tab_id, current_document_generation)
 }
 
 fn text_control_len_chars(dom: &mut DomNode, node_id: usize) -> Option<usize> {
@@ -129,7 +145,13 @@ fn text_control_len_chars(dom: &mut DomNode, node_id: usize) -> Option<usize> {
   if tag.eq_ignore_ascii_case("textarea") {
     Some(crate::dom::textarea_current_value(node).chars().count())
   } else if tag.eq_ignore_ascii_case("input") {
-    Some(node.get_attribute_ref("value").unwrap_or("").chars().count())
+    Some(
+      node
+        .get_attribute_ref("value")
+        .unwrap_or("")
+        .chars()
+        .count(),
+    )
   } else {
     None
   }
@@ -140,9 +162,13 @@ fn text_control_len_chars(dom: &mut DomNode, node_id: usize) -> Option<usize> {
 /// Returns `true` when the request was recognized and dispatched.
 pub fn handle_accesskit_action_request(
   ctx: &mut ChromeDocumentContext<'_>,
+  current_tab_id: TabId,
+  current_document_generation: u32,
   request: accesskit::ActionRequest,
 ) -> bool {
-  let Some(target_node_id) = fastrender_node_id_from_accesskit(request.target) else {
+  let Some(target_node_id) =
+    fastrender_node_id_from_accesskit(request.target, current_tab_id, current_document_generation)
+  else {
     return false;
   };
 
@@ -162,12 +188,10 @@ pub fn handle_accesskit_action_request(
       let (focus_changed, focus_action) = ctx.focus_node_id(target_node_id);
       ctx.push_action(focus_action);
 
-      let (changed, action) = ctx.interaction.key_activate(
-        ctx.dom,
-        KeyAction::Enter,
-        ctx.document_url,
-        ctx.base_url,
-      );
+      let (changed, action) =
+        ctx
+          .interaction
+          .key_activate(ctx.dom, KeyAction::Enter, ctx.document_url, ctx.base_url);
       ctx.push_action(action);
 
       if focus_changed || changed {
@@ -219,7 +243,9 @@ pub fn handle_accesskit_action_request(
       let anchor = selection.anchor.character_index.min(max_len);
       let focus = selection.focus.character_index.min(max_len);
       if anchor == focus {
-        ctx.interaction.set_text_selection_caret(target_node_id, anchor);
+        ctx
+          .interaction
+          .set_text_selection_caret(target_node_id, anchor);
       } else {
         // Preserve selection direction (caret should be at the requested focus offset).
         ctx
@@ -282,10 +308,9 @@ pub fn handle_accesskit_action_request(
       let (focus_changed, focus_action) = ctx.focus_node_id(target_node_id);
       ctx.push_action(focus_action);
 
-      let changed =
-        ctx
-          .interaction
-          .key_action_with_box_tree(ctx.dom, ctx.box_tree, key);
+      let changed = ctx
+        .interaction
+        .key_action_with_box_tree(ctx.dom, ctx.box_tree, key);
 
       if focus_changed || changed {
         ctx.mark_redraw();
@@ -326,12 +351,16 @@ mod tests {
       .is_some()
   }
 
+  const TEST_TAB_ID: TabId = TabId(1);
+  const TEST_DOCUMENT_GENERATION: u32 = 1;
+
   fn page_node_id(dom_node_id: usize) -> accesskit::NodeId {
-    crate::ui::encode_page_node_id(crate::ui::messages::TabId(1), 1, dom_node_id)
+    crate::ui::encode_page_node_id(TEST_TAB_ID, TEST_DOCUMENT_GENERATION, dom_node_id)
   }
 
   #[test]
   fn accesskit_focus_sets_interaction_focus() {
+    let tab_id = TEST_TAB_ID;
     let mut dom = crate::dom::parse_html(
       "<html><body><button id=\"x\">OK</button><input id=\"y\"></body></html>",
     )
@@ -357,6 +386,8 @@ mod tests {
 
     let handled = handle_accesskit_action_request(
       &mut ctx,
+      tab_id,
+      TEST_DOCUMENT_GENERATION,
       accesskit::ActionRequest {
         action: accesskit::Action::Focus,
         target: page_node_id(button_id),
@@ -367,15 +398,16 @@ mod tests {
     assert_eq!(engine.focused_node_id(), Some(button_id));
     assert!(needs_redraw);
     assert!(
-      actions
-        .iter()
-        .any(|a| matches!(a, InteractionAction::FocusChanged { node_id: Some(id) } if *id == button_id)),
+      actions.iter().any(
+        |a| matches!(a, InteractionAction::FocusChanged { node_id: Some(id) } if *id == button_id)
+      ),
       "expected FocusChanged action, got {actions:?}"
     );
   }
 
   #[test]
   fn accesskit_set_value_updates_text_input() {
+    let tab_id = TEST_TAB_ID;
     let mut dom = crate::dom::parse_html(
       "<html><body><button id=\"x\">OK</button><input id=\"y\" value=\"old\"></body></html>",
     )
@@ -399,6 +431,8 @@ mod tests {
 
     let handled = handle_accesskit_action_request(
       &mut ctx,
+      tab_id,
+      TEST_DOCUMENT_GENERATION,
       accesskit::ActionRequest {
         action: accesskit::Action::SetValue,
         target: page_node_id(input_id),
@@ -413,10 +447,10 @@ mod tests {
 
   #[test]
   fn accesskit_set_text_selection_moves_caret_and_sets_range() {
-    let mut dom = crate::dom::parse_html(
-      "<html><body><input id=\"y\" value=\"abcdef\"></body></html>",
-    )
-    .expect("parse");
+    let tab_id = TEST_TAB_ID;
+    let mut dom =
+      crate::dom::parse_html("<html><body><input id=\"y\" value=\"abcdef\"></body></html>")
+        .expect("parse");
     let input_id = find_node_id_by_id_attr(&mut dom, "y");
     let target = page_node_id(input_id);
 
@@ -426,16 +460,18 @@ mod tests {
     let caret_req = accesskit::ActionRequest {
       action: accesskit::Action::SetTextSelection,
       target,
-      data: Some(accesskit::ActionData::SetTextSelection(accesskit::TextSelection {
-        anchor: accesskit::TextPosition {
-          node: target,
-          character_index: 3,
+      data: Some(accesskit::ActionData::SetTextSelection(
+        accesskit::TextSelection {
+          anchor: accesskit::TextPosition {
+            node: target,
+            character_index: 3,
+          },
+          focus: accesskit::TextPosition {
+            node: target,
+            character_index: 3,
+          },
         },
-        focus: accesskit::TextPosition {
-          node: target,
-          character_index: 3,
-        },
-      })),
+      )),
     };
 
     {
@@ -451,9 +487,17 @@ mod tests {
         needs_redraw: &mut needs_redraw,
         emitted_actions: None,
       };
-      assert!(handle_accesskit_action_request(&mut ctx, caret_req));
+      assert!(handle_accesskit_action_request(
+        &mut ctx,
+        tab_id,
+        TEST_DOCUMENT_GENERATION,
+        caret_req
+      ));
     }
-    let edit = engine.interaction_state().text_edit.expect("expected edit state");
+    let edit = engine
+      .interaction_state()
+      .text_edit
+      .expect("expected edit state");
     assert_eq!(edit.node_id, input_id);
     assert_eq!(edit.caret, 3);
     assert_eq!(edit.selection, None);
@@ -463,16 +507,18 @@ mod tests {
     let range_req = accesskit::ActionRequest {
       action: accesskit::Action::SetTextSelection,
       target,
-      data: Some(accesskit::ActionData::SetTextSelection(accesskit::TextSelection {
-        anchor: accesskit::TextPosition {
-          node: target,
-          character_index: 1,
+      data: Some(accesskit::ActionData::SetTextSelection(
+        accesskit::TextSelection {
+          anchor: accesskit::TextPosition {
+            node: target,
+            character_index: 1,
+          },
+          focus: accesskit::TextPosition {
+            node: target,
+            character_index: 4,
+          },
         },
-        focus: accesskit::TextPosition {
-          node: target,
-          character_index: 4,
-        },
-      })),
+      )),
     };
 
     {
@@ -488,9 +534,17 @@ mod tests {
         needs_redraw: &mut needs_redraw,
         emitted_actions: None,
       };
-      assert!(handle_accesskit_action_request(&mut ctx, range_req));
+      assert!(handle_accesskit_action_request(
+        &mut ctx,
+        tab_id,
+        TEST_DOCUMENT_GENERATION,
+        range_req
+      ));
     }
-    let edit = engine.interaction_state().text_edit.expect("expected edit state");
+    let edit = engine
+      .interaction_state()
+      .text_edit
+      .expect("expected edit state");
     assert_eq!(edit.node_id, input_id);
     assert_eq!(edit.caret, 4);
     assert_eq!(edit.selection, Some((1, 4)));
@@ -501,16 +555,18 @@ mod tests {
     let reverse_req = accesskit::ActionRequest {
       action: accesskit::Action::SetTextSelection,
       target,
-      data: Some(accesskit::ActionData::SetTextSelection(accesskit::TextSelection {
-        anchor: accesskit::TextPosition {
-          node: target,
-          character_index: 4,
+      data: Some(accesskit::ActionData::SetTextSelection(
+        accesskit::TextSelection {
+          anchor: accesskit::TextPosition {
+            node: target,
+            character_index: 4,
+          },
+          focus: accesskit::TextPosition {
+            node: target,
+            character_index: 1,
+          },
         },
-        focus: accesskit::TextPosition {
-          node: target,
-          character_index: 1,
-        },
-      })),
+      )),
     };
 
     {
@@ -526,9 +582,17 @@ mod tests {
         needs_redraw: &mut needs_redraw,
         emitted_actions: None,
       };
-      assert!(handle_accesskit_action_request(&mut ctx, reverse_req));
+      assert!(handle_accesskit_action_request(
+        &mut ctx,
+        tab_id,
+        TEST_DOCUMENT_GENERATION,
+        reverse_req
+      ));
     }
-    let edit = engine.interaction_state().text_edit.expect("expected edit state");
+    let edit = engine
+      .interaction_state()
+      .text_edit
+      .expect("expected edit state");
     assert_eq!(edit.node_id, input_id);
     assert_eq!(edit.caret, 1);
     assert_eq!(edit.selection, Some((1, 4)));
@@ -537,10 +601,10 @@ mod tests {
 
   #[test]
   fn accesskit_default_action_toggles_checkbox() {
-    let mut dom = crate::dom::parse_html(
-      "<html><body><input id=\"z\" type=\"checkbox\"></body></html>",
-    )
-    .expect("parse");
+    let tab_id = TEST_TAB_ID;
+    let mut dom =
+      crate::dom::parse_html("<html><body><input id=\"z\" type=\"checkbox\"></body></html>")
+        .expect("parse");
     let checkbox_id = find_node_id_by_id_attr(&mut dom, "z");
 
     let mut engine = InteractionEngine::new();
@@ -560,6 +624,8 @@ mod tests {
     };
     let handled = handle_accesskit_action_request(
       &mut ctx,
+      tab_id,
+      TEST_DOCUMENT_GENERATION,
       accesskit::ActionRequest {
         action: accesskit::Action::Default,
         target: page_node_id(checkbox_id),
@@ -573,6 +639,7 @@ mod tests {
 
   #[test]
   fn accesskit_focus_dispatches_focus_blur_events_into_js() -> crate::Result<()> {
+    let tab_id = TEST_TAB_ID;
     let _lock = crate::testing::global_test_lock();
 
     let html = r#"<!doctype html>
@@ -634,6 +701,8 @@ mod tests {
 
       assert!(handle_accesskit_action_request(
         &mut ctx,
+        tab_id,
+        TEST_DOCUMENT_GENERATION,
         accesskit::ActionRequest {
           action: accesskit::Action::Focus,
           target: page_node_id(a_id),
@@ -642,6 +711,8 @@ mod tests {
       ));
       assert!(handle_accesskit_action_request(
         &mut ctx,
+        tab_id,
+        TEST_DOCUMENT_GENERATION,
         accesskit::ActionRequest {
           action: accesskit::Action::Focus,
           target: page_node_id(b_id),
@@ -685,5 +756,107 @@ mod tests {
     );
 
     Ok(())
+  }
+
+  #[test]
+  fn accesskit_decoding_ignores_other_tabs_and_generations() {
+    // Use a small dom id (1) to ensure we don't accidentally rely on "big values" to avoid
+    // collisions; the namespacing scheme must handle this safely.
+    let dom_node_id = 1usize;
+
+    let tab_id = TEST_TAB_ID;
+    let gen = TEST_DOCUMENT_GENERATION;
+    let node_id = crate::ui::encode_page_node_id(tab_id, gen, dom_node_id);
+
+    assert_eq!(
+      fastrender_node_id_from_accesskit(node_id, tab_id, gen),
+      Some(dom_node_id)
+    );
+    assert_eq!(
+      fastrender_node_id_from_accesskit(node_id, TabId(2), gen),
+      None,
+      "expected ids for other tabs to be ignored"
+    );
+    assert_eq!(
+      fastrender_node_id_from_accesskit(node_id, tab_id, gen + 1),
+      None,
+      "expected stale generation ids to be ignored"
+    );
+  }
+
+  #[test]
+  fn action_routing_ignores_requests_for_other_tabs_and_generations() {
+    let tab_id = TEST_TAB_ID;
+    let gen = TEST_DOCUMENT_GENERATION;
+
+    let mut dom = crate::dom::parse_html("<html><body><button id=\"x\">OK</button></body></html>")
+      .expect("parse");
+    let button_id = find_node_id_by_id_attr(&mut dom, "x");
+
+    let mut engine = InteractionEngine::new();
+    let mut needs_redraw = false;
+    let mut ctx = ChromeDocumentContext {
+      dom: &mut dom,
+      interaction: &mut engine,
+      js_tab: None,
+      box_tree: None,
+      fragment_tree: None,
+      scroll_state: None,
+      document_url: "about:blank",
+      base_url: "about:blank",
+      needs_redraw: &mut needs_redraw,
+      emitted_actions: None,
+    };
+
+    let other_tab_target = crate::ui::encode_page_node_id(TabId(2), gen, button_id);
+    let handled_other_tab = handle_accesskit_action_request(
+      &mut ctx,
+      tab_id,
+      gen,
+      accesskit::ActionRequest {
+        action: accesskit::Action::Focus,
+        target: other_tab_target,
+        data: None,
+      },
+    );
+    assert!(
+      !handled_other_tab,
+      "expected action requests for other tabs to be ignored"
+    );
+    assert_eq!(
+      engine.focused_node_id(),
+      None,
+      "expected focus to remain unchanged"
+    );
+    assert!(
+      !needs_redraw,
+      "expected unrelated-tab action routing to not request redraw"
+    );
+
+    needs_redraw = false;
+    let stale_target = crate::ui::encode_page_node_id(tab_id, gen - 1, button_id);
+    let handled_stale = handle_accesskit_action_request(
+      &mut ctx,
+      tab_id,
+      gen,
+      accesskit::ActionRequest {
+        action: accesskit::Action::Focus,
+        target: stale_target,
+        data: None,
+      },
+    );
+    assert!(
+      !handled_stale,
+      "expected action requests for stale document generations to be ignored"
+    );
+    assert_eq!(
+      engine.focused_node_id(),
+      None,
+      "expected focus to remain unchanged"
+    );
+    assert!(
+      !needs_redraw,
+      "expected stale-generation action routing to not request redraw"
+    );
   }
 }

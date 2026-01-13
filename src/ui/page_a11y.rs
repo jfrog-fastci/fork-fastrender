@@ -80,6 +80,21 @@ mod accesskit_ids {
     use std::num::NonZeroU128;
 
     #[test]
+    fn page_ids_do_not_collide_with_small_wrapper_ids() {
+      // The compositor (non-egui) accessibility tree reserves small integer node ids like 1/2/3 for
+      // Window/Chrome/Page wrapper nodes. Page subtree ids must never collide with those, even when
+      // the DOM node id itself is 1/2/3.
+      let tab_id = TabId(1);
+      let gen = 1;
+      for dom in 1usize..=3 {
+        let node_id = encode_page_node_id(tab_id, gen, dom);
+        assert_ne!(node_id.0.get(), 1);
+        assert_ne!(node_id.0.get(), 2);
+        assert_ne!(node_id.0.get(), 3);
+      }
+    }
+
+    #[test]
     fn encode_decode_round_trip_includes_generation() {
       let tab_id = TabId(123);
       let gen = 42;

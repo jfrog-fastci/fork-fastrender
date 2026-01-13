@@ -26,7 +26,8 @@ pub fn page_node_id(tab_id: TabId, dom_node_id: usize) -> accesskit::NodeId {
   let dom_bits = dom_node_id as u64 as u128;
 
   let raw = PAGE_NODE_ID_TAG | (tab_bits << 64) | dom_bits;
-  accesskit::NodeId(NonZeroU128::new(raw).expect("page node ids must be non-zero")) // fastrender-allow-unwrap
+  accesskit::NodeId(NonZeroU128::new(raw).expect("page node ids must be non-zero"))
+  // fastrender-allow-unwrap
 }
 
 /// Returns true if `id` is in the page node ID namespace.
@@ -91,6 +92,23 @@ mod tests {
         }
         assert_ne!(a.0.get(), b.0.get(), "ids at {i} and {j} should differ");
       }
+    }
+  }
+
+  #[test]
+  fn page_ids_do_not_collide_with_small_wrapper_ids() {
+    // The compositor (non-egui) accessibility tree reserves small integer node ids like 1/2/3 for
+    // Window/Chrome/Page wrapper nodes. Page DOM nodes must never collide with these (even when the
+    // DOM node id itself is 1/2/3).
+    for dom_node_id in 1usize..=3 {
+      let id = page_node_id(TabId(1), dom_node_id);
+      assert!(
+        id.0.get() >= PAGE_NODE_ID_TAG,
+        "expected page ids to always set the tag bit"
+      );
+      assert_ne!(id.0.get(), 1);
+      assert_ne!(id.0.get(), 2);
+      assert_ne!(id.0.get(), 3);
     }
   }
 }

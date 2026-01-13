@@ -204,7 +204,7 @@ Required conventions for dynamic rows:
 If you need to validate id stability, use `dump_accesskit` for manual inspection and add/extend headless tests like
 `error_infobar_details_toggle_keeps_focus_and_id_when_label_changes` in [`src/bin/browser.rs`](../src/bin/browser.rs).
 
-### FastRender node ids (renderer-chrome / page content)
+### Page/FastRender node ids (tab-safe, collision-free)
 
 When chrome and/or page content are rendered by FastRender (instead of egui widgets), we mint
 AccessKit ids from FastRender’s own stable node identifiers (e.g. DOM pre-order ids).
@@ -238,6 +238,8 @@ Wrapper/root nodes in the compositor/renderer-chrome accessibility tree (see
 in the “non-page” namespace (upper 64 bits are `0`, so `decode_page_node_id` returns `None`).
 
 This guarantees that DOM node id `1` in any tab will never collide with wrapper/root ids like `1`/`2`/`3`.
+Note: [`src/ui/page_accesskit_ids.rs`](../src/ui/page_accesskit_ids.rs) contains an older tag-bit
+encoding variant; the windowed browser UI currently uses `encode_page_node_id` for page subtree ids.
 
 ---
 
@@ -362,8 +364,9 @@ need to become FastRender interaction operations.
 
 The current shared helper is [`src/ui/fast_accesskit_actions.rs`](../src/ui/fast_accesskit_actions.rs):
 
-- `handle_accesskit_action_request(ctx, request)` decodes the target `NodeId` into a FastRender DOM
-  node id (see NodeId scheme above).
+- `handle_accesskit_action_request(ctx, current_tab_id, current_document_generation, request)` decodes
+  the target `NodeId` into a FastRender DOM node id (see NodeId scheme above) and ignores requests
+  for other tabs or stale document generations.
 - It then translates a subset of AccessKit actions into `InteractionEngine` calls and marks
   `needs_redraw` when state changes.
 
