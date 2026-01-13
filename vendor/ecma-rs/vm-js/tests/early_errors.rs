@@ -372,6 +372,15 @@ fn strict_mode_yield_identifier_reference_in_destructuring_is_syntax_error() {
 }
 
 #[test]
+fn strict_mode_yield_identifier_reference_in_destructuring_assignment_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; ({ yield } = {});"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn await_identifier_reference_in_destructuring_in_async_fn_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
