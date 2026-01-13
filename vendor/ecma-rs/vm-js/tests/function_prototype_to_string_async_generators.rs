@@ -267,3 +267,32 @@ fn proxy_async_generator_method_to_string_is_native() -> Result<(), VmError> {
   }
   Ok(())
 }
+
+#[test]
+fn async_generator_to_string_preserves_crlf_line_terminators() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  // Mirrors test262's line terminator normalisation checks, but for `async function*`.
+  match rt.exec_script("async function* g(\r\n) {\r\n  yield 1;\r\n}\r\ng.toString()") {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert_eq!(s, "async function* g(\r\n) {\r\n  yield 1;\r\n}");
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
+
+#[test]
+fn async_generator_to_string_preserves_cr_line_terminators() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script("async function* g(\r) {\r  yield 1;\r}\rg.toString()") {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert_eq!(s, "async function* g(\r) {\r  yield 1;\r}");
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}

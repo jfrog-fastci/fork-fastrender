@@ -3236,6 +3236,101 @@ impl<'a> Evaluator<'a> {
     best
   }
 
+  fn class_member_span_start(
+    &self,
+    member_loc_start: u32,
+    key_loc_start: u32,
+    key_is_computed: bool,
+    func: Option<&parse_js::ast::func::Func>,
+    accessor_keyword: Option<&'static [u8]>,
+  ) -> u32 {
+    let prefix_len = self.env.prefix_len();
+    let base_offset = self.env.base_offset();
+
+    let key_span_start = base_offset.saturating_add(key_loc_start.saturating_sub(prefix_len));
+    let member_span_start = base_offset.saturating_add(member_loc_start.saturating_sub(prefix_len));
+
+    // For non-async, non-generator methods, the key's start location is sufficient and avoids
+    // including `static` from `static <method>` class elements (which is not part of the
+    // `Function.prototype.toString` source text for the resulting function object).
+    let Some(func) = func else {
+      return self.class_member_span_start_scan(
+        member_span_start,
+        key_span_start,
+        key_is_computed,
+        accessor_keyword,
+        /* async_ */ false,
+        /* generator */ false,
+      );
+    };
+
+    self.class_member_span_start_scan(
+      member_span_start,
+      key_span_start,
+      key_is_computed,
+      accessor_keyword,
+      func.async_,
+      func.generator,
+    )
+  }
+
+  fn class_member_span_start_scan(
+    &self,
+    member_span_start: u32,
+    key_span_start: u32,
+    key_is_computed: bool,
+    accessor_keyword: Option<&'static [u8]>,
+    is_async: bool,
+    is_generator: bool,
+  ) -> u32 {
+    let source = self.env.source();
+    let text = source.text.as_bytes();
+    let start = (member_span_start as usize).min(text.len());
+    let end = (key_span_start as usize).min(text.len());
+    if start >= end {
+      return key_span_start;
+    }
+    let slice = &text[start..end];
+
+    let mut best = key_span_start;
+
+    // `ClassOrObjKey::Computed` locs point at the expression *inside* the brackets, so include the
+    // `[` token itself when slicing source spans for `Function.prototype.toString` and lazy
+    // function reparsing.
+    if key_is_computed {
+      if let Some(pos) = slice.iter().rposition(|&b| b == b'[') {
+        best = best.min(member_span_start.saturating_add(pos as u32));
+      }
+    }
+
+    if let Some(keyword) = accessor_keyword {
+      if let Some(pos) = slice
+        .windows(keyword.len())
+        .rposition(|w| w == keyword)
+      {
+        best = best.min(member_span_start.saturating_add(pos as u32));
+      }
+    }
+
+    if is_async {
+      let async_bytes = b"async";
+      if let Some(pos) = slice
+        .windows(async_bytes.len())
+        .rposition(|w| w == async_bytes)
+      {
+        best = best.min(member_span_start.saturating_add(pos as u32));
+      }
+    }
+
+    if is_generator {
+      if let Some(pos) = slice.iter().rposition(|&b| b == b'*') {
+        best = best.min(member_span_start.saturating_add(pos as u32));
+      }
+    }
+
+    best
+  }
+
   fn instantiate_script(
     &mut self,
     scope: &mut Scope<'_>,
@@ -6194,6 +6289,10 @@ impl<'a> Evaluator<'a> {
       };
 
       let member_loc_start = member.loc.start_u32();
+      let (key_loc_start, key_is_computed) = match &member.stx.key {
+        ClassOrObjKey::Direct(direct) => (direct.loc.start_u32(), false),
+        ClassOrObjKey::Computed(expr) => (expr.loc.start_u32(), true),
+      };
 
       let mut member_scope = class_scope.reborrow();
       member_scope.push_root(Value::Object(target_obj))?;
@@ -6240,12 +6339,17 @@ impl<'a> Evaluator<'a> {
           let is_async_generator = func_node.stx.generator && func_node.stx.async_;
           let length = self.function_length(&func_node.stx)?;
 
-          let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
+          let span_start = self.class_member_span_start(
+            member_loc_start,
+            key_loc_start,
+            key_is_computed,
+            Some(&func_node.stx),
+            None,
+          );
           let rel_end = func_node
             .loc
             .end_u32()
             .saturating_sub(self.env.prefix_len());
-          let span_start = self.env.base_offset().saturating_add(rel_start);
           let span_end = self.env.base_offset().saturating_add(rel_end);
 
           let code = self.vm.register_ecma_function(
@@ -6349,12 +6453,17 @@ impl<'a> Evaluator<'a> {
           let func_node = &getter.stx.func;
           let length = self.function_length(&func_node.stx)?;
 
-          let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
+          let span_start = self.class_member_span_start(
+            member_loc_start,
+            key_loc_start,
+            key_is_computed,
+            None,
+            Some(b"get"),
+          );
           let rel_end = func_node
             .loc
             .end_u32()
             .saturating_sub(self.env.prefix_len());
-          let span_start = self.env.base_offset().saturating_add(rel_start);
           let span_end = self.env.base_offset().saturating_add(rel_end);
 
           let code = self.vm.register_ecma_function(
@@ -6433,12 +6542,17 @@ impl<'a> Evaluator<'a> {
           let func_node = &setter.stx.func;
           let length = self.function_length(&func_node.stx)?;
 
-          let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
+          let span_start = self.class_member_span_start(
+            member_loc_start,
+            key_loc_start,
+            key_is_computed,
+            None,
+            Some(b"set"),
+          );
           let rel_end = func_node
             .loc
             .end_u32()
             .saturating_sub(self.env.prefix_len());
-          let span_start = self.env.base_offset().saturating_add(rel_start);
           let span_end = self.env.base_offset().saturating_add(rel_end);
 
           let code = self.vm.register_ecma_function(
@@ -15667,18 +15781,27 @@ fn async_define_class_member(
   };
 
   let member_loc_start = member.loc.start_u32();
+  let (key_loc_start, key_is_computed) = match &member.stx.key {
+    ClassOrObjKey::Direct(direct) => (direct.loc.start_u32(), false),
+    ClassOrObjKey::Computed(expr) => (expr.loc.start_u32(), true),
+  };
 
   match &member.stx.val {
     ClassOrObjVal::Method(method) => {
       let func_node = &method.stx.func;
       let length = evaluator.function_length(&func_node.stx)?;
 
-      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let span_start = evaluator.class_member_span_start(
+        member_loc_start,
+        key_loc_start,
+        key_is_computed,
+        Some(&func_node.stx),
+        None,
+      );
       let rel_end = func_node
         .loc
         .end_u32()
         .saturating_sub(evaluator.env.prefix_len());
-      let span_start = evaluator.env.base_offset().saturating_add(rel_start);
       let span_end = evaluator.env.base_offset().saturating_add(rel_end);
 
       let code = evaluator.vm.register_ecma_function(
@@ -15751,12 +15874,17 @@ fn async_define_class_member(
       let func_node = &getter.stx.func;
       let length = evaluator.function_length(&func_node.stx)?;
 
-      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let span_start = evaluator.class_member_span_start(
+        member_loc_start,
+        key_loc_start,
+        key_is_computed,
+        None,
+        Some(b"get"),
+      );
       let rel_end = func_node
         .loc
         .end_u32()
         .saturating_sub(evaluator.env.prefix_len());
-      let span_start = evaluator.env.base_offset().saturating_add(rel_start);
       let span_end = evaluator.env.base_offset().saturating_add(rel_end);
 
       let code = evaluator.vm.register_ecma_function(
@@ -15821,12 +15949,17 @@ fn async_define_class_member(
       let func_node = &setter.stx.func;
       let length = evaluator.function_length(&func_node.stx)?;
 
-      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let span_start = evaluator.class_member_span_start(
+        member_loc_start,
+        key_loc_start,
+        key_is_computed,
+        None,
+        Some(b"set"),
+      );
       let rel_end = func_node
         .loc
         .end_u32()
         .saturating_sub(evaluator.env.prefix_len());
-      let span_start = evaluator.env.base_offset().saturating_add(rel_start);
       let span_end = evaluator.env.base_offset().saturating_add(rel_end);
 
       let code = evaluator.vm.register_ecma_function(
