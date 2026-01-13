@@ -2,7 +2,7 @@ use vm_js::{
   GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
-fn fail_uncatchable(
+fn test_unimplemented(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -11,7 +11,7 @@ fn fail_uncatchable(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::Unimplemented("uncatchable test error"))
+  Err(VmError::Unimplemented("test unimplemented"))
 }
 
 fn new_runtime() -> JsRuntime {
@@ -47,12 +47,12 @@ fn for_triple_let_closure_capture() {
 fn for_triple_restores_lexical_env_on_uncatchable_error() {
   let mut rt = new_runtime();
 
-  rt.register_global_native_function("__fail_uncatchable__", fail_uncatchable, 0)
+  rt.register_global_native_function("__test_unimplemented", test_unimplemented, 0)
     .unwrap();
   let err = rt
     // Trigger an uncatchable VM error inside the loop body so we can assert the loop restores its
     // lexical environment before unwinding.
-    .exec_script(r#"for (let i = 0; i < 1; i++) { __fail_uncatchable__(); }"#)
+    .exec_script(r#"for (let i = 0; i < 1; i++) { __test_unimplemented(); }"#)
     .unwrap_err();
   assert!(matches!(err, VmError::Unimplemented(_)));
 

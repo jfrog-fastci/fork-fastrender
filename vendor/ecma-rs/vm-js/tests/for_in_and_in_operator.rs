@@ -2,7 +2,7 @@ use vm_js::{
   GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
-fn fail_uncatchable(
+fn test_unimplemented(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -11,7 +11,7 @@ fn fail_uncatchable(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::Unimplemented("uncatchable test error"))
+  Err(VmError::Unimplemented("test unimplemented"))
 }
 
 fn new_runtime() -> JsRuntime {
@@ -148,12 +148,12 @@ fn in_operator_treats_string_indices_as_properties() {
 fn for_in_restores_lexical_env_on_uncatchable_error() {
   let mut rt = new_runtime();
 
-  rt.register_global_native_function("__fail_uncatchable__", fail_uncatchable, 0)
+  rt.register_global_native_function("__test_unimplemented", test_unimplemented, 0)
     .unwrap();
   let err = rt
     // Trigger an uncatchable VM error inside the loop body so we can assert the loop restores its
     // per-iteration lexical environment before unwinding.
-    .exec_script(r#"for (let k in {a:1}) { __fail_uncatchable__(); }"#)
+    .exec_script(r#"for (let k in {a:1}) { __test_unimplemented(); }"#)
     .unwrap_err();
   assert!(matches!(err, VmError::Unimplemented(_)));
 
