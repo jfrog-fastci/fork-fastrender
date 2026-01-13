@@ -84,7 +84,7 @@ struct ExternalTask<Host: 'static> {
 struct ExternalTaskQueueState<Host: 'static> {
   queue: VecDeque<ExternalTask<Host>>,
   max_pending_tasks: usize,
-  waker: Option<Arc<dyn Fn() + Send + Sync>>,
+  wake: Option<Arc<dyn Fn() + Send + Sync>>,
   closed: bool,
 }
 
@@ -113,15 +113,19 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
       inner: Arc::new(Mutex::new(ExternalTaskQueueState {
         queue: VecDeque::new(),
         max_pending_tasks,
-        waker: None,
+        wake: None,
         closed: false,
       })),
     }
   }
 
-  pub fn set_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+  pub fn set_wake_callback(&self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
     let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    lock.waker = waker;
+    lock.wake = cb;
+  }
+
+  pub fn set_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+    self.set_wake_callback(waker);
   }
 
   fn set_max_pending_tasks(&self, max_pending_tasks: usize) {
@@ -135,6 +139,8 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
     let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.closed = true;
     lock.queue.clear();
+    // Ensure embeddings can release any wake resources once an event loop is dropped/reset.
+    lock.wake = None;
   }
 
   fn is_empty(&self) -> bool {
@@ -155,7 +161,7 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
   where
     F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + Send + 'static,
   {
-    let waker = {
+    let wake = {
       let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
       if lock.closed {
         return Err(Error::Other("EventLoop external task queue is closed".to_string()));
@@ -170,14 +176,15 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
         source,
         runnable: Box::new(runnable),
       });
-      lock.waker.clone()
+      lock.wake.clone()
     };
 
-    // IMPORTANT: do not invoke the waker while holding the mutex. Embeddings may re-enter the
-    // event loop (draining this queue) from inside the waker.
-    if let Some(waker) = waker {
-      // Best-effort wakeup: never let a waker panic propagate into an unrelated producer thread.
-      let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (waker)()));
+    // IMPORTANT: do not invoke the wake callback while holding the mutex. Embeddings may re-enter
+    // the event loop (draining this queue) from inside the wake callback.
+    if let Some(wake) = wake {
+      // Best-effort wakeup: never let a wake callback panic propagate into an unrelated producer
+      // thread.
+      let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (wake)()));
     }
     Ok(())
   }
@@ -661,8 +668,17 @@ impl<Host: 'static> EventLoop<Host> {
     self.external_task_queue.clone()
   }
 
+  /// Installs (or clears) a callback invoked whenever an external task is successfully queued via
+  /// [`ExternalTaskQueueHandle::queue_task`].
+  ///
+  /// Embeddings can use this to wake a sleeping host/UI so externally-driven events (WebSocket,
+  /// message channels, etc) still make forward progress even when the host is otherwise idle.
+  pub fn set_external_wake_callback(&self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
+    self.external_task_queue.set_wake_callback(cb);
+  }
+
   pub fn set_external_task_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
-    self.external_task_queue.set_waker(waker);
+    self.set_external_wake_callback(waker);
   }
 
   fn drain_external_tasks(&mut self) -> Result<()> {
@@ -2512,30 +2528,58 @@ mod tests {
   }
 
   #[test]
-  fn external_task_queue_waker_fires_on_successful_enqueue() -> Result<()> {
-    let mut host = TestHost::default();
-    let mut event_loop = EventLoop::<TestHost>::new();
-
-    let handle = event_loop.external_task_queue_handle();
-
-    let wake_count = Arc::new(AtomicUsize::new(0));
-    let wake_count2 = Arc::clone(&wake_count);
-    handle.set_waker(Some(Arc::new(move || {
-      wake_count2.fetch_add(1, Ordering::SeqCst);
+  fn external_task_queue_wake_callback_invoked_once_per_queued_task() -> Result<()> {
+    let handle = ExternalTaskQueueHandle::<()>::new(10);
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wakes_for_cb = Arc::clone(&wakes);
+    handle.set_wake_callback(Some(Arc::new(move || {
+      wakes_for_cb.fetch_add(1, Ordering::SeqCst);
     })));
 
-    handle.queue_task(TaskSource::Networking, |host, _event_loop| {
-      host.count += 1;
-      Ok(())
-    })?;
+    handle.queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))?;
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
 
-    assert_eq!(wake_count.load(Ordering::SeqCst), 1);
+    handle.queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))?;
+    assert_eq!(wakes.load(Ordering::SeqCst), 2);
 
-    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
-    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
-    assert_eq!(host.count, 1);
-    assert_eq!(wake_count.load(Ordering::SeqCst), 1);
     Ok(())
+  }
+
+  #[test]
+  fn external_task_queue_wake_callback_not_invoked_when_queue_is_full() -> Result<()> {
+    let handle = ExternalTaskQueueHandle::<()>::new(1);
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wakes_for_cb = Arc::clone(&wakes);
+    handle.set_wake_callback(Some(Arc::new(move || {
+      wakes_for_cb.fetch_add(1, Ordering::SeqCst);
+    })));
+
+    handle.queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))?;
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+
+    assert!(handle
+      .queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))
+      .is_err());
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+
+    Ok(())
+  }
+
+  #[test]
+  fn external_task_queue_wake_callback_not_invoked_when_queue_is_closed() {
+    let handle = ExternalTaskQueueHandle::<()>::new(10);
+    handle.close();
+
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wakes_for_cb = Arc::clone(&wakes);
+    handle.set_wake_callback(Some(Arc::new(move || {
+      wakes_for_cb.fetch_add(1, Ordering::SeqCst);
+    })));
+
+    assert!(handle
+      .queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))
+      .is_err());
+    assert_eq!(wakes.load(Ordering::SeqCst), 0);
   }
 
   #[test]
