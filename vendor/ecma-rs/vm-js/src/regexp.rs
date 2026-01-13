@@ -934,6 +934,7 @@ impl RegExpProgram {
     exec_mem: &'a RegExpExecMemoryBudget,
     initial_captures: Option<&[usize]>,
   ) -> Result<Option<RegExpMatch>, VmError> {
+    let unicode_mode = flags.has_either_unicode_flag();
     let mut stack: Vec<ExecState<'a>> = Vec::new();
     let mut stack_mem: Vec<RegExpExecMemoryToken<'a>> = Vec::new();
 
@@ -1001,7 +1002,7 @@ impl RegExpProgram {
           Inst::Char(ch) => {
             if dir.is_forward() {
               let Some((cp, len)) =
-                decode_code_point(input, state.pos, flags.has_either_unicode_flag())
+                decode_code_point(input, state.pos, unicode_mode)
               else {
                 break;
               };
@@ -1011,7 +1012,7 @@ impl RegExpProgram {
               state.pos = state.pos.saturating_add(len);
             } else {
               let Some((cp, len)) =
-                decode_prev_code_point(input, state.pos, flags.has_either_unicode_flag())
+                decode_prev_code_point(input, state.pos, unicode_mode)
               else {
                 break;
               };
@@ -1024,13 +1025,13 @@ impl RegExpProgram {
           }
           Inst::Any => {
             let Some((cp, len)) = (if dir.is_forward() {
-              decode_code_point(input, state.pos, flags.has_either_unicode_flag())
+              decode_code_point(input, state.pos, unicode_mode)
             } else {
-              decode_prev_code_point(input, state.pos, flags.has_either_unicode_flag())
+              decode_prev_code_point(input, state.pos, unicode_mode)
             }) else {
               break;
             };
-            if !flags.dot_all && cp <= 0xFFFF && is_line_terminator_unit(cp as u16) {
+            if !flags.dot_all && is_line_terminator(cp) {
               break;
             }
             if dir.is_forward() {
@@ -1042,9 +1043,9 @@ impl RegExpProgram {
           }
           Inst::Class(cls) => {
             let Some((cp, len)) = (if dir.is_forward() {
-              decode_code_point(input, state.pos, flags.has_either_unicode_flag())
+              decode_code_point(input, state.pos, unicode_mode)
             } else {
-              decode_prev_code_point(input, state.pos, flags.has_either_unicode_flag())
+              decode_prev_code_point(input, state.pos, unicode_mode)
             }) else {
               break;
             };
@@ -2015,8 +2016,8 @@ enum Inst {
   /// Matches a single pattern character.
   ///
   /// In non-UnicodeMode this matches a single UTF-16 code unit.
-  /// In UnicodeMode (`/u`), this matches a single Unicode code point (consuming 1 or 2 UTF-16
-  /// code units).
+  /// In UnicodeMode (`/u` or `/v`), this matches a single Unicode code point (consuming 1 or 2
+  /// UTF-16 code units).
   Char(u32),
   Any,
   Class(CharClass),
@@ -2544,6 +2545,38 @@ fn is_line_terminator_unit(u: u16) -> bool {
   matches!(u, 0x000A | 0x000D | 0x2028 | 0x2029)
 }
 
+#[inline]
+fn is_line_terminator(cp: u32) -> bool {
+  matches!(cp, 0x000A | 0x000D | 0x2028 | 0x2029)
+}
+
+#[inline]
+fn utf16_decode_surrogate_pair(high: u16, low: u16) -> u32 {
+  debug_assert!((0xD800..=0xDBFF).contains(&high));
+  debug_assert!((0xDC00..=0xDFFF).contains(&low));
+  let high = high as u32;
+  let low = low as u32;
+  0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
+}
+
+/// Returns the Unicode code point and UTF-16 code unit length at `index`.
+///
+/// When `input[index]` is a leading surrogate and it is followed by a trailing surrogate, this
+/// decodes the surrogate pair as a single supplementary-plane code point.
+#[inline]
+fn utf16_code_point_at(input: &[u16], index: usize) -> Option<(u32, usize)> {
+  let &u = input.get(index)?;
+  if (0xD800..=0xDBFF).contains(&u) {
+    let Some(&u2) = input.get(index + 1) else {
+      return Some((u as u32, 1));
+    };
+    if (0xDC00..=0xDFFF).contains(&u2) {
+      return Some((utf16_decode_surrogate_pair(u, u2), 2));
+    }
+  }
+  Some((u as u32, 1))
+}
+
 fn is_ascii_letter(u: u16) -> bool {
   (b'a' as u16..=b'z' as u16).contains(&u) || (b'A' as u16..=b'Z' as u16).contains(&u)
 }
@@ -2609,14 +2642,10 @@ pub(crate) fn advance_string_index(input: &[u16], index: usize, unicode: bool) -
   if !unicode {
     return index.saturating_add(1);
   }
-  let u = input[index];
-  if (0xD800..=0xDBFF).contains(&u) && index + 1 < input.len() {
-    let u2 = input[index + 1];
-    if (0xDC00..=0xDFFF).contains(&u2) {
-      return index + 2;
-    }
-  }
-  index + 1
+  let Some((_, len)) = utf16_code_point_at(input, index) else {
+    return index.saturating_add(1);
+  };
+  index.saturating_add(len)
 }
 
 // --- Parser + compiler ---
@@ -2652,8 +2681,8 @@ enum Atom {
   /// A literal pattern character.
   ///
   /// In non-UnicodeMode this represents a single UTF-16 code unit.
-  /// In UnicodeMode (`/u`), this represents a single Unicode code point (which may require a
-  /// surrogate pair in the input string).
+  /// In UnicodeMode (`/u` or `/v`), this represents a single Unicode code point (which may require
+  /// a surrogate pair in the input string).
   Literal(u32),
   Any,
   Class(CharClass),
@@ -3069,18 +3098,15 @@ impl<'a> Parser<'a> {
       x => {
         // In UnicodeMode (`u`/`v`), pattern source text is interpreted as Unicode code points, so
         // UTF-16 surrogate pairs in the pattern represent a single atom.
-        if unicode_mode && (0xD800..=0xDBFF).contains(&x) {
-          if let Some(next) = self.peek() {
-            if (0xDC00..=0xDFFF).contains(&next) {
-              self.next(); // consume low surrogate
-              let lead = (x as u32).saturating_sub(0xD800);
-              let trail = (next as u32).saturating_sub(0xDC00);
-              let cp = 0x10000u32.saturating_add((lead << 10) | trail);
-              return Ok(Atom::Literal(cp));
-            }
-          }
+        if unicode_mode
+          && (0xD800..=0xDBFF).contains(&x)
+          && self.peek().is_some_and(|u2| (0xDC00..=0xDFFF).contains(&u2))
+        {
+          let low = self.next().unwrap();
+          Ok(Atom::Literal(utf16_decode_surrogate_pair(x, low)))
+        } else {
+          Ok(Atom::Literal(x as u32))
         }
-        Ok(Atom::Literal(x as u32))
       }
     }
   }
@@ -3441,19 +3467,15 @@ impl<'a> Parser<'a> {
         //
         // This is especially important for `/v` (UnicodeSets) patterns like `[👨‍👩‍👧‍👦]/v`, which
         // must match the full code point `👨` rather than a single surrogate half.
-        if self.flags.has_either_unicode_flag() && (0xD800..=0xDBFF).contains(&other) {
-          if let Some(next) = self.peek() {
-            if (0xDC00..=0xDFFF).contains(&next) {
-              // Consume the low surrogate.
-              self.next();
-              let lead = (other as u32).saturating_sub(0xD800);
-              let trail = (next as u32).saturating_sub(0xDC00);
-              let cp = 0x10000u32.saturating_add((lead << 10) | trail);
-              return Ok(CharClassItem::Char(cp));
-            }
-          }
+        if self.flags.has_either_unicode_flag()
+          && (0xD800..=0xDBFF).contains(&other)
+          && self.peek().is_some_and(|u2| (0xDC00..=0xDFFF).contains(&u2))
+        {
+          let low = self.next().unwrap();
+          Ok(CharClassItem::Char(utf16_decode_surrogate_pair(other, low)))
+        } else {
+          Ok(CharClassItem::Char(other as u32))
         }
-        Ok(CharClassItem::Char(other as u32))
       }
     }
   }
@@ -3656,17 +3678,18 @@ impl<'a> Parser<'a> {
 
   fn parse_unicode_escape(&mut self, ctx: &mut CompileCtx<'_>) -> Result<u32, RegExpCompileError> {
     if self.flags.has_either_unicode_flag() && self.peek() == Some(b'{' as u16) {
-      // \u{...}
+      // `\u{...}` (UnicodeMode only).
       self.next(); // consume '{'
       let mut value: u32 = 0;
       let mut saw_digit = false;
       let mut digit_i: usize = 0;
       loop {
         let Some(u) = self.peek() else {
+          // Unterminated `\u{...`.
           return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
         };
         if u == (b'}' as u16) {
-          self.next();
+          self.next(); // consume '}'
           break;
         }
         if digit_i != 0 {
@@ -3689,7 +3712,7 @@ impl<'a> Parser<'a> {
       return Ok(value);
     }
 
-    // \uXXXX
+    // `\uXXXX` (always).
     if !self.flags.has_either_unicode_flag() {
       // Non-UnicodeMode: only treat as a Unicode escape sequence when followed by 4 hex digits;
       // otherwise it is an identity escape for `u` (and leaves the input untouched so `{...}` can
@@ -3726,7 +3749,9 @@ impl<'a> Parser<'a> {
     // non-braced `\uXXXX` form. This matches ECMAScript ParsePattern semantics.
     if (0xD800..=0xDBFF).contains(&(value as u16)) {
       let save = self.idx;
-      if self.units.get(save) == Some(&(b'\\' as u16)) && self.units.get(save + 1) == Some(&(b'u' as u16)) {
+      if self.units.get(save) == Some(&(b'\\' as u16))
+        && self.units.get(save + 1) == Some(&(b'u' as u16))
+      {
         // Do not merge braced escapes (`\u{...}`).
         if self.units.get(save + 2) != Some(&(b'{' as u16)) && save + 6 <= self.units.len() {
           let digits = &self.units[save + 2..save + 6];

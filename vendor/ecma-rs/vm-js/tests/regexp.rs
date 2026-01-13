@@ -367,6 +367,60 @@ fn regexp_last_index_sticky_semantics() {
 }
 
 #[test]
+fn regexp_unicode_mode_consumes_surrogate_pairs_for_dot() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var s = "💩";
+        var ok_no_unicode = /^.$/.test(s);
+        var ok_u = /^.$/u.test(s);
+        var ok_v = new RegExp("^.$", "v").test(s);
+
+        // Unpaired surrogates are still matched as single code points in Unicode mode.
+        var lone_high = String.fromCharCode(0xD800);
+        var lone_low = String.fromCharCode(0xDC00);
+        var ok_lone_high = /^.$/u.test(lone_high);
+        var ok_lone_low = /^.$/u.test(lone_low);
+
+        [ok_no_unicode, ok_u, ok_v, ok_lone_high, ok_lone_low].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "false,true,true,true,true");
+}
+
+#[test]
+fn regexp_unicode_mode_parses_non_bmp_literals_and_classes_as_code_points() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var two = "💩💩";
+        // In Unicode mode, the `{2}` quantifier applies to the whole code point.
+        var ok_u = /^💩{2}$/u.test(two);
+        var ok_v = new RegExp("^💩{2}$", "v").test(two);
+        // Without Unicode mode, the quantifier applies to the second UTF-16 code unit only.
+        var ok_no_unicode = /^💩{2}$/.test(two);
+
+        // Character classes match code points under /u.
+        var ok_class_literal = /^[💩]$/u.test("💩");
+        var ok_class_escape_pair = /^[\uD83D\uDCA9]$/u.test("💩");
+
+        // \u{...} escapes produce full code points in Unicode mode.
+        var ok_u_brace_escape = new RegExp("^\\u{1F4A9}$", "u").test("💩");
+
+        // \uXXXX escapes can pair in Unicode mode to form a supplementary code point.
+        var ok_u_surrogate_pair_escape = new RegExp("^\\uD83D\\uDCA9$", "u").test("💩");
+
+        [ok_u, ok_v, ok_no_unicode, ok_class_literal, ok_class_escape_pair, ok_u_brace_escape, ok_u_surrogate_pair_escape].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,true,false,true,true,true,true");
+}
+
+#[test]
 fn string_regex_methods_basic_match_search_replace_split() {
   let mut rt = new_runtime();
   let value = rt
