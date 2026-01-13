@@ -6749,6 +6749,7 @@ pub(crate) fn is_secure_context_for_document_url(url: &str) -> bool {
   match url.scheme() {
     "https" => true,
     "http" => matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1")),
+    "chrome" => true,
     _ => false,
   }
 }
@@ -64127,6 +64128,7 @@ mod tests {
     let mut realm_a = new_realm(WindowRealmConfig::new("about:blank"))?;
     let origin = realm_a.exec_script("window.origin")?;
     assert_eq!(get_string(realm_a.heap(), origin), "null");
+    assert_eq!(realm_a.exec_script("isSecureContext")?, Value::Bool(false));
     realm_a.exec_script("localStorage.setItem('x', '1')")?;
 
     let mut realm_b = new_realm(WindowRealmConfig::new("about:blank"))?;
@@ -71951,6 +71953,17 @@ mod tests {
     };
     let units = realm.heap().get_string(handle)?.as_code_units().to_vec();
     assert_eq!(units, vec![0u16, 1, 2, 3]);
+
+    Ok(())
+  }
+
+  #[test]
+  fn window_or_worker_global_scope_primitives_for_chrome_urls() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://settings/page"))?;
+
+    let origin = realm.exec_script("origin")?;
+    assert_eq!(get_string(realm.heap(), origin), "chrome://settings");
+    assert_eq!(realm.exec_script("isSecureContext")?, Value::Bool(true));
 
     Ok(())
   }
