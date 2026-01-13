@@ -17564,13 +17564,8 @@ pub fn string_prototype_char_code_at(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-string.prototype.charcodeat
   let mut scope = scope.reborrow();
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
-
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -17603,13 +17598,8 @@ pub fn string_prototype_code_point_at(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-string.prototype.codepointat
   let mut scope = scope.reborrow();
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
-
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let pos_val = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -17660,13 +17650,8 @@ pub fn string_prototype_char_at(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  // Spec: `RequireObjectCoercible(this value)`.
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -17717,13 +17702,8 @@ pub fn string_prototype_at(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-string.prototype.at
   let mut scope = scope.reborrow();
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
-
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let pos_val = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -17786,13 +17766,8 @@ fn string_pad_impl(
   at_start: bool,
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
-
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let max_len_val = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -17906,13 +17881,8 @@ pub fn string_prototype_slice(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  // Spec: `RequireObjectCoercible(this value)`.
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let len = {
@@ -17946,14 +17916,8 @@ pub fn string_prototype_index_of(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  // Spec: `RequireObjectCoercible(this value)`.
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
-
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -18407,13 +18371,8 @@ pub fn string_prototype_substring(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  // Spec: `RequireObjectCoercible(this value)`.
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let len = {

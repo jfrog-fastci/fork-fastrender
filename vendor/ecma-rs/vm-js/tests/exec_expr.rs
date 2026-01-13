@@ -687,7 +687,117 @@ fn string_prototype_char_at_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
-      r#""abc".charAt(1) === "b" && "abc".charAt(9) === "" && "abc".charAt(-1) === "" && String.prototype.charAt.call(123, 1) === "2""#,
+      r#"
+        var threwNull = false;
+        try { String.prototype.charAt.call(null, 1); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.charAt.call(undefined, 1); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+
+        "abc".charAt(1) === "b"
+          && "abc".charAt(9) === ""
+          && "abc".charAt(-1) === ""
+          && String.prototype.charAt.call(123, 1) === "2"
+          && threwNull
+          && threwUndef
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_char_code_at_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var threwNull = false;
+        try { String.prototype.charCodeAt.call(null, 1); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.charCodeAt.call(undefined, 1); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+
+        "abc".charCodeAt(1) === 98
+          && isNaN("abc".charCodeAt(9))
+          && isNaN("abc".charCodeAt(-1))
+          && String.prototype.charCodeAt.call(123, 1) === 50
+          && threwNull
+          && threwUndef
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_code_point_at_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var threwNull = false;
+        try { String.prototype.codePointAt.call(null, 1); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.codePointAt.call(undefined, 1); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+
+        "abc".codePointAt(1) === 98
+          && "abc".codePointAt(9) === undefined
+          && "abc".codePointAt(-1) === undefined
+          && String.prototype.codePointAt.call(123, 1) === 50
+          && threwNull
+          && threwUndef
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_at_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var threwNull = false;
+        try { String.prototype.at.call(null, 1); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.at.call(undefined, 1); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+
+        "abc".at(1) === "b"
+          && "abc".at(-1) === "c"
+          && "abc".at(9) === undefined
+          && String.prototype.at.call(123, 1) === "2"
+          && threwNull
+          && threwUndef
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_pad_start_end_work_and_are_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var threwStartNull = false;
+        try { String.prototype.padStart.call(null, 4, "0"); } catch (e) { threwStartNull = e && e.name === "TypeError"; }
+        var threwStartUndef = false;
+        try { String.prototype.padStart.call(undefined, 4, "0"); } catch (e) { threwStartUndef = e && e.name === "TypeError"; }
+        var threwEndNull = false;
+        try { String.prototype.padEnd.call(null, 4, "0"); } catch (e) { threwEndNull = e && e.name === "TypeError"; }
+        var threwEndUndef = false;
+        try { String.prototype.padEnd.call(undefined, 4, "0"); } catch (e) { threwEndUndef = e && e.name === "TypeError"; }
+
+        "abc".padStart(5, "0") === "00abc"
+          && "abc".padEnd(5, "0") === "abc00"
+          && String.prototype.padStart.call(123, 4, "0") === "0123"
+          && String.prototype.padEnd.call(123, 4, "0") === "1230"
+          && threwStartNull
+          && threwStartUndef
+          && threwEndNull
+          && threwEndUndef
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
@@ -697,7 +807,19 @@ fn string_prototype_char_at_works_and_is_generic() {
 fn string_prototype_slice_works() {
   let mut rt = new_runtime();
   let value = rt
-    .exec_script(r#""abcd".slice(1, 3) === "bc" && "abcd".slice(-1) === "d""#)
+    .exec_script(
+      r#"
+        var threwNull = false;
+        try { String.prototype.slice.call(null, 1, 2); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.slice.call(undefined, 1, 2); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+
+        "abcd".slice(1, 3) === "bc"
+          && "abcd".slice(-1) === "d"
+          && threwNull
+          && threwUndef
+      "#,
+    )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
@@ -718,7 +840,19 @@ fn string_prototype_index_of_works() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
-      r#""abcd".indexOf("bc")===1 && "abcd".indexOf("x")===-1 && "abcd".indexOf("", 2)===2 && "ab".indexOf("a", -1)===0"#,
+      r#"
+        var threwNull = false;
+        try { String.prototype.indexOf.call(null, "b"); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.indexOf.call(undefined, "b"); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+
+        "abcd".indexOf("bc")===1
+          && "abcd".indexOf("x")===-1
+          && "abcd".indexOf("", 2)===2
+          && "ab".indexOf("a", -1)===0
+          && threwNull
+          && threwUndef
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
@@ -888,7 +1022,21 @@ fn string_prototype_substring_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
-      r#""abcd".substring(1, 3) === "bc" && "abcd".substring(2) === "cd" && "abcd".substring(-1, 2) === "ab" && "abcd".substring(3, 1) === "bc" && "abcd".substring(1, 1e999) === "bcd" && String.prototype.substring.call({toString:function(){return "ab";}}, 1) === "b""#,
+      r#"
+        var threwNull = false;
+        try { String.prototype.substring.call(null, 1); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.substring.call(undefined, 1); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+
+        "abcd".substring(1, 3) === "bc"
+          && "abcd".substring(2) === "cd"
+          && "abcd".substring(-1, 2) === "ab"
+          && "abcd".substring(3, 1) === "bc"
+          && "abcd".substring(1, 1e999) === "bcd"
+          && String.prototype.substring.call({toString:function(){return "ab";}}, 1) === "b"
+          && threwNull
+          && threwUndef
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
