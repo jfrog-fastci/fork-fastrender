@@ -164,7 +164,8 @@ Linux sandbox code lives in:
 - `seccomp-bpf`: [`src/sandbox/linux_seccomp.rs`](../src/sandbox/linux_seccomp.rs) (installed via
   [`src/sandbox/mod.rs`](../src/sandbox/mod.rs))
 - Optional filesystem defense-in-depth (Landlock): [`src/sandbox/linux_landlock.rs`](../src/sandbox/linux_landlock.rs)
-- Optional namespace hardening (best-effort, before seccomp): [`src/sandbox/linux_namespaces.rs`](../src/sandbox/linux_namespaces.rs)
+- Optional namespace hardening (best-effort, before seccomp; disabled by default and controlled via
+  `RendererSandboxConfig::linux_namespaces`): [`src/sandbox/linux_namespaces.rs`](../src/sandbox/linux_namespaces.rs)
 
 Repo reality (today): the Linux seccomp sandbox is designed to:
 
