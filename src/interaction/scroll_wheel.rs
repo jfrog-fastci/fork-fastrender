@@ -364,6 +364,7 @@ pub fn apply_wheel_scroll_at_point_prepared(
   let options = ScrollOptions {
     source: ScrollSource::User,
     simulate_overscroll: false,
+    apply_snap: false,
   };
 
   // Mirror the paint pipeline for hit testing: sticky offsets are applied relative to scroll state,

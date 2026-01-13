@@ -169,7 +169,6 @@ pub enum MediaCodec {
   H264,
   Vp9,
   Opus,
-  H264,
   Aac,
   Unknown(String),
 }

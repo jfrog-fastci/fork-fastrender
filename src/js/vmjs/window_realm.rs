@@ -10847,7 +10847,7 @@ fn maybe_adopt_node_into_document(
   // Resolve the source DOM pointer without calling `dom_mut()` on `BrowserDocumentDom2`, which would
   // conservatively mark the host document dirty even when adoption is non-render-affecting (e.g.
   // adopting a detached node like a fresh DocumentType).
-  let Some(src_dom_ptr) = dom_ptr_for_document_id_read(vm, host, node.document_id) else {
+  let Some(mut src_dom_ptr) = dom_ptr_for_document_id_read(vm, host, node.document_id) else {
     return Err(VmError::TypeError(
       "operation requires a DOM-backed source document",
     ));
