@@ -287,7 +287,7 @@ What the tick does:
 
 What the tick must **not** do:
 
-* **Do not** treat “time since last tick” as progress on the media timeline.
+* **Do not** treat tick `delta` (or “time since last tick”) as progress on the media timeline.
   * Ticks can jitter, coalesce, or pause entirely (window moved, system under load, backgrounded).
   * Accumulating `dt` from ticks is a classic way to create drift.
 * **Do not** advance media time by a fixed amount per tick (e.g. “+16ms each tick”).

@@ -163,11 +163,11 @@ to disable it yet; the `browser --js` flag is currently only meaningful for `--h
 - DOM mutations can invalidate style/layout/paint and trigger repaints (today this is generally a
   full rerender, not an incremental damaged-rect compositor).
 - Time-based behavior is driven by an explicit UI tick loop:
-  - Each rendered frame reports `RenderedFrame.wants_ticks` (in
+  - Each rendered frame reports `RenderedFrame.next_tick` (in
     [`WorkerToUi::FrameReady`](../src/ui/messages.rs)).
-  - While `wants_ticks` is true, the UI sends periodic `UiToWorker::Tick { tab_id }` messages to
-    advance time-based effects (CSS animations/transitions, animated images, JS timers, and
-    `requestAnimationFrame`) and repaint when needed.
+  - While `next_tick` is `Some(_)`, the UI sends periodic `UiToWorker::Tick { tab_id, delta }`
+    messages to advance time-based effects (CSS animations/transitions, animated images, JS timers,
+    and `requestAnimationFrame`) and repaint when needed.
 
 For the message-level protocol and scheduling details, see the “Tick loop” section in
 [`docs/browser_ui.md`](browser_ui.md). For the library embedding surface and JS execution budgets,

@@ -791,16 +791,18 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - `SetActiveTab { tab_id }`
 - `Navigate { tab_id, url, reason }`
 - History actions (`GoBack { tab_id }`, `GoForward { tab_id }`, `Reload { tab_id }`)
-- `Tick { tab_id }` — periodic wake-up used to advance time-based effects and drive the tab event
-  loop (CSS animations/transitions, animated images, JS timers/rAF, etc). UIs can drive ticks for
-  the active tab while the worker reports `RenderedFrame.wants_ticks == true` (typically at ~60Hz).
+- `Tick { tab_id, delta }` — periodic wake-up used to advance time-based effects and drive the tab
+  event loop (CSS animations/transitions, animated images, JS timers/rAF, etc). UIs can drive ticks
+  for the active tab while the worker reports `RenderedFrame.next_tick.is_some()` (often at ~60Hz).
   - Tick is a wake-up signal (no timestamp); time-aware subsystems must query their own clocks (see
     [`docs/media_clocking.md`](media_clocking.md)).
-  - Implementation note: CSS animation sampling in the current UI worker advances by a fixed time
-    step per tick (`TICK_ANIMATION_STEP` in [`src/ui/render_worker.rs`](../src/ui/render_worker.rs))
-    for determinism. It does **not** measure real elapsed time between ticks, so animations may
-    slow/freeze if ticks are delayed/suppressed. Do not treat UI ticks as a master clock for media
-    playback (see [`docs/media_clocking.md`](media_clocking.md)).
+  - Implementation note: the current UI worker advances CSS animation time using the `delta`
+    provided in `Tick` (with a default requested cadence of `DEFAULT_TICK_INTERVAL` in
+    [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)). The windowed `browser` UI typically
+    derives `delta` from wall-clock time between scheduled ticks, but deterministic harnesses can
+    inject a fixed `delta`. If ticks are delayed/suppressed, animations will pause and then jump
+    when ticks resume. Do not treat UI ticks as a master clock for media playback; see
+    [`docs/media_clocking.md`](media_clocking.md).
 - `ViewportChanged { tab_id, viewport_css, dpr }`
 - `Scroll { tab_id, delta_css, pointer_css }`
 - pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)
@@ -872,15 +874,16 @@ job (navigation/tick/etc). Multiple worker threads can render concurrently witho
 other's stage forwarding, but overlapping render jobs on the *same* thread would still require
 per-job routing (e.g. tagging stage messages with a job identifier).
 
-#### Tick loop (`RenderedFrame.wants_ticks` / `UiToWorker::Tick`)
+#### Tick loop (`RenderedFrame.next_tick` / `UiToWorker::Tick`)
 
 FastRender’s browser UI worker is **tick-driven**: it does not busy-poll “document time” on its own.
 Front-ends drive time-based behavior by sending periodic
 [`UiToWorker::Tick`](../src/ui/messages.rs) messages.
 
-- The worker reports a per-frame hint: `RenderedFrame.wants_ticks` (on
+- The worker reports a per-frame scheduling hint: `RenderedFrame.next_tick` (on
   [`WorkerToUi::FrameReady`](../src/ui/messages.rs)).
-- While `wants_ticks == true`, front-ends should send `Tick { tab_id }` for the active/visible tab.
+- While `next_tick` is `Some(d)`, front-ends should send `Tick { tab_id, delta }` for the
+  active/visible tab, scheduled roughly `d` apart.
   - The windowed `browser` app does this with a small scheduler in
     [`src/bin/browser.rs`](../src/bin/browser.rs), using `ControlFlow::WaitUntil` so it can animate
     without busy-polling the winit event loop.
@@ -890,9 +893,9 @@ Front-ends drive time-based behavior by sending periodic
   repaint if the page becomes dirty.
 - `Tick` is a wake-up signal (no timestamp). Time-aware subsystems (timers, animations, media) must
   query their own clocks; see [`docs/media_clocking.md`](media_clocking.md).
-  - CSS animations/transitions in the current UI worker are advanced by a fixed per-tick step for
-    determinism (see `TICK_ANIMATION_STEP` in [`src/ui/render_worker.rs`](../src/ui/render_worker.rs));
-    the worker does not attempt to “catch up” based on wall time if ticks are delayed.
+  - CSS animations/transitions in the current UI worker are advanced based on the tick `delta`
+    (stored as a `Duration` and converted at the API boundary); deterministic harnesses can inject a
+    fixed delta. See `DEFAULT_TICK_INTERVAL` in [`src/ui/render_worker.rs`](../src/ui/render_worker.rs).
 
 ### Worker-owned history semantics
 

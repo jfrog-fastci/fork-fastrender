@@ -299,11 +299,15 @@ pub struct RenderedFrame {
   pub scroll_metrics: ScrollMetrics,
   /// Schedule hint for the next [`UiToWorker::Tick`] the UI should deliver for this tab.
   ///
-  /// - `None` means the worker does not currently need ticks (no time-based effects).
-  /// - `Some(d)` means the UI should send a tick after approximately `d` has elapsed.
+  /// This is a high-level "time-based effects" signal:
+  ///
+  /// - `None` means the worker does not currently need periodic ticks (no active time-based effects
+  ///   such as CSS animations/transitions, animated images, JS timers/`requestAnimationFrame`, etc).
+  /// - `Some(d)` means the UI should send a tick after approximately `d` has elapsed so the worker
+  ///   can advance time-based state and repaint if needed.
   ///
   /// This replaces the older `wants_ticks: bool` flag so workers can request more nuanced wake-up
-  /// cadences (e.g. 60fps CSS animations vs. video frame deadlines).
+  /// cadences (e.g. 60fps CSS animations vs. coarser timer/media deadlines).
   pub next_tick: Option<Duration>,
 }
 

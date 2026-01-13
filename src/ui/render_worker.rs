@@ -1493,8 +1493,8 @@ fn find_replaced_image_for_styled_node<'a>(
 /// Returns `true` when the renderer DOM contains CSS time-based effects that require periodic
 /// sampling (keyframe animations or transitions).
 ///
-/// Note: this is a CSS-only helper. The UI protocol's `RenderedFrame.wants_ticks` flag may also be
-/// `true` for other time-based effects (e.g. JS timers/rAF, animated images) depending on which
+/// Note: this is a CSS-only helper. The UI protocol's `RenderedFrame.next_tick` hint may also be
+/// `Some(...)` for other time-based effects (e.g. JS timers/rAF, animated images) depending on which
 /// subsystems are enabled for the tab.
 fn document_wants_ticks(doc: &BrowserDocument) -> bool {
   doc.prepared().is_some_and(|prepared| {
