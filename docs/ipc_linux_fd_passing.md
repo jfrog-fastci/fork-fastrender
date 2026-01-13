@@ -234,6 +234,10 @@ Rationale:
 - Truncation means you did not receive what the sender actually sent.
 - Especially with `SCM_RIGHTS`, truncation can drop some passed FDs. Even though Linux will close “excess” FDs in the receiver on truncation, your protocol state is now ambiguous → **treat as a protocol violation and fail closed**.
 
+Implementation note: even when you treat truncation as fatal, still **close any FDs that *were*
+delivered** in the control buffer (parse `SCM_RIGHTS` and drop them) before returning an error,
+otherwise a hostile peer can leak FDs in the receiver via repeated truncated messages.
+
 ### 3) Bound FD count and close extras
 
 When parsing `SCM_RIGHTS`:
