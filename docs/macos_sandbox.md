@@ -228,6 +228,13 @@ sandbox can:
 
 The probe prints `ALLOWED` / `DENIED` and the relevant `errno` for both cases.
 
+##### Results (pure-computation)
+
+On macOS with the built-in Seatbelt profile `pure-computation`:
+
+- Creating new POSIX shmem after sandbox (`shm_open` + `ftruncate` + `mmap`): **DENIED**
+- Mapping an inherited shmem fd after sandbox (`mmap` on an fd opened pre-sandbox): **ALLOWED**
+
 ##### Recommendation (pixel buffer IPC)
 
 If `shm_open` is **DENIED** under `pure-computation`, but mapping an inherited fd is **ALLOWED**, the
@@ -251,7 +258,7 @@ allowing a shared pixel buffer.
 
 - `0`: No “unexpectedly allowed” probes were observed.
 - `1`: At least one probe that was expected to be denied succeeded.
-- `2`: Sandbox failed to apply (or you ran it on a non-macOS host).
+- `2`: Sandbox failed to apply.
 
 ### Editing the profiles
 
@@ -280,4 +287,3 @@ Run it explicitly on macOS with:
 ```bash
 bash scripts/cargo_agent.sh test -p fastrender sandbox_exec_blocks_file_and_network -- --ignored --nocapture
 ```
-
