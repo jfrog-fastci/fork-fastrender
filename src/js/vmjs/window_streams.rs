@@ -5394,7 +5394,59 @@ fn transform_sink_write_native(
       &[chunk, Value::Object(controller_obj)],
     );
     return match call_res {
-      Ok(value) => Ok(value),
+      Ok(value) => {
+        // `transform()` may return a Promise (e.g. `async transform`). If it rejects, we must error
+        // the readable side so pending reads don't hang forever.
+        //
+        // Spec shape: wrap in `PromiseResolve` and attach a rejection handler that calls
+        // `controller.error(reason)` (modeled here via `error_readable_stream`) and then rethrows so
+        // `writer.write()` is rejected with the same reason.
+        let transform_promise = promise_resolve_with_host_and_hooks(vm, scope, host, hooks, value)?;
+        let Value::Object(transform_promise_obj) = transform_promise else {
+          return Err(VmError::InvariantViolation(
+            "PromiseResolve must return an object",
+          ));
+        };
+
+        let rejected_call_id = with_realm_state_mut(vm, scope, callee, |state, _heap| {
+          Ok(state.transform_close_after_flush_rejected_call_id)
+        })?;
+
+        let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
+        let realm_slot = Value::Number(realm_id.to_raw() as f64);
+
+        // Root stream + promise across callback allocation.
+        let mut scope = scope.reborrow();
+        scope.push_root(Value::Object(stream_obj))?;
+        scope.push_root(transform_promise)?;
+
+        let on_rejected_name = scope.alloc_string("TransformStream transform rejected")?;
+        scope.push_root(Value::String(on_rejected_name))?;
+        let on_rejected = scope.alloc_native_function_with_slots(
+          rejected_call_id,
+          None,
+          on_rejected_name,
+          1,
+          &[realm_slot, Value::Object(stream_obj)],
+        )?;
+        scope.push_root(Value::Object(on_rejected))?;
+
+        let derived = perform_promise_then_with_host_and_hooks(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          Value::Object(transform_promise_obj),
+          None,
+          Some(Value::Object(on_rejected)),
+        )?;
+
+        // `transform_promise` is not returned to user code, so mark it as handled to avoid
+        // `unhandledrejection` if it rejects before `then` reactions run.
+        mark_promise_handled(&mut scope, transform_promise)?;
+
+        Ok(derived)
+      }
       Err(err) => {
         // Error the readable side and propagate the thrown error to the writer.
         let pending = error_readable_stream(vm, scope, callee, stream_obj, err.to_string())?;
