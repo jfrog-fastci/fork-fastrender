@@ -1038,6 +1038,17 @@ fn spawn_restricted_token(
     0
   };
 
+  // If `lpCurrentDirectory` is NULL, Windows inherits the parent's current directory. For a
+  // low-integrity restricted token that directory may be inaccessible, causing `CreateProcessAsUserW`
+  // to fail with `ERROR_ACCESS_DENIED`.
+  //
+  // Prefer the executable's parent directory (if the image is loadable, the directory is generally
+  // traversable too). Fall back to a conservative system directory.
+  let current_dir = exe
+    .parent()
+    .unwrap_or_else(|| Path::new(FALLBACK_APPCONTAINER_CWD));
+  let current_dir_wide = wide_from_os(current_dir.as_os_str());
+
   let handles: Vec<HANDLE> = inherit_handles
     .iter()
     .copied()
@@ -1090,7 +1101,7 @@ fn spawn_restricted_token(
             FALSE,
             flags,
             env_ptr,
-            std::ptr::null(),
+            current_dir_wide.as_ptr(),
             std::ptr::addr_of_mut!(startup_ex).cast::<STARTUPINFOW>(),
             &mut pi,
           )
@@ -1115,7 +1126,7 @@ fn spawn_restricted_token(
                 FALSE,
                 flags & !EXTENDED_STARTUPINFO_PRESENT,
                 env_ptr,
-                std::ptr::null(),
+                current_dir_wide.as_ptr(),
                 &mut startup,
                 &mut pi,
               )
@@ -1148,7 +1159,7 @@ fn spawn_restricted_token(
             FALSE,
             flags,
             env_ptr,
-            std::ptr::null(),
+            current_dir_wide.as_ptr(),
             &mut startup,
             &mut pi,
           )
@@ -1221,7 +1232,7 @@ fn spawn_restricted_token(
               TRUE,
               flags,
               env_ptr,
-              std::ptr::null(),
+              current_dir_wide.as_ptr(),
               std::ptr::addr_of_mut!(startup_ex).cast::<STARTUPINFOW>(),
               &mut pi,
             )
