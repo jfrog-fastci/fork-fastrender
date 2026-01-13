@@ -33,6 +33,26 @@ fn native_get_max_string_code_units(
   Ok(Value::Number(rt.limits().max_string_code_units as f64))
 }
 
+fn native_to_string_enforces_payload_limits(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  // Root the input across `ToString` since it may allocate/GC and `value` may contain GC handles.
+  rt.scope.push_root(value)?;
+  let _ = rt
+    .scope
+    .to_string(&mut *rt.vm, host, hooks, value)
+    .map(|_| ())?;
+  Ok(Value::Undefined)
+}
+
 #[test]
 fn bindings_runtime_reads_webidl_limits_from_vmjs_host_hooks_payload() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
@@ -70,3 +90,72 @@ fn bindings_runtime_reads_webidl_limits_from_vmjs_host_hooks_payload() -> Result
   Ok(())
 }
 
+#[test]
+fn bindings_scope_to_string_uses_webidl_limits_from_vmjs_host_hooks_payload() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let func = {
+    let call_id = vm.register_native_call(native_to_string_enforces_payload_limits)?;
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("toStringLimited")?;
+    scope.push_root(Value::String(name))?;
+    scope.alloc_native_function(call_id, None, name, 1)?
+  };
+  let _func_root = heap.add_root(Value::Object(func))?;
+
+  let mut payload = VmJsHostHooksPayload::default();
+  let mut limits = WebIdlLimits::default();
+  limits.max_string_code_units = 1;
+  payload.set_webidl_limits(limits);
+  let mut hooks = HooksWithPayload { payload };
+
+  let err = {
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(func))?;
+    let s = scope.alloc_string("ab")?;
+    scope.push_root(Value::String(s))?;
+    vm.call_with_host(
+      &mut scope,
+      &mut hooks,
+      Value::Object(func),
+      Value::Undefined,
+      &[Value::String(s)],
+    )
+    .expect_err("expected to_string to throw RangeError due to max_string_code_units")
+  };
+
+  let thrown = match err {
+    VmError::Throw(v) => v,
+    VmError::ThrowWithStack { value, .. } => value,
+    other => panic!("expected thrown RangeError object, got {other:?}"),
+  };
+  let Value::Object(err_obj) = thrown else {
+    panic!("expected thrown value to be an object, got {thrown:?}");
+  };
+
+  let mut scope = heap.scope();
+  // Root the thrown value across string allocations for property key creation.
+  scope.push_root(thrown)?;
+  assert_eq!(
+    scope.object_get_prototype(err_obj)?,
+    Some(realm.intrinsics().range_error_prototype())
+  );
+
+  let msg_key_s = scope.alloc_string("message")?;
+  scope.push_root(Value::String(msg_key_s))?;
+  let msg_key = vm_js::PropertyKey::from_string(msg_key_s);
+  let message = scope.heap().get(err_obj, &msg_key)?;
+  let Value::String(message_s) = message else {
+    panic!("expected error.message to be a string, got {message:?}");
+  };
+  assert_eq!(
+    scope.heap().get_string(message_s)?.to_utf8_lossy(),
+    "string exceeds maximum length"
+  );
+
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}
