@@ -1768,7 +1768,7 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
           // empty string (missing IDs, referenced nodes hidden from AT, or whitespace-only text),
           // then the element is considered unnamed and must not expose the implicit landmark role.
           if !role_from_attr && matches!(role.as_deref(), Some("region") | Some("form")) {
-            let author_name = compute_name(node, ctx, /*allow_name_from_content=*/ false);
+            let author_name = landmark_author_name(node, ctx);
             let named = author_name.as_ref().is_some_and(|s| !s.is_empty());
             if !named {
               role = None;
@@ -2314,6 +2314,30 @@ fn has_accessible_name_attr(node: &DomNode) -> bool {
     || node
       .get_attribute_ref("title")
       .is_some_and(|v| !trim_ascii_whitespace(v).is_empty())
+}
+
+fn landmark_author_name(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
+  if let Some(labelledby) = node.node.get_attribute_ref("aria-labelledby") {
+    let mut visited = HashSet::new();
+    visited.insert(node.node_id);
+    return Some(referenced_text_attr(
+      ctx,
+      node.node_id,
+      labelledby,
+      &mut visited,
+      TextAlternativeMode::Referenced,
+    ));
+  }
+
+  if let Some(label) = node.node.get_attribute_ref("aria-label") {
+    return Some(normalize_whitespace(label));
+  }
+
+  node
+    .node
+    .get_attribute_ref("title")
+    .map(normalize_whitespace)
+    .map(|s| s.to_string())
 }
 
 fn is_html_element(node: &DomNode) -> bool {
