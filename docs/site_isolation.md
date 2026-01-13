@@ -286,26 +286,52 @@ All navigations (top-level or subframe) use the same flow:
 
 Inputs:
 - `frame_id`: the frame being navigated.
-- `url`: target URL (post URL normalization / before fetch).
+- `commit_url`: the URL that will actually be committed for the new document.
+  - For network navigations this is the **final URL after redirects** (i.e. the origin-bearing URL
+    that the response/body should be associated with).
+  - For non-network URLs (`about:*`, `data:`, etc.) this is the URL itself.
 - `initiator_site`: site of the frame that initiated the navigation (usually the current site of
   `frame_id` itself; for iframe creation it’s the parent frame site).
 
 Algorithm (normative):
 
-1. `target_site = derive_site_key(url, initiator_site)`
+1. `target_site = derive_site_key(commit_url, initiator_site)`
 2. If `frame.current_site == target_site` **and** the current renderer process is alive:
    - Stay in the same process (`no process swap`).
 3. Else:
    - Ask `RendererProcessRegistry::get_or_spawn(&target_site)`.
-   - If allocation fails due to quota (see §5), the navigation **must not** silently fall back to a
-     different `SiteKey`’s process. Instead:
-     - fail the navigation and commit an error document (`about:error`) *in the existing process*
-       if one exists, or in a dedicated “error renderer” if not.
-     - (Exact UI is product-dependent; the security rule is “do not merge sites due to quota”.)
+    - If allocation fails due to quota (see §5), the navigation **must not** silently fall back to a
+      different `SiteKey`’s process. Instead:
+      - treat the navigation as **failed** and do **not** commit a new document that would require a
+        different `SiteKey`/process.
+        - The frame remains on its previously committed document (often an initial `about:blank`).
+        - The browser may surface an error via chrome UI and/or render a non-document placeholder in
+          the frame rectangle (for subframes).
+      - Security invariant: **never merge sites** (run `target_site` content in some other site’s
+        process) to satisfy quotas.
 4. Update `FrameTree` node:
    - `node.site = target_site`
    - `node.process = assigned_process`
-   - `node.current_url = committed_url` (after redirects)
+   - `node.current_url = commit_url` (after redirects)
+
+### 3.1.1 Redirects and process assignment
+
+Redirects are a common source of ambiguity; this section is **normative** to avoid “guessing”.
+
+Rule (normative):
+
+- Process assignment is based on the **committed URL**, not the initial requested URL.
+- A cross-site redirect (i.e. redirect where `derive_site_key(final_url, initiator_site)` differs
+  from the initial site) must result in a **process swap before commit**.
+
+Implementation guidance:
+
+- In the target architecture where renderers are sandboxed and cannot perform network fetches, the
+  browser/network layer will already observe redirects and can choose the correct process before the
+  renderer sees any response bytes.
+- If an implementation performs any provisional work in an initial process (discouraged), it must
+  restart the navigation in the correct process on cross-site redirects; it must not commit/load
+  site B bytes in a site A process.
 
 ### 3.2 Top-level navigations
 
