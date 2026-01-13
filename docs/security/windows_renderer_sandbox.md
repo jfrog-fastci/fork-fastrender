@@ -23,6 +23,10 @@ This is a quick reference. The full Windows sandbox design is layered as:
 2. **Job object** limits (kill-on-close + active process limit; optional memory cap in `crates/win-sandbox`).
 3. **Handle inheritance allowlisting** (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) to prevent capability leaks.
 4. **Process mitigations** (Win32k lockdown, dynamic code prohibition, etc.) when enabled.
+   - Applied at process creation time via `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` (best-effort; if
+     the OS rejects the attribute, the spawn helper retries without mitigations).
+   - Debug escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1` disables mitigation policies only (it does
+     not disable AppContainer/restricted-token sandboxing, job limits, or handle allowlisting).
 5. **Fallback mode**: restricted token + Low IL (weaker; network not reliably blocked).
 
 ### Primary mode: AppContainer (zero capabilities)
@@ -104,6 +108,16 @@ opt in to running without the full sandbox by setting:
 
 This is intended for development/debugging only: it can enable weaker sandboxing or an unsandboxed
 spawn.
+
+### Disable mitigation policies only (debug/compatibility)
+
+If a particular Windows build has compatibility issues with process mitigation policies, you can
+disable only that layer by setting:
+
+- `FASTR_DISABLE_WIN_MITIGATIONS=1`
+
+This keeps the primary sandbox boundary intact (AppContainer / restricted token + job limits + handle
+allowlisting).
 
 ---
 
