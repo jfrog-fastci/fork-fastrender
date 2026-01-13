@@ -868,6 +868,8 @@ mod placement;
 mod track_sizing;
 mod types;
 mod util;
+#[cfg(test)]
+mod rerun_detection_tests;
 
 /// Grid layout algorithm
 /// This consists of a few phases:
@@ -1357,7 +1359,9 @@ where
   if !rerun_column_sizing {
     let min_content_contribution_changed = items
       .iter_mut()
-      .filter(|item| item.crosses_intrinsic_column)
+      .filter(|item| {
+        item.crosses_intrinsic_column && (width_was_indefinite || item.aspect_ratio.is_some())
+      })
       .any(|item| {
         let available_space = item.available_space(
           AbstractAxis::Inline,
