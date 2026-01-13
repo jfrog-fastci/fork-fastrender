@@ -230,6 +230,10 @@ mod private_in_tests;
 #[path = "../tests/compound_assignment_bitwise_shift.rs"]
 mod compound_assignment_bitwise_shift_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/error_coercion.rs"]
+mod error_coercion_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;

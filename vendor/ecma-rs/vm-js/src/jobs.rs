@@ -149,6 +149,19 @@ pub trait VmJobContext {
 
   /// Removes a persistent root previously created by [`VmJobContext::add_root`].
   fn remove_root(&mut self, id: RootId);
+
+  /// Coerces internal helper errors that represent spec throw completions (TypeError, NotCallable,
+  /// etc.) into a thrown value with an attached stack trace when intrinsics are available.
+  ///
+  /// This is used by [`Job::run`] to ensure **host-visible job failures** surface as
+  /// [`VmError::ThrowWithStack`] rather than leaking helper variants to the embedding.
+  ///
+  /// The default implementation is a no-op; job contexts that have access to a [`Vm`] + [`Heap`]
+  /// should override it.
+  #[inline]
+  fn coerce_error_to_throw_with_stack(&mut self, err: VmError) -> VmError {
+    err
+  }
 }
 
 /// A spec-shaped representation of an ECMAScript *Job Abstract Closure*.
@@ -329,7 +342,10 @@ impl Job {
     self.cleanup_roots(ctx);
 
     match result {
-      Ok(result) => result,
+      Ok(result) => match result {
+        Err(err) if err.is_throw_completion() => Err(ctx.coerce_error_to_throw_with_stack(err)),
+        other => other,
+      },
       Err(_) => Err(VmError::InvariantViolation("job closure panicked")),
     }
   }

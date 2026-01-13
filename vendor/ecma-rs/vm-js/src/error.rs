@@ -141,6 +141,7 @@ impl VmError {
       self,
       VmError::Throw(_)
         | VmError::ThrowWithStack { .. }
+        | VmError::Unimplemented(_)
         | VmError::TypeError(_)
         | VmError::RangeError(_)
         | VmError::NotCallable

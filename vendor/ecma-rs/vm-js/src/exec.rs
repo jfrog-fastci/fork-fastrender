@@ -1989,17 +1989,12 @@ impl JsRuntime {
           );
 
           match res {
-            Ok(v) => Ok(v),
-            Err(err) => {
-              let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
-              match err {
-                VmError::Throw(value) => Err(VmError::ThrowWithStack {
-                  value,
-                  stack: vm_frame.capture_stack(),
-                }),
-                other => Err(other),
-              }
-            }
+            Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
+              &*vm_frame,
+              &mut scope,
+              err,
+            )),
+            other => other,
           }
         })()
       };
@@ -2078,17 +2073,12 @@ impl JsRuntime {
           );
 
           match res {
-            Ok(v) => Ok(v),
-            Err(err) => {
-              let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
-              match err {
-                VmError::Throw(value) => Err(VmError::ThrowWithStack {
-                  value,
-                  stack: vm_frame.capture_stack(),
-                }),
-                other => Err(other),
-              }
-            }
+            Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
+              &*vm_frame,
+              &mut scope,
+              err,
+            )),
+            other => other,
           }
         })()
       };
@@ -2293,24 +2283,24 @@ impl JsRuntime {
           }
 
           let mut scope = self.heap.scope();
-          // In classic scripts, top-level `this` is the global object (even in strict mode).
-          let global_this = Value::Object(global_object);
-
           let res: Result<Value, VmError> = (|| {
-          if !has_await {
-            let mut evaluator = Evaluator {
-              vm: &mut *vm_frame,
-              host,
-              hooks: &mut hooks,
-              env: &mut self.env,
-              strict,
-              this: global_this,
-              new_target: Value::Undefined,
-              class_constructor: None,
-              derived_constructor: false,
-              this_initialized: true,
-              this_root_idx: None,
-            };
+            // In classic scripts, top-level `this` is the global object (even in strict mode).
+            let global_this = Value::Object(global_object);
+
+            if !has_await {
+              let mut evaluator = Evaluator {
+                vm: &mut *vm_frame,
+                host,
+                hooks: &mut hooks,
+                env: &mut self.env,
+                strict,
+                this: global_this,
+                new_target: Value::Undefined,
+                class_constructor: None,
+                derived_constructor: false,
+                this_initialized: true,
+                this_root_idx: None,
+              };
 
             evaluator.instantiate_script(&mut scope, &top.stx.body)?;
 
@@ -2632,28 +2622,23 @@ impl JsRuntime {
 
           Ok(promise)
         }
-          Err(err) => {
-            env.teardown(scope.heap_mut());
-            Err(err)
-          }
-          }
-          })();
+        Err(err) => {
+          env.teardown(scope.heap_mut());
+          Err(err)
+        }
+      }
+      })();
 
-          match res {
-            Ok(v) => Ok(v),
-            Err(err) => {
-              let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
-              match err {
-                VmError::Throw(value) => Err(VmError::ThrowWithStack {
-                  value,
-                  stack: vm_frame.capture_stack(),
-                }),
-                other => Err(other),
-              }
-            }
-          }
-        })()
-      };
+      match res {
+        Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
+          &*vm_frame,
+          &mut scope,
+          err,
+        )),
+        other => other,
+      }
+    })()
+    };
 
       // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
       // (for example by native handlers calling `vm.microtask_queue_mut()` while the queue was moved
@@ -2745,10 +2730,10 @@ impl JsRuntime {
       }
 
       let mut scope = self.heap.scope();
+      let res: Result<Value, VmError> = (|| {
       // In classic scripts, top-level `this` is the global object (even in strict mode).
       let global_this = Value::Object(global_object);
 
-      let res: Result<Value, VmError> = (|| {
       if !has_await {
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
@@ -3087,22 +3072,17 @@ impl JsRuntime {
       })();
 
       match res {
-        Ok(v) => Ok(v),
-        Err(err) => {
-          let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
-          match err {
-            VmError::Throw(value) => Err(VmError::ThrowWithStack {
-              value,
-              stack: vm_frame.capture_stack(),
-            }),
-            other => Err(other),
-          }
-        }
+        Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
+          &*vm_frame,
+          &mut scope,
+          err,
+        )),
+        other => other,
       }
-        })()
-      };
-      drop(vm_ctx);
-      result
+    })()
+    };
+    drop(vm_ctx);
+    result
     })();
 
     if let Err(err) = &result {
@@ -3593,6 +3573,15 @@ impl VmJobContext for JsRuntime {
 
   fn remove_root(&mut self, id: RootId) {
     self.heap.remove_root(id)
+  }
+
+  fn coerce_error_to_throw_with_stack(&mut self, err: VmError) -> VmError {
+    // Borrow-split `vm` and `heap` so we can create a `Scope` while accessing the VM for stack
+    // capture and intrinsics.
+    let vm = &self.vm;
+    let heap = &mut self.heap;
+    let mut scope = heap.scope();
+    crate::vm::coerce_error_to_throw_with_stack(vm, &mut scope, err)
   }
 }
 

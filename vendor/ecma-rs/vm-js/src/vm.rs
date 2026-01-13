@@ -119,6 +119,128 @@ pub(crate) fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError
     other => other,
   }
 }
+
+/// Like [`coerce_error_to_throw`], but:
+/// - always returns a [`VmError::ThrowWithStack`] for throw-completion errors when intrinsics are
+///   available, and
+/// - is best-effort under allocator/heap OOM when constructing the Error object (returns the
+///   original error).
+///
+/// This is intended for **host-facing execution boundaries** (script entry points, job/microtask
+/// execution) so embeddings never observe internal helper errors such as
+/// [`VmError::TypeError`]/[`VmError::RangeError`]/[`VmError::NotCallable`].
+pub(crate) fn coerce_error_to_throw_with_stack(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  err: VmError,
+) -> VmError {
+  let Some(intr) = vm.intrinsics() else {
+    return err;
+  };
+
+  let stack = || vm.capture_stack();
+
+  match err {
+    VmError::ThrowWithStack { .. } => err,
+    VmError::Throw(value) => VmError::ThrowWithStack {
+      value,
+      stack: stack(),
+    },
+
+    VmError::Unimplemented(reason) => {
+      let original = VmError::Unimplemented(reason);
+      let message = match crate::fallible_format::try_format_error_message("unimplemented: ", reason, "") {
+        Ok(m) => m,
+        Err(_) => return original,
+      };
+      match crate::error_object::new_error(scope, intr.error_prototype(), "Error", message.as_str()) {
+        Ok(value) => VmError::ThrowWithStack {
+          value,
+          stack: stack(),
+        },
+        Err(_) => original,
+      }
+    }
+
+    VmError::TypeError(message) => {
+      let original = VmError::TypeError(message);
+      match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
+        Ok(value) => VmError::ThrowWithStack {
+          value,
+          stack: stack(),
+        },
+        Err(_) => original,
+      }
+    }
+    VmError::RangeError(message) => {
+      let original = VmError::RangeError(message);
+      match crate::error_object::new_error(scope, intr.range_error_prototype(), "RangeError", message) {
+        Ok(value) => VmError::ThrowWithStack {
+          value,
+          stack: stack(),
+        },
+        Err(_) => original,
+      }
+    }
+    VmError::NotCallable => {
+      let original = VmError::NotCallable;
+      let message = "value is not callable";
+      match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
+        Ok(value) => VmError::ThrowWithStack {
+          value,
+          stack: stack(),
+        },
+        Err(_) => original,
+      }
+    }
+    VmError::NotConstructable => {
+      let original = VmError::NotConstructable;
+      let message = "value is not a constructor";
+      match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
+        Ok(value) => VmError::ThrowWithStack {
+          value,
+          stack: stack(),
+        },
+        Err(_) => original,
+      }
+    }
+    VmError::PrototypeCycle => {
+      let original = VmError::PrototypeCycle;
+      let message = "prototype cycle";
+      match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
+        Ok(value) => VmError::ThrowWithStack {
+          value,
+          stack: stack(),
+        },
+        Err(_) => original,
+      }
+    }
+    VmError::PrototypeChainTooDeep => {
+      let original = VmError::PrototypeChainTooDeep;
+      let message = "prototype chain too deep";
+      match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
+        Ok(value) => VmError::ThrowWithStack {
+          value,
+          stack: stack(),
+        },
+        Err(_) => original,
+      }
+    }
+    VmError::InvalidPropertyDescriptorPatch => {
+      let original = VmError::InvalidPropertyDescriptorPatch;
+      let message = "invalid property descriptor patch: cannot mix data and accessor fields";
+      match crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
+        Ok(value) => VmError::ThrowWithStack {
+          value,
+          stack: stack(),
+        },
+        Err(_) => original,
+      }
+    }
+
+    other => other,
+  }
+}
 /// A native (host-implemented) function call handler.
 pub type NativeCall = for<'a> fn(
   &mut Vm,
@@ -1333,6 +1455,11 @@ impl Vm {
 
       fn remove_root(&mut self, id: RootId) {
         self.heap.remove_root(id)
+      }
+
+      fn coerce_error_to_throw_with_stack(&mut self, err: VmError) -> VmError {
+        let mut scope = self.heap.scope();
+        coerce_error_to_throw_with_stack(&*self.vm, &mut scope, err)
       }
     }
 
