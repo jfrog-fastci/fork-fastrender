@@ -1234,11 +1234,52 @@ fn history_state_change_cross_origin_throws_security_error() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
 
+  let before = realm
+    .exec_script(
+      "location.href + '|' + document.URL + '|' + document.baseURI + '|' + history.length + '|' + (history.state === null)",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  let before_s = get_string(realm.heap(), before);
+
   let value = realm
     .exec_script("try { history.pushState({}, '', 'https://evil.com/'); } catch(e) { e && e.name; }")
     .map_err(|e| Error::Other(e.to_string()))?;
-
   assert_eq!(get_string(realm.heap(), value), "SecurityError");
+
+  let after = realm
+    .exec_script(
+      "location.href + '|' + document.URL + '|' + document.baseURI + '|' + history.length + '|' + (history.state === null)",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(
+    get_string(realm.heap(), after),
+    before_s,
+    "history.pushState must not mutate URL/state/length after SecurityError"
+  );
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "history.pushState failure should not schedule navigation"
+  );
+
+  let value = realm
+    .exec_script("try { history.replaceState({}, '', 'https://evil.com/'); } catch(e) { e && e.name; }")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), value), "SecurityError");
+
+  let after = realm
+    .exec_script(
+      "location.href + '|' + document.URL + '|' + document.baseURI + '|' + history.length + '|' + (history.state === null)",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(
+    get_string(realm.heap(), after),
+    before_s,
+    "history.replaceState must not mutate URL/state/length after SecurityError"
+  );
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "history.replaceState failure should not schedule navigation"
+  );
   Ok(())
 }
 
@@ -1247,11 +1288,52 @@ fn history_state_change_invalid_url_throws_security_error() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
 
+  let before = realm
+    .exec_script(
+      "location.href + '|' + document.URL + '|' + document.baseURI + '|' + history.length + '|' + (history.state === null)",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  let before_s = get_string(realm.heap(), before);
+
   let value = realm
     .exec_script("try { history.pushState({}, '', 'http://'); } catch(e) { e && e.name; }")
     .map_err(|e| Error::Other(e.to_string()))?;
-
   assert_eq!(get_string(realm.heap(), value), "SecurityError");
+
+  let after = realm
+    .exec_script(
+      "location.href + '|' + document.URL + '|' + document.baseURI + '|' + history.length + '|' + (history.state === null)",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(
+    get_string(realm.heap(), after),
+    before_s,
+    "history.pushState must not mutate URL/state/length after SecurityError"
+  );
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "history.pushState failure should not schedule navigation"
+  );
+
+  let value = realm
+    .exec_script("try { history.replaceState({}, '', 'http://'); } catch(e) { e && e.name; }")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), value), "SecurityError");
+
+  let after = realm
+    .exec_script(
+      "location.href + '|' + document.URL + '|' + document.baseURI + '|' + history.length + '|' + (history.state === null)",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(
+    get_string(realm.heap(), after),
+    before_s,
+    "history.replaceState must not mutate URL/state/length after SecurityError"
+  );
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "history.replaceState failure should not schedule navigation"
+  );
   Ok(())
 }
 
