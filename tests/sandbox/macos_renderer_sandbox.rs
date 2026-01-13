@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode};
+use fastrender::sandbox as sandbox_mod;
 
 const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_CHILD";
 const MODE_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_MODE";
@@ -45,6 +46,123 @@ fn renderer_sandbox_profiles_enforce_policy() {
       String::from_utf8_lossy(&output.stderr)
     );
   }
+}
+
+#[test]
+fn sandbox_env_disable_skips_seatbelt() {
+  const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_DISABLE_CHILD";
+  const SENTINEL: &str = "FASTR_TEST_MACOS_SANDBOX_DISABLE_OK";
+
+  if std::env::var_os(CHILD_ENV).is_some() {
+    // Even though we request a strict sandbox, the env var should disable sandboxing entirely.
+    sandbox_mod::apply_pure_computation_sandbox()
+      .expect("apply_pure_computation_sandbox should be a no-op when disabled");
+
+    // If Seatbelt was applied, these operations would be denied under pure-computation.
+    let passwd = std::fs::read("/etc/passwd").or_else(|err| {
+      if err.kind() == io::ErrorKind::NotFound {
+        std::fs::read("/private/etc/passwd")
+      } else {
+        Err(err)
+      }
+    });
+    assert!(
+      passwd.is_ok(),
+      "expected /etc/passwd read to succeed when sandbox is disabled, got {passwd:?}"
+    );
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0");
+    assert!(
+      listener.is_ok(),
+      "expected localhost bind to succeed when sandbox is disabled, got {listener:?}"
+    );
+
+    let status = Command::new("/usr/bin/true").status();
+    assert!(
+      status.as_ref().is_ok_and(|s| s.success()),
+      "expected /usr/bin/true to be spawnable when sandbox is disabled, got {status:?}"
+    );
+
+    println!("{SENTINEL}");
+    return;
+  }
+
+  let exe = std::env::current_exe().expect("test exe path");
+  let output = Command::new(&exe)
+    .env(CHILD_ENV, "1")
+    .env("FASTR_DISABLE_RENDERER_SANDBOX", "1")
+    .arg("--exact")
+    .arg(stringify!(sandbox_env_disable_skips_seatbelt))
+    .arg("--nocapture")
+    .output()
+    .expect("spawn sandbox env override child");
+
+  assert!(
+    output.status.success(),
+    "child sandbox env override should exit successfully (stdout={}, stderr={})",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+  assert!(
+    String::from_utf8_lossy(&output.stdout).contains(SENTINEL),
+    "expected sentinel; stdout={}, stderr={}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+}
+
+#[test]
+fn sandbox_env_profile_overrides_strict_to_system_fonts() {
+  const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_PROFILE_OVERRIDE_CHILD";
+  const SENTINEL: &str = "FASTR_TEST_MACOS_SANDBOX_PROFILE_OVERRIDE_OK";
+
+  if std::env::var_os(CHILD_ENV).is_some() {
+    // Discover a real system font file path before sandboxing; strict mode denies filesystem reads.
+    let font_path = find_system_font_file();
+
+    // Even though this is the strict entrypoint, the env var should select the relaxed system-fonts
+    // profile so that font discovery/loading can proceed for debugging.
+    sandbox_mod::apply_pure_computation_sandbox()
+      .expect("apply_pure_computation_sandbox should respect env profile override");
+
+    let bytes = std::fs::read(&font_path)
+      .unwrap_or_else(|err| panic!("expected system font read to succeed under override: {err}"));
+    assert!(
+      !bytes.is_empty(),
+      "expected non-empty font bytes from {}",
+      font_path.display()
+    );
+
+    // Even in the relaxed profile, sensitive filesystem + network access should remain blocked.
+    assert_permission_denied(std::fs::read("/etc/passwd"), "read /etc/passwd");
+    assert_permission_denied(std::net::TcpListener::bind("127.0.0.1:0"), "bind localhost");
+
+    println!("{SENTINEL}");
+    return;
+  }
+
+  let exe = std::env::current_exe().expect("test exe path");
+  let output = Command::new(&exe)
+    .env(CHILD_ENV, "1")
+    .env("FASTR_MACOS_RENDERER_SANDBOX", "system-fonts")
+    .arg("--exact")
+    .arg(stringify!(sandbox_env_profile_overrides_strict_to_system_fonts))
+    .arg("--nocapture")
+    .output()
+    .expect("spawn sandbox env profile override child");
+
+  assert!(
+    output.status.success(),
+    "child sandbox env profile override should exit successfully (stdout={}, stderr={})",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+  assert!(
+    String::from_utf8_lossy(&output.stdout).contains(SENTINEL),
+    "expected sentinel; stdout={}, stderr={}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
 }
 
 fn run_child() {
