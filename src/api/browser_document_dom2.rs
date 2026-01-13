@@ -1868,6 +1868,48 @@ impl BrowserDocumentDom2 {
     Ok(Some(Dom2HitTestResult { node, hit }))
   }
 
+  /// Like [`BrowserDocumentDom2::hit_test_viewport_point`], but returns all hits (topmost first).
+  ///
+  /// This mirrors [`BrowserDocumentDom2::elements_from_point`] but includes hit-test metadata.
+  pub fn hit_test_viewport_point_all(&mut self, x: f32, y: f32) -> Result<Vec<Dom2HitTestResult>> {
+    if !x.is_finite() || !y.is_finite() {
+      return Ok(Vec::new());
+    }
+
+    self.ensure_layout_for_hit_testing()?;
+    let Some(prepared) = self.prepared.as_ref() else {
+      return Ok(Vec::new());
+    };
+
+    let viewport = prepared.fragment_tree().viewport_size();
+    if x < 0.0 || y < 0.0 || x >= viewport.width || y >= viewport.height {
+      return Ok(Vec::new());
+    }
+
+    let scroll_state = ScrollState::from_parts_with_deltas(
+      Point::new(self.options.scroll_x, self.options.scroll_y),
+      self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
+    );
+
+    let hits = crate::interaction::hit_testing::hit_test_dom_viewport_point_all(
+      prepared,
+      &scroll_state,
+      Point::new(x, y),
+    );
+
+    let mut out: Vec<Dom2HitTestResult> = Vec::new();
+    for hit in hits {
+      let Some(node) = self.dom2_node_for_hit_test(&hit) else {
+        continue;
+      };
+      out.push(Dom2HitTestResult { node, hit });
+    }
+
+    Ok(out)
+  }
+
   /// Like [`BrowserDocumentDom2::element_from_point`], but returns all hit elements (topmost first).
   ///
   /// This backs `Document.elementsFromPoint()` when needed.
@@ -3521,6 +3563,35 @@ mod tests {
  
     assert!(doc.hit_test_viewport_point(40.0, 10.0)?.is_none());
     assert!(doc.hit_test_viewport_point(10.0, 40.0)?.is_none());
+    Ok(())
+  }
+
+  #[test]
+  fn hit_test_viewport_point_all_returns_hits_in_stack_order() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #a, #b { position: absolute; left: 0; top: 0; width: 50px; height: 50px; }
+            #a { background: red; z-index: 1; }
+            #b { background: blue; z-index: 2; }
+          </style>
+        </head>
+        <body>
+          <div id="a"></div>
+          <div id="b"></div>
+        </body>
+      </html>"#;
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(100, 100))?;
+
+    let a_id = doc.dom().get_element_by_id("a").expect("a element");
+    let b_id = doc.dom().get_element_by_id("b").expect("b element");
+
+    let hits = doc.hit_test_viewport_point_all(10.0, 10.0)?;
+    assert_eq!(hits.first().map(|hit| hit.node), Some(b_id));
+    assert!(hits.iter().any(|hit| hit.node == a_id));
     Ok(())
   }
 
