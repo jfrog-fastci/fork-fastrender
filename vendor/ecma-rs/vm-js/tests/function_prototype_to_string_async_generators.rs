@@ -98,6 +98,28 @@ f.toString()"#,
 }
 
 #[test]
+fn async_generator_function_expression_to_string_preserves_comments() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script(
+    r#"let f = /* before */async /* a */ function /* b */ * /* c */ F /* d */ ( /* e */ x /* f */ , /* g */ y /* h */ ) /* i */ { /* j */ ; /* k */ ; /* l */ }/* after */;
+let g = /* before */async /* a */ function /* b */ * /* c */ ( /* d */ x /* e */ , /* f */ y /* g */ ) /* h */ { /* i */ ; /* j */ ; /* k */ }/* after */;
+f.toString() + "|" + g.toString()"#,
+  ) {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert_eq!(
+        s,
+        "async /* a */ function /* b */ * /* c */ F /* d */ ( /* e */ x /* f */ , /* g */ y /* h */ ) /* i */ { /* j */ ; /* k */ ; /* l */ }|\
+async /* a */ function /* b */ * /* c */ ( /* d */ x /* e */ , /* f */ y /* g */ ) /* h */ { /* i */ ; /* j */ ; /* k */ }"
+      );
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
+
+#[test]
 fn async_generator_function_constructor_to_string_matches_test262() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
   match rt.exec_script(
@@ -161,6 +183,56 @@ F.prototype.f.toString()"#,
     Ok(value) => {
       let s = value_to_utf8(&rt, value);
       assert_eq!(s, "async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }");
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
+
+#[test]
+fn async_generator_methods_to_string_preserve_computed_key_source() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script(
+    r#"let x = "h";
+let f = { /* before */async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }/* after */ }.f;
+let g = { /* before */async /* a */ * /* b */ [ /* c */ "g" /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }/* after */ }.g;
+let h = { /* before */async /* a */ * /* b */ [ /* c */ x /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }/* after */ }.h;
+
+class F { /* before */async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }/* after */ }
+class G { /* before */async /* a */ * /* b */ [ /* c */ "g" /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }/* after */ }
+class H { /* before */async /* a */ * /* b */ [ /* c */ x /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }/* after */ }
+
+class SF { static /* before */async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }/* after */ }
+class SG { static /* before */async /* a */ * /* b */ [ /* c */ "g" /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }/* after */ }
+class SH { static /* before */async /* a */ * /* b */ [ /* c */ x /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }/* after */ }
+
+[
+  f.toString(),
+  g.toString(),
+  h.toString(),
+  F.prototype.f.toString(),
+  G.prototype.g.toString(),
+  H.prototype.h.toString(),
+  SF.f.toString(),
+  SG.g.toString(),
+  SH.h.toString(),
+].join("|")"#,
+  ) {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert_eq!(
+        s,
+        "async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }|\
+async /* a */ * /* b */ [ /* c */ \"g\" /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }|\
+async /* a */ * /* b */ [ /* c */ x /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }|\
+async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }|\
+async /* a */ * /* b */ [ /* c */ \"g\" /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }|\
+async /* a */ * /* b */ [ /* c */ x /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }|\
+async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }|\
+async /* a */ * /* b */ [ /* c */ \"g\" /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }|\
+async /* a */ * /* b */ [ /* c */ x /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h */ }"
+      );
     }
     Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
     Err(err) => return Err(err),
