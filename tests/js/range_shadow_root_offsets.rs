@@ -114,13 +114,19 @@ fn range_offsets_ignore_shadow_root_pseudo_child_in_js() -> Result<()> {
         }
 
         // Live range maintenance must also use light DOM indices when inserting/removing.
+        const rZero = document.createRange();
+        rZero.setStart(host, 0);
+        rZero.setEnd(host, 0);
+
         const rLive = document.createRange();
         rLive.setStart(host, 1);
         rLive.setEnd(host, 1);
         const ins = document.createElement("span");
         host.insertBefore(ins, light);
+        console.log("zeroAfterInsert:" + rZero.startOffset + "," + rZero.endOffset);
         console.log("afterInsert:" + rLive.startOffset + "," + rLive.endOffset);
         host.removeChild(ins);
+        console.log("zeroAfterRemove:" + rZero.startOffset + "," + rZero.endOffset);
         console.log("afterRemove:" + rLive.startOffset + "," + rLive.endOffset);
 
         // splitText must treat host child offsets as light DOM indices (ShadowRoot excluded).
@@ -146,7 +152,9 @@ fn range_offsets_ignore_shadow_root_pseudo_child_in_js() -> Result<()> {
       "cmp0:-1".to_string(),
       "cmp:1".to_string(),
       "idxerr:IndexSizeError".to_string(),
+      "zeroAfterInsert:0,0".to_string(),
       "afterInsert:2,2".to_string(),
+      "zeroAfterRemove:0,0".to_string(),
       "afterRemove:1,1".to_string(),
       "afterSplit:2,2".to_string(),
     ]
