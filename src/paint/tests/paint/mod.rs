@@ -225,6 +225,7 @@ mod svg_foreign_object_external;
 mod svg_img_preserve_aspect_ratio;
 mod svg_inline_cross_root_id_refs_test;
 mod svg_inline_test;
+mod svg_text_baseline_properties_test;
 mod svg_replaced_box_sizing;
 mod svg_use_currentcolor_cross_root;
 mod system_color_keywords_test;
