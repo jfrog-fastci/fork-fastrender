@@ -135,6 +135,24 @@ impl Document {
     None
   }
 
+  fn tree_children_for_range(&self, parent: NodeId) -> Vec<NodeId> {
+    let Some(parent_node) = self.nodes.get(parent.index()) else {
+      return Vec::new();
+    };
+
+    parent_node
+      .children
+      .iter()
+      .copied()
+      .filter(|&child| {
+        let Some(child_node) = self.nodes.get(child.index()) else {
+          return false;
+        };
+        child_node.parent == Some(parent) && self.is_tree_child_for_range(parent, child)
+      })
+      .collect()
+  }
+
   /// Map an index into `parent.children` (including ShadowRoot nodes) to a DOM Range "tree child"
   /// index.
   ///
@@ -932,7 +950,7 @@ impl Document {
     let original_end_is_inclusive_ancestor_of_start =
       self.is_inclusive_descendant_for_range(original_start_node, original_end_node);
 
-    let common_children: Vec<NodeId> = self.nodes[common_ancestor.index()].children.clone();
+    let common_children: Vec<NodeId> = self.tree_children_for_range(common_ancestor);
 
     let first_partially_contained_child = if original_start_is_inclusive_ancestor_of_end {
       None
@@ -940,10 +958,7 @@ impl Document {
       common_children
         .iter()
         .copied()
-        .find(|&child| {
-          self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor))
-            && self.is_node_partially_contained_in_range(child, start_node, end_node)
-        })
+        .find(|&child| self.is_node_partially_contained_in_range(child, start_node, end_node))
     };
 
     let last_partially_contained_child = if original_end_is_inclusive_ancestor_of_start {
@@ -953,17 +968,11 @@ impl Document {
         .iter()
         .rev()
         .copied()
-        .find(|&child| {
-          self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor))
-            && self.is_node_partially_contained_in_range(child, start_node, end_node)
-        })
+        .find(|&child| self.is_node_partially_contained_in_range(child, start_node, end_node))
     };
 
     let mut contained_children: Vec<NodeId> = Vec::new();
     for child in common_children.iter().copied() {
-      if !self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor)) {
-        continue;
-      }
       if self.is_node_contained_in_range(child, start, end)? {
         contained_children.push(child);
       }
@@ -1098,7 +1107,7 @@ impl Document {
     let original_end_is_inclusive_ancestor_of_start =
       self.is_inclusive_descendant_for_range(original_start_node, original_end_node);
 
-    let common_children: Vec<NodeId> = self.nodes[common_ancestor.index()].children.clone();
+    let common_children: Vec<NodeId> = self.tree_children_for_range(common_ancestor);
 
     let first_partially_contained_child = if original_start_is_inclusive_ancestor_of_end {
       None
@@ -1106,10 +1115,7 @@ impl Document {
       common_children
         .iter()
         .copied()
-        .find(|&child| {
-          self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor))
-            && self.is_node_partially_contained_in_range(child, start_node, end_node)
-        })
+        .find(|&child| self.is_node_partially_contained_in_range(child, start_node, end_node))
     };
 
     let last_partially_contained_child = if original_end_is_inclusive_ancestor_of_start {
@@ -1119,17 +1125,11 @@ impl Document {
         .iter()
         .rev()
         .copied()
-        .find(|&child| {
-          self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor))
-            && self.is_node_partially_contained_in_range(child, start_node, end_node)
-        })
+        .find(|&child| self.is_node_partially_contained_in_range(child, start_node, end_node))
     };
 
     let mut contained_children: Vec<NodeId> = Vec::new();
     for child in common_children.iter().copied() {
-      if !self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor)) {
-        continue;
-      }
       if self.is_node_contained_in_range(child, start, end)? {
         contained_children.push(child);
       }
