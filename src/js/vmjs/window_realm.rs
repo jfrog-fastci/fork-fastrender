@@ -34292,7 +34292,7 @@ fn range_select_node_contents_native(
     Err(dom2::DomError::IndexSizeError) => {
       Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?))
     }
-    Err(dom2::DomError::InvalidNodeType) => Err(VmError::Throw(make_dom_exception(
+    Err(dom2::DomError::InvalidNodeTypeError) => Err(VmError::Throw(make_dom_exception(
       vm,
       scope,
       "InvalidNodeTypeError",
@@ -34319,7 +34319,7 @@ fn range_to_string_native(
 
   let s = match dom.range_to_string(handle.range_id) {
     Ok(s) => s,
-    Err(dom2::DomError::InvalidNodeType) => {
+    Err(dom2::DomError::InvalidNodeTypeError) => {
       return Err(VmError::Throw(make_dom_exception(
         vm,
         scope,
