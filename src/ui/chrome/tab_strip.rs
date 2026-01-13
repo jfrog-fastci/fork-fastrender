@@ -3275,7 +3275,7 @@ pub(super) fn tab_strip_ui(
     // first time a tab is dragged (egui otherwise initializes animations at their target value).
     if let Some(new_id) = dragging_tab_id {
       let _ = motion.animate_bool(
-        ctx,
+        &ctx,
         egui::Id::new(("tab_drag_lift", new_id)),
         false,
         motion.durations.tab_drag_lift,
@@ -3286,7 +3286,7 @@ pub(super) fn tab_strip_ui(
     // in again.
     if let Some(prev_id) = last_dragged_id {
       let _ = motion.animate_bool(
-        ctx,
+        &ctx,
         egui::Id::new(("tab_drag_lift", prev_id)),
         false,
         motion.durations.tab_drag_lift,
@@ -3498,7 +3498,7 @@ pub(super) fn tab_strip_ui(
     // Animate the lift/scale-in so the dragged tab feels like it's being "picked up". When reduced
     // motion is enabled this snaps to the final state.
     let lift_id = egui::Id::new(("tab_drag_lift", dragging_tab_id));
-    let lift_t = motion.animate_bool(ctx, lift_id, true, motion.durations.tab_drag_lift);
+    let lift_t = motion.animate_bool(&ctx, lift_id, true, motion.durations.tab_drag_lift);
     let lift = Vec2::new(0.0, -DRAG_PREVIEW_LIFT_Y * lift_t);
     preview_rect = preview_rect.translate(lift);
     let scale = 1.0 + (DRAG_PREVIEW_SCALE - 1.0) * lift_t;
