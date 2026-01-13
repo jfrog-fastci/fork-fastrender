@@ -10,7 +10,7 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn object_from_entries_close_throw_overrides_original_throw() -> Result<(), VmError> {
+fn object_from_entries_close_throw_is_ignored_on_throw_completion() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
@@ -31,13 +31,16 @@ fn object_from_entries_close_throw_overrides_original_throw() -> Result<(), VmEr
           }
         };
       };
-      var threwClose = false;
+      var out = "no throw";
       try {
         Object.fromEntries(iterable);
       } catch (e) {
-        threwClose = (e === "close");
+        // `Object.fromEntries` throws a TypeError for non-object entries. `IteratorClose` calls the
+        // iterator's `return`, but errors thrown while calling `return` must be ignored for throw
+        // completions (the original throw is preserved).
+        out = (e && e.name) || e;
       }
-      threwClose && returnCount === 1;
+      out === "TypeError" && returnCount === 1;
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
@@ -45,7 +48,7 @@ fn object_from_entries_close_throw_overrides_original_throw() -> Result<(), VmEr
 }
 
 #[test]
-fn weak_map_constructor_close_throw_overrides_original_throw() -> Result<(), VmError> {
+fn weak_map_constructor_close_throw_is_ignored_on_throw_completion() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
@@ -70,7 +73,7 @@ fn weak_map_constructor_close_throw_overrides_original_throw() -> Result<(), VmE
       try {
         new WeakMap(iterable);
       } catch (e) {
-        threw = (e === "close");
+        threw = (e === "set");
       }
       threw && returnCount === 1;
     "#,
@@ -80,7 +83,7 @@ fn weak_map_constructor_close_throw_overrides_original_throw() -> Result<(), VmE
 }
 
 #[test]
-fn weak_set_constructor_close_throw_overrides_original_throw() -> Result<(), VmError> {
+fn weak_set_constructor_close_throw_is_ignored_on_throw_completion() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
@@ -104,7 +107,7 @@ fn weak_set_constructor_close_throw_overrides_original_throw() -> Result<(), VmE
       try {
         new WeakSet(iterable);
       } catch (e) {
-        threw = (e === "close");
+        threw = (e === "add");
       }
       threw && returnCount === 1;
     "#,
@@ -114,7 +117,7 @@ fn weak_set_constructor_close_throw_overrides_original_throw() -> Result<(), VmE
 }
 
 #[test]
-fn promise_all_close_throw_overrides_promise_resolve_throw() -> Result<(), VmError> {
+fn promise_all_close_throw_is_ignored_on_throw_completion() -> Result<(), VmError> {
   let mut rt = new_runtime();
   rt.exec_script(
     r#"
@@ -138,7 +141,8 @@ fn promise_all_close_throw_overrides_promise_resolve_throw() -> Result<(), VmErr
       };
 
       // Use a custom constructor so `promiseResolve` throws during PerformPromiseAll, which should
-      // trigger IteratorClose(done=false). The close throw must override the original error.
+      // trigger IteratorClose(done=false). Errors thrown while calling `return()` must be ignored
+      // for throw completions (the original throw is preserved).
       function P(executor) { return new Promise(executor); }
       P.resolve = function() { throw "resolve"; };
 
@@ -148,7 +152,7 @@ fn promise_all_close_throw_overrides_promise_resolve_throw() -> Result<(), VmErr
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let value = rt.exec_script(r#"caught === "close" && returnCount === 1"#)?;
+  let value = rt.exec_script(r#"caught === "resolve" && returnCount === 1"#)?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }

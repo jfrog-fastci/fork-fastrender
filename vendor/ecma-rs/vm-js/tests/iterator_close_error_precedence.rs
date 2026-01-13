@@ -9,18 +9,19 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn object_from_entries_iterator_close_return_getter_throw_overrides_original_throw(
+fn object_from_entries_iterator_close_return_getter_throw_is_ignored_on_throw_completion(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  // When the iterator value access throws, `Object.fromEntries` performs `IteratorClose`. Per
-  // ECMA-262 `IteratorClose`, errors produced while getting/calling `iterator.return` override the
-  // incoming completion (even when the incoming completion is a throw completion).
+  // When iterator consumption throws, `Object.fromEntries` performs `IteratorClose`. Per ECMA-262
+  // `IteratorClose`, errors thrown while closing are ignored for throw completions (the original
+  // throw is preserved).
   let value = rt.exec_script(
     r#"
       (function () {
         var original = "original";
         var close = "close";
+        var closed = false;
 
         var iter = {};
         iter[Symbol.iterator] = function () {
@@ -34,14 +35,14 @@ fn object_from_entries_iterator_close_return_getter_throw_overrides_original_thr
                 },
               };
             },
-            get return() { throw close; },
+            get return() { closed = true; throw close; },
           };
         };
 
         try {
           Object.fromEntries(iter);
         } catch (e) {
-          return e === close;
+          return closed === true && e === original;
         }
         return false;
       })()
@@ -52,7 +53,7 @@ fn object_from_entries_iterator_close_return_getter_throw_overrides_original_thr
 }
 
 #[test]
-fn object_from_entries_iterator_close_return_not_callable_overrides_original_throw(
+fn object_from_entries_iterator_close_return_not_callable_is_ignored_on_throw_completion(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -60,6 +61,7 @@ fn object_from_entries_iterator_close_return_not_callable_overrides_original_thr
     r#"
       (function () {
         var original = "original";
+        var closed = false;
 
         var iter = {};
         iter[Symbol.iterator] = function () {
@@ -73,14 +75,14 @@ fn object_from_entries_iterator_close_return_not_callable_overrides_original_thr
                 },
               };
             },
-            return: 1,
+            get return() { closed = true; return 1; },
           };
         };
 
         try {
           Object.fromEntries(iter);
         } catch (e) {
-          return e && e.name === "TypeError";
+          return closed === true && e === original;
         }
         return false;
       })()
@@ -165,7 +167,7 @@ fn promise_race_step_error_does_not_invoke_iterator_close() -> Result<(), VmErro
 }
 
 #[test]
-fn weak_map_constructor_iterator_close_return_getter_throw_overrides_original_throw(
+fn weak_map_constructor_iterator_close_return_getter_throw_is_ignored_on_throw_completion(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -174,6 +176,7 @@ fn weak_map_constructor_iterator_close_return_getter_throw_overrides_original_th
       (function () {
         var original = "original";
         var close = "close";
+        var closed = false;
 
         var iter = {};
         iter[Symbol.iterator] = function () {
@@ -187,14 +190,14 @@ fn weak_map_constructor_iterator_close_return_getter_throw_overrides_original_th
                 },
               };
             },
-            get return() { throw close; },
+            get return() { closed = true; throw close; },
           };
         };
 
         try {
           new WeakMap(iter);
         } catch (e) {
-          return e === close;
+          return closed === true && e === original;
         }
         return false;
       })()
@@ -205,7 +208,7 @@ fn weak_map_constructor_iterator_close_return_getter_throw_overrides_original_th
 }
 
 #[test]
-fn weak_set_constructor_iterator_close_return_getter_throw_overrides_original_throw(
+fn weak_set_constructor_iterator_close_return_getter_throw_is_ignored_on_throw_completion(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -214,6 +217,7 @@ fn weak_set_constructor_iterator_close_return_getter_throw_overrides_original_th
       (function () {
         var original = "original";
         var close = "close";
+        var closed = false;
 
         // Force the per-element `adder` call to throw a predictable value.
         WeakSet.prototype.add = function () { throw original; };
@@ -222,14 +226,14 @@ fn weak_set_constructor_iterator_close_return_getter_throw_overrides_original_th
         iter[Symbol.iterator] = function () {
           return {
             next: function () { return { done: false, value: {} }; },
-            get return() { throw close; },
+            get return() { closed = true; throw close; },
           };
         };
 
         try {
           new WeakSet(iter);
         } catch (e) {
-          return e === close;
+          return closed === true && e === original;
         }
         return false;
       })()

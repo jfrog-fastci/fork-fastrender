@@ -16,7 +16,7 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 }
 
 #[test]
-fn for_await_of_sync_iterator_close_error_overrides_promise_resolve_throw() -> Result<(), VmError> {
+fn for_await_of_sync_iterator_close_error_is_suppressed_for_promise_resolve_throw() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -53,7 +53,10 @@ fn for_await_of_sync_iterator_close_error_overrides_promise_resolve_throw() -> R
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "close");
+  // `AsyncFromSyncIteratorContinuation` closes the underlying sync iterator when `PromiseResolve`
+  // fails, but suppresses errors from closing for throw completions (the original throw is
+  // preserved).
+  assert_eq!(value_to_string(&rt, value), "then");
 
   let closed = rt.exec_script("closed")?;
   assert_eq!(closed, Value::Bool(true));
@@ -61,7 +64,7 @@ fn for_await_of_sync_iterator_close_error_overrides_promise_resolve_throw() -> R
 }
 
 #[test]
-fn for_await_of_sync_iterator_close_error_overrides_awaited_value_rejection() -> Result<(), VmError> {
+fn for_await_of_sync_iterator_close_error_is_suppressed_for_awaited_value_rejection() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -93,7 +96,7 @@ fn for_await_of_sync_iterator_close_error_overrides_awaited_value_rejection() ->
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "close");
+  assert_eq!(value_to_string(&rt, value), "reason");
 
   let closed = rt.exec_script("closed")?;
   assert_eq!(closed, Value::Bool(true));

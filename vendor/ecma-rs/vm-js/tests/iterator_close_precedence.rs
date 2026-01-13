@@ -15,7 +15,7 @@ fn assert_value_is_utf8(rt: &JsRuntime, value: Value, expected: &str) {
 }
 
 #[test]
-fn close_throw_overrides_body_throw() -> Result<(), VmError> {
+fn close_throw_is_suppressed_for_body_throw() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
@@ -31,7 +31,9 @@ fn close_throw_overrides_body_throw() -> Result<(), VmError> {
     out;
   "#,
   )?;
-  assert_value_is_utf8(&rt, value, "close");
+  // Per ECMA-262 `IteratorClose`, errors thrown while calling `iterator.return` are ignored for
+  // throw completions (the original throw is preserved).
+  assert_value_is_utf8(&rt, value, "body");
   Ok(())
 }
 

@@ -1,4 +1,5 @@
 use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::VmError;
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -6,7 +7,7 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
-fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, vm_js::VmError> {
+fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
   let script = CompiledScript::compile_script(rt.heap_mut(), "<inline>", source)?;
   rt.exec_compiled_script(script)
 }
@@ -35,7 +36,7 @@ fn class_extends_null_prototype_wiring() {
 }
 
 #[test]
-fn class_extends_null_prototype_wiring_compiled() -> Result<(), vm_js::VmError> {
+fn class_extends_null_prototype_wiring_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = match exec_compiled(
     &mut rt,
@@ -47,7 +48,7 @@ fn class_extends_null_prototype_wiring_compiled() -> Result<(), vm_js::VmError> 
   ) {
     Ok(v) => v,
     // Compiled HIR execution does not yet support derived classes. Skip this test until it does.
-    Err(vm_js::VmError::Unimplemented(msg)) if msg.contains("class inheritance") => return Ok(()),
+    Err(VmError::Unimplemented(msg)) if msg.contains("class inheritance") => return Ok(()),
     Err(err) => return Err(err),
   };
   assert_eq!(value, Value::Bool(true));
@@ -69,7 +70,7 @@ fn class_extends_null_default_constructor_throws_type_error() {
 }
 
 #[test]
-fn class_extends_null_default_constructor_throws_type_error_compiled() -> Result<(), vm_js::VmError> {
+fn class_extends_null_default_constructor_throws_type_error_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = match exec_compiled(
     &mut rt,
@@ -80,7 +81,7 @@ fn class_extends_null_default_constructor_throws_type_error_compiled() -> Result
   ) {
     Ok(v) => v,
     // Compiled HIR execution does not yet support derived classes. Skip this test until it does.
-    Err(vm_js::VmError::Unimplemented(msg)) if msg.contains("class inheritance") => return Ok(()),
+    Err(VmError::Unimplemented(msg)) if msg.contains("class inheritance") => return Ok(()),
     Err(err) => return Err(err),
   };
   assert_value_is_utf8(&rt, value, "TypeError");
@@ -103,7 +104,7 @@ fn class_extends_null_explicit_constructor_can_return_null_proto_object() {
 }
 
 #[test]
-fn class_extends_null_explicit_constructor_can_return_null_proto_object_compiled() -> Result<(), vm_js::VmError> {
+fn class_extends_null_explicit_constructor_can_return_null_proto_object_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = match exec_compiled(
     &mut rt,
@@ -115,7 +116,7 @@ fn class_extends_null_explicit_constructor_can_return_null_proto_object_compiled
   ) {
     Ok(v) => v,
     // Compiled HIR execution does not yet support derived classes. Skip this test until it does.
-    Err(vm_js::VmError::Unimplemented(msg)) if msg.contains("class inheritance") => return Ok(()),
+    Err(VmError::Unimplemented(msg)) if msg.contains("class inheritance") => return Ok(()),
     Err(err) => return Err(err),
   };
   assert_eq!(value, Value::Bool(true));
