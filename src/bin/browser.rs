@@ -5468,24 +5468,17 @@ impl App {
         let mut scroll_to_selected = scroll_to_selected;
 
         let visuals = ui.visuals().clone();
-        let hover_bg = if visuals.dark_mode {
-          egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24)
-        } else {
-          egui::Color32::from_rgba_unmultiplied(0, 0, 0, 14)
+        let hover_bg = {
+          // Use a subtle text-colored scrim so hover remains visible even when the theme's hovered
+          // widget fill matches the popup background.
+          let base = visuals.text_color();
+          let alpha = if visuals.dark_mode { 24 } else { 14 };
+          egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
         };
 
-        let selection_base = visuals.selection.bg_fill;
-        let [sr, sg, sb, _] = selection_base.to_array();
-        let selection_bg = if visuals.dark_mode {
-          egui::Color32::from_rgba_unmultiplied(sr, sg, sb, 140)
-        } else {
-          egui::Color32::from_rgba_unmultiplied(sr, sg, sb, 72)
-        };
-        let selection_hover_bg = if visuals.dark_mode {
-          egui::Color32::from_rgba_unmultiplied(sr, sg, sb, 180)
-        } else {
-          egui::Color32::from_rgba_unmultiplied(sr, sg, sb, 104)
-        };
+        // Respect the theme's selection fill (including alpha) so high-contrast themes remain
+        // readable and don't get washed out by hard-coded opacity tweaks.
+        let selection_fill = visuals.selection.bg_fill;
 
         let body_font = ui
           .style()
@@ -5517,10 +5510,17 @@ impl App {
               match item {
                 SelectItem::OptGroupLabel { label, disabled } => {
                   ui.add_space(6.0);
-                  let (rect, _response) = ui.allocate_exact_size(
+                  let (rect, response) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), 18.0),
                     egui::Sense::hover(),
                   );
+                  response.widget_info({
+                    let mut a11y_label = label.trim().to_string();
+                    if a11y_label.is_empty() {
+                      a11y_label = "Group".to_string();
+                    }
+                    move || egui::WidgetInfo::labeled(egui::WidgetType::Label, a11y_label.clone())
+                  });
                   let label_color = if *disabled {
                     visuals.weak_text_color()
                   } else {
@@ -5548,13 +5548,32 @@ impl App {
                   } else {
                     label
                   };
-                  let row_sense = if *disabled {
-                    egui::Sense::hover()
-                  } else {
-                    egui::Sense::click()
-                  };
-                  let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), row_sense);
+                  let row_width = ui.available_width();
+                  let (rect, response) = ui
+                    .add_enabled_ui(!*disabled, |ui| {
+                      ui.allocate_exact_size(
+                        egui::vec2(row_width, row_height),
+                        egui::Sense::click(),
+                      )
+                    })
+                    .inner;
+
+                  response.widget_info({
+                    let mut a11y_label = base.trim().to_string();
+                    if a11y_label.is_empty() {
+                      a11y_label = "(empty)".to_string();
+                    }
+                    let selected = *selected;
+                    move || {
+                      // Model each row like a `SelectableLabel` so screen readers can announce the
+                      // selected state.
+                      egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        selected,
+                        a11y_label.clone(),
+                      )
+                    }
+                  });
 
                   if response.clicked() && !*disabled {
                     clicked_item_idx = Some(idx);
@@ -5596,15 +5615,10 @@ impl App {
                       );
                     }
                     if selected_t > 0.0 {
-                      let fill = if hovered {
-                        selection_hover_bg
-                      } else {
-                        selection_bg
-                      };
                       painter.rect_filled(
                         bg_rect,
                         row_rounding,
-                        Self::with_alpha(fill, selected_t * open_opacity),
+                        Self::with_alpha(selection_fill, selected_t * open_opacity),
                       );
                     }
                   }
@@ -5634,7 +5648,7 @@ impl App {
                       check_rect,
                       fastrender::ui::BrowserIcon::Check,
                       14.0,
-                      Self::with_alpha(selection_base, selected_t * open_opacity),
+                      Self::with_alpha(visuals.text_color(), selected_t * open_opacity),
                     );
                   }
                   x += check_col_width;
