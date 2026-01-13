@@ -2,10 +2,11 @@
 
 use super::support;
 use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::api::FastRenderFactory;
 use fastrender::ui::browser_limits::BrowserLimits;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;
-use fastrender::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig, FontConfig};
+use fastrender::{FastRenderConfig, FastRenderPoolConfig, FontConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
