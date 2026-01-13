@@ -5,8 +5,8 @@ use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
 use url::Url;
 
 use super::resolve_url;
-use super::InteractionState;
 use super::state::{FileSelection, FormStateDom2, InteractionStateDom2};
+use super::InteractionState;
 use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +91,11 @@ impl Dom2FileInputLookup for FormStateDom2 {
 
 impl Dom2FileInputLookup for InteractionStateDom2 {
   fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]> {
-    self.form_state.file_inputs.get(&input).map(|v| v.as_slice())
+    self
+      .form_state
+      .file_inputs
+      .get(&input)
+      .map(|v| v.as_slice())
   }
 }
 
@@ -213,7 +217,8 @@ fn button_type(node: &DomNode) -> &str {
 
 fn is_submit_control(node: &DomNode) -> bool {
   (is_input(node)
-    && (input_type(node).eq_ignore_ascii_case("submit") || input_type(node).eq_ignore_ascii_case("image")))
+    && (input_type(node).eq_ignore_ascii_case("submit")
+      || input_type(node).eq_ignore_ascii_case("image")))
     || (is_button(node) && button_type(node).eq_ignore_ascii_case("submit"))
 }
 
@@ -929,7 +934,14 @@ pub fn form_submission_without_submitter(
   url.set_fragment(None);
 
   let mut entries: Vec<FormDataEntry> = Vec::new();
-  collect_form_entries(&index, form_node_id, None, None, interaction_state, &mut entries)?;
+  collect_form_entries(
+    &index,
+    form_node_id,
+    None,
+    None,
+    interaction_state,
+    &mut entries,
+  )?;
 
   match method {
     FormSubmissionMethod::Get => {
@@ -1060,116 +1072,9 @@ fn is_submit_control_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
     || (is_button_dom2(dom, node) && button_type_dom2(dom, node).eq_ignore_ascii_case("submit"))
 }
 
-fn node_self_is_inert_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  // `<template>` contents are always inert. In `dom2`, template elements are represented by
-  // `Node::inert_subtree=true`, so treat that flag as inert on the element itself and inherited by
-  // descendants via ancestor checks.
-  if dom.node(node).inert_subtree {
-    return true;
-  }
-
-  // Only elements and slots can carry attributes.
-  match &dom.node(node).kind {
-    dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. } => {}
-    _ => return false,
-  }
-
-  if has_attr_dom2(dom, node, "inert") {
-    return true;
-  }
-  get_attr_dom2(dom, node, "data-fastr-inert")
-    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-}
-
-fn is_effectively_inert_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  let mut current = Some(node);
-  // Defensive bound against accidental cycles.
-  let mut remaining = dom.nodes_len().saturating_add(1);
-  while let Some(id) = current {
-    if remaining == 0 {
-      break;
-    }
-    remaining -= 1;
-    if node_self_is_inert_dom2(dom, id) {
-      return true;
-    }
-    current = dom.parent_node(id);
-  }
-  false
-}
-
-fn is_html_fieldset_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  is_html_element_tag_dom2(dom, node, "fieldset")
-}
-
-fn is_html_legend_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  is_html_element_tag_dom2(dom, node, "legend")
-}
-
-fn is_fieldset_disabled_candidate_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  is_input_dom2(dom, node)
-    || is_select_dom2(dom, node)
-    || is_textarea_dom2(dom, node)
-    || is_button_dom2(dom, node)
-}
-
-fn fieldset_first_legend_child_dom2(dom: &dom2::Document, fieldset: dom2::NodeId) -> Option<dom2::NodeId> {
-  debug_assert!(is_html_fieldset_dom2(dom, fieldset));
-  let node = dom.node(fieldset);
-  node.children.iter().copied().find(|&child| {
-    dom.nodes().get(child.index()).is_some_and(|child_node| child_node.parent == Some(fieldset))
-      && is_html_legend_dom2(dom, child)
-  })
-}
-
-fn is_effectively_disabled_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  match &dom.node(node).kind {
-    dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. } => {}
-    _ => return false,
-  }
-
-  // `disabled` is a boolean attribute on form controls, but authors also use it on custom controls;
-  // for interaction treat it as authoritative on the element itself.
-  if has_attr_dom2(dom, node, "disabled") {
-    return true;
-  }
-
-  if !is_fieldset_disabled_candidate_dom2(dom, node) {
-    return false;
-  }
-
-  // Walk ancestors; `<fieldset disabled>` is the only ancestor-based disabledness we model (with the
-  // first-legend exception).
-  let mut ancestors: Vec<dom2::NodeId> = Vec::new();
-  let mut current = Some(node);
-  let mut remaining = dom.nodes_len().saturating_add(1);
-  while let Some(id) = current {
-    if remaining == 0 {
-      break;
-    }
-    remaining -= 1;
-    ancestors.push(id);
-
-    if is_html_fieldset_dom2(dom, id) && has_attr_dom2(dom, id, "disabled") {
-      match fieldset_first_legend_child_dom2(dom, id) {
-        Some(first_legend) => {
-          let in_first_legend = ancestors.iter().any(|&a| a == first_legend);
-          if !in_first_legend {
-            return true;
-          }
-        }
-        None => return true,
-      }
-    }
-
-    current = dom.parent_node(id);
-  }
-
-  false
-}
-
 fn is_disabled_or_inert_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  is_effectively_disabled_dom2(dom, node) || is_effectively_inert_dom2(dom, node)
+  super::effective_disabled_dom2::is_effectively_disabled(node, dom)
+    || super::effective_disabled_dom2::is_effectively_inert(node, dom)
 }
 
 fn tree_root_boundary_dom2(dom: &dom2::Document, node: dom2::NodeId) -> Option<dom2::NodeId> {
@@ -1277,7 +1182,9 @@ fn option_value_dom2(dom: &dom2::Document, option: dom2::NodeId) -> String {
   if let Some(value) = get_attr_dom2(dom, option, "value") {
     return value.to_string();
   }
-  crate::dom::strip_and_collapse_ascii_whitespace(&collect_descendant_text_content_dom2(dom, option))
+  crate::dom::strip_and_collapse_ascii_whitespace(&collect_descendant_text_content_dom2(
+    dom, option,
+  ))
 }
 
 #[derive(Debug, Clone)]
@@ -1317,7 +1224,10 @@ fn option_disabled_dom2(dom: &dom2::Document, option: dom2::NodeId, select: dom2
   false
 }
 
-fn collect_select_options_dom2(dom: &dom2::Document, select: dom2::NodeId) -> Vec<SelectOptionDom2> {
+fn collect_select_options_dom2(
+  dom: &dom2::Document,
+  select: dom2::NodeId,
+) -> Vec<SelectOptionDom2> {
   let mut out = Vec::new();
   for option in dom.select_options(select) {
     if !is_option_dom2(dom, option) {
@@ -1325,7 +1235,7 @@ fn collect_select_options_dom2(dom: &dom2::Document, select: dom2::NodeId) -> Ve
     }
     // Skip inert `<template>` contents (and other inert subtrees) inside the select, matching the
     // renderer DOM's template-contents semantics.
-    if is_effectively_inert_dom2(dom, option) {
+    if super::effective_disabled_dom2::is_effectively_inert(option, dom) {
       continue;
     }
     out.push(SelectOptionDom2 {
@@ -1431,7 +1341,10 @@ fn collect_form_entries_dom2(
       continue;
     }
 
-    if !(is_input_dom2(dom, node_id) || is_textarea_dom2(dom, node_id) || is_select_dom2(dom, node_id)) {
+    if !(is_input_dom2(dom, node_id)
+      || is_textarea_dom2(dom, node_id)
+      || is_select_dom2(dom, node_id))
+    {
       continue;
     }
 
@@ -1578,7 +1491,9 @@ fn collect_form_entries_dom2(
       .map(trim_ascii_whitespace)
       .unwrap_or("");
 
-    if is_input_dom2(dom, submitter_node_id) && input_type_dom2(dom, submitter_node_id).eq_ignore_ascii_case("image") {
+    if is_input_dom2(dom, submitter_node_id)
+      && input_type_dom2(dom, submitter_node_id).eq_ignore_ascii_case("image")
+    {
       let (x, y) = submitter_image_coords.unwrap_or((0, 0));
       let x_name = if name.is_empty() {
         "x".to_string()
@@ -1697,7 +1612,9 @@ pub fn form_submission_dom2(
           let (body, boundary) = serialize_multipart_form_data(&entries);
           (body, format!("multipart/form-data; boundary={boundary}"))
         }
-        FormSubmissionEnctype::TextPlain => (serialize_text_plain(&entries), "text/plain".to_string()),
+        FormSubmissionEnctype::TextPlain => {
+          (serialize_text_plain(&entries), "text/plain".to_string())
+        }
       };
 
       Some(FormSubmission {
@@ -1865,7 +1782,9 @@ mod dom2_tests {
 
     let option_live = doc.create_element("option", "");
     doc.set_attribute(option_live, "value", "a").unwrap();
-    doc.set_bool_attribute(option_live, "selected", true).unwrap();
+    doc
+      .set_bool_attribute(option_live, "selected", true)
+      .unwrap();
     doc.append_child(select, option_live).unwrap();
 
     // Insert an inert `<template>` subtree inside the `<select>` via DOM APIs. Its `<option>`
@@ -1875,7 +1794,9 @@ mod dom2_tests {
 
     let option_inert = doc.create_element("option", "");
     doc.set_attribute(option_inert, "value", "b").unwrap();
-    doc.set_bool_attribute(option_inert, "selected", true).unwrap();
+    doc
+      .set_bool_attribute(option_inert, "selected", true)
+      .unwrap();
     doc.append_child(template, option_inert).unwrap();
 
     let submission = form_submission_without_submitter_dom2(
@@ -1888,8 +1809,7 @@ mod dom2_tests {
     .expect("submission");
 
     assert_eq!(
-      submission.url,
-      "https://example.com/submit?s=a",
+      submission.url, "https://example.com/submit?s=a",
       "options inside inert template subtrees must not contribute to successful controls"
     );
   }
