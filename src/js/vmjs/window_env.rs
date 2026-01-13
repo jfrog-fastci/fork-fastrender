@@ -65,6 +65,8 @@ const UA_DATA_TO_JSON_SLOT_BRANDS: usize = 0;
 const UA_DATA_TO_JSON_SLOT_MOBILE: usize = 1;
 const UA_DATA_TO_JSON_SLOT_PLATFORM: usize = 2;
 
+const SERVICE_WORKER_REGISTER_SLOT_REGISTRATION: usize = 0;
+
 const MAX_UA_DATA_STRING_CHARS: usize = 64;
 const MAX_UA_DATA_VERSION_CHARS: usize = 32;
 const MAX_UA_DATA_HINTS: usize = 32;
@@ -1447,6 +1449,111 @@ fn navigator_java_enabled_native(
   Ok(Value::Bool(false))
 }
 
+fn promise_fulfilled_vm_js(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  value: Value,
+) -> Result<Value, VmError> {
+  let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+    "Promise requires intrinsics (create a Realm first)",
+  ))?;
+  // Root the input value across Promise allocation in case it triggers a GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(value)?;
+
+  let promise = scope.alloc_promise_with_prototype(Some(intr.promise_prototype()))?;
+  scope.push_root(Value::Object(promise))?;
+  // Settle directly: this avoids thenable assimilation and stays deterministic + non-throwing.
+  scope.heap_mut().promise_fulfill(promise, value)?;
+  Ok(Value::Object(promise))
+}
+
+fn service_worker_registration_update_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  promise_fulfilled_vm_js(vm, scope, Value::Undefined)
+}
+
+fn service_worker_registration_unregister_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  promise_fulfilled_vm_js(vm, scope, Value::Bool(true))
+}
+
+fn service_worker_register_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  if let Some(url_value) = args.get(0).copied() {
+    // Run host-aware `ToString` for URL-ish inputs, but keep this shim forgiving: do not
+    // synchronously throw for normal conversion failures.
+    if !matches!(url_value, Value::String(_)) {
+      match scope.to_string(vm, host, hooks, url_value) {
+        Ok(_s) => {}
+        Err(e @ VmError::Termination(_)) => return Err(e),
+        Err(_) => {}
+      }
+    }
+  }
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let registration = slots
+    .get(SERVICE_WORKER_REGISTER_SLOT_REGISTRATION)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  promise_fulfilled_vm_js(vm, scope, registration)
+}
+
+fn service_worker_get_registrations_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+    "getRegistrations requires intrinsics (create a Realm first)",
+  ))?;
+
+  let arr = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(arr))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(arr, Some(intr.array_prototype()))?;
+  promise_fulfilled_vm_js(vm, scope, Value::Object(arr))
+}
+
+fn service_worker_get_registration_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  promise_fulfilled_vm_js(vm, scope, Value::Undefined)
+}
+
 fn navigator_ua_data_get_high_entropy_values_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2151,6 +2258,126 @@ pub(crate) fn install_window_shims_vm_js(
     Value::Object(send_beacon_func),
   )?;
 
+  // `navigator.serviceWorker` (ServiceWorkerContainer) deterministic stub.
+  //
+  // Many real-world sites probe this surface even when Service Workers are not strictly required.
+  // Provide a bounded, non-networking implementation that supports common feature-detection and
+  // `register(..)` call patterns.
+  let sw_update_call_id = vm.register_native_call(service_worker_registration_update_native)?;
+  let sw_unregister_call_id = vm.register_native_call(service_worker_registration_unregister_native)?;
+  let sw_register_call_id = vm.register_native_call(service_worker_register_native)?;
+  let sw_get_regs_call_id = vm.register_native_call(service_worker_get_registrations_native)?;
+  let sw_get_reg_call_id = vm.register_native_call(service_worker_get_registration_native)?;
+
+  let sw_update_name = scope.alloc_string("update")?;
+  scope.push_root(Value::String(sw_update_name))?;
+  let sw_update_func = scope.alloc_native_function(sw_update_call_id, None, sw_update_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    sw_update_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(sw_update_func))?;
+
+  let sw_unregister_name = scope.alloc_string("unregister")?;
+  scope.push_root(Value::String(sw_unregister_name))?;
+  let sw_unregister_func =
+    scope.alloc_native_function(sw_unregister_call_id, None, sw_unregister_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    sw_unregister_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(sw_unregister_func))?;
+
+  let sw_registration = scope.alloc_object()?;
+  scope.push_root(Value::Object(sw_registration))?;
+  scope.heap_mut().object_set_prototype(
+    sw_registration,
+    Some(realm.intrinsics().object_prototype()),
+  )?;
+  define_read_only_vm_js(
+    scope,
+    sw_registration,
+    "update",
+    Value::Object(sw_update_func),
+  )?;
+  define_read_only_vm_js(
+    scope,
+    sw_registration,
+    "unregister",
+    Value::Object(sw_unregister_func),
+  )?;
+
+  // `ready`: Promise resolved with the registration object.
+  let sw_ready_promise = scope.alloc_promise_with_prototype(Some(realm.intrinsics().promise_prototype()))?;
+  scope.push_root(Value::Object(sw_ready_promise))?;
+  scope
+    .heap_mut()
+    .promise_fulfill(sw_ready_promise, Value::Object(sw_registration))?;
+
+  let sw_container = scope.alloc_object()?;
+  scope.push_root(Value::Object(sw_container))?;
+  scope.heap_mut().object_set_prototype(
+    sw_container,
+    Some(realm.intrinsics().object_prototype()),
+  )?;
+  define_read_only_vm_js(scope, sw_container, "controller", Value::Null)?;
+  define_read_only_vm_js(scope, sw_container, "ready", Value::Object(sw_ready_promise))?;
+
+  let sw_register_name = scope.alloc_string("register")?;
+  scope.push_root(Value::String(sw_register_name))?;
+  let sw_register_func = scope.alloc_native_function_with_slots(
+    sw_register_call_id,
+    None,
+    sw_register_name,
+    2,
+    &[Value::Object(sw_registration)],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    sw_register_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(sw_register_func))?;
+  define_read_only_vm_js(
+    scope,
+    sw_container,
+    "register",
+    Value::Object(sw_register_func),
+  )?;
+
+  let sw_get_regs_name = scope.alloc_string("getRegistrations")?;
+  scope.push_root(Value::String(sw_get_regs_name))?;
+  let sw_get_regs_func =
+    scope.alloc_native_function(sw_get_regs_call_id, None, sw_get_regs_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    sw_get_regs_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(sw_get_regs_func))?;
+  define_read_only_vm_js(
+    scope,
+    sw_container,
+    "getRegistrations",
+    Value::Object(sw_get_regs_func),
+  )?;
+
+  let sw_get_reg_name = scope.alloc_string("getRegistration")?;
+  scope.push_root(Value::String(sw_get_reg_name))?;
+  let sw_get_reg_func =
+    scope.alloc_native_function(sw_get_reg_call_id, None, sw_get_reg_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    sw_get_reg_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(sw_get_reg_func))?;
+  define_read_only_vm_js(
+    scope,
+    sw_container,
+    "getRegistration",
+    Value::Object(sw_get_reg_func),
+  )?;
+
+  define_read_only_vm_js(scope, navigator, "serviceWorker", Value::Object(sw_container))?;
+
   define_read_only_vm_js(scope, window, "navigator", Value::Object(navigator))?;
 
   // `matchMedia` / `MediaQueryList` shims.
@@ -2531,6 +2758,154 @@ pub fn install_window_shims(
   let send_beacon_key = prop_key(rt, "sendBeacon")?;
   rt.define_data_property(navigator, send_beacon_key, send_beacon, false)?;
 
+  // `navigator.serviceWorker` (ServiceWorkerContainer) deterministic stub.
+  //
+  // The legacy `VmJsRuntime` cannot construct real `%Promise%` objects, so we expose immediate
+  // thenables that invoke `onFulfilled` synchronously.
+  let service_worker = rt.alloc_object_value()?;
+  define_read_only_data_property(rt, service_worker, "controller", Value::Null, false)?;
+
+  // `ready`: immediate thenable resolving to a registration-like object.
+  let ready_thenable = rt.alloc_object_value()?;
+  let ready_then = rt.alloc_function_value(|rt, _this, args| {
+    let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
+
+    let registration = rt.alloc_object_value()?;
+    let update = rt.alloc_function_value(|rt, _this, _args| {
+      let thenable = rt.alloc_object_value()?;
+      let then_fn = rt.alloc_function_value(|rt, _this, args| {
+        let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
+        if rt.is_callable(on_fulfilled) {
+          let _ = rt.call_function(on_fulfilled, Value::Undefined, &[Value::Undefined]);
+        }
+        Ok(Value::Undefined)
+      })?;
+      let then_key = prop_key(rt, "then")?;
+      rt.define_data_property(thenable, then_key, then_fn, false)?;
+      Ok(thenable)
+    })?;
+    let unregister = rt.alloc_function_value(|rt, _this, _args| {
+      let thenable = rt.alloc_object_value()?;
+      let then_fn = rt.alloc_function_value(|rt, _this, args| {
+        let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
+        if rt.is_callable(on_fulfilled) {
+          let _ = rt.call_function(on_fulfilled, Value::Undefined, &[Value::Bool(true)]);
+        }
+        Ok(Value::Undefined)
+      })?;
+      let then_key = prop_key(rt, "then")?;
+      rt.define_data_property(thenable, then_key, then_fn, false)?;
+      Ok(thenable)
+    })?;
+
+    let update_key = prop_key(rt, "update")?;
+    rt.define_data_property(registration, update_key, update, false)?;
+    let unregister_key = prop_key(rt, "unregister")?;
+    rt.define_data_property(registration, unregister_key, unregister, false)?;
+
+    if rt.is_callable(on_fulfilled) {
+      let _ = rt.call_function(on_fulfilled, Value::Undefined, &[registration]);
+    }
+
+    Ok(Value::Undefined)
+  })?;
+  let then_key = prop_key(rt, "then")?;
+  rt.define_data_property(ready_thenable, then_key, ready_then, false)?;
+  let ready_key = prop_key(rt, "ready")?;
+  rt.define_data_property(service_worker, ready_key, ready_thenable, false)?;
+
+  let register = rt.alloc_function_value(|rt, _this, args| {
+    if let Some(url_value) = args.get(0).copied() {
+      // Accept URL-ish inputs via `ToString`, but keep the shim forgiving/non-throwing.
+      let _ = rt.to_string(url_value);
+    }
+
+    let thenable = rt.alloc_object_value()?;
+    let then_fn = rt.alloc_function_value(|rt, _this, args| {
+      let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
+
+      let registration = rt.alloc_object_value()?;
+      let update = rt.alloc_function_value(|rt, _this, _args| {
+        let thenable = rt.alloc_object_value()?;
+        let then_fn = rt.alloc_function_value(|rt, _this, args| {
+          let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
+          if rt.is_callable(on_fulfilled) {
+            let _ = rt.call_function(on_fulfilled, Value::Undefined, &[Value::Undefined]);
+          }
+          Ok(Value::Undefined)
+        })?;
+        let then_key = prop_key(rt, "then")?;
+        rt.define_data_property(thenable, then_key, then_fn, false)?;
+        Ok(thenable)
+      })?;
+      let unregister = rt.alloc_function_value(|rt, _this, _args| {
+        let thenable = rt.alloc_object_value()?;
+        let then_fn = rt.alloc_function_value(|rt, _this, args| {
+          let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
+          if rt.is_callable(on_fulfilled) {
+            let _ = rt.call_function(on_fulfilled, Value::Undefined, &[Value::Bool(true)]);
+          }
+          Ok(Value::Undefined)
+        })?;
+        let then_key = prop_key(rt, "then")?;
+        rt.define_data_property(thenable, then_key, then_fn, false)?;
+        Ok(thenable)
+      })?;
+
+      let update_key = prop_key(rt, "update")?;
+      rt.define_data_property(registration, update_key, update, false)?;
+      let unregister_key = prop_key(rt, "unregister")?;
+      rt.define_data_property(registration, unregister_key, unregister, false)?;
+
+      if rt.is_callable(on_fulfilled) {
+        let _ = rt.call_function(on_fulfilled, Value::Undefined, &[registration]);
+      }
+      Ok(Value::Undefined)
+    })?;
+
+    let then_key = prop_key(rt, "then")?;
+    rt.define_data_property(thenable, then_key, then_fn, false)?;
+    Ok(thenable)
+  })?;
+  let register_key = prop_key(rt, "register")?;
+  rt.define_data_property(service_worker, register_key, register, false)?;
+
+  let get_registrations = rt.alloc_function_value(|rt, _this, _args| {
+    let thenable = rt.alloc_object_value()?;
+    let then_fn = rt.alloc_function_value(|rt, _this, args| {
+      let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
+      let regs = rt.alloc_array()?;
+      if rt.is_callable(on_fulfilled) {
+        let _ = rt.call_function(on_fulfilled, Value::Undefined, &[regs]);
+      }
+      Ok(Value::Undefined)
+    })?;
+    let then_key = prop_key(rt, "then")?;
+    rt.define_data_property(thenable, then_key, then_fn, false)?;
+    Ok(thenable)
+  })?;
+  let get_regs_key = prop_key(rt, "getRegistrations")?;
+  rt.define_data_property(service_worker, get_regs_key, get_registrations, false)?;
+
+  let get_registration = rt.alloc_function_value(|rt, _this, _args| {
+    let thenable = rt.alloc_object_value()?;
+    let then_fn = rt.alloc_function_value(|rt, _this, args| {
+      let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
+      if rt.is_callable(on_fulfilled) {
+        let _ = rt.call_function(on_fulfilled, Value::Undefined, &[Value::Undefined]);
+      }
+      Ok(Value::Undefined)
+    })?;
+    let then_key = prop_key(rt, "then")?;
+    rt.define_data_property(thenable, then_key, then_fn, false)?;
+    Ok(thenable)
+  })?;
+  let get_reg_key = prop_key(rt, "getRegistration")?;
+  rt.define_data_property(service_worker, get_reg_key, get_registration, false)?;
+
+  let service_worker_key = prop_key(rt, "serviceWorker")?;
+  rt.define_data_property(navigator, service_worker_key, service_worker, false)?;
+
   // `navigator.languages` is an array in browsers; use a real JS Array so callers can use
   // `Array.isArray` and the `length` property behaves as expected.
   let languages = rt.alloc_array()?;
@@ -2698,6 +3073,55 @@ mod tests {
     let to_json = get_prop(&mut rt, ua_data, "toJSON");
     let json = rt.call_function(to_json, ua_data, &[]).unwrap();
     assert!(matches!(json, Value::Object(_)));
+  }
+
+  #[test]
+  fn legacy_navigator_service_worker_exists_and_register_is_thenable() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let mut rt = VmJsRuntime::new();
+    let window = rt.alloc_object_value().unwrap();
+    let media = MediaContext::screen(800.0, 600.0);
+    install_window_shims(&mut rt, window, WindowEnv::from_media(media)).unwrap();
+
+    let navigator = get_prop(&mut rt, window, "navigator");
+    let service_worker = get_prop(&mut rt, navigator, "serviceWorker");
+    assert!(matches!(service_worker, Value::Object(_)));
+
+    let controller = get_prop(&mut rt, service_worker, "controller");
+    assert_eq!(controller, Value::Null);
+
+    let register_fn = get_prop(&mut rt, service_worker, "register");
+    assert!(rt.is_callable(register_fn));
+
+    let url = rt.alloc_string_value("/sw.js").unwrap();
+    let thenable = rt
+      .call_function(register_fn, service_worker, &[url])
+      .unwrap();
+    let then_fn = get_prop(&mut rt, thenable, "then");
+    assert!(rt.is_callable(then_fn));
+
+    let called = Rc::new(Cell::new(false));
+    let called_for_cb = called.clone();
+    let on_fulfilled = rt
+      .alloc_function_value(move |rt, _this, args| {
+        called_for_cb.set(true);
+        let reg = args.get(0).copied().unwrap_or(Value::Undefined);
+        assert!(matches!(reg, Value::Object(_)));
+        let update_key = prop_key(rt, "update")?;
+        let unregister_key = prop_key(rt, "unregister")?;
+        let update = rt.get(reg, update_key).unwrap_or(Value::Undefined);
+        let unregister = rt.get(reg, unregister_key).unwrap_or(Value::Undefined);
+        assert!(rt.is_callable(update));
+        assert!(rt.is_callable(unregister));
+        Ok(Value::Undefined)
+      })
+      .unwrap();
+
+    rt.call_function(then_fn, thenable, &[on_fulfilled])
+      .unwrap();
+    assert!(called.get());
   }
 
   #[test]
@@ -2963,6 +3387,45 @@ mod tests {
       )
       .unwrap();
     assert_eq!(throwing_to_string, Value::Bool(false));
+  }
+
+  #[test]
+  fn navigator_service_worker_is_present_and_registration_methods_resolve() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+
+    assert_eq!(
+      host.exec_script("'serviceWorker' in navigator").unwrap(),
+      Value::Bool(true)
+    );
+
+    host
+      .exec_script(
+        r#"
+        globalThis.__sw_done = false;
+        (async () => {
+          await navigator.serviceWorker.register("/sw.js").then(r => r.update());
+          globalThis.__sw_done = true;
+        })();
+        "#,
+      )
+      .unwrap();
+    host.perform_microtask_checkpoint().unwrap();
+    assert_eq!(host.exec_script("globalThis.__sw_done").unwrap(), Value::Bool(true));
+
+    host
+      .exec_script(
+        r#"
+        globalThis.__sw_regs_len = -1;
+        (async () => {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          globalThis.__sw_regs_len = regs.length;
+        })();
+        "#,
+      )
+      .unwrap();
+    host.perform_microtask_checkpoint().unwrap();
+    assert_eq!(host.exec_script("globalThis.__sw_regs_len").unwrap(), Value::Number(0.0));
   }
 
   #[test]
