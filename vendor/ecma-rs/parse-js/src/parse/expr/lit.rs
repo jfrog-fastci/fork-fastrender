@@ -3319,6 +3319,15 @@ mod regex_validation_tests {
   }
 
   #[test]
+  fn duplicate_named_capture_groups_in_same_alternative_are_rejected() {
+    assert_invalid(r"/(?<x>a)(?<x>b)/");
+    // A duplicate in any disjunction alternative is a syntax error.
+    assert_invalid(r"/(?<x>a)|(?<x>b)(?<x>c)/");
+    // Duplicate between the outer named group and a nested named group in one alternative.
+    assert_invalid(r"/(?<x>(?<x>a)|b)/");
+  }
+
+  #[test]
   fn unicode_sets_mode_accepts_class_string_disjunction() {
     assert_valid(r"/^[\q{0|2|4|9\uFE0F\u20E3}_]+$/v");
     assert_valid(r"/^[[0-9]\q{0|2|4|9\uFE0F\u20E3}]+$/v");
