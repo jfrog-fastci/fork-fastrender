@@ -2261,7 +2261,10 @@ fn throw_range_error(vm: &mut Vm, scope: &mut Scope<'_>, message: &str) -> VmErr
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::dom2;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+  use crate::js::window::WindowHost;
+  use selectors::context::QuirksMode;
   use vm_js::{HostSlots, Value};
 
   fn get_string(realm: &WindowRealm, value: Value) -> String {
@@ -3029,6 +3032,49 @@ mod tests {
       "try { structuredClone(new FormData().entries()); 'no' } catch (e) { e.name }",
     )?;
     assert_eq!(get_string(&realm, v), "DataCloneError");
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_fetch_api_objects_and_web_socket() -> crate::error::Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.com/")?;
+
+    let headers = host.exec_script(
+      "(() => {\
+         try { structuredClone(new Headers()); return false; }\
+         catch (e) { return !!(e && e.name === 'DataCloneError'); }\
+       })()",
+    )?;
+    assert_eq!(headers, Value::Bool(true));
+
+    let request = host.exec_script(
+      "(() => {\
+         try { structuredClone(new Request('https://example.com/')); return false; }\
+         catch (e) { return !!(e && e.name === 'DataCloneError'); }\
+       })()",
+    )?;
+    assert_eq!(request, Value::Bool(true));
+
+    let response = host.exec_script(
+      "(() => {\
+         try { structuredClone(new Response('x')); return false; }\
+         catch (e) { return !!(e && e.name === 'DataCloneError'); }\
+       })()",
+    )?;
+    assert_eq!(response, Value::Bool(true));
+
+    let websocket = host.exec_script(
+      "(() => {\
+         if (typeof WebSocket !== 'function') return true;\
+         let ws;\
+         try { ws = new WebSocket('wss://127.0.0.1:1/'); } catch (_e) { return true; }\
+         try { structuredClone(ws); return false; }\
+         catch (e) { return !!(e && e.name === 'DataCloneError'); }\
+       })()",
+    )?;
+    assert_eq!(websocket, Value::Bool(true));
+
     Ok(())
   }
 }
