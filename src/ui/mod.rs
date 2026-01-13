@@ -266,7 +266,7 @@ pub use notifications::{
   WarningToastPresentation, WarningToastState, TOAST_DEFAULT_TTL, WARNING_TOAST_DEFAULT_TTL,
 };
 
-pub use frame_upload::FrameUploadCoalescer;
+pub use frame_upload::{FrameUploadCoalescer, FrameUploadCoalescerStats};
 pub use worker_wake::WorkerWakeCoalescer;
 pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};
 pub use chrome_action::ChromeAction;

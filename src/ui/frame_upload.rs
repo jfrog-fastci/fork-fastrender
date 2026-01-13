@@ -2,6 +2,22 @@ use super::browser_app::FrameReadyUpdate;
 use super::messages::TabId;
 use lru::LruCache;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameUploadCoalescerStats {
+  /// Number of times [`FrameUploadCoalescer::push`] was called.
+  pub push_calls: u64,
+  /// Number of times a pending frame for a tab was overwritten (coalesced / dropped without
+  /// uploading).
+  pub overwritten_frames: u64,
+  /// Number of frames removed from the pending set via [`FrameUploadCoalescer::take`] or
+  /// [`FrameUploadCoalescer::drain`].
+  pub drained_frames: u64,
+  /// Current pending frame count (one per tab).
+  pub pending_tabs: usize,
+  /// Max pending frame count (one per tab) observed since the last [`FrameUploadCoalescer::take_stats`].
+  pub max_pending_tabs: usize,
+}
+
 /// Coalesces `WorkerToUi::FrameReady` pixmaps into at most one pending upload per tab.
 ///
 /// The render worker can produce multiple frames before the windowed UI gets a chance to redraw.
@@ -15,6 +31,11 @@ use lru::LruCache;
 pub struct FrameUploadCoalescer {
   latest_by_tab: LruCache<TabId, FrameReadyUpdate>,
   total_estimated_bytes: u64,
+
+  push_calls: u64,
+  overwritten_frames: u64,
+  drained_frames: u64,
+  max_pending_tabs: usize,
 }
 
 impl Default for FrameUploadCoalescer {
@@ -28,6 +49,10 @@ impl FrameUploadCoalescer {
     Self {
       latest_by_tab: LruCache::unbounded(),
       total_estimated_bytes: 0,
+      push_calls: 0,
+      overwritten_frames: 0,
+      drained_frames: 0,
+      max_pending_tabs: 0,
     }
   }
 
@@ -47,6 +72,10 @@ impl FrameUploadCoalescer {
 
   pub fn is_empty(&self) -> bool {
     self.latest_by_tab.is_empty()
+  }
+
+  pub fn pending_tab_count(&self) -> usize {
+    self.latest_by_tab.len()
   }
 
   pub fn has_pending_for_tab(&self, tab_id: TabId) -> bool {
@@ -70,14 +99,18 @@ impl FrameUploadCoalescer {
 
   /// Store `frame`, coalescing with any already-pending upload for the same tab.
   pub fn push(&mut self, frame: FrameReadyUpdate) {
+    self.push_calls = self.push_calls.saturating_add(1);
+
     let bytes = Self::estimated_bytes_for(&frame);
     // Overwrite older pending frames for this tab (dropping the pixmap without uploading).
     if let Some(prev) = self.latest_by_tab.put(frame.tab_id, frame) {
+      self.overwritten_frames = self.overwritten_frames.saturating_add(1);
       self.total_estimated_bytes = self
         .total_estimated_bytes
         .saturating_sub(Self::estimated_bytes_for(&prev));
     }
     self.total_estimated_bytes = self.total_estimated_bytes.saturating_add(bytes);
+    self.max_pending_tabs = self.max_pending_tabs.max(self.latest_by_tab.len());
   }
 
   /// Evict pending uploads until the total estimated size is at most `budget_bytes`.
@@ -141,16 +174,43 @@ impl FrameUploadCoalescer {
     self.total_estimated_bytes = self
       .total_estimated_bytes
       .saturating_sub(Self::estimated_bytes_for(&frame));
+    self.drained_frames = self.drained_frames.saturating_add(1);
     Some(frame)
   }
 
   /// Drains all pending uploads.
   pub fn drain(&mut self) -> impl Iterator<Item = FrameReadyUpdate> {
+    let drained = self.latest_by_tab.len() as u64;
+    self.drained_frames = self.drained_frames.saturating_add(drained);
     self.total_estimated_bytes = 0;
     // `lru` versions vary in whether `clear()` is implemented on `LruCache`, so drain by replacing.
     std::mem::replace(&mut self.latest_by_tab, LruCache::unbounded())
       .into_iter()
       .map(|(_tab_id, frame)| frame)
+  }
+
+  /// Returns coalescing counters accumulated since the last call and resets them.
+  ///
+  /// Intended to be called once per UI frame so callers can report per-frame deltas (e.g. HUD).
+  pub fn take_stats(&mut self) -> FrameUploadCoalescerStats {
+    let pending_tabs = self.latest_by_tab.len();
+    let max_pending_tabs = self.max_pending_tabs.max(pending_tabs);
+    let stats = FrameUploadCoalescerStats {
+      push_calls: self.push_calls,
+      overwritten_frames: self.overwritten_frames,
+      drained_frames: self.drained_frames,
+      pending_tabs,
+      max_pending_tabs,
+    };
+
+    self.push_calls = 0;
+    self.overwritten_frames = 0;
+    self.drained_frames = 0;
+    // Baseline the next window so it accounts for already-pending frames even if no new pushes
+    // arrive before the next `take_stats` call.
+    self.max_pending_tabs = pending_tabs;
+
+    stats
   }
 }
 
@@ -298,5 +358,38 @@ mod tests {
     assert!(evicted >= 1, "expected at least one tab to be evicted");
     assert!(coalescer.has_pending_for_tab(preserved));
     assert_eq!(coalescer.total_estimated_bytes(), preserve_bytes);
+  }
+
+  #[test]
+  fn counters_track_overwrites() {
+    let tab = TabId(1);
+    let mut coalescer = FrameUploadCoalescer::new();
+
+    coalescer.push(make_frame(tab, (1, 1), (10, 10), 1.0));
+    coalescer.push(make_frame(tab, (2, 2), (10, 10), 1.0));
+
+    let stats = coalescer.take_stats();
+    assert_eq!(stats.push_calls, 2);
+    assert_eq!(stats.overwritten_frames, 1);
+    assert_eq!(stats.pending_tabs, 1);
+  }
+
+  #[test]
+  fn counters_track_drains_and_pending_count() {
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let mut coalescer = FrameUploadCoalescer::new();
+
+    coalescer.push(make_frame(tab_a, (1, 1), (10, 10), 1.0));
+    coalescer.push(make_frame(tab_b, (1, 1), (10, 10), 1.0));
+    assert_eq!(coalescer.pending_tab_count(), 2);
+
+    let drained: Vec<_> = coalescer.drain().collect();
+    assert_eq!(drained.len(), 2);
+    assert_eq!(coalescer.pending_tab_count(), 0);
+
+    let stats = coalescer.take_stats();
+    assert_eq!(stats.drained_frames, 2);
+    assert_eq!(stats.pending_tabs, 0);
   }
 }

@@ -6757,6 +6757,9 @@ struct BrowserHud {
   last_upload_ms: f32,
   last_upload_bytes: u64,
   uploads_this_frame: u32,
+  last_upload_textures_updated: u32,
+  last_upload_textures_created: u32,
+  frame_upload_stats: fastrender::ui::FrameUploadCoalescerStats,
   process_cpu_time_ms_total: Option<u64>,
   process_cpu_percent_recent: Option<f64>,
   text_buf: String,
@@ -6795,6 +6798,9 @@ impl BrowserHud {
       last_upload_ms: 0.0,
       last_upload_bytes: 0,
       uploads_this_frame: 0,
+      last_upload_textures_updated: 0,
+      last_upload_textures_created: 0,
+      frame_upload_stats: fastrender::ui::FrameUploadCoalescerStats::default(),
       process_cpu_time_ms_total: None,
       process_cpu_percent_recent: None,
       text_buf: String::with_capacity(384),
@@ -11448,10 +11454,19 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       hud.uploads_this_frame = 0;
       hud.last_upload_bytes = 0;
       hud.last_upload_ms = 0.0;
+      hud.last_upload_textures_created = 0;
+      hud.last_upload_textures_updated = 0;
     }
+
+    let record_frame_upload_stats = |app: &mut Self| {
+      if let Some(hud) = app.hud.as_mut() {
+        hud.frame_upload_stats = app.pending_frame_uploads.take_stats();
+      }
+    };
 
     let Some(tab_id) = self.browser_state.active_tab_id() else {
       self.next_page_upload_redraw = None;
+      record_frame_upload_stats(self);
       return;
     };
 
@@ -11460,6 +11475,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     // time on every redraw (especially during resize).
     if !self.pending_frame_uploads.has_pending_for_tab(tab_id) {
       self.next_page_upload_redraw = None;
+      record_frame_upload_stats(self);
       return;
     }
 
@@ -11482,6 +11498,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                 .map(|existing| existing.min(earliest))
                 .unwrap_or(earliest),
             );
+            record_frame_upload_stats(self);
             return;
           }
         } else {
@@ -11498,11 +11515,13 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
     let upload_start = self.hud.is_some().then(std::time::Instant::now);
     let Some(frame_ready) = self.pending_frame_uploads.take(tab_id) else {
+      record_frame_upload_stats(self);
       return;
     };
 
     // Ignore stale frames for tabs that have already been closed.
     if self.browser_state.tab(frame_ready.tab_id).is_none() {
+      record_frame_upload_stats(self);
       return;
     }
 
@@ -11511,13 +11530,19 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       .saturating_mul(u64::from(pixmap.height()))
       .saturating_mul(4);
     if let Some(tex) = self.tab_textures.get_mut(&tab_id) {
+      let textures_updated = 1u32;
       let recreated = tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
       if recreated {
         if let Some(hud) = self.hud.as_mut() {
           hud.page_texture_recreates_total = hud.page_texture_recreates_total.saturating_add(1);
         }
       }
+      if let Some(hud) = self.hud.as_mut() {
+        hud.last_upload_textures_updated = textures_updated;
+      }
     } else {
+      let textures_created = 1u32;
+      let textures_updated = 1u32;
       let mut tex =
         fastrender::ui::WgpuPixmapTexture::new_page(&self.device, &mut self.egui_renderer, &pixmap);
       let recreated = tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
@@ -11527,6 +11552,10 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         }
       }
       self.tab_textures.insert(tab_id, tex);
+      if let Some(hud) = self.hud.as_mut() {
+        hud.last_upload_textures_created = textures_created;
+        hud.last_upload_textures_updated = textures_updated;
+      }
     }
 
     self.last_page_upload_at = Some(now);
@@ -11538,6 +11567,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         .filter(|ms| ms.is_finite())
         .unwrap_or(0.0);
     }
+
+    record_frame_upload_stats(self);
   }
 
   fn send_viewport_changed_clamped_if_needed(
@@ -12427,19 +12458,40 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       "wgpu: surface.configure={}  page_tex_recreate={}",
       hud.surface_configure_calls_total, hud.page_texture_recreates_total
     );
+    let upload_pixels = hud.last_upload_bytes / 4;
     if hud.last_upload_ms.is_finite() {
       let _ = writeln!(
         &mut hud.text_buf,
-        "upload: {}  {:.2}ms  {} bytes",
-        hud.uploads_this_frame, hud.last_upload_ms, hud.last_upload_bytes
+        "upload: {}  {:.2}ms  {} px  {} bytes  tex(u{} c{})",
+        hud.uploads_this_frame,
+        hud.last_upload_ms,
+        upload_pixels,
+        hud.last_upload_bytes,
+        hud.last_upload_textures_updated,
+        hud.last_upload_textures_created
       );
     } else {
       let _ = writeln!(
         &mut hud.text_buf,
-        "upload: {}  - ms  {} bytes",
-        hud.uploads_this_frame, hud.last_upload_bytes
+        "upload: {}  - ms  {} px  {} bytes  tex(u{} c{})",
+        hud.uploads_this_frame,
+        upload_pixels,
+        hud.last_upload_bytes,
+        hud.last_upload_textures_updated,
+        hud.last_upload_textures_created
       );
     }
+
+    let frame_stats = hud.frame_upload_stats;
+    let _ = writeln!(
+      &mut hud.text_buf,
+      "frame_upload: push={} overwrite={} drained={} pending={} max_pending={}",
+      frame_stats.push_calls,
+      frame_stats.overwritten_frames,
+      frame_stats.drained_frames,
+      frame_stats.pending_tabs,
+      frame_stats.max_pending_tabs
+    );
 
     let _ = writeln!(
       &mut hud.text_buf,
