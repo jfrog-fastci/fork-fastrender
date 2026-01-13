@@ -4500,8 +4500,11 @@ impl BrowserRuntime {
     });
   }
 
-  fn pump_js_event_loop_after_dom_event_dispatch(
-    &mut self,
+  // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
+  // borrowed from `self.tabs` without triggering borrow-checker errors (E0499/E0502).
+  fn pump_js_event_loop_after_dom_event_dispatch_for_tab(
+    ui_tx: &Sender<WorkerToUi>,
+    debug_log_enabled: bool,
     tab_id: TabId,
     tab: &mut TabState,
     generation_before_dispatch: u64,
@@ -4522,8 +4525,8 @@ impl BrowserRuntime {
 
     let prev_generation = tab.js_dom_mutation_generation;
     if let Err(err) = js_tab.run_event_loop_until_idle(run_limits) {
-      if self.debug_log_enabled && !cancel_callback() {
-        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+      if debug_log_enabled && !cancel_callback() {
+        let _ = ui_tx.send(WorkerToUi::DebugLog {
           tab_id,
           line: format!("js event-loop pump failed: {err}"),
         });
@@ -5004,7 +5007,9 @@ impl BrowserRuntime {
       // Release our mutable borrow of `tab.js_tab` before running the follow-up pump (which borrows
       // it again).
       drop(js_tab);
-      self.pump_js_event_loop_after_dom_event_dispatch(
+      Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+        &self.ui_tx,
+        self.debug_log_enabled,
         tab_id,
         tab,
         js_mutation_generation_before_dispatch,
@@ -5139,7 +5144,13 @@ impl BrowserRuntime {
       }
       if dispatched_dom_event {
         if let Some(before) = js_mutation_generation_before_dispatch {
-          self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
+          Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+            &self.ui_tx,
+            self.debug_log_enabled,
+            tab_id,
+            tab,
+            before,
+          );
         }
       }
     }
@@ -5250,7 +5261,13 @@ impl BrowserRuntime {
       }
       if dispatched_dom_event {
         if let Some(before) = js_mutation_generation_before_dispatch {
-          self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
+          Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+            &self.ui_tx,
+            self.debug_log_enabled,
+            tab_id,
+            tab,
+            before,
+          );
         }
       }
       return;
@@ -5694,7 +5711,13 @@ impl BrowserRuntime {
 
     if dispatched_dom_event {
       if let Some(before) = js_mutation_generation_before_dispatch {
-        self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
+        Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+          &self.ui_tx,
+          self.debug_log_enabled,
+          tab_id,
+          tab,
+          before,
+        );
       }
     }
 
@@ -5837,7 +5860,13 @@ impl BrowserRuntime {
 
           if dispatched_dom_event {
             if let Some(before) = js_mutation_generation_before_dispatch {
-              self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
+              Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+                &self.ui_tx,
+                self.debug_log_enabled,
+                tab_id,
+                tab,
+                before,
+              );
             }
           }
 
@@ -5850,7 +5879,13 @@ impl BrowserRuntime {
         } else if dom_changed || scroll_changed {
           if dispatched_dom_event {
             if let Some(before) = js_mutation_generation_before_dispatch {
-              self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
+              Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+                &self.ui_tx,
+                self.debug_log_enabled,
+                tab_id,
+                tab,
+                before,
+              );
             }
           }
           tab.needs_repaint = true;
@@ -6034,6 +6069,10 @@ impl BrowserRuntime {
         Err(_) => (None, None),
       };
 
+    let js_mutation_generation_before_dispatch =
+      tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
+    let mut dispatched_dom_event = false;
+    let mut drop_default_allowed = true;
     if let Some(js_tab) = tab.js_tab.as_mut() {
       if let Some(target_id) = drop_target_id {
         let target = js_dom_node_for_preorder_id_with_log(
@@ -6049,11 +6088,10 @@ impl BrowserRuntime {
           "drop",
         );
         if let Some(node_id) = target {
+          dispatched_dom_event = true;
           match js_tab.dispatch_drop_event_with_files(node_id, pos_css, &paths) {
             Ok(default_allowed) => {
-              if !default_allowed {
-                return;
-              }
+              drop_default_allowed = default_allowed;
             }
             Err(err) => {
               // Best-effort: keep default behavior working even when JS event dispatch fails.
@@ -6065,6 +6103,19 @@ impl BrowserRuntime {
           }
         }
       }
+    }
+
+    if dispatched_dom_event && !drop_default_allowed {
+      if let Some(before) = js_mutation_generation_before_dispatch {
+        Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+          &self.ui_tx,
+          self.debug_log_enabled,
+          tab_id,
+          tab,
+          before,
+        );
+      }
+      return;
     }
 
     let engine = &mut tab.interaction;
@@ -6096,6 +6147,18 @@ impl BrowserRuntime {
       }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
+    }
+
+    if dispatched_dom_event {
+      if let Some(before) = js_mutation_generation_before_dispatch {
+        Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+          &self.ui_tx,
+          self.debug_log_enabled,
+          tab_id,
+          tab,
+          before,
+        );
+      }
     }
   }
 
@@ -6373,7 +6436,13 @@ impl BrowserRuntime {
 
     if dispatched_dom_event {
       if let Some(before) = js_mutation_generation_before_dispatch {
-        self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
+        Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+          &self.ui_tx,
+          self.debug_log_enabled,
+          tab_id,
+          tab,
+          before,
+        );
       }
     }
 
@@ -7493,12 +7562,6 @@ impl BrowserRuntime {
         }
       }
 
-      if dispatched_dom_event {
-        if let Some(before) = js_mutation_generation_before_dispatch {
-          self.pump_js_event_loop_after_dom_event_dispatch(tab_id, tab, before);
-        }
-      }
-
       let action_is_none = matches!(action, InteractionAction::None);
       match action {
         InteractionAction::Navigate { href } => {
@@ -7797,6 +7860,20 @@ impl BrowserRuntime {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
           }
+        }
+      }
+
+      // After dispatching keyboard-initiated DOM events (click/submit), pump the JS event loop so
+      // follow-up microtasks/timer tasks run before we return to the UI.
+      if dispatched_dom_event {
+        if let Some(before) = js_mutation_generation_before_dispatch {
+          Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+            &self.ui_tx,
+            self.debug_log_enabled,
+            tab_id,
+            tab,
+            before,
+          );
         }
       }
     }

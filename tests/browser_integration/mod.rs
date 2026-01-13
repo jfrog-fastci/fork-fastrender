@@ -146,6 +146,7 @@ mod ui_worker_color_picker_choose;
 mod ui_worker_crash_hook;
 mod ui_worker_crash_url;
 mod ui_worker_link_drag_suppresses_navigation;
+mod ui_worker_js_pump_after_event;
 mod ui_worker_dpr;
 mod ui_worker_favicon;
 mod ui_worker_focus_scroll;
