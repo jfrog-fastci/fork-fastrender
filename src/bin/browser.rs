@@ -13002,9 +13002,13 @@ impl App {
         self.history_panel_request_focus_search = false;
         self.bookmarks_manager.clear_transient();
       }
-      if opened_downloads_panel {
-        // When the downloads panel auto-opens and intends to take focus (when allowed), do not keep
-        // forwarding keyboard focus to the rendered page.
+      if self.downloads_panel_request_focus {
+        // When the downloads panel intends to take focus (when allowed), do not keep forwarding
+        // keyboard focus/input to the rendered page.
+        self.page_has_focus = false;
+      } else if opened_downloads_panel {
+        // Even when we avoid requesting focus (e.g. the user is typing in a chrome text input),
+        // opening the side panel should not re-enable page focus.
         self.page_has_focus = false;
       }
     }

@@ -50,12 +50,16 @@ pub fn on_download_started(input: DownloadsPanelPolicyInput) -> DownloadsPanelPo
   let mut out = DownloadsPanelPolicyOutput::same_as_input(input);
 
   // Ensure the downloads panel is visible.
-  if !out.downloads_panel_open {
-    out.downloads_panel_open = true;
-    // Only request focus when the user is not actively typing into another chrome text input.
-    if !input.chrome_has_text_focus {
-      out.downloads_panel_request_focus = true;
-    }
+  out.downloads_panel_open = true;
+
+  // Focus rules:
+  // - While the user is typing in a chrome text input, never request focus (avoid disrupting their
+  //   typing, even if opening downloads closes another panel).
+  // - Otherwise, request focus so keyboard users can immediately interact with downloads.
+  if input.chrome_has_text_focus {
+    out.downloads_panel_request_focus = false;
+  } else {
+    out.downloads_panel_request_focus = true;
   }
 
   // Keep the right-side panel area exclusive: downloads share the space with history/bookmarks.
@@ -121,14 +125,13 @@ mod tests {
   }
 
   #[test]
-  fn does_not_force_focus_when_panel_already_open() {
+  fn requests_focus_when_panel_already_open_and_not_typing() {
     let mut input = base_input();
     input.downloads_panel_open = true;
     input.downloads_panel_request_focus = false;
 
     let out = on_download_started(input);
     assert!(out.downloads_panel_open);
-    assert!(!out.downloads_panel_request_focus);
+    assert!(out.downloads_panel_request_focus);
   }
 }
-
