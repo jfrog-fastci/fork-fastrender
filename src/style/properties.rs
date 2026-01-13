@@ -5292,6 +5292,12 @@ fn is_inherited_property(name: &str) -> bool {
       | "stroke-miterlimit"
       | "stroke-opacity"
       | "stroke-width"
+      | "shape-rendering"
+      | "vector-effect"
+      | "color-rendering"
+      | "color-interpolation"
+      | "color-interpolation-filters"
+      | "mask-type"
   )
 }
 
@@ -24956,6 +24962,23 @@ mod tests {
   use cssparser::Parser;
   use cssparser::ParserInput;
   use std::sync::Arc;
+
+  #[test]
+  fn svg_rendering_hint_properties_are_treated_as_inherited() {
+    for prop in [
+      "shape-rendering",
+      "vector-effect",
+      "color-rendering",
+      "color-interpolation",
+      "color-interpolation-filters",
+      "mask-type",
+    ] {
+      assert!(
+        is_inherited_property(prop),
+        "expected {prop} to be treated as inherited for global keyword handling"
+      );
+    }
+  }
 
   #[test]
   fn extract_margin_values_accepts_zero_number_and_calc_zero() {
