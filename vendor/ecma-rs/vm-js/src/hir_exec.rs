@@ -671,7 +671,6 @@ impl<'vm> HirEvaluator<'vm> {
         .heap_mut()
         .set_function_bound_new_target(func_obj, self.new_target)?;
     }
-
     // `Heap::alloc_user_function_with_env` already creates `.prototype` for constructable user
     // functions. Do not create it here, otherwise non-constructable functions (e.g. method
     // functions) incorrectly get an own `"prototype"` property.
