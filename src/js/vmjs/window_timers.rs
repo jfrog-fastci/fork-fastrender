@@ -2482,8 +2482,7 @@ fn make_idle_deadline_object(
   // Best-effort: if the realm exposes an `IdleDeadline` interface, set the prototype so
   // `deadline instanceof IdleDeadline` works for libraries that inspect it.
   //
-  // Preserve determinism/safety by only consulting own *data* properties (no getters, no proxies),
-  // walking the prototype chain manually.
+  // Preserve determinism/safety by only consulting own *data* properties (no getters, no proxies).
   let own_data_value = |obj: vm_js::GcObject, key: &PropertyKey| -> Result<Option<Value>, VmError> {
     match scope.heap().object_get_own_data_property_value(obj, key) {
       Ok(value) => Ok(value),
@@ -2493,20 +2492,11 @@ fn make_idle_deadline_object(
     }
   };
   let idle_deadline_ctor_key = alloc_key(&mut scope, "IdleDeadline")?;
-  let mut cursor = Some(global_obj);
-  let idle_deadline_ctor = loop {
-    let Some(obj) = cursor else { break None };
-    if let Some(Value::Object(ctor)) = own_data_value(obj, &idle_deadline_ctor_key)? {
-      break Some(ctor);
-    }
-    cursor = match scope.object_get_prototype(obj) {
-      Ok(next) => next,
-      // Best-effort: if the prototype chain is hostile (revoked Proxy, cycle, etc.), fall back to a
-      // plain object rather than throwing from requestIdleCallback.
-      Err(VmError::OutOfMemory) => return Err(VmError::OutOfMemory),
-      Err(_) => break None,
-    };
-  };
+  let idle_deadline_ctor = own_data_value(global_obj, &idle_deadline_ctor_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
   if let Some(idle_deadline_ctor) = idle_deadline_ctor {
     scope.push_root(Value::Object(idle_deadline_ctor))?;
     let prototype_key = alloc_key(&mut scope, "prototype")?;
