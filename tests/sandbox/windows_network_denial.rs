@@ -304,6 +304,9 @@ fn collect_stdio_handles_for_inheritance() -> (Vec<RawHandle>, HandleInheritGuar
 
 #[test]
 fn appcontainer_denies_outbound_tcp_connect() {
+  // Serialize network-heavy tests to keep CI deterministic.
+  let _net_guard = crate::common::net_test_lock();
+
   // Binding localhost can fail in some CI environments; skip with a clear message.
   let listener: TcpListener =
     match crate::common::try_bind_localhost("appcontainer_denies_outbound_tcp_connect") {
