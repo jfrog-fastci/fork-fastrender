@@ -6,6 +6,7 @@ data as untrusted**.
 
 Related:
 - Site isolation process model (process assignment + OOPIF semantics): [`docs/site_isolation.md`](site_isolation.md)
+- Linux IPC checklist (shared memory + FD passing): [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
 
 **Status / repo reality (today):**
 
