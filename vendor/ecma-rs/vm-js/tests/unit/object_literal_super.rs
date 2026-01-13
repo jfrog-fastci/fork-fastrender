@@ -1,5 +1,58 @@
 use crate::property::{PropertyKey, PropertyKind};
-use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use crate::{CompiledScript, GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmOptions};
+
+fn assert_object_literal_methods_and_accessors_have_home_object(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+) -> Result<(), VmError> {
+  scope.push_root(Value::Object(obj))?;
+
+  // Method: `{ m() {} }`.
+  let m_key_s = scope.alloc_string("m")?;
+  let m_desc = scope
+    .heap()
+    .get_own_property(obj, PropertyKey::from_string(m_key_s))?
+    .expect("missing property `m`");
+  let PropertyKind::Data { value, .. } = m_desc.kind else {
+    panic!("expected data property for `m`, got: {m_desc:?}");
+  };
+  let Value::Object(m_func) = value else {
+    panic!("expected function value for `m`, got: {value:?}");
+  };
+  assert_eq!(
+    scope.heap().get_function_home_object(m_func)?,
+    Some(obj),
+    "object literal method function missing [[HomeObject]]"
+  );
+
+  // Accessors: `{ get x() {}, set x(v) {} }`.
+  let x_key_s = scope.alloc_string("x")?;
+  let x_desc = scope
+    .heap()
+    .get_own_property(obj, PropertyKey::from_string(x_key_s))?
+    .expect("missing property `x`");
+  let PropertyKind::Accessor { get, set } = x_desc.kind else {
+    panic!("expected accessor property for `x`, got: {x_desc:?}");
+  };
+  let Value::Object(get_func) = get else {
+    panic!("expected getter function for `x`, got: {get:?}");
+  };
+  let Value::Object(set_func) = set else {
+    panic!("expected setter function for `x`, got: {set:?}");
+  };
+  assert_eq!(
+    scope.heap().get_function_home_object(get_func)?,
+    Some(obj),
+    "object literal getter function missing [[HomeObject]]"
+  );
+  assert_eq!(
+    scope.heap().get_function_home_object(set_func)?,
+    Some(obj),
+    "object literal setter function missing [[HomeObject]]"
+  );
+
+  Ok(())
+}
 
 fn assert_script_returns_true_in_interpreter_and_compiled(source: &str) -> Result<(), VmError> {
   // AST interpreter.
@@ -162,6 +215,22 @@ fn object_literal_arrow_captures_lexical_super_and_observes_dynamic_prototype() 
 }
 
 #[test]
+fn object_literal_methods_and_accessors_set_home_object_ast() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let result = rt.exec_script(r#"({ m() {}, get x() {}, set x(v) {} })"#)?;
+  let Value::Object(obj) = result else {
+    panic!("expected object, got: {result:?}");
+  };
+
+  let mut scope = rt.heap.scope();
+  assert_object_literal_methods_and_accessors_have_home_object(&mut scope, obj)?;
+  Ok(())
+}
+
+#[test]
 fn super_computed_getsuperbase_before_topropertykey_getvalue() -> Result<(), VmError> {
   // Mirrors test262: language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js
   assert_script_returns_true_in_interpreter_and_compiled(
@@ -299,53 +368,7 @@ fn compiled_hir_object_literal_methods_and_accessors_set_home_object() -> Result
   };
 
   let mut scope = rt.heap.scope();
-  scope.push_root(Value::Object(obj))?;
-
-  // Method: `{ m() {} }`.
-  let m_key_s = scope.alloc_string("m")?;
-  let m_desc = scope
-    .heap()
-    .get_own_property(obj, PropertyKey::from_string(m_key_s))?
-    .expect("missing property `m`");
-  let PropertyKind::Data { value, .. } = m_desc.kind else {
-    panic!("expected data property for `m`, got: {m_desc:?}");
-  };
-  let Value::Object(m_func) = value else {
-    panic!("expected function value for `m`, got: {value:?}");
-  };
-  assert_eq!(
-    scope.heap().get_function_home_object(m_func)?,
-    Some(obj),
-    "object literal method function missing [[HomeObject]]"
-  );
-
-  // Accessors: `{ get x() {}, set x(v) {} }`.
-  let x_key_s = scope.alloc_string("x")?;
-  let x_desc = scope
-    .heap()
-    .get_own_property(obj, PropertyKey::from_string(x_key_s))?
-    .expect("missing property `x`");
-  let PropertyKind::Accessor { get, set } = x_desc.kind else {
-    panic!("expected accessor property for `x`, got: {x_desc:?}");
-  };
-  let Value::Object(get_func) = get else {
-    panic!("expected getter function for `x`, got: {get:?}");
-  };
-  let Value::Object(set_func) = set else {
-    panic!("expected setter function for `x`, got: {set:?}");
-  };
-  assert_eq!(
-    scope.heap().get_function_home_object(get_func)?,
-    Some(obj),
-    "object literal getter function missing [[HomeObject]]"
-  );
-  assert_eq!(
-    scope.heap().get_function_home_object(set_func)?,
-    Some(obj),
-    "object literal setter function missing [[HomeObject]]"
-  );
-
-  Ok(())
+  assert_object_literal_methods_and_accessors_have_home_object(&mut scope, obj)
 }
 
 #[test]
