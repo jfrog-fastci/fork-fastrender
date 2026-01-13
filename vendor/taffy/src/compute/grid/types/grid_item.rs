@@ -97,6 +97,13 @@ pub(in super::super) struct GridItem {
   pub minimum_contribution_cache: Size<Option<f32>>,
   /// Cache for the max-content size
   pub max_content_contribution_cache: Size<Option<f32>>,
+  /// Cache for resolved margin axis sums excluding baseline shims.
+  ///
+  /// The cached value includes `extra_margin` but *not* `baseline_shim` because baseline shims can
+  /// change across passes. The cache key is the `inner_node_width` basis used to resolve vertical
+  /// percentage margins (stored as canonicalized `f32::to_bits()` where `0.0` and `-0.0` map to the
+  /// same key).
+  pub resolved_margin_axis_sums_cache: Option<(Option<u32>, Size<f32>)>,
 
   /// Final y position. Used to compute baseline alignment for the container.
   pub y_position: f32,
@@ -146,6 +153,7 @@ impl GridItem {
       min_content_contribution_cache: Size::NONE,
       max_content_contribution_cache: Size::NONE,
       minimum_contribution_cache: Size::NONE,
+      resolved_margin_axis_sums_cache: None,
       y_position: 0.0,
       height: 0.0,
     }
@@ -428,6 +436,65 @@ impl GridItem {
         .resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis)),
     } + self.extra_margin)
       .sum_axes()
+  }
+
+  /// Retrieve the item's resolved margins for size contributions from an ephemeral cache.
+  ///
+  /// This cache is intended for grid track sizing, where intrinsic contribution queries may be
+  /// served from cache but still need to account for margins. Margin resolution can be
+  /// surprisingly expensive (percent + calc), so we cache the resolved sums per `inner_node_width`
+  /// basis.
+  ///
+  /// The cached sums exclude baseline shims because baseline shims can change across passes. The
+  /// returned value always includes the *current* baseline shims.
+  #[inline(always)]
+  pub fn margins_axis_sums_with_baseline_shims_cached(
+    &mut self,
+    inner_node_width: Option<f32>,
+    tree: &impl LayoutPartialTree,
+  ) -> Size<f32> {
+    #[inline(always)]
+    fn canonicalize_inner_node_width(width: Option<f32>) -> Option<u32> {
+      width.map(|w| {
+        // Canonicalize 0.0 and -0.0 so we don't miss cache hits due to sign-bit noise.
+        let w = if w == 0.0 { 0.0 } else { w };
+        w.to_bits()
+      })
+    }
+
+    let key = canonicalize_inner_node_width(inner_node_width);
+    let base_sums = match self.resolved_margin_axis_sums_cache {
+      Some((cached_key, cached_sums)) if cached_key == key => cached_sums,
+      _ => {
+        let resolved_sums = (Rect {
+          left: self
+            .margin
+            .left
+            .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+          right: self
+            .margin
+            .right
+            .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+          top: self
+            .margin
+            .top
+            .resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis)),
+          bottom: self
+            .margin
+            .bottom
+            .resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis)),
+        } + self.extra_margin)
+          .sum_axes();
+
+        self.resolved_margin_axis_sums_cache = Some((key, resolved_sums));
+        resolved_sums
+      }
+    };
+
+    Size {
+      width: base_sums.width + self.baseline_shim.x,
+      height: base_sums.height + self.baseline_shim.y,
+    }
   }
 
   /// Compute the item's min content contribution from the provided parameters
@@ -820,5 +887,119 @@ impl GridItem {
         self.minimum_contribution_cache.set(axis, Some(size));
         size
       })
+  }
+}
+
+#[cfg(all(test, feature = "taffy_tree"))]
+mod tests {
+  use super::*;
+  use crate::style::Style;
+  use crate::sys::DefaultCheapStr;
+  use crate::tree::{Layout, LayoutInput, LayoutOutput};
+  use core::iter;
+
+  struct DummyTree {
+    style: Style<DefaultCheapStr>,
+  }
+
+  impl crate::tree::TraversePartialTree for DummyTree {
+    type ChildIter<'a>
+      = iter::Empty<NodeId>
+    where
+      Self: 'a;
+
+    fn child_ids(&self, _parent_node_id: NodeId) -> Self::ChildIter<'_> {
+      iter::empty()
+    }
+
+    fn child_count(&self, _parent_node_id: NodeId) -> usize {
+      0
+    }
+
+    fn get_child_id(&self, _parent_node_id: NodeId, _child_index: usize) -> NodeId {
+      NodeId::new(0)
+    }
+  }
+
+  impl LayoutPartialTree for DummyTree {
+    type CoreContainerStyle<'a>
+      = &'a Style<DefaultCheapStr>
+    where
+      Self: 'a;
+
+    type CustomIdent = DefaultCheapStr;
+
+    fn get_core_container_style(&self, _node_id: NodeId) -> Self::CoreContainerStyle<'_> {
+      &self.style
+    }
+
+    fn set_unrounded_layout(&mut self, _node_id: NodeId, _layout: &Layout) {}
+
+    fn compute_child_layout(&mut self, _node_id: NodeId, _inputs: LayoutInput) -> LayoutOutput {
+      LayoutOutput::from_outer_size(Size::ZERO)
+    }
+  }
+
+  #[test]
+  fn margins_axis_sums_cache_respects_inner_node_width_and_baseline_shims() {
+    let tree = DummyTree {
+      style: Style::default(),
+    };
+
+    let style = Style::<DefaultCheapStr> {
+      // Top/bottom percent margins resolve against `inner_node_width`.
+      margin: Rect {
+        left: LengthPercentageAuto::percent(0.5),
+        right: LengthPercentageAuto::length(5.0),
+        top: LengthPercentageAuto::percent(0.1),
+        bottom: LengthPercentageAuto::percent(0.2),
+      },
+      ..Default::default()
+    };
+
+    let mut item = GridItem::new_with_placement_style_and_order(
+      NodeId::new(1),
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      style,
+      AlignItems::Stretch,
+      AlignItems::Stretch,
+      0,
+    );
+    item.baseline_shim = Point { x: 6.0, y: 7.0 };
+    item.extra_margin = Rect {
+      left: 1.0,
+      right: 2.0,
+      top: 3.0,
+      bottom: 4.0,
+    };
+
+    // First call populates the cache.
+    let first = item.margins_axis_sums_with_baseline_shims_cached(Some(100.0), &tree);
+    assert_eq!(first, Size { width: 14.0, height: 44.0 });
+    let cache_after_first = item.resolved_margin_axis_sums_cache;
+    assert_eq!(
+      cache_after_first,
+      Some((Some(100.0f32.to_bits()), Size { width: 8.0, height: 37.0 }))
+    );
+
+    // Second call with the same key should return the same results and leave the cache unchanged.
+    let second = item.margins_axis_sums_with_baseline_shims_cached(Some(100.0), &tree);
+    assert_eq!(second, first);
+    assert_eq!(item.resolved_margin_axis_sums_cache, cache_after_first);
+
+    // A different inner_node_width should update the resolved margins.
+    let third = item.margins_axis_sums_with_baseline_shims_cached(Some(200.0), &tree);
+    assert_eq!(third, Size { width: 14.0, height: 74.0 });
+    assert_eq!(
+      item.resolved_margin_axis_sums_cache,
+      Some((Some(200.0f32.to_bits()), Size { width: 8.0, height: 67.0 }))
+    );
   }
 }
