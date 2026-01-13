@@ -144,6 +144,17 @@ pub fn create_restricted_token_low_integrity() -> Result<OwnedHandle> {
 pub fn spawn_with_token(cfg: &SpawnConfig, token: &OwnedHandle) -> Result<crate::ChildProcess> {
   let job = create_default_job()?;
   let application_name = wide_from_os(cfg.exe.as_os_str());
+  // If `lpCurrentDirectory` is NULL, Windows inherits the parent's current directory. For low
+  // integrity/restricted tokens that directory may be inaccessible (e.g. a dev checkout that is not
+  // readable at Low IL), causing `CreateProcessAsUserW` to fail with `ERROR_ACCESS_DENIED`.
+  //
+  // Using the executable's parent directory is a best-effort choice: if the executable is
+  // loadable, the directory is generally traversable too.
+  let current_dir_wide = cfg.exe.parent().map(|p| wide_from_os(p.as_os_str()));
+  let current_dir_ptr = current_dir_wide
+    .as_ref()
+    .map(|wide| wide.as_ptr())
+    .unwrap_or(std::ptr::null());
   let mut cmdline = build_command_line(&cfg.exe, &cfg.args);
 
   let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
@@ -167,7 +178,7 @@ pub fn spawn_with_token(cfg: &SpawnConfig, token: &OwnedHandle) -> Result<crate:
         FALSE,
         CREATE_SUSPENDED,
         std::ptr::null(),
-        std::ptr::null(),
+        current_dir_ptr,
         &startup,
         &mut pi,
       )
@@ -204,7 +215,7 @@ pub fn spawn_with_token(cfg: &SpawnConfig, token: &OwnedHandle) -> Result<crate:
         if handles.is_empty() { FALSE } else { TRUE },
         flags,
         std::ptr::null(),
-        std::ptr::null(),
+        current_dir_ptr,
         std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
         &mut pi,
       )
