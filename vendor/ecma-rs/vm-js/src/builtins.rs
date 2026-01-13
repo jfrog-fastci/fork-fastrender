@@ -18896,6 +18896,22 @@ impl BigUint {
     Self { limbs: Vec::new() }
   }
 
+  fn try_from_u64(n: u64) -> Result<Self, VmError> {
+    if n == 0 {
+      return Ok(Self::zero());
+    }
+    let lo = n as u32;
+    let hi = (n >> 32) as u32;
+    let mut limbs: Vec<u32> = Vec::new();
+    let cap = if hi == 0 { 1usize } else { 2usize };
+    limbs.try_reserve_exact(cap).map_err(|_| VmError::OutOfMemory)?;
+    limbs.push(lo);
+    if hi != 0 {
+      limbs.push(hi);
+    }
+    Ok(Self { limbs })
+  }
+
   fn from_u64(n: u64) -> Self {
     if n == 0 {
       return Self::zero();
@@ -18927,6 +18943,15 @@ impl BigUint {
     (self.limbs.len() as u32 - 1) * 32 + hi
   }
 
+  fn bit_is_set(&self, bit: u32) -> bool {
+    let word = (bit / 32) as usize;
+    let shift = bit % 32;
+    let Some(&limb) = self.limbs.get(word) else {
+      return false;
+    };
+    ((limb >> shift) & 1) != 0
+  }
+
   fn shl_bits(&mut self, bits: u32) -> Result<(), VmError> {
     if self.is_zero() || bits == 0 {
       return Ok(());
@@ -18956,6 +18981,51 @@ impl BigUint {
 
     self.limbs = out;
     self.normalize();
+    Ok(())
+  }
+
+  fn shr_bits(&mut self, bits: u32) {
+    if self.is_zero() || bits == 0 {
+      return;
+    }
+    let word_shift = (bits / 32) as usize;
+    let bit_shift = bits % 32;
+    if word_shift >= self.limbs.len() {
+      self.limbs.clear();
+      return;
+    }
+    if word_shift != 0 {
+      self.limbs.copy_within(word_shift.., 0);
+      self.limbs.truncate(self.limbs.len() - word_shift);
+    }
+
+    if bit_shift != 0 {
+      let mut carry: u32 = 0;
+      for limb in self.limbs.iter_mut().rev() {
+        let new_carry = *limb << (32 - bit_shift);
+        *limb = (*limb >> bit_shift) | carry;
+        carry = new_carry;
+      }
+    }
+    self.normalize();
+  }
+
+  fn add_small(&mut self, add: u32) -> Result<(), VmError> {
+    if add == 0 {
+      return Ok(());
+    }
+    let mut carry: u64 = add as u64;
+    let mut i = 0usize;
+    while carry != 0 {
+      if i == self.limbs.len() {
+        self.limbs.try_reserve_exact(1).map_err(|_| VmError::OutOfMemory)?;
+        self.limbs.push(0);
+      }
+      let sum = self.limbs[i] as u64 + carry;
+      self.limbs[i] = sum as u32;
+      carry = sum >> 32;
+      i = i.saturating_add(1);
+    }
     Ok(())
   }
 
@@ -19357,21 +19427,109 @@ pub fn number_prototype_to_fixed(
     return Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?));
   }
 
-  // Normalize -0 to +0 so Rust's formatting doesn't produce "-0.00" etc.
+  // Normalize -0 to +0 so output never includes "-0.00" etc.
   let x = if x == 0.0 { 0.0 } else { x };
 
-  let mut buf = String::new();
-  // For |x| < 1e21, `toFixed` uses fixed notation with up to 100 fractional digits.
+  let negative = x < 0.0;
+  let abs = if negative { -x } else { x };
+
+  // Implement `toFixed` rounding using exact IEEE-754 decomposition so ties round away from zero
+  // (ECMA-262 semantics), rather than Rust's default half-to-even formatting.
   //
-  // The formatted output is bounded by:
-  //   [optional '-'] + up to 22 integer digits (rounding can carry into 1e21) + ['.' + f digits]
-  let reserve = 1usize
-    .saturating_add(22)
-    .saturating_add(if f > 0 { 1usize.saturating_add(f) } else { 0 });
-  buf
-    .try_reserve_exact(reserve)
+  // `abs` is represented as `mantissa * 2^shift` exactly, and we compute:
+  //   round(abs * 10^f)
+  // as an integer BigUint, rounding half up (ties included).
+  let bits = abs.to_bits();
+  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+  let frac_bits = bits & ((1u64 << 52) - 1);
+  let (mantissa, shift): (u64, i32) = if exp_bits == 0 {
+    // subnormal
+    (frac_bits, -1074)
+  } else {
+    let e = exp_bits - 1023;
+    ((1u64 << 52) | frac_bits, e - 52)
+  };
+
+  let mut scaled = BigUint::try_from_u64(mantissa)?;
+  for _ in 0..f {
+    scaled.mul_small(10)?;
+  }
+  if shift >= 0 {
+    scaled.shl_bits(shift as u32)?;
+  } else {
+    let k = (-shift) as u32;
+    if k != 0 {
+      let round_up = scaled.bit_is_set(k - 1);
+      scaled.shr_bits(k);
+      if round_up {
+        scaled.add_small(1)?;
+      }
+    }
+  }
+
+  // Convert the scaled integer into decimal digits.
+  let mut digits_rev: Vec<u8> = Vec::new();
+  digits_rev
+    .try_reserve_exact(256)
     .map_err(|_| VmError::OutOfMemory)?;
-  try_write_fmt(&mut buf, format_args!("{:.*}", f, x))?;
+  if scaled.is_zero() {
+    digits_rev.push(b'0');
+  } else {
+    while !scaled.is_zero() {
+      let d = scaled.div_rem_small(10)?;
+      digits_rev.push(b'0' + (d as u8));
+    }
+    digits_rev.reverse();
+  }
+
+  let digits_len = digits_rev.len();
+  let sign_len = if negative { 1usize } else { 0usize };
+
+  let mut buf = String::new();
+  if f == 0 {
+    let total_len = sign_len.saturating_add(digits_len);
+    buf
+      .try_reserve_exact(total_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    if negative {
+      buf.push('-');
+    }
+    for &b in &digits_rev {
+      buf.push(b as char);
+    }
+  } else {
+    let pad_zeros = if digits_len <= f {
+      f.saturating_add(1).saturating_sub(digits_len)
+    } else {
+      0usize
+    };
+    let total_digits = pad_zeros.saturating_add(digits_len);
+    let int_len = total_digits.saturating_sub(f);
+    let total_len = sign_len
+      .saturating_add(total_digits)
+      .saturating_add(1); // '.'
+    buf
+      .try_reserve_exact(total_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    if negative {
+      buf.push('-');
+    }
+    for i in 0..int_len {
+      if i < pad_zeros {
+        buf.push('0');
+      } else {
+        buf.push(digits_rev[i - pad_zeros] as char);
+      }
+    }
+    buf.push('.');
+    for i in int_len..total_digits {
+      if i < pad_zeros {
+        buf.push('0');
+      } else {
+        buf.push(digits_rev[i - pad_zeros] as char);
+      }
+    }
+  }
   let out = scope.alloc_string(&buf)?;
   Ok(Value::String(out))
 }

@@ -71,17 +71,27 @@ fn number_prototype_formatting_methods_work() -> Result<(), VmError> {
   let s = rt.exec_script(r#"(-0).toString(2) + "," + (-0).toExponential() + "," + (-0).toFixed(2)"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "0,0e+0,0.00");
 
-  // toFixed / toExponential / toPrecision basic cases.
+  // toFixed / toExponential / toPrecision basic + regression cases.
   let s = rt.exec_script(
     r#"
       (1.2345).toFixed(2) + "," +
+      (1.25).toFixed(1) + "," +
       (1).toExponential(2) + "," +
       (77).toExponential() + "," +
       (123.45).toPrecision(4) + "," +
-      (9.99).toPrecision(1)
+      (9.99).toPrecision(1) + "," +
+      // `toPrecision` threshold: fixed for exp == p-1, exponential for exp == p.
+      (999).toPrecision(3) + "," +
+      (1000).toPrecision(3) + "," +
+      // `toPrecision` threshold: fixed for exp == -6, exponential for exp < -6.
+      (0.00000123).toPrecision(2) + "," +
+      (0.000000123).toPrecision(2)
     "#,
   )?;
-  assert_eq!(as_utf8_lossy(&rt, s), "1.23,1.00e+0,7.7e+1,123.5,1e+1");
+  assert_eq!(
+    as_utf8_lossy(&rt, s),
+    "1.23,1.3,1.00e+0,7.7e+1,123.5,1e+1,999,1.00e+3,0.0000012,1.2e-7"
+  );
 
   // Max length / range edge cases (fractionDigits/precision upper bound is 100).
   let s = rt.exec_script(r#"(-0).toFixed(100)"#)?;
@@ -170,8 +180,8 @@ fn number_prototype_symbol_to_primitive_is_installed_and_validates_hint() -> Res
       r#"
         const f = Number.prototype[Symbol.toPrimitive];
         f.call(new Number(1), "string") === "1" &&
-        f.call(new Number(1), "number") === 1 &&
-        f.call(new Number(1), "default") === 1
+        f.call(new Number(1.5), "number") === 1.5 &&
+        f.call(new Number(2), "default") === 2
       "#,
     )?,
     Value::Bool(true)
@@ -181,10 +191,10 @@ fn number_prototype_symbol_to_primitive_is_installed_and_validates_hint() -> Res
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
   let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call(1, 1); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
-  let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call("x", "number"); } catch (e) { e.name }"#)?;
+  let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call("x", "default"); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
   let s = rt.exec_script(
-    r#"try { Number.prototype[Symbol.toPrimitive].call(new Proxy(new Number(1), {}), "number"); } catch (e) { e.name }"#,
+    r#"try { Number.prototype[Symbol.toPrimitive].call(new Proxy(new Number(1), {}), "default"); } catch (e) { e.name }"#,
   )?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
