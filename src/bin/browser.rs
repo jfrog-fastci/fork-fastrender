@@ -23420,6 +23420,7 @@ fn merge_last_known_good_window_state(
   capture: fastrender::ui::BrowserWindowState,
   window_minimized: bool,
 ) -> Option<fastrender::ui::BrowserWindowState> {
+  let had_previous = previous.is_some();
   let (Some(width), Some(height)) = (capture.width, capture.height) else {
     return previous;
   };
@@ -23453,13 +23454,19 @@ fn merge_last_known_good_window_state(
     if next.height.is_none() {
       next.height = Some(height);
     }
-    // Best-effort position tracking: keep the previous restore position if present, but if we don't
-    // have any position yet we may as well take the capture.
-    if next.x.is_none() && capture.x.is_some() {
-      next.x = capture.x;
-    }
-    if next.y.is_none() && capture.y.is_some() {
-      next.y = capture.y;
+    // Avoid learning a restore position from a maximized capture: if the platform can report a
+    // position only while maximized, it's likely the maximized window origin (e.g. monitor top-left)
+    // rather than the user's "restored" position.
+    //
+    // If there is no prior state at all, we still take the capture as a best-effort fallback so the
+    // window can reopen on the same monitor.
+    if !had_previous {
+      if next.x.is_none() && capture.x.is_some() {
+        next.x = capture.x;
+      }
+      if next.y.is_none() && capture.y.is_some() {
+        next.y = capture.y;
+      }
     }
     return Some(next);
   }
@@ -23584,6 +23591,31 @@ mod window_state_persistence_tests {
     assert_eq!(merged.y, Some(0));
     assert_eq!(merged.width, Some(1920));
     assert_eq!(merged.height, Some(1080));
+    assert!(merged.maximized);
+  }
+
+  #[test]
+  fn maximized_does_not_fill_missing_restore_position_from_capture() {
+    let previous = Some(fastrender::ui::BrowserWindowState {
+      x: None,
+      y: None,
+      width: Some(800),
+      height: Some(600),
+      maximized: false,
+    });
+    let capture = fastrender::ui::BrowserWindowState {
+      x: Some(0),
+      y: Some(0),
+      width: Some(1920),
+      height: Some(1080),
+      maximized: true,
+    };
+    let merged = merge_last_known_good_window_state(previous, capture, false)
+      .expect("expected merged state");
+    assert_eq!(merged.x, None);
+    assert_eq!(merged.y, None);
+    assert_eq!(merged.width, Some(800));
+    assert_eq!(merged.height, Some(600));
     assert!(merged.maximized);
   }
 }
