@@ -4,6 +4,8 @@
 //! size. Browser/renderer protocol types and validation live in [`protocol`].
 
 pub mod error;
+#[cfg(unix)]
+pub mod fd_passing;
 pub mod framing;
 pub mod frame_pool;
 pub mod network;
