@@ -17056,9 +17056,7 @@ impl App {
         if map_modifiers(self.modifiers).command() {
           return;
         }
-        if let Some(hud) = self.hud.as_mut() {
-          hud.note_scroll_input(std::time::Instant::now());
-        }
+        let hud_scroll_at = self.hud.is_some().then(std::time::Instant::now);
 
         // Treat the clear browsing data dialog as a modal: do not scroll the page beneath it.
         if self.clear_browsing_data_dialog_open {
@@ -17157,6 +17155,9 @@ impl App {
           return;
         }
 
+        if let (Some(hud), Some(at)) = (self.hud.as_mut(), hud_scroll_at) {
+          hud.note_scroll_input(at);
+        }
         // Treat wheel scrolling over overlay scrollbars as viewport scrolling (like browsers): do
         // not route the delta to nested element scrollers via hit-testing.
         let pointer_css = if self.cursor_over_overlay_scrollbars(pos_points) {
