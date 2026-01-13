@@ -198,6 +198,8 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - CLI equivalent: `browser --exit-immediately`.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
   - CLI equivalent: `browser --headless-smoke`.
+  - JS variant: combine with `browser --headless-smoke --js` (or set the env var and pass `--js`) to
+    run a vm-js `api::BrowserTab` smoke test instead; on success it prints `HEADLESS_VMJS_SMOKE_OK`.
 - `FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE=1` – **test-only** hook: run a headless crash-isolation smoke test that intentionally crashes the renderer worker and validates that the crash is contained (future: renderer *process* crash isolation). On success it prints `HEADLESS_CRASH_SMOKE_OK` to stdout.
   - CLI equivalent: `browser --headless-crash-smoke`.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON=<json>` – **test-only** hook: override the restored session used by headless smoke mode with an explicit `BrowserSession` JSON value.
