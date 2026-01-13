@@ -2214,6 +2214,11 @@ impl BrowserRuntime {
           doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
           doc.set_device_pixel_ratio(tab.dpr);
         }
+
+        if let Some(js_tab) = tab.js_tab.as_mut() {
+          js_tab.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
+          js_tab.set_device_pixel_ratio(tab.dpr);
+        }
       }
       UiToWorker::Scroll {
         tab_id,

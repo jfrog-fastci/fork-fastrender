@@ -5177,6 +5177,22 @@ impl BrowserTab {
     self.set_animation_time(Some(time_ms));
   }
 
+  /// Updates the viewport size in CSS pixels for the tab's live `dom2` document.
+  ///
+  /// This affects layout/geometry queries (`elementFromPoint`, `getBoundingClientRect`, etc) and
+  /// media query evaluation, and marks layout+paint dirty.
+  pub fn set_viewport(&mut self, width: u32, height: u32) {
+    self.host.document.set_viewport(width, height);
+  }
+
+  /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
+  ///
+  /// Non-finite or non-positive values clear the override (falling back to the renderer default).
+  /// Changing DPR invalidates layout+paint.
+  pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
+    self.host.document.set_device_pixel_ratio(dpr);
+  }
+
   pub fn write_trace(&self) -> Result<()> {
     let Some(path) = self.trace_output.as_deref() else {
       return Ok(());
