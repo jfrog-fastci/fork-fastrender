@@ -483,7 +483,8 @@ pub(crate) fn parse_ascii_decimal_to_f64_str(
   }
 }
 
-fn is_ecma_whitespace_unit(unit: u16) -> bool {
+#[inline]
+pub(crate) fn is_ecma_whitespace_unit(unit: u16) -> bool {
   matches!(
     unit,
     // WhiteSpace (ECMA-262)

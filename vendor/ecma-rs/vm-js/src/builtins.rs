@@ -279,25 +279,7 @@ fn string_position_from_value(
 }
 
 fn is_trim_whitespace_unit(unit: u16) -> bool {
-  matches!(
-    unit,
-    // WhiteSpace (ECMA-262)
-    0x0009
-      | 0x000B
-      | 0x000C
-      | 0x0020
-      | 0x00A0
-      | 0x1680
-      | 0x202F
-      | 0x205F
-      | 0x3000
-      | 0xFEFF
-      // LineTerminator (ECMA-262)
-      | 0x000A
-      | 0x000D
-      | 0x2028
-      | 0x2029
-  ) || matches!(unit, 0x2000..=0x200A)
+  crate::ops::is_ecma_whitespace_unit(unit)
 }
 
 fn slice_range_from_args(
