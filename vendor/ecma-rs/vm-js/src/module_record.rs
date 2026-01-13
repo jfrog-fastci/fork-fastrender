@@ -221,10 +221,29 @@ pub(crate) struct ModuleNamespaceCache {
 /// Source Text Module Record (ECMA-262).
 #[derive(Clone, Debug, Default)]
 pub struct SourceTextModuleRecord {
+  // === Executable code ===
+  //
+  // A `SourceTextModuleRecord` can be executed through one of two evaluators:
+  //
+  // - **AST interpreter** (`exec.rs`): requires `source` + `ast` to both be `Some`.
+  // - **HIR executor** (`hir_exec.rs`): requires `compiled` to be `Some`.
+  //
+  // These fields are optional so a `ModuleGraph` can be populated in stages (e.g. module loading
+  // before compilation) and so embeddings can choose their preferred execution strategy.
+  //
+  // Note: [`crate::CompiledScript`] owns an [`ExternalMemoryToken`] that charges the heap for
+  // off-heap compiled code/HIR. Storing it in this record ensures the token stays alive (and its
+  // bytes stay accounted for) for as long as the module record is reachable from the graph.
+
   /// Source text and metadata for this module (URL, name, etc).
   pub source: Option<Arc<SourceText>>,
   /// Parsed `parse-js` AST for this module.
   pub ast: Option<Arc<Node<TopLevel>>>,
+  /// Compiled module code (source text + lowered HIR).
+  ///
+  /// When executing via the HIR path, `source`/`ast` may be `None` as the compiled script already
+  /// owns its own [`SourceText`] reference.
+  pub compiled: Option<Arc<crate::CompiledScript>>,
   pub requested_modules: Vec<ModuleRequest>,
   pub import_entries: Vec<ImportEntry>,
   pub status: ModuleStatus,
