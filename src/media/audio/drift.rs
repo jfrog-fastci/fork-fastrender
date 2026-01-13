@@ -550,6 +550,40 @@ mod tests {
     run_queue_simulation(47_980.0);
   }
 
+  #[test]
+  fn drift_resampler_flushes_subnormal_interpolation_outputs() {
+    // Configure the controller to be a no-op so the resampler uses a 1:1 ratio and preserves
+    // `phase` exactly as set in the test.
+    let cfg = DriftControllerConfig {
+      target_buffer_s: 0.0,
+      low_watermark_s: 0.0,
+      high_watermark_s: 0.0,
+      max_playback_rate_adjust: 0.0,
+      max_slew_per_s: 0.0,
+      kp: 0.0,
+      ki: 0.0,
+    };
+
+    // Set up a queue with two frames: smallest normal, then zero.
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 16);
+    prod.push(&[f32::MIN_POSITIVE, 0.0], Duration::ZERO);
+
+    let mut resampler = DriftResampler::new(1, 48_000, 48_000, cfg);
+    // Force the first output sample to interpolate halfway between frame0 and frame1, which would
+    // normally produce a subnormal value (`0.5 * MIN_POSITIVE`).
+    resampler.phase = 0.5;
+
+    let mut out = [1.0f32; 1];
+    resampler.pop_into(&mut cons, &mut out);
+
+    assert!(
+      resampler.last_input_frames_consumed() >= 2,
+      "expected resampler to consume input frames"
+    );
+    // We flush non-normal outputs to +0.0.
+    assert_eq!(out[0].to_bits(), 0.0f32.to_bits());
+  }
+
   /// Monotonic stream-time clock used by the deterministic drift simulations.
   ///
   /// This accumulates `frames/sample_rate` in a way that avoids `f64` rounding drift.
