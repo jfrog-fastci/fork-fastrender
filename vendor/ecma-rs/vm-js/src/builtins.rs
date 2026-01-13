@@ -16259,8 +16259,11 @@ pub fn string_prototype_replace_all(
   let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_roots(&[search_value, replace_value])?;
 
-  // 2. If searchValue is neither undefined nor null, then:
-  if !matches!(search_value, Value::Undefined | Value::Null) {
+  // 2. If searchValue is an Object, then:
+  //
+  // Important: per spec, primitives must *not* be boxed for these checks (no observable prototype
+  // lookup on `Boolean/Number/String.prototype[Symbol.replace]`).
+  if let Value::Object(_) = search_value {
     // 2.a. Let isRegExp be ? IsRegExp(searchValue).
     let is_regexp = crate::spec_ops::is_regexp_with_host_and_hooks(
       vm,
@@ -16273,9 +16276,7 @@ pub fn string_prototype_replace_all(
     // 2.b. If isRegExp is true, validate `flags` is object-coercible and contains `"g"`.
     if is_regexp {
       let Value::Object(search_obj) = search_value else {
-        return Err(VmError::InvariantViolation(
-          "IsRegExp returned true for a non-object value",
-        ));
+        return Err(VmError::InvariantViolation("expected searchValue object"));
       };
 
       // `flags = ? Get(searchValue, "flags")`.
