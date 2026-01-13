@@ -11,7 +11,6 @@ use crate::ui::zoom;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -25,15 +24,6 @@ const MAX_WINDOW_POS_ABS_PX: i64 = 1_000_000;
 const FALLBACK_WINDOW_WIDTH_PX: i64 = 1_024;
 const FALLBACK_WINDOW_HEIGHT_PX: i64 = 768;
 const MAX_SCROLL_CSS: f32 = 1e9;
-
-fn session_backup_path(path: &Path) -> PathBuf {
-  let Some(ext) = path.extension() else {
-    return path.with_extension("bak");
-  };
-  let mut backup_ext = OsString::from(ext);
-  backup_ext.push(".bak");
-  path.with_extension(backup_ext)
-}
 
 fn default_did_exit_cleanly() -> bool {
   true

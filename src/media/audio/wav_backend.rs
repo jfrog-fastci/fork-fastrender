@@ -272,7 +272,6 @@ mod tests {
 
   use super::AudioBackend;
   use super::WavAudioBackend;
-  use crate::media::audio::AudioBackend;
   use crate::media::audio::test_signal;
 
   #[test]
