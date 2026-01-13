@@ -4,7 +4,7 @@
 use fastrender::cli_utils as common;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
-use common::args::{AnimationTimeArgs, CompatArgs};
+use common::args::{AnimationTimeArgs, CompatArgs, JsExecutionArgs};
 use common::asset_discovery::extract_inline_css_chunks;
 use common::render_pipeline::{
   build_http_fetcher, build_render_configs, build_renderer_with_fetcher, decode_html_resource,
@@ -38,6 +38,8 @@ use fastrender::resource::{
 };
 use fastrender::style::media::{MediaContext, MediaType};
 use fastrender::tree::box_tree::CrossOriginAttribute;
+use fastrender::api::BrowserTab;
+use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::{OutputFormat, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
@@ -372,6 +374,13 @@ struct RenderArgs {
 
   #[command(flatten)]
   animation_time: AnimationTimeArgs,
+
+  /// Enable JavaScript execution during offline replay (experimental)
+  #[arg(long = "js", action = ArgAction::SetTrue)]
+  js_enabled: bool,
+
+  #[command(flatten)]
+  js: JsExecutionArgs,
 
   /// Override horizontal scroll offset
   #[arg(long)]
@@ -1345,7 +1354,10 @@ fn render_bundle(args: RenderArgs) -> Result<()> {
   }
   apply_full_page_env(render.full_page);
 
-  let RenderConfigBundle { config, options } = build_render_configs(&RenderSurface {
+  let RenderConfigBundle {
+    mut config,
+    options,
+  } = build_render_configs(&RenderSurface {
     viewport: render.viewport,
     scroll_x: render.scroll_x,
     scroll_y: render.scroll_y,
@@ -1368,32 +1380,64 @@ fn render_bundle(args: RenderArgs) -> Result<()> {
     dom_compat_mode: render.dom_compat_mode,
   });
 
-  let fetcher: Arc<dyn ResourceFetcher> = Arc::new(BundledFetcher::new(bundle));
-  let mut renderer = build_renderer_with_fetcher(config, fetcher)?;
-
   let base_hint = if doc_meta.final_url.is_empty() {
     manifest.original_url.clone()
   } else {
     doc_meta.final_url.clone()
   };
-  let mut doc_resource = FetchedResource::with_final_url(
-    (*doc_bytes).clone(),
-    doc_meta.content_type.clone(),
-    Some(base_hint.clone()),
-  );
-  doc_resource.status = doc_meta.status;
-  doc_resource.etag = doc_meta.etag.clone();
-  doc_resource.last_modified = doc_meta.last_modified.clone();
-  doc_resource.nosniff = doc_meta.nosniff;
-  doc_resource.access_control_allow_origin = doc_meta.access_control_allow_origin.clone();
-  doc_resource.timing_allow_origin = doc_meta.timing_allow_origin.clone();
-  doc_resource.vary = doc_meta.vary.clone();
-  doc_resource.response_referrer_policy = doc_meta
-    .response_referrer_policy
-    .as_deref()
-    .and_then(ReferrerPolicy::parse_value_list);
-  let result = render_fetched_document(&mut renderer, &doc_resource, Some(&base_hint), &options)?;
-  let png = encode_image(&result.pixmap, OutputFormat::Png)?;
+
+  if args.js_enabled {
+    // When JavaScript execution is enabled, parse/render with "scripting enabled" semantics
+    // (affects `<noscript>` handling and the `(scripting: ...)` media feature baseline).
+    config = config.with_dom_scripting_enabled(true);
+  }
+
+  let fetcher: Arc<dyn ResourceFetcher> = Arc::new(BundledFetcher::new(bundle));
+
+  let pixmap = if !args.js_enabled {
+    let mut renderer = build_renderer_with_fetcher(config, Arc::clone(&fetcher))?;
+
+    let mut doc_resource = FetchedResource::with_final_url(
+      (*doc_bytes).clone(),
+      doc_meta.content_type.clone(),
+      Some(base_hint.clone()),
+    );
+    doc_resource.status = doc_meta.status;
+    doc_resource.etag = doc_meta.etag.clone();
+    doc_resource.last_modified = doc_meta.last_modified.clone();
+    doc_resource.nosniff = doc_meta.nosniff;
+    doc_resource.access_control_allow_origin = doc_meta.access_control_allow_origin.clone();
+    doc_resource.timing_allow_origin = doc_meta.timing_allow_origin.clone();
+    doc_resource.vary = doc_meta.vary.clone();
+    doc_resource.response_referrer_policy = doc_meta
+      .response_referrer_policy
+      .as_deref()
+      .and_then(ReferrerPolicy::parse_value_list);
+    let result = render_fetched_document(&mut renderer, &doc_resource, Some(&base_hint), &options)?;
+    result.pixmap
+  } else {
+    // Ensure JS execution is bounded by the same cooperative deadline as render + navigation.
+    // (Today bundle_page does not expose timeout flags, but this keeps behavior consistent if the
+    // caller installs a root deadline.)
+    let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+    let _deadline_guard = deadline.is_enabled().then(|| DeadlineGuard::install(Some(&deadline)));
+
+    let renderer = build_renderer_with_fetcher(config, Arc::clone(&fetcher))?;
+    let mut tab = BrowserTab::with_renderer_and_vmjs_and_js_execution_options(
+      renderer,
+      options.clone(),
+      args.js.to_options(),
+    )?;
+    tab.navigate_to_url(&base_hint, options.clone())?;
+
+    // Drive the JS event loop until stable with a bounded number of "frames" so hostile pages
+    // cannot hang the CLI indefinitely even if they keep scheduling work.
+    let max_frames = 50usize;
+    let _ = tab.run_until_stable(max_frames)?;
+    tab.render_frame()?
+  };
+
+  let png = encode_image(&pixmap, OutputFormat::Png)?;
 
   let out_path = PathBuf::from(&args.out);
   if let Some(parent) = out_path.parent() {

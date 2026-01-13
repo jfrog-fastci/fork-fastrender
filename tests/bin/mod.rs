@@ -5,6 +5,7 @@ mod report_helpers;
 mod bundle_page_cache_alias_test;
 mod bundle_page_cache_help_test;
 mod bundle_page_cache_offline_test;
+mod bundle_page_render_js_test;
 mod bundle_page_same_origin_policy_test;
 mod bundle_page_test;
 mod browser_perf_log_summary_test;
