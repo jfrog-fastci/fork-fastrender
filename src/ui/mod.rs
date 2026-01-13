@@ -255,7 +255,7 @@ pub use browser_app::{
 pub use renderer_ipc::{FrameReadyLimits, FrameReadyViolation};
 pub use global_history::{
   ClearBrowsingDataRange, GlobalHistoryEntry, GlobalHistorySearcher, GlobalHistoryStore,
-  DEFAULT_GLOBAL_HISTORY_CAPACITY,
+  HistoryVisitDelta, DEFAULT_GLOBAL_HISTORY_CAPACITY,
 };
 pub use history::{HistoryEntry, TabHistory};
 pub use visited::{should_record_visit_in_history, VisitedUrlRecord, VisitedUrlStore};

@@ -95,6 +95,26 @@ fn default_visit_count() -> u64 {
   1
 }
 
+/// Incremental "visit committed" delta for synchronizing history across windows.
+///
+/// This delta is intentionally small and self-contained so the windowed browser can merge history
+/// updates from multiple windows without cloning/reseeding the full [`GlobalHistoryStore`] on every
+/// navigation.
+///
+/// Notes:
+/// - This currently models *only* additive visit recording (`GlobalHistoryStore::record*`).
+/// - Destructive history actions (clear/delete) may fall back to full-store sync for correctness.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryVisitDelta {
+  /// Normalized URL key that is actually stored in [`GlobalHistoryStore::entries`].
+  pub url: String,
+  /// Optional title update for the visit. `None` means "do not clobber an existing title".
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub title: Option<String>,
+  /// Unix epoch milliseconds timestamp recorded for this visit.
+  pub visited_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GlobalHistoryStore {
   schema_version: u32,
@@ -228,20 +248,86 @@ impl GlobalHistoryStore {
   ///
   /// Returns `true` if the store was mutated.
   pub fn record(&mut self, url: String, title: Option<String>) -> bool {
+    self.record_at_ms(url, title, now_unix_ms()).is_some()
+  }
+
+  /// Record a committed visit to `url` and return a delta describing the mutation.
+  ///
+  /// This is intended for UI layers that synchronize history across windows without cloning the
+  /// entire history store on every navigation.
+  pub fn record_with_delta(
+    &mut self,
+    url: String,
+    title: Option<String>,
+  ) -> Option<HistoryVisitDelta> {
     self.record_at_ms(url, title, now_unix_ms())
   }
 
-  fn record_at_ms(&mut self, url: String, title: Option<String>, visited_at_ms: u64) -> bool {
+  fn record_at_ms(
+    &mut self,
+    url: String,
+    title: Option<String>,
+    visited_at_ms: u64,
+  ) -> Option<HistoryVisitDelta> {
+    if self.capacity == 0 {
+      return None;
+    }
+
+    let Some(normalized) = normalize_url_for_history(&url) else {
+      return None;
+    };
+    let title = normalize_title(title);
+
+    let changed = self.record_normalized_at_ms(normalized.as_str(), title.as_deref(), visited_at_ms);
+    changed.then_some(HistoryVisitDelta {
+      url: normalized,
+      title,
+      visited_at_ms,
+    })
+  }
+
+  /// Apply an incremental visit delta produced by [`GlobalHistoryStore::record_with_delta`].
+  ///
+  /// This is O(delta) and avoids re-parsing the URL because the delta carries the normalized URL
+  /// that acts as the store key.
+  pub fn apply_visit_delta(&mut self, delta: &HistoryVisitDelta) -> bool {
+    self.record_normalized_at_ms(delta.url.as_str(), delta.title.as_deref(), delta.visited_at_ms)
+  }
+
+  pub fn apply_visit_deltas(&mut self, deltas: &[HistoryVisitDelta]) -> bool {
+    let mut changed = false;
+    for delta in deltas {
+      changed |= self.apply_visit_delta(delta);
+    }
+    changed
+  }
+
+  fn record_normalized_at_ms(
+    &mut self,
+    normalized: &str,
+    title: Option<&str>,
+    visited_at_ms: u64,
+  ) -> bool {
     if self.capacity == 0 {
       return false;
     }
 
-    let Some(normalized) = normalize_url_for_history(&url) else {
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
       return false;
-    };
-    let title = normalize_title(title);
+    }
 
-    if let Some(&idx) = self.url_index.get(normalized.as_str()) {
+    // Defensive: deltas are expected to contain already-normalized non-`about:` URLs, but avoid
+    // accidentally recording internal pages if a caller violates the contract.
+    if normalized
+      .as_bytes()
+      .get(..6)
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"about:"))
+    {
+      return false;
+    }
+
+    if let Some(&idx) = self.url_index.get(normalized) {
       // Fast path: the entry is already the most-recent; update in place without shifting.
       if idx == self.entries.len().saturating_sub(1)
         && self.entries.get(idx).is_some_and(|e| e.url == normalized)
@@ -249,8 +335,8 @@ impl GlobalHistoryStore {
         let existing = &mut self.entries[idx];
         existing.visit_count = existing.visit_count.max(1).saturating_add(1);
         existing.visited_at_ms = visited_at_ms;
-        if title.is_some() {
-          existing.title = title;
+        if let Some(title) = title {
+          existing.title = Some(title.to_string());
         }
         self.bump_revision();
         return true;
@@ -261,8 +347,8 @@ impl GlobalHistoryStore {
         let mut existing = self.entries.remove(idx);
         existing.visit_count = existing.visit_count.max(1).saturating_add(1);
         existing.visited_at_ms = visited_at_ms;
-        if title.is_some() {
-          existing.title = title;
+        if let Some(title) = title {
+          existing.title = Some(title.to_string());
         }
         self.entries.push(existing);
 
@@ -275,15 +361,15 @@ impl GlobalHistoryStore {
       // Defensive fallback: if the index got out of sync (e.g. someone mutated `entries`
       // directly), rebuild and retry once.
       self.rebuild_url_index();
-      if let Some(&idx) = self.url_index.get(normalized.as_str()) {
+      if let Some(&idx) = self.url_index.get(normalized) {
         if idx == self.entries.len().saturating_sub(1)
           && self.entries.get(idx).is_some_and(|e| e.url == normalized)
         {
           let existing = &mut self.entries[idx];
           existing.visit_count = existing.visit_count.max(1).saturating_add(1);
           existing.visited_at_ms = visited_at_ms;
-          if title.is_some() {
-            existing.title = title;
+          if let Some(title) = title {
+            existing.title = Some(title.to_string());
           }
           self.bump_revision();
           return true;
@@ -293,8 +379,8 @@ impl GlobalHistoryStore {
           let mut existing = self.entries.remove(idx);
           existing.visit_count = existing.visit_count.max(1).saturating_add(1);
           existing.visited_at_ms = visited_at_ms;
-          if title.is_some() {
-            existing.title = title;
+          if let Some(title) = title {
+            existing.title = Some(title.to_string());
           }
           self.entries.push(existing);
           self.reindex_from(idx);
@@ -304,13 +390,14 @@ impl GlobalHistoryStore {
       }
     }
 
+    let url = normalized.to_string();
     self.entries.push(GlobalHistoryEntry {
-      url: normalized.clone(),
-      title,
+      url: url.clone(),
+      title: title.map(|t| t.to_string()),
       visited_at_ms,
       visit_count: 1,
     });
-    self.url_index.insert(normalized, self.entries.len() - 1);
+    self.url_index.insert(url, self.entries.len() - 1);
     self.enforce_capacity();
     self.bump_revision();
     true
@@ -835,7 +922,7 @@ mod tests {
       "https://example.test/a#one".to_string(),
       Some("A1".to_string()),
       1
-    ));
+    ).is_some());
     assert_eq!(store.entries.len(), 1);
     let entry = store.entries.last().unwrap();
     assert_eq!(entry.url, "https://example.test/a");
@@ -847,7 +934,7 @@ mod tests {
       "https://example.test/a#two".to_string(),
       Some("A2".to_string()),
       2
-    ));
+    ).is_some());
     assert_eq!(store.entries.len(), 1);
     let entry = store.entries.last().unwrap();
     assert_eq!(entry.url, "https://example.test/a");
@@ -860,9 +947,9 @@ mod tests {
   fn dedupes_non_consecutive_and_moves_to_end() {
     let mut store = GlobalHistoryStore::with_capacity(10);
 
-    store.record_at_ms("https://a.example/".to_string(), Some("A".to_string()), 1);
-    store.record_at_ms("https://b.example/".to_string(), Some("B".to_string()), 2);
-    store.record_at_ms("https://a.example/".to_string(), None, 3);
+    let _ = store.record_at_ms("https://a.example/".to_string(), Some("A".to_string()), 1);
+    let _ = store.record_at_ms("https://b.example/".to_string(), Some("B".to_string()), 2);
+    let _ = store.record_at_ms("https://a.example/".to_string(), None, 3);
 
     assert_eq!(store.entries.len(), 2);
     assert_eq!(store.entries[0].url, "https://b.example/");
@@ -879,12 +966,99 @@ mod tests {
   }
 
   #[test]
+  fn apply_visit_delta_matches_record_in_same_order() {
+    let mut recorded = GlobalHistoryStore::with_capacity(10);
+    let mut applied = GlobalHistoryStore::with_capacity(10);
+    let mut deltas = Vec::new();
+
+    for (url, title, ts) in [
+      ("https://example.test/a#one", Some("A1"), 1_u64),
+      ("https://example.test/b", Some("B"), 2),
+      ("https://example.test/a#two", None, 3),
+    ] {
+      let delta = recorded
+        .record_at_ms(url.to_string(), title.map(|t| t.to_string()), ts)
+        .expect("expected visit to be recorded");
+      deltas.push(delta);
+    }
+
+    for delta in &deltas {
+      assert!(applied.apply_visit_delta(delta));
+    }
+
+    assert_eq!(applied, recorded);
+    assert_url_index_consistent(&applied);
+  }
+
+  #[test]
+  fn apply_visit_delta_increments_visit_count_and_moves_to_most_recent() {
+    let mut store = GlobalHistoryStore::with_capacity(10);
+
+    let a1 = HistoryVisitDelta {
+      url: "https://a.example/".to_string(),
+      title: None,
+      visited_at_ms: 1,
+    };
+    let b1 = HistoryVisitDelta {
+      url: "https://b.example/".to_string(),
+      title: None,
+      visited_at_ms: 2,
+    };
+    let a2 = HistoryVisitDelta {
+      url: "https://a.example/".to_string(),
+      title: None,
+      visited_at_ms: 3,
+    };
+
+    assert!(store.apply_visit_delta(&a1));
+    assert!(store.apply_visit_delta(&b1));
+    assert!(store.apply_visit_delta(&a2));
+
+    assert_eq!(store.entries.len(), 2);
+    assert_eq!(
+      store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
+      vec!["https://b.example/", "https://a.example/"]
+    );
+    assert_eq!(store.get("https://a.example/").unwrap().visit_count, 2);
+    assert_eq!(store.get("https://a.example/").unwrap().visited_at_ms, 3);
+  }
+
+  #[test]
+  fn concurrent_window_deltas_merge_without_loss() {
+    let mut global = GlobalHistoryStore::with_capacity(10);
+    let mut win_a = global.clone();
+    let mut win_b = global.clone();
+
+    // Window A commits a visit and publishes a delta.
+    let delta_a = win_a
+      .record_at_ms("https://a.example/".to_string(), None, 1)
+      .expect("expected delta");
+    assert!(global.apply_visit_delta(&delta_a));
+    // Propagate to the other window before it records its own visit (matches the browser's
+    // per-window drain+propagate logic).
+    assert!(win_b.apply_visit_delta(&delta_a));
+
+    // Window B commits a different visit in the same wake batch.
+    let delta_b = win_b
+      .record_at_ms("https://b.example/".to_string(), None, 2)
+      .expect("expected delta");
+    assert!(global.apply_visit_delta(&delta_b));
+    assert!(win_a.apply_visit_delta(&delta_b));
+
+    assert_eq!(global.len(), 2);
+    assert!(global.get("https://a.example/").is_some());
+    assert!(global.get("https://b.example/").is_some());
+    assert_eq!(win_a, global);
+    assert_eq!(win_b, global);
+  }
+
+  #[test]
   fn url_index_tracks_record_updates_and_recency_ordering() {
     let mut store = GlobalHistoryStore::with_capacity(10);
 
-    store.record_at_ms("https://a.example/".to_string(), Some("A".to_string()), 1);
-    store.record_at_ms("https://b.example/".to_string(), Some("B".to_string()), 2);
-    store.record_at_ms("https://c.example/".to_string(), Some("C".to_string()), 3);
+    let _ = store.record_at_ms("https://a.example/".to_string(), Some("A".to_string()), 1);
+    let _ = store.record_at_ms("https://b.example/".to_string(), Some("B".to_string()), 2);
+    let _ = store.record_at_ms("https://c.example/".to_string(), Some("C".to_string()), 3);
     assert_eq!(
       store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
       vec!["https://a.example/", "https://b.example/", "https://c.example/"]
@@ -892,7 +1066,7 @@ mod tests {
     assert_url_index_consistent(&store);
 
     // Update a middle entry; it should move to the end and all shifted indices should update.
-    store.record_at_ms("https://b.example/".to_string(), None, 4);
+    let _ = store.record_at_ms("https://b.example/".to_string(), None, 4);
     assert_eq!(
       store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
       vec!["https://a.example/", "https://c.example/", "https://b.example/"]
@@ -902,7 +1076,7 @@ mod tests {
     assert_url_index_consistent(&store);
 
     // Update the oldest entry; it should move to the end.
-    store.record_at_ms("https://a.example/".to_string(), None, 5);
+    let _ = store.record_at_ms("https://a.example/".to_string(), None, 5);
     assert_eq!(
       store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
       vec!["https://c.example/", "https://b.example/", "https://a.example/"]
@@ -910,7 +1084,7 @@ mod tests {
     assert_url_index_consistent(&store);
 
     // Updating the most-recent entry should not reorder.
-    store.record_at_ms("https://a.example/#fragment".to_string(), None, 6);
+    let _ = store.record_at_ms("https://a.example/#fragment".to_string(), None, 6);
     assert_eq!(
       store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
       vec!["https://c.example/", "https://b.example/", "https://a.example/"]
@@ -929,7 +1103,7 @@ mod tests {
       "about:history",
       "ABOUT:BOOKMARKS",
     ] {
-      assert!(!store.record_at_ms(url.to_string(), None, 1));
+      assert!(store.record_at_ms(url.to_string(), None, 1).is_none());
     }
 
     assert!(store.entries.is_empty());
@@ -939,7 +1113,9 @@ mod tests {
   fn records_file_urls() {
     let mut store = GlobalHistoryStore::with_capacity(10);
 
-    assert!(store.record_at_ms("file:///tmp/a.html#section".to_string(), None, 10));
+    assert!(store
+      .record_at_ms("file:///tmp/a.html#section".to_string(), None, 10)
+      .is_some());
     assert_eq!(store.entries.len(), 1);
     assert_eq!(store.entries[0].url, "file:///tmp/a.html");
     assert_eq!(store.entries[0].visit_count, 1);
@@ -949,9 +1125,9 @@ mod tests {
   fn every_committed_navigation_increments_visit_count_and_updates_last_visited() {
     let mut store = GlobalHistoryStore::with_capacity(10);
 
-    store.record_at_ms("https://example.test/a".to_string(), None, 1);
-    store.record_at_ms("https://example.test/a".to_string(), None, 2);
-    store.record_at_ms("https://example.test/a".to_string(), None, 3);
+    let _ = store.record_at_ms("https://example.test/a".to_string(), None, 1);
+    let _ = store.record_at_ms("https://example.test/a".to_string(), None, 2);
+    let _ = store.record_at_ms("https://example.test/a".to_string(), None, 3);
 
     let entry = store.get("https://example.test/a").unwrap();
     assert_eq!(entry.visit_count, 3);
@@ -962,13 +1138,13 @@ mod tests {
   fn title_is_updated_only_when_some_non_empty() {
     let mut store = GlobalHistoryStore::with_capacity(10);
 
-    store.record_at_ms(
+    let _ = store.record_at_ms(
       "https://example.test/".to_string(),
       Some("Title".to_string()),
       1,
     );
-    store.record_at_ms("https://example.test/".to_string(), None, 2);
-    store.record_at_ms(
+    let _ = store.record_at_ms("https://example.test/".to_string(), None, 2);
+    let _ = store.record_at_ms(
       "https://example.test/".to_string(),
       Some("   ".to_string()),
       3,
@@ -983,9 +1159,9 @@ mod tests {
   #[test]
   fn capacity_is_enforced_by_dropping_oldest_entries_first() {
     let mut store = GlobalHistoryStore::with_capacity(2);
-    store.record_at_ms("https://a.example/".to_string(), None, 1);
-    store.record_at_ms("https://b.example/".to_string(), None, 2);
-    store.record_at_ms("https://c.example/".to_string(), None, 3);
+    let _ = store.record_at_ms("https://a.example/".to_string(), None, 1);
+    let _ = store.record_at_ms("https://b.example/".to_string(), None, 2);
+    let _ = store.record_at_ms("https://c.example/".to_string(), None, 3);
 
     assert_eq!(store.len(), 2);
     let urls: Vec<&str> = store.iter_recent().map(|(_, e)| e.url.as_str()).collect();
@@ -995,13 +1171,13 @@ mod tests {
   #[test]
   fn url_index_is_correct_after_capacity_eviction() {
     let mut store = GlobalHistoryStore::with_capacity(3);
-    store.record_at_ms("https://a.example/".to_string(), None, 1);
-    store.record_at_ms("https://b.example/".to_string(), None, 2);
-    store.record_at_ms("https://c.example/".to_string(), None, 3);
+    let _ = store.record_at_ms("https://a.example/".to_string(), None, 1);
+    let _ = store.record_at_ms("https://b.example/".to_string(), None, 2);
+    let _ = store.record_at_ms("https://c.example/".to_string(), None, 3);
     assert_url_index_consistent(&store);
 
     // Add a new entry at capacity; oldest should be evicted and indices rewritten.
-    store.record_at_ms("https://d.example/".to_string(), None, 4);
+    let _ = store.record_at_ms("https://d.example/".to_string(), None, 4);
     assert_eq!(
       store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
       vec!["https://b.example/", "https://c.example/", "https://d.example/"]
@@ -1013,7 +1189,7 @@ mod tests {
     assert_url_index_consistent(&store);
 
     // Moving an entry after eviction should still preserve index consistency.
-    store.record_at_ms("https://b.example/".to_string(), None, 5);
+    let _ = store.record_at_ms("https://b.example/".to_string(), None, 5);
     assert_eq!(
       store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
       vec!["https://c.example/", "https://d.example/", "https://b.example/"]
@@ -1021,7 +1197,7 @@ mod tests {
     assert_url_index_consistent(&store);
 
     // Another eviction should drop the new oldest.
-    store.record_at_ms("https://e.example/".to_string(), None, 6);
+    let _ = store.record_at_ms("https://e.example/".to_string(), None, 6);
     assert_eq!(
       store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
       vec!["https://d.example/", "https://b.example/", "https://e.example/"]
@@ -1034,17 +1210,17 @@ mod tests {
   fn search_matches_all_tokens_in_url_or_title_and_is_recency_first() {
     let mut history = GlobalHistoryStore::with_capacity(10);
 
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://example.com/one".to_string(),
       Some("First Page".to_string()),
       1,
     );
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://example.com/two".to_string(),
       Some("Second Page".to_string()),
       2,
     );
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://rust-lang.org/".to_string(),
       Some("Rust Language".to_string()),
       3,
@@ -1070,9 +1246,9 @@ mod tests {
   #[test]
   fn delete_entry_removes_single_matching_url() {
     let mut history = GlobalHistoryStore::with_capacity(10);
-    history.record_at_ms("https://a.example/".to_string(), None, 1);
-    history.record_at_ms("https://b.example/".to_string(), None, 2);
-    history.record_at_ms("https://c.example/".to_string(), None, 3);
+    let _ = history.record_at_ms("https://a.example/".to_string(), None, 1);
+    let _ = history.record_at_ms("https://b.example/".to_string(), None, 2);
+    let _ = history.record_at_ms("https://c.example/".to_string(), None, 3);
 
     assert!(history.delete_entry("https://b.example/"));
     assert!(!history.delete_entry("https://b.example/"));
@@ -1084,9 +1260,9 @@ mod tests {
   #[test]
   fn remove_at_removes_entries_by_index() {
     let mut history = GlobalHistoryStore::with_capacity(10);
-    history.record_at_ms("https://a.example/".to_string(), None, 1);
-    history.record_at_ms("https://b.example/".to_string(), None, 2);
-    history.record_at_ms("https://c.example/".to_string(), None, 3);
+    let _ = history.record_at_ms("https://a.example/".to_string(), None, 1);
+    let _ = history.record_at_ms("https://b.example/".to_string(), None, 2);
+    let _ = history.record_at_ms("https://c.example/".to_string(), None, 3);
 
     assert_eq!(history.remove_at(99), None);
 
@@ -1100,9 +1276,9 @@ mod tests {
   #[test]
   fn clear_all_since_and_range() {
     let mut history = GlobalHistoryStore::with_capacity(10);
-    history.record_at_ms("https://a.example/".to_string(), None, 10);
-    history.record_at_ms("https://b.example/".to_string(), None, 20);
-    history.record_at_ms("https://c.example/".to_string(), None, 30);
+    let _ = history.record_at_ms("https://a.example/".to_string(), None, 10);
+    let _ = history.record_at_ms("https://b.example/".to_string(), None, 20);
+    let _ = history.record_at_ms("https://c.example/".to_string(), None, 30);
 
     history.clear_since(25);
     let urls: Vec<&str> = history.iter_recent().map(|(_, e)| e.url.as_str()).collect();
@@ -1158,7 +1334,7 @@ mod tests {
     assert_eq!(store.get("https://b.example/").unwrap().title.as_deref(), Some("Bee"));
 
     // Recording a URL that already exists after load should update in place (no duplicate entry).
-    store.record_at_ms(
+    let _ = store.record_at_ms(
       "https://a.example/#three".to_string(),
       Some("Newest".to_string()),
       10,
@@ -1186,7 +1362,7 @@ mod tests {
   #[test]
   fn serialization_is_versioned() {
     let mut store = GlobalHistoryStore::with_capacity(10);
-    store.record_at_ms("https://a.example/".to_string(), Some("A".to_string()), 1);
+    let _ = store.record_at_ms("https://a.example/".to_string(), Some("A".to_string()), 1);
 
     let v = serde_json::to_value(&store).unwrap();
     assert_eq!(
@@ -1206,22 +1382,22 @@ mod tests {
     let now_ms = 1_000_000_000_000_u64;
 
     let mut history = GlobalHistoryStore::default();
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://old.example/".to_string(),
       None,
       now_ms - 8 * DAY_MS,
     );
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://days.example/".to_string(),
       None,
       now_ms - 2 * DAY_MS,
     );
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://hours.example/".to_string(),
       None,
       now_ms - 2 * HOUR_MS,
     );
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://recent.example/".to_string(),
       None,
       now_ms - 10 * 60 * 1000,
@@ -1272,17 +1448,17 @@ mod tests {
   #[test]
   fn search_returns_results_ordered_by_recency() {
     let mut history = GlobalHistoryStore::default();
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://example.com/a".to_string(),
       Some("First".to_string()),
       1,
     );
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://example.com/b".to_string(),
       Some("Second".to_string()),
       2,
     );
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://example.com/a".to_string(),
       Some("Third".to_string()),
       3,
@@ -1296,12 +1472,12 @@ mod tests {
   #[test]
   fn searcher_invalidates_cache_on_query_change() {
     let mut history = GlobalHistoryStore::with_capacity(10);
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://example.com/one".to_string(),
       Some("Example One".to_string()),
       1,
     );
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://rust-lang.org/".to_string(),
       Some("Rust".to_string()),
       2,
@@ -1320,12 +1496,12 @@ mod tests {
   #[test]
   fn searcher_invalidates_cache_on_history_mutation() {
     let mut history = GlobalHistoryStore::with_capacity(10);
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://example.com/one".to_string(),
       Some("One".to_string()),
       1,
     );
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://example.com/two".to_string(),
       Some("Two".to_string()),
       2,
@@ -1337,7 +1513,7 @@ mod tests {
     assert_eq!(history.entries[before[0]].url, "https://example.com/two");
 
     // Mutation: add a newer matching entry.
-    history.record_at_ms(
+    let _ = history.record_at_ms(
       "https://example.com/three".to_string(),
       Some("Three".to_string()),
       3,
@@ -1366,13 +1542,13 @@ mod tests {
 
     let mut store = GlobalHistoryStore::with_capacity(10_000);
     for i in 0..10_000_u32 {
-      store.record_at_ms(format!("https://example.test/{i}"), None, i as u64);
+      let _ = store.record_at_ms(format!("https://example.test/{i}"), None, i as u64);
     }
 
     let t0 = Instant::now();
     // Update a middle entry repeatedly; with a URL index this should avoid O(n) URL comparisons.
     for i in 0..1000_u32 {
-      store.record_at_ms("https://example.test/5000".to_string(), None, 10_000 + i as u64);
+      let _ = store.record_at_ms("https://example.test/5000".to_string(), None, 10_000 + i as u64);
     }
     let dt = t0.elapsed();
     eprintln!("record 1000 updates into 10k-entry store: {dt:?}");

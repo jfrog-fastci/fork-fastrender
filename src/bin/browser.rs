@@ -5389,8 +5389,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         for window_id in window_order.iter().copied() {
           let mut request_redraw = false;
-          let mut history_changed = false;
-          let mut history_snapshot = None;
+          let mut history_deltas: Vec<fastrender::ui::HistoryVisitDelta> = Vec::new();
           let mut needs_follow_up_wake = false;
 
           if let Some(win) = windows.get_mut(&window_id) {
@@ -5443,7 +5442,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 QueuedMsg::Clipboard(update) => win.app.handle_worker_clipboard_update(update),
               };
               request_redraw |= result.request_redraw;
-              history_changed |= result.history_changed;
+              history_deltas.extend(result.history_deltas);
             }
 
             let outcome = DrainOutcome {
@@ -5468,10 +5467,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             if request_redraw {
               win.app.schedule_worker_redraw(std::time::Instant::now());
-            }
-
-            if history_changed {
-              history_snapshot = Some(win.app.browser_state.history.clone());
             }
 
             // Clear the per-window pending bit now that we've drained the current batch, then
@@ -5506,17 +5501,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           // Propagate history updates immediately so subsequent windows process their worker
           // messages against the latest global store (avoids lost history entries when multiple
           // windows commit navigations in a single wake batch).
-          if let Some(new_history) = history_snapshot {
-            global_history = new_history;
+          if !history_deltas.is_empty() {
+            global_history.apply_visit_deltas(&history_deltas);
             fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
               &global_history,
             );
             history_autosave_send_scheduler.mark_dirty();
-            for win in windows.values_mut() {
-              win.app.browser_state.history = global_history.clone();
-              win.app.browser_state.visited.clear();
-              win.app.browser_state.seed_visited_from_history();
-              win.app.browser_state.chrome.omnibox.reset();
+
+            for (id, win) in windows.iter_mut() {
+              if *id != window_id {
+                win.app
+                  .browser_state
+                  .history
+                  .apply_visit_deltas(&history_deltas);
+                for delta in &history_deltas {
+                  win
+                    .app
+                    .browser_state
+                    .visited
+                    .record_visit(delta.url.clone(), delta.title.clone());
+                }
+              }
               win.app.window.request_redraw();
             }
           }
@@ -6195,6 +6200,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
+    // History UI mutations (clear/delete) are currently synchronized via full-store snapshot.
+    // Visit recording (`NavigationCommitted`) uses incremental deltas in the WorkerWake path above
+    // to avoid cloning/reseeding the full history store on every navigation.
     if let Some((new_history, flush)) = history_update {
       global_history = new_history;
       history_autosave_send_scheduler.mark_dirty();
@@ -9178,10 +9186,10 @@ enum SuppressReceivedCharacter {
 }
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Default)]
 struct WorkerMessageResult {
   request_redraw: bool,
-  history_changed: bool,
+  history_deltas: Vec<fastrender::ui::HistoryVisitDelta>,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -12241,7 +12249,7 @@ impl App {
 
     WorkerMessageResult {
       request_redraw: true,
-      history_changed: false,
+      history_deltas: Vec::new(),
     }
   }
 
@@ -12263,7 +12271,7 @@ impl App {
         }
         return WorkerMessageResult {
           request_redraw: true,
-          history_changed: false,
+          history_deltas: Vec::new(),
         };
       }
       fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { tab_id, request } => {
@@ -12277,7 +12285,7 @@ impl App {
         }
         return WorkerMessageResult {
           request_redraw: true,
-          history_changed: false,
+          history_deltas: Vec::new(),
         };
       }
       msg => msg,
@@ -12288,7 +12296,7 @@ impl App {
     let Some(mut msg) = sanitize_worker_to_ui_for_windowed_browser(msg) else {
       return WorkerMessageResult {
         request_redraw: false,
-        history_changed: false,
+        history_deltas: Vec::new(),
       };
     };
     if let fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } = &msg {
@@ -12321,7 +12329,7 @@ impl App {
     if should_ignore_for_trusted_about {
       return WorkerMessageResult {
         request_redraw: false,
-        history_changed: false,
+        history_deltas: Vec::new(),
       };
     }
 
@@ -12453,7 +12461,7 @@ impl App {
     }
 
     let mut request_redraw = false;
-    let mut history_changed = false;
+    let mut history_deltas: Vec<fastrender::ui::HistoryVisitDelta> = Vec::new();
 
     if let fastrender::ui::WorkerToUi::DebugLog { tab_id, line } = &msg {
       let safe = fastrender::ui::untrusted::sanitize_untrusted_text(
@@ -12722,7 +12730,6 @@ impl App {
         request_redraw = true;
       }
     }
-
     #[derive(Debug, Clone)]
     enum DownloadToastTrigger {
       Started {
@@ -12752,12 +12759,12 @@ impl App {
     };
 
     let sync_open_tabs_snapshot =
-      matches!(msg, fastrender::ui::WorkerToUi::NavigationCommitted { .. });
-    let update = self.browser_state.apply_worker_msg(msg);
+      matches!(&msg, fastrender::ui::WorkerToUi::NavigationCommitted { .. });
+    let mut update = self.browser_state.apply_worker_msg(msg);
     if sync_open_tabs_snapshot {
       self.sync_about_open_tabs_snapshot();
     }
-    history_changed |= update.history_changed;
+    history_deltas.append(&mut update.history_deltas);
 
     let has_frame_ready = update.frame_ready.is_some();
 
@@ -12941,7 +12948,7 @@ impl App {
     }
     WorkerMessageResult {
       request_redraw,
-      history_changed,
+      history_deltas,
     }
   }
 

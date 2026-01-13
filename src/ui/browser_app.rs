@@ -22,7 +22,7 @@ use crate::ui::renderer_ipc::{
 };
 use crate::ui::{
   protocol_limits, resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistorySearcher,
-  GlobalHistoryStore, OmniboxSuggestion, VisitedUrlStore,
+  GlobalHistoryStore, HistoryVisitDelta, OmniboxSuggestion, VisitedUrlStore,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -353,6 +353,11 @@ pub struct AppUpdate {
   ///
   /// Front-ends that persist history to disk can use this to decide when to flush new snapshots.
   pub history_changed: bool,
+  /// Incremental history visit deltas produced by processing a worker message.
+  ///
+  /// The windowed browser uses these to synchronize history across windows without cloning the
+  /// entire history store on every navigation.
+  pub history_deltas: Vec<HistoryVisitDelta>,
   /// Recommended full window title for the host window.
   pub set_window_title: Option<String>,
   /// A new pixmap is ready for upload; the state model does not store pixel buffers.
@@ -2667,36 +2672,34 @@ impl BrowserAppState {
         if let Some(url) = safe_url.as_ref() {
           // Record global history. This is the single canonical source of truth for what counts as a
           // "visit" (scheme allowlist, fragment stripping, `about:` filtering, etc).
-          update.history_changed = self.history.record(url.clone(), safe_title.clone());
+          if let Some(delta) = self.history.record_with_delta(url.clone(), safe_title.clone()) {
+            update.history_changed = true;
+            // Keep omnibox visited history consistent by recording the normalized URL from the
+            // delta (fragment stripped, scheme allowlist applied).
+            self
+              .visited
+              .record_visit(delta.url.clone(), delta.title.clone());
+            update.history_deltas.push(delta);
+          }
         }
 
-        // Keep the omnibox visited store consistent with the global history store by recording the
-        // normalized URL (e.g. fragment stripped).
-        //
         // When global history rejects a navigation (notably internal `about:` pages), we still
         // record a small allowlist of useful `about:` pages so they remain discoverable via omnibox
         // autocomplete. The visited store enforces the policy (see
         // `ui::visited::should_record_visit_in_history`).
-        if update.history_changed {
-          if let Some(url) = safe_url.as_ref() {
-            let normalized_url = self
-              .history
-              .get(url)
-              .map(|entry| entry.url.clone())
-              // `record` returned true, so this should be unreachable, but keep a safe fallback to
-              // avoid losing visited entries in release builds if invariants change.
-              .unwrap_or_else(|| url.clone());
-            self.visited.record_visit(normalized_url, safe_title.clone());
+        if !update.history_changed {
+          if let Some(url) = safe_url.as_ref().filter(|u| about_pages::is_about_url(u)) {
+            // Normalize internal pages by stripping any query/fragment so e.g. `about:help#foo` and
+            // `about:history?q=rust` do not create separate visited entries.
+            let normalized_about = url
+              .split(|c| matches!(c, '?' | '#'))
+              .next()
+              .unwrap_or(url.as_str())
+              .to_string();
+            self
+              .visited
+              .record_visit(normalized_about, safe_title.clone());
           }
-        } else if let Some(url) = safe_url.as_ref().filter(|u| about_pages::is_about_url(u)) {
-          // Normalize internal pages by stripping any query/fragment so e.g. `about:help#foo` and
-          // `about:history?q=rust` do not create separate visited entries.
-          let normalized_about = url
-            .split(|c| matches!(c, '?' | '#'))
-            .next()
-            .unwrap_or(url.as_str())
-            .to_string();
-          self.visited.record_visit(normalized_about, safe_title.clone());
         }
         if let Some(tab) = self.tab_mut(tab_id) {
           if tab.renderer_crashed {
@@ -3325,6 +3328,10 @@ mod browser_app_tests {
       !update.history_changed,
       "disallowed worker URL should not be recorded in history"
     );
+    assert!(
+      update.history_deltas.is_empty(),
+      "expected no history deltas for disallowed scheme"
+    );
     assert_eq!(
       app.active_tab().and_then(|t| t.current_url()).map(str::to_string),
       before_tab_url,
@@ -3483,6 +3490,11 @@ mod browser_app_tests {
     });
 
     assert!(update.history_changed);
+    assert_eq!(update.history_deltas.len(), 1);
+    let delta = &update.history_deltas[0];
+    assert_eq!(delta.url, "https://example.com/");
+    assert_eq!(delta.title.as_deref(), Some("Example Domain"));
+    assert_ne!(delta.visited_at_ms, 0);
     assert_eq!(app.visited.len(), 1);
     let record = app.visited.iter_recent().next().expect("expected visit");
     assert_eq!(record.url, "https://example.com/");
