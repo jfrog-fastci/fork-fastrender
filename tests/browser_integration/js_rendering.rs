@@ -236,14 +236,50 @@ fn js_external_async_script_runs_without_waiting_for_parsing_complete() -> Resul
 
   // `BrowserTab::from_html_*` uses the streaming parser driver and yields at async script boundaries
   // so "fast" async scripts can execute before later HTML is parsed.
+  //
+  // Construction only performs the initial parse slice and schedules tasks; it does not drive the
+  // event loop. The async script's fetch/execute work should therefore still be pending here.
   assert_eq!(
     root_class(tab.dom()).as_deref(),
-    Some("on"),
-    "async scripts should be able to mutate the document before parsing completes"
+    Some("off"),
+    "expected async script to not have executed during construction"
   );
   assert!(
     tab.dom().get_element_by_id("box").is_none(),
     "expected parsing to pause at the async script boundary before reaching the body"
+  );
+
+  // Drive the event loop in small steps until the async script executes, but ensure parsing does
+  // not resume past the async boundary before the script runs.
+  let step_limits = RunLimits {
+    max_tasks: 1,
+    max_microtasks: 1024,
+    max_wall_time: None,
+  };
+  for step in 0..64usize {
+    if root_class(tab.dom()).as_deref() == Some("on") {
+      break;
+    }
+    let outcome = tab.run_event_loop_until_idle(step_limits)?;
+    // If parsing resumed past the async boundary before the async script executed, we'd observe the
+    // body content here (e.g. #box).
+    assert!(
+      tab.dom().get_element_by_id("box").is_none(),
+      "expected parsing to remain paused at the async script boundary while waiting for async script to execute (step={}, outcome={outcome:?})",
+      step + 1
+    );
+    if matches!(outcome, RunUntilIdleOutcome::Idle) {
+      break;
+    }
+  }
+  assert_eq!(
+    root_class(tab.dom()).as_deref(),
+    Some("on"),
+    "async script should be able to mutate the document before parsing completes"
+  );
+  assert!(
+    tab.dom().get_element_by_id("box").is_none(),
+    "expected parsing to still be paused at the async boundary at the moment the async script executes"
   );
 
   let _ = tab.run_until_stable(/* max_frames */ 10)?;
