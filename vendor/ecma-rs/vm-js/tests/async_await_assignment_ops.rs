@@ -122,6 +122,57 @@ fn async_await_compound_assignment_exponentiation_equals_number_and_bigint() -> 
 }
 
 #[test]
+fn async_await_exponentiation_assignment_bigint_negative_exponent_throws_range_error(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let x = 2n;
+        x **= await Promise.resolve(-1n);
+        return "no error";
+      }
+      f().then(v => out = v, e => out = e && e.name);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "RangeError");
+  Ok(())
+}
+
+#[test]
+fn async_await_bitwise_assignment_cannot_mix_bigint_and_number() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let x = 1n;
+        x |= await Promise.resolve(1);
+        return "no error";
+      }
+      f().then(v => out = v, e => out = e && e.name);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "TypeError");
+  Ok(())
+}
+
+#[test]
 fn async_await_compound_assignment_to_computed_member_with_await_in_key_and_rhs() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
