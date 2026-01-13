@@ -570,6 +570,46 @@ mod tests {
   }
 
   #[test]
+  fn document_selection_contains_point_ignores_collapsed_ranges() {
+    let highlight = DocumentSelectionRange {
+      start: DocumentSelectionPoint {
+        node_id: 1,
+        char_offset: 0,
+      },
+      end: DocumentSelectionPoint {
+        node_id: 1,
+        char_offset: 5,
+      },
+    };
+    let caret = DocumentSelectionPoint {
+      node_id: 2,
+      char_offset: 3,
+    };
+    let collapsed = DocumentSelectionRange {
+      start: caret,
+      end: caret,
+    };
+
+    let mut ranges = DocumentSelectionRanges {
+      ranges: vec![highlight, collapsed],
+      primary: 0,
+      anchor: highlight.start,
+      focus: highlight.end,
+    };
+    ranges.normalize();
+    let selection = DocumentSelectionState::Ranges(ranges);
+
+    assert!(document_selection_contains_point(
+      &selection,
+      DocumentSelectionPoint {
+        node_id: 1,
+        char_offset: 2,
+      }
+    ));
+    assert!(!document_selection_contains_point(&selection, caret));
+  }
+
+  #[test]
   fn style_for_styled_node_id_falls_back_to_pseudo_style() {
     let styled_node_id = 42;
 
@@ -3160,6 +3200,11 @@ fn document_selection_contains_point(
   match selection {
     DocumentSelectionState::All => true,
     DocumentSelectionState::Ranges(ranges) => ranges.ranges.iter().any(|range| {
+      // Collapsed ranges represent a caret without any selected text; starting a drag-drop from such
+      // a point would be surprising when other ranges in the selection are highlighted.
+      if range.start == range.end {
+        return false;
+      }
       // Allow starting a drag at either boundary. This is more forgiving than the half-open
       // selection model and better matches typical "click anywhere on the highlight" UX.
       cmp_document_selection_point(range.start, point) != Ordering::Greater
