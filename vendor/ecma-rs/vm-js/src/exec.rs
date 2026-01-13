@@ -1914,6 +1914,25 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
+    if script.contains_async_generators {
+      // Async generator bodies are not yet supported by the compiled (HIR) execution path.
+      //
+      // Fall back to the AST interpreter path using the original `SourceText`. This ensures scripts
+      // containing `async function*` can still execute correctly without partially executing any HIR
+      // code (which could introduce side effects before a retry).
+      let source = script.source.clone();
+      // Move the VM-owned microtask queue out so it can be passed as `hooks` while still holding
+      // `&mut self`.
+      let mut hooks = mem::take(self.vm.microtask_queue_mut());
+      let result = self.exec_script_source_with_host_and_hooks(host, &mut hooks, source);
+      // Drain any Promise jobs that were enqueued onto the VM-owned queue while it was moved out.
+      while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
+        hooks.enqueue_promise_job(job, realm);
+      }
+      *self.vm.microtask_queue_mut() = hooks;
+      return result;
+    }
+
     let source = script.source.clone();
 
     let (line, col) = source.line_col(0);
@@ -1995,6 +2014,13 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
+    if script.contains_async_generators {
+      // See `exec_compiled_script_with_host`: async generator functions are not yet supported in
+      // the compiled (HIR) executor.
+      let source = script.source.clone();
+      return self.exec_script_source_with_host_and_hooks(host, hooks, source);
+    }
+
     let source = script.source.clone();
     let (line, col) = source.line_col(0);
     let frame = StackFrame {

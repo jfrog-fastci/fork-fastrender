@@ -10,6 +10,7 @@ diagnostics = { workspace = true }
 thiserror = { workspace = true }
 parse-js = { workspace = true, features = ["diagnostics"] }
 hir-js = { workspace = true }
+derive-visitor = { workspace = true }
 itoa = { workspace = true }
 ryu = { workspace = true }
 semantic-js = { workspace = true }

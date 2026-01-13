@@ -14,14 +14,18 @@ use crate::Heap;
 use crate::VmError;
 use crate::Vm;
 use diagnostics::FileId;
+use derive_visitor::visitor_enter_fn;
+use derive_visitor::Drive;
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
 use parse_js::ast::expr::lit::{LitArrElem, LitTemplatePart};
 use parse_js::ast::expr::pat::{ArrPat, ObjPat, Pat};
 use parse_js::ast::expr::Expr;
+use parse_js::ast::func::Func;
 use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::{ForInOfLhs, ForTripleStmtInit, Stmt};
 use parse_js::operator::OperatorName;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+use std::cell::Cell;
 use std::sync::Arc;
 
 /// A compiled JavaScript source file (source text + lowered HIR).
@@ -32,6 +36,7 @@ use std::sync::Arc;
 pub struct CompiledScript {
   pub source: Arc<SourceText>,
   pub hir: Arc<hir_js::LowerResult>,
+  pub contains_async_generators: bool,
   #[allow(dead_code)]
   source_type: SourceType,
   #[allow(dead_code)]
@@ -71,6 +76,8 @@ impl CompiledScript {
       )?;
     }
 
+    let contains_async_generators = ast_contains_async_generators(&parsed);
+
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
     }))
@@ -82,6 +89,7 @@ impl CompiledScript {
     Ok(Arc::new(Self {
       source,
       hir: Arc::new(hir),
+      contains_async_generators,
       source_type: SourceType::Script,
       external_memory,
     }))
@@ -113,6 +121,8 @@ impl CompiledScript {
       )?;
     }
 
+    let contains_async_generators = ast_contains_async_generators(&parsed);
+
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
     }))
@@ -123,6 +133,7 @@ impl CompiledScript {
     Ok(Arc::new(Self {
       source,
       hir: Arc::new(hir),
+      contains_async_generators,
       source_type: SourceType::Module,
       external_memory,
     }))
@@ -162,12 +173,15 @@ impl CompiledScript {
       )?;
     }
 
+    let contains_async_generators = ast_contains_async_generators(&parsed);
+
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
     Ok(Arc::new(Self {
       source,
       hir: Arc::new(hir),
+      contains_async_generators,
       source_type: SourceType::Script,
       external_memory,
     }))
@@ -195,12 +209,14 @@ impl CompiledScript {
         &mut tick,
       )?;
     }
+    let contains_async_generators = ast_contains_async_generators(&parsed);
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
     Ok(Arc::new(Self {
       source,
       hir: Arc::new(hir),
+      contains_async_generators,
       source_type: SourceType::Module,
       external_memory,
     }))
@@ -215,6 +231,17 @@ impl CompiledScript {
 pub struct CompiledFunctionRef {
   pub script: Arc<CompiledScript>,
   pub body: hir_js::BodyId,
+}
+
+fn ast_contains_async_generators<T: Drive>(root: &T) -> bool {
+  let found = Cell::new(false);
+  let mut visitor = visitor_enter_fn(|func: &Func| {
+    if func.async_ && func.generator {
+      found.set(true);
+    }
+  });
+  root.drive(&mut visitor);
+  found.get()
 }
 
 fn detect_use_strict_directive<F>(stmts: &[Node<Stmt>], tick: &mut F) -> Result<bool, VmError>
