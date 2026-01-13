@@ -197,8 +197,14 @@ mod tests {
 
     let derived = runtime_toggles_with_browser_media_prefs(&base, ui);
     assert_eq!(derived.get("FASTR_SOME_OTHER_FLAG"), Some("1"));
-    assert_eq!(derived.config().media.prefers_color_scheme, Some(ColorScheme::Dark));
-    assert_eq!(derived.config().media.prefers_contrast, Some(ContrastPreference::More));
+    assert_eq!(
+      derived.config().media.prefers_color_scheme,
+      Some(ColorScheme::Dark)
+    );
+    assert_eq!(
+      derived.config().media.prefers_contrast,
+      Some(ContrastPreference::More)
+    );
     assert_eq!(derived.config().media.prefers_reduced_motion, Some(true));
   }
 }

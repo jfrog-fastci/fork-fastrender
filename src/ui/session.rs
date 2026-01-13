@@ -177,23 +177,20 @@ impl BrowserSessionWindow {
         }
       };
       let pinned = tab.pinned;
-      let group = tab
-        .group
-        .filter(|_| !pinned)
-        .and_then(|group_id| {
-          if let Some(existing) = group_indices.get(&group_id) {
-            return Some(*existing);
-          }
-          let group_state = app.tab_groups.get(&group_id)?;
-          let idx = tab_groups.len();
-          tab_groups.push(BrowserSessionTabGroup {
-            title: group_state.title.clone(),
-            color: group_state.color,
-            collapsed: group_state.collapsed,
-          });
-          group_indices.insert(group_id, idx);
-          Some(idx)
+      let group = tab.group.filter(|_| !pinned).and_then(|group_id| {
+        if let Some(existing) = group_indices.get(&group_id) {
+          return Some(*existing);
+        }
+        let group_state = app.tab_groups.get(&group_id)?;
+        let idx = tab_groups.len();
+        tab_groups.push(BrowserSessionTabGroup {
+          title: group_state.title.clone(),
+          color: group_state.color,
+          collapsed: group_state.collapsed,
         });
+        group_indices.insert(group_id, idx);
+        Some(idx)
+      });
       tabs.push(BrowserSessionTab {
         url,
         zoom: Some(tab.zoom),
@@ -236,9 +233,7 @@ impl BrowserSessionWindow {
       sanitize_tab(tab);
     }
 
-    self.active_tab_index = self
-      .active_tab_index
-      .min(self.tabs.len().saturating_sub(1));
+    self.active_tab_index = self.active_tab_index.min(self.tabs.len().saturating_sub(1));
 
     // Sanitize tab group state/membership:
     // - pinned tabs cannot be grouped
@@ -402,13 +397,12 @@ impl BrowserSession {
     self.appearance = self.appearance.sanitized();
 
     let home_trimmed = self.home_url.trim().to_string();
-    self.home_url = if home_trimmed.is_empty()
-      || validate_user_navigation_url_scheme(&home_trimmed).is_err()
-    {
-      default_home_url()
-    } else {
-      home_trimmed
-    };
+    self.home_url =
+      if home_trimmed.is_empty() || validate_user_navigation_url_scheme(&home_trimmed).is_err() {
+        default_home_url()
+      } else {
+        home_trimmed
+      };
 
     if self.windows.is_empty() {
       self.windows.push(BrowserSessionWindow {
@@ -891,9 +885,18 @@ mod tests {
     let tab_b = TabId(2);
     let tab_c = TabId(3);
 
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:blank".to_string()), false);
-    app.push_tab(BrowserTabState::new(tab_c, "about:error".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:blank".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_c, "about:error".to_string()),
+      false,
+    );
 
     assert!(app.pin_tab(tab_a));
 
@@ -1376,8 +1379,13 @@ impl Drop for SessionFileLock {
 
 #[derive(Debug)]
 pub enum SessionLockError {
-  AlreadyLocked { lock_path: PathBuf },
-  Io { lock_path: PathBuf, error: io::Error },
+  AlreadyLocked {
+    lock_path: PathBuf,
+  },
+  Io {
+    lock_path: PathBuf,
+    error: io::Error,
+  },
 }
 
 impl std::fmt::Display for SessionLockError {
@@ -1387,7 +1395,11 @@ impl std::fmt::Display for SessionLockError {
         write!(f, "session lock already held: {}", lock_path.display())
       }
       Self::Io { lock_path, error } => {
-        write!(f, "failed to acquire session lock {}: {error}", lock_path.display())
+        write!(
+          f,
+          "failed to acquire session lock {}: {error}",
+          lock_path.display()
+        )
       }
     }
   }
