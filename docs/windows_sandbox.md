@@ -352,14 +352,18 @@ In repo reality today:
 - `crates/win-sandbox/src/mitigations.rs` defines the renderer mitigation bitmask
   (`mitigations::renderer_mitigation_policy()`).
 - `crates/win-sandbox/src/spawn.rs` can apply it during process creation.
-- Mitigations are **opt-in per spawn**: `SpawnConfig::mitigation_policy` defaults to `0` (disabled)
-  unless the caller sets it.
+- Mitigations are **opt-in per spawn** for `win_sandbox::spawn_sandboxed`: `SpawnConfig::mitigation_policy`
+  is `None` by default (disabled) unless the caller sets it.
 - Escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1` disables **mitigation policies only** (useful for
   debugging/compatibility).
 
 `src/sandbox/windows.rs::spawn_sandboxed` applies these mitigation policies at process creation time
 (best-effort). If the OS rejects the mitigation attribute (e.g. older Windows builds), the spawn
 logic retries without mitigations instead of failing process creation.
+
+`win_sandbox::renderer::RendererSandbox` (the higher-level Job+AppContainer wrapper) also applies the
+default renderer mitigation policy by default (best-effort; retries without mitigations if the OS
+rejects the attribute).
 
 `crates/win-sandbox::RendererSandbox` also applies the default mitigation policy at process creation
 time (best-effort) when spawning its AppContainer-only child.
