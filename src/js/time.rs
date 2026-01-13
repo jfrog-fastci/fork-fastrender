@@ -376,6 +376,17 @@ pub fn install_time_bindings(
       },
     )?;
 
+    // --- performance.interactionCount (Event Timing API) ---
+    //
+    // Real-world web-vitals snippets often feature-detect this field (`"interactionCount" in performance`)
+    // to decide whether they should install a `PerformanceObserver` for Event Timing entries. FastRender
+    // does not currently implement Event Timing, so expose a deterministic stub to keep those snippets
+    // on the cheap, synchronous code path.
+    let interaction_count_key_s = scope.alloc_string("interactionCount")?;
+    scope.push_root(Value::String(interaction_count_key_s))?;
+    let interaction_count_key = PropertyKey::from_string(interaction_count_key_s);
+    scope.define_property(performance, interaction_count_key, readonly_num_desc(0.0))?;
+
     // --- performance.mark / measure / getEntries* (User Timing / Performance Timeline) ---
     //
     // Many analytics libraries call these APIs unguarded. Provide a minimal deterministic store
@@ -2262,6 +2273,81 @@ mod tests {
     assert!((n - web_time.performance_now(&event_loop)).abs() < 1e-9);
 
     // `vm-js` realms own persistent GC roots that must be explicitly removed.
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn performance_interaction_count_is_stubbed() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings =
+      install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, WebTime::default())
+        .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    // `'interactionCount' in performance` should be true.
+    {
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(performance_obj)).unwrap();
+      let key_s = scope
+        .alloc_string("interactionCount")
+        .expect("alloc interactionCount");
+      scope.push_root(Value::String(key_s)).unwrap();
+      let key = PropertyKey::from_string(key_s);
+      assert!(
+        scope
+          .heap()
+          .has_property(performance_obj, &key)
+          .expect("has_property"),
+        "expected 'interactionCount' in performance to be true"
+      );
+    }
+
+    // It should be a deterministic constant.
+    assert_eq!(
+      get_object_property(&mut heap, performance_obj, "interactionCount"),
+      Value::Number(0.0)
+    );
+
+    // Sloppy-mode assignment should not change it.
+    {
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(performance_obj)).unwrap();
+      let key_s = scope
+        .alloc_string("interactionCount")
+        .expect("alloc interactionCount");
+      scope.push_root(Value::String(key_s)).unwrap();
+      let key = PropertyKey::from_string(key_s);
+      let set_ok = scope
+        .ordinary_set(
+          &mut vm,
+          performance_obj,
+          key,
+          Value::Number(10.0),
+          Value::Object(performance_obj),
+        )
+        .expect("ordinary_set");
+      assert!(
+        !set_ok,
+        "expected assigning to performance.interactionCount to fail"
+      );
+    }
+
+    assert_eq!(
+      get_object_property(&mut heap, performance_obj, "interactionCount"),
+      Value::Number(0.0)
+    );
+
     realm.teardown(&mut heap);
   }
 
