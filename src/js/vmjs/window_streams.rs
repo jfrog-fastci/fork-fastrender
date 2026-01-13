@@ -47,6 +47,9 @@ const WRITABLE_STREAM_DEFAULT_WRITER_HOST_TAG: u64 = 0x5753_5752_4954_4552; // "
 const TRANSFORM_STREAM_HOST_TAG: u64 = 0x5452_4E53_5354_524D; // "TRNSSTRM"
 const TRANSFORM_STREAM_DEFAULT_CONTROLLER_HOST_TAG: u64 = 0x5453_434E_5452_4C52; // "TSCNTRLR"
 const TRANSFORM_STREAM_SINK_HOST_TAG: u64 = 0x5453_5349_4E4B_5F5F; // "TSSINK__"
+// QueuingStrategy interface objects are also platform objects and are not structured-cloneable.
+const BYTE_LENGTH_QUEUING_STRATEGY_HOST_TAG: u64 = 0x424C_5153_5452_4154; // "BLQSTRAT"
+const COUNT_QUEUING_STRATEGY_HOST_TAG: u64 = 0x434E_5451_5354_5259; // "CNTQSTRY"
 
 // Hidden per-iterator own properties.
 const ITER_READER_KEY: &str = "__fastrender_readable_stream_iter_reader";
@@ -6373,6 +6376,13 @@ fn byte_length_queuing_strategy_ctor_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: BYTE_LENGTH_QUEUING_STRATEGY_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   let high_water_mark_key = alloc_key(scope, "highWaterMark")?;
   scope.define_property(
@@ -6477,6 +6487,13 @@ fn count_queuing_strategy_ctor_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: COUNT_QUEUING_STRATEGY_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   let high_water_mark_key = alloc_key(scope, "highWaterMark")?;
   scope.define_property(

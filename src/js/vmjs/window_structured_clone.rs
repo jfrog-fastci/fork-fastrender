@@ -2885,6 +2885,23 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_rejects_queuing_strategies() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let blqs = realm.exec_script(
+      "try { structuredClone(new ByteLengthQueuingStrategy({ highWaterMark: 1 })); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, blqs), "DataCloneError");
+
+    let cqs = realm.exec_script(
+      "try { structuredClone(new CountQueuingStrategy({ highWaterMark: 1 })); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, cqs), "DataCloneError");
+
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_rejects_window_realm_platform_objects() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
