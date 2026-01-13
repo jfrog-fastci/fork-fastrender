@@ -4102,7 +4102,9 @@ mod tests {
     };
 
     let face = font.as_ttf_face().unwrap();
-    let Some(glyph_id) = face.glyph_index('A').map(|g| g.0 as u32) else {
+    // Use a glyph with strong vertical stems so LCD/subpixel AA reliably produces colored fringes
+    // when enabled (the identity-transform sanity check below depends on this).
+    let Some(glyph_id) = face.glyph_index('H').map(|g| g.0 as u32) else {
       return;
     };
 
@@ -4195,7 +4197,7 @@ mod tests {
     };
 
     let face = font.as_ttf_face().unwrap();
-    let Some(glyph_id) = face.glyph_index('A').map(|g| g.0 as u32) else {
+    let Some(glyph_id) = face.glyph_index('H').map(|g| g.0 as u32) else {
       return;
     };
 
