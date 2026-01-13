@@ -18,7 +18,9 @@
 //!
 //! This module therefore builds an explicit UTF-16 environment block containing only a small
 //! allowlist of variables required for basic runtime correctness, and passes it to the Windows
-//! process creation APIs.
+//! process creation APIs. In particular, it overrides `TEMP`/`TMP` to a sandbox-accessible temp
+//! directory (in AppContainer mode this is typically `GetAppContainerFolderPath(AppContainerSid)\Temp`,
+//! falling back to `C:\Windows\Temp` when the AppContainer storage folder cannot be queried).
 //!
 //! Set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` to opt back into inheriting the full environment for
 //! debugging.
