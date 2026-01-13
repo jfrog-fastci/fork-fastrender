@@ -43,6 +43,85 @@ pub(crate) fn to_number_with_tick(
   }
 }
 
+fn is_integral_number(n: f64) -> bool {
+  n.is_finite() && n.fract() == 0.0
+}
+
+fn is_odd_integral_number(n: f64) -> bool {
+  is_integral_number(n) && (n % 2.0).abs() == 1.0
+}
+
+/// `Number::exponentiate` (ECMA-262).
+///
+/// Used by both the exponentiation operator (`**` / `**=`) and `Math.pow`.
+/// Spec: https://tc39.es/ecma262/#sec-numeric-types-number-exponentiate
+pub(crate) fn number_exponentiate(base: f64, exponent: f64) -> f64 {
+  if exponent.is_nan() {
+    return f64::NAN;
+  }
+  // Exponent is +0 or -0.
+  if exponent == 0.0 {
+    return 1.0;
+  }
+  if base.is_nan() {
+    return f64::NAN;
+  }
+  if base == f64::INFINITY {
+    return if exponent > 0.0 { f64::INFINITY } else { 0.0 };
+  }
+  if base == f64::NEG_INFINITY {
+    if exponent > 0.0 {
+      return if is_odd_integral_number(exponent) {
+        f64::NEG_INFINITY
+      } else {
+        f64::INFINITY
+      };
+    }
+    return if is_odd_integral_number(exponent) { -0.0 } else { 0.0 };
+  }
+  if base == 0.0 && !base.is_sign_negative() {
+    return if exponent > 0.0 { 0.0 } else { f64::INFINITY };
+  }
+  if base == 0.0 && base.is_sign_negative() {
+    if exponent > 0.0 {
+      return if is_odd_integral_number(exponent) {
+        -0.0
+      } else {
+        0.0
+      };
+    }
+    return if is_odd_integral_number(exponent) {
+      f64::NEG_INFINITY
+    } else {
+      f64::INFINITY
+    };
+  }
+  if exponent == f64::INFINITY {
+    let abs = base.abs();
+    if abs > 1.0 {
+      return f64::INFINITY;
+    }
+    if abs == 1.0 {
+      return f64::NAN;
+    }
+    return 0.0;
+  }
+  if exponent == f64::NEG_INFINITY {
+    let abs = base.abs();
+    if abs > 1.0 {
+      return 0.0;
+    }
+    if abs == 1.0 {
+      return f64::NAN;
+    }
+    return f64::INFINITY;
+  }
+  if base < 0.0 && !is_integral_number(exponent) {
+    return f64::NAN;
+  }
+  base.powf(exponent)
+}
+
 fn string_to_number_with_tick(
   heap: &Heap,
   s: GcString,

@@ -12136,7 +12136,9 @@ impl<'a> Evaluator<'a> {
     let left_num = self.to_numeric(&mut op_scope, left)?;
     let right_num = self.to_numeric(&mut op_scope, right)?;
     match (left_num, right_num) {
-      (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a.powf(b))),
+      (NumericValue::Number(a), NumericValue::Number(b)) => {
+        Ok(Value::Number(crate::ops::number_exponentiate(a, b)))
+      }
       (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
         let out = {
           let base = op_scope.heap().get_bigint(a)?;

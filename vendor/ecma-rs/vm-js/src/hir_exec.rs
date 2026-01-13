@@ -3785,7 +3785,9 @@ impl<'vm> HirEvaluator<'vm> {
         let base = self.to_numeric(&mut scope, l)?;
         let exp = self.to_numeric(&mut scope, r)?;
         match (base, exp) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a.powf(b))),
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number(crate::ops::number_exponentiate(a, b)))
+          }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
             let out = {
               let a = scope.heap().get_bigint(a)?;
@@ -5076,7 +5078,9 @@ impl<'vm> HirEvaluator<'vm> {
         let base = self.to_numeric(&mut scope, left)?;
         let exp = self.to_numeric(&mut scope, right)?;
         match (base, exp) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a.powf(b))),
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number(crate::ops::number_exponentiate(a, b)))
+          }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
             let out = {
               let a = scope.heap().get_bigint(a)?;

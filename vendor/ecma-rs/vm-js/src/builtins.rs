@@ -22078,14 +22078,6 @@ fn to_uint32(n: f64) -> u32 {
   int as u32
 }
 
-fn is_integral_number(n: f64) -> bool {
-  n.is_finite() && n.fract() == 0.0
-}
-
-fn is_odd_integral_number(n: f64) -> bool {
-  is_integral_number(n) && (n % 2.0).abs() == 1.0
-}
-
 const MATH_VARIADIC_TICK_EVERY: usize = 32;
 const MATH_SUM_PRECISE_TICK_EVERY: u64 = 32;
 const MATH_SUM_PRECISE_MAX_COUNT: u64 = (1u64 << 53) - 1;
@@ -22995,65 +22987,7 @@ pub fn math_pow(
   let exp = args.get(1).copied().unwrap_or(Value::Undefined);
   let x = scope.to_number(vm, host, hooks, base)?;
   let y = scope.to_number(vm, host, hooks, exp)?;
-  // Spec: https://tc39.es/ecma262/#sec-numeric-types-number-exponentiate
-  let out = if y.is_nan() {
-    f64::NAN
-  } else if y == 0.0 {
-    1.0
-  } else if x.is_nan() {
-    f64::NAN
-  } else if x == f64::INFINITY {
-    if y > 0.0 { f64::INFINITY } else { 0.0 }
-  } else if x == f64::NEG_INFINITY {
-    if y > 0.0 {
-      if is_odd_integral_number(y) {
-        f64::NEG_INFINITY
-      } else {
-        f64::INFINITY
-      }
-    } else if is_odd_integral_number(y) {
-      -0.0
-    } else {
-      0.0
-    }
-  } else if x == 0.0 && !x.is_sign_negative() {
-    if y > 0.0 { 0.0 } else { f64::INFINITY }
-  } else if x == 0.0 && x.is_sign_negative() {
-    if y > 0.0 {
-      if is_odd_integral_number(y) {
-        -0.0
-      } else {
-        0.0
-      }
-    } else if is_odd_integral_number(y) {
-      f64::NEG_INFINITY
-    } else {
-      f64::INFINITY
-    }
-  } else if y == f64::INFINITY {
-    let abs = x.abs();
-    if abs > 1.0 {
-      f64::INFINITY
-    } else if abs == 1.0 {
-      f64::NAN
-    } else {
-      0.0
-    }
-  } else if y == f64::NEG_INFINITY {
-    let abs = x.abs();
-    if abs > 1.0 {
-      0.0
-    } else if abs == 1.0 {
-      f64::NAN
-    } else {
-      f64::INFINITY
-    }
-  } else if x < 0.0 && !is_integral_number(y) {
-    f64::NAN
-  } else {
-    x.powf(y)
-  };
-  Ok(Value::Number(out))
+  Ok(Value::Number(crate::ops::number_exponentiate(x, y)))
 }
 
 /// `Math.sqrt(x)` (ECMA-262).

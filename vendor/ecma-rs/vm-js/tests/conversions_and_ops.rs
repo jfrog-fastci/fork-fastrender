@@ -55,7 +55,37 @@ fn numeric_operators_use_tonumber_for_strings() {
 #[test]
 fn exponentiation_operator_and_assignment_work_for_numbers() {
   let mut rt = new_runtime();
-  let ok = rt.exec_script("2 ** 3 === 8 && 2 ** 3 ** 2 === 512").unwrap();
+  let ok = rt
+    .exec_script(
+      r#"
+        (() => {
+          if (!(2 ** 3 === 8 && 2 ** 3 ** 2 === 512)) return false;
+
+          // Spec edge cases (Number::exponentiate).
+          const a = (-1) ** Infinity;
+          if (a === a) return false;
+          const b = (-1) ** -Infinity;
+          if (b === b) return false;
+          if (NaN ** 0 !== 1) return false;
+
+          const neg_zero_pos = (-0) ** 3;
+          if (!(neg_zero_pos === 0 && 1 / neg_zero_pos === -Infinity)) return false;
+          if ((-0) ** -3 !== -Infinity) return false;
+          if (0 ** -3 !== Infinity) return false;
+
+          const pos_zero = Infinity ** -1;
+          if (!(pos_zero === 0 && 1 / pos_zero === Infinity)) return false;
+          const neg_zero_neg = (-Infinity) ** -3;
+          if (!(neg_zero_neg === 0 && 1 / neg_zero_neg === -Infinity)) return false;
+
+          const nan = (-2) ** 0.5;
+          if (nan === nan) return false;
+
+          return true;
+        })()
+      "#,
+    )
+    .unwrap();
   assert_eq!(ok, Value::Bool(true));
 
   let ok = rt.exec_script("let x = 2; x **= 3; x === 8").unwrap();
