@@ -274,6 +274,10 @@ FastRender can emit the computed accessibility tree so semantics can be validate
 
 `AccessibilityNode` is `Serialize`, so callers can convert it to `serde_json::Value` or a pretty-printed string. The `dump_a11y` CLI binary emits the JSON tree for a cached HTML document.
 
+For contributor workflow details (inspecting the tree, how viewport/CSS bounds are computed and
+mapped for UI integration, and how to test screen reader integration), see
+[page_accessibility.md](page_accessibility.md).
+
 ## DOM compatibility mode
 
 `DomCompatibilityMode` controls whether FastRender applies a small set of **opt-in**, JS-era DOM
