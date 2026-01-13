@@ -27,9 +27,9 @@ use core::ptr;
 use icu_casemap::{CaseMapperBorrowed, ClosureSink};
 use std::alloc::alloc;
 
+pub(crate) use crate::regexp_unicode_property_strings::UnicodeStringProperty;
 #[cfg(test)]
 mod unicode_string_property;
-pub(crate) use crate::regexp_unicode_property_strings::UnicodeStringProperty;
 #[cfg(test)]
 pub(crate) use unicode_string_property::resolve_unicode_string_property;
 
