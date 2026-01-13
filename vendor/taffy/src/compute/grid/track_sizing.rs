@@ -672,7 +672,7 @@ pub(super) fn resolve_item_baselines(
   // per-group heap allocations (BTreeMap) / hash table rehashing (FxHashMap) in baseline-heavy
   // grids.
   let mut group_stats: Vec<BaselineGroupStats> = Vec::new();
-  let mut baseline_entries_capacity: usize = 0;
+  let mut has_shim_group = false;
   for item in items.iter_mut() {
     check_layout_abort();
     // Clear any stale shims for the axis we are computing. The track sizing algorithm can rerun, so
@@ -704,12 +704,9 @@ pub(super) fn resolve_item_baselines(
       }
       let entry = &mut group_stats[key];
       entry.count += 1;
-      // `baseline_entries` contains one entry per baseline-aligned item, but only for groups
-      // with > 1 participating item.
       if entry.count == 2 {
-        baseline_entries_capacity += 2;
-      } else if entry.count > 2 {
-        baseline_entries_capacity += 1;
+        // Only groups with > 1 baseline-aligned item require actual shimming work.
+        has_shim_group = true;
       }
     }
   }
@@ -777,7 +774,7 @@ pub(super) fn resolve_item_baselines(
   // In the row sizing pass this means baseline processing is a complete no-op. In the column
   // sizing pass we may still need to measure the baseline-aligned item in the first row in order
   // to compute the grid container baseline.
-  if baseline_entries_capacity == 0 {
+  if !has_shim_group {
     if axis == AbstractAxis::Inline {
       let first_group_baseline_count = group_stats
         .get(first_group_key as usize)
@@ -803,19 +800,7 @@ pub(super) fn resolve_item_baselines(
     return;
   }
 
-  // Indices of baseline-aligned items in groups with > 1 participants. We store the measured
-  // baseline value directly on the item in the relevant `baseline_shim` axis component, and later
-  // overwrite it with the computed shim.
-  //
-  // Baseline alignment is relatively uncommon; avoid a heap allocation for the common case of only
-  // a few baseline-aligned items.
-  const STACK_BASELINE_ENTRY_CAPACITY: usize = 32;
-  let mut baseline_entries_stack: ArrayVec<usize, STACK_BASELINE_ENTRY_CAPACITY> = ArrayVec::new();
-  let mut baseline_entries_heap: Option<Vec<usize>> =
-    (baseline_entries_capacity > STACK_BASELINE_ENTRY_CAPACITY)
-      .then(|| Vec::with_capacity(baseline_entries_capacity));
-
-  for (idx, item) in items.iter_mut().enumerate() {
+  for item in items.iter_mut() {
     check_layout_abort();
     if !is_baseline_aligned(item) {
       continue;
@@ -856,23 +841,27 @@ pub(super) fn resolve_item_baselines(
       AbstractAxis::Inline => item.baseline_shim.y = value,
       AbstractAxis::Block => item.baseline_shim.x = value,
     }
-    match baseline_entries_heap.as_mut() {
-      Some(vec) => vec.push(idx),
-      None => baseline_entries_stack.push(idx),
-    }
     if let Some(entry) = group_stats.get_mut(key as usize) {
       entry.max_baseline = f32_max(entry.max_baseline, value);
     }
   }
 
-  let mut apply_shim = |idx: usize| {
-    let item = &mut items[idx];
+  for item in items.iter_mut() {
+    check_layout_abort();
+    if !is_baseline_aligned(item) {
+      continue;
+    }
+
     let key = match other_axis {
       AbstractAxis::Inline => item.column_indexes.start,
       AbstractAxis::Block => item.row_indexes.start,
     };
+    let baseline_item_count = group_stats.get(key as usize).map(|s| s.count).unwrap_or(0);
+    if baseline_item_count <= 1 {
+      continue;
+    }
     let Some(group_max) = group_stats.get(key as usize).map(|s| s.max_baseline) else {
-      return;
+      continue;
     };
     let value = match axis {
       AbstractAxis::Inline => item.baseline_shim.y,
@@ -883,16 +872,6 @@ pub(super) fn resolve_item_baselines(
     match axis {
       AbstractAxis::Inline => item.baseline_shim.y = shim,
       AbstractAxis::Block => item.baseline_shim.x = shim,
-    }
-  };
-
-  if let Some(entries) = baseline_entries_heap {
-    for idx in entries {
-      apply_shim(idx);
-    }
-  } else {
-    for idx in baseline_entries_stack {
-      apply_shim(idx);
     }
   }
 }
