@@ -373,7 +373,9 @@ fn should_emit_download_progress(
 // handlers, deferred scripts, etc) can execute without waiting for a user event.
 //
 // Budgets must remain tight so hostile pages cannot hang the worker.
-const POST_NAV_JS_PUMP_MAX_TASKS: usize = 1;
+// DOMContentLoaded is queued behind a barrier task (see `js::document_lifecycle`), so we need to
+// allow at least 2 tasks to ensure the lifecycle event itself can run.
+const POST_NAV_JS_PUMP_MAX_TASKS: usize = 4;
 const POST_NAV_JS_PUMP_MAX_MICROTASKS: usize = 10_000;
 const POST_NAV_JS_PUMP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
 #[derive(Debug, Clone, Default)]
@@ -6062,7 +6064,7 @@ impl BrowserRuntime {
       max_wall_time: Some(POST_NAV_JS_PUMP_TIMEOUT),
     };
 
-    let js_dom_snapshot = {
+    let (js_dom_snapshot, js_dom_generation) = {
       let Some(js_tab) = tab.js_tab.as_mut() else {
         return false;
       };
@@ -6074,8 +6076,13 @@ impl BrowserRuntime {
       }
       // Snapshot the post-pump DOM so we can compare against the renderer DOM without holding a
       // borrow into `tab.js_tab` across the subsequent `tab.document` mutation.
-      js_tab.dom().to_renderer_dom()
+      let generation = js_tab.dom().mutation_generation();
+      let snapshot = js_tab.dom().to_renderer_dom();
+      (snapshot, generation)
     };
+    // Keep our cached generation in sync with whatever ran during the pump so subsequent ticks
+    // don't treat the DOM as "dirty" purely due to this initial execution slice.
+    tab.js_dom_mutation_generation = js_dom_generation;
 
     let Some(doc) = tab.document.as_mut() else {
       return false;
