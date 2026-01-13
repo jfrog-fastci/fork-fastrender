@@ -10978,6 +10978,17 @@ struct OpenSelectDropdown {
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
+struct OpenDatalist {
+  tab_id: fastrender::ui::TabId,
+  input_node_id: usize,
+  options: Vec<fastrender::ui::messages::DatalistOption>,
+  /// egui widget id that held focus before the popup was opened.
+  focus_before_open: Option<egui::Id>,
+  /// Bounding box of the `<input>` control in viewport CSS coordinates.
+  anchor_css: fastrender::geometry::Rect,
+  /// Fallback anchor position in egui points (cursor position).
+  anchor_points: egui::Pos2,
+}
 struct OpenDateTimePicker {
   tab_id: fastrender::ui::TabId,
   input_node_id: usize,
@@ -11044,6 +11055,20 @@ fn close_select_dropdown_popup(
   };
   *open_select_dropdown_rect = None;
   restore_or_clear_egui_focus(ctx, dropdown.focus_before_open);
+}
+
+#[cfg(feature = "browser_ui")]
+fn close_datalist_popup(
+  ctx: &egui::Context,
+  open_datalist: &mut Option<OpenDatalist>,
+  open_datalist_rect: &mut Option<egui::Rect>,
+) {
+  let Some(popup) = open_datalist.take() else {
+    *open_datalist_rect = None;
+    return;
+  };
+  *open_datalist_rect = None;
+  restore_or_clear_egui_focus(ctx, popup.focus_before_open);
 }
 
 #[cfg(feature = "browser_ui")]
@@ -13435,6 +13460,8 @@ struct App {
 
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
+  open_datalist: Option<OpenDatalist>,
+  open_datalist_rect: Option<egui::Rect>,
   open_date_time_picker: Option<OpenDateTimePicker>,
   open_date_time_picker_rect: Option<egui::Rect>,
   open_color_picker: Option<OpenColorPicker>,
@@ -13877,6 +13904,9 @@ impl App {
     self
       .open_select_dropdown_rect
       .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_datalist_rect
+        .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_date_time_picker_rect
         .is_some_and(|rect| rect.contains(pos_points))
@@ -14420,6 +14450,8 @@ impl App {
       open_context_menu_rect: None,
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
+      open_datalist: None,
+      open_datalist_rect: None,
       open_date_time_picker: None,
       open_date_time_picker_rect: None,
       open_color_picker: None,
@@ -16306,6 +16338,21 @@ impl App {
     self.close_select_dropdown();
   }
 
+  fn close_datalist(&mut self) {
+    close_datalist_popup(
+      &self.egui_ctx,
+      &mut self.open_datalist,
+      &mut self.open_datalist_rect,
+    );
+  }
+
+  fn cancel_datalist(&mut self) {
+    if let Some(popup) = self.open_datalist.as_ref() {
+      self.send_worker_msg(fastrender::ui::UiToWorker::datalist_cancel(popup.tab_id));
+    }
+    self.close_datalist();
+  }
+
   fn close_date_time_picker(&mut self) {
     close_date_time_picker_popup(
       &self.egui_ctx,
@@ -17677,6 +17724,7 @@ impl App {
       | fastrender::ui::WorkerToUi::NavigationCommitted { tab_id, .. }
       | fastrender::ui::WorkerToUi::NavigationFailed { tab_id, .. }
       | fastrender::ui::WorkerToUi::SelectDropdownClosed { tab_id }
+      | fastrender::ui::WorkerToUi::DatalistClosed { tab_id }
       | fastrender::ui::WorkerToUi::DateTimePickerClosed { tab_id }
       | fastrender::ui::WorkerToUi::ColorPickerClosed { tab_id }
       | fastrender::ui::WorkerToUi::FilePickerClosed { tab_id }
@@ -17694,6 +17742,13 @@ impl App {
           .is_some_and(|picker| picker.tab_id == *tab_id)
         {
           self.close_date_time_picker();
+        }
+        if self
+          .open_datalist
+          .as_ref()
+          .is_some_and(|popup| popup.tab_id == *tab_id)
+        {
+          self.close_datalist();
         }
         if self
           .open_color_picker
@@ -18008,6 +18063,45 @@ impl App {
           color,
         });
         self.open_color_picker_rect = None;
+        request_redraw = true;
+      }
+    }
+
+    if let fastrender::ui::WorkerToUi::DatalistOpened {
+      tab_id,
+      input_node_id,
+      options,
+      anchor_css,
+    } = &msg
+    {
+      if self.browser_state.active_tab_id() == Some(*tab_id) {
+        let focus_before_open = self
+          .open_datalist
+          .as_ref()
+          .map(|existing| existing.focus_before_open)
+          .unwrap_or_else(|| egui_focused_widget_id(&self.egui_ctx));
+
+        let mut anchor_points = self
+          .last_cursor_pos_points
+          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
+          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
+        if self.page_input_tab == Some(*tab_id) {
+          if let Some(mapping) = self.page_input_mapping {
+            if let Some(rect_points) = mapping.rect_css_to_rect_points(*anchor_css) {
+              anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+            }
+          }
+        }
+
+        self.open_datalist = Some(OpenDatalist {
+          tab_id: *tab_id,
+          input_node_id: *input_node_id,
+          options: options.clone(),
+          focus_before_open,
+          anchor_css: *anchor_css,
+          anchor_points,
+        });
+        self.open_datalist_rect = None;
         request_redraw = true;
       }
     }
@@ -21429,6 +21523,135 @@ impl App {
     self.window.request_redraw();
   }
 
+  fn render_datalist_popup(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::UiToWorker;
+
+    let (tab_id, input_node_id, anchor_css, fallback_anchor_points) =
+      match self.open_datalist.as_ref() {
+        Some(popup) => (
+          popup.tab_id,
+          popup.input_node_id,
+          popup.anchor_css,
+          popup.anchor_points,
+        ),
+        None => {
+          self.open_datalist_rect = None;
+          return;
+        }
+      };
+
+    if self.browser_state.active_tab_id() != Some(tab_id) {
+      self.cancel_datalist();
+      self.window.request_redraw();
+      return;
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+      self.cancel_datalist();
+      self.window.request_redraw();
+      return;
+    }
+
+    let mut anchor_rect_points: Option<egui::Rect> = None;
+    let mut fallback_anchor_pos_points = fallback_anchor_points;
+    let mut preferred_width_points = Self::SELECT_DROPDOWN_MIN_WIDTH_POINTS;
+
+    if self.page_input_tab == Some(tab_id) {
+      if let Some(mapping) = self.page_input_mapping {
+        if let Some(rect_points) = mapping.rect_css_to_rect_points(anchor_css) {
+          anchor_rect_points = Some(rect_points);
+          fallback_anchor_pos_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+          preferred_width_points = rect_points.width().max(preferred_width_points);
+        }
+      }
+    }
+    preferred_width_points = preferred_width_points.max(Self::SELECT_DROPDOWN_MIN_WIDTH_POINTS);
+
+    let screen_rect_points = ctx.screen_rect();
+    let screen_rect = fastrender::Rect::from_xywh(
+      screen_rect_points.min.x,
+      screen_rect_points.min.y,
+      screen_rect_points.width(),
+      screen_rect_points.height(),
+    );
+    let anchor_rect = anchor_rect_points
+      .map(|rect| fastrender::Rect::from_xywh(rect.min.x, rect.min.y, rect.width(), rect.height()));
+
+    let placement = fastrender::select_dropdown::select_dropdown_popup_placement(
+      screen_rect,
+      anchor_rect,
+      fastrender::Point::new(fallback_anchor_pos_points.x, fallback_anchor_pos_points.y),
+      preferred_width_points,
+      Self::SELECT_DROPDOWN_MIN_WIDTH_POINTS,
+      Self::SELECT_DROPDOWN_MAX_WIDTH_POINTS,
+      Self::SELECT_DROPDOWN_MAX_HEIGHT_POINTS,
+      Self::SELECT_DROPDOWN_EDGE_PADDING_POINTS,
+    );
+
+    let (popup_pos, popup_pivot) = match placement.direction {
+      fastrender::select_dropdown::SelectDropdownPopupDirection::Down => (
+        egui::pos2(placement.rect.min_x(), placement.rect.min_y()),
+        egui::Align2::LEFT_TOP,
+      ),
+      fastrender::select_dropdown::SelectDropdownPopupDirection::Up => (
+        egui::pos2(placement.rect.min_x(), placement.rect.max_y()),
+        egui::Align2::LEFT_BOTTOM,
+      ),
+    };
+
+    let (popup_rect, chosen) = {
+      let options = match self.open_datalist.as_ref() {
+        Some(popup) => popup.options.clone(),
+        None => Vec::new(),
+      };
+
+      let popup = egui::Area::new(egui::Id::new(("fastr_datalist_popup", tab_id.0, input_node_id)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(popup_pos)
+        .pivot(popup_pivot)
+        .show(ctx, |ui| {
+          let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_min_width(placement.rect.width());
+            let max_h = placement.rect.height().max(0.0);
+
+            let mut chosen: Option<usize> = None;
+            egui::ScrollArea::vertical()
+              .max_height(max_h)
+              .show(ui, |ui| {
+                for opt in options.iter() {
+                  let resp = ui.add_enabled(
+                    !opt.disabled,
+                    egui::SelectableLabel::new(false, opt.value.as_str()),
+                  );
+                  if resp.clicked() {
+                    chosen = Some(opt.option_node_id);
+                  }
+                }
+              });
+
+            chosen
+          });
+
+          (frame.response.rect, frame.inner)
+        });
+
+      popup.inner
+    };
+    self.open_datalist_rect = Some(popup_rect);
+
+    let Some(option_node_id) = chosen else {
+      return;
+    };
+
+    let _ = self.send_worker_msg(UiToWorker::datalist_choose(
+      tab_id,
+      input_node_id,
+      option_node_id,
+    ));
+    self.close_datalist();
+    self.window.request_redraw();
+  }
+
   fn render_date_time_picker_value_input(
     ui: &mut egui::Ui,
     tab_id: fastrender::ui::TabId,
@@ -23745,6 +23968,34 @@ impl App {
           self.cancel_select_dropdown();
           self.window.request_redraw();
           if clicked_select_control {
+            return;
+          }
+        }
+
+        if matches!(state, ElementState::Pressed) && self.open_datalist.is_some() {
+          // If the datalist popup is open, clicks inside it are handled by egui (option selection).
+          if self
+            .open_datalist_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+
+          // Close the popup before processing the click so we don't require a second click to
+          // interact with the underlying page/chrome.
+          //
+          // Special-case: clicking the `<input>` control itself should typically just toggle the
+          // popup closed (don't immediately reopen it by forwarding the click to the page).
+          let clicked_input_control = self.open_datalist.as_ref().is_some_and(|popup| {
+            self
+              .page_input_mapping
+              .and_then(|mapping| mapping.rect_css_to_rect_points(popup.anchor_css))
+              .is_some_and(|rect_points| rect_points.contains(pos_points))
+          });
+
+          self.cancel_datalist();
+          self.window.request_redraw();
+          if clicked_input_control {
             return;
           }
         }
@@ -28039,6 +28290,7 @@ impl App {
     );
     self.render_media_controls(&ctx);
     self.render_select_dropdown(&ctx);
+    self.render_datalist_popup(&ctx);
     self.render_date_time_picker(&ctx);
     self.render_color_picker(&ctx);
     self.render_file_picker(&ctx);

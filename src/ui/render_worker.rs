@@ -785,6 +785,13 @@ impl TabMediaWakeState {
   }
 }
 
+#[derive(Debug, Clone)]
+struct DatalistPopupState {
+  input_node_id: usize,
+  options: Vec<DatalistOption>,
+  anchor_css: Rect,
+}
+
 struct TabState {
   history: TabHistory,
   loading: bool,
@@ -840,6 +847,7 @@ struct TabState {
   /// between ticks and event dispatch).
   js_dom_mutation_generation: u64,
   interaction: InteractionEngine,
+  datalist_popup: Option<DatalistPopupState>,
   cancel: CancelGens,
   last_committed_url: Option<String>,
   last_base_url: Option<String>,
@@ -905,6 +913,7 @@ impl TabState {
       js_dom_dirty: false,
       js_dom_mutation_generation: 0,
       interaction: InteractionEngine::new(),
+      datalist_popup: None,
       cancel,
       last_committed_url: None,
       last_base_url: None,
@@ -3738,44 +3747,48 @@ impl BrowserRuntime {
           self.viewport_changed_handled_for_test = self.viewport_changed_handled_for_test.saturating_add(1);
         }
 
-        let Some(tab) = self.tabs.get_mut(&tab_id) else {
-          return;
-        };
-        let prev_viewport = tab.viewport_css;
-        let prev_dpr = tab.dpr;
-        let clamp = self.limits.clamp_viewport_and_dpr(viewport_css, dpr);
-        let resized = clamp.viewport_css != prev_viewport || clamp.dpr != prev_dpr;
-        tab.viewport_css = clamp.viewport_css;
-        tab.dpr = clamp.dpr;
-        if let Some(text) = clamp.warning_text(&self.limits) {
-          let _ = self
-            .ui_tx
-            .send(WorkerToUiMsg::Single(WorkerToUi::Warning { tab_id, text }));
-        }
-        // Viewport changes should cancel any in-flight paints, but do not attempt to paint before
-        // the first navigation completes (no document/layout cache yet).
-        tab.cancel.bump_paint();
+        {
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return;
+          };
+          let prev_viewport = tab.viewport_css;
+          let prev_dpr = tab.dpr;
+          let clamp = self.limits.clamp_viewport_and_dpr(viewport_css, dpr);
+          let resized = clamp.viewport_css != prev_viewport || clamp.dpr != prev_dpr;
+          tab.viewport_css = clamp.viewport_css;
+          tab.dpr = clamp.dpr;
+          if let Some(text) = clamp.warning_text(&self.limits) {
+            let _ = self
+              .ui_tx
+              .send(WorkerToUiMsg::Single(WorkerToUi::Warning { tab_id, text }));
+          }
+          // Viewport changes should cancel any in-flight paints, but do not attempt to paint before
+          // the first navigation completes (no document/layout cache yet).
+          tab.cancel.bump_paint();
 
-        if let Some(doc) = tab.document.as_mut() {
-          tab.needs_repaint = true;
-          tab.force_repaint = true;
-          doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
-          doc.set_device_pixel_ratio(tab.dpr);
-        }
-        tab.sync_js_viewport_state();
+          if let Some(doc) = tab.document.as_mut() {
+            tab.needs_repaint = true;
+            tab.force_repaint = true;
+            doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
+            doc.set_device_pixel_ratio(tab.dpr);
+          }
+          tab.sync_js_viewport_state();
 
-        if resized {
-          if let Some(js_tab) = tab.js_tab.as_mut() {
-            let _ = js_tab.dispatch_window_event(
-              "resize",
-              web_events::EventInit {
-                bubbles: false,
-                cancelable: false,
-                composed: false,
-              },
-            );
+          if resized {
+            if let Some(js_tab) = tab.js_tab.as_mut() {
+              let _ = js_tab.dispatch_window_event(
+                "resize",
+                web_events::EventInit {
+                  bubbles: false,
+                  cancelable: false,
+                  composed: false,
+                },
+              );
+            }
           }
         }
+
+        self.refresh_datalist_popup_anchor(tab_id);
       }
       UiToWorker::Scroll {
         tab_id,
@@ -4109,11 +4122,13 @@ impl BrowserRuntime {
             }
           }
         }
+        self.refresh_datalist_popup_anchor(tab_id);
       }
       UiToWorker::ScrollTo { tab_id, pos_css } => {
-        let Some(tab) = self.tabs.get_mut(&tab_id) else {
-          return;
-        };
+        {
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return;
+          };
 
         let sanitize = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
         let target = Point::new(sanitize(pos_css.0), sanitize(pos_css.1));
@@ -4177,7 +4192,6 @@ impl BrowserRuntime {
             }
           }
         }
-
         if viewport_scrolled {
           if let Some(js_tab) = tab.js_tab.as_mut() {
             let _ = js_tab.dispatch_window_event(
@@ -4190,6 +4204,9 @@ impl BrowserRuntime {
             );
           }
         }
+        }
+
+        self.refresh_datalist_popup_anchor(tab_id);
       }
       UiToWorker::PointerMove {
         tab_id,
@@ -4269,6 +4286,7 @@ impl BrowserRuntime {
         // side. Emit `DatalistClosed` anyway so UIs can dismiss the popup deterministically.
         if let Some(tab) = self.tabs.get_mut(&tab_id) {
           tab.datalist_open_input = None;
+          tab.datalist_popup = None;
         }
         let _ = self
           .ui_tx
@@ -5291,6 +5309,13 @@ impl BrowserRuntime {
       CursorKind::Default,
       None,
     );
+
+    if tab.datalist_popup.take().is_some() {
+      tab.datalist_open_input = None;
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
+    }
 
     let had_pending_navigation = tab.loading;
     let had_pending_history_entry = tab.pending_history_entry;
@@ -8571,6 +8596,66 @@ impl BrowserRuntime {
     }
   }
 
+  fn refresh_datalist_popup_anchor(&mut self, tab_id: TabId) {
+    let ui_tx = self.ui_tx.clone();
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(mut popup) = tab.datalist_popup.take() else {
+      return;
+    };
+
+    let viewport_rect = Rect::from_xywh(
+      0.0,
+      0.0,
+      tab.viewport_css.0 as f32,
+      tab.viewport_css.1 as f32,
+    );
+
+    let Some(doc) = tab.document.as_ref() else {
+      tab.datalist_open_input = None;
+      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
+      return;
+    };
+    let Some(prepared) = doc.prepared() else {
+      tab.datalist_open_input = None;
+      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
+      return;
+    };
+
+    let Some(anchor_css) = styled_node_anchor_css(
+      prepared.box_tree(),
+      prepared.fragment_tree(),
+      &tab.scroll_state,
+      popup.input_node_id,
+    )
+    .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+    else {
+      tab.datalist_open_input = None;
+      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
+      return;
+    };
+
+    if !anchor_css.intersects(viewport_rect) {
+      tab.datalist_open_input = None;
+      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
+      return;
+    }
+
+    if anchor_css != popup.anchor_css {
+      popup.anchor_css = anchor_css;
+      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DatalistOpened {
+        tab_id,
+        input_node_id: popup.input_node_id,
+        options: popup.options.clone(),
+        anchor_css,
+      }));
+    }
+
+    tab.datalist_popup = Some(popup);
+  }
+
   fn handle_datalist_choose(
     &mut self,
     tab_id: TabId,
@@ -8791,6 +8876,12 @@ impl BrowserRuntime {
         .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
         .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
 
+      tab.datalist_popup = Some(DatalistPopupState {
+        input_node_id,
+        options: options.clone(),
+        anchor_css,
+      });
+
       let _ = self
         .ui_tx
         .send(WorkerToUiMsg::Single(WorkerToUi::DatalistOpened {
@@ -8806,6 +8897,7 @@ impl BrowserRuntime {
         .ui_tx
         .send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
       tab.datalist_open_input = None;
+      tab.datalist_popup = None;
     }
 
     let mut scroll_changed = false;
@@ -9723,6 +9815,7 @@ impl BrowserRuntime {
           .ui_tx
           .send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
         tab.datalist_open_input = None;
+        tab.datalist_popup = None;
       }
 
       let mut default_allowed = true;

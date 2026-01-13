@@ -23,6 +23,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 use url::Url;
 
+#[derive(Debug, Clone)]
+struct DatalistPopupState {
+  input_node_id: usize,
+  options: Vec<DatalistOption>,
+  anchor_css: Rect,
+}
+
 /// Per-tab worker-side controller that owns interactive document state (DOM + scroll + input).
 ///
 /// This is a synchronous, message-driven component intended to be used by a render worker thread.
@@ -32,6 +39,7 @@ pub struct BrowserTabController {
   tab_id: TabId,
   document: BrowserDocument,
   interaction: InteractionEngine,
+  datalist_popup: Option<DatalistPopupState>,
   current_url: String,
   base_url: String,
   scroll_state: ScrollState,
@@ -120,6 +128,7 @@ impl BrowserTabController {
       tab_id,
       document,
       interaction: InteractionEngine::new(),
+      datalist_popup: None,
       current_url: document_url.to_string(),
       base_url: strip_fragment(document_url),
       scroll_state: ScrollState::default(),
@@ -250,6 +259,7 @@ impl BrowserTabController {
       } if tab_id == self.tab_id => self.handle_datalist_choose(input_node_id, option_node_id),
       UiToWorker::DatalistCancel { tab_id } if tab_id == self.tab_id => {
         self.datalist_open_input = None;
+        self.datalist_popup = None;
         Ok(vec![WorkerToUi::DatalistClosed { tab_id }])
       }
       UiToWorker::DateTimePickerChoose {
@@ -441,7 +451,6 @@ impl BrowserTabController {
 
     self.tick_animation_time_ms = next;
     self.document.set_animation_time_ms(next);
-
     self.paint_if_needed()
   }
 
@@ -675,7 +684,9 @@ impl BrowserTabController {
       }
     }
 
-    self.paint_if_needed()
+    let mut out = self.refresh_datalist_popup_anchor();
+    out.extend(self.paint_if_needed()?);
+    Ok(out)
   }
 
   fn handle_viewport_changed(
@@ -689,7 +700,9 @@ impl BrowserTabController {
     self.document.set_device_pixel_ratio(dpr);
     // Keep the document's scroll state stable across the resize until painting clamps it.
     self.document.set_scroll_state(self.scroll_state.clone());
-    self.paint_if_needed()
+    let mut out = self.paint_if_needed()?;
+    out.extend(self.refresh_datalist_popup_anchor());
+    Ok(out)
   }
 
   fn handle_scroll(
@@ -793,7 +806,9 @@ impl BrowserTabController {
       self.document.set_scroll_state(self.scroll_state.clone());
     }
 
-    self.paint_if_needed()
+    let mut out = self.refresh_datalist_popup_anchor();
+    out.extend(self.paint_if_needed()?);
+    Ok(out)
   }
 
   fn handle_pointer_move(&mut self, pos_css: (f32, f32)) -> Result<Vec<WorkerToUi>> {
@@ -1384,6 +1399,46 @@ impl BrowserTabController {
     )))
   }
 
+  fn refresh_datalist_popup_anchor(&mut self) -> Vec<WorkerToUi> {
+    let Some(mut popup) = self.datalist_popup.take() else {
+      return Vec::new();
+    };
+
+    let viewport_rect = Rect::from_xywh(
+      0.0,
+      0.0,
+      self.viewport_css.0 as f32,
+      self.viewport_css.1 as f32,
+    );
+
+    let Some(anchor_css) = self
+      .select_anchor_css(popup.input_node_id)
+      .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+    else {
+      self.datalist_open_input = None;
+      return vec![WorkerToUi::DatalistClosed { tab_id: self.tab_id }];
+    };
+
+    if !anchor_css.intersects(viewport_rect) {
+      self.datalist_open_input = None;
+      return vec![WorkerToUi::DatalistClosed { tab_id: self.tab_id }];
+    }
+
+    let mut out = Vec::new();
+    if anchor_css != popup.anchor_css {
+      popup.anchor_css = anchor_css;
+      out.push(WorkerToUi::DatalistOpened {
+        tab_id: self.tab_id,
+        input_node_id: popup.input_node_id,
+        options: popup.options.clone(),
+        anchor_css,
+      });
+    }
+
+    self.datalist_popup = Some(popup);
+    out
+  }
+
   fn handle_text_input(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {
     let prev_open = self.datalist_open_input;
     let scroll_snapshot = self.scroll_state.clone();
@@ -1446,6 +1501,11 @@ impl BrowserTabController {
     let mut out = Vec::new();
     if let Some((input_node_id, options)) = datalist_open {
       let anchor_css = self.select_anchor_css(input_node_id).unwrap_or(Rect::ZERO);
+      self.datalist_popup = Some(DatalistPopupState {
+        input_node_id,
+        options: options.clone(),
+        anchor_css,
+      });
       out.push(WorkerToUi::DatalistOpened {
         tab_id: self.tab_id,
         input_node_id,
@@ -1456,6 +1516,7 @@ impl BrowserTabController {
     } else if prev_open.is_some() {
       out.push(WorkerToUi::DatalistClosed { tab_id: self.tab_id });
       self.datalist_open_input = None;
+      self.datalist_popup = None;
     }
     if changed || scroll_changed {
       out.extend(self.paint_if_needed()?);
@@ -1470,6 +1531,7 @@ impl BrowserTabController {
   ) -> Result<Vec<WorkerToUi>> {
     // Mirror the threaded worker semantics: choosing any option in the datalist overlay should close
     // the popup even when the selection is rejected (disabled option) or a no-op.
+    self.datalist_popup = None;
     let mut out = vec![WorkerToUi::DatalistClosed { tab_id: self.tab_id }];
     self.datalist_open_input = None;
     let engine = &mut self.interaction;
@@ -1518,6 +1580,7 @@ impl BrowserTabController {
     if self.interaction_state().focused != Some(open_input) {
       out.push(WorkerToUi::DatalistClosed { tab_id: self.tab_id });
       self.datalist_open_input = None;
+      self.datalist_popup = None;
     }
   }
 
