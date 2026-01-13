@@ -116,7 +116,8 @@ When FastRender ships as a macOS `.app`, we want the **untrusted renderer helper
 content) to run with **App Sandbox** enabled, with a deny-by-default posture:
 
 - no direct network access
-- no direct filesystem access
+- no filesystem access outside the app bundle + sandbox container (no extra file entitlements
+  granting access to user/system paths)
 - all OS I/O brokered by the trusted browser/UI process (or a dedicated network process) over IPC
 
 This repository includes placeholder entitlement files for that future packaging step:
@@ -130,6 +131,10 @@ This repository includes placeholder entitlement files for that future packaging
   - Intentionally does **not** request network or file entitlements.
   - Reminder: App Sandbox entitlements are *additive* grants; “denied” is achieved by leaving
     entitlements out (not by writing explicit deny rules).
+
+Note: a sandboxed process can still read its own **app bundle resources** and can typically read/write
+within its **App Sandbox container**; the goal here is to prevent the renderer from directly accessing
+arbitrary user/system paths (and to keep network I/O brokered by a privileged process).
 
 ### How these would be used (future `.app` bundling)
 

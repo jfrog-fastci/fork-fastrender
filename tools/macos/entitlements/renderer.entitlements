@@ -7,8 +7,9 @@
   beyond what is required to render:
     - NO network access (do NOT add `com.apple.security.network.client` or
       `com.apple.security.network.server`)
-    - NO filesystem read/write access (do NOT add any `com.apple.security.files.*`
-      entitlements)
+    - NO filesystem access beyond the app bundle + app container:
+      - do NOT add any `com.apple.security.files.*` entitlements that would grant
+        broader read/write access (user-selected, downloads, bookmarks, etc.)
 
   All network and file I/O should be brokered by the trusted browser process
   (or a dedicated network process) over a narrow IPC surface.
