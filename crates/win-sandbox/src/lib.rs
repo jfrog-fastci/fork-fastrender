@@ -1,0 +1,211 @@
+//! Windows sandboxing primitives (Win32).
+//!
+//! This crate intentionally contains only small, Windows-focused utilities so
+//! higher-level crates can use sandboxing (job objects, AppContainer, restricted
+//! tokens, ...) without pulling in the full `fastrender` dependency graph.
+//!
+//! The public API is intentionally safe; internal Win32 calls are wrapped so
+//! callers never need to use `unsafe` directly.
+
+use thiserror::Error;
+
+/// Result type alias for win-sandbox operations.
+pub type Result<T> = std::result::Result<T, WinSandboxError>;
+
+/// A Win32 error captured from `GetLastError()` along with a formatted message.
+///
+/// This is primarily a building block for [`WinSandboxError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastError {
+  code: u32,
+}
+
+impl LastError {
+  /// Captures the current thread's `GetLastError()` value.
+  #[cfg(windows)]
+  pub fn last() -> Self {
+    // SAFETY: FFI call; does not have preconditions.
+    let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+    Self { code }
+  }
+
+  /// Creates a `LastError` from an explicit Win32 error code.
+  pub fn from_code(code: u32) -> Self {
+    Self { code }
+  }
+
+  /// Returns the underlying Win32 error code.
+  pub fn code(self) -> u32 {
+    self.code
+  }
+
+  /// Formats the error code using `FormatMessageW`.
+  #[cfg(windows)]
+  pub fn message(self) -> String {
+    format_win32_error_message(self.code)
+  }
+
+  /// Formats the error code on non-Windows targets.
+  #[cfg(not(windows))]
+  pub fn message(self) -> String {
+    format!("Win32 error {}", self.code)
+  }
+}
+
+#[cfg(windows)]
+fn format_win32_error_message(code: u32) -> String {
+  use windows_sys::Win32::System::Diagnostics::Debug::{
+    FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS,
+  };
+
+  // `FormatMessageW` returns a localized string and may append a trailing CRLF.
+  // Use a fixed buffer to avoid heap allocation + `LocalFree` plumbing.
+  let mut buf = [0u16; 512];
+
+  // SAFETY: Win32 FFI call. We pass a valid writable buffer; `lpSource` and
+  // `Arguments` are null because we use `FORMAT_MESSAGE_FROM_SYSTEM`.
+  let len = unsafe {
+    FormatMessageW(
+      FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+      std::ptr::null(),
+      code,
+      0,
+      buf.as_mut_ptr(),
+      buf.len() as u32,
+      std::ptr::null_mut(),
+    )
+  };
+
+  if len == 0 {
+    return format!("Win32 error {code}");
+  }
+
+  let msg = String::from_utf16_lossy(&buf[..len as usize]);
+  msg.trim().to_string()
+}
+
+/// Errors produced by the Windows sandbox layer.
+#[derive(Debug, Error)]
+pub enum WinSandboxError {
+  /// A Win32 API failed. Contains the function name and `GetLastError()` code.
+  #[error("{func} failed with Win32 error {code}: {message}")]
+  Win32 {
+    func: &'static str,
+    code: u32,
+    message: String,
+  },
+}
+
+impl WinSandboxError {
+  /// Builds a [`WinSandboxError::Win32`] by calling `GetLastError()` immediately.
+  #[cfg(windows)]
+  pub fn last(func: &'static str) -> Self {
+    let err = LastError::last();
+    Self::from_last_error(func, err)
+  }
+
+  /// Builds a [`WinSandboxError::Win32`] from an explicit error code.
+  pub fn from_code(func: &'static str, code: u32) -> Self {
+    Self::from_last_error(func, LastError::from_code(code))
+  }
+
+  fn from_last_error(func: &'static str, err: LastError) -> Self {
+    Self::Win32 {
+      func,
+      code: err.code(),
+      message: err.message(),
+    }
+  }
+}
+
+/// RAII wrapper for an owned Win32 `HANDLE`.
+///
+/// This type closes the handle with `CloseHandle` on drop.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct OwnedHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl OwnedHandle {
+  /// Borrows the underlying `HANDLE`.
+  pub fn as_raw(&self) -> windows_sys::Win32::Foundation::HANDLE {
+    self.0
+  }
+
+  /// Consumes the wrapper without closing the handle.
+  pub fn into_raw(self) -> windows_sys::Win32::Foundation::HANDLE {
+    let handle = self.0;
+    std::mem::forget(self);
+    handle
+  }
+
+  #[allow(dead_code)]
+  pub(crate) fn from_raw(handle: windows_sys::Win32::Foundation::HANDLE) -> Self {
+    Self(handle)
+  }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedHandle {
+  fn drop(&mut self) {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    let handle = self.0;
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+      return;
+    }
+
+    // SAFETY: `CloseHandle` is valid to call on kernel object handles returned
+    // from Win32 APIs (job objects, tokens, ...). We defensively avoid closing
+    // common sentinel values.
+    unsafe {
+      CloseHandle(handle);
+    }
+  }
+}
+
+/// RAII wrapper for an owned Win32 `PSID`.
+///
+/// # Allocation / free contract
+///
+/// This wrapper is intended for SIDs allocated by Win32 APIs that document that
+/// the caller must free the returned `PSID` with `LocalFree` (for example,
+/// `DeriveAppContainerSidFromAppContainerName`).
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct OwnedSid(windows_sys::Win32::Security::PSID);
+
+#[cfg(windows)]
+impl OwnedSid {
+  /// Borrows the underlying `PSID`.
+  pub fn as_ptr(&self) -> windows_sys::Win32::Security::PSID {
+    self.0
+  }
+
+  /// Consumes the wrapper without freeing the SID.
+  pub fn into_ptr(self) -> windows_sys::Win32::Security::PSID {
+    let sid = self.0;
+    std::mem::forget(self);
+    sid
+  }
+
+  #[allow(dead_code)]
+  pub(crate) fn from_local_free(sid: windows_sys::Win32::Security::PSID) -> Self {
+    Self(sid)
+  }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedSid {
+  fn drop(&mut self) {
+    use windows_sys::Win32::Foundation::LocalFree;
+    if self.0.is_null() {
+      return;
+    }
+
+    // SAFETY: This wrapper only supports SIDs allocated by APIs requiring
+    // `LocalFree` (see type docs).
+    unsafe {
+      LocalFree(self.0 as _);
+    }
+  }
+}

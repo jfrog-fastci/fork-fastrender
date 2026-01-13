@@ -12,6 +12,7 @@ members = [
   "crates/js-wpt-dom-runner",
   "crates/fastrender-ipc",
   "crates/fastrender-renderer",
+  "crates/win-sandbox",
 ]
 # NOTE: WebIDL/JS infrastructure should live in `vendor/ecma-rs/` per
 # instructions/ecma_rs_ownership.md and instructions/webidl_consolidation.md.

@@ -6134,6 +6134,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
+name = "win-sandbox"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
