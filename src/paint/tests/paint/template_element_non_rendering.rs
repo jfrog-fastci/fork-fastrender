@@ -12,7 +12,7 @@ fn template_element_never_generates_boxes_even_with_display_override() {
   let mut renderer = FastRender::with_config(config).expect("renderer should construct");
 
   // Per the HTML Standard, `<template>` "represents nothing" in a rendering. Author CSS must not be
-  // able to force it to generate a box.
+  // able to force it to generate a box or affect layout.
   let html = r#"<!doctype html>
     <style>
       html, body { margin: 0; background: rgb(0,255,0); }
@@ -20,10 +20,16 @@ fn template_element_never_generates_boxes_even_with_display_override() {
         display: block !important;
         width: 50px;
         height: 50px;
+        background: rgb(0,0,255);
+      }
+      #after {
+        width: 50px;
+        height: 50px;
         background: rgb(255,0,0);
       }
     </style>
     <template></template>
+    <div id="after"></div>
   "#;
 
   let pixmap = renderer
@@ -32,12 +38,11 @@ fn template_element_never_generates_boxes_even_with_display_override() {
 
   let pixel = pixmap.pixel(10, 10).expect("pixel");
   assert!(
-    pixel.green() > 200 && pixel.red() < 80 && pixel.blue() < 80,
-    "expected template to not paint; got rgba({}, {}, {}, {})",
+    pixel.red() > 200 && pixel.green() < 80 && pixel.blue() < 80,
+    "expected template to not paint or affect layout (red box should start at y=0); got rgba({}, {}, {}, {})",
     pixel.red(),
     pixel.green(),
     pixel.blue(),
     pixel.alpha()
   );
 }
-
