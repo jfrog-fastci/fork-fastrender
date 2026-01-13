@@ -1564,7 +1564,15 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         let _ = socket.close(frame);
         break;
       }
-      Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
+      Ok(Message::Ping(payload)) => {
+        // Per RFC 6455, the endpoint must respond to pings with a pong containing the same payload.
+        // Browsers do not surface ping/pong frames to JS, so do not enqueue any JS events.
+        if socket.write_message(Message::Pong(payload)).is_err() {
+          closing = Some((1006, "".to_string()));
+          break;
+        }
+      }
+      Ok(Message::Pong(_)) => {}
       Err(tungstenite::Error::Io(ref io)) if io.kind() == std::io::ErrorKind::TimedOut => {}
       Err(tungstenite::Error::Io(ref io)) if io.kind() == std::io::ErrorKind::WouldBlock => {}
       Err(_) => {
@@ -1844,8 +1852,8 @@ mod tests {
   use crate::dom2;
   use crate::error::Result;
   use crate::js::{RunLimits, WindowHost};
+  use crate::testing::{net_test_lock, try_bind_localhost};
   use selectors::context::QuirksMode;
-  use std::net::TcpListener;
   use std::time::Instant;
 
   fn get_global_prop_utf8(host: &mut WindowHost, name: &str) -> Option<String> {
@@ -1874,8 +1882,8 @@ mod tests {
 
   #[test]
   fn websocket_connect_send_echo_close() -> Result<()> {
-    let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
-      // Some sandboxed CI environments may forbid binding sockets; skip in that case.
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_connect_send_echo_close") else {
       return Ok(());
     };
     listener.set_nonblocking(true).expect("set_nonblocking");
@@ -1975,6 +1983,125 @@ mod tests {
     assert_eq!(
       get_global_prop_utf8(&mut host, "__msg").as_deref(),
       Some("hello")
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_responds_to_ping_frames() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_responds_to_ping_frames") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let ping_payload: Vec<u8> = b"fastrender-ping".to_vec();
+    let ping_payload_server = ping_payload.clone();
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let mut ws = tungstenite::accept(stream).expect("accept websocket");
+
+            // Send ping and wait for matching pong.
+            ws.write_message(Message::Ping(ping_payload_server.clone()))
+              .expect("server ping write failed");
+
+            let read_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+              match ws.read_message() {
+                Ok(Message::Pong(payload)) => {
+                  assert_eq!(payload, ping_payload_server, "pong payload mismatch");
+                  break;
+                }
+                Ok(other) => panic!("expected pong, got {other:?}"),
+                Err(tungstenite::Error::Io(ref err))
+                  if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) =>
+                {
+                  if Instant::now() >= read_deadline {
+                    panic!("server pong read timed out");
+                  }
+                }
+                Err(err) => panic!("server pong read failed: {err}"),
+              }
+            }
+
+            let _ = ws.close(None);
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__done = false;
+      globalThis.__err = "";
+      globalThis.__messageCount = 0;
+      globalThis.__ws = new WebSocket("ws://{addr}/");
+      const ws = globalThis.__ws;
+      ws.onopen = function () {{
+        // No-op: server sends ping immediately after handshake.
+      }};
+      ws.onmessage = function () {{
+        globalThis.__messageCount++;
+      }};
+      ws.onerror = function () {{
+        globalThis.__err = "error";
+        globalThis.__done = true;
+      }};
+      ws.onclose = function () {{
+        globalThis.__done = true;
+      }};
+      "#,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 100,
+        max_microtasks: 1000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default();
+      if done == "true" {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      "",
+      "unexpected websocket error: {:?}",
+      get_global_prop_utf8(&mut host, "__err")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__messageCount").as_deref(),
+      Some("0"),
+      "ping/pong frames must not surface as JS message events"
     );
 
     server.join().expect("server thread panicked");
