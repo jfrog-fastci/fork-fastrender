@@ -261,6 +261,7 @@ fn restricted_token_spawn_does_not_inherit_inaccessible_cwd() {
     appcontainer: None,
     job: None,
     mitigation_policy: None,
+    all_application_packages_hardened: true,
   };
 
   let token = RestrictedToken::for_current_process_low_integrity()
