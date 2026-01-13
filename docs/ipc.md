@@ -17,7 +17,9 @@ Related:
 - Linux FD-passing + shared-memory checklist: [`ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
 - Multiprocess threat model (trust boundary statement): [`multiprocess_threat_model.md`](multiprocess_threat_model.md)
 - Network process overview + IPC surface: [`network_process.md`](network_process.md)
+- Renderer sandbox entrypoint (all platforms): [`renderer_sandbox.md`](renderer_sandbox.md)
 - Renderer sandboxing overview (platform notes, seccomp/AppContainer/etc): [`sandboxing.md`](sandboxing.md)
+- Linux renderer sandbox deep dive (rlimits/fd hygiene/namespaces/Landlock/seccomp): [`security/sandbox.md`](security/sandbox.md)
 - Linux renderer seccomp allowlist workflow: [`seccomp_allowlist.md`](seccomp_allowlist.md)
 
 If you add/modify IPC code, treat this as a *non-optional* checklist:
