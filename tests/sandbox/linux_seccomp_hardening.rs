@@ -205,6 +205,19 @@ fn linux_seccomp_blocks_ptrace_and_unshare() {
       [-1, 0, 0, 0, 0, 0],
     );
 
+    // Signal queue syscalls can carry `siginfo` payloads to other processes/threads; we deny them
+    // as part of the renderer seccomp hardening policy.
+    assert_syscall_fails_with_eperm(
+      "rt_sigqueueinfo",
+      libc::SYS_rt_sigqueueinfo as libc::c_long,
+      [pid, 0, 0, 0, 0, 0],
+    );
+    assert_syscall_fails_with_eperm(
+      "rt_tgsigqueueinfo",
+      libc::SYS_rt_tgsigqueueinfo as libc::c_long,
+      [pid, pid, 0, 0, 0, 0],
+    );
+
     maybe_assert_syscall_fails_with_eperm("io_uring_setup", SYS_IO_URING_SETUP, [0, 0, 0, 0, 0, 0]);
     maybe_assert_syscall_fails_with_eperm(
       "io_uring_enter",

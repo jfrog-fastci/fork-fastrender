@@ -203,6 +203,10 @@ fn build_renderer_filter(config: RendererSandboxConfig) -> Vec<libc::sock_filter
     libc::SYS_pidfd_send_signal,
   ]);
 
+  // Signal-queue syscalls can deliver `siginfo` payloads to other processes/threads. These are not
+  // needed by the renderer sandbox and widen the cross-process control surface.
+  deny.extend_from_slice(&[libc::SYS_rt_sigqueueinfo, libc::SYS_rt_tgsigqueueinfo]);
+
   // Filesystem notification (expand kernel surface; should never be needed in a renderer).
   #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
   deny.extend_from_slice(&[libc::SYS_fanotify_init, libc::SYS_fanotify_mark]);
