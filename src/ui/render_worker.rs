@@ -999,14 +999,39 @@ fn js_dom_node_for_preorder_id(
   _js_dom_mapping_generation: &mut u64,
   js_dom_mapping: &mut Option<crate::dom2::RendererDomMapping>,
 ) -> Option<crate::dom2::NodeId> {
-  js_dom_mapping
-    .as_ref()
-    .and_then(|mapping| mapping.node_id_for_preorder(preorder_id))
-    .or_else(|| element_id.and_then(|id| js_tab.dom().get_element_by_id(id)))
-    // Fallback to the JS tab's cached renderer-preorder mapping (rebuilt when the dom2 document's
-    // mutation generation changes). This is stable across dom2 insertions/removals via `NodeId` and
-    // accounts for non-rendered/synthetic nodes (comments, `<wbr>` ZWSP injection, etc).
-    .or_else(|| js_tab.dom2_node_for_renderer_preorder(preorder_id))
+  let dom = js_tab.dom();
+
+  // Prefer the mapping produced when we snapshot the JS dom2 tree into the renderer DOM (dom1). This
+  // mapping is consistent with hit-testing/layout, which also operates over that renderer snapshot.
+  if let Some(mapping) = js_dom_mapping.as_ref() {
+    if let Some(mapped) = mapping.node_id_for_preorder(preorder_id) {
+      // If the caller also supplies an element id, treat it as a stability check: renderer preorder
+      // ids can shift when the mapping is rebuilt after DOM mutations, but the element's `id=`
+      // attribute remains stable. If the mapped node does not match the expected id, fall back to a
+      // fresh `getElementById` lookup.
+      if let Some(id) = element_id {
+        let mapped_id = dom.get_attribute(mapped, "id").ok().flatten();
+        if mapped_id != Some(id) {
+          if let Some(by_id) = dom.get_element_by_id(id) {
+            return Some(by_id);
+          }
+        }
+      }
+
+      return Some(mapped);
+    }
+  }
+
+  if let Some(id) = element_id {
+    if let Some(by_id) = dom.get_element_by_id(id) {
+      return Some(by_id);
+    }
+  }
+
+  // Fallback to the JS tab's cached renderer-preorder mapping (rebuilt when the dom2 document's
+  // mutation generation changes). This is stable across dom2 insertions/removals via `NodeId` and
+  // accounts for non-rendered/synthetic nodes (comments, `<wbr>` ZWSP injection, etc).
+  js_tab.dom2_node_for_renderer_preorder(preorder_id)
 }
 
 fn js_dom_node_for_preorder_id_with_log(
@@ -1047,6 +1072,129 @@ fn js_dom_node_for_preorder_id_with_log(
     }
   }
   node_id
+}
+
+#[cfg(test)]
+mod render_worker_dom_mapping_tests {
+  use super::js_dom_node_for_preorder_id;
+  use crate::js::{RunLimits, RunUntilIdleOutcome};
+  use crate::{BrowserTab, RenderOptions};
+  use std::time::Duration;
+
+  #[test]
+  fn js_dom_node_for_preorder_id_uses_renderer_mapping_after_dom_mutation() -> crate::error::Result<()> {
+    let _lock = crate::testing::global_test_lock();
+    crate::testing::init_rayon_for_tests(2);
+
+    let html = r#"<!doctype html>
+      <html>
+        <body>
+          <button id="mutate">mutate</button>
+          <div id="a">A</div>
+          <div id="target">Target</div>
+          <script>
+            document.getElementById("mutate").addEventListener("click", () => {
+              const inserted = document.createElement("div");
+              inserted.id = "inserted";
+              inserted.textContent = "Inserted";
+              const target = document.getElementById("target");
+              target.parentNode.insertBefore(inserted, target);
+            });
+          </script>
+        </body>
+      </html>"#;
+
+    let mut tab = BrowserTab::from_html_with_vmjs(html, RenderOptions::new().with_viewport(64, 64))?;
+    let run_limits = RunLimits {
+      max_tasks: 128,
+      max_microtasks: 1024,
+      max_wall_time: Some(Duration::from_millis(500)),
+    };
+    assert_eq!(
+      tab.run_event_loop_until_idle(run_limits)?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    // Render once to ensure the tab has produced at least one layout pass before we rely on a
+    // renderer preorder mapping.
+    tab.render_frame()?;
+
+    let target = tab
+      .dom()
+      .get_element_by_id("target")
+      .expect("#target element");
+
+    let mapping_before = tab.dom().to_renderer_dom_with_mapping().mapping;
+    let preorder_before = mapping_before
+      .preorder_for_node_id(target)
+      .expect("preorder id for #target before mutation");
+
+    // Mutate the live dom2 document via JS to insert a node *before* #target.
+    let mutate = tab
+      .dom()
+      .get_element_by_id("mutate")
+      .expect("#mutate button");
+    tab.dispatch_click_event(mutate)?;
+    let run_limits = RunLimits {
+      max_tasks: 128,
+      max_microtasks: 1024,
+      max_wall_time: Some(Duration::from_millis(500)),
+    };
+    assert_eq!(
+      tab.run_event_loop_until_idle(run_limits)?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    // Render again so the tab has performed a layout pass with the updated DOM shape.
+    tab.render_frame()?;
+
+    let mapping_after = tab.dom().to_renderer_dom_with_mapping().mapping;
+    let preorder_after = mapping_after
+      .preorder_for_node_id(target)
+      .expect("preorder id for #target after mutation");
+    assert_ne!(
+      preorder_before, preorder_after,
+      "expected inserting a node before #target to shift its renderer preorder id"
+    );
+
+    // Mapping-based lookup must still resolve the renderer preorder id to the correct dom2 NodeId,
+    // even though `NodeId` indices no longer align with preorder ids.
+    let mut generation = 0;
+    let mut mapping = Some(mapping_after.clone());
+    assert_eq!(
+      js_dom_node_for_preorder_id(&mut tab, preorder_after, None, &mut generation, &mut mapping),
+      Some(target)
+    );
+
+    // Demonstrate why the legacy `node_id_from_index(preorder-1)` mapping is incorrect after DOM
+    // insertions: the inserted node is created *after* the initial parse, but appears before
+    // `#target` in preorder traversal.
+    let legacy_index = tab
+      .dom()
+      .node_id_from_index(preorder_after.saturating_sub(1))
+      .ok();
+    assert_ne!(
+      legacy_index,
+      Some(target),
+      "expected node_id_from_index(preorder-1) to diverge after dom2 DOM mutations"
+    );
+
+    // When the caller supplies a stable element id, we should be able to recover even if the
+    // renderer preorder id is stale (e.g. saved from a previous snapshot before the DOM mutation).
+    let mut mapping = Some(mapping_after);
+    assert_eq!(
+      js_dom_node_for_preorder_id(
+        &mut tab,
+        preorder_before,
+        Some("target"),
+        &mut generation,
+        &mut mapping
+      ),
+      Some(target)
+    );
+
+    Ok(())
+  }
 }
 
 fn dom_node_by_preorder_id<'a>(

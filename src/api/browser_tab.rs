@@ -7995,6 +7995,15 @@ impl BrowserTab {
     self.host.document.dom2_node_for_renderer_preorder(preorder_id)
   }
 
+  /// Returns the mapping produced for the most recently prepared renderer DOM snapshot, if
+  /// available.
+  ///
+  /// This is primarily used by UI integrations to translate renderer pre-order ids (from hit
+  /// testing) back into stable `dom2::NodeId`s, even when the live DOM has since been mutated.
+  pub fn last_dom_mapping(&self) -> Option<&crate::dom2::RendererDomMapping> {
+    self.host.document.last_dom_mapping()
+  }
+
   pub fn dom_mut(&mut self) -> &mut Document {
     self.host.dom_mut()
   }
