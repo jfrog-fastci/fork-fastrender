@@ -114,6 +114,11 @@ impl UserenvApis {
 
 unsafe fn get_proc<T>(module: HMODULE, symbol: &'static [u8], func: &'static str) -> Result<T> {
   // SAFETY: `symbol` is a pointer to a null-terminated ASCII string.
+  //
+  // Reset last-error to avoid returning a stale value if `GetProcAddress` does
+  // not set it in some edge case (e.g. older/stripped builds). The documented
+  // error for a missing symbol is `ERROR_PROC_NOT_FOUND` (127).
+  windows_sys::Win32::Foundation::SetLastError(0);
   let proc = GetProcAddress(module, symbol.as_ptr());
   match proc {
     Some(proc) => {
@@ -121,7 +126,11 @@ unsafe fn get_proc<T>(module: HMODULE, symbol: &'static [u8], func: &'static str
       // signature.
       Ok(std::mem::transmute_copy(&proc))
     }
-    None => Err(WinSandboxError::from_code(func, ERROR_PROC_NOT_FOUND)),
+    None => {
+      let err = windows_sys::Win32::Foundation::GetLastError();
+      let err = if err == 0 { ERROR_PROC_NOT_FOUND } else { err };
+      Err(WinSandboxError::from_code(func, err))
+    }
   }
 }
 
