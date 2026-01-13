@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::ipc::websocket as websocket_ipc;
 use crate::resource::{FetchedResource, ResourceFetcher};
 use std::io::BufRead;
 use std::net::{SocketAddr, TcpStream};
@@ -298,6 +299,19 @@ struct DirectWebSocketStream {
   protocol: String,
 }
 
+fn normalize_close_code_for_frame(code: u16) -> u16 {
+  // Renderer-provided close codes are untrusted. Never allow codes that RFC 6455 forbids on the wire
+  // (e.g. 1005/1006/1015) or out-of-range values that tungstenite may reject.
+  //
+  // Invalid codes are mapped to 1000 (normal closure) so the network process can still honor the
+  // close request without risking protocol errors.
+  if websocket_ipc::is_valid_close_code(code) {
+    code
+  } else {
+    1000
+  }
+}
+
 fn map_tungstenite_err(err: TungsteniteError) -> Error {
   match err {
     TungsteniteError::Io(err) => Error::Io(err),
@@ -337,10 +351,13 @@ impl WebSocketStream for DirectWebSocketStream {
       WebSocketMessage::Binary(bytes) => TungsteniteMessage::Binary(bytes),
       WebSocketMessage::Ping(bytes) => TungsteniteMessage::Ping(bytes),
       WebSocketMessage::Pong(bytes) => TungsteniteMessage::Pong(bytes),
-      WebSocketMessage::Close { code, reason } => TungsteniteMessage::Close(Some(CloseFrame {
-        code: tungstenite::protocol::frame::coding::CloseCode::from(code),
-        reason: reason.unwrap_or_default().into(),
-      })),
+      WebSocketMessage::Close { code, reason } => {
+        let code = normalize_close_code_for_frame(code);
+        TungsteniteMessage::Close(Some(CloseFrame {
+          code: tungstenite::protocol::frame::coding::CloseCode::from(code),
+          reason: reason.unwrap_or_default().into(),
+        }))
+      }
     };
 
     self.socket.write_message(msg).map_err(map_tungstenite_err)?;
@@ -373,9 +390,12 @@ impl WebSocketStream for DirectWebSocketStream {
   }
 
   fn close(&mut self, code: Option<u16>, reason: Option<String>) -> Result<()> {
-    let frame = code.map(|code| CloseFrame {
-      code: tungstenite::protocol::frame::coding::CloseCode::from(code),
-      reason: reason.unwrap_or_default().into(),
+    let frame = code.map(|code| {
+      let code = normalize_close_code_for_frame(code);
+      CloseFrame {
+        code: tungstenite::protocol::frame::coding::CloseCode::from(code),
+        reason: reason.unwrap_or_default().into(),
+      }
     });
     self.socket.close(frame).map_err(map_tungstenite_err)?;
     Ok(())
@@ -383,6 +403,26 @@ impl WebSocketStream for DirectWebSocketStream {
 
   fn protocol(&self) -> &str {
     &self.protocol
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn normalize_close_code_rejects_reserved_codes() {
+    assert_eq!(normalize_close_code_for_frame(1000), 1000);
+    assert_eq!(normalize_close_code_for_frame(3000), 3000);
+    assert_eq!(normalize_close_code_for_frame(4999), 4999);
+
+    // Reserved/invalid codes must never be sent on the wire.
+    assert_eq!(normalize_close_code_for_frame(1005), 1000);
+    assert_eq!(normalize_close_code_for_frame(1006), 1000);
+    assert_eq!(normalize_close_code_for_frame(1015), 1000);
+    assert_eq!(normalize_close_code_for_frame(0), 1000);
+    assert_eq!(normalize_close_code_for_frame(2000), 1000);
+    assert_eq!(normalize_close_code_for_frame(5000), 1000);
   }
 }
 
@@ -399,4 +439,3 @@ impl DownloadClient {
     Ok(())
   }
 }
-
