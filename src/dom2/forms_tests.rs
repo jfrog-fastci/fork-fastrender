@@ -202,7 +202,9 @@ fn renderer_dom_snapshot_projects_runtime_form_control_state() {
   // Mutate runtime state without mutating content attributes.
   doc.set_input_value(text_input, "bar").unwrap();
   doc.set_input_checked(checkbox, true).unwrap();
-  doc.set_input_value(file_input, "C:\\secret\\path.txt").unwrap();
+  doc
+    .set_input_value(file_input, "C:\\secret\\path.txt")
+    .unwrap();
   doc.set_textarea_value(textarea, "world").unwrap();
   doc.set_option_selected(option, true).unwrap();
 
@@ -349,4 +351,92 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
       "expected no `selected` attribute on snapshot option when selectedness=false"
     );
   }
+}
+
+#[test]
+fn renderer_snapshot_overrides_content_attributes_with_internal_form_state() {
+  let html = concat!(
+    "<!doctype html><html><body>",
+    "<input id=t value=foo>",
+    "<input id=c type=checkbox checked>",
+    "<textarea id=ta>hello</textarea>",
+    "<select><option id=o selected>One</option></select>",
+    "</body></html>",
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let text_input = doc.get_element_by_id("t").expect("text input");
+  let checkbox = doc.get_element_by_id("c").expect("checkbox");
+  let textarea = doc.get_element_by_id("ta").expect("textarea");
+  let option = doc.get_element_by_id("o").expect("option");
+
+  // Mutate internal state without mutating content attributes.
+  doc.set_input_value(text_input, "bar").unwrap();
+  doc.set_input_checked(checkbox, false).unwrap();
+  doc.set_textarea_value(textarea, "world").unwrap();
+  doc.set_option_selected(option, false).unwrap();
+
+  assert_eq!(doc.get_attribute(text_input, "value").unwrap(), Some("foo"));
+  assert!(
+    doc.has_attribute(checkbox, "checked").unwrap(),
+    "set_input_checked must not mutate content attributes"
+  );
+  assert!(
+    doc.has_attribute(option, "selected").unwrap(),
+    "set_option_selected must not mutate content attributes"
+  );
+
+  let snapshot = doc.to_renderer_dom();
+
+  let text_node = find_dom_by_id(&snapshot, "t").expect("text input snapshot");
+  assert_eq!(text_node.get_attribute_ref("value"), Some("bar"));
+
+  let checkbox_node = find_dom_by_id(&snapshot, "c").expect("checkbox snapshot");
+  assert_eq!(
+    checkbox_node.get_attribute_ref("checked"),
+    None,
+    "snapshot checkbox should reflect checkedness=false"
+  );
+
+  let textarea_node = find_dom_by_id(&snapshot, "ta").expect("textarea snapshot");
+  assert_eq!(
+    textarea_node.get_attribute_ref("data-fastr-value"),
+    Some("world")
+  );
+
+  let option_node = find_dom_by_id(&snapshot, "o").expect("option snapshot");
+  assert_eq!(
+    option_node.get_attribute_ref("selected"),
+    None,
+    "snapshot option should reflect selectedness=false"
+  );
+
+  // Resetting the textarea should remove the runtime override attribute in the snapshot.
+  doc.reset_textarea(textarea).unwrap();
+  let snapshot = doc.to_renderer_dom();
+  let textarea_node = find_dom_by_id(&snapshot, "ta").expect("textarea snapshot");
+  assert_eq!(textarea_node.get_attribute_ref("data-fastr-value"), None);
+}
+
+#[test]
+fn renderer_subtree_snapshot_reflects_form_control_internal_state() {
+  let html = "<!doctype html><html><body><input id=i value=foo></body></html>";
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let input = doc.get_element_by_id("i").expect("input element");
+
+  doc.set_input_value(input, "bar").unwrap();
+  assert_eq!(
+    doc.get_attribute(input, "value").unwrap(),
+    Some("foo"),
+    "set_input_value must not mutate content attributes"
+  );
+
+  let subtree = doc
+    .to_renderer_dom_subtree(input)
+    .expect("subtree snapshot");
+  assert_eq!(subtree.get_attribute_ref("id"), Some("i"));
+  assert_eq!(
+    subtree.get_attribute_ref("value"),
+    Some("bar"),
+    "subtree snapshot should reflect the current input value"
+  );
 }
