@@ -1007,8 +1007,11 @@ reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property d
 
 # --- RegExp + String (regex methods) ---
 #
-# RegExp itself is still incomplete, so keep the broad `built-ins/RegExp/**` xfail, but carve out
-# the known-green surface so regressions are caught.
+# RegExp itself is still incomplete. This block is primarily used by the focused RegExp suite:
+# `tests/js/test262_suites/regexp.toml`.
+#
+# Keep the broad `built-ins/RegExp/**` xfail, but carve out the known-green surface so regressions
+# are caught and so improvements show up as XPASS in the RegExp suite.
 [[expectations]]
 glob = "built-ins/RegExp/prototype/test/**"
 status = "pass"
@@ -1036,6 +1039,32 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/String/prototype/split/**"
 status = "pass"
+
+# RegExp work-in-progress buckets (kept xfail so improvements show up as XPASS).
+[[expectations]]
+glob = "built-ins/RegExp/prototype/exec/**"
+status = "xfail"
+reason = "vm-js: RegExp.prototype.exec semantics are still incomplete (named groups, indices /d, unicode sets, etc)."
+
+[[expectations]]
+glob = "built-ins/RegExp/named-groups/**"
+status = "xfail"
+reason = "vm-js: RegExp named capture groups / match result `.groups` semantics are still incomplete."
+
+[[expectations]]
+glob = "built-ins/RegExp/lookBehind/**"
+status = "xfail"
+reason = "vm-js: RegExp lookbehind assertions are not implemented."
+
+[[expectations]]
+glob = "built-ins/RegExp/match-indices/**"
+status = "xfail"
+reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
+
+[[expectations]]
+glob = "built-ins/RegExp/property-escapes/**"
+status = "xfail"
+reason = "vm-js: RegExp Unicode property escapes (\\p{...}) are not fully implemented."
 
 [[expectations]]
 glob = "built-ins/RegExp/lookBehind/**"

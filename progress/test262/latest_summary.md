@@ -16,6 +16,19 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
   --fail-on new
 ```
 
+- RegExp-focused suite (separate from the curated suite):
+  ```bash
+  # from repo root
+  CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+    --harness test262 \
+    --suite-path ../../tests/js/test262_suites/regexp.toml \
+    --manifest ../../tests/js/test262_manifest.toml \
+    --timeout-secs 10 \
+    --jobs 4 \
+    --report-path ../../target/js/test262_regexp.json \
+    --fail-on new
+  ```
+
 - JSON report (not committed): `target/js/test262.json`
 - Note: `scripts/cargo_agent.sh` runs the vendored `test262-semantic` workspace from `vendor/ecma-rs/`,
   so the `../../...` paths above are relative to that directory.
