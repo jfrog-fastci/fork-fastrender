@@ -196,7 +196,7 @@ When parsing `SCM_RIGHTS`:
 
 - Enforce a strict **maximum expected FD count** (per-message).
 - If more FDs are received than expected, **close the extras immediately** and treat the message as invalid (or at minimum treat it as “unexpected/ignore”).
-- Reject malformed control messages (e.g. `cmsg_len` that is not a multiple of `sizeof(int)` for `SCM_RIGHTS`).
+- Reject malformed control messages (e.g. `cmsg_len < CMSG_LEN(0)` or `cmsg_len` that is not a multiple of `sizeof(int)` for `SCM_RIGHTS`).
 - On any validation/protocol failure *after receiving FDs*, **close all received FDs** before returning an error (avoid FD leaks in the browser).
 
 Even though the kernel enforces a hard ceiling (`SCM_MAX_FD`, currently 253), that is far larger than any sane protocol message. “Accepting whatever count arrives” is an easy DoS vector.
@@ -271,6 +271,7 @@ for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
   if (cmsg->cmsg_level != SOL_SOCKET) { fail; }
   if (cmsg->cmsg_type != SCM_RIGHTS) { fail; }
 
+  if (cmsg->cmsg_len < CMSG_LEN(0)) { fail; }
   size_t payload_len = cmsg->cmsg_len - CMSG_LEN(0);
   if (payload_len % sizeof(int) != 0) { fail; }
 
