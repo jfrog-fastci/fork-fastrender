@@ -600,6 +600,39 @@ mod tests {
     let b = factory.site_key_for_navigation(url.as_str(), None);
     assert_eq!(a, b);
   }
+
+  #[test]
+  fn site_lock_matches_url_handles_blob_and_about_blank() {
+    let lock_site = site_key_for_navigation("https://a.test/", None);
+    let lock = SiteLock::from_site_key(&lock_site, SiteIsolationMode::PerOrigin);
+
+    // Blob URLs derive their origin from the embedded URL; the claimed site key should not matter.
+    let other_site = site_key_for_navigation("https://b.test/", None);
+    assert!(lock.matches_url("blob:https://a.test/uuid", &other_site));
+    assert!(!lock.matches_url("blob:https://b.test/uuid", &lock_site));
+
+    // about:blank inherits its origin; the renderer must fall back to the claimed site key.
+    assert!(lock.matches_url("about:blank", &lock_site));
+    assert!(!lock.matches_url("about:blank", &other_site));
+  }
+
+  #[test]
+  fn schemeful_site_lock_groups_subdomains() {
+    let lock_site = site_key_for_navigation("https://a.example.com/", None);
+    let lock = SiteLock::from_site_key(&lock_site, SiteIsolationMode::PerSite);
+
+    // Same registrable domain should match.
+    let other_subdomain = site_key_for_navigation("https://b.example.com/", None);
+    assert!(lock.matches_url("https://b.example.com/path", &other_subdomain));
+
+    // Different registrable domain should not match.
+    let other_domain = site_key_for_navigation("https://example.org/", None);
+    assert!(!lock.matches_url("https://example.org/", &other_domain));
+
+    // Scheme must match.
+    let http_subdomain = site_key_for_navigation("http://b.example.com/", None);
+    assert!(!lock.matches_url("http://b.example.com/", &http_subdomain));
+  }
 }
 
 /// Contextual metadata for a navigation request.
