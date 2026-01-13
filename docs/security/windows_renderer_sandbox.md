@@ -120,3 +120,4 @@ Windows sandbox/security regression tests live under:
 
 - `tests/sandbox/` (e.g. process handle escape, job-object process creation limits)
 - `tests/sandbox/windows_sandbox_appcontainer_spawn.rs` (AppContainer spawn + opt-out behaviour)
+- `crates/win-sandbox/tests/` (AppContainer/network/filesystem/restricted-token invariants + helper spawners)
