@@ -31,6 +31,7 @@ use fastrender::{
   BoxNode, BoxTree, ComputedStyle, FormattingContext, FormattingContextFactory,
   FormattingContextType, IntrinsicSizingMode, LayoutConfig, LayoutConstraints, LayoutEngine, Size,
 };
+use rayon::ThreadPoolBuilder;
 
 mod common;
 
@@ -42,6 +43,26 @@ fn micro_criterion() -> Criterion {
     .warm_up_time(Duration::from_millis(200))
     .measurement_time(Duration::from_millis(600))
     .configure_from_args()
+}
+
+fn ensure_rayon_global_pool_for_bench(max_threads: usize) -> bool {
+  let desired = std::thread::available_parallelism()
+    .map(|n| n.get())
+    .unwrap_or(1)
+    .max(1)
+    .min(max_threads.max(1));
+  if ThreadPoolBuilder::new()
+    .num_threads(desired)
+    .thread_name(|idx| format!("fastr-bench-rayon-{idx}"))
+    .build_global()
+    .is_ok()
+  {
+    return true;
+  }
+
+  // If the pool was already initialized elsewhere, we can treat this as success. Avoid
+  // unguarded calls that could trigger Rayon's lazy init with an excessive thread count.
+  std::panic::catch_unwind(|| rayon::current_num_threads()).is_ok()
 }
 
 fn build_flex_measure_tree(item_count: usize) -> BoxTree {
@@ -255,6 +276,100 @@ fn build_block_intrinsic_many_runs_tree(run_count: usize) -> BoxTree {
         vec![],
       ));
     }
+  }
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, children);
+  BoxTree::new(root)
+}
+
+fn build_block_intrinsic_mixed_segments_tree(section_count: usize) -> BoxTree {
+  // Regression protected:
+  // - `BlockFormattingContext::compute_intrinsic_inline_sizes` can become dominated by walking many
+  //   heterogeneous children (inline runs, block-level children, and floats). Profiling on large
+  //   pages shows the per-child intrinsic sizing + inline-run shaping can dominate wall time, so
+  //   this tree is designed to stress that fan-out.
+  const RUN_TEXT: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit";
+  const BLOCK_TEXT: &str = "supercalifragilisticexpialidocious the quick brown fox jumps";
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+  let root_style = Arc::new(root_style);
+
+  let mut block_style = ComputedStyle::default();
+  block_style.display = Display::Block;
+  // Add some margins so the outer-size path is exercised too.
+  block_style.margin_left = Some(Length::px(4.0));
+  block_style.margin_right = Some(Length::px(6.0));
+  let block_style = Arc::new(block_style);
+
+  let mut float_left_style = ComputedStyle::default();
+  float_left_style.display = Display::Block;
+  float_left_style.float = Float::Left;
+  float_left_style.margin_right = Some(Length::px(6.0));
+  let float_left_style = Arc::new(float_left_style);
+
+  let mut float_right_style = ComputedStyle::default();
+  float_right_style.display = Display::Block;
+  float_right_style.float = Float::Right;
+  float_right_style.margin_left = Some(Length::px(6.0));
+  let float_right_style = Arc::new(float_right_style);
+
+  // Use a dedicated inline FC wrapper so block children invoke inline layout/shaping.
+  let mut inline_fc_style = ComputedStyle::default();
+  inline_fc_style.display = Display::Block;
+  let inline_fc_style = Arc::new(inline_fc_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.display = Display::Inline;
+  let text_style = Arc::new(text_style);
+
+  let mut children = Vec::with_capacity(section_count * 16);
+  for idx in 0..section_count {
+    // Inline run (multiple text nodes) to force inline-item collection/shaping.
+    for j in 0..6 {
+      children.push(BoxNode::new_text(
+        text_style.clone(),
+        format!("run-{idx}-{j} {RUN_TEXT} "),
+      ));
+    }
+
+    // Periodic floats so intrinsic sizing has to account for float line accumulation.
+    if idx % 8 == 0 {
+      let left_text = BoxNode::new_text(
+        text_style.clone(),
+        format!("float-left-{idx} {RUN_TEXT} {RUN_TEXT}"),
+      );
+      children.push(BoxNode::new_block(
+        float_left_style.clone(),
+        FormattingContextType::Block,
+        vec![left_text],
+      ));
+      let right_text = BoxNode::new_text(
+        text_style.clone(),
+        format!("float-right-{idx} {RUN_TEXT} {RUN_TEXT}"),
+      );
+      children.push(BoxNode::new_block(
+        float_right_style.clone(),
+        FormattingContextType::Block,
+        vec![right_text],
+      ));
+    }
+
+    // In-flow block child.
+    let text = BoxNode::new_text(
+      text_style.clone(),
+      format!("block-{idx} {BLOCK_TEXT} {BLOCK_TEXT} {RUN_TEXT}"),
+    );
+    let inline = BoxNode::new_block(
+      inline_fc_style.clone(),
+      FormattingContextType::Inline,
+      vec![text],
+    );
+    children.push(BoxNode::new_block(
+      block_style.clone(),
+      FormattingContextType::Block,
+      vec![inline],
+    ));
   }
 
   let root = BoxNode::new_block(root_style, FormattingContextType::Block, children);
@@ -639,6 +754,73 @@ fn bench_block_intrinsic_many_inline_runs(c: &mut Criterion) {
   group.finish();
 }
 
+fn bench_block_intrinsic_sizing_parallel_fanout(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  // Ensure the rayon global pool is installed with a conservative thread count so this benchmark
+  // can run in constrained environments without panicking during Rayon's lazy initialization.
+  if !ensure_rayon_global_pool_for_bench(4) {
+    eprintln!("layout_hotspots block_intrinsic_parallel: rayon pool unavailable; skipping");
+    return;
+  }
+
+  let viewport = Size::new(800.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+
+  let serial_factory =
+    FormattingContextFactory::with_font_context_and_viewport(font_ctx.clone(), viewport)
+      .with_parallelism(LayoutParallelism::disabled());
+  let serial_bfc = BlockFormattingContext::with_factory(serial_factory);
+
+  let parallelism = LayoutParallelism::enabled(8).with_max_threads(Some(4));
+  let parallel_factory =
+    FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+      .with_parallelism(parallelism);
+  let parallel_bfc = BlockFormattingContext::with_factory(parallel_factory);
+
+  let mut tree = build_block_intrinsic_mixed_segments_tree(64);
+  // Disable intrinsic caching for the root so each iteration recomputes intrinsic widths.
+  tree.root.id = 0;
+  let node = &tree.root;
+
+  assert!(
+    parallelism.should_parallelize(node.children.len()),
+    "expected block intrinsic parallel bench tree to exceed fanout threshold (children={})",
+    node.children.len()
+  );
+
+  // Sanity check: serial and parallel intrinsic sizing must match.
+  let (serial_min, serial_max) = serial_bfc
+    .compute_intrinsic_inline_sizes(node)
+    .expect("serial intrinsic sizing should succeed");
+  let (parallel_min, parallel_max) = parallel_bfc
+    .compute_intrinsic_inline_sizes(node)
+    .expect("parallel intrinsic sizing should succeed");
+  let eps = 0.001;
+  assert!(
+    (serial_min - parallel_min).abs() < eps && (serial_max - parallel_max).abs() < eps,
+    "intrinsic mismatch: serial=({serial_min},{serial_max}) parallel=({parallel_min},{parallel_max})"
+  );
+
+  let mut group = c.benchmark_group("layout_hotspots_block_intrinsic_parallel");
+  group.bench_function("serial_min_and_max_combined_api", |b| {
+    b.iter(|| {
+      let widths = serial_bfc
+        .compute_intrinsic_inline_sizes(black_box(node))
+        .expect("intrinsic sizing should succeed");
+      black_box(widths);
+    })
+  });
+  group.bench_function("parallel_min_and_max_combined_api", |b| {
+    b.iter(|| {
+      let widths = parallel_bfc
+        .compute_intrinsic_inline_sizes(black_box(node))
+        .expect("intrinsic sizing should succeed");
+      black_box(widths);
+    })
+  });
+  group.finish();
+}
+
 fn bench_float_shrink_to_fit_sizing(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
@@ -807,6 +989,7 @@ criterion_group!(
     bench_block_intrinsic_sizing,
     bench_block_intrinsic_sizing_nowrap,
     bench_block_intrinsic_many_inline_runs,
+    bench_block_intrinsic_sizing_parallel_fanout,
     bench_float_shrink_to_fit_sizing,
     bench_table_cell_intrinsic_and_distribution,
     bench_inline_layout_cache
