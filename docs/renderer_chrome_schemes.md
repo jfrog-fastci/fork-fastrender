@@ -34,6 +34,9 @@ schemes” rule, which will also reject `chrome://` and `chrome-action:`:
 
 - Scheme allowlist for navigations: [`src/ui/url.rs`](../src/ui/url.rs) (`validate_user_navigation_url_scheme`).
   - This only allows `http`, `https`, `file`, `about`.
+  - Unit test ensures privileged `chrome://` / `chrome-action:` remain rejected:
+    `user_navigation_scheme_validation_rejects_privileged_renderer_chrome_schemes` in
+    [`src/ui/url.rs`](../src/ui/url.rs).
 - Content worker uses that allowlist for all non-`about:` navigations:
   [`src/ui/render_worker.rs`](../src/ui/render_worker.rs) (navigation prepare path calls
   `validate_user_navigation_url_scheme`).
