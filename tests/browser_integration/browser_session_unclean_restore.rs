@@ -86,7 +86,8 @@ fn browser_restores_unclean_session_and_emits_warning() {
       "active_tab_index": 0
     }],
     "active_window_index": 0,
-    "did_exit_cleanly": false
+    "did_exit_cleanly": false,
+    "unclean_exit_streak": 1
   }"#;
   std::fs::write(&session_path, unclean_json).expect("write unclean session file");
 
@@ -100,9 +101,15 @@ fn browser_restores_unclean_session_and_emits_warning() {
     !restored.did_exit_cleanly,
     "expected restored session to preserve did_exit_cleanly=false; got session: {restored:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
   );
+  assert_eq!(
+    restored.unclean_exit_streak, 1,
+    "expected restored session to preserve unclean_exit_streak=1; got session: {restored:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+  );
 
   assert!(
-    stderr.contains("previous session ended unexpectedly; restoring"),
+    stderr.contains("previous session ended unexpectedly")
+      && stderr.contains("restoring")
+      && stderr.contains("unclean_exit_streak"),
     "expected unclean-session restore warning in stderr; stderr:\n{stderr}\nstdout:\n{stdout}"
   );
 
@@ -115,4 +122,3 @@ fn browser_restores_unclean_session_and_emits_warning() {
     "expected headless smoke harness to rewrite did_exit_cleanly=true; got session: {parsed_on_disk:?}\nfile:\n{on_disk}"
   );
 }
-
