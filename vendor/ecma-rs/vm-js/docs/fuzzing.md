@@ -20,6 +20,9 @@ The `vm_js_exec` and `vm_js_exec_compiled` targets are intentionally defensive:
 - **Deadline:** ~20ms per run
 - **Heap limit:** 16MiB max (GC threshold 8MiB)
 - **Interrupt flag:** enabled; sometimes pre-set based on input to exercise interruption paths
+- **Compiled target:** `vm_js_exec_compiled` also compiles under a budget using
+  `CompiledScript::compile_script_with_budget` so missed ticks in parse/early-error paths are fuzzed
+  too.
 
 This ensures inputs like `while(true){}` terminate quickly under normal operation.
 
