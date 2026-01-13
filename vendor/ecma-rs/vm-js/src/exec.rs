@@ -32837,7 +32837,32 @@ fn gen_call_begin(
     return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
   }
 
+  // Mirror `Evaluator::eval_call`: detect direct eval (`eval(...)`) and execute in the caller's
+  // lexical environment rather than invoking the global `%eval%` builtin.
+  //
+  // This matters in the generator continuation evaluator because calls that contain `yield` do not
+  // go through `Evaluator::eval_call` and instead arrive here after resuming argument evaluation.
+  let direct_eval_syntax = !call.optional_chaining
+    && call.callee.assoc.get::<ParenthesizedExpr>().is_none()
+    && match &*call.callee.stx {
+      Expr::Id(id) => id.stx.name == "eval",
+      Expr::IdPat(id) => id.stx.name == "eval",
+      _ => false,
+    };
+
   if call.arguments.is_empty() {
+    if direct_eval_syntax {
+      let intr = evaluator
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      if callee_value == Value::Object(intr.eval()) {
+        // Direct eval: execute in the caller's lexical environment (with strictness propagation).
+        let arg0 = Value::Undefined;
+        return Ok(GenEval::Complete(Completion::normal(arg0)));
+      }
+    }
+
     let mut call_scope = scope.reborrow();
     call_scope.push_roots(&[callee_value, this_value])?;
     let res = evaluator.call(&mut call_scope, callee_value, this_value, &[]);
@@ -32912,6 +32937,39 @@ fn gen_call_continue_args(
         )?;
         return Ok(GenEval::Suspend(suspend));
       }
+    }
+  }
+
+  // Mirror `Evaluator::eval_call`: detect direct eval (`eval(...)`) and execute in the caller's
+  // lexical environment rather than invoking the global `%eval%` builtin.
+  //
+  // This matters in the generator continuation evaluator because calls that contain `yield` do not
+  // go through `Evaluator::eval_call` and instead arrive here after resuming argument evaluation.
+  let direct_eval_syntax = !call.optional_chaining
+    && call.callee.assoc.get::<ParenthesizedExpr>().is_none()
+    && match &*call.callee.stx {
+      Expr::Id(id) => id.stx.name == "eval",
+      Expr::IdPat(id) => id.stx.name == "eval",
+      _ => false,
+    };
+  if direct_eval_syntax {
+    let intr = evaluator
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    if callee_value == Value::Object(intr.eval()) {
+      let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+      let res = match arg0 {
+        Value::String(s) => evaluator.eval_direct_eval_string(scope, s),
+        other => Ok(other),
+      };
+      return match res {
+        Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+        Err(err) => {
+          let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+          Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+      };
     }
   }
 
