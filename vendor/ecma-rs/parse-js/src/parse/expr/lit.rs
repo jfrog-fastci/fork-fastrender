@@ -2397,9 +2397,6 @@ fn validate_regex_pattern(
       if after_esc >= pattern.len() {
         // In UnicodeMode, `\c` must be followed by an ASCII letter (and we already know no
         // character follows).
-        //
-        // In non-UnicodeMode, Annex B treats an incomplete control escape as literal pattern
-        // characters (`\c`), so accept it as an identity escape for `c`.
         if unicode_mode {
           return Err(RegexError {
             kind: RegexErrorKind::InvalidPattern,
@@ -2407,7 +2404,9 @@ fn validate_regex_pattern(
             len: pattern.len().saturating_sub(escape_start),
           });
         }
-        return Ok((after_esc, RegexClassAtom::Single('c' as u32)));
+        // Non-UnicodeMode: Annex B permits treating an incomplete control escape as literal pattern
+        // characters (a literal backslash followed by `c`).
+        return Ok((after_backslash, RegexClassAtom::Single('\\' as u32)));
       }
       let ctrl = pattern[after_esc..].chars().next().unwrap();
       if ctrl.is_ascii_alphabetic() {
@@ -2420,19 +2419,17 @@ fn validate_regex_pattern(
         let value = (ctrl as u32) % 32;
         return Ok((after_esc + ctrl.len_utf8(), RegexClassAtom::Single(value)));
       }
-      if unicode_mode {
-        // `\c` is only valid when followed by an ASCII letter (or, in non-UnicodeMode character
-        // classes, a ClassControlLetter digit/underscore per Annex B).
-        return Err(RegexError {
-          kind: RegexErrorKind::InvalidPattern,
-          offset: base_offset + escape_start,
-          len: after_esc + ctrl.len_utf8() - escape_start,
-        });
+      if !unicode_mode {
+        // Non-UnicodeMode: Annex B permits treating invalid `\c` sequences as literal pattern
+        // characters (a literal backslash followed by `c`).
+        return Ok((after_backslash, RegexClassAtom::Single('\\' as u32)));
       }
-      // Annex B (non-UnicodeMode): treat invalid `\c` escapes as literal pattern characters.
-      // Accept it as an identity escape for `c`, leaving the following character to be parsed
-      // normally by the caller.
-      return Ok((after_esc, RegexClassAtom::Single('c' as u32)));
+      // UnicodeMode: `\c` is only valid when followed by an ASCII letter.
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: base_offset + escape_start,
+        len: after_esc + ctrl.len_utf8() - escape_start,
+      });
     }
 
     // `\b` is backspace inside character classes.
@@ -2825,9 +2822,8 @@ fn validate_regex_pattern(
             len: after_c.saturating_sub(escape_start),
           });
         }
-        // Annex B (non-UnicodeMode): treat invalid `\c` escapes as literal pattern characters.
-        // Accept it as an identity escape for `c`, leaving the following character to be parsed
-        // normally by the loop.
+        // Non-UnicodeMode: Annex B permits treating invalid/incomplete control escapes as literal
+        // pattern characters (`\c`).
         i += esc_len;
         prev_can_be_quantified = true;
         quantifier_allows_lazy = false;
@@ -3015,6 +3011,8 @@ fn validate_regex_pattern(
         if let Some(name) = capture_name {
           let signature = alt_stack.clone();
           if let Some(existing) = named_capture_groups.get(&name) {
+            // Early error: duplicate named capture groups are disallowed unless they are in disjoint
+            // alternation branches.
             for prev in existing {
               if !signatures_mutually_exclusive(prev, &signature) {
                 return Err(RegexError {
