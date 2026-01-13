@@ -826,8 +826,18 @@ fn readable_stream_ctor_construct(
     scope.push_root(underlying_source)?;
     let start_key = alloc_key(scope, "start")?;
     let start_val = vm.get_with_host_and_hooks(host, scope, hooks, source_obj, start_key)?;
-    if scope.heap().is_callable(start_val)? {
-      start_fn = start_val;
+    // Spec shape: `GetMethod(underlyingSource, "start")`.
+    //
+    // - `undefined` / `null` => treat as "missing".
+    // - Otherwise => must be callable.
+    if !matches!(start_val, Value::Undefined | Value::Null) {
+      if scope.heap().is_callable(start_val)? {
+        start_fn = start_val;
+      } else {
+        return Err(VmError::TypeError(
+          "ReadableStream underlyingSource.start is not callable",
+        ));
+      }
     }
   }
 
