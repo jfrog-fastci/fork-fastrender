@@ -1448,6 +1448,8 @@ fn parse_line_name_list(
       let (count_str, pattern_str) = split_once_comma(&inner)?;
       let count_str = strip_css_comments_to_whitespace(count_str);
       let count_str = trim_ascii_whitespace(count_str.as_ref());
+      // CSS <integer> tokens allow an optional leading `+` sign (e.g. `repeat(+2, ...)`).
+      let count_str = count_str.strip_prefix('+').unwrap_or(count_str);
 
       let count: usize = count_str.parse().ok()?;
       if count == 0 {
