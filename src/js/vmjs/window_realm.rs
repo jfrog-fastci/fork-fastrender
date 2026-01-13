@@ -49333,10 +49333,8 @@ fn init_window_globals(
     crate::js::bindings::install_element_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_fragment_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_static_range_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_shadow_root_bindings_vm_js(vm, heap, realm)?;
-    crate::js::bindings::install_abstract_range_bindings_vm_js(vm, heap, realm)?;
-    crate::js::bindings::install_range_bindings_vm_js(vm, heap, realm)?;
-    crate::js::bindings::install_node_iterator_bindings_vm_js(vm, heap, realm)?;
     // Collections/DOM wrappers returned by host dispatch (e.g. `querySelectorAll`, `classList`)
     // need their WebIDL-generated constructors/prototypes installed as globals so wrapper objects
     // can adopt the correct prototypes and pass `instanceof` checks.
@@ -59372,6 +59370,12 @@ fn init_window_globals(
   let html_element_proto = dom_platform
     .as_ref()
     .map(|platform| platform.prototype_for(DomInterface::HTMLElement));
+  let document_fragment_proto = dom_platform
+    .as_ref()
+    .map(|platform| platform.prototype_for(DomInterface::DocumentFragment));
+  let shadow_root_proto = dom_platform
+    .as_ref()
+    .map(|platform| platform.prototype_for(DomInterface::ShadowRoot));
   if let Some(element_proto) = element_proto {
     let mut define_method_if_missing =
       |name: &str, func: GcObject| -> Result<(), VmError> {
@@ -59418,13 +59422,6 @@ fn init_window_globals(
   // querySelector(All) per-instance on other node types as a best-effort shim. The DOM Standard,
   // however, defines querySelector(All) on `DocumentFragment.prototype` (and by extension on
   // `ShadowRoot`), so we ensure the methods exist on the interface prototypes.
-  let document_fragment_proto = dom_platform
-    .as_ref()
-    .map(|platform| platform.prototype_for(DomInterface::DocumentFragment));
-  let shadow_root_proto = dom_platform
-    .as_ref()
-    .map(|platform| platform.prototype_for(DomInterface::ShadowRoot));
-
   if let Some(document_fragment_proto) = document_fragment_proto {
     let mut define_method_if_missing =
       |name: &str, func: GcObject| -> Result<(), VmError> {

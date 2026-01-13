@@ -128,6 +128,15 @@ fn should_delegate_dom_interface(interface: &'static str) -> bool {
   )
 }
 
+fn is_attr_object(heap: &vm_js::Heap, obj: GcObject) -> Result<bool, VmError> {
+  let slots = match heap.object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if heap.is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  Ok(matches!(slots, Some(slots) if slots.b == ATTR_HOST_TAG))
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RootedCallback {
   value: Value,
@@ -184,6 +193,14 @@ struct LiveHtmlCollection {
 struct RangeState {
   document_id: DocumentId,
   range_id: RangeId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StaticRangeState {
+  start_container: RootedValue,
+  start_offset: usize,
+  end_container: RootedValue,
+  end_offset: usize,
 }
 
 enum DomHostAdapter<'a, Host: DomHost + 'static> {
@@ -1108,6 +1125,7 @@ pub struct VmJsWebIdlBindingsHostDispatch<Host: WindowRealmHost + 'static> {
   urls: HashMap<WeakGcObject, Url>,
   params: HashMap<WeakGcObject, UrlSearchParams>,
   ranges: HashMap<WeakGcObject, RangeState>,
+  static_ranges: HashMap<WeakGcObject, StaticRangeState>,
   event_targets: HashMap<WeakGcObject, EventTargetState>,
   live_html_collections: Vec<LiveHtmlCollection>,
   abort_signal_listener_cleanup_call: Option<NativeFunctionId>,
@@ -1126,6 +1144,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       urls: HashMap::new(),
       params: HashMap::new(),
       ranges: HashMap::new(),
+      static_ranges: HashMap::new(),
       event_targets: HashMap::new(),
       live_html_collections: Vec::new(),
       abort_signal_listener_cleanup_call: None,
@@ -1144,6 +1163,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       urls: HashMap::new(),
       params: HashMap::new(),
       ranges: HashMap::new(),
+      static_ranges: HashMap::new(),
       event_targets: HashMap::new(),
       live_html_collections: Vec::new(),
       abort_signal_listener_cleanup_call: None,
@@ -1161,6 +1181,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     self.urls.clear();
     self.params.clear();
     self.ranges.clear();
+    self.static_ranges.clear();
     self.event_targets.clear();
     self.live_html_collections.clear();
     self.timer_registry.borrow_mut().clear();
@@ -1241,6 +1262,17 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     self
       .live_html_collections
       .retain(|coll| coll.weak_obj.upgrade(heap).is_some());
+
+    // When a StaticRange wrapper dies, drop its rooted endpoint containers.
+    self.static_ranges.retain(|k, state| {
+      if k.upgrade(heap).is_some() {
+        true
+      } else {
+        heap.remove_root(state.start_container.root);
+        heap.remove_root(state.end_container.root);
+        false
+      }
+    });
 
     // When an EventTarget wrapper dies, drop its listener roots.
     self.event_targets.retain(|k, state| {
@@ -2806,7 +2838,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let fragment_obj = Self::require_receiver_object(receiver)?;
         let (document_id, fragment_id) = {
           let platform = require_dom_platform_mut(vm)?;
-          let handle = platform.require_node_handle(scope.heap(), Value::Object(fragment_obj))?;
+          let handle = platform.require_document_fragment_handle(scope.heap(), Value::Object(fragment_obj))?;
           (handle.document_id, handle.node_id)
         };
 
@@ -2854,7 +2886,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         let (document_id, fragment_id) = {
           let platform = require_dom_platform_mut(vm)?;
-          let handle = platform.require_node_handle(scope.heap(), Value::Object(fragment_obj))?;
+          let handle = platform.require_document_fragment_handle(scope.heap(), Value::Object(fragment_obj))?;
           (handle.document_id, handle.node_id)
         };
 
@@ -2886,26 +2918,23 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let selectors =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
 
-        let result: Result<Vec<(NodeId, DomInterface)>, DomException> =
-          self.with_dom_host(vm, |host| {
-            Ok(
-              dom2_bindings::query_selector_all(host, &selectors, Some(fragment_id)).map(|nodes| {
-                host.with_dom(|dom| {
-                  nodes
-                    .into_iter()
-                    .map(|node_id| {
-                      let primary = if node_id.index() >= dom.nodes_len() {
-                        DomInterface::Node
-                      } else {
-                        DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
-                      };
-                      (node_id, primary)
-                    })
-                    .collect()
+        let result: Result<Vec<(NodeId, DomInterface)>, DomException> = self.with_dom_host(vm, |host| {
+          Ok(dom2_bindings::query_selector_all(host, &selectors, Some(fragment_id)).map(|nodes| {
+            host.with_dom(|dom| {
+              nodes
+                .into_iter()
+                .map(|node_id| {
+                  let primary = if node_id.index() >= dom.nodes_len() {
+                    DomInterface::Node
+                  } else {
+                    DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+                  };
+                  (node_id, primary)
                 })
-              }),
-            )
-          })?;
+                .collect()
+            })
+          }))
+        })?;
 
         let nodes = match result {
           Ok(nodes) => nodes,
@@ -7298,155 +7327,38 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::Object(walker_obj))?;
         Ok(Value::Object(walker_obj))
       },
-      ("Document", "createRange", 0) => {
-        let document_obj = Self::require_receiver_object(receiver)?;
-        scope.push_root(Value::Object(document_obj))?;
-
-        {
-          let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-          let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
-        }
-
-        // Create a JS wrapper object whose prototype is `Range.prototype`.
-        let global = self
-          .global
-          .or_else(|| vm.user_data_mut::<WindowRealmUserData>().and_then(|data| data.window_obj()))
-          .ok_or(VmError::TypeError("Illegal invocation"))?;
-        scope.push_root(Value::Object(global))?;
-        let ctor_key = key_from_str(scope, "Range")?;
-        let Some(Value::Object(ctor_obj)) =
-          scope.heap().object_get_own_data_property_value(global, &ctor_key)?
-        else {
-          return Err(VmError::TypeError("Range constructor not available"));
-        };
-        scope.push_root(Value::Object(ctor_obj))?;
-        let proto_key = key_from_str(scope, "prototype")?;
-        let Some(Value::Object(proto_obj)) =
-          scope.heap().object_get_own_data_property_value(ctor_obj, &proto_key)?
-        else {
-          return Err(VmError::TypeError("Range.prototype not available"));
-        };
-        scope.push_root(Value::Object(proto_obj))?;
-
-        let range_obj = scope.alloc_object_with_prototype(Some(proto_obj))?;
-        scope.push_root(Value::Object(range_obj))?;
-
-        // Keep a reference to the wrapper document for receiver branding.
-        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
-        scope.define_property(
-          range_obj,
-          wrapper_document_key,
-          data_property(Value::Object(document_obj), false, false, false),
-        )?;
-
-        // Allocate and register a live range in the associated dom2 document. This does not mutate the
-        // live DOM tree (only internal range state), so report `changed=false`.
-        //
-        // Register the wrapper in the document's weak live-traversal registry so range state can be
-        // swept when the JS object is collected.
-        let range_id = {
-          let heap = scope.heap();
-          with_active_vm_host(vm, |host| {
-            mutate_dom_detached(host, |dom| dom.register_live_range(heap, range_obj))
-          })?
-        };
-
-        // Set wrapper host slots after registration so the weak registry can observe wrapper GC and prune
-        // stale `dom2::Document` range state.
-        scope.heap_mut().object_set_host_slots(
-          range_obj,
-          HostSlots {
-            a: range_id.as_u64(),
-            b: RANGE_HOST_TAG,
-          },
-        )?;
-
-        Ok(Value::Object(range_obj))
-      },
-
-      ("Range", "constructor", 0) => {
-        let obj = Self::require_receiver_object(receiver)?;
-        scope.push_root(Value::Object(obj))?;
-
-        let document_obj = vm
-          .user_data_mut::<WindowRealmUserData>()
-          .and_then(|data| data.document_obj())
-          .ok_or(VmError::TypeError("Range constructor missing document object"))?;
-        scope.push_root(Value::Object(document_obj))?;
-
-        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
-        scope.define_property(
-          obj,
-          wrapper_document_key,
-          data_property(Value::Object(document_obj), false, false, false),
-        )?;
-
-        let range_id = {
-          let heap = scope.heap();
-          with_active_vm_host(vm, |host| {
-            mutate_dom_detached(host, |dom| dom.register_live_range(heap, obj))
-          })?
-        };
-        scope.heap_mut().object_set_host_slots(
-          obj,
-          HostSlots {
-            a: range_id.as_u64(),
-            b: RANGE_HOST_TAG,
-          },
-        )?;
-
-        Ok(Value::Undefined)
-      },
-
-      ("Range", "setStart", 0) => {
-        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
-
-        let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let offset = match args.get(1).copied().unwrap_or(Value::Number(0.0)) {
-          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
-          _ => 0,
-        } as usize;
-
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), node_value)?;
-
-        let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
-          mutate_dom_detached(host, |dom| dom.range_set_start(range_id, node_id, offset))
-        })?;
-        match result {
-          Ok(()) => Ok(Value::Undefined),
-          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
-        }
-      },
-
-      ("Range", "setEnd", 0) => {
-        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
-
-        let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let offset = match args.get(1).copied().unwrap_or(Value::Number(0.0)) {
-          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
-          _ => 0,
-        } as usize;
-
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), node_value)?;
-
-        let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
-          mutate_dom_detached(host, |dom| dom.range_set_end(range_id, node_id, offset))
-        })?;
-        match result {
-          Ok(()) => Ok(Value::Undefined),
-          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
-        }
-      },
-
       ("Range", "selectNodeContents", 0) => {
-        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
-        let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), node_value)?;
+        let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
+        let node_handle = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform.require_node_handle(scope.heap(), node_val)?
+        };
 
-        let result: Result<(), DomError> = with_active_vm_host(vm, |host| {
-          mutate_dom_detached(host, |dom| dom.range_select_node_contents(range_id, node_id))
-        })?;
+        if node_handle.document_id != document_id {
+          return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
+        }
+
+        let owned_result: Option<Result<(), DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document_mut(document_id, |dom| {
+              dom.range_select_node_contents(range_id, node_handle.node_id)
+            })
+          });
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| {
+              let out = dom.range_select_node_contents(range_id, node_handle.node_id);
+              (out, false)
+            }))
+          })?
+        };
+
         match result {
           Ok(()) => Ok(Value::Undefined),
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
@@ -7454,28 +7366,20 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       },
 
       ("Range", "toString", 0) => {
-        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
-        let result: Result<String, DomError> =
-          self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.range_to_string(range_id))))?;
+        let owned_result: Option<Result<String, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| data.with_owned_dom2_document(document_id, |dom| dom.range_to_string(range_id)));
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.range_to_string(range_id))))?
+        };
+
         match result {
           Ok(s) => Ok(Value::String(scope.alloc_string(&s)?)),
-          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
-        }
-      },
-
-      ("AbstractRange", "collapsed", 0) => {
-        let (range_id, _document_id) = require_range_receiver(vm, scope, receiver)?;
-
-        let result: Result<bool, DomError> = self.with_dom_host(vm, |host| {
-          Ok(host.with_dom(|dom| {
-            let start = dom.range_start(range_id)?;
-            let end = dom.range_end(range_id)?;
-            Ok(start == end)
-          }))
-        })?;
-        match result {
-          Ok(b) => Ok(Value::Bool(b)),
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
       },
@@ -7541,6 +7445,47 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           },
         )?;
         Ok(Value::Object(range_obj))
+      }
+
+      ("Range", "compareBoundaryPoints", 0) => {
+        let state = self.require_range_state(vm, scope, receiver)?;
+
+        let how_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
+        let how_n = match how_value {
+          Value::Number(n) => n,
+          other => scope.heap_mut().to_number(other)?,
+        };
+        let how = to_uint16_f64(how_n);
+
+        let other_value = args.get(1).copied().unwrap_or(Value::Undefined);
+        let other_state = self.require_range_state(vm, scope, Some(other_value))?;
+
+        if other_state.document_id != state.document_id {
+          return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
+        }
+
+        let owned_result: Option<Result<i16, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              dom.range_compare_boundary_points(state.range_id, how, other_state.range_id)
+            })
+          });
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              dom.range_compare_boundary_points(state.range_id, how, other_state.range_id)
+            }))
+          })?
+        };
+
+        match result {
+          Ok(value) => Ok(Value::Number(value as f64)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
       }
 
       ("Element", "matches", 0) => {
@@ -10283,7 +10228,6 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               node_id,
               primary_interface,
             )?;
-            scope.push_root(Value::Object(wrapper))?;
             Ok(Value::Object(wrapper))
           }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
@@ -10492,10 +10436,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
 
         let offset_val = args.get(1).copied().unwrap_or(Value::Number(0.0));
-        let offset = match offset_val {
-          Value::Number(n) if n.is_finite() && n >= 0.0 => (n as u32) as usize,
-          _ => 0,
-        };
+        let offset = to_uint32_f64(scope.heap_mut().to_number(offset_val)?) as usize;
 
         let is_start = operation == "setStart";
 
@@ -10592,10 +10533,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
 
         let offset_val = args.get(1).copied().unwrap_or(Value::Number(0.0));
-        let offset = match offset_val {
-          Value::Number(n) if n.is_finite() && n >= 0.0 => (n as u32) as usize,
-          _ => 0,
-        };
+        let offset = to_uint32_f64(scope.heap_mut().to_number(offset_val)?) as usize;
 
         let owned_result: Option<Result<i16, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
@@ -11633,7 +11571,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let state = self.require_range_state(vm, scope, receiver)?;
         let (range_id, document_id) = (state.range_id, state.document_id);
 
-        // Fast path: return offsets/collapsed without allocating wrappers.
+        // Fast path: offsets/collapsed do not require allocating node wrappers.
         if op == "startOffset" || op == "endOffset" || op == "collapsed" {
           let owned_result: Option<Result<Value, DomError>> = vm
             .user_data_mut::<WindowRealmUserData>()
@@ -11645,33 +11583,33 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 "endOffset" => dom
                   .range_end_offset(range_id)
                   .map(|v| Value::Number(v as f64)),
-                "collapsed" => {
-                  let start = dom.range_start(range_id)?;
-                  let end = dom.range_end(range_id)?;
-                  Ok(Value::Bool(start == end))
-                }
+                "collapsed" => dom
+                  .range_collapsed(range_id)
+                  .map(|collapsed| Value::Bool(collapsed)),
                 _ => Err(DomError::NotFoundError),
               })
             });
 
-          let value = if let Some(result) = owned_result {
+          let result = if let Some(result) = owned_result {
             result
           } else {
             self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| match op {
-                "startOffset" => dom.range_start_offset(range_id).map(|v| Value::Number(v as f64)),
-                "endOffset" => dom.range_end_offset(range_id).map(|v| Value::Number(v as f64)),
-                "collapsed" => {
-                  let start = dom.range_start(range_id)?;
-                  let end = dom.range_end(range_id)?;
-                  Ok(Value::Bool(start == end))
-                }
+                "startOffset" => dom
+                  .range_start_offset(range_id)
+                  .map(|v| Value::Number(v as f64)),
+                "endOffset" => dom
+                  .range_end_offset(range_id)
+                  .map(|v| Value::Number(v as f64)),
+                "collapsed" => dom
+                  .range_collapsed(range_id)
+                  .map(|collapsed| Value::Bool(collapsed)),
                 _ => Err(DomError::NotFoundError),
               }))
             })?
           };
 
-          return match value {
+          return match result {
             Ok(v) => Ok(v),
             Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
           };
@@ -11692,11 +11630,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             })
           });
 
-        let (node_id, primary_interface) = if let Some(result) = owned_result {
-          match result {
-            Ok(v) => v,
-            Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
-          }
+        let result = if let Some(result) = owned_result {
+          result
         } else {
           self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
@@ -11709,17 +11644,21 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               Ok((node_id, primary))
             }))
           })?
-          .map_err(|err: DomError| self.dom_error_to_vm_error(vm, scope, err))?
         };
 
-        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
-          scope,
-          document_id,
-          node_id,
-          primary_interface,
-        )?;
-        scope.push_root(Value::Object(wrapper))?;
-        Ok(Value::Object(wrapper))
+        match result {
+          Ok((node_id, primary_interface)) => {
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+              scope,
+              document_id,
+              node_id,
+              primary_interface,
+            )?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
       }
 
       ("Window", "alert", _) => Ok(Value::Undefined),

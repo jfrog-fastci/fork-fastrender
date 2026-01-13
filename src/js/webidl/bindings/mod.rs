@@ -44,6 +44,7 @@ pub use generated::{
   install_node_iterator_bindings_vm_js,
   install_node_list_bindings_vm_js,
   install_range_bindings_vm_js,
+  install_static_range_bindings_vm_js,
   install_text_bindings_vm_js,
   install_tree_walker_bindings_vm_js,
   install_url_bindings_vm_js,

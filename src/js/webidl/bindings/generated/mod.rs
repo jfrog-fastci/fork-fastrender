@@ -372,6 +372,80 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn js_to_dict_static_range_init(
+    rt: &mut BindingsRuntime<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<Value, VmError> {
+    let _ = (&mut *host, &mut *hooks);
+    if matches!(value, Value::Undefined | Value::Null) {
+      let obj = rt.alloc_object()?;
+      return Ok(Value::Object(obj));
+    }
+    let Value::Object(input) = value else {
+      return Err(rt.throw_type_error("expected object for dictionary StaticRangeInit"));
+    };
+    rt.scope.push_root(Value::Object(input))?;
+    let out_obj = rt.alloc_object()?;
+    {
+      let key = rt.property_key("startContainer")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = v;
+        rt.define_data_property_str(
+          out_obj,
+          "startContainer",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("startOffset")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted =
+          Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v)?) as f64);
+        rt.define_data_property_str(
+          out_obj,
+          "startOffset",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("endContainer")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = v;
+        rt.define_data_property_str(
+          out_obj,
+          "endContainer",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("endOffset")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted =
+          Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v)?) as f64);
+        rt.define_data_property_str(
+          out_obj,
+          "endOffset",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    Ok(Value::Object(out_obj))
+  }
+
+  #[allow(dead_code)]
   fn abstract_range_get_attribute_collapsed(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1298,12 +1372,8 @@ pub mod window {
             Value::Undefined
           } else if matches!(v, Value::Null | Value::Undefined) {
             js_to_dict_element_creation_options(rt, host, hooks, v)?
-          } else if let Value::Object(obj) = v {
-            if conversions::is_string_object(rt, host, hooks, obj)? {
-              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-            } else {
-              js_to_dict_element_creation_options(rt, host, hooks, v)?
-            }
+          } else if let Value::Object(_) = v {
+            js_to_dict_element_creation_options(rt, host, hooks, v)?
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
           } else {
@@ -2111,12 +2181,8 @@ pub mod window {
           let v = v;
           if false {
             Value::Undefined
-          } else if let Value::Object(obj) = v {
-            if conversions::is_string_object(rt, host, hooks, obj)? {
-              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-            } else {
-              v
-            }
+          } else if let Value::Object(_) = v {
+            v
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
           } else {
@@ -2443,12 +2509,8 @@ pub mod window {
         let v = v1;
         if false {
           Value::Undefined
-        } else if let Value::Object(obj) = v {
-          if conversions::is_string_object(rt, host, hooks, obj)? {
-            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-          } else {
-            v
-          }
+        } else if let Value::Object(_) = v {
+          v
         } else if matches!(v, Value::String(_)) {
           Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
         } else {
@@ -2573,12 +2635,8 @@ pub mod window {
           let v = v;
           if false {
             Value::Undefined
-          } else if let Value::Object(obj) = v {
-            if conversions::is_string_object(rt, host, hooks, obj)? {
-              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-            } else {
-              v
-            }
+          } else if let Value::Object(_) = v {
+            v
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
           } else {
@@ -2762,12 +2820,8 @@ pub mod window {
           let v = v;
           if false {
             Value::Undefined
-          } else if let Value::Object(obj) = v {
-            if conversions::is_string_object(rt, host, hooks, obj)? {
-              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-            } else {
-              v
-            }
+          } else if let Value::Object(_) = v {
+            v
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
           } else {
@@ -2823,12 +2877,8 @@ pub mod window {
         let v = v1;
         if false {
           Value::Undefined
-        } else if let Value::Object(obj) = v {
-          if conversions::is_string_object(rt, host, hooks, obj)? {
-            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-          } else {
-            v
-          }
+        } else if let Value::Object(_) = v {
+          v
         } else if matches!(v, Value::String(_)) {
           Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
         } else {
@@ -3185,16 +3235,8 @@ pub mod window {
         let v = v0;
         if false {
           Value::Undefined
-        } else if let Value::Object(obj) = v {
-          if conversions::is_string_object(rt, host, hooks, obj)? {
-            if matches!(v, Value::Null | Value::Undefined) {
-              Value::String(rt.alloc_string("")?)
-            } else {
-              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-            }
-          } else {
-            v
-          }
+        } else if let Value::Object(_) = v {
+          v
         } else if matches!(v, Value::String(_)) {
           if matches!(v, Value::Null | Value::Undefined) {
             Value::String(rt.alloc_string("")?)
@@ -3432,16 +3474,8 @@ pub mod window {
         let v = v0;
         if false {
           Value::Undefined
-        } else if let Value::Object(obj) = v {
-          if conversions::is_string_object(rt, host, hooks, obj)? {
-            if matches!(v, Value::Null | Value::Undefined) {
-              Value::String(rt.alloc_string("")?)
-            } else {
-              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-            }
-          } else {
-            v
-          }
+        } else if let Value::Object(_) = v {
+          v
         } else if matches!(v, Value::String(_)) {
           if matches!(v, Value::Null | Value::Undefined) {
             Value::String(rt.alloc_string("")?)
@@ -5860,6 +5894,51 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn range_compare_boundary_points(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::Number(rt.scope.to_number(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = v1;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "compareBoundaryPoints",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn range_compare_point(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -5899,35 +5978,6 @@ pub mod window {
         receiver,
         "Range",
         "comparePoint",
-        0,
-        &converted_args,
-      )
-    }
-  }
-
-  #[allow(dead_code)]
-  fn range_delete_contents(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    _host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    _callee: GcObject,
-    this: Value,
-    _args: &[Value],
-  ) -> Result<Value, VmError> {
-    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    let rt = &mut rt;
-    rt.scope.push_root(this)?;
-    let receiver = Some(this);
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "Range",
-        "deleteContents",
         0,
         &converted_args,
       )
@@ -5976,6 +6026,35 @@ pub mod window {
         receiver,
         "Range",
         "createContextualFragment",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_delete_contents(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "deleteContents",
         0,
         &converted_args,
       )
@@ -6161,43 +6240,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn range_select_node_contents(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    _host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    _callee: GcObject,
-    this: Value,
-    args: &[Value],
-  ) -> Result<Value, VmError> {
-    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    let rt = &mut rt;
-    rt.scope.push_root(this)?;
-    let receiver = Some(this);
-    {
-      let mut converted_args: Vec<Value> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        Value::Undefined
-      };
-      let converted = v0;
-      let converted = rt.scope.push_root(converted)?;
-      converted_args.push(converted);
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "Range",
-        "selectNodeContents",
-        0,
-        &converted_args,
-      )
-    }
-  }
-
-  #[allow(dead_code)]
   fn range_set_end(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -6327,7 +6369,7 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn range_to_string(
+  fn range_get_attribute_common_ancestor_container(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     _host: &mut dyn VmHost,
@@ -6340,19 +6382,16 @@ pub mod window {
     let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "Range",
-        "toString",
-        0,
-        &converted_args,
-      )
-    }
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Range",
+      "commonAncestorContainer",
+      0,
+      &[],
+    )
   }
 
   #[allow(dead_code)]
@@ -6396,6 +6435,63 @@ pub mod window {
         &mut rt.scope,
         Some(Value::Object(obj)),
         "Range",
+        "constructor",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Object(obj))
+    }
+  }
+
+  #[allow(dead_code)]
+  fn static_range_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn static_range_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let default_proto =
+      rt.require_native_object_slot(callee, 0, "StaticRange constructor missing prototype slot")?;
+    let wrapper_proto =
+      rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
+    let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
+
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = js_to_dict_static_range_init(rt, host, hooks, v0)?;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        Some(Value::Object(obj)),
+        "StaticRange",
         "constructor",
         0,
         &converted_args,
@@ -7649,53 +7745,49 @@ pub mod window {
           if false {
             Value::Undefined
           } else if let Value::Object(obj) = v {
-            if conversions::is_string_object(rt, host, hooks, obj)? {
-              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+            let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
+            if let Some(iter_method) = iter_method {
+              conversions::to_iterable_list_from_method(
+                rt,
+                host,
+                hooks,
+                v,
+                iter_method,
+                "expected object for sequence",
+                |rt, host, hooks, next| {
+                  Ok(conversions::to_iterable_list(
+                    rt,
+                    host,
+                    hooks,
+                    next,
+                    "expected object for sequence",
+                    |rt, host, hooks, next| {
+                      Ok(Value::String(rt.scope.to_string(
+                        &mut *rt.vm,
+                        host,
+                        hooks,
+                        next,
+                      )?))
+                    },
+                  )?)
+                },
+              )?
             } else {
-              let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
-              if let Some(iter_method) = iter_method {
-                conversions::to_iterable_list_from_method(
-                  rt,
-                  host,
-                  hooks,
-                  v,
-                  iter_method,
-                  "expected object for sequence",
-                  |rt, host, hooks, next| {
-                    Ok(conversions::to_iterable_list(
-                      rt,
-                      host,
-                      hooks,
-                      next,
-                      "expected object for sequence",
-                      |rt, host, hooks, next| {
-                        Ok(Value::String(rt.scope.to_string(
-                          &mut *rt.vm,
-                          host,
-                          hooks,
-                          next,
-                        )?))
-                      },
-                    )?)
-                  },
-                )?
-              } else {
-                conversions::to_record(
-                  rt,
-                  host,
-                  hooks,
-                  v,
-                  "expected object for record",
-                  |rt, host, hooks, prop_value| {
-                    Ok(Value::String(rt.scope.to_string(
-                      &mut *rt.vm,
-                      host,
-                      hooks,
-                      prop_value,
-                    )?))
-                  },
-                )?
-              }
+              conversions::to_record(
+                rt,
+                host,
+                hooks,
+                v,
+                "expected object for record",
+                |rt, host, hooks, prop_value| {
+                  Ok(Value::String(rt.scope.to_string(
+                    &mut *rt.vm,
+                    host,
+                    hooks,
+                    prop_value,
+                  )?))
+                },
+              )?
             }
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
@@ -13335,6 +13427,28 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("compareBoundaryPoints")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(
+          range_compare_boundary_points,
+          None,
+          "compareBoundaryPoints",
+          2,
+        )?;
+        rt.define_data_property_str(
+          proto_range,
+          "compareBoundaryPoints",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("comparePoint")?;
       if rt
         .scope
@@ -13346,23 +13460,6 @@ pub mod window {
         rt.define_data_property_str(
           proto_range,
           "comparePoint",
-          Value::Object(func),
-          DataPropertyAttributes::METHOD,
-        )?;
-      }
-    }
-    {
-      let key = rt.property_key("deleteContents")?;
-      if rt
-        .scope
-        .heap()
-        .object_get_own_property(proto_range, &key)?
-        .is_none()
-      {
-        let func = rt.alloc_native_function(range_delete_contents, None, "deleteContents", 0)?;
-        rt.define_data_property_str(
-          proto_range,
-          "deleteContents",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;
@@ -13385,6 +13482,23 @@ pub mod window {
         rt.define_data_property_str(
           proto_range,
           "createContextualFragment",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("deleteContents")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_delete_contents, None, "deleteContents", 0)?;
+        rt.define_data_property_str(
+          proto_range,
+          "deleteContents",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;
@@ -13476,23 +13590,6 @@ pub mod window {
       }
     }
     {
-      let key = rt.property_key("selectNodeContents")?;
-      if rt
-        .scope
-        .heap()
-        .object_get_own_property(proto_range, &key)?
-        .is_none()
-      {
-        let func = rt.alloc_native_function(range_select_node_contents, None, "selectNodeContents", 1)?;
-        rt.define_data_property_str(
-          proto_range,
-          "selectNodeContents",
-          Value::Object(func),
-          DataPropertyAttributes::METHOD,
-        )?;
-      }
-    }
-    {
       let key = rt.property_key("setEnd")?;
       if rt
         .scope
@@ -13534,7 +13631,8 @@ pub mod window {
         .object_get_own_property(proto_range, &key)?
         .is_none()
       {
-        let func = rt.alloc_native_function(range_surround_contents, None, "surroundContents", 1)?;
+        let func =
+          rt.alloc_native_function(range_surround_contents, None, "surroundContents", 1)?;
         rt.define_data_property_str(
           proto_range,
           "surroundContents",
@@ -13544,19 +13642,26 @@ pub mod window {
       }
     }
     {
-      let key = rt.property_key("toString")?;
+      let key = rt.property_key("commonAncestorContainer")?;
       if rt
         .scope
         .heap()
         .object_get_own_property(proto_range, &key)?
         .is_none()
       {
-        let func = rt.alloc_native_function(range_to_string, None, "toString", 0)?;
-        rt.define_data_property_str(
+        let get = rt.alloc_native_function(
+          range_get_attribute_common_ancestor_container,
+          None,
+          "get commonAncestorContainer",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
           proto_range,
-          "toString",
-          Value::Object(func),
-          DataPropertyAttributes::METHOD,
+          "commonAncestorContainer",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
         )?;
       }
     }
@@ -13676,6 +13781,111 @@ pub mod window {
         )?;
       }
     }
+    Ok(())
+  }
+
+  pub fn install_static_range_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (_ctor_static_range, proto_static_range) = {
+      let ctor_key = rt.property_key("StaticRange")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          static_range_call_without_new,
+          Some(static_range_construct),
+          "StaticRange",
+          1,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "StaticRange",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    let parent_proto = {
+      let ctor_key = rt.property_key("AbstractRange")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_static_range, Some(parent_proto))?;
+    }
+
     Ok(())
   }
 
@@ -14717,6 +14927,7 @@ pub mod window {
     install_node_iterator_bindings_vm_js(vm, heap, realm)?;
     install_node_list_bindings_vm_js(vm, heap, realm)?;
     install_range_bindings_vm_js(vm, heap, realm)?;
+    install_static_range_bindings_vm_js(vm, heap, realm)?;
     install_text_bindings_vm_js(vm, heap, realm)?;
     install_tree_walker_bindings_vm_js(vm, heap, realm)?;
     install_url_bindings_vm_js(vm, heap, realm)?;
@@ -16222,53 +16433,49 @@ pub mod worker {
           if false {
             Value::Undefined
           } else if let Value::Object(obj) = v {
-            if conversions::is_string_object(rt, host, hooks, obj)? {
-              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+            let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
+            if let Some(iter_method) = iter_method {
+              conversions::to_iterable_list_from_method(
+                rt,
+                host,
+                hooks,
+                v,
+                iter_method,
+                "expected object for sequence",
+                |rt, host, hooks, next| {
+                  Ok(conversions::to_iterable_list(
+                    rt,
+                    host,
+                    hooks,
+                    next,
+                    "expected object for sequence",
+                    |rt, host, hooks, next| {
+                      Ok(Value::String(rt.scope.to_string(
+                        &mut *rt.vm,
+                        host,
+                        hooks,
+                        next,
+                      )?))
+                    },
+                  )?)
+                },
+              )?
             } else {
-              let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
-              if let Some(iter_method) = iter_method {
-                conversions::to_iterable_list_from_method(
-                  rt,
-                  host,
-                  hooks,
-                  v,
-                  iter_method,
-                  "expected object for sequence",
-                  |rt, host, hooks, next| {
-                    Ok(conversions::to_iterable_list(
-                      rt,
-                      host,
-                      hooks,
-                      next,
-                      "expected object for sequence",
-                      |rt, host, hooks, next| {
-                        Ok(Value::String(rt.scope.to_string(
-                          &mut *rt.vm,
-                          host,
-                          hooks,
-                          next,
-                        )?))
-                      },
-                    )?)
-                  },
-                )?
-              } else {
-                conversions::to_record(
-                  rt,
-                  host,
-                  hooks,
-                  v,
-                  "expected object for record",
-                  |rt, host, hooks, prop_value| {
-                    Ok(Value::String(rt.scope.to_string(
-                      &mut *rt.vm,
-                      host,
-                      hooks,
-                      prop_value,
-                    )?))
-                  },
-                )?
-              }
+              conversions::to_record(
+                rt,
+                host,
+                hooks,
+                v,
+                "expected object for record",
+                |rt, host, hooks, prop_value| {
+                  Ok(Value::String(rt.scope.to_string(
+                    &mut *rt.vm,
+                    host,
+                    hooks,
+                    prop_value,
+                  )?))
+                },
+              )?
             }
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
@@ -17266,6 +17473,7 @@ pub use window::install_node_filter_bindings_vm_js;
 pub use window::install_node_iterator_bindings_vm_js;
 pub use window::install_node_list_bindings_vm_js;
 pub use window::install_range_bindings_vm_js;
+pub use window::install_static_range_bindings_vm_js;
 pub use window::install_text_bindings_vm_js;
 pub use window::install_tree_walker_bindings_vm_js;
 pub use window::install_url_bindings_vm_js;
