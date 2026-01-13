@@ -2688,6 +2688,112 @@ fn compiled_switch_instantiates_lexical_decls_for_tdz() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_switch_function_basic_match_and_break() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(x) {
+        let y = 0;
+        switch (x) {
+          case 1:
+            y = 1;
+            break;
+          case 2:
+            y = 2;
+            break;
+          default:
+            y = 3;
+        }
+        return y;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    1,
+  )?;
+
+  let r2 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(2.0)],
+  )?;
+  assert_eq!(r2, Value::Number(2.0));
+
+  let r9 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(9.0)],
+  )?;
+  assert_eq!(r9, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_switch_function_fallthrough() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(x) {
+        let y = 0;
+        switch (x) {
+          case 1:
+            y += 1;
+          case 2:
+            y += 2;
+        }
+        return y;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    1,
+  )?;
+
+  let r1 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(1.0)],
+  )?;
+  assert_eq!(r1, Value::Number(3.0));
+
+  let r2 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(2.0)],
+  )?;
+  assert_eq!(r2, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_postfix_update_expression_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
