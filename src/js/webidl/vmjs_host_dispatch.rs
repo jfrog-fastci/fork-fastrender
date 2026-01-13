@@ -4661,7 +4661,6 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
         let name =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
-
         let result: Result<bool, DomError> = with_active_vm_host(vm, |host| {
           let any = host.as_any_mut();
           if let Some(host) = any.downcast_mut::<DocumentHostState>() {
@@ -4749,6 +4748,78 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             })();
 
             let changed = dom.mutation_generation() != generation;
+            (result, changed)
+          }))
+        })?;
+
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("Element", "insertAdjacentHTML", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let position =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let html = js_string_to_rust_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let before = dom.mutation_generation();
+            let result = dom.insert_adjacent_html(element_id, &position, &html);
+            let changed = dom.mutation_generation() != before;
+            (result, changed)
+          }))
+        })?;
+
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("Element", "insertAdjacentElement", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let where_ =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let new_element_val = args.get(1).copied().unwrap_or(Value::Undefined);
+        let new_element_id =
+          require_dom_platform_mut(vm)?.require_element_id(scope.heap(), new_element_val)?;
+
+        let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let before = dom.mutation_generation();
+            let result = dom.insert_adjacent_element(element_id, &where_, new_element_id);
+            let changed = dom.mutation_generation() != before;
+            (result, changed)
+          }))
+        })?;
+
+        match result {
+          Ok(Some(_)) => Ok(new_element_val),
+          Ok(None) => Ok(Value::Null),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
+      ("Element", "insertAdjacentText", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let where_ =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let data = js_string_to_rust_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let before = dom.mutation_generation();
+            let result = dom.insert_adjacent_text(element_id, &where_, &data);
+            let changed = dom.mutation_generation() != before;
             (result, changed)
           }))
         })?;

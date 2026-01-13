@@ -103,6 +103,9 @@ operations = [
   "querySelector",
   "querySelectorAll",
   "replaceWith",
+  "insertAdjacentHTML",
+  "insertAdjacentElement",
+  "insertAdjacentText",
 ]
 
 [[interface]]

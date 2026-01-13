@@ -1007,6 +1007,47 @@ impl DomPlatform {
       }
     }
 
+    // Keep the wrapper's owning document reference in sync with the handwritten vm-js DOM helpers
+    // (`window_realm.rs`), which identify nodes by `(wrapper_document, __fastrender_node_id)`.
+    //
+    // This property is intentionally *not* used by the WebIDL host dispatch (it uses the
+    // `meta_by_wrapper` table instead), but it enables transitional fallback shims and older native
+    // helpers to work against platform-object wrappers created via `DomPlatform`.
+    {
+      // Root wrapper while allocating strings / potentially allocating the document wrapper.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(wrapper))?;
+
+      // Ensure a stable document wrapper exists for this document ID so we can stash it.
+      let document_obj = if node_id.index() == 0 {
+        wrapper
+      } else {
+        self.get_or_create_wrapper_for_document_id(
+          &mut scope,
+          document_id,
+          NodeId::from_index(0),
+          DomInterface::Document,
+        )?
+      };
+      scope.push_root(Value::Object(document_obj))?;
+
+      let wrapper_document_key =
+        PropertyKey::from_string(scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?);
+      scope.define_property(
+        wrapper,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(document_obj),
+            // Allow document rebinding for clone+mapping operations (e.g. adoptNode-style moves).
+            writable: true,
+          },
+        },
+      )?;
+    }
+
     self.register_wrapper_for_document_id(
       scope.heap(),
       wrapper,

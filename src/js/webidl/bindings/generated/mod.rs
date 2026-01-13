@@ -1646,6 +1646,152 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_insert_adjacent_element(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = v1;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "insertAdjacentElement",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_insert_adjacent_h_t_m_l(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = {
+        let v = v1;
+        if false {
+          Value::Undefined
+        } else if let Value::Object(_) = v {
+          v
+        } else if matches!(v, Value::String(_)) {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        } else {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        }
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "insertAdjacentHTML",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_insert_adjacent_text(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v1)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "insertAdjacentText",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn element_matches(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -3173,65 +3319,6 @@ pub mod window {
         &converted_args,
       )
     }
-  }
-
-  #[allow(dead_code)]
-  fn node_contains(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    _host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    _callee: GcObject,
-    this: Value,
-    args: &[Value],
-  ) -> Result<Value, VmError> {
-    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    let rt = &mut rt;
-    rt.scope.push_root(this)?;
-    let receiver = Some(this);
-    {
-      let mut converted_args: Vec<Value> = Vec::new();
-      let v0 = if args.len() > 0 { args[0] } else { Value::Undefined };
-      let converted = v0;
-      let converted = rt.scope.push_root(converted)?;
-      converted_args.push(converted);
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "Node",
-        "contains",
-        0,
-        &converted_args,
-      )
-    }
-  }
-
-  #[allow(dead_code)]
-  fn node_has_child_nodes(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    _host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    _callee: GcObject,
-    this: Value,
-    _args: &[Value],
-  ) -> Result<Value, VmError> {
-    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    let rt = &mut rt;
-    rt.scope.push_root(this)?;
-    let receiver = Some(this);
-    let bindings_host = host_from_hooks(hooks)?;
-    bindings_host.call_operation(
-      &mut *rt.vm,
-      &mut rt.scope,
-      receiver,
-      "Node",
-      "hasChildNodes",
-      0,
-      &[],
-    )
   }
 
   #[allow(dead_code)]
@@ -6400,6 +6487,68 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("insertAdjacentElement")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(
+          element_insert_adjacent_element,
+          None,
+          "insertAdjacentElement",
+          2,
+        )?;
+        rt.define_data_property_str(
+          proto_element,
+          "insertAdjacentElement",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("insertAdjacentHTML")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(
+          element_insert_adjacent_h_t_m_l,
+          None,
+          "insertAdjacentHTML",
+          2,
+        )?;
+        rt.define_data_property_str(
+          proto_element,
+          "insertAdjacentHTML",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("insertAdjacentText")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(element_insert_adjacent_text, None, "insertAdjacentText", 2)?;
+        rt.define_data_property_str(
+          proto_element,
+          "insertAdjacentText",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("matches")?;
       if rt
         .scope
@@ -7428,40 +7577,6 @@ pub mod window {
         rt.define_data_property_str(
           proto_node,
           "cloneNode",
-          Value::Object(func),
-          DataPropertyAttributes::METHOD,
-        )?;
-      }
-    }
-    {
-      let key = rt.property_key("contains")?;
-      if rt
-        .scope
-        .heap()
-        .object_get_own_property(proto_node, &key)?
-        .is_none()
-      {
-        let func = rt.alloc_native_function(node_contains, None, "contains", 1)?;
-        rt.define_data_property_str(
-          proto_node,
-          "contains",
-          Value::Object(func),
-          DataPropertyAttributes::METHOD,
-        )?;
-      }
-    }
-    {
-      let key = rt.property_key("hasChildNodes")?;
-      if rt
-        .scope
-        .heap()
-        .object_get_own_property(proto_node, &key)?
-        .is_none()
-      {
-        let func = rt.alloc_native_function(node_has_child_nodes, None, "hasChildNodes", 0)?;
-        rt.define_data_property_str(
-          proto_node,
-          "hasChildNodes",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;
