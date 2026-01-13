@@ -15,6 +15,7 @@ use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 
 const DISABLE_MITIGATIONS_ENV: &str = "FASTR_DISABLE_WIN_MITIGATIONS";
+const JOB_MEM_LIMIT_ENV: &str = "FASTR_RENDERER_JOB_MEM_LIMIT_MB";
 
 struct EnvVarRestore {
   key: &'static str,
@@ -89,6 +90,7 @@ fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> String {
 #[test]
 fn renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren() {
   let _mitigation_guard = EnvVarRestore::remove(DISABLE_MITIGATIONS_ENV);
+  let _job_mem_limit_guard = EnvVarRestore::remove(JOB_MEM_LIMIT_ENV);
 
   if !common::require_full_sandbox_support(
     "renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren",

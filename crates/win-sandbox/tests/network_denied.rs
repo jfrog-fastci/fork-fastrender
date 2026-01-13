@@ -22,6 +22,7 @@ use windows_sys::Win32::System::Threading::{
 const CHILD_ENV: &str = "FASTR_TEST_WIN_APPCONTAINER_NETWORK_CHILD";
 const PORT_ENV: &str = "FASTR_TEST_WIN_APPCONTAINER_NETWORK_PORT";
 const DISABLE_MITIGATIONS_ENV: &str = "FASTR_DISABLE_WIN_MITIGATIONS";
+const JOB_MEM_LIMIT_ENV: &str = "FASTR_RENDERER_JOB_MEM_LIMIT_MB";
 
 const WSAEACCES: i32 = 10013;
 
@@ -33,6 +34,7 @@ struct EnvRestore {
   prev_port: Option<OsString>,
   prev_threads: Option<OsString>,
   prev_disable_mitigations: Option<OsString>,
+  prev_job_mem_limit: Option<OsString>,
 }
 
 impl EnvRestore {
@@ -41,17 +43,20 @@ impl EnvRestore {
     let prev_port = std::env::var_os(PORT_ENV);
     let prev_threads = std::env::var_os("RUST_TEST_THREADS");
     let prev_disable_mitigations = std::env::var_os(DISABLE_MITIGATIONS_ENV);
+    let prev_job_mem_limit = std::env::var_os(JOB_MEM_LIMIT_ENV);
 
     std::env::set_var(CHILD_ENV, "1");
     std::env::set_var(PORT_ENV, port);
     std::env::set_var("RUST_TEST_THREADS", "1");
     std::env::remove_var(DISABLE_MITIGATIONS_ENV);
+    std::env::remove_var(JOB_MEM_LIMIT_ENV);
 
     Self {
       prev_child,
       prev_port,
       prev_threads,
       prev_disable_mitigations,
+      prev_job_mem_limit,
     }
   }
 }
@@ -65,6 +70,7 @@ impl Drop for EnvRestore {
       DISABLE_MITIGATIONS_ENV,
       self.prev_disable_mitigations.take(),
     );
+    restore_var(JOB_MEM_LIMIT_ENV, self.prev_job_mem_limit.take());
   }
 }
 
