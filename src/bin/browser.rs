@@ -8815,6 +8815,16 @@ fn _assert_send_page_subtree_accesskit_update() {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
+struct TrustedAboutPrepared {
+  url: String,
+  viewport_css: (u32, u32),
+  dpr: f32,
+  prepared: fastrender::PreparedDocument,
+  scroll_bounds: fastrender::scroll::ScrollBounds,
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: fastrender::ui::WindowTitleCache,
@@ -8922,6 +8932,8 @@ struct App {
   trusted_about_renderer: Option<fastrender::FastRender>,
   /// Tracks the `about:` URL that each tab texture was last rendered for.
   trusted_about_rendered_urls: std::collections::HashMap<fastrender::ui::TabId, String>,
+  /// Cached prepared documents for trusted `about:` pages, keyed by tab id.
+  trusted_about_prepared: std::collections::HashMap<fastrender::ui::TabId, TrustedAboutPrepared>,
 
   /// Rect of the central content panel (in egui points) from the last painted frame.
   ///
@@ -9587,6 +9599,7 @@ impl App {
         compositor_a11y::DEFAULT_WINDOW_NAME,
         compositor_a11y::DEFAULT_CHROME_NAME,
         compositor_a11y::DEFAULT_PAGE_NAME,
+        None,
         compositor_a11y::CompositorFocusTarget::Chrome,
       );
       ChromeA11yBackend::FastRender(compositor_a11y::CompositorAccessibility::new(
@@ -9823,6 +9836,7 @@ impl App {
       next_page_upload_redraw: None,
       trusted_about_renderer: None,
       trusted_about_rendered_urls: std::collections::HashMap::new(),
+      trusted_about_prepared: std::collections::HashMap::new(),
       content_rect_points: None,
       page_rect_points: None,
       page_viewport_css: None,
@@ -10959,6 +10973,11 @@ impl App {
         // Invalidate any cached `about:` frame for this tab so the trusted renderer repaints on the
         // next UI redraw.
         self.trusted_about_rendered_urls.remove(tab_id);
+        self.trusted_about_prepared.remove(tab_id);
+        if let Some(tab) = self.browser_state.tab_mut(*tab_id) {
+          tab.scroll_state = fastrender::scroll::ScrollState::default();
+          tab.scroll_metrics = None;
+        }
         self.window.request_redraw();
         return Ok(());
       }
@@ -10966,8 +10985,93 @@ impl App {
         if fastrender::ui::about_pages::is_about_url(request.url.as_str()) =>
       {
         self.trusted_about_rendered_urls.remove(tab_id);
+        self.trusted_about_prepared.remove(tab_id);
+        if let Some(tab) = self.browser_state.tab_mut(*tab_id) {
+          tab.scroll_state = fastrender::scroll::ScrollState::default();
+          tab.scroll_metrics = None;
+        }
         self.window.request_redraw();
         return Ok(());
+      }
+      UiToWorker::Scroll {
+        tab_id,
+        delta_css,
+        ..
+      } => {
+        let is_trusted_about = self
+          .browser_state
+          .tab(*tab_id)
+          .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+          .is_some_and(fastrender::ui::about_pages::is_about_url);
+        if !is_trusted_about {
+          // Fall through: handled by the worker.
+        } else {
+          let Some(tab) = self.browser_state.tab_mut(*tab_id) else {
+            return Ok(());
+          };
+
+          // Mirror the worker's scroll sanitization rules (non-finite => 0, clamp to >=0).
+          let (dx_raw, dy_raw) = *delta_css;
+          if (!dx_raw.is_finite() && !dy_raw.is_finite()) || (dx_raw == 0.0 && dy_raw == 0.0) {
+            return Ok(());
+          }
+          let dx = if dx_raw.is_finite() { dx_raw } else { 0.0 };
+          let dy = if dy_raw.is_finite() { dy_raw } else { 0.0 };
+
+          let prev = tab.scroll_state.clone();
+          let mut next = prev.clone();
+          next.viewport.x = (next.viewport.x + dx).max(0.0);
+          next.viewport.y = (next.viewport.y + dy).max(0.0);
+
+          // Clamp to the most recent scroll bounds when available; otherwise, the subsequent render
+          // pass will clamp once the document layout is known.
+          if let Some(metrics) = tab.scroll_metrics {
+            next.viewport = metrics.bounds_css.clamp(next.viewport);
+          }
+
+          if next.viewport != prev.viewport {
+            next.update_deltas_from(&prev);
+            tab.scroll_state = next;
+            self.trusted_about_rendered_urls.remove(tab_id);
+            if self.browser_state.active_tab_id() == Some(*tab_id) {
+              self.window.request_redraw();
+            }
+          }
+          return Ok(());
+        }
+      }
+      UiToWorker::ScrollTo { tab_id, pos_css } => {
+        let is_trusted_about = self
+          .browser_state
+          .tab(*tab_id)
+          .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+          .is_some_and(fastrender::ui::about_pages::is_about_url);
+        if !is_trusted_about {
+          // Fall through: handled by the worker.
+        } else {
+          let Some(tab) = self.browser_state.tab_mut(*tab_id) else {
+            return Ok(());
+          };
+
+          let sanitize = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+          let mut target = fastrender::Point::new(sanitize(pos_css.0), sanitize(pos_css.1));
+          if let Some(metrics) = tab.scroll_metrics {
+            target = metrics.bounds_css.clamp(target);
+          }
+
+          let prev = tab.scroll_state.clone();
+          if target != prev.viewport {
+            let mut next = prev.clone();
+            next.viewport = target;
+            next.update_deltas_from(&prev);
+            tab.scroll_state = next;
+            self.trusted_about_rendered_urls.remove(tab_id);
+            if self.browser_state.active_tab_id() == Some(*tab_id) {
+              self.window.request_redraw();
+            }
+          }
+          return Ok(());
+        }
       }
       _ => {}
     }
@@ -11018,40 +11122,115 @@ impl App {
     // Keep relative URL resolution consistent with the worker's about-page handling.
     renderer.set_base_url(fastrender::ui::about_pages::ABOUT_BASE_URL.to_string());
 
-    let html = fastrender::ui::about_pages::html_for_about_url(url).unwrap_or_else(|| {
-      fastrender::ui::about_pages::error_page_html(
-        "Unknown about page",
-        &format!("Unknown URL: {url}"),
-        None,
-      )
-    });
-
-    let pixmap = match renderer.render_html_with_options(
-      &html,
-      fastrender::RenderOptions::new()
-        .with_viewport(viewport_css.0, viewport_css.1)
-        .with_device_pixel_ratio(dpr),
-    ) {
-      Ok(pixmap) => pixmap,
-      Err(err) => {
-        eprintln!("trusted about: render failed for {url}: {err}");
-        return;
+    let should_reprepare = match self.trusted_about_prepared.get(&tab_id) {
+      Some(cached) => {
+        cached.url != url
+          || cached.viewport_css != viewport_css
+          || (cached.dpr - dpr).abs() > 0.01
       }
+      None => true,
     };
 
-    // Apply the rendered frame into the shared app state model so chrome state (loading spinner,
-    // scrollbars, etc) stays coherent with worker-rendered pages.
-    let scroll_state = fastrender::scroll::ScrollState::default();
-    let scroll_metrics = ScrollMetrics {
-      viewport_css,
-      scroll_css: (0.0, 0.0),
-      bounds_css: fastrender::scroll::ScrollBounds {
+    if should_reprepare {
+      let html = fastrender::ui::about_pages::html_for_about_url(url).unwrap_or_else(|| {
+        fastrender::ui::about_pages::error_page_html(
+          "Unknown about page",
+          &format!("Unknown URL: {url}"),
+          None,
+        )
+      });
+
+      let options = fastrender::RenderOptions::new()
+        .with_viewport(viewport_css.0, viewport_css.1)
+        .with_device_pixel_ratio(dpr);
+      let prepared = match renderer.prepare_html(&html, options) {
+        Ok(doc) => doc,
+        Err(err) => {
+          eprintln!("trusted about: prepare failed for {url}: {err}");
+          return;
+        }
+      };
+
+      let viewport_size = fastrender::Size::new(viewport_css.0 as f32, viewport_css.1 as f32);
+      let mut bounds = fastrender::scroll::ScrollBounds {
         min_x: 0.0,
         min_y: 0.0,
         max_x: 0.0,
         max_y: 0.0,
-      },
-      content_css: (viewport_css.0 as f32, viewport_css.1 as f32),
+      };
+      let chain = fastrender::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[]);
+      if let Some(root) = chain.last() {
+        bounds = root.bounds;
+      }
+      // Mirror worker behaviour: clamp scroll bounds to non-negative finite max values.
+      let sanitize_axis = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+      bounds = fastrender::scroll::ScrollBounds {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: sanitize_axis(bounds.max_x),
+        max_y: sanitize_axis(bounds.max_y),
+      };
+
+      self.trusted_about_prepared.insert(
+        tab_id,
+        TrustedAboutPrepared {
+          url: url.to_string(),
+          viewport_css,
+          dpr,
+          prepared,
+          scroll_bounds: bounds,
+        },
+      );
+    }
+
+    let Some(cached) = self.trusted_about_prepared.get(&tab_id) else {
+      return;
+    };
+
+    // Clamp the scroll state to the computed bounds so we don't rely on paint-time clamping (which
+    // would otherwise desynchronize `viewport_delta` from the effective scroll position).
+    let mut scroll_state = self
+      .browser_state
+      .tab(tab_id)
+      .map(|tab| tab.scroll_state.clone())
+      .unwrap_or_default();
+    let clamped_viewport = cached.scroll_bounds.clamp(scroll_state.viewport);
+    if clamped_viewport != scroll_state.viewport {
+      let prev = scroll_state.clone();
+      scroll_state.viewport = clamped_viewport;
+      scroll_state.update_deltas_from(&prev);
+    }
+
+    let pixmap = match cached
+      .prepared
+      .paint_with_scroll_state(scroll_state.clone(), None, None, None)
+    {
+      Ok(pixmap) => pixmap,
+      Err(err) => {
+        eprintln!("trusted about: paint failed for {url}: {err}");
+        return;
+      }
+    };
+
+    let sanitize_scroll = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let scroll_metrics = {
+      let max_x = sanitize_scroll(cached.scroll_bounds.max_x);
+      let max_y = sanitize_scroll(cached.scroll_bounds.max_y);
+      let viewport_size = fastrender::Size::new(viewport_css.0 as f32, viewport_css.1 as f32);
+      ScrollMetrics {
+        viewport_css,
+        scroll_css: (
+          sanitize_scroll(scroll_state.viewport.x),
+          sanitize_scroll(scroll_state.viewport.y),
+        ),
+        bounds_css: fastrender::scroll::ScrollBounds {
+          min_x: 0.0,
+          min_y: 0.0,
+          max_x,
+          max_y,
+        },
+        content_css: (viewport_size.width + max_x, viewport_size.height + max_y),
+      }
     };
 
     let update = self.browser_state.apply_worker_msg(WorkerToUi::FrameReady {
@@ -18893,6 +19072,7 @@ impl App {
           self.next_media_wakeup.remove(&tab_id);
           self.last_media_wakeup_tick.remove(&tab_id);
           self.trusted_about_rendered_urls.remove(&tab_id);
+          self.trusted_about_prepared.remove(&tab_id);
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
@@ -18999,6 +19179,7 @@ impl App {
           self.next_media_wakeup.remove(&tab_id);
           self.last_media_wakeup_tick.remove(&tab_id);
           self.trusted_about_rendered_urls.remove(&tab_id);
+          self.trusted_about_prepared.remove(&tab_id);
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
@@ -19082,6 +19263,7 @@ impl App {
             self.next_media_wakeup.remove(&closed_tab_id);
             self.last_media_wakeup_tick.remove(&closed_tab_id);
             self.trusted_about_rendered_urls.remove(&closed_tab_id);
+            self.trusted_about_prepared.remove(&closed_tab_id);
             if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
               tex.destroy(&mut self.egui_renderer);
             }
@@ -19135,6 +19317,7 @@ impl App {
             self.next_media_wakeup.remove(&closed_tab_id);
             self.last_media_wakeup_tick.remove(&closed_tab_id);
             self.trusted_about_rendered_urls.remove(&closed_tab_id);
+            self.trusted_about_prepared.remove(&closed_tab_id);
             if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
               tex.destroy(&mut self.egui_renderer);
             }
@@ -19484,17 +19667,120 @@ impl App {
       return;
     }
 
-    if request.action != accesskit::Action::Focus {
-      return;
+    fn is_scroll_action(action: accesskit::Action) -> bool {
+      matches!(
+        action,
+        accesskit::Action::ScrollUp
+          | accesskit::Action::ScrollDown
+          | accesskit::Action::ScrollLeft
+          | accesskit::Action::ScrollRight
+          | accesskit::Action::ScrollForward
+          | accesskit::Action::ScrollBackward
+          | accesskit::Action::ScrollToPoint
+          | accesskit::Action::SetScrollOffset
+      )
     }
 
-    if request.target == compositor_a11y::page_node_id() {
-      self.page_has_focus = true;
-      self.chrome_has_text_focus = false;
-      self.window.request_redraw();
-    } else if request.target == compositor_a11y::chrome_node_id() {
-      self.page_has_focus = false;
-      self.window.request_redraw();
+    match request.action {
+      accesskit::Action::Focus => {
+        if request.target == compositor_a11y::page_node_id() {
+          self.page_has_focus = true;
+          self.chrome_has_text_focus = false;
+          self.window.request_redraw();
+        } else if request.target == compositor_a11y::chrome_node_id() {
+          self.page_has_focus = false;
+          self.window.request_redraw();
+        }
+      }
+      action if is_scroll_action(action) => {
+        // Only the page node supports scroll actions in the minimal compositor tree.
+        if request.target != compositor_a11y::page_node_id() {
+          return;
+        }
+
+        use fastrender::scroll::ScrollBounds;
+        use fastrender::Point;
+        use fastrender::ui::UiToWorker;
+
+        let Some(tab_id) = self.browser_state.active_tab_id() else {
+          return;
+        };
+        let Some(tab) = self.browser_state.tab(tab_id) else {
+          return;
+        };
+        let Some(metrics) = tab.scroll_metrics else {
+          return;
+        };
+
+        let bounds: ScrollBounds = metrics.bounds_css;
+
+        let sanitize = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        let current = Point::new(
+          sanitize(tab.scroll_state.viewport.x),
+          sanitize(tab.scroll_state.viewport.y),
+        );
+
+        let mut next = current;
+        let line_step = 40.0_f32;
+        let page_step_x = metrics.viewport_css.0 as f32;
+        let page_step_y = metrics.viewport_css.1 as f32;
+
+        match request.action {
+          accesskit::Action::ScrollUp => next.y -= line_step,
+          accesskit::Action::ScrollDown => next.y += line_step,
+          accesskit::Action::ScrollLeft => next.x -= line_step,
+          accesskit::Action::ScrollRight => next.x += line_step,
+          accesskit::Action::ScrollForward => {
+            if bounds.max_y > bounds.min_y {
+              next.y += page_step_y;
+            } else {
+              next.x += page_step_x;
+            }
+          }
+          accesskit::Action::ScrollBackward => {
+            if bounds.max_y > bounds.min_y {
+              next.y -= page_step_y;
+            } else {
+              next.x -= page_step_x;
+            }
+          }
+          accesskit::Action::ScrollToPoint => {
+            let Some(data) = request.data.as_ref() else {
+              return;
+            };
+            let accesskit::ActionData::ScrollToPoint(p) = data else {
+              return;
+            };
+            next = Point::new(p.x as f32, p.y as f32);
+          }
+          accesskit::Action::SetScrollOffset => {
+            let Some(data) = request.data.as_ref() else {
+              return;
+            };
+            let accesskit::ActionData::SetScrollOffset(p) = data else {
+              return;
+            };
+            next = Point::new(p.x as f32, p.y as f32);
+          }
+          _ => return,
+        }
+
+        next = Point::new(sanitize(next.x), sanitize(next.y));
+        next = bounds.clamp(next);
+
+        if next == current {
+          return;
+        }
+
+        let _ = self.send_worker_msg(UiToWorker::ScrollTo {
+          tab_id,
+          pos_css: (next.x, next.y),
+        });
+        // Ensure the UI paints promptly for trusted about: pages and keeps overlay scrollbars
+        // responsive even if the worker takes time to repaint.
+        self.window.request_redraw();
+      }
+      _ => {}
     }
   }
 
@@ -19533,12 +19819,18 @@ impl App {
         compositor_a11y::CompositorFocusTarget::Chrome
       };
 
+      let page_scroll = self
+        .browser_state
+        .active_tab()
+        .and_then(|tab| tab.scroll_metrics);
+
       let state = compositor_a11y::state_for_window(
         &self.window,
         chrome_height_px,
         window_name,
         compositor_a11y::DEFAULT_CHROME_NAME,
         page_name,
+        page_scroll,
         focus,
       );
       a11y.update_if_active(&state);
@@ -20249,6 +20541,7 @@ impl App {
       } else {
         // If the tab is no longer on an about: page, discard any cached about-render metadata.
         self.trusted_about_rendered_urls.remove(&active_tab);
+        self.trusted_about_prepared.remove(&active_tab);
       }
 
       // Best-effort popup UX: when a native wheel scroll happens outside an open picker/dropdown,

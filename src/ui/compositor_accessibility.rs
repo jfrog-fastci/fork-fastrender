@@ -3,6 +3,8 @@
 use accesskit::{Action, NodeBuilder, NodeClassSet, NodeId, Rect, Role, Tree, TreeUpdate};
 use std::num::NonZeroU128;
 
+use crate::ui::messages::ScrollMetrics;
+
 /// Stable node ids for the compositor (non-egui) browser UI accessibility tree.
 ///
 /// These IDs must remain stable across updates so assistive technology does not "lose" the tree.
@@ -91,6 +93,12 @@ pub struct CompositorA11yState {
   pub window_bounds: Rect,
   pub chrome_bounds: Rect,
   pub page_bounds: Rect,
+  /// Optional scroll metrics for the active page.
+  ///
+  /// When present, the page node exposes `scroll_x/y` properties and supports scroll-related
+  /// actions (so assistive tech can scroll the rendered page region even when the underlying page
+  /// content is a bitmap).
+  pub page_scroll: Option<ScrollMetrics>,
   pub focus: CompositorFocusTarget,
 }
 
@@ -102,6 +110,7 @@ pub fn state_for_window(
   window_name: impl Into<String>,
   chrome_name: impl Into<String>,
   page_name: impl Into<String>,
+  page_scroll: Option<ScrollMetrics>,
   focus: CompositorFocusTarget,
 ) -> CompositorA11yState {
   let size = window.inner_size();
@@ -132,7 +141,47 @@ pub fn state_for_window(
       x1: width,
       y1: height,
     },
+    page_scroll,
     focus,
+  }
+}
+
+fn set_scroll_properties_for_page(builder: &mut NodeBuilder, metrics: ScrollMetrics) {
+  // AccessKit scroll offsets/bounds are `f64`s. Keep the values finite and non-negative.
+  let sanitize_axis = |v: f32| -> f64 {
+    if v.is_finite() {
+      v.max(0.0) as f64
+    } else {
+      0.0
+    }
+  };
+
+  builder.set_scroll_x(sanitize_axis(metrics.scroll_css.0));
+  builder.set_scroll_y(sanitize_axis(metrics.scroll_css.1));
+  builder.set_scroll_x_min(sanitize_axis(metrics.bounds_css.min_x));
+  builder.set_scroll_y_min(sanitize_axis(metrics.bounds_css.min_y));
+  builder.set_scroll_x_max(sanitize_axis(metrics.bounds_css.max_x));
+  builder.set_scroll_y_max(sanitize_axis(metrics.bounds_css.max_y));
+
+  // Only advertise scroll actions when the scroll range is non-zero; this avoids telling screen
+  // readers that a non-scrollable page can be scrolled.
+  let scrollable_x = metrics.bounds_css.max_x > metrics.bounds_css.min_x;
+  let scrollable_y = metrics.bounds_css.max_y > metrics.bounds_css.min_y;
+  if !(scrollable_x || scrollable_y) {
+    return;
+  }
+
+  for action in [
+    Action::ScrollUp,
+    Action::ScrollDown,
+    Action::ScrollLeft,
+    Action::ScrollRight,
+    Action::ScrollForward,
+    Action::ScrollBackward,
+    Action::ScrollToPoint,
+    Action::SetScrollOffset,
+  ] {
+    builder.add_action(action);
   }
 }
 
@@ -153,6 +202,9 @@ fn build_initial_tree_update(state: &CompositorA11yState) -> TreeUpdate {
   page.set_name(state.page_name.clone());
   page.set_bounds(state.page_bounds);
   page.add_action(Action::Focus);
+  if let Some(scroll) = state.page_scroll {
+    set_scroll_properties_for_page(&mut page, scroll);
+  }
 
   let focus_id = match state.focus {
     CompositorFocusTarget::Chrome => chrome_node_id(),
@@ -223,6 +275,7 @@ mod tests {
         x1: 800.0,
         y1: 600.0,
       },
+      page_scroll: None,
       focus: CompositorFocusTarget::Page,
     };
 
@@ -263,5 +316,61 @@ mod tests {
 
     let update = build_tree_update(&state);
     assert_eq!(update.tree, None);
+  }
+
+  #[test]
+  fn page_node_exposes_scroll_properties_when_metrics_present() {
+    let state = CompositorA11yState {
+      window_name: "FastRender Browser".to_string(),
+      chrome_name: "Browser chrome".to_string(),
+      page_name: "Web page content".to_string(),
+      window_bounds: Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 800.0,
+        y1: 600.0,
+      },
+      chrome_bounds: Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 800.0,
+        y1: 80.0,
+      },
+      page_bounds: Rect {
+        x0: 0.0,
+        y0: 80.0,
+        x1: 800.0,
+        y1: 600.0,
+      },
+      page_scroll: Some(ScrollMetrics {
+        viewport_css: (400, 300),
+        scroll_css: (0.0, 120.0),
+        bounds_css: crate::scroll::ScrollBounds {
+          min_x: 0.0,
+          min_y: 0.0,
+          max_x: 0.0,
+          max_y: 900.0,
+        },
+        content_css: (400.0, 1200.0),
+      }),
+      focus: CompositorFocusTarget::Page,
+    };
+
+    let update = build_initial_tree_update(&state);
+    let page = update
+      .nodes
+      .iter()
+      .find_map(|(id, node)| (*id == page_node_id()).then_some(node))
+      .expect("page node missing");
+
+    assert_eq!(page.scroll_y().unwrap_or(0.0), 120.0);
+    assert_eq!(page.scroll_y_max().unwrap_or(0.0), 900.0);
+    assert!(
+      page
+        .actions()
+        .iter()
+        .any(|a| *a == Action::SetScrollOffset),
+      "expected scroll actions to be advertised when scroll range is non-zero"
+    );
   }
 }

@@ -219,9 +219,9 @@ pub mod security;
 
 // AccessKit integration helpers (used by the windowed browser UI and renderer-chrome experiments).
 //
-// Kept behind the `browser_ui` feature because the `accesskit` crate is optional and currently
-// pulled in alongside the rest of the desktop UI stack.
-#[cfg(feature = "browser_ui")]
+// Kept behind the `browser_ui_base` feature because the `accesskit` crate is optional and only
+// pulled in alongside the desktop UI stack (winit/wgpu).
+#[cfg(feature = "browser_ui_base")]
 pub mod accessibility_accesskit;
 
 // ============================================================================
