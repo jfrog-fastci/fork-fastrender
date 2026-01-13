@@ -11370,12 +11370,15 @@ impl DisplayListRenderer {
 
     let halo_px = self.tile_halo_px(list)?;
     let mut repainted_tiles = 0usize;
-    let to_css = |device: Rect| {
+    // Avoid capturing `&self` in this closure; we need to mutably borrow `self` below for partial
+    // repaint and Rust considers the closure's borrow live across the whole call.
+    let scale = self.scale;
+    let to_css = move |device: Rect| {
       Rect::from_xywh(
-        device.x() / self.scale,
-        device.y() / self.scale,
-        device.width() / self.scale,
-        device.height() / self.scale,
+        device.x() / scale,
+        device.y() / scale,
+        device.width() / scale,
+        device.height() / scale,
       )
     };
 
