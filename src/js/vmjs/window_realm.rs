@@ -43674,6 +43674,9 @@ fn init_window_globals(
     // installed the interface.
     crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_node_filter_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_node_iterator_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_tree_walker_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_character_data_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_event_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_custom_event_bindings_vm_js(vm, heap, realm)?;

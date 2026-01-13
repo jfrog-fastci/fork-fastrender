@@ -1162,6 +1162,71 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn document_create_node_iterator(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v1, Value::Undefined) {
+        Value::Number(0.0)
+      } else {
+        Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v1)?) as f64)
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v2 = if args.len() > 2 {
+        args[2]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v2, Value::Undefined) {
+        Value::Null
+      } else {
+        if matches!(v2, Value::Null | Value::Undefined) {
+          Value::Null
+        } else {
+          conversions::to_callback_interface(rt, host, hooks, v2)?
+        }
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "createNodeIterator",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn document_create_text_node(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1192,6 +1257,71 @@ pub mod window {
         receiver,
         "Document",
         "createTextNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_create_tree_walker(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v1, Value::Undefined) {
+        Value::Number(0.0)
+      } else {
+        Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v1)?) as f64)
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v2 = if args.len() > 2 {
+        args[2]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v2, Value::Undefined) {
+        Value::Null
+      } else {
+        if matches!(v2, Value::Null | Value::Undefined) {
+          Value::Null
+        } else {
+          conversions::to_callback_interface(rt, host, hooks, v2)?
+        }
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "createTreeWalker",
         0,
         &converted_args,
       )
@@ -4715,6 +4845,285 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn node_filter_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn node_filter_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_detach(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "NodeIterator",
+        "detach",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_next_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "NodeIterator",
+        "nextNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_previous_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "NodeIterator",
+        "previousNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_filter(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeIterator",
+      "filter",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_pointer_before_reference_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeIterator",
+      "pointerBeforeReferenceNode",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_reference_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeIterator",
+      "referenceNode",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_root(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeIterator",
+      "root",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_what_to_show(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "NodeIterator",
+      "whatToShow",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
   fn node_list_entries(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -5023,6 +5432,382 @@ pub mod window {
 
   #[allow(dead_code)]
   fn text_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_first_child(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "TreeWalker",
+        "firstChild",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_last_child(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "TreeWalker",
+        "lastChild",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_next_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "TreeWalker",
+        "nextNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_next_sibling(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "TreeWalker",
+        "nextSibling",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_parent_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "TreeWalker",
+        "parentNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_previous_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "TreeWalker",
+        "previousNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_previous_sibling(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "TreeWalker",
+        "previousSibling",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_get_attribute_current_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "TreeWalker",
+      "currentNode",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_set_attribute_current_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "TreeWalker",
+        "currentNode",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_get_attribute_filter(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "TreeWalker",
+      "filter",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_get_attribute_root(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "TreeWalker",
+      "root",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_get_attribute_what_to_show(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "TreeWalker",
+      "whatToShow",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_construct(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     host: &mut dyn VmHost,
@@ -6956,6 +7741,24 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("createNodeIterator")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_document, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(document_create_node_iterator, None, "createNodeIterator", 1)?;
+        rt.define_data_property_str(
+          proto_document,
+          "createNodeIterator",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("createTextNode")?;
       if rt
         .scope
@@ -6968,6 +7771,24 @@ pub mod window {
         rt.define_data_property_str(
           proto_document,
           "createTextNode",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("createTreeWalker")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_document, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(document_create_tree_walker, None, "createTreeWalker", 1)?;
+        rt.define_data_property_str(
+          proto_document,
+          "createTreeWalker",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;
@@ -10093,6 +10914,802 @@ pub mod window {
     Ok(())
   }
 
+  pub fn install_node_filter_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (ctor_node_filter, proto_node_filter) = {
+      let ctor_key = rt.property_key("NodeFilter")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          node_filter_call_without_new,
+          Some(node_filter_construct),
+          "NodeFilter",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "NodeFilter",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("FILTER_ACCEPT")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "FILTER_ACCEPT",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "FILTER_ACCEPT",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("FILTER_REJECT")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "FILTER_REJECT",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "FILTER_REJECT",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("FILTER_SKIP")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "FILTER_SKIP",
+          Value::Number(3.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "FILTER_SKIP",
+          Value::Number(3.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_ALL")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_ALL",
+          Value::Number(4294967295.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_ALL",
+          Value::Number(4294967295.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_ATTRIBUTE")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_ATTRIBUTE",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_ATTRIBUTE",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_CDATA_SECTION")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_CDATA_SECTION",
+          Value::Number(8.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_CDATA_SECTION",
+          Value::Number(8.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_COMMENT")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_COMMENT",
+          Value::Number(128.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_COMMENT",
+          Value::Number(128.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_DOCUMENT")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_DOCUMENT",
+          Value::Number(256.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_DOCUMENT",
+          Value::Number(256.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_DOCUMENT_FRAGMENT")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_DOCUMENT_FRAGMENT",
+          Value::Number(1024.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_DOCUMENT_FRAGMENT",
+          Value::Number(1024.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_DOCUMENT_TYPE")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_DOCUMENT_TYPE",
+          Value::Number(512.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_DOCUMENT_TYPE",
+          Value::Number(512.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_ELEMENT")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_ELEMENT",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_ELEMENT",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_ENTITY")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_ENTITY",
+          Value::Number(32.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_ENTITY",
+          Value::Number(32.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_ENTITY_REFERENCE")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_ENTITY_REFERENCE",
+          Value::Number(16.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_ENTITY_REFERENCE",
+          Value::Number(16.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_NOTATION")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_NOTATION",
+          Value::Number(2048.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_NOTATION",
+          Value::Number(2048.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_PROCESSING_INSTRUCTION")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_PROCESSING_INSTRUCTION",
+          Value::Number(64.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_PROCESSING_INSTRUCTION",
+          Value::Number(64.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("SHOW_TEXT")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_node_filter,
+          "SHOW_TEXT",
+          Value::Number(4.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_filter, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_node_filter,
+          "SHOW_TEXT",
+          Value::Number(4.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
+  pub fn install_node_iterator_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (_ctor_node_iterator, proto_node_iterator) = {
+      let ctor_key = rt.property_key("NodeIterator")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          node_iterator_call_without_new,
+          Some(node_iterator_construct),
+          "NodeIterator",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "NodeIterator",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("detach")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_iterator, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(node_iterator_detach, None, "detach", 0)?;
+        rt.define_data_property_str(
+          proto_node_iterator,
+          "detach",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("nextNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_iterator, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(node_iterator_next_node, None, "nextNode", 0)?;
+        rt.define_data_property_str(
+          proto_node_iterator,
+          "nextNode",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("previousNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_iterator, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(node_iterator_previous_node, None, "previousNode", 0)?;
+        rt.define_data_property_str(
+          proto_node_iterator,
+          "previousNode",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("filter")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_iterator, &key)?
+        .is_none()
+      {
+        let get =
+          rt.alloc_native_function(node_iterator_get_attribute_filter, None, "get filter", 0)?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_node_iterator,
+          "filter",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("pointerBeforeReferenceNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_iterator, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          node_iterator_get_attribute_pointer_before_reference_node,
+          None,
+          "get pointerBeforeReferenceNode",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_node_iterator,
+          "pointerBeforeReferenceNode",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("referenceNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_iterator, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          node_iterator_get_attribute_reference_node,
+          None,
+          "get referenceNode",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_node_iterator,
+          "referenceNode",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("root")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_iterator, &key)?
+        .is_none()
+      {
+        let get =
+          rt.alloc_native_function(node_iterator_get_attribute_root, None, "get root", 0)?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_node_iterator,
+          "root",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("whatToShow")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node_iterator, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          node_iterator_get_attribute_what_to_show,
+          None,
+          "get whatToShow",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_node_iterator,
+          "whatToShow",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
   pub fn install_node_list_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
@@ -10411,6 +12028,302 @@ pub mod window {
       rt.set_prototype(proto_text, Some(parent_proto))?;
     }
 
+    Ok(())
+  }
+
+  pub fn install_tree_walker_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (_ctor_tree_walker, proto_tree_walker) = {
+      let ctor_key = rt.property_key("TreeWalker")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          tree_walker_call_without_new,
+          Some(tree_walker_construct),
+          "TreeWalker",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "TreeWalker",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("firstChild")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(tree_walker_first_child, None, "firstChild", 0)?;
+        rt.define_data_property_str(
+          proto_tree_walker,
+          "firstChild",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("lastChild")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(tree_walker_last_child, None, "lastChild", 0)?;
+        rt.define_data_property_str(
+          proto_tree_walker,
+          "lastChild",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("nextNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(tree_walker_next_node, None, "nextNode", 0)?;
+        rt.define_data_property_str(
+          proto_tree_walker,
+          "nextNode",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("nextSibling")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(tree_walker_next_sibling, None, "nextSibling", 0)?;
+        rt.define_data_property_str(
+          proto_tree_walker,
+          "nextSibling",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("parentNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(tree_walker_parent_node, None, "parentNode", 0)?;
+        rt.define_data_property_str(
+          proto_tree_walker,
+          "parentNode",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("previousNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(tree_walker_previous_node, None, "previousNode", 0)?;
+        rt.define_data_property_str(
+          proto_tree_walker,
+          "previousNode",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("previousSibling")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(tree_walker_previous_sibling, None, "previousSibling", 0)?;
+        rt.define_data_property_str(
+          proto_tree_walker,
+          "previousSibling",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("currentNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          tree_walker_get_attribute_current_node,
+          None,
+          "get currentNode",
+          0,
+        )?;
+        let set = Value::Object(rt.alloc_native_function(
+          tree_walker_set_attribute_current_node,
+          None,
+          "set currentNode",
+          1,
+        )?);
+        rt.define_accessor_property_str(
+          proto_tree_walker,
+          "currentNode",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("filter")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let get =
+          rt.alloc_native_function(tree_walker_get_attribute_filter, None, "get filter", 0)?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_tree_walker,
+          "filter",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("root")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(tree_walker_get_attribute_root, None, "get root", 0)?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_tree_walker,
+          "root",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("whatToShow")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_tree_walker, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          tree_walker_get_attribute_what_to_show,
+          None,
+          "get whatToShow",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_tree_walker,
+          "whatToShow",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
     Ok(())
   }
 
@@ -11051,8 +12964,11 @@ pub mod window {
     install_fast_render_navigation_bindings_vm_js(vm, heap, realm)?;
     install_fast_render_tabs_bindings_vm_js(vm, heap, realm)?;
     install_html_collection_bindings_vm_js(vm, heap, realm)?;
+    install_node_filter_bindings_vm_js(vm, heap, realm)?;
+    install_node_iterator_bindings_vm_js(vm, heap, realm)?;
     install_node_list_bindings_vm_js(vm, heap, realm)?;
     install_text_bindings_vm_js(vm, heap, realm)?;
+    install_tree_walker_bindings_vm_js(vm, heap, realm)?;
     install_url_bindings_vm_js(vm, heap, realm)?;
     install_url_search_params_bindings_vm_js(vm, heap, realm)?;
     install_window_ops_bindings_vm_js(vm, heap, realm)?;
@@ -13591,8 +15507,11 @@ pub use window::install_fast_render_navigation_bindings_vm_js;
 pub use window::install_fast_render_tabs_bindings_vm_js;
 pub use window::install_html_collection_bindings_vm_js;
 pub use window::install_node_bindings_vm_js;
+pub use window::install_node_filter_bindings_vm_js;
+pub use window::install_node_iterator_bindings_vm_js;
 pub use window::install_node_list_bindings_vm_js;
 pub use window::install_text_bindings_vm_js;
+pub use window::install_tree_walker_bindings_vm_js;
 pub use window::install_url_bindings_vm_js;
 pub use window::install_url_search_params_bindings_vm_js;
 pub use window::install_window_bindings_vm_js;

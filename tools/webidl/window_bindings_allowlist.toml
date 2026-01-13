@@ -45,6 +45,40 @@ attributes = [
 operations = ["appendChild", "insertBefore", "removeChild", "replaceChild", "cloneNode"]
 
 [[interface]]
+name = "NodeFilter"
+constructors = false
+attributes = []
+# `NodeFilter` is a callback interface; we only need its constants exposed on the global interface
+# object for now. Filtering itself is implemented in host dispatch.
+operations = []
+
+[[interface]]
+name = "NodeIterator"
+constructors = false
+attributes = [
+  "root",
+  "referenceNode",
+  "pointerBeforeReferenceNode",
+  "whatToShow",
+  "filter",
+]
+operations = ["nextNode", "previousNode", "detach"]
+
+[[interface]]
+name = "TreeWalker"
+constructors = false
+attributes = ["root", "whatToShow", "filter", "currentNode"]
+operations = [
+  "parentNode",
+  "firstChild",
+  "lastChild",
+  "previousSibling",
+  "nextSibling",
+  "previousNode",
+  "nextNode",
+]
+
+[[interface]]
 name = "CharacterData"
 constructors = false
 attributes = []
@@ -65,6 +99,8 @@ operations = [
   "createElement",
   "createTextNode",
   "createDocumentFragment",
+  "createNodeIterator",
+  "createTreeWalker",
 ]
 
 [[interface]]

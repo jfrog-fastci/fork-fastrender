@@ -1,6 +1,6 @@
 use crate::api::BrowserDocumentDom2;
 use crate::dom::HTML_NAMESPACE;
-use crate::dom2::{DomError, NodeId, NodeKind, RangeId};
+use crate::dom2::{DomError, NodeId, NodeIteratorId, NodeKind, RangeId};
 use crate::geometry::{Point, Rect};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::dom_internal_keys::{
@@ -53,6 +53,8 @@ const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
 const DOM_TOKEN_LIST_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG");
+const NODE_ITERATOR_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMNIT");
+const TREE_WALKER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMTWK");
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
 const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 // Must match `window_realm::NODE_LIST_ROOT_KEY`.
@@ -60,6 +62,14 @@ const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 // Note: `dom_internal_keys` intentionally centralises most `__fastrender_*` keys, but the NodeList
 // root back-reference is currently only needed by the vm-js DOM shims and the WebIDL host dispatch.
 const NODE_LIST_ROOT_KEY: &str = "__fastrender_node_list_root";
+const NODE_FILTER_ACCEPT: u16 = 1;
+const NODE_FILTER_REJECT: u16 = 2;
+const NODE_FILTER_SKIP: u16 = 3;
+const TRAVERSAL_ACTIVE_SLOT: &str = "__fastrender_traversal_active";
+const TRAVERSAL_WHAT_TO_SHOW_SLOT: &str = "__fastrender_traversal_what_to_show";
+const TRAVERSAL_FILTER_SLOT: &str = "__fastrender_traversal_filter";
+const TREE_WALKER_ROOT_SLOT: &str = "__fastrender_tree_walker_root";
+const TREE_WALKER_CURRENT_SLOT: &str = "__fastrender_tree_walker_current";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -446,7 +456,7 @@ fn require_range_receiver(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   receiver: Option<Value>,
-) -> Result<(RangeId, crate::js::dom_platform::DocumentId), VmError> {
+) -> Result<(RangeId, DocumentId), VmError> {
   let Some(Value::Object(obj)) = receiver else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
@@ -476,6 +486,388 @@ fn require_range_receiver(
     .document_id;
 
   Ok((range_id, document_id))
+}
+
+fn require_node_iterator_receiver(
+  scope: &Scope<'_>,
+  receiver: Option<Value>,
+) -> Result<(NodeIteratorId, GcObject), VmError> {
+  let Some(Value::Object(obj)) = receiver else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  if !matches!(slots, Some(slots) if slots.b == NODE_ITERATOR_HOST_TAG) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  Ok((NodeIteratorId::from_u64(slots.unwrap().a), obj))
+}
+
+fn require_tree_walker_receiver(
+  scope: &Scope<'_>,
+  receiver: Option<Value>,
+) -> Result<GcObject, VmError> {
+  let Some(Value::Object(obj)) = receiver else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  if !matches!(slots, Some(slots) if slots.b == TREE_WALKER_HOST_TAG) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  Ok(obj)
+}
+
+fn read_internal_node_id_slot(
+  scope: &Scope<'_>,
+  obj: GcObject,
+  key: &PropertyKey,
+) -> Result<NodeId, VmError> {
+  let Some(Value::Number(n)) = scope.heap().object_get_own_data_property_value(obj, key)? else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  if !n.is_finite() || n < 0.0 || n > (usize::MAX as f64) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  Ok(NodeId::from_index(n.trunc() as usize))
+}
+
+fn node_kind_to_node_type(kind: &NodeKind) -> u32 {
+  match kind {
+    NodeKind::Document { .. } => 9,
+    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => 11,
+    NodeKind::Text { .. } => 3,
+    NodeKind::Comment { .. } => 8,
+    NodeKind::ProcessingInstruction { .. } => 7,
+    NodeKind::Doctype { .. } => 10,
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => 1,
+  }
+}
+
+fn tree_parent_node(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
+  let node_ref = dom.nodes().get(node.index())?;
+  // ShadowRoot tree-facing semantics: `ShadowRoot.parentNode` is always null.
+  if matches!(node_ref.kind, NodeKind::ShadowRoot { .. }) {
+    return None;
+  }
+  dom.parent_node(node)
+}
+
+fn tree_first_child(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
+  let nodes = dom.nodes();
+  let node_ref = nodes.get(node.index())?;
+  let filter_shadow_root_children = matches!(node_ref.kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
+  for &child_id in &node_ref.children {
+    let Some(child_node) = nodes.get(child_id.index()) else {
+      continue;
+    };
+    if filter_shadow_root_children && matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    return Some(child_id);
+  }
+  None
+}
+
+fn tree_last_child(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
+  let nodes = dom.nodes();
+  let node_ref = nodes.get(node.index())?;
+  let filter_shadow_root_children = matches!(node_ref.kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
+  for &child_id in node_ref.children.iter().rev() {
+    let Some(child_node) = nodes.get(child_id.index()) else {
+      continue;
+    };
+    if filter_shadow_root_children && matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    return Some(child_id);
+  }
+  None
+}
+
+fn tree_next_sibling(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
+  let parent = tree_parent_node(dom, node)?;
+  let nodes = dom.nodes();
+  let parent_ref = nodes.get(parent.index())?;
+  let pos = parent_ref.children.iter().position(|&c| c == node)?;
+  let filter_shadow_root_children = matches!(parent_ref.kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
+  for &sib in parent_ref.children.iter().skip(pos + 1) {
+    let Some(sib_node) = nodes.get(sib.index()) else {
+      continue;
+    };
+    if filter_shadow_root_children && matches!(sib_node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    return Some(sib);
+  }
+  None
+}
+
+fn tree_previous_sibling(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
+  let parent = tree_parent_node(dom, node)?;
+  let nodes = dom.nodes();
+  let parent_ref = nodes.get(parent.index())?;
+  let pos = parent_ref.children.iter().position(|&c| c == node)?;
+  let filter_shadow_root_children = matches!(parent_ref.kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
+  for &sib in parent_ref.children.iter().take(pos).rev() {
+    let Some(sib_node) = nodes.get(sib.index()) else {
+      continue;
+    };
+    if filter_shadow_root_children && matches!(sib_node.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    return Some(sib);
+  }
+  None
+}
+
+fn tree_last_inclusive_descendant(dom: &crate::dom2::Document, node: NodeId) -> NodeId {
+  if node.index() >= dom.nodes_len() {
+    return node;
+  }
+  let mut current = node;
+  let mut remaining = dom.nodes_len() + 1;
+  while remaining > 0 {
+    remaining -= 1;
+    let Some(last_child) = tree_last_child(dom, current) else {
+      break;
+    };
+    current = last_child;
+  }
+  current
+}
+
+fn tree_is_inclusive_descendant_of(dom: &crate::dom2::Document, root: NodeId, node: NodeId) -> bool {
+  let mut remaining = dom.nodes_len() + 1;
+  let mut current = Some(node);
+  while let Some(id) = current {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+    if id == root {
+      return true;
+    }
+    current = tree_parent_node(dom, id);
+  }
+  false
+}
+
+fn tree_following_in_subtree(dom: &crate::dom2::Document, root: NodeId, node: NodeId) -> Option<NodeId> {
+  if !tree_is_inclusive_descendant_of(dom, root, node) {
+    return None;
+  }
+  if let Some(first_child) = tree_first_child(dom, node) {
+    return Some(first_child);
+  }
+  let mut current = node;
+  let mut remaining = dom.nodes_len() + 1;
+  while remaining > 0 {
+    remaining -= 1;
+    if current == root {
+      return None;
+    }
+    if let Some(next_sibling) = tree_next_sibling(dom, current) {
+      return Some(next_sibling);
+    }
+    current = tree_parent_node(dom, current)?;
+  }
+  None
+}
+
+fn tree_preceding_in_subtree(dom: &crate::dom2::Document, root: NodeId, node: NodeId) -> Option<NodeId> {
+  if root == node {
+    return None;
+  }
+  if !tree_is_inclusive_descendant_of(dom, root, node) {
+    return None;
+  }
+  if let Some(previous_sibling) = tree_previous_sibling(dom, node) {
+    return Some(tree_last_inclusive_descendant(dom, previous_sibling));
+  }
+  tree_parent_node(dom, node)
+}
+
+fn to_uint16_f64(n: f64) -> u16 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  let n = n.trunc();
+  let modulo = 65536.0;
+  let mut int = n % modulo;
+  if int < 0.0 {
+    int += modulo;
+  }
+  int as u16
+}
+
+fn traversal_filter_node<Host: DomHost + 'static>(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  dom_exception: DomExceptionClassVmJs,
+  traverser_obj: GcObject,
+  node_id: NodeId,
+  document_id: DocumentId,
+  what_to_show_key: PropertyKey,
+  filter_key: PropertyKey,
+  active_key: PropertyKey,
+) -> Result<u16, VmError> {
+  // Step 1: re-entrancy guard.
+  let is_active = match scope
+    .heap()
+    .object_get_own_data_property_value(traverser_obj, &active_key)?
+  {
+    Some(Value::Bool(b)) => b,
+    Some(v) => scope.heap().to_boolean(v)?,
+    None => false,
+  };
+  if is_active {
+    return Err(throw_dom_exception(scope, dom_exception, "InvalidStateError", ""));
+  }
+
+  // Step 2: nodeType.
+  let node_type = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+    Ok(host.with_dom(|dom| {
+      if node_id.index() >= dom.nodes_len() {
+        return None;
+      }
+      Some(node_kind_to_node_type(&dom.node(node_id).kind))
+    }))
+  })?;
+  let Some(node_type) = node_type else {
+    return Ok(NODE_FILTER_SKIP);
+  };
+
+  // Step 3: whatToShow bit check.
+  let what_to_show = match scope
+    .heap()
+    .object_get_own_data_property_value(traverser_obj, &what_to_show_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() => {
+      let n = n.trunc();
+      if n <= 0.0 {
+        0u32
+      } else if n >= u32::MAX as f64 {
+        u32::MAX
+      } else {
+        n as u32
+      }
+    }
+    Some(v) => {
+      let n = scope.heap_mut().to_number(v)?;
+      if !n.is_finite() {
+        0u32
+      } else {
+        let n = n.trunc();
+        if n <= 0.0 {
+          0u32
+        } else if n >= u32::MAX as f64 {
+          u32::MAX
+        } else {
+          n as u32
+        }
+      }
+    }
+    None => 0,
+  };
+
+  if node_type == 0 {
+    return Ok(NODE_FILTER_SKIP);
+  }
+  let n = node_type - 1;
+  if n >= 32 {
+    return Ok(NODE_FILTER_SKIP);
+  }
+  if (what_to_show & (1u32 << n)) == 0 {
+    return Ok(NODE_FILTER_SKIP);
+  }
+
+  // Step 4: if filter is null, accept.
+  let filter = scope
+    .heap()
+    .object_get_own_data_property_value(traverser_obj, &filter_key)?
+    .unwrap_or(Value::Null);
+  if matches!(filter, Value::Null | Value::Undefined) {
+    return Ok(NODE_FILTER_ACCEPT);
+  }
+
+  // Step 5+: call filter.acceptNode(node) with active flag protection.
+  scope.define_property(
+    traverser_obj,
+    active_key,
+    data_property(Value::Bool(true), true, false, false),
+  )?;
+
+  // Resolve the node wrapper to pass to the callback.
+  let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+    Ok(host.with_dom(|dom| {
+      if node_id.index() >= dom.nodes_len() {
+        DomInterface::Node
+      } else {
+        DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+      }
+    }))
+  })?;
+  let wrapper = {
+    let platform = require_dom_platform_mut(vm)?;
+    platform.get_or_create_wrapper_for_document_id(scope, document_id, node_id, primary)?
+  };
+  scope.push_root(Value::Object(wrapper))?;
+
+  let callback_result: Result<Value, VmError> = (|| {
+    if is_callable(scope, filter) {
+      return call_with_active_vm_host_and_hooks(
+        vm,
+        scope,
+        filter,
+        // For callback interfaces, use the callback object as `this`.
+        filter,
+        &[Value::Object(wrapper)],
+      );
+    }
+
+    let Value::Object(filter_obj) = filter else {
+      return Err(VmError::TypeError("NodeFilter is not an object"));
+    };
+
+    // `call a user object's operation` for callback interfaces:
+    // - attempt `callback.acceptNode(node)` first
+    // - fall back to `callback.handleEvent(node)` for compatibility with our generic callback-interface
+    //   conversion, which validates `handleEvent`.
+    let accept_node_key = key_from_str(scope, "acceptNode")?;
+    let mut method = get_with_active_vm_host_and_hooks(vm, scope, filter_obj, accept_node_key)?;
+    if matches!(method, Value::Undefined | Value::Null) {
+      let handle_event_key = key_from_str(scope, "handleEvent")?;
+      method = get_with_active_vm_host_and_hooks(vm, scope, filter_obj, handle_event_key)?;
+    }
+    if matches!(method, Value::Undefined | Value::Null) {
+      return Err(VmError::TypeError(
+        "Callback interface object is missing a callable acceptNode method",
+      ));
+    }
+    if !is_callable(scope, method) {
+      return Err(VmError::TypeError("GetMethod: target is not callable"));
+    }
+    scope.push_root(method)?;
+    call_with_active_vm_host_and_hooks(vm, scope, method, filter, &[Value::Object(wrapper)])
+  })();
+
+  // Always clear the active flag before returning, even if the callback threw.
+  scope.define_property(
+    traverser_obj,
+    active_key,
+    data_property(Value::Bool(false), true, false, false),
+  )?;
+
+  let callback_value = callback_result?;
+  let n = scope.heap_mut().to_number(callback_value)?;
+  Ok(to_uint16_f64(n))
 }
 
 fn mutate_dom_detached<R>(
@@ -1268,6 +1660,54 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       return Err(VmError::TypeError(
         "URLSearchParams.prototype is not an object",
       ));
+    };
+    Ok(proto_obj)
+  }
+
+  fn node_iterator_proto_from_global(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+  ) -> Result<GcObject, VmError> {
+    let global = self
+      .global
+      .ok_or(VmError::Unimplemented("WebIDL host missing global object"))?;
+    let ctor_key = key_from_str(scope, "NodeIterator")?;
+    let ctor = get_with_active_vm_host_and_hooks(vm, scope, global, ctor_key)?;
+    scope.push_root(ctor)?;
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(VmError::TypeError("globalThis.NodeIterator is not an object"));
+    };
+
+    let proto_key = key_from_str(scope, "prototype")?;
+    let proto = get_with_active_vm_host_and_hooks(vm, scope, ctor_obj, proto_key)?;
+    scope.push_root(proto)?;
+    let Value::Object(proto_obj) = proto else {
+      return Err(VmError::TypeError("NodeIterator.prototype is not an object"));
+    };
+    Ok(proto_obj)
+  }
+
+  fn tree_walker_proto_from_global(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+  ) -> Result<GcObject, VmError> {
+    let global = self
+      .global
+      .ok_or(VmError::Unimplemented("WebIDL host missing global object"))?;
+    let ctor_key = key_from_str(scope, "TreeWalker")?;
+    let ctor = get_with_active_vm_host_and_hooks(vm, scope, global, ctor_key)?;
+    scope.push_root(ctor)?;
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(VmError::TypeError("globalThis.TreeWalker is not an object"));
+    };
+
+    let proto_key = key_from_str(scope, "prototype")?;
+    let proto = get_with_active_vm_host_and_hooks(vm, scope, ctor_obj, proto_key)?;
+    scope.push_root(proto)?;
+    let Value::Object(proto_obj) = proto else {
+      return Err(VmError::TypeError("TreeWalker.prototype is not an object"));
     };
     Ok(proto_obj)
   }
@@ -4261,6 +4701,975 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
 
+      ("NodeIterator", "detach", 0) => {
+        let _ = args;
+        let _ = require_node_iterator_receiver(scope, receiver)?;
+        Ok(Value::Undefined)
+      }
+      ("NodeIterator", "root", 0) => {
+        let _ = args;
+        let (iter_id, iter_obj) = require_node_iterator_receiver(scope, receiver)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(iter_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let root_id = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| dom.node_iterator_root(iter_id)))
+        })?;
+        let Some(root_id) = root_id else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if root_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(root_id).kind)
+            }
+          }))
+        })?;
+        let wrapper = require_dom_platform_mut(vm)?
+          .get_or_create_wrapper_for_document_id(scope, document_id, root_id, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("NodeIterator", "referenceNode", 0) => {
+        let _ = args;
+        let (iter_id, iter_obj) = require_node_iterator_receiver(scope, receiver)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(iter_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let reference_id = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| dom.node_iterator_reference(iter_id)))
+        })?;
+        let Some(reference_id) = reference_id else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if reference_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(reference_id).kind)
+            }
+          }))
+        })?;
+        let wrapper = require_dom_platform_mut(vm)?
+          .get_or_create_wrapper_for_document_id(scope, document_id, reference_id, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("NodeIterator", "pointerBeforeReferenceNode", 0) => {
+        let _ = args;
+        let (iter_id, _iter_obj) = require_node_iterator_receiver(scope, receiver)?;
+        let before = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| dom.node_iterator_pointer_before_reference(iter_id)))
+        })?;
+        let Some(before) = before else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        Ok(Value::Bool(before))
+      }
+      ("NodeIterator", "whatToShow", 0) => {
+        let _ = args;
+        let (_iter_id, iter_obj) = require_node_iterator_receiver(scope, receiver)?;
+        let key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        Ok(scope
+          .heap()
+          .object_get_own_data_property_value(iter_obj, &key)?
+          .unwrap_or(Value::Number(0.0)))
+      }
+      ("NodeIterator", "filter", 0) => {
+        let _ = args;
+        let (_iter_id, iter_obj) = require_node_iterator_receiver(scope, receiver)?;
+        let key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        Ok(scope
+          .heap()
+          .object_get_own_data_property_value(iter_obj, &key)?
+          .unwrap_or(Value::Null))
+      }
+      ("NodeIterator", "nextNode", 0) => {
+        let _ = args;
+        let (iter_id, iter_obj) = require_node_iterator_receiver(scope, receiver)?;
+        let dom_exception = self.dom_exception_class_for_realm(vm, scope)?;
+
+        let what_key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        let filter_key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        let active_key = key_from_str(scope, TRAVERSAL_ACTIVE_SLOT)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(iter_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let state = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let root = dom.node_iterator_root(iter_id)?;
+            let reference = dom.node_iterator_reference(iter_id)?;
+            let before = dom.node_iterator_pointer_before_reference(iter_id)?;
+            Some((root, reference, before))
+          }))
+        })?;
+        let Some((root, mut node, mut before_node)) = state else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+
+        loop {
+          if !before_node {
+            let next = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| tree_following_in_subtree(dom, root, node)))
+            })?;
+            let Some(next) = next else {
+              return Ok(Value::Null);
+            };
+            node = next;
+          } else {
+            before_node = false;
+          }
+
+          let result = traversal_filter_node::<Host>(
+            vm,
+            scope,
+            dom_exception,
+            iter_obj,
+            node,
+            document_id,
+            what_key,
+            filter_key,
+            active_key,
+          )?;
+          if result == NODE_FILTER_ACCEPT {
+            break;
+          }
+        }
+
+        // Persist the new iterator state.
+        with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            dom.set_node_iterator_reference_and_pointer(iter_id, node, before_node);
+            ((), false)
+          }))
+        })?;
+
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if node.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(node).kind)
+            }
+          }))
+        })?;
+        let wrapper =
+          require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, node, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("NodeIterator", "previousNode", 0) => {
+        let _ = args;
+        let (iter_id, iter_obj) = require_node_iterator_receiver(scope, receiver)?;
+        let dom_exception = self.dom_exception_class_for_realm(vm, scope)?;
+
+        let what_key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        let filter_key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        let active_key = key_from_str(scope, TRAVERSAL_ACTIVE_SLOT)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(iter_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let state = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let root = dom.node_iterator_root(iter_id)?;
+            let reference = dom.node_iterator_reference(iter_id)?;
+            let before = dom.node_iterator_pointer_before_reference(iter_id)?;
+            Some((root, reference, before))
+          }))
+        })?;
+        let Some((root, mut node, mut before_node)) = state else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+
+        loop {
+          if before_node {
+            let prev = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| tree_preceding_in_subtree(dom, root, node)))
+            })?;
+            let Some(prev) = prev else {
+              return Ok(Value::Null);
+            };
+            node = prev;
+          } else {
+            before_node = true;
+          }
+
+          let result = traversal_filter_node::<Host>(
+            vm,
+            scope,
+            dom_exception,
+            iter_obj,
+            node,
+            document_id,
+            what_key,
+            filter_key,
+            active_key,
+          )?;
+          if result == NODE_FILTER_ACCEPT {
+            break;
+          }
+        }
+
+        // Persist the new iterator state.
+        with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            dom.set_node_iterator_reference_and_pointer(iter_id, node, before_node);
+            ((), false)
+          }))
+        })?;
+
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if node.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(node).kind)
+            }
+          }))
+        })?;
+        let wrapper =
+          require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, node, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+
+      ("TreeWalker", "root", 0) => {
+        let _ = args;
+        let walker_obj = require_tree_walker_receiver(scope, receiver)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(walker_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let root_key = key_from_str(scope, TREE_WALKER_ROOT_SLOT)?;
+        let root_id = read_internal_node_id_slot(scope, walker_obj, &root_key)?;
+        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if root_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(root_id).kind)
+            }
+          }))
+        })?;
+        let wrapper = require_dom_platform_mut(vm)?
+          .get_or_create_wrapper_for_document_id(scope, document_id, root_id, primary)?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("TreeWalker", "whatToShow", 0) => {
+        let _ = args;
+        let walker_obj = require_tree_walker_receiver(scope, receiver)?;
+        let key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        Ok(scope
+          .heap()
+          .object_get_own_data_property_value(walker_obj, &key)?
+          .unwrap_or(Value::Number(0.0)))
+      }
+      ("TreeWalker", "filter", 0) => {
+        let _ = args;
+        let walker_obj = require_tree_walker_receiver(scope, receiver)?;
+        let key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        Ok(scope
+          .heap()
+          .object_get_own_data_property_value(walker_obj, &key)?
+          .unwrap_or(Value::Null))
+      }
+      ("TreeWalker", "currentNode", 0) => {
+        let walker_obj = require_tree_walker_receiver(scope, receiver)?;
+        let current_key = key_from_str(scope, TREE_WALKER_CURRENT_SLOT)?;
+        if args.is_empty() {
+          let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+          let Some(Value::Object(document_obj)) =
+            scope.heap().object_get_own_data_property_value(walker_obj, &wrapper_doc_key)?
+          else {
+            return Err(VmError::TypeError("Illegal invocation"));
+          };
+          let document_id = {
+            let platform = require_dom_platform_mut(vm)?;
+            platform
+              .require_document_handle(scope.heap(), Value::Object(document_obj))?
+              .document_id
+          };
+
+          let current_id = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
+          let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              if current_id.index() >= dom.nodes_len() {
+                DomInterface::Node
+              } else {
+                DomInterface::primary_for_node_kind(&dom.node(current_id).kind)
+              }
+            }))
+          })?;
+          let wrapper = require_dom_platform_mut(vm)?
+            .get_or_create_wrapper_for_document_id(scope, document_id, current_id, primary)?;
+          scope.push_root(Value::Object(wrapper))?;
+          Ok(Value::Object(wrapper))
+        } else {
+          let value = args.get(0).copied().unwrap_or(Value::Undefined);
+          let node_id = {
+            let platform = require_dom_platform_mut(vm)?;
+            platform
+              .require_node_handle(scope.heap(), value)?
+              .node_id
+          };
+          scope.define_property(
+            walker_obj,
+            current_key,
+            data_property(Value::Number(node_id.index() as f64), true, false, false),
+          )?;
+          Ok(Value::Undefined)
+        }
+      }
+
+      ("TreeWalker", "parentNode", 0) => {
+        let _ = args;
+        let dom_exception = self.dom_exception_class_for_realm(vm, scope)?;
+        let walker_obj = require_tree_walker_receiver(scope, receiver)?;
+
+        let root_key = key_from_str(scope, TREE_WALKER_ROOT_SLOT)?;
+        let current_key = key_from_str(scope, TREE_WALKER_CURRENT_SLOT)?;
+        let what_key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        let filter_key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        let active_key = key_from_str(scope, TRAVERSAL_ACTIVE_SLOT)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(walker_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let root_id = read_internal_node_id_slot(scope, walker_obj, &root_key)?;
+        let mut node = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
+
+        while node != root_id {
+          let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.with_dom(|dom| tree_parent_node(dom, node)))
+          })?;
+          let Some(parent) = parent else {
+            break;
+          };
+          node = parent;
+
+          let result = traversal_filter_node::<Host>(
+            vm,
+            scope,
+            dom_exception,
+            walker_obj,
+            node,
+            document_id,
+            what_key,
+            filter_key,
+            active_key,
+          )?;
+          if result == NODE_FILTER_ACCEPT {
+            scope.define_property(
+              walker_obj,
+              current_key,
+              data_property(Value::Number(node.index() as f64), true, false, false),
+            )?;
+            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if node.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(node).kind)
+                }
+              }))
+            })?;
+            let wrapper = require_dom_platform_mut(vm)?
+              .get_or_create_wrapper_for_document_id(scope, document_id, node, primary)?;
+            scope.push_root(Value::Object(wrapper))?;
+            return Ok(Value::Object(wrapper));
+          }
+        }
+
+        Ok(Value::Null)
+      }
+
+      ("TreeWalker", "firstChild", 0) | ("TreeWalker", "lastChild", 0) => {
+        let _ = args;
+        let dom_exception = self.dom_exception_class_for_realm(vm, scope)?;
+        let walker_obj = require_tree_walker_receiver(scope, receiver)?;
+        let is_first = operation == "firstChild";
+
+        let root_key = key_from_str(scope, TREE_WALKER_ROOT_SLOT)?;
+        let current_key = key_from_str(scope, TREE_WALKER_CURRENT_SLOT)?;
+        let what_key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        let filter_key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        let active_key = key_from_str(scope, TRAVERSAL_ACTIVE_SLOT)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(walker_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let root_id = read_internal_node_id_slot(scope, walker_obj, &root_key)?;
+        let start_current = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
+
+        let mut node = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if is_first {
+              tree_first_child(dom, start_current)
+            } else {
+              tree_last_child(dom, start_current)
+            }
+          }))
+        })?;
+
+        while let Some(current) = node {
+          let result = traversal_filter_node::<Host>(
+            vm,
+            scope,
+            dom_exception,
+            walker_obj,
+            current,
+            document_id,
+            what_key,
+            filter_key,
+            active_key,
+          )?;
+          if result == NODE_FILTER_ACCEPT {
+            scope.define_property(
+              walker_obj,
+              current_key,
+              data_property(Value::Number(current.index() as f64), true, false, false),
+            )?;
+            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if current.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(current).kind)
+                }
+              }))
+            })?;
+            let wrapper = require_dom_platform_mut(vm)?
+              .get_or_create_wrapper_for_document_id(scope, document_id, current, primary)?;
+            scope.push_root(Value::Object(wrapper))?;
+            return Ok(Value::Object(wrapper));
+          }
+
+          if result == NODE_FILTER_SKIP {
+            let child = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if is_first {
+                  tree_first_child(dom, current)
+                } else {
+                  tree_last_child(dom, current)
+                }
+              }))
+            })?;
+            if child.is_some() {
+              node = child;
+              continue;
+            }
+          }
+
+          // Walk to next sibling/ancestor sibling.
+          let mut n = current;
+          loop {
+            let sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if is_first {
+                  tree_next_sibling(dom, n)
+                } else {
+                  tree_previous_sibling(dom, n)
+                }
+              }))
+            })?;
+            if let Some(sibling) = sibling {
+              node = Some(sibling);
+              break;
+            }
+
+            let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| tree_parent_node(dom, n)))
+            })?;
+            if parent.is_none()
+              || parent == Some(root_id)
+              || parent == Some(start_current)
+            {
+              return Ok(Value::Null);
+            }
+            n = parent.unwrap();
+          }
+        }
+
+        Ok(Value::Null)
+      }
+
+      ("TreeWalker", "nextSibling", 0) | ("TreeWalker", "previousSibling", 0) => {
+        let _ = args;
+        let dom_exception = self.dom_exception_class_for_realm(vm, scope)?;
+        let walker_obj = require_tree_walker_receiver(scope, receiver)?;
+        let is_next = operation == "nextSibling";
+
+        let root_key = key_from_str(scope, TREE_WALKER_ROOT_SLOT)?;
+        let current_key = key_from_str(scope, TREE_WALKER_CURRENT_SLOT)?;
+        let what_key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        let filter_key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        let active_key = key_from_str(scope, TRAVERSAL_ACTIVE_SLOT)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(walker_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let root_id = read_internal_node_id_slot(scope, walker_obj, &root_key)?;
+        let mut node = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
+        if node == root_id {
+          return Ok(Value::Null);
+        }
+
+        loop {
+          let mut sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              if is_next {
+                tree_next_sibling(dom, node)
+              } else {
+                tree_previous_sibling(dom, node)
+              }
+            }))
+          })?;
+
+          while let Some(sib) = sibling {
+            node = sib;
+            let result = traversal_filter_node::<Host>(
+              vm,
+              scope,
+              dom_exception,
+              walker_obj,
+              node,
+              document_id,
+              what_key,
+              filter_key,
+              active_key,
+            )?;
+            if result == NODE_FILTER_ACCEPT {
+              scope.define_property(
+                walker_obj,
+                current_key,
+                data_property(Value::Number(node.index() as f64), true, false, false),
+              )?;
+              let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+                Ok(host.with_dom(|dom| {
+                  if node.index() >= dom.nodes_len() {
+                    DomInterface::Node
+                  } else {
+                    DomInterface::primary_for_node_kind(&dom.node(node).kind)
+                  }
+                }))
+              })?;
+              let wrapper = require_dom_platform_mut(vm)?
+                .get_or_create_wrapper_for_document_id(scope, document_id, node, primary)?;
+              scope.push_root(Value::Object(wrapper))?;
+              return Ok(Value::Object(wrapper));
+            }
+
+            sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if is_next {
+                  tree_first_child(dom, node)
+                } else {
+                  tree_last_child(dom, node)
+                }
+              }))
+            })?;
+
+            if result == NODE_FILTER_REJECT || sibling.is_none() {
+              sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+                Ok(host.with_dom(|dom| {
+                  if is_next {
+                    tree_next_sibling(dom, node)
+                  } else {
+                    tree_previous_sibling(dom, node)
+                  }
+                }))
+              })?;
+            }
+          }
+
+          // Ascend.
+          let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.with_dom(|dom| tree_parent_node(dom, node)))
+          })?;
+          let Some(parent) = parent else {
+            return Ok(Value::Null);
+          };
+          node = parent;
+          if node == root_id {
+            return Ok(Value::Null);
+          }
+          if traversal_filter_node::<Host>(
+            vm,
+            scope,
+            dom_exception,
+            walker_obj,
+            node,
+            document_id,
+            what_key,
+            filter_key,
+            active_key,
+          )? == NODE_FILTER_ACCEPT
+          {
+            return Ok(Value::Null);
+          }
+        }
+      }
+
+      ("TreeWalker", "previousNode", 0) => {
+        let _ = args;
+        let dom_exception = self.dom_exception_class_for_realm(vm, scope)?;
+        let walker_obj = require_tree_walker_receiver(scope, receiver)?;
+
+        let root_key = key_from_str(scope, TREE_WALKER_ROOT_SLOT)?;
+        let current_key = key_from_str(scope, TREE_WALKER_CURRENT_SLOT)?;
+        let what_key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        let filter_key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        let active_key = key_from_str(scope, TRAVERSAL_ACTIVE_SLOT)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(walker_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let root_id = read_internal_node_id_slot(scope, walker_obj, &root_key)?;
+        let mut node = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
+
+        while node != root_id {
+          let mut sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.with_dom(|dom| tree_previous_sibling(dom, node)))
+          })?;
+
+          while let Some(sib) = sibling {
+            node = sib;
+            let mut result = traversal_filter_node::<Host>(
+              vm,
+              scope,
+              dom_exception,
+              walker_obj,
+              node,
+              document_id,
+              what_key,
+              filter_key,
+              active_key,
+            )?;
+
+            while result != NODE_FILTER_REJECT {
+              let child = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+                Ok(host.with_dom(|dom| tree_last_child(dom, node)))
+              })?;
+              let Some(child) = child else {
+                break;
+              };
+              node = child;
+              result = traversal_filter_node::<Host>(
+                vm,
+                scope,
+                dom_exception,
+                walker_obj,
+                node,
+                document_id,
+                what_key,
+                filter_key,
+                active_key,
+              )?;
+            }
+
+            if result == NODE_FILTER_ACCEPT {
+              scope.define_property(
+                walker_obj,
+                current_key,
+                data_property(Value::Number(node.index() as f64), true, false, false),
+              )?;
+              let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+                Ok(host.with_dom(|dom| {
+                  if node.index() >= dom.nodes_len() {
+                    DomInterface::Node
+                  } else {
+                    DomInterface::primary_for_node_kind(&dom.node(node).kind)
+                  }
+                }))
+              })?;
+              let wrapper = require_dom_platform_mut(vm)?
+                .get_or_create_wrapper_for_document_id(scope, document_id, node, primary)?;
+              scope.push_root(Value::Object(wrapper))?;
+              return Ok(Value::Object(wrapper));
+            }
+
+            sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| tree_previous_sibling(dom, node)))
+            })?;
+          }
+
+          let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.with_dom(|dom| tree_parent_node(dom, node)))
+          })?;
+          let Some(parent) = parent else {
+            return Ok(Value::Null);
+          };
+          if node == root_id {
+            return Ok(Value::Null);
+          }
+          node = parent;
+
+          let result = traversal_filter_node::<Host>(
+            vm,
+            scope,
+            dom_exception,
+            walker_obj,
+            node,
+            document_id,
+            what_key,
+            filter_key,
+            active_key,
+          )?;
+          if result == NODE_FILTER_ACCEPT {
+            scope.define_property(
+              walker_obj,
+              current_key,
+              data_property(Value::Number(node.index() as f64), true, false, false),
+            )?;
+            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if node.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(node).kind)
+                }
+              }))
+            })?;
+            let wrapper = require_dom_platform_mut(vm)?
+              .get_or_create_wrapper_for_document_id(scope, document_id, node, primary)?;
+            scope.push_root(Value::Object(wrapper))?;
+            return Ok(Value::Object(wrapper));
+          }
+        }
+
+        Ok(Value::Null)
+      }
+
+      ("TreeWalker", "nextNode", 0) => {
+        let _ = args;
+        let dom_exception = self.dom_exception_class_for_realm(vm, scope)?;
+        let walker_obj = require_tree_walker_receiver(scope, receiver)?;
+
+        let root_key = key_from_str(scope, TREE_WALKER_ROOT_SLOT)?;
+        let current_key = key_from_str(scope, TREE_WALKER_CURRENT_SLOT)?;
+        let what_key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        let filter_key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        let active_key = key_from_str(scope, TRAVERSAL_ACTIVE_SLOT)?;
+
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let Some(Value::Object(document_obj)) =
+          scope.heap().object_get_own_data_property_value(walker_obj, &wrapper_doc_key)?
+        else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let root_id = read_internal_node_id_slot(scope, walker_obj, &root_key)?;
+        let mut node = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
+        let mut result: u16 = NODE_FILTER_ACCEPT;
+
+        loop {
+          // Descend.
+          loop {
+            if result == NODE_FILTER_REJECT {
+              break;
+            }
+            let child = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| tree_first_child(dom, node)))
+            })?;
+            let Some(child) = child else {
+              break;
+            };
+            node = child;
+            result = traversal_filter_node::<Host>(
+              vm,
+              scope,
+              dom_exception,
+              walker_obj,
+              node,
+              document_id,
+              what_key,
+              filter_key,
+              active_key,
+            )?;
+            if result == NODE_FILTER_ACCEPT {
+              scope.define_property(
+                walker_obj,
+                current_key,
+                data_property(Value::Number(node.index() as f64), true, false, false),
+              )?;
+              let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+                Ok(host.with_dom(|dom| {
+                  if node.index() >= dom.nodes_len() {
+                    DomInterface::Node
+                  } else {
+                    DomInterface::primary_for_node_kind(&dom.node(node).kind)
+                  }
+                }))
+              })?;
+              let wrapper = require_dom_platform_mut(vm)?
+                .get_or_create_wrapper_for_document_id(scope, document_id, node, primary)?;
+              scope.push_root(Value::Object(wrapper))?;
+              return Ok(Value::Object(wrapper));
+            }
+          }
+
+          // Find next sibling of an ancestor.
+          let mut temporary = node;
+          loop {
+            if temporary == root_id {
+              return Ok(Value::Null);
+            }
+            let sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| tree_next_sibling(dom, temporary)))
+            })?;
+            if let Some(sibling) = sibling {
+              node = sibling;
+              break;
+            }
+            let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| tree_parent_node(dom, temporary)))
+            })?;
+            let Some(parent) = parent else {
+              return Ok(Value::Null);
+            };
+            temporary = parent;
+          }
+
+          result = traversal_filter_node::<Host>(
+            vm,
+            scope,
+            dom_exception,
+            walker_obj,
+            node,
+            document_id,
+            what_key,
+            filter_key,
+            active_key,
+          )?;
+          if result == NODE_FILTER_ACCEPT {
+            scope.define_property(
+              walker_obj,
+              current_key,
+              data_property(Value::Number(node.index() as f64), true, false, false),
+            )?;
+            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                if node.index() >= dom.nodes_len() {
+                  DomInterface::Node
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(node).kind)
+                }
+              }))
+            })?;
+            let wrapper = require_dom_platform_mut(vm)?
+              .get_or_create_wrapper_for_document_id(scope, document_id, node, primary)?;
+            scope.push_root(Value::Object(wrapper))?;
+            return Ok(Value::Object(wrapper));
+          }
+        }
+      }
+
       ("URL", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
         let input =
@@ -4842,6 +6251,255 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           )?
         };
         Ok(Value::Object(wrapper))
+      }
+
+      ("Document", "createNodeIterator", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+
+        // Brand check: `Document.prototype.createNodeIterator` must only be callable on a DOM-backed
+        // Document wrapper.
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let root_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let root_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_node_handle(scope.heap(), root_value)?
+            .node_id
+        };
+
+        let what_to_show = match args.get(1).copied().unwrap_or(Value::Number(0.0)) {
+          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n.trunc() as u32,
+          other => {
+            let n = scope.heap_mut().to_number(other)?;
+            if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 {
+              n.trunc() as u32
+            } else {
+              0
+            }
+          }
+        };
+
+        let filter = args.get(2).copied().unwrap_or(Value::Null);
+
+        let proto = self.node_iterator_proto_from_global(vm, scope)?;
+        scope.push_root(Value::Object(proto))?;
+        let iter_obj = scope.alloc_object_with_prototype(Some(proto))?;
+        scope.push_root(Value::Object(iter_obj))?;
+
+        let id = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let id = dom.create_node_iterator(root_id);
+            dom.register_node_iterator_wrapper(scope.heap(), id, iter_obj);
+            (id, false)
+          }))
+        })?;
+
+        scope.heap_mut().object_set_host_slots(
+          iter_obj,
+          HostSlots {
+            a: id.as_u64(),
+            b: NODE_ITERATOR_HOST_TAG,
+          },
+        )?;
+
+        // Store traversal state on the wrapper as non-enumerable data properties.
+        let what_key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        let filter_key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        let active_key = key_from_str(scope, TRAVERSAL_ACTIVE_SLOT)?;
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+
+        scope.define_property(
+          iter_obj,
+          what_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Number(what_to_show as f64),
+              writable: true,
+            },
+          },
+        )?;
+        scope.define_property(
+          iter_obj,
+          filter_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: filter,
+              writable: true,
+            },
+          },
+        )?;
+        scope.define_property(
+          iter_obj,
+          active_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Bool(false),
+              writable: true,
+            },
+          },
+        )?;
+        scope.define_property(
+          iter_obj,
+          wrapper_doc_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Object(document_obj),
+              writable: true,
+            },
+          },
+        )?;
+
+        // Root return value while constructing it.
+        scope.push_root(Value::Object(iter_obj))?;
+
+        // Ensure root/reference pointers remain stable by registering the iterator against the same
+        // document ID used by node wrappers.
+        let _ = document_id;
+
+        Ok(Value::Object(iter_obj))
+      }
+
+      ("Document", "createTreeWalker", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+
+        // Brand check: `Document.prototype.createTreeWalker` must only be callable on a DOM-backed
+        // Document wrapper.
+        {
+          let platform = require_dom_platform_mut(vm)?;
+          let _ = platform.require_document_handle(scope.heap(), Value::Object(document_obj))?;
+        }
+
+        let root_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let root_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_node_handle(scope.heap(), root_value)?
+            .node_id
+        };
+
+        let what_to_show = match args.get(1).copied().unwrap_or(Value::Number(0.0)) {
+          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n.trunc() as u32,
+          other => {
+            let n = scope.heap_mut().to_number(other)?;
+            if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 {
+              n.trunc() as u32
+            } else {
+              0
+            }
+          }
+        };
+        let filter = args.get(2).copied().unwrap_or(Value::Null);
+
+        let proto = self.tree_walker_proto_from_global(vm, scope)?;
+        scope.push_root(Value::Object(proto))?;
+        let walker_obj = scope.alloc_object_with_prototype(Some(proto))?;
+        scope.push_root(Value::Object(walker_obj))?;
+
+        scope.heap_mut().object_set_host_slots(
+          walker_obj,
+          HostSlots {
+            a: 0,
+            b: TREE_WALKER_HOST_TAG,
+          },
+        )?;
+
+        // Store traversal state on the wrapper as non-enumerable data properties.
+        let root_key = key_from_str(scope, TREE_WALKER_ROOT_SLOT)?;
+        let current_key = key_from_str(scope, TREE_WALKER_CURRENT_SLOT)?;
+        let what_key = key_from_str(scope, TRAVERSAL_WHAT_TO_SHOW_SLOT)?;
+        let filter_key = key_from_str(scope, TRAVERSAL_FILTER_SLOT)?;
+        let active_key = key_from_str(scope, TRAVERSAL_ACTIVE_SLOT)?;
+        let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+
+        scope.define_property(
+          walker_obj,
+          root_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Number(root_id.index() as f64),
+              writable: true,
+            },
+          },
+        )?;
+        scope.define_property(
+          walker_obj,
+          current_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Number(root_id.index() as f64),
+              writable: true,
+            },
+          },
+        )?;
+        scope.define_property(
+          walker_obj,
+          what_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Number(what_to_show as f64),
+              writable: true,
+            },
+          },
+        )?;
+        scope.define_property(
+          walker_obj,
+          filter_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: filter,
+              writable: true,
+            },
+          },
+        )?;
+        scope.define_property(
+          walker_obj,
+          active_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Bool(false),
+              writable: true,
+            },
+          },
+        )?;
+        scope.define_property(
+          walker_obj,
+          wrapper_doc_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Object(document_obj),
+              writable: true,
+            },
+          },
+        )?;
+
+        scope.push_root(Value::Object(walker_obj))?;
+        Ok(Value::Object(walker_obj))
       }
 
       ("Element", "matches", 0) => {

@@ -34,8 +34,9 @@ pub use generated::{
   install_custom_event_bindings_vm_js, install_event_bindings_vm_js,
   install_dom_token_list_bindings_vm_js, install_event_target_bindings_vm_js,
   install_html_collection_bindings_vm_js, install_node_bindings_vm_js,
-  install_node_list_bindings_vm_js, install_text_bindings_vm_js, install_url_bindings_vm_js,
-  install_url_search_params_bindings_vm_js,
+  install_node_filter_bindings_vm_js, install_node_iterator_bindings_vm_js,
+  install_node_list_bindings_vm_js, install_text_bindings_vm_js,
+  install_tree_walker_bindings_vm_js, install_url_bindings_vm_js, install_url_search_params_bindings_vm_js,
   install_window_bindings_vm_js, install_window_ops_bindings_vm_js, install_worker_bindings_vm_js,
 };
 pub use generated_legacy::{install_window_bindings, install_worker_bindings};
