@@ -89,8 +89,8 @@ FastRender models this separation too:
 
 **Current behavior:** `tick_frame()` runs at most one rAF “turn” when callbacks are pending, and it
 drains microtasks queued by rAF before rendering. It does **not** enforce a wall-clock frame cadence
-by itself; the embedder is expected to call `tick_frame()` on its chosen frame schedule (see
-`next_wake_time()` / `animation_frame_interval`).
+by itself; the embedder is expected to call `tick_frame()` on its chosen frame schedule (see the
+live-loop discussion below for wake/sleep strategy).
 
 ### 3) `BrowserTab::run_until_stable(...)` (drains tasks + rAF + renders until convergence)
 
