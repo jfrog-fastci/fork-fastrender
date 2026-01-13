@@ -55,7 +55,6 @@ pub mod html_scripting;
 pub mod html_script_pipeline;
 pub mod html_script_scheduler;
 pub mod import_maps;
-pub mod module_graph_loader;
 pub mod options;
 pub mod orchestrator;
 pub mod page_load;
