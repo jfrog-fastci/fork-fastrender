@@ -5410,7 +5410,7 @@ impl BrowserRuntime {
           drop_target_element_id.as_deref(),
           &mut tab.js_dom_mapping_generation,
           &mut tab.js_dom_mapping,
-          &mut tab.js_dom_mapping_miss_logged,
+          &mut tab.js_dom_mapping_miss_log_last,
           "drop",
         );
         if let Some(node_id) = target {
@@ -7489,7 +7489,7 @@ impl BrowserRuntime {
     tab.js_dom_mutation_generation = js_dom_generation;
     tab.js_dom_mapping_generation = js_dom_generation;
     tab.js_dom_mapping = Some(js_dom_mapping);
-    tab.js_dom_mapping_miss_logged = false;
+    tab.js_dom_mapping_miss_log_last.clear();
 
     let Some(doc) = tab.document.as_mut() else {
       return false;
