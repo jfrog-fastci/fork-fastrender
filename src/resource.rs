@@ -14376,6 +14376,40 @@ mod tests_minimal {
       "unexpected error message: {err}"
     );
   }
+
+  #[test]
+  fn resource_fetcher_arc_forwarder_calls_inner_fetch_range_with_request_override() {
+    struct RangeOnlyFetcher;
+
+    impl ResourceFetcher for RangeOnlyFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        Err(Error::Other(format!("unexpected fetch call for {url}")))
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        _req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        Ok(FetchedResource::new(b"range".to_vec(), None))
+      }
+    }
+
+    // `Arc<T>` implements `ResourceFetcher` and should forward the range request to the inner
+    // implementation. This matters because the default range implementation issues a HTTP request
+    // with custom headers (`Range`, `Accept-Encoding`) via `fetch_http_request`, which many custom
+    // fetchers do not support.
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(RangeOnlyFetcher);
+    let res = fetcher
+      .fetch_range_with_request(
+        FetchRequest::new("http://example.test/asset.bin", FetchDestination::Fetch),
+        0..=3,
+        10,
+      )
+      .expect("arc range fetch should use inner override");
+    assert_eq!(res.bytes, b"range");
+  }
 }
 
 // The bulk of `resource`'s unit tests exercise the in-process HTTP(S) implementation, which is
