@@ -378,7 +378,8 @@ if those menu items are currently disabled:
 
 - **New Window**: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>N</kbd>.
 - **Show Downloads…**: use the downloads button in the toolbar.
-- **Bookmark manager…**: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>.
+- **Bookmark manager…**: use <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> (Win/Linux) or
+  <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> (macOS).
 - **Toggle Full Screen**: use <kbd>F11</kbd> (Win/Linux) or <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd>
   (macOS).
 
