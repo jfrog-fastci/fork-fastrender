@@ -26,6 +26,9 @@ Web APIs are implemented in FastRender's `src/js/`. See [`docs/build_performance
 
 This workstream owns **Web Platform APIs** beyond the core DOM: fetch, URL, timers, storage, encoding, crypto, and other browser APIs.
 
+For which public API containers currently include JavaScript execution + an event loop (and which are
+render-only documents), see [`docs/runtime_stacks.md`](../docs/runtime_stacks.md).
+
 ## The job
 
 Implement the **Web APIs that real websites depend on**. Not obscure APIs. The ones that break pages when missing.

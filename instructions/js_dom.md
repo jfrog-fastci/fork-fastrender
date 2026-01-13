@@ -26,6 +26,9 @@ DOM bindings touch both FastRender and ecma-rs. See [`docs/build_performance.md`
 
 This workstream owns the **DOM API surface exposed to JavaScript**: Document, Element, Node, events, and related APIs.
 
+For which public API containers currently include JavaScript execution + an event loop (and which are
+render-only documents), see [`docs/runtime_stacks.md`](../docs/runtime_stacks.md).
+
 ## The job
 
 Expose a **complete, spec-compliant DOM API** to JavaScript. Scripts should be able to query elements, modify the DOM, handle events, and manipulate styles—just like in a real browser.

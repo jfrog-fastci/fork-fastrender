@@ -29,6 +29,9 @@ See [`docs/build_performance.md`](../docs/build_performance.md):
 
 This workstream owns how **JavaScript integrates with HTML**: script loading, module execution, the event loop, host hooks, and the execution lifecycle.
 
+For which public API containers currently include JavaScript execution + an event loop (and which are
+render-only documents), see [`docs/runtime_stacks.md`](../docs/runtime_stacks.md).
+
 ## The job
 
 Make scripts run **at the right time, in the right order, with the right context**—exactly as the HTML Standard specifies. Make vm-js a **clean, embeddable JavaScript engine** that integrates with FastRender's DOM and event loop.
