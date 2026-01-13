@@ -58,6 +58,63 @@ fn optional_chaining_is_invalid_destructuring_assignment_target() {
 }
 
 #[test]
+fn optional_chaining_on_super_member_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try {
+        eval("class B {} class A extends B { m() { super?.bar; } }");
+      } catch (e) {
+        ok = e && e.name === "SyntaxError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn optional_chaining_on_super_computed_member_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try {
+        eval("class B {} class A extends B { m() { super?.['bar']; } }");
+      } catch (e) {
+        ok = e && e.name === "SyntaxError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn optional_chaining_on_super_call_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try {
+        eval("class B {} class A extends B { constructor() { super?.(); } }");
+      } catch (e) {
+        ok = e && e.name === "SyntaxError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn duplicate_parameter_names_in_strict_mode_are_syntax_error() {
   let mut rt = new_runtime();
   let err = rt

@@ -2087,7 +2087,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Expr::Binary(binary) => self.visit_binary(ctx, &binary.stx),
       Expr::Call(call) => self.visit_call(ctx, &call.stx),
       Expr::Class(class) => self.visit_class_expr(ctx, &class.stx),
-      Expr::ComputedMember(member) => self.visit_computed_member(ctx, &member.stx),
+      Expr::ComputedMember(member) => self.visit_computed_member(ctx, expr.loc, &member.stx),
       Expr::Cond(cond) => self.visit_cond(ctx, &cond.stx),
       Expr::Func(func) => self.visit_func_expr(ctx, &func.stx),
       Expr::Id(id) => {
@@ -2175,6 +2175,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     loc: Loc,
     expr: &MemberExpr,
   ) -> Result<(), VmError> {
+    if expr.optional_chaining && matches!(&*expr.left.stx, Expr::Super(_)) {
+      self.push_error(loc, "optional chaining cannot be used on super")?;
+    }
     self.visit_expr(ctx, &expr.left)?;
     if expr.right.starts_with('#') {
       if matches!(&*expr.left.stx, Expr::Super(_)) {
@@ -2189,18 +2192,26 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn visit_computed_member(
     &mut self,
     ctx: &mut ControlContext,
+    loc: Loc,
     expr: &ComputedMemberExpr,
   ) -> Result<(), VmError> {
+    if expr.optional_chaining && matches!(&*expr.object.stx, Expr::Super(_)) {
+      self.push_error(loc, "optional chaining cannot be used on super")?;
+    }
     self.visit_expr(ctx, &expr.object)?;
     self.visit_expr(ctx, &expr.member)
   }
 
   fn visit_call(&mut self, ctx: &mut ControlContext, expr: &CallExpr) -> Result<(), VmError> {
-    if matches!(&*expr.callee.stx, Expr::Super(_)) && !ctx.super_call_allowed {
-      self.push_error(
-        expr.callee.loc,
-        "super() is only valid in derived class constructors",
-      )?;
+    if matches!(&*expr.callee.stx, Expr::Super(_)) {
+      if expr.optional_chaining {
+        self.push_error(expr.callee.loc, "optional chaining cannot be used on super")?;
+      } else if !ctx.super_call_allowed {
+        self.push_error(
+          expr.callee.loc,
+          "super() is only valid in derived class constructors",
+        )?;
+      }
     }
     self.visit_expr(ctx, &expr.callee)?;
     for arg in &expr.arguments {
