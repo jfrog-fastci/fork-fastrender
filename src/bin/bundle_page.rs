@@ -1756,13 +1756,11 @@ fn placeholder_resource(
         Some(url.to_string()),
       )
     }
-    FetchDestination::Other | FetchDestination::Video | FetchDestination::Audio => {
-      FetchedResource::with_final_url(
+    FetchDestination::Other => FetchedResource::with_final_url(
       Vec::new(),
       Some("application/octet-stream".to_string()),
       Some(url.to_string()),
-      )
-    }
+    ),
     FetchDestination::Fetch => {
       let mut res = FetchedResource::with_final_url(
         Vec::new(),
@@ -2568,9 +2566,7 @@ fn crawl_document(
           }
         })
       }
-      FetchDestination::Other | FetchDestination::Fetch | FetchDestination::Video | FetchDestination::Audio => {
-        Ok(())
-      }
+      FetchDestination::Other | FetchDestination::Fetch => Ok(()),
     };
     if let Err(err) = validation {
       handle_crawl_failure(

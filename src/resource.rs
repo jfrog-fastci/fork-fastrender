@@ -1606,6 +1606,16 @@ impl<'a> FetchRequest<'a> {
     Self::new(url, FetchDestination::Image)
   }
 
+  /// Create a video fetch request.
+  pub fn video(url: &'a str) -> Self {
+    Self::new(url, FetchDestination::Video)
+  }
+
+  /// Create an audio fetch request.
+  pub fn audio(url: &'a str) -> Self {
+    Self::new(url, FetchDestination::Audio)
+  }
+
   /// Attach a referrer URL used to construct the HTTP `Referer` header.
   pub fn with_referrer_url(mut self, referrer_url: &'a str) -> Self {
     self.referrer_url = Some(referrer_url);
