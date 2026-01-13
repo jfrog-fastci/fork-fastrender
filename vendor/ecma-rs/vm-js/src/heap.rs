@@ -1302,6 +1302,17 @@ impl Heap {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::Generator(_)))
   }
 
+  /// Returns `true` if `obj` currently points to a live AsyncGenerator object allocation.
+  ///
+  /// This is the spec-shaped "brand check" for async generator objects (i.e. objects with async
+  /// generator internal slots).
+  ///
+  /// Note: async generator objects are not yet implemented in `vm-js`, so this currently always
+  /// returns `false`.
+  pub fn is_async_generator_object(&self, _obj: GcObject) -> bool {
+    false
+  }
+
   /// Returns `true` if `obj` currently points to a live ArrayBuffer object allocation.
   pub fn is_array_buffer_object(&self, obj: GcObject) -> bool {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::ArrayBuffer(_)))

@@ -163,6 +163,43 @@ pub fn make_generator_function_instance_prototype(
   Ok(prototype)
 }
 
+/// ECMA-262-like helper for creating an async generator function instance's per-function
+/// `.prototype` object.
+///
+/// Async generator functions are not constructors, but still get an own `prototype` data property
+/// whose value is an object that inherits from `%AsyncGeneratorPrototype%`. Like
+/// [`make_generator_function_instance_prototype`], this intentionally does **not** define
+/// `F.prototype.constructor`.
+///
+/// This defines `F.prototype` as a writable, non-enumerable, non-configurable data property.
+pub fn make_async_generator_function_instance_prototype(
+  scope: &mut Scope<'_>,
+  func: GcObject,
+  async_generator_prototype: GcObject,
+) -> Result<GcObject, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(func))?;
+  scope.push_root(Value::Object(async_generator_prototype))?;
+
+  let prototype = scope.alloc_object_with_prototype(Some(async_generator_prototype))?;
+  scope.push_root(Value::Object(prototype))?;
+  let prototype_key = scope.common_key_prototype()?;
+  scope.define_property(
+    func,
+    PropertyKey::String(prototype_key),
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(prototype),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(prototype)
+}
+
 fn compute_function_name(
   scope: &mut Scope<'_>,
   name: PropertyKey,

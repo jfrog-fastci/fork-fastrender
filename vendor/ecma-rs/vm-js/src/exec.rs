@@ -4581,22 +4581,10 @@ impl<'a> Evaluator<'a> {
   ) -> Result<GcObject, VmError> {
     use crate::function::ThisMode;
     use crate::vm::EcmaFunctionKind;
- 
+  
     let func = &decl.stx.function.stx;
-    if func.generator && func.async_ {
-      // `async function*` is valid ECMAScript syntax, but vm-js does not implement async generator
-      // semantics yet. Surface this as a *throwable* `SyntaxError` so user code (and test262
-      // harness helpers like `wellKnownIntrinsicObjects.js`) can feature-detect it via try/catch
-      // instead of treating it as a host-level fatal error.
-      let intr = self
-        .vm
-        .intrinsics()
-        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-      let err_obj =
-        crate::error_object::new_syntax_error_object(scope, &intr, "async generator functions")?;
-      return Err(VmError::Throw(err_obj));
-    }
     let is_generator = func.generator;
+    let is_async_generator = func.generator && func.async_;
     let is_strict = self.strict
       || match &func.body {
         Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
@@ -4645,7 +4633,11 @@ impl<'a> Evaluator<'a> {
       .object_set_prototype(
         func_obj,
         Some(if is_generator {
-          intr.generator_function_prototype()
+          if is_async_generator {
+            intr.async_generator_function_prototype()
+          } else {
+            intr.generator_function_prototype()
+          }
         } else {
           intr.function_prototype()
         }),
@@ -4663,11 +4655,19 @@ impl<'a> Evaluator<'a> {
         .set_function_script_or_module_token(func_obj, Some(token))?;
     }
     if is_generator {
-      crate::function_properties::make_generator_function_instance_prototype(
-        scope,
-        func_obj,
-        intr.generator_prototype(),
-      )?;
+      if is_async_generator {
+        crate::function_properties::make_async_generator_function_instance_prototype(
+          scope,
+          func_obj,
+          intr.async_generator_prototype(),
+        )?;
+      } else {
+        crate::function_properties::make_generator_function_instance_prototype(
+          scope,
+          func_obj,
+          intr.generator_prototype(),
+        )?;
+      }
     }
     Ok(func_obj)
   }
@@ -6083,9 +6083,7 @@ impl<'a> Evaluator<'a> {
       match &member.stx.val {
         ClassOrObjVal::Method(method) => {
           let func_node = &method.stx.func;
-          if func_node.stx.generator && func_node.stx.async_ {
-            return Err(VmError::Unimplemented("async generator functions"));
-          }
+          let is_async_generator = func_node.stx.generator && func_node.stx.async_;
           let length = self.function_length(&func_node.stx)?;
 
           let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
@@ -6136,7 +6134,11 @@ impl<'a> Evaluator<'a> {
             .object_set_prototype(
               func_obj,
               Some(if func_node.stx.generator {
-                intr.generator_function_prototype()
+                if is_async_generator {
+                  intr.async_generator_function_prototype()
+                } else {
+                  intr.generator_function_prototype()
+                }
               } else {
                 intr.function_prototype()
               }),
@@ -6156,11 +6158,19 @@ impl<'a> Evaluator<'a> {
               .set_function_script_or_module_token(func_obj, Some(token))?;
           }
           if func_node.stx.generator {
-            crate::function_properties::make_generator_function_instance_prototype(
-              &mut member_scope,
-              func_obj,
-              intr.generator_prototype(),
-            )?;
+            if is_async_generator {
+              crate::function_properties::make_async_generator_function_instance_prototype(
+                &mut member_scope,
+                func_obj,
+                intr.async_generator_prototype(),
+              )?;
+            } else {
+              crate::function_properties::make_generator_function_instance_prototype(
+                &mut member_scope,
+                func_obj,
+                intr.generator_prototype(),
+              )?;
+            }
           }
           member_scope.push_root(Value::Object(func_obj))?;
 
@@ -8050,18 +8060,8 @@ impl<'a> Evaluator<'a> {
     // returning to the caller.
     let mut scope = scope.reborrow();
 
-    if func.generator && func.async_ {
-      // See `create_function_object_for_decl`: throw a catchable SyntaxError instead of surfacing
-      // as a host-level `Unimplemented` error.
-      let intr = self
-        .vm
-        .intrinsics()
-        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-      let err_obj =
-        crate::error_object::new_syntax_error_object(&mut scope, &intr, "async generator functions")?;
-      return Err(VmError::Throw(err_obj));
-    }
     let is_generator = func.generator;
+    let is_async_generator = func.generator && func.async_;
     let is_strict = self.strict
       || match &func.body {
         Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
@@ -8149,7 +8149,11 @@ impl<'a> Evaluator<'a> {
       .object_set_prototype(
         func_obj,
         Some(if is_generator {
-          intr.generator_function_prototype()
+          if is_async_generator {
+            intr.async_generator_function_prototype()
+          } else {
+            intr.generator_function_prototype()
+          }
         } else {
           intr.function_prototype()
         }),
@@ -8167,11 +8171,19 @@ impl<'a> Evaluator<'a> {
         .set_function_script_or_module_token(func_obj, Some(token))?;
     }
     if is_generator {
-      crate::function_properties::make_generator_function_instance_prototype(
-        &mut scope,
-        func_obj,
-        intr.generator_prototype(),
-      )?;
+      if is_async_generator {
+        crate::function_properties::make_async_generator_function_instance_prototype(
+          &mut scope,
+          func_obj,
+          intr.async_generator_prototype(),
+        )?;
+      } else {
+        crate::function_properties::make_generator_function_instance_prototype(
+          &mut scope,
+          func_obj,
+          intr.generator_prototype(),
+        )?;
+      }
     }
     if func.arrow {
       scope
@@ -8751,9 +8763,7 @@ impl<'a> Evaluator<'a> {
             }
             ClassOrObjVal::Method(method) => {
               let func_node = &method.stx.func;
-              if func_node.stx.generator && func_node.stx.async_ {
-                return Err(VmError::Unimplemented("async generator functions"));
-              }
+              let is_async_generator = func_node.stx.generator && func_node.stx.async_;
               let length = self.function_length(&func_node.stx)?;
 
               let span_start = self.object_member_span_start(member_loc_start, key_loc_start, &func_node.stx);
@@ -8811,7 +8821,11 @@ impl<'a> Evaluator<'a> {
                 .object_set_prototype(
                   func_obj,
                   Some(if func_node.stx.generator {
-                    intr.generator_function_prototype()
+                    if is_async_generator {
+                      intr.async_generator_function_prototype()
+                    } else {
+                      intr.generator_function_prototype()
+                    }
                   } else {
                     intr.function_prototype()
                   }),
@@ -8831,11 +8845,19 @@ impl<'a> Evaluator<'a> {
                   .set_function_script_or_module_token(func_obj, Some(token))?;
               }
               if func_node.stx.generator {
-                crate::function_properties::make_generator_function_instance_prototype(
-                  &mut member_scope,
-                  func_obj,
-                  intr.generator_prototype(),
-                )?;
+                if is_async_generator {
+                  crate::function_properties::make_async_generator_function_instance_prototype(
+                    &mut member_scope,
+                    func_obj,
+                    intr.async_generator_prototype(),
+                  )?;
+                } else {
+                  crate::function_properties::make_generator_function_instance_prototype(
+                    &mut member_scope,
+                    func_obj,
+                    intr.generator_prototype(),
+                  )?;
+                }
               }
               if func_node.stx.arrow {
                 member_scope
@@ -28505,6 +28527,7 @@ fn gen_resume_from_frames(
               state = gen_error_to_completion(evaluator, scope, close_err)?;
               continue;
             }
+
             let err = throw_type_error(
               evaluator.vm,
               scope,

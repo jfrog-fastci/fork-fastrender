@@ -4935,6 +4935,266 @@ pub fn generator_function_constructor_construct(
   Ok(Value::Object(func_obj))
 }
 
+/// `%AsyncGeneratorFunction%` (ECMA-262).
+///
+/// Calling `%AsyncGeneratorFunction%` as a function behaves like `new %AsyncGeneratorFunction%`.
+///
+/// Note: async generator function *execution* semantics are implemented in a separate task. This
+/// constructor implements dynamic creation semantics so code can observe `%AsyncGeneratorFunction%`
+/// and create async generator function objects.
+pub fn async_generator_function_constructor_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  async_generator_function_constructor_construct(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    args,
+    Value::Object(callee),
+  )
+}
+
+/// `%AsyncGeneratorFunction%` `[[Construct]]` (ECMA-262).
+///
+/// This is `CreateDynamicFunction` for async generator functions: it parses the provided parameter
+/// list and body text and returns a fresh async generator function object.
+pub fn async_generator_function_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  // `CreateDynamicFunction` creates the function in the realm of the provided constructor. `vm-js`
+  // represents a realm by storing the realm's global object on `[[Realm]]`.
+  let Some(global_object) = scope.heap().get_function_realm(callee)? else {
+    return Err(VmError::Unimplemented(
+      "AsyncGeneratorFunction constructor missing [[Realm]]",
+    ));
+  };
+
+  // Like `%Function%`, `%AsyncGeneratorFunction%` creates its function in the global lexical
+  // environment, not in the caller's environment. In `vm-js`, this is stored as the intrinsic
+  // Function constructor's captured closure env.
+  let closure_env = match scope.heap().get_function_closure_env(callee)? {
+    Some(env) => Some(env),
+    None => scope.heap().get_function_closure_env(intr.function_constructor())?,
+  };
+
+  // `AsyncGeneratorFunction(...params, body)` uses the final argument as the body.
+  let (param_values, body_value) = match args.split_last() {
+    Some((last, rest)) => (rest, *last),
+    None => (&[][..], Value::Undefined),
+  };
+
+  let mut params_joined: String = String::new();
+  for (idx, param_value) in param_values.iter().copied().enumerate() {
+    if idx % 32 == 0 {
+      vm.tick()?;
+    }
+    let s = scope.to_string(vm, host, hooks, param_value)?;
+    let units = scope.heap().get_string(s)?.as_code_units();
+    let text = utf16_to_utf8_lossy_with_tick(units, || vm.tick())?;
+    if idx != 0 {
+      params_joined
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      params_joined.push(',');
+    }
+    params_joined
+      .try_reserve(text.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    params_joined.push_str(&text);
+  }
+
+  let body_s = scope.to_string(vm, host, hooks, body_value)?;
+  let body_units = scope.heap().get_string(body_s)?.as_code_units();
+  let body_text = utf16_to_utf8_lossy_with_tick(body_units, || vm.tick())?;
+
+  // Parse as a single async generator function declaration statement so we can reuse the normal
+  // ECMAScript function-object call path.
+  let mut source: String = String::new();
+  const PREFIX: &str = "async function* anonymous(";
+  const MIDDLE: &str = "\n) {\n";
+  const SUFFIX: &str = "\n}";
+  let total_len = PREFIX
+    .len()
+    .checked_add(params_joined.len())
+    .and_then(|n| n.checked_add(MIDDLE.len()))
+    .and_then(|n| n.checked_add(body_text.len()))
+    .and_then(|n| n.checked_add(SUFFIX.len()))
+    .ok_or(VmError::OutOfMemory)?;
+  source
+    .try_reserve(total_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+  source.push_str(PREFIX);
+  source.push_str(&params_joined);
+  source.push_str(MIDDLE);
+  source.push_str(&body_text);
+  source.push_str(SUFFIX);
+
+  // Parse eagerly so syntax errors become JS-catchable `SyntaxError` exceptions instead of
+  // surfacing as non-catchable `VmError::Syntax`.
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let parsed = match vm.parse_top_level_with_budget(&source, opts) {
+    Ok(top) => top,
+    Err(VmError::Syntax(diags)) => {
+      let message = diags
+        .first()
+        .map(|d| d.message.as_str())
+        .unwrap_or("Invalid or unexpected token");
+      let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+      return Err(VmError::Throw(err_obj));
+    }
+    Err(err) => return Err(err),
+  };
+  {
+    let mut tick = || vm.tick();
+    match crate::early_errors::validate_top_level(
+      &parsed.stx.body,
+      crate::early_errors::EarlyErrorOptions::script(false),
+      &mut tick,
+    ) {
+      Ok(()) => {}
+      Err(VmError::Syntax(diags)) => {
+        let message = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .unwrap_or("Invalid or unexpected token");
+        let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+        return Err(VmError::Throw(err_obj));
+      }
+      Err(err) => return Err(err),
+    }
+  }
+
+  // Derive strictness and length from the parsed function node.
+  let mut is_strict = false;
+  let mut length: u32 = 0;
+  let mut body_stmts: Option<&[Node<Stmt>]> = None;
+  if parsed.stx.body.len() == 1 {
+    if let Stmt::FunctionDecl(decl) = &*parsed.stx.body[0].stx {
+      let func = &decl.stx.function.stx;
+      length = {
+        let mut len: u32 = 0;
+        for (i, param) in func.parameters.iter().enumerate() {
+          if i % 32 == 0 {
+            vm.tick()?;
+          }
+          if param.stx.rest || param.stx.default_value.is_some() {
+            break;
+          }
+          len = len.saturating_add(1);
+        }
+        len
+      };
+      if let Some(FuncBody::Block(stmts)) = &func.body {
+        const TICK_EVERY: usize = 32;
+        for (i, stmt) in stmts.iter().enumerate() {
+          if i % TICK_EVERY == 0 {
+            vm.tick()?;
+          }
+          let Stmt::Expr(expr_stmt) = &*stmt.stx else {
+            break;
+          };
+          let expr = &expr_stmt.stx.expr;
+          if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+            break;
+          }
+          let Expr::LitStr(lit) = &*expr.stx else {
+            break;
+          };
+          if lit.stx.value == "use strict" {
+            is_strict = true;
+            break;
+          }
+        }
+        body_stmts = Some(stmts);
+      }
+    }
+  }
+
+  if is_strict {
+    // Strict-mode `with` is required to be rejected during dynamic async generator function
+    // creation (spec `CreateDynamicFunction`), not deferred until first execution.
+    if let Some(stmts) = body_stmts {
+      if strict_mode_stmts_contain_with(vm, stmts)? {
+        let err_obj = crate::error_object::new_syntax_error_object(
+          scope,
+          &intr,
+          "with statements are not allowed in strict mode",
+        )?;
+        return Err(VmError::Throw(err_obj));
+      }
+    }
+  }
+
+  let this_mode = if is_strict { ThisMode::Strict } else { ThisMode::Global };
+
+  let source = Arc::new(SourceText::new_charged(
+    scope.heap_mut(),
+    "<AsyncGeneratorFunction>",
+    source,
+  )?);
+  let span_end = u32::try_from(source.text.len()).unwrap_or(u32::MAX);
+  let code_id = vm.register_ecma_function(source, 0, span_end, crate::vm::EcmaFunctionKind::Decl)?;
+
+  let name_s = scope.alloc_string("anonymous")?;
+  let func_obj = scope.alloc_ecma_function(
+    code_id,
+    false,
+    name_s,
+    length,
+    this_mode,
+    is_strict,
+    closure_env,
+  )?;
+  scope.push_root(Value::Object(func_obj))?;
+  scope.heap_mut().object_set_prototype(
+    func_obj,
+    Some(intr.async_generator_function_prototype()),
+  )?;
+  crate::function_properties::make_async_generator_function_instance_prototype(
+    scope,
+    func_obj,
+    intr.async_generator_prototype(),
+  )?;
+  scope
+    .heap_mut()
+    .set_function_realm(func_obj, global_object)?;
+
+  let job_realm = scope
+    .heap()
+    .get_function_job_realm(callee)
+    .or(vm.current_realm());
+  if let Some(job_realm) = job_realm {
+    scope.heap_mut().set_function_job_realm(func_obj, job_realm)?;
+  }
+  if let Some(script_or_module) = vm.get_active_script_or_module() {
+    let token = vm.intern_script_or_module(script_or_module)?;
+    scope
+      .heap_mut()
+      .set_function_script_or_module_token(func_obj, Some(token))?;
+  }
+
+  Ok(Value::Object(func_obj))
+}
+
 pub fn error_constructor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -6022,6 +6282,22 @@ pub fn promise_species_get(
 ///
 /// All built-in iterator objects are iterable (calling `@@iterator` returns the iterator itself).
 pub fn iterator_prototype_iterator(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(this)
+}
+
+/// `%AsyncIteratorPrototype%[@@asyncIterator]` (ECMA-262).
+///
+/// Async iterator objects are async iterable: calling `iter[Symbol.asyncIterator]()` returns `iter`
+/// itself.
+pub fn async_iterator_prototype_symbol_async_iterator(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -12801,6 +13077,75 @@ fn create_iterator_result_object(
   scope.define_property(out, value_key, data_desc(value, true, true, true))?;
   scope.define_property(out, done_key, data_desc(Value::Bool(done), true, true, true))?;
   Ok(Value::Object(out))
+}
+
+fn require_async_generator_object(
+  scope: &mut Scope<'_>,
+  this: Value,
+  non_object_message: &'static str,
+  incompatible_receiver_message: &'static str,
+) -> Result<GcObject, VmError> {
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError(non_object_message));
+  };
+  if !scope.heap().is_async_generator_object(this_obj) {
+    return Err(VmError::TypeError(incompatible_receiver_message));
+  }
+  Ok(this_obj)
+}
+
+pub fn async_generator_prototype_next(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _this_obj = require_async_generator_object(
+    scope,
+    this,
+    "AsyncGenerator.prototype.next called on non-object",
+    "AsyncGenerator.prototype.next called on incompatible receiver",
+  )?;
+  Err(VmError::Unimplemented("async generator runtime"))
+}
+
+pub fn async_generator_prototype_return(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _this_obj = require_async_generator_object(
+    scope,
+    this,
+    "AsyncGenerator.prototype.return called on non-object",
+    "AsyncGenerator.prototype.return called on incompatible receiver",
+  )?;
+  Err(VmError::Unimplemented("async generator runtime"))
+}
+
+pub fn async_generator_prototype_throw(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _this_obj = require_async_generator_object(
+    scope,
+    this,
+    "AsyncGenerator.prototype.throw called on non-object",
+    "AsyncGenerator.prototype.throw called on incompatible receiver",
+  )?;
+  Err(VmError::Unimplemented("async generator runtime"))
 }
 
 fn require_generator_object(

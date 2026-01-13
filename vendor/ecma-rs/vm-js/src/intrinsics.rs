@@ -46,6 +46,9 @@ pub struct Intrinsics {
   generator_function: GcObject,
   generator_function_prototype: GcObject,
   generator_prototype: GcObject,
+  async_generator_function: GcObject,
+  async_generator_function_prototype: GcObject,
+  async_generator_prototype: GcObject,
   array_iterator_prototype: GcObject,
   array_prototype: GcObject,
   string_iterator_prototype: GcObject,
@@ -1203,6 +1206,21 @@ impl Intrinsics {
     let generator_prototype_return = vm.register_native_call(builtins::generator_prototype_return)?;
     let generator_prototype_throw = vm.register_native_call(builtins::generator_prototype_throw)?;
 
+    // Async generator intrinsics.
+    let async_generator_function_constructor_call =
+      vm.register_native_call(builtins::async_generator_function_constructor_call)?;
+    let async_generator_function_constructor_construct = vm.register_native_construct(
+      builtins::async_generator_function_constructor_construct,
+    )?;
+    let async_generator_prototype_next =
+      vm.register_native_call(builtins::async_generator_prototype_next)?;
+    let async_generator_prototype_return =
+      vm.register_native_call(builtins::async_generator_prototype_return)?;
+    let async_generator_prototype_throw =
+      vm.register_native_call(builtins::async_generator_prototype_throw)?;
+    let async_iterator_prototype_symbol_async_iterator =
+      vm.register_native_call(builtins::async_iterator_prototype_symbol_async_iterator)?;
+
     // `%Number%`, `%Boolean%`, `%BigInt%`, `%Date%`, and global functions.
     let number_call = vm.register_native_call(builtins::number_constructor_call)?;
     let number_construct = vm.register_native_construct(builtins::number_constructor_construct)?;
@@ -1692,6 +1710,158 @@ impl Intrinsics {
 
       thrower_fn
     };
+
+    // `%AsyncIteratorPrototype%`
+    let async_iterator_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(async_iterator_prototype, Some(object_prototype))?;
+
+    // `%AsyncIteratorPrototype%[@@asyncIterator]`
+    {
+      let iter_name = scope.alloc_string("[Symbol.asyncIterator]")?;
+      scope.push_root(Value::String(iter_name))?;
+      let iter_fn = scope.alloc_native_function(
+        async_iterator_prototype_symbol_async_iterator,
+        None,
+        iter_name,
+        0,
+      )?;
+      scope.push_root(Value::Object(iter_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iter_fn, Some(function_prototype))?;
+      scope.define_property(
+        async_iterator_prototype,
+        PropertyKey::Symbol(well_known_symbols.async_iterator),
+        data_desc(Value::Object(iter_fn), true, false, true),
+      )?;
+    }
+
+    // `%AsyncGeneratorFunction.prototype%`
+    let async_generator_function_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(async_generator_function_prototype, Some(function_prototype))?;
+
+    // `%AsyncGeneratorPrototype%`
+    let async_generator_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(async_generator_prototype, Some(async_iterator_prototype))?;
+
+    // `%AsyncGeneratorFunction%`
+    let async_generator_function_name = scope.alloc_string("AsyncGeneratorFunction")?;
+    let async_generator_function = alloc_rooted_native_function(
+      scope,
+      roots,
+      async_generator_function_constructor_call,
+      Some(async_generator_function_constructor_construct),
+      async_generator_function_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(async_generator_function, Some(function_constructor))?;
+    // Override `.prototype` with the spec-required (non-writable, non-configurable) value.
+    scope.define_property(
+      async_generator_function,
+      common.prototype,
+      data_desc(
+        Value::Object(async_generator_function_prototype),
+        false,
+        false,
+        false,
+      ),
+    )?;
+
+    // AsyncGeneratorFunction.prototype.constructor
+    scope.define_property(
+      async_generator_function_prototype,
+      common.constructor,
+      data_desc(Value::Object(async_generator_function), false, false, true),
+    )?;
+    // AsyncGeneratorFunction.prototype.prototype
+    scope.define_property(
+      async_generator_function_prototype,
+      common.prototype,
+      data_desc(Value::Object(async_generator_prototype), false, false, true),
+    )?;
+    // AsyncGeneratorFunction.prototype[@@toStringTag]
+    install_to_string_tag(
+      scope,
+      async_generator_function_prototype,
+      well_known_symbols.to_string_tag,
+      "AsyncGeneratorFunction",
+    )?;
+
+    // AsyncGeneratorPrototype.constructor
+    scope.define_property(
+      async_generator_prototype,
+      common.constructor,
+      data_desc(
+        Value::Object(async_generator_function_prototype),
+        false,
+        false,
+        true,
+      ),
+    )?;
+    // AsyncGeneratorPrototype.next
+    {
+      let next_s = scope.alloc_string("next")?;
+      scope.push_root(Value::String(next_s))?;
+      let key = PropertyKey::from_string(next_s);
+      let func = scope.alloc_native_function(async_generator_prototype_next, None, next_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        async_generator_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+    // AsyncGeneratorPrototype.return
+    {
+      let return_s = scope.alloc_string("return")?;
+      scope.push_root(Value::String(return_s))?;
+      let key = PropertyKey::from_string(return_s);
+      let func =
+        scope.alloc_native_function(async_generator_prototype_return, None, return_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        async_generator_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+    // AsyncGeneratorPrototype.throw
+    {
+      let throw_s = scope.alloc_string("throw")?;
+      scope.push_root(Value::String(throw_s))?;
+      let key = PropertyKey::from_string(throw_s);
+      let func = scope.alloc_native_function(async_generator_prototype_throw, None, throw_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        async_generator_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+    // AsyncGeneratorPrototype[@@toStringTag]
+    install_to_string_tag(
+      scope,
+      async_generator_prototype,
+      well_known_symbols.to_string_tag,
+      "AsyncGenerator",
+    )?;
 
     // `%GeneratorFunction.prototype%`
     let generator_function_prototype = alloc_rooted_object(scope, roots)?;
@@ -6801,6 +6971,9 @@ impl Intrinsics {
       generator_function,
       generator_function_prototype,
       generator_prototype,
+      async_generator_function,
+      async_generator_function_prototype,
+      async_generator_prototype,
       array_iterator_prototype,
       array_prototype,
       string_iterator_prototype,
@@ -6944,6 +7117,18 @@ impl Intrinsics {
 
   pub fn generator_prototype(&self) -> GcObject {
     self.generator_prototype
+  }
+
+  pub fn async_generator_function(&self) -> GcObject {
+    self.async_generator_function
+  }
+
+  pub fn async_generator_function_prototype(&self) -> GcObject {
+    self.async_generator_function_prototype
+  }
+
+  pub fn async_generator_prototype(&self) -> GcObject {
+    self.async_generator_prototype
   }
 
   pub(crate) fn array_iterator_prototype(&self) -> GcObject {
@@ -7348,3 +7533,42 @@ impl Intrinsics {
 }
 
 // Note: well-known symbols are now heap-global (see `Heap::ensure_well_known_symbols`).
+
+#[cfg(test)]
+mod async_generator_intrinsics_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn async_generator_intrinsics_are_observable_from_js() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const f = (async function* () {});
+          const ctor = f.constructor;
+
+          if (!(typeof ctor === "function")) return false;
+          if (ctor.name !== "AsyncGeneratorFunction") return false;
+
+          const asyncGenProto = Object.getPrototypeOf(f).prototype;
+          if (!(asyncGenProto && typeof asyncGenProto === "object")) return false;
+
+          const asyncIterProto = Object.getPrototypeOf(asyncGenProto);
+          if (!(asyncIterProto && typeof asyncIterProto[Symbol.asyncIterator] === "function")) return false;
+
+          return true;
+        })()
+      "#,
+    )?;
+
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
