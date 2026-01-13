@@ -77,7 +77,9 @@ fn async_attribute_added_clears_force_async_flag() {
 fn async_attribute_added_does_not_touch_non_script_elements() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let div = doc.create_element("div", HTML_NAMESPACE);
-  doc.node_mut(div).script_force_async = true;
+  // Mutate the internal slot directly (without using `node_mut`) so we don't bump
+  // `mutation_generation`/`MutationLog.unclassified` for a test-only invariant.
+  doc.nodes[div.index()].script_force_async = true;
   doc.set_attribute(div, "async", "").unwrap();
   assert!(doc.node(div).script_force_async);
 }
