@@ -43,9 +43,10 @@ extern "C" {
 // `sandbox_init` flags are not exposed in `libc`.
 //
 // Apple documents `SANDBOX_NAMED` as the flag to treat the `profile` string as a profile name
-// rather than raw profile source code. We keep the constant local so the crate can compile on
-// non-macOS targets without pulling in additional bindgen tooling.
+// rather than raw profile source code.
 const SANDBOX_NAMED: u64 = 0x0001;
+// Treat the `profile` argument as raw SBPL profile source.
+const SANDBOX_PROFILE: u64 = 0x0002;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacosSandboxMode {
@@ -89,6 +90,31 @@ const RENDERER_SYSTEM_FONTS_PROFILE: &str = r#"(version 1)
 (allow file-read* (subpath "/System/Library/PrivateFrameworks"))
 (allow file-read* (subpath "/usr/lib"))
 "#;
+
+// Minimal embedded fallback for the strict `pure-computation` sandbox.
+//
+// Requirements:
+// - `(version 1)`
+// - `(deny default)`
+// - deny file-read*, file-write*, and network*
+// - allow enough for basic runtime (threads, memory, stdio)
+const STRICT_FALLBACK_PROFILE: &str = r#"(version 1)
+(deny default)
+(deny file-read*)
+(deny file-write*)
+(deny network*)
+(allow process*)
+(allow sysctl-read)
+(allow mach-lookup)
+(allow ipc-posix-shm)
+(allow ipc-posix-sem)
+"#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrictSandboxBackend {
+  NamedProfile,
+  EmbeddedFallback,
+}
 
 fn sandbox_init_profile(profile: &CStr, flags: u64) -> io::Result<()> {
   let mut errorbuf: *mut libc::c_char = std::ptr::null_mut();
@@ -146,8 +172,7 @@ fn apply_named_profile(profile_name: &str) -> io::Result<()> {
 fn apply_profile_source(profile_source: &str) -> io::Result<()> {
   let profile_source = CString::new(profile_source)
     .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "sandbox profile contains NUL"))?;
-  // Flags == 0 means the profile argument is raw profile source (not a named profile).
-  sandbox_init_profile(&profile_source, 0)
+  sandbox_init_profile(&profile_source, SANDBOX_PROFILE)
 }
 
 fn apply_profile_source_with_home_param(profile_source: &str) -> io::Result<()> {
@@ -155,42 +180,61 @@ fn apply_profile_source_with_home_param(profile_source: &str) -> io::Result<()> 
     .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "sandbox profile contains NUL"))?;
 
   let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
-  let home = CString::new(home)
-    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "HOME contains NUL"))?;
+  let home =
+    CString::new(home).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "HOME contains NUL"))?;
   let key = CString::new("HOME").expect("static cstr should not contain NUL");
 
   // `sandbox_init_with_parameters` expects a NULL-terminated list: [key, value, key, value, NULL].
   let params: [*const libc::c_char; 3] = [key.as_ptr(), home.as_ptr(), std::ptr::null()];
-  sandbox_init_profile_with_parameters(&profile_source, 0, &params)
+  sandbox_init_profile_with_parameters(&profile_source, SANDBOX_PROFILE, &params)
+}
+
+fn error_indicates_unknown_profile(message: &str) -> bool {
+  let lower = message.to_ascii_lowercase();
+  lower.contains("unknown profile")
+    || lower.contains("no such profile")
+    || lower.contains("profile not found")
+    || lower.contains("invalid profile")
+}
+
+fn apply_strict_sandbox_named_first(profile_name: &str) -> io::Result<StrictSandboxBackend> {
+  match apply_named_profile(profile_name) {
+    Ok(()) => Ok(StrictSandboxBackend::NamedProfile),
+    Err(err) => {
+      if !error_indicates_unknown_profile(&err.to_string()) {
+        return Err(err);
+      }
+
+      match apply_profile_source(STRICT_FALLBACK_PROFILE) {
+        Ok(()) => Ok(StrictSandboxBackend::EmbeddedFallback),
+        Err(fallback_err) => Err(io::Error::new(
+          io::ErrorKind::Other,
+          format!(
+            "failed to apply Seatbelt sandbox named profile '{profile_name}' (error: {err}); fallback profile also failed (error: {fallback_err})",
+          ),
+        )),
+      }
+    }
+  }
+}
+
+/// Apply a strict Seatbelt sandbox profile to the current process.
+///
+/// This first attempts macOS's built-in `pure-computation` profile via
+/// `sandbox_init("pure-computation", SANDBOX_NAMED, ...)`. If that profile is unavailable or
+/// rejected as invalid, it retries using an embedded SBPL profile string via `SANDBOX_PROFILE`.
+///
+/// ⚠️ This is irreversible for the lifetime of the process; tests must apply it in a dedicated
+/// child process.
+pub fn apply_strict_sandbox() -> io::Result<()> {
+  apply_strict_sandbox_named_first("pure-computation").map(|_| ())
 }
 
 /// Apply the macOS Seatbelt "pure-computation" sandbox profile to the current process.
 ///
-/// This profile is expected to prevent direct filesystem and network access.
-///
-/// ⚠️ This is irreversible for the lifetime of the process; tests must apply it in a dedicated
-/// child process (see `FASTR_TEST_MACOS_SANDBOX_CHILD` in the unit tests below).
+/// This is an alias for [`apply_strict_sandbox`].
 pub fn apply_pure_computation_sandbox() -> io::Result<()> {
-  let named_err = match apply_named_profile("pure-computation") {
-    Ok(()) => return Ok(()),
-    Err(err) => err,
-  };
-
-  // Some environments may not support named profiles via `sandbox_init` (for example, if the flag
-  // values differ across SDKs). Fall back to loading the profile source from known system paths.
-  let candidate_paths = [
-    "/usr/share/sandbox/pure-computation.sb",
-    "/System/Library/Sandbox/Profiles/pure-computation.sb",
-  ];
-  for path in candidate_paths {
-    if let Ok(source) = std::fs::read_to_string(path) {
-      if let Ok(()) = apply_profile_source(&source) {
-        return Ok(());
-      }
-    }
-  }
-
-  Err(named_err)
+  apply_strict_sandbox()
 }
 
 /// Apply a renderer-focused sandbox to the current process.
@@ -220,10 +264,7 @@ mod tests {
     if err.kind() == io::ErrorKind::PermissionDenied {
       return true;
     }
-    matches!(
-      err.raw_os_error(),
-      Some(libc::EPERM) | Some(libc::EACCES)
-    )
+    matches!(err.raw_os_error(), Some(libc::EPERM) | Some(libc::EACCES))
   }
 
   #[test]
@@ -284,6 +325,67 @@ mod tests {
     let exe = std::env::current_exe().expect("current test exe path");
     let test_name =
       "sandbox::macos::tests::seatbelt_pure_computation_blocks_filesystem_and_network";
+    let output = Command::new(exe)
+      .env(CHILD_ENV, "1")
+      .env(PORT_ENV, port)
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn child test process");
+    assert!(
+      output.status.success(),
+      "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  #[test]
+  fn seatbelt_strict_sandbox_falls_back_when_named_profile_missing() {
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      let port: u16 = std::env::var(PORT_ENV)
+        .expect("child process missing sandbox port env var")
+        .parse()
+        .expect("parse sandbox port env var");
+
+      let backend =
+        apply_strict_sandbox_named_first("fastrender-nonexistent-seatbelt-profile").expect(
+          "apply strict sandbox with embedded fallback when the named profile is missing",
+        );
+      assert_eq!(
+        backend,
+        StrictSandboxBackend::EmbeddedFallback,
+        "expected strict sandbox helper to use the embedded fallback profile"
+      );
+
+      let read_err = std::fs::read_to_string("/etc/passwd")
+        .expect_err("expected filesystem read to be denied by sandbox");
+      assert!(
+        is_permission_error(&read_err),
+        "expected file read to be denied by sandbox, got {read_err:?}"
+      );
+
+      let connect_err = TcpStream::connect(("127.0.0.1", port))
+        .expect_err("expected network connect to be denied by sandbox");
+      assert!(
+        is_permission_error(&connect_err),
+        "expected network connect to be denied by sandbox, got {connect_err:?}"
+      );
+      return;
+    }
+
+    let _listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test TCP listener");
+    let port = _listener
+      .local_addr()
+      .expect("listener local addr")
+      .port()
+      .to_string();
+
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name =
+      "sandbox::macos::tests::seatbelt_strict_sandbox_falls_back_when_named_profile_missing";
     let output = Command::new(exe)
       .env(CHILD_ENV, "1")
       .env(PORT_ENV, port)

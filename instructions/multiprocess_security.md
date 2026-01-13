@@ -137,8 +137,17 @@ Linux implementation checklist (shared memory + FD passing footguns): [`docs/ipc
 | Platform | Sandbox mechanism |
 |----------|-------------------|
 | Linux | seccomp-bpf, namespaces, landlock |
-| macOS | sandbox-exec, App Sandbox |
+| macOS | Seatbelt (`sandbox_init` / `sandbox-exec`), App Sandbox |
 | Windows | Job objects, AppContainer, LPAC |
+
+macOS note: FastRender prefers the system-provided Seatbelt profile `pure-computation` when
+applying a strict sandbox. Some macOS versions do not ship that named profile (or treat it as
+invalid), so the implementation falls back to an embedded SBPL profile string with:
+
+- `(deny default)`
+- explicit denies for `file-read*`, `file-write*`, and `network*`
+
+See `src/sandbox/macos.rs` (`apply_strict_sandbox`) for details.
 
 ## Priority order
 
