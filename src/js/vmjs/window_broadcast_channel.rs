@@ -922,6 +922,18 @@ fn broadcast_channel_post_message_native(
           // outlives this hook (it is stack-scoped to the dispatch call).
           unsafe { (&mut *self.microtasks).enqueue_promise_job(job, realm) };
         }
+
+        fn host_enqueue_promise_job_fallible(
+          &mut self,
+          ctx: &mut dyn vm_js::VmJobContext,
+          job: vm_js::Job,
+          realm: Option<vm_js::RealmId>,
+        ) -> Result<(), VmError> {
+          // SAFETY: `microtasks` points into the receiver VM's microtask queue (see above).
+          unsafe {
+            vm_js::VmHostHooks::host_enqueue_promise_job_fallible(&mut *self.microtasks, ctx, job, realm)
+          }
+        }
       }
 
       let mut recv_scope = recv_heap.scope();
