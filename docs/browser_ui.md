@@ -505,6 +505,14 @@ address bar, and popups/menus.
 For a deeper architecture/debugging guide (AccessKit updates, node id stability, coordinate system
 notes, and future chrome+content composition), see [`docs/chrome_accessibility.md`](chrome_accessibility.md).
 
+Debugging tip: to inspect the AccessKit tree update without running a screen reader, use the
+`dump_accesskit` CLI (requires `--features browser_ui`):
+
+```bash
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- --help
+```
+
 Manual verification checklist:
 
 - macOS: VoiceOver can traverse toolbar controls (Back/Forward/Reload/Zoom, tab close, new tab) and
