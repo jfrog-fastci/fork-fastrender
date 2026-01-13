@@ -53,7 +53,8 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_FETCH_ENFORCE_CORS=0|false|no|off` – opt out of browser-like CORS checks (`Access-Control-Allow-Origin`) for cross-origin web fonts and `<img crossorigin>` images (enabled by default).
 - `FASTR_PAINT_BACKEND=display_list|legacy` – select the paint pipeline (defaults to `display_list`). Use `legacy` to force the immediate painter.
 - `FASTR_DISABLE_RENDERER_SANDBOX=0|1` – **Windows-only** debug escape hatch: disable the Windows renderer sandbox (AppContainer/restricted-token).
-  - Alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off`
+  - Any non-empty value **other than** `0`/`false`/`no`/`off` disables sandboxing (e.g. `1`).
+  - Alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off` (`off`/`0`/`false`/`no` disable sandboxing).
   - When set, FastRender logs a warning to stderr so insecure runs are not silent.
 - `FASTR_LOG_SANDBOX=0|1` – **Windows-only**: enable verbose Windows sandbox spawn logging (useful when debugging AppContainer/restricted-token failures).
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.

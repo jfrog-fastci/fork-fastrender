@@ -99,6 +99,13 @@ To debug why AppContainer/restricted-token spawning is failing, enable verbose s
 
 - `FASTR_LOG_SANDBOX=1`
 
+Value parsing details:
+
+- `FASTR_DISABLE_RENDERER_SANDBOX`: any non-empty value **other than** `0`/`false`/`no`/`off` disables
+  sandboxing.
+- `FASTR_WINDOWS_RENDERER_SANDBOX`: `off`/`0`/`false`/`no` disables sandboxing; any other value keeps
+  sandboxing enabled.
+
 ## Linux sandbox implementation
 
 Linux sandbox code lives in:
