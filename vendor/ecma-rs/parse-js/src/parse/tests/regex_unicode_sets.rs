@@ -101,3 +101,28 @@ fn accepts_q_disjunction_in_negated_class_when_non_stringy() {
   assert!(parse_with_options("let r = /[^\\q{ab}]/v;", opts).is_err());
   assert!(parse_with_options("let r = /[^\\q{}]/v;", opts).is_err());
 }
+
+#[test]
+fn parses_test262_unicode_sets_generated_files() {
+  // Smoke-test the vendored test262 `unicodeSets/generated` corpus: these should be parseable so
+  // tests can reach runtime (even if RegExp v-mode execution is not implemented yet).
+  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("../test262-semantic/data/test/built-ins/RegExp/unicodeSets/generated");
+  if !root.is_dir() {
+    // Some distributions of `parse-js` may not vendor the test262 corpus.
+    return;
+  }
+
+  let opts = ecma_script_opts();
+  for entry in std::fs::read_dir(&root).expect("read unicodeSets/generated dir") {
+    let entry = entry.expect("read_dir entry");
+    let path = entry.path();
+    if path.extension().and_then(|s| s.to_str()) != Some("js") {
+      continue;
+    }
+    let src = std::fs::read_to_string(&path).expect("read test file");
+    if let Err(err) = parse_with_options(&src, opts) {
+      panic!("failed to parse {}: {err}", path.display());
+    }
+  }
+}
