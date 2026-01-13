@@ -38,6 +38,8 @@ pub mod config;
 
 pub mod fd_sanitizer;
 
+pub mod spawn;
+
 pub use fd_sanitizer::close_fds_except;
 
 #[cfg(target_os = "linux")]
@@ -102,10 +104,45 @@ impl Default for NetworkPolicy {
   }
 }
 
+/// Landlock sandbox policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererLandlockPolicy {
+  /// Do not apply Landlock.
+  Disabled,
+  /// Best-effort Landlock that attempts to deny filesystem writes globally while still allowing
+  /// reads (so dynamic linking continues to work).
+  ///
+  /// If the running kernel does not support Landlock, this falls back to a no-op.
+  RestrictWrites,
+}
+
+/// Seccomp sandbox policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererSeccompPolicy {
+  /// Do not install a seccomp filter.
+  Disabled,
+  /// Default renderer policy. Currently this blocks obvious "escape hatches" like creating
+  /// network sockets.
+  RendererDefault,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RendererSandboxConfig {
   pub network_policy: NetworkPolicy,
   pub linux_namespaces: linux_namespaces::LinuxNamespacesConfig,
+  /// Address space ceiling (RLIMIT_AS) in bytes. `None` disables the limit.
+  pub address_space_limit_bytes: Option<u64>,
+  /// File descriptor ceiling (RLIMIT_NOFILE). `None` disables the limit.
+  pub nofile_limit: Option<u64>,
+  /// Core dump size ceiling (RLIMIT_CORE) in bytes. `None` disables the limit.
+  ///
+  /// Renderer subprocesses should generally set this to `Some(0)` to ensure no coredumps are
+  /// produced from untrusted content.
+  pub core_limit_bytes: Option<u64>,
+  /// Landlock filesystem policy.
+  pub landlock: RendererLandlockPolicy,
+  /// Seccomp policy.
+  pub seccomp: RendererSeccompPolicy,
 }
 
 impl Default for RendererSandboxConfig {
@@ -113,8 +150,19 @@ impl Default for RendererSandboxConfig {
     Self {
       network_policy: NetworkPolicy::DenyAllSockets,
       linux_namespaces: linux_namespaces::LinuxNamespacesConfig::default(),
+      address_space_limit_bytes: None,
+      nofile_limit: None,
+      core_limit_bytes: Some(0),
+      landlock: RendererLandlockPolicy::Disabled,
+      seccomp: RendererSeccompPolicy::RendererDefault,
     }
   }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RendererSandboxError {
+  #[error("rlimit value {value} for {resource} does not fit platform rlim_t")]
+  InvalidRlimitValue { resource: &'static str, value: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
