@@ -38,7 +38,7 @@ This directory contains the **committed pageset scoreboard**: one tiny JSON file
   - Triage note:
     - `diff_percent` is a **raw pixel mismatch** rate. On real pages it can be dominated by tiny differences (subpixel anti-aliasing, font rasterization, rounding, or 1–2 LSB per-channel noise) and therefore read as “high” even when the render looks visually correct.
     - When diffing Chrome baseline screenshots (which use **system fonts**) against deterministic fixture renders (which typically use **bundled fonts**), pages that rely on **generic font families** like `sans-serif`/`serif` can accumulate large text diffs even if layout and paint logic are otherwise correct.
-    - `perceptual` is usually a better indicator of **visually meaningful** differences; prefer it when prioritizing which pages are actually “broken”.
+    - `perceptual` is usually a better indicator of **visually meaningful** differences; prefer it when prioritizing which pages are actually “broken”. However, SSIM can still be sensitive on extremely text-dense pages: small per-glyph rasterization differences (subpixel AA, hinting) can raise `perceptual` even when layout/colors are correct.
 - Migration note (perceptual metric evolution):
   - `accuracy.perceptual` values computed on different commits may not be directly comparable, since the underlying perceptual metric implementation can change (for example: global SSIM → windowed SSIM over downsampled luminance).
   - `accuracy.computed_at_commit` records the git SHA of the run so you can tell which implementation produced the stored number.

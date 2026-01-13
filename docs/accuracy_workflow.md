@@ -211,6 +211,12 @@ exact implementation can change over time; newer artifacts may include `perceptu
 `computed_at_commit` to help interpret mixed historical values without requiring a repo-wide
 refresh.
 
+Note: SSIM is *not* immune to text rendering noise. On pages that are extremely text-dense, small
+per-glyph rasterization differences (subpixel AA, hinting, antialiasing, font fallback) can be
+amplified across many windows and still produce a relatively high `perceptual` score even when the
+page looks correct at a glance. Use the diff report visually and rely on spec-driven debugging when
+deciding if a page is actually “broken”.
+
 See [`progress/pages/README.md`](../progress/pages/README.md) for the full schema and migration
 guidance.
 
