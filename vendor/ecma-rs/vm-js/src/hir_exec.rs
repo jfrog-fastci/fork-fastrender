@@ -4108,7 +4108,16 @@ impl<'vm> HirEvaluator<'vm> {
       | hir_js::AssignOp::MulAssign
       | hir_js::AssignOp::DivAssign
       | hir_js::AssignOp::RemAssign
-      | hir_js::AssignOp::ExponentAssign => self.eval_compound_assignment(scope, body, op, target, value),
+      | hir_js::AssignOp::ExponentAssign
+      | hir_js::AssignOp::ShiftLeftAssign
+      | hir_js::AssignOp::ShiftRightAssign
+      | hir_js::AssignOp::ShiftRightUnsignedAssign
+      | hir_js::AssignOp::BitOrAssign
+      | hir_js::AssignOp::BitAndAssign
+      | hir_js::AssignOp::BitXorAssign => self.eval_compound_assignment(scope, body, op, target, value),
+      hir_js::AssignOp::LogicalAndAssign
+      | hir_js::AssignOp::LogicalOrAssign
+      | hir_js::AssignOp::NullishAssign => self.eval_logical_assignment(scope, body, op, target, value),
       _ => Err(VmError::Unimplemented("assignment operator (hir-js compiled path)")),
     }
   }
@@ -4253,6 +4262,158 @@ impl<'vm> HirEvaluator<'vm> {
     }
   }
 
+  fn eval_logical_assignment(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    op: hir_js::AssignOp,
+    target: hir_js::PatId,
+    value: hir_js::ExprId,
+  ) -> Result<Value, VmError> {
+    debug_assert!(matches!(
+      op,
+      hir_js::AssignOp::LogicalAndAssign
+        | hir_js::AssignOp::LogicalOrAssign
+        | hir_js::AssignOp::NullishAssign
+    ));
+
+    let should_assign = |scope: &Scope<'_>, left: Value| -> Result<bool, VmError> {
+      Ok(match op {
+        hir_js::AssignOp::LogicalAndAssign => scope.heap().to_boolean(left)?,
+        hir_js::AssignOp::LogicalOrAssign => !scope.heap().to_boolean(left)?,
+        hir_js::AssignOp::NullishAssign => matches!(left, Value::Null | Value::Undefined),
+        _ => false,
+      })
+    };
+
+    let pat = self.get_pat(body, target)?;
+    match pat.kind {
+      hir_js::PatKind::Ident(name_id) => {
+        let name = self.resolve_name(name_id)?;
+        let mut scope = scope.reborrow();
+
+        let reference = self.env.resolve_binding_reference(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut scope,
+          name.as_str(),
+        )?;
+
+        let left = self.get_value_from_resolved_binding(&mut scope, reference)?;
+        if !should_assign(&scope, left)? {
+          return Ok(left);
+        }
+
+        // Root `left` across RHS evaluation and the subsequent assignment.
+        scope.push_root(left)?;
+        let right = self.eval_expr(&mut scope, body, value)?;
+        scope.push_root(right)?;
+        self.env.set_resolved_binding(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut scope,
+          reference,
+          right,
+          self.strict,
+        )?;
+        Ok(right)
+      }
+      hir_js::PatKind::AssignTarget(expr_id) => {
+        let target_expr = self.get_expr(body, expr_id)?;
+        match &target_expr.kind {
+          hir_js::ExprKind::Ident(name_id) => {
+            let name = self.resolve_name(*name_id)?;
+            let mut scope = scope.reborrow();
+
+            let reference = self.env.resolve_binding_reference(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut scope,
+              name.as_str(),
+            )?;
+
+            let left = self.get_value_from_resolved_binding(&mut scope, reference)?;
+            if !should_assign(&scope, left)? {
+              return Ok(left);
+            }
+
+            scope.push_root(left)?;
+            let right = self.eval_expr(&mut scope, body, value)?;
+            scope.push_root(right)?;
+            self.env.set_resolved_binding(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut scope,
+              reference,
+              right,
+              self.strict,
+            )?;
+            Ok(right)
+          }
+          hir_js::ExprKind::Member(member) => {
+            if member.optional {
+              return Err(VmError::InvariantViolation(
+                "optional chaining used in assignment target",
+              ));
+            }
+
+            let base = self.eval_expr(scope, body, member.object)?;
+            let mut scope = scope.reborrow();
+            scope.push_root(base)?;
+
+            let key = self.eval_object_key(&mut scope, body, &member.property)?;
+            root_property_key(&mut scope, key)?;
+
+            let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+            scope.push_root(Value::Object(obj))?;
+            let receiver = base;
+
+            let left = scope.get_with_host_and_hooks(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              obj,
+              key,
+              receiver,
+            )?;
+            if !should_assign(&scope, left)? {
+              return Ok(left);
+            }
+
+            scope.push_root(left)?;
+            let right = self.eval_expr(&mut scope, body, value)?;
+            scope.push_root(right)?;
+
+            let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+              self.vm,
+              &mut scope,
+              &mut *self.host,
+              &mut *self.hooks,
+              obj,
+              key,
+              right,
+              receiver,
+            )?;
+            if !ok && self.strict {
+              return Err(VmError::TypeError("Cannot assign to read-only property"));
+            }
+            Ok(right)
+          }
+          _ => Err(VmError::Unimplemented(
+            "assignment target (hir-js compiled path)",
+          )),
+        }
+      }
+      _ => Err(VmError::Unimplemented(
+        "assignment pattern (hir-js compiled path)",
+      )),
+    }
+  }
+
   fn apply_compound_assignment_op(
     &mut self,
     scope: &mut Scope<'_>,
@@ -4371,6 +4532,51 @@ impl<'vm> HirEvaluator<'vm> {
           }
           _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
         }
+      }
+      hir_js::AssignOp::ShiftLeftAssign => {
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_int32(ln).wrapping_shl(shift) as f64))
+      }
+      hir_js::AssignOp::ShiftRightAssign => {
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_int32(ln).wrapping_shr(shift) as f64))
+      }
+      hir_js::AssignOp::ShiftRightUnsignedAssign => {
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_uint32(ln).wrapping_shr(shift) as f64))
+      }
+      hir_js::AssignOp::BitOrAssign => {
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        Ok(Value::Number((to_int32(ln) | to_int32(rn)) as f64))
+      }
+      hir_js::AssignOp::BitAndAssign => {
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        Ok(Value::Number((to_int32(ln) & to_int32(rn)) as f64))
+      }
+      hir_js::AssignOp::BitXorAssign => {
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[left, right])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        Ok(Value::Number((to_int32(ln) ^ to_int32(rn)) as f64))
       }
       _ => Err(VmError::Unimplemented(
         "compound assignment operator (hir-js compiled path)",
