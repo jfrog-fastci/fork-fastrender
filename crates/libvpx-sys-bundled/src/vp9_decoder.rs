@@ -201,8 +201,13 @@ impl Vp9Decoder {
     }
 
     let y_plane = img.planes[0];
-    let u_plane = img.planes[1];
-    let v_plane = img.planes[2];
+    // `VPX_IMG_FMT_YV12` is YVU (V and U swapped compared to I420). libvpx uses the format tag to
+    // signal this plane ordering.
+    let (u_plane, v_plane) = if fmt_base == crate::VPX_IMG_FMT_YV12 {
+      (img.planes[2], img.planes[1])
+    } else {
+      (img.planes[1], img.planes[2])
+    };
     let a_plane = img.planes[3];
     if y_plane.is_null() || u_plane.is_null() || v_plane.is_null() {
       return Err(MediaError::Decode(
