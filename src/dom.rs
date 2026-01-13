@@ -2456,7 +2456,52 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
     }
   }
 
+  strip_authored_file_input_state(&mut root, &mut deadline_counter)?;
+
   Ok(root)
+}
+
+fn strip_authored_file_input_state(node: &mut DomNode, deadline_counter: &mut usize) -> Result<()> {
+  // File input selection state must only ever be set via user interaction (file picker). Some
+  // implementations store selected file paths in internal DOM attributes (e.g. `data-fastr-files`)
+  // for later submission; ensure remote markup cannot prefill them.
+  const INTERNAL_FILE_SELECTION_ATTRS: [&str; 1] = ["data-fastr-files"];
+
+  let mut stack: Vec<*mut DomNode> = vec![node as *mut DomNode];
+  while let Some(ptr) = stack.pop() {
+    check_active_periodic(
+      deadline_counter,
+      DOM_PARSE_NODE_DEADLINE_STRIDE,
+      RenderStage::DomParse,
+    )?;
+
+    // SAFETY: pointers are derived from a live `DomNode` tree; we never mutate a node's `children`
+    // vector while pointers into it are stored on the stack.
+    let node = unsafe { &mut *ptr };
+
+    let is_file_input = matches!(&node.node_type, DomNodeType::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("input"))
+      && node
+        .get_attribute_ref("type")
+        .is_some_and(|t| trim_ascii_whitespace_html(t).eq_ignore_ascii_case("file"));
+    if is_file_input {
+      for &name in &INTERNAL_FILE_SELECTION_ATTRS {
+        node.remove_attribute(name);
+      }
+      // HTML file inputs cannot be prefilled. Remove any authored `value=` attribute to avoid
+      // accidental use as a pseudo "selected path" by future code.
+      node.remove_attribute("value");
+    }
+
+    let len = node.children.len();
+    let children_ptr = node.children.as_mut_ptr();
+    for idx in (0..len).rev() {
+      // SAFETY: `children_ptr` came from `node.children` and the vector is not mutated until after
+      // this node is processed, so these pointers remain valid.
+      stack.push(unsafe { children_ptr.add(idx) });
+    }
+  }
+
+  Ok(())
 }
 
 /// Clone a DOM tree while periodically checking any active render deadline.
@@ -10858,6 +10903,35 @@ mod tests {
       result.unwrap().is_ok(),
       "parse_html returned error on malformed input"
     );
+  }
+
+  #[test]
+  fn parse_html_strips_authored_file_input_selection_state() {
+    let dom = parse_html(
+      r#"<form><input type="file" data-fastr-files='["/etc/passwd"]' value="/etc/passwd"></form>"#,
+    )
+    .expect("parse html");
+
+    fn find_file_input<'a>(node: &'a DomNode) -> Option<&'a DomNode> {
+      let mut stack: Vec<&'a DomNode> = vec![node];
+      while let Some(current) = stack.pop() {
+        let is_file = matches!(current.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("input"))
+          && current
+            .get_attribute_ref("type")
+            .is_some_and(|t| trim_ascii_whitespace_html(t).eq_ignore_ascii_case("file"));
+        if is_file {
+          return Some(current);
+        }
+        for child in current.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    let input = find_file_input(&dom).expect("file input");
+    assert_eq!(input.get_attribute_ref("data-fastr-files"), None);
+    assert_eq!(input.get_attribute_ref("value"), None);
   }
 
   #[test]
