@@ -2,6 +2,7 @@ pub mod modal_dialog;
 pub mod state_to_html;
 pub mod template;
 pub mod dialog;
+mod theme;
 
 pub use state_to_html::chrome_frame_html_from_state;
 

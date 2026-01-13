@@ -7,6 +7,8 @@ use crate::ui::{
 };
 use std::fmt::Write;
 
+use super::theme::chrome_theme_css;
+
 fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
   match suggestion.action {
     OmniboxAction::NavigateToUrl(_) => "omnibox-type-url",
@@ -145,6 +147,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("<head>\n");
   out.push_str("  <meta charset=\"utf-8\">\n");
   out.push_str("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+  out.push_str("  <style>\n");
+  out.push_str(&chrome_theme_css(&app.appearance));
+  out.push_str("  </style>\n");
   out.push_str("  <link rel=\"stylesheet\" href=\"chrome://styles/chrome.css\">\n");
   out.push_str("</head>\n");
   out.push_str("<body>\n");
@@ -260,6 +265,7 @@ mod tests {
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::messages::TabId;
   use crate::ui::{OmniboxAction, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
+  use crate::ui::theme_parsing::BrowserTheme;
   use crate::{BrowserDocument, FastRender, FontConfig, RenderOptions};
 
   #[test]
@@ -398,5 +404,25 @@ mod tests {
       .expect("build deterministic renderer");
     let _doc = BrowserDocument::new(renderer, &html, RenderOptions::default())
       .expect("parse chrome frame HTML with omnibox popup");
+  }
+
+  #[test]
+  fn chrome_frame_html_emits_theme_css_variables_from_accent() {
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
+    app.appearance.theme = BrowserTheme::Light;
+    app.appearance.accent_color = Some("#ff00ff".to_string());
+
+    let html = chrome_frame_html_from_state(&app);
+    for needle in [
+      "--chrome-accent: rgb(255, 0, 255);",
+      "--chrome-accent-bg: rgba(255, 0, 255, 0.18);",
+      "--chrome-accent-border: rgba(255, 0, 255, 0.55);",
+      "--chrome-focus-ring: rgba(255, 0, 255, 0.65);",
+    ] {
+      assert!(
+        html.contains(needle),
+        "expected chrome frame HTML to include themed CSS variable {needle:?}, got: {html}"
+      );
+    }
   }
 }

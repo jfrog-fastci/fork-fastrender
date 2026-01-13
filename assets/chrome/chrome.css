@@ -2,6 +2,12 @@
  *
  * This is intentionally small: it's only meant to provide a baseline for early
  * chrome HTML prototyping (toolbars, tab strips, etc.).
+ *
+ * Theme + accent are provided by the chrome-frame HTML generator via CSS custom properties:
+ *   --chrome-accent: rgb(R, G, B)
+ *   --chrome-accent-bg: rgba(R, G, B, A)
+ *   --chrome-accent-border: rgba(R, G, B, A)
+ *   --chrome-focus-ring: rgba(R, G, B, A)
  */
 
 :root {
@@ -14,6 +20,11 @@
 body {
   margin: 0;
   background: #f3f4f6;
+}
+
+:focus {
+  outline: 3px solid var(--chrome-focus-ring, rgba(37, 99, 235, 0.55));
+  outline-offset: 2px;
 }
 
 .tab-strip {
@@ -170,7 +181,7 @@ body {
 
 .omnibox-suggestion:hover,
 .omnibox-suggestion.selected {
-  background: #e8f0fe;
+  background: var(--chrome-accent-bg, #e8f0fe);
 }
 
 .omnibox-icon {
@@ -292,10 +303,10 @@ body {
 }
 
 .chrome-modal-button-primary {
-  background: #e8f0fe;
-  border-color: rgba(37, 99, 235, 0.55);
+  background: var(--chrome-accent-bg, #e8f0fe);
+  border-color: var(--chrome-accent-border, rgba(37, 99, 235, 0.55));
 }
 
 .chrome-modal-button-primary:hover {
-  background: rgba(37, 99, 235, 0.18);
+  background: var(--chrome-accent-bg, rgba(37, 99, 235, 0.18));
 }

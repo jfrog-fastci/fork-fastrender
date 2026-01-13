@@ -7,6 +7,8 @@ use crate::ui::html_escape::escape_html;
 use crate::ui::{BrowserAppState, ChromeActionUrl, OmniboxAction, OmniboxSearchSource, OmniboxSuggestion};
 use std::fmt::Write;
 
+use super::theme::chrome_theme_css;
+
 fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
   match suggestion.action {
     OmniboxAction::NavigateToUrl(_) => "omnibox-type-url",
@@ -142,6 +144,7 @@ pub fn chrome_frame_html(app: &BrowserAppState) -> String {
   let current_url = app.chrome.address_bar_text.as_str();
   let safe_current_url = escape_html(current_url);
   let omnibox_popup = omnibox_popup_html(app);
+  let theme_css = chrome_theme_css(&app.appearance);
 
   // Keep this template intentionally minimal. It should remain JS-free so the chrome can be driven
   // via simple `chrome-action:` navigations while JS support is still being brought up.
@@ -150,6 +153,7 @@ pub fn chrome_frame_html(app: &BrowserAppState) -> String {
 <html class="chrome-frame">
   <head>
     <meta charset="utf-8">
+    <style>{theme_css}</style>
     <link rel="stylesheet" href="chrome://styles/chrome.css">
     <title>FastRender</title>
   </head>
