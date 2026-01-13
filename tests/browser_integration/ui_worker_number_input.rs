@@ -200,6 +200,86 @@ fn number_input_arrow_keys_step_value_and_repaint() {
 }
 
 #[test]
+fn number_input_wheel_scroll_steps_value_and_repaints_without_scrolling_page() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let page_url = site.write(
+    "page.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #n { position: absolute; left: 0; top: 0; width: 120px; height: 32px; border: 0; padding: 0; }
+      #box { position: absolute; left: 0; top: 64px; width: 64px; height: 64px; background: rgb(255, 0, 0); }
+      input[value="1"] ~ #box { background: rgb(0, 255, 0); }
+      /* Make the page scrollable so an unhandled wheel would scroll the viewport. */
+      #spacer { height: 2000px; }
+    </style>
+  </head>
+  <body>
+    <input id="n" type="number" value="1" min="0">
+    <div id="box"></div>
+    <div id="spacer"></div>
+  </body>
+</html>
+"#,
+  );
+
+  let handle = spawn_ui_worker("fastr-ui-worker-number-input-wheel").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId::new();
+
+  ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("create tab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (240, 180), 1.0))
+    .expect("viewport");
+  ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      page_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("navigate");
+
+  let deadline = Instant::now() + TIMEOUT;
+  let frame = recv_until_frame_ready(&ui_rx, tab_id, deadline);
+  assert_eq!(frame.scroll_state.viewport.y, 0.0);
+  assert_eq!(rgba_at_css(&frame, 10, 70), [0, 255, 0, 255]);
+
+  // Drain queued messages so assertions are scoped to focus + wheel stepping.
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
+
+  // Focus the input body (not the spinner) so wheel-stepping is enabled.
+  ui_tx
+    .send(support::pointer_down(tab_id, (10.0, 10.0), PointerButton::Primary))
+    .expect("pointer down");
+  ui_tx
+    .send(support::pointer_up(tab_id, (10.0, 10.0), PointerButton::Primary))
+    .expect("pointer up");
+
+  // Wheel down over the focused input: should step value 1 → 0 and *not* scroll the page.
+  ui_tx
+    .send(support::scroll_msg(tab_id, (0.0, 40.0), Some((10.0, 10.0))))
+    .expect("scroll");
+
+  let deadline = Instant::now() + TIMEOUT;
+  let frame = recv_until_pixel(&ui_rx, tab_id, (10, 70), [255, 0, 0, 255], deadline);
+  assert_eq!(rgba_at_css(&frame, 10, 70), [255, 0, 0, 255]);
+  assert_eq!(
+    frame.scroll_state.viewport.y, 0.0,
+    "expected wheel-stepping number input to not scroll the page"
+  );
+
+  drop(ui_tx);
+  join.join().expect("worker join");
+}
+
+#[test]
 fn number_input_step_affects_get_form_submission_value() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();

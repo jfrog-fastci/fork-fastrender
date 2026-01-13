@@ -478,13 +478,52 @@ impl BrowserTabController {
       self.force_repaint()?;
     }
 
+    let delta_x = if delta_css.0.is_finite() { delta_css.0 } else { 0.0 };
+    let delta_y = if delta_css.1.is_finite() { delta_css.1 } else { 0.0 };
+
+    let pointer_css = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite());
+
+    if let Some(pointer_css) = pointer_css {
+      // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
+      // gesture for numeric stepping (instead of scrolling the page).
+      let scroll_snapshot = self.scroll_state.clone();
+      let engine = &mut self.interaction;
+      if let Ok(step_result) =
+        self
+          .document
+          .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+            let scrolled = (!scroll_snapshot.elements.is_empty())
+              .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
+            let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+            let step_result = engine.wheel_step_number_input(
+              dom,
+              box_tree,
+              hit_tree,
+              &scroll_snapshot,
+              Point::new(pointer_css.0, pointer_css.1),
+              delta_y,
+            );
+            let changed = step_result.unwrap_or(false);
+            (changed, step_result)
+          })
+      {
+        if let Some(dom_changed) = step_result {
+          // Numeric stepping does not update scroll state.
+          if dom_changed {
+            return self.paint_if_needed();
+          }
+          return Ok(Vec::new());
+        }
+      }
+    }
+
     let Some(prepared) = self.document.prepared() else {
       return Ok(Vec::new());
     };
 
     let mut next_state = self.scroll_state.clone();
 
-    if let Some(pointer_css) = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite()) {
+    if let Some(pointer_css) = pointer_css {
       let page_point =
         Point::new(pointer_css.0, pointer_css.1).translate(self.scroll_state.viewport);
       next_state = apply_wheel_scroll_at_point(
@@ -493,32 +532,20 @@ impl BrowserTabController {
         Size::new(self.viewport_css.0 as f32, self.viewport_css.1 as f32),
         page_point,
         ScrollWheelInput {
-          delta_x: delta_css.0,
-          delta_y: delta_css.1,
+          delta_x,
+          delta_y,
         },
       );
     } else {
       // No pointer location: treat this as a viewport scroll.
       let mut viewport_scroll = next_state.viewport;
 
-      let delta = Point::new(
-        if delta_css.0.is_finite() {
-          delta_css.0
-        } else {
-          0.0
-        },
-        if delta_css.1.is_finite() {
-          delta_css.1
-        } else {
-          0.0
-        },
-      );
+      let delta = Point::new(delta_x, delta_y);
       if delta != Point::ZERO {
         let viewport = prepared.fragment_tree().viewport_size();
-        let bounds =
-          crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
-            .first()
-            .map(|state| state.bounds);
+        let bounds = crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
+          .first()
+          .map(|state| state.bounds);
         let target = Point::new(viewport_scroll.x + delta.x, viewport_scroll.y + delta.y);
         if let Some(bounds) = bounds {
           viewport_scroll = bounds.clamp(target);

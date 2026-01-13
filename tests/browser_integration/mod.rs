@@ -94,6 +94,7 @@ mod ui_frame_upload_coalescing;
 mod ui_input_routing;
 mod ui_keyboard_scrolling;
 mod ui_navigation_messages;
+mod ui_number_input_wheel_step;
 mod ui_render_thread;
 mod ui_render_worker_thread_builder_test;
 mod ui_scroll_metrics;
