@@ -93,7 +93,6 @@ fn validate_navigation_url_scheme(url: &str, allow_chrome: bool) -> Result<(), S
     _ => Err(format!("unsupported URL scheme: {scheme}")),
   }
 }
-
 /// Sanitize a URL string received from the render worker before storing it in browser UI state or
 /// acting on it.
 ///
@@ -158,6 +157,45 @@ pub(crate) fn navigation_to_file_is_allowed(
       !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https")
     }
   }
+}
+
+/// Validate + normalize a user-typed navigation input (address bar / omnibox) into a canonical URL.
+///
+/// This mirrors the normalization pipeline used by typed navigations:
+/// - Trims ASCII whitespace.
+/// - Resolves fragment-only inputs (`#hash`) against `current_url` when provided.
+/// - Applies omnibox URL-vs-search heuristics via [`resolve_omnibox_input`].
+/// - Enforces the user navigation scheme allowlist via [`validate_user_navigation_url_scheme`].
+///
+/// This is intended for any UI that needs to accept a "typed navigation" string (e.g. address bar,
+/// home page configuration) and wants behavior consistent with normal navigation.
+pub fn normalize_user_typed_navigation_url(
+  raw: &str,
+  current_url: Option<&str>,
+) -> Result<String, String> {
+  let raw_trimmed = trim_ascii_whitespace(raw);
+  if raw_trimmed.is_empty() {
+    return Err("empty URL".to_string());
+  }
+
+  let normalized = if raw_trimmed.starts_with('#') {
+    let current = current_url
+      .filter(|u| !u.trim().is_empty())
+      .ok_or_else(|| "cannot navigate to a fragment without an active document".to_string())?;
+    let current = Url::parse(current).map_err(|err| err.to_string())?;
+    current
+      .join(raw_trimmed)
+      .map_err(|err| err.to_string())?
+      .to_string()
+  } else {
+    match resolve_omnibox_input(raw_trimmed)? {
+      OmniboxInputResolution::Url { url } => url,
+      OmniboxInputResolution::Search { url, .. } => url,
+    }
+  };
+
+  validate_user_navigation_url_scheme(&normalized)?;
+  Ok(normalized)
 }
 
 /// Normalize a user-provided address bar input into a canonical URL string.
@@ -708,11 +746,11 @@ fn has_explicit_scheme(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::{
-    http_fallback_url_for_failed_https, navigation_to_file_is_allowed, normalize_user_url,
-    omnibox_input_looks_like_url, resolve_link_url, resolve_omnibox_input,
-    resolve_omnibox_search_query, sanitize_worker_url_for_ui,
-    validate_trusted_chrome_navigation_url_scheme, validate_user_navigation_url_scheme,
-    OmniboxInputResolution,
+    http_fallback_url_for_failed_https, navigation_to_file_is_allowed,
+    normalize_user_typed_navigation_url, normalize_user_url, omnibox_input_looks_like_url,
+    resolve_link_url, resolve_omnibox_input, resolve_omnibox_search_query,
+    sanitize_worker_url_for_ui, validate_trusted_chrome_navigation_url_scheme,
+    validate_user_navigation_url_scheme, OmniboxInputResolution,
   };
   use crate::ui::NavigationReason;
 
@@ -808,6 +846,22 @@ mod tests {
   }
 
   #[test]
+  fn typed_navigation_normalization_allows_http_https_about() {
+    assert_eq!(
+      normalize_user_typed_navigation_url("about:blank", None).unwrap(),
+      "about:blank"
+    );
+    assert_eq!(
+      normalize_user_typed_navigation_url("https://example.com", None).unwrap(),
+      "https://example.com/"
+    );
+    assert_eq!(
+      normalize_user_typed_navigation_url("http://example.com", None).unwrap(),
+      "http://example.com/"
+    );
+  }
+
+  #[test]
   fn sanitize_worker_url_for_ui_allows_http_https_file_about() {
     assert_eq!(
       sanitize_worker_url_for_ui("https://example.com/path").as_deref(),
@@ -828,6 +882,21 @@ mod tests {
   }
 
   #[test]
+  fn typed_navigation_normalization_rejects_javascript_and_unknown_schemes() {
+    assert!(normalize_user_typed_navigation_url("javascript:alert(1)", None).is_err());
+    assert!(normalize_user_typed_navigation_url("foo:bar", None).is_err());
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn typed_navigation_normalization_allows_file_paths() {
+    assert_eq!(
+      normalize_user_typed_navigation_url("/tmp/a.html", None).unwrap(),
+      "file:///tmp/a.html"
+    );
+  }
+
+  #[test]
   fn sanitize_worker_url_for_ui_rejects_disallowed_schemes_and_invalid_urls() {
     assert_eq!(
       sanitize_worker_url_for_ui("javascript:alert(1)"),
@@ -843,6 +912,18 @@ mod tests {
       sanitize_worker_url_for_ui("http://[::1"),
       None,
       "invalid URL must be rejected"
+    );
+  }
+
+  #[test]
+  fn typed_navigation_normalization_allows_windows_style_file_paths() {
+    assert_eq!(
+      normalize_user_typed_navigation_url(r"C:\\tmp\\a.html", None).unwrap(),
+      "file:///C:/tmp/a.html"
+    );
+    assert_eq!(
+      normalize_user_typed_navigation_url(r"\\\\server\\share\\a.html", None).unwrap(),
+      "file://server/share/a.html"
     );
   }
 

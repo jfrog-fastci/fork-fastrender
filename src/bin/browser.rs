@@ -263,6 +263,7 @@ fn should_restore_page_focus_for_state(
   history_panel_open: bool,
   downloads_panel_open: bool,
   clear_browsing_data_dialog_open: bool,
+  set_home_page_dialog_open: bool,
   tab_search_open: bool,
   find_in_page_open: bool,
 ) -> bool {
@@ -271,6 +272,7 @@ fn should_restore_page_focus_for_state(
     && !history_panel_open
     && !downloads_panel_open
     && !clear_browsing_data_dialog_open
+    && !set_home_page_dialog_open
     && !tab_search_open
     && !find_in_page_open
 }
@@ -16557,139 +16559,31 @@ impl App {
       return false;
     }
 
+    let was_open = self.set_home_page_dialog_open;
+    let output = fastrender::ui::panels::home_url_dialog_ui(
+      ctx,
+      fastrender::ui::panels::HomeUrlDialogInput {
+        open: &mut self.set_home_page_dialog_open,
+        url_text: &mut self.set_home_page_dialog_text,
+        error: &mut self.set_home_page_dialog_error,
+        request_initial_focus: &mut self.set_home_page_dialog_request_focus,
+      },
+    );
+
     let mut session_dirty = false;
-
-    let mut open = self.set_home_page_dialog_open;
-    let request_initial_focus = std::mem::take(&mut self.set_home_page_dialog_request_focus);
-    let mut text = std::mem::take(&mut self.set_home_page_dialog_text);
-    let mut error = self.set_home_page_dialog_error.take();
-
-    // Esc closes the dialog (Chrome-like) and should not leak to other overlays.
-    let escape_pressed = ctx.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape));
-    if escape_pressed {
-      open = false;
-    }
-
-    let mut close_dialog = false;
-    let mut apply_requested = false;
-
-    // Backdrop (modal scrim). Draw behind the window to dim the underlying UI and intercept pointer
-    // events so the dialog feels modal.
-    let screen_rect = ctx.screen_rect();
-    egui::Area::new("set_home_page_backdrop")
-      .order(egui::Order::Middle)
-      .fixed_pos(screen_rect.min)
-      .show(ctx, |ui| {
-        ui.set_min_size(screen_rect.size());
-        let (rect, _resp) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
-        let alpha = if ui.visuals().dark_mode { 140 } else { 96 };
-        ui.painter().rect_filled(
-          rect,
-          egui::Rounding::none(),
-          egui::Color32::from_black_alpha(alpha),
-        );
-      });
-
-    egui::Window::new("Set Home Page")
-      .collapsible(false)
-      .resizable(false)
-      .title_bar(false)
-      .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-      .open(&mut open)
-      .show(ctx, |ui| {
-        ui.set_min_width(460.0);
-
-        fastrender::ui::panel_header(ui, fastrender::ui::BrowserIcon::Home, "Set Home Page", || {
-          close_dialog = true;
-        });
-        ui.add_space(8.0);
-        ui.label(
-          egui::RichText::new("Enter the URL to open when you press the Home button.")
-            .color(ui.visuals().weak_text_color()),
-        );
-
-        ui.add_space(14.0);
-        ui.label(egui::RichText::new("Home page URL").strong());
-
-        let resp = ui.add(
-          egui::TextEdit::singleline(&mut text)
-            .desired_width(f32::INFINITY)
-            .hint_text("about:newtab"),
-        );
-        resp.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Home page URL")
-        });
-        if request_initial_focus {
-          resp.request_focus();
-        }
-        if resp.changed() {
-          error = None;
-        }
-        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-          apply_requested = true;
-        }
-
-        ui.add_space(6.0);
-        ui.label(
-          egui::RichText::new("Allowed schemes: http, https, file, about")
-            .small()
-            .weak(),
-        );
-
-        if let Some(err) = error.as_deref().filter(|e| !e.trim().is_empty()) {
-          ui.add_space(8.0);
-          ui.label(egui::RichText::new(err).color(ui.visuals().error_fg_color));
-        }
-
-        ui.add_space(14.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-          let save_resp = ui.button("Save");
-          save_resp
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Save home page"));
-          if save_resp.clicked() {
-            apply_requested = true;
-          }
-
-          let cancel_resp = ui.button("Cancel");
-          cancel_resp
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel"));
-          if cancel_resp.clicked() {
-            close_dialog = true;
-          }
-        });
-      });
-
-    if close_dialog {
-      open = false;
-    }
-
-    if apply_requested && open {
-      match resolve_home_url_input(&text) {
-        Ok(url) => {
-          if url != self.home_url {
-            self.home_url = url;
-            session_dirty = true;
-          }
-          open = false;
-          error = None;
-        }
-        Err(err) => {
-          error = Some(err);
-          // Ensure we repaint so the error becomes visible immediately.
-          ctx.request_repaint();
-        }
+    if let Some(url) = output.save_url {
+      if url != self.home_url {
+        self.home_url = url;
+        session_dirty = true;
+        self.show_chrome_toast("Home page updated");
       }
     }
 
-    if self.set_home_page_dialog_open && !open {
+    if was_open && !self.set_home_page_dialog_open {
       // Restore keyboard focus after closing the modal.
       self.page_has_focus = self.should_restore_page_focus();
       self.window.request_redraw();
     }
-
-    self.set_home_page_dialog_open = open;
-    self.set_home_page_dialog_text = text;
-    self.set_home_page_dialog_error = error;
 
     session_dirty
   }
@@ -22036,6 +21930,7 @@ impl App {
       self.history_panel_open,
       self.downloads_panel_open,
       self.clear_browsing_data_dialog_open,
+      self.set_home_page_dialog_open,
       self.browser_state.chrome.tab_search.open,
       self
         .browser_state
@@ -22663,7 +22558,7 @@ impl App {
           return;
         }
 
-        if self.clear_browsing_data_dialog_open {
+        if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
           return;
         }
 
@@ -22796,8 +22691,8 @@ impl App {
         }
         let hud_scroll_at = self.hud.is_some().then(std::time::Instant::now);
 
-        // Treat the clear browsing data dialog as a modal: do not scroll the page beneath it.
-        if self.clear_browsing_data_dialog_open {
+        // Treat modal dialogs as modal: do not scroll the page beneath them.
+        if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
           return;
         }
 
@@ -22911,7 +22806,7 @@ impl App {
         if self.browser_state.chrome.tab_search.open {
           return;
         }
-        if self.clear_browsing_data_dialog_open {
+        if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
           return;
         }
         let pos_points = egui::pos2(
@@ -23273,7 +23168,7 @@ impl App {
         }
 
         let mapped_button = map_mouse_button(*button);
-        if self.clear_browsing_data_dialog_open {
+        if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
           return;
         }
         if matches!(
@@ -23855,7 +23750,7 @@ impl App {
         self.modifiers = *modifiers;
       }
       WindowEvent::KeyboardInput { input, .. } => {
-        if self.clear_browsing_data_dialog_open {
+        if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
           return;
         }
         if input.state != ElementState::Pressed {
@@ -24539,7 +24434,7 @@ impl App {
         });
       }
       WindowEvent::Ime(ime) => {
-        if self.clear_browsing_data_dialog_open {
+        if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
           return;
         }
         // If egui is actively editing text (e.g. the address bar), don't handle page-level IME
@@ -24621,7 +24516,7 @@ impl App {
             }
           }
         }
-        if self.clear_browsing_data_dialog_open {
+        if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
           return;
         }
         if !self.page_has_focus || self.chrome_has_text_focus {
@@ -24874,6 +24769,10 @@ impl App {
         ChromeAction::OpenClearBrowsingDataDialog => {
           self.clear_browsing_data_dialog_open = true;
           self.clear_browsing_data_dialog_request_focus = true;
+          // Only one modal dialog at a time.
+          self.set_home_page_dialog_open = false;
+          self.set_home_page_dialog_request_focus = false;
+          self.set_home_page_dialog_error = None;
           // Ensure chrome/page UI doesn't continue to capture keyboard focus/input while the modal
           // is open.
           self.browser_state.chrome.request_focus_address_bar = false;
@@ -24895,6 +24794,9 @@ impl App {
           // Default to a "safe" time range when the dialog is opened (including from shortcuts).
           self.clear_browsing_data_range = fastrender::ui::ClearBrowsingDataRange::default();
           self.window.request_redraw();
+        }
+        ChromeAction::OpenHomeUrlDialog => {
+          self.open_set_home_page_dialog();
         }
         ChromeAction::NewTab => {
           session_dirty = true;
@@ -26166,15 +26068,11 @@ impl App {
     // routing decisions without calling `egui::Context::wants_keyboard_input()` directly.
     self.refresh_chrome_text_focus_from_egui(&ctx);
 
-    // Treat the clear browsing data dialog as a modal: while it's open, the rendered page should
-    // never take keyboard focus (e.g. via `response.request_focus()` on the central page image).
-    if self.clear_browsing_data_dialog_open {
+    // Treat modal dialogs as modal: while they're open, the rendered page should never take
+    // keyboard focus (e.g. via `response.request_focus()` on the central page image).
+    if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
       self.page_has_focus = false;
       self.cancel_media_controls();
-    }
-    // Similarly, treat the home page settings dialog as a modal.
-    if self.set_home_page_dialog_open {
-      self.page_has_focus = false;
     }
 
     // When using a full-size content view on macOS (transparent titlebar / unified toolbar),
@@ -26402,7 +26300,7 @@ impl App {
         &mut self.browser_state,
         Some(&self.bookmarks),
         self.chrome_has_text_focus,
-        !self.clear_browsing_data_dialog_open,
+        !(self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open),
         |tab_id| {
           if let Some(tex) = self.tab_favicons.get(&tab_id) {
             Some(tex.id())
@@ -26608,7 +26506,8 @@ impl App {
     // Handle Escape-to-close for side panels *after* rendering them, so focused panel text inputs
     // (e.g. the search fields) can consume Escape (to clear) before we interpret it as "close the
     // panel".
-    if !self.clear_browsing_data_dialog_open
+    if !(self.clear_browsing_data_dialog_open
+      || self.set_home_page_dialog_open)
       && (self.bookmarks_panel_open || self.history_panel_open)
     {
       if self.history_panel_open {
@@ -26707,7 +26606,7 @@ impl App {
       self.render_downloads_panel(&ctx);
     }
     if self.downloads_panel_open
-      && !self.clear_browsing_data_dialog_open
+      && !(self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open)
       && fastrender::ui::panel_escape::downloads_panel_should_close_on_escape(
         self.browser_state.chrome.address_bar_has_focus,
         self.browser_state.chrome.tab_search.open,
@@ -26876,7 +26775,9 @@ impl App {
       // Note: media controls are intentionally excluded so the overlay can stay attached while
       // scrolling the page.
       let mut wheel_blocked_by_popup = false;
-      if !self.wheel_events_buf.is_empty() && !self.clear_browsing_data_dialog_open {
+      if !self.wheel_events_buf.is_empty()
+        && !(self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open)
+      {
         if let Some(pos_points) = ctx.input(|i| i.pointer.hover_pos()) {
           if self.open_select_dropdown.is_some() {
             if self
@@ -27190,7 +27091,7 @@ impl App {
             if !self.wheel_events_buf.is_empty()
               && !wheel_blocked_by_popup
               && response.hovered()
-              && !self.clear_browsing_data_dialog_open
+              && !(self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open)
             {
               let cursor_over_overlay = response
                 .hover_pos()
@@ -28723,28 +28624,31 @@ mod page_focus_restore_tests {
   #[test]
   fn restore_focus_requires_no_other_focus_surfaces() {
     assert!(should_restore_page_focus_for_state(
-      false, false, false, false, false, false, false
+      false, false, false, false, false, false, false, false
     ));
     assert!(!should_restore_page_focus_for_state(
-      true, false, false, false, false, false, false
+      true, false, false, false, false, false, false, false
     ));
     assert!(!should_restore_page_focus_for_state(
-      false, true, false, false, false, false, false
+      false, true, false, false, false, false, false, false
     ));
     assert!(!should_restore_page_focus_for_state(
-      false, false, true, false, false, false, false
+      false, false, true, false, false, false, false, false
     ));
     assert!(!should_restore_page_focus_for_state(
-      false, false, false, true, false, false, false
+      false, false, false, true, false, false, false, false
     ));
     assert!(!should_restore_page_focus_for_state(
-      false, false, false, false, true, false, false
+      false, false, false, false, true, false, false, false
     ));
     assert!(!should_restore_page_focus_for_state(
-      false, false, false, false, false, true, false
+      false, false, false, false, false, true, false, false
     ));
     assert!(!should_restore_page_focus_for_state(
-      false, false, false, false, false, false, true
+      false, false, false, false, false, false, true, false
+    ));
+    assert!(!should_restore_page_focus_for_state(
+      false, false, false, false, false, false, false, true
     ));
   }
 }

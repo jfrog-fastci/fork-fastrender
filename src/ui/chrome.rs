@@ -2846,6 +2846,26 @@ pub fn chrome_ui_with_bookmarks(
 
             ui.separator();
 
+            ui.label(egui::RichText::new("Settings").strong());
+            let home_page = ui.button("Set home page…");
+            popup_focus_ids.push(home_page.id);
+            home_page
+              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Set home page"));
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(
+                ctx,
+                "chrome_menu_item_open_home_url_dialog_rect",
+                home_page.rect,
+              );
+            }
+            if menu_open && home_page.clicked() {
+              actions.push(ChromeAction::OpenHomeUrlDialog);
+              close_menu = true;
+            }
+
+            ui.separator();
+
             ui.label(egui::RichText::new("Window").strong());
             let mut show_menu_bar = app.chrome.show_menu_bar;
             let mut show_menu_bar_toggle = ui.checkbox(&mut show_menu_bar, "Show menu bar");
@@ -10143,6 +10163,29 @@ frame={idx} repaint_after={:?}\n",
         .iter()
         .any(|text| text.contains("accounts.google.com")),
       "expected address bar display to contain the subdomain prefix; found texts: {texts:?}"
+    );
+  }
+
+  #[test]
+  fn chrome_menu_open_home_url_dialog_emits_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let bookmarks = BookmarkStore::default();
+    let ctx = egui::Context::default();
+
+    let actions = click_menu_item(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      "chrome_menu_item_open_home_url_dialog_rect",
+    );
+    assert!(
+      matches!(actions.as_slice(), [ChromeAction::OpenHomeUrlDialog]),
+      "expected ChromeAction::OpenHomeUrlDialog, got {actions:?}"
     );
   }
 

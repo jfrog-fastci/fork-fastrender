@@ -866,25 +866,8 @@ impl BrowserTabState {
   /// The worker remains the source of truth for the ultimately committed URL (e.g. after
   /// redirects) and navigation history/back-forward state.
   pub fn navigate_typed(&mut self, raw: &str) -> Result<UiToWorker, String> {
-    let raw_trimmed = crate::ui::url::trim_ascii_whitespace(raw);
-
-    let normalized = if raw_trimmed.starts_with('#') {
-      let current = self
-        .current_url
-        .as_deref()
-        .ok_or_else(|| "cannot navigate to a fragment without an active document".to_string())?;
-      let current = Url::parse(current).map_err(|err| err.to_string())?;
-      current
-        .join(raw_trimmed)
-        .map_err(|err| err.to_string())?
-        .to_string()
-    } else {
-      match resolve_omnibox_input(raw_trimmed)? {
-        crate::ui::OmniboxInputResolution::Url { url } => url,
-        crate::ui::OmniboxInputResolution::Search { url, .. } => url,
-      }
-    };
-    validate_user_navigation_url_scheme(&normalized)?;
+    let normalized =
+      crate::ui::normalize_user_typed_navigation_url(raw, self.current_url.as_deref())?;
 
     self.crashed = false;
     self.crash_reason = None;
@@ -2668,27 +2651,11 @@ impl BrowserAppState {
     let tab_id = self.active_tab.ok_or_else(|| "no active tab".to_string())?;
 
     let raw = crate::ui::url::trim_ascii_whitespace(&self.chrome.address_bar_text);
-    if raw.is_empty() {
-      return Err("empty URL".to_string());
-    }
-
-    let normalized = if raw.starts_with('#') {
-      let current = self
-        .tab(tab_id)
-        .and_then(|t| t.current_url.as_deref())
-        .ok_or_else(|| "cannot navigate to a fragment without an active document".to_string())?;
-      let current = Url::parse(current).map_err(|err| err.to_string())?;
-      current
-        .join(raw)
-        .map_err(|err| err.to_string())?
-        .to_string()
-    } else {
-      match resolve_omnibox_input(raw)? {
-        crate::ui::OmniboxInputResolution::Url { url } => url,
-        crate::ui::OmniboxInputResolution::Search { url, .. } => url,
-      }
-    };
-    validate_user_navigation_url_scheme(&normalized)?;
+    let current_url = self
+      .tab(tab_id)
+      .and_then(|t| t.current_url.as_deref())
+      .map(str::to_string);
+    let normalized = crate::ui::normalize_user_typed_navigation_url(raw, current_url.as_deref())?;
 
     self.chrome.address_bar_editing = false;
     self.chrome.address_bar_has_focus = false;

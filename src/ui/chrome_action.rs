@@ -80,7 +80,8 @@ pub enum ChromeAction {
   ToggleBookmarksManager,
   /// Open the clear browsing data dialog.
   OpenClearBrowsingDataDialog,
+  /// Open the "Set home page URL" dialog.
+  OpenHomeUrlDialog,
   /// Toggle visibility of the downloads panel.
   ToggleDownloadsPanel,
 }
-
