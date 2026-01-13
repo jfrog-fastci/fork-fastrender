@@ -31,8 +31,9 @@ Code lives in:
   web-compat behaviors are still missing. See [javascript.md](javascript.md),
   [html_script_processing.md](html_script_processing.md), and [runtime_stacks.md](runtime_stacks.md)
   for context on the JS stacks and containers.
-  - JS execution is controlled by the browser CLI (see `browser --help` for `--js`/`--no-js` and the
-    current default).
+  - CLI note: `browser --js` currently only affects `--headless-smoke` (a vm-js `BrowserTab` smoke
+    test). The windowed UI worker maintains its own JS-capable tab runtime by default and has no
+    stable CLI toggle to disable JS today.
 - A renderer-chrome browser UI (yet): the `browser` chrome is currently rendered via egui. The
   renderer-chrome workstream aims to render the chrome UI using FastRender; trusted chrome pages
   would then use the privileged JS bridge documented in [chrome_js_bridge.md](chrome_js_bridge.md).
