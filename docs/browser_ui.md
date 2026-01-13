@@ -636,8 +636,8 @@ isolation. The intended seam is the `UiToWorker`/`WorkerToUi` protocol
 `spawn_browser_ui_worker`). The headless smoke modes (`--headless-smoke` / `--headless-crash-smoke`)
 are intended to remain stable as that swap happens.
 
-For OS sandboxing details (including the Windows AppContainer + Job Object design and the
-Windows-only debug escape hatch), see [sandboxing.md](sandboxing.md).
+For OS sandboxing details (including the Windows AppContainer + Job Object design and renderer
+debug escape hatches), see [sandboxing.md](sandboxing.md).
 
 Windows debugging tip: set `FASTR_LOG_SANDBOX=1` for verbose AppContainer/restricted-token spawn
 logs.
