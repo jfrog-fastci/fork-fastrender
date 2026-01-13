@@ -4472,18 +4472,18 @@ impl<'a> Parser<'a> {
 
         // Non-unicode: invalid backreference => legacy octal escape (if possible) or identity
         // escape (`\8`/`\9`).
-          if x == (b'8' as u16) || x == (b'9' as u16) {
-            // IdentityEscape: keep only the first digit.
-            self.idx = digit_start.saturating_add(1);
-            return Ok(Atom::Literal(x as u32));
-          }
+        if x == (b'8' as u16) || x == (b'9' as u16) {
+          // IdentityEscape: keep only the first digit.
+          self.idx = digit_start.saturating_add(1);
+          return Ok(Atom::Literal(x as u32));
+        }
 
         // LegacyOctalEscapeSequence: rewind to after the first digit and consume the correct octal
-          // digit length.
-          self.idx = digit_start.saturating_add(1);
-          let v = self.parse_legacy_octal_escape_after_first(x)?;
-          Ok(Atom::Literal(v as u32))
-        }
+        // digit length.
+        self.idx = digit_start.saturating_add(1);
+        let v = self.parse_legacy_octal_escape_after_first(x)?;
+        Ok(Atom::Literal(v as u32))
+      }
       x if x == (b'x' as u16) => Ok(Atom::Literal(self.parse_hex_escape_2(ctx)?)),
       x if x == (b'u' as u16) => Ok(Atom::Literal(self.parse_unicode_escape(ctx)?)),
       other => {
@@ -5724,7 +5724,6 @@ mod unicode_set_vm_tests {
       single,
       has_empty: true,
     };
- 
     let program = RegExpProgram {
       insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'b' as u32), Inst::Match],
       capture_count: 1,
@@ -5774,7 +5773,6 @@ mod unicode_set_vm_tests {
       single,
       has_empty: false,
     };
- 
     let program = RegExpProgram {
       insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'c' as u32), Inst::Match],
       capture_count: 1,

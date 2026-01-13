@@ -2409,11 +2409,7 @@ pub fn array_is_array(
   Ok(Value::Bool(is_array))
 }
 
-/// `Array.from(items, mapFn?, thisArg?)` (partial).
-///
-/// This is implemented primarily to support iterator consumption with correct Proxy semantics:
-/// - `GetMethod(items, @@iterator)` to select iterable vs array-like
-/// - `Get` for `"length"` and element keys using internal-method dispatch
+/// `Array.from(items, mapFn?, thisArg?)` (ECMA-262).
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-array.from>
 pub fn array_constructor_from(
@@ -2427,7 +2423,7 @@ pub fn array_constructor_from(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
 
-  // ECMA-262: `C` is the `this` value passed to `Array.from`.
+  // `C` is the `this` value (`Array.from` is generic and can be applied to other constructors).
   let c = this;
   scope.push_root(c)?;
 
@@ -2460,20 +2456,21 @@ pub fn array_constructor_from(
     PropertyKey::from_symbol(iterator_sym),
   )?;
 
-  let is_constructor = scope.heap().is_constructor(c)?;
-  // Shared `"length"` key for the final `Set(A, "length", ...)` step (both iterator + array-like
-  // paths).
-  let length_key = string_key(&mut scope, "length")?;
-
   // If `items` is iterable, follow the iterator protocol.
   if let Some(method) = using_iterator {
     scope.push_root(method)?;
 
-    // Spec: if `IsConstructor(C)` is true, allocate via `Construct(C)` so `GetPrototypeFromConstructor`
-    // consults `GetFunctionRealm(C)` when needed (cross-realm correctness).
-    let out = if is_constructor {
-      let out = vm.construct_with_host_and_hooks(host, &mut scope, hooks, c, &[], c)?;
-      require_object(out)?
+    // `A = ? Construct(C)` (no args) when `C` is a constructor; otherwise `A = ! ArrayCreate(0)`.
+    let out = if scope.heap().is_constructor(c)? {
+      let constructed = vm.construct_with_host_and_hooks(host, &mut scope, hooks, c, &[], c)?;
+      match constructed {
+        Value::Object(o) => o,
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "Array.from Construct(C) returned a non-object",
+          ))
+        }
+      }
     } else {
       create_array_object(vm, &mut scope, 0)?
     };
@@ -2483,23 +2480,41 @@ pub fn array_constructor_from(
       crate::iterator::get_iterator_from_method(vm, host, hooks, &mut scope, items, method)?;
     scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
 
-    let result: Result<Value, VmError> = (|| {
-      let mut k: usize = 0;
-      loop {
-        if k % 1024 == 0 {
-          vm.tick()?;
-        }
+    let length_key = string_key(&mut scope, "length")?;
 
-        // ECMA-262: `k ≥ 2^53 - 1` throws and closes the iterator.
-        const MAX_SAFE_INTEGER: usize = (1usize << 53) - 1;
-        if k >= MAX_SAFE_INTEGER {
-          return Err(VmError::TypeError("Array.from result exceeds MAX_SAFE_INTEGER"));
-        }
+    // Spec guard: `k >= 2^53 - 1` should throw a TypeError (after closing the iterator).
+    const MAX_SAFE_INTEGER: u64 = 9007199254740991;
 
-        let next_value =
-          crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record)?;
-        let Some(next_value) = next_value else {
-          // `Perform ? Set(A, "length", 𝔽(k), true)`.
+    let mut k: u64 = 0;
+    loop {
+      if k % 1024 == 0 {
+        vm.tick()?;
+      }
+
+      if k >= MAX_SAFE_INTEGER {
+        let err = VmError::TypeError("Array.from result exceeds maximum length");
+        return Err(iterator_close_on_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          &iterator_record,
+          err,
+        ));
+      }
+
+      // `nextValue = ? IteratorStepValue(iteratorRecord)` (note: if this throws, do **not**
+      // IteratorClose — the spec propagates the abrupt completion directly).
+      let next_value = match crate::iterator::iterator_step_value(
+        vm,
+        host,
+        hooks,
+        &mut scope,
+        &mut iterator_record,
+      ) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+          // `Set(A, "length", k, true)`
           let ok = scope.set_with_host_and_hooks(
             vm,
             host,
@@ -2513,60 +2528,88 @@ pub fn array_constructor_from(
             return Err(VmError::TypeError("Array.from failed to set length"));
           }
           return Ok(Value::Object(out));
-        };
+        }
+        Err(err) => return Err(err),
+      };
 
+      let entry_result: Result<(), VmError> = (|| {
         // Use a nested scope so per-iteration roots do not accumulate.
         let mut step_scope = scope.reborrow();
         step_scope.push_root(next_value)?;
 
-        let mut mapped = next_value;
-        if mapping {
-          let args = [next_value, Value::Number(k as f64)];
-          mapped = vm.call_with_host_and_hooks(host, &mut step_scope, hooks, mapfn, this_arg, &args)?;
-        }
-        step_scope.push_root(mapped)?;
-
-        let idx_s = alloc_string_from_usize(&mut step_scope, k)?;
+        // `Pk = ToString(k)`
+        let idx_s = alloc_string_from_u64(&mut step_scope, k)?;
         step_scope.push_root(Value::String(idx_s))?;
         let idx_key = PropertyKey::from_string(idx_s);
-        step_scope.create_data_property_or_throw(out, idx_key, mapped)?;
 
-        k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
-      }
-    })();
+        // `mappedValue = ? Call(mapfn, thisArg, [nextValue, k])` (IfAbruptCloseIterator).
+        let mapped = if mapping {
+          let args = [next_value, Value::Number(k as f64)];
+          vm.call_with_host_and_hooks(host, &mut step_scope, hooks, mapfn, this_arg, &args)?
+        } else {
+          next_value
+        };
 
-    match result {
-      Ok(v) => Ok(v),
-      Err(err) => {
-        Err(iterator_close_on_error(
+        // `CreateDataPropertyOrThrow(A, Pk, mappedValue)` (IfAbruptCloseIterator).
+        step_scope.define_property_or_throw_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          out,
+          idx_key,
+          PropertyDescriptorPatch {
+            value: Some(mapped),
+            writable: Some(true),
+            enumerable: Some(true),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )?;
+        Ok(())
+      })();
+
+      if let Err(entry_err) = entry_result {
+        return Err(iterator_close_on_error(
           vm,
           &mut scope,
           host,
           hooks,
           &iterator_record,
-          err,
-        ))
+          entry_err,
+        ));
       }
+
+      k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
     }
   } else {
-    // Array-like path: `arrayLike = ToObject(items)` then `len = LengthOfArrayLike(arrayLike)`.
+    // Array-like path:
+    // `arrayLike = ToObject(items)` then `len = LengthOfArrayLike(arrayLike)`.
     let obj = scope.to_object(vm, host, hooks, items)?;
     scope.push_root(Value::Object(obj))?;
 
-    let len = crate::spec_ops::length_of_array_like_with_host_and_hooks(vm, &mut scope, host, hooks, obj)?;
+    let len =
+      crate::spec_ops::length_of_array_like_with_host_and_hooks(vm, &mut scope, host, hooks, obj)?;
 
-    let out = if is_constructor {
-      let args = [Value::Number(len as f64)];
-      let out = vm.construct_with_host_and_hooks(host, &mut scope, hooks, c, &args, c)?;
-      require_object(out)?
+    // `A = ? Construct(C, [len])` when `C` is a constructor; otherwise `A = ? ArrayCreate(len)`.
+    let out = if scope.heap().is_constructor(c)? {
+      let len_value = Value::Number(len as f64);
+      let constructed =
+        vm.construct_with_host_and_hooks(host, &mut scope, hooks, c, &[len_value], c)?;
+      match constructed {
+        Value::Object(o) => o,
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "Array.from Construct(C, [len]) returned a non-object",
+          ))
+        }
+      }
     } else {
-      let len_u32 = u32::try_from(len).map_err(|_| {
-        // `ArrayCreate(len)` throws a RangeError when `len > 2^32 - 1`.
-        VmError::RangeError("Invalid array length")
-      })?;
+      let len_u32 = u32::try_from(len).map_err(|_| VmError::RangeError("Invalid array length"))?;
       create_array_object(vm, &mut scope, len_u32)?
     };
     scope.push_root(Value::Object(out))?;
+
+    let length_key = string_key(&mut scope, "length")?;
 
     for k in 0..len {
       if k % 1024 == 0 {
@@ -2581,18 +2624,31 @@ pub fn array_constructor_from(
       let idx_key = PropertyKey::from_string(idx_s);
 
       let value = step_scope.get_with_host_and_hooks(vm, host, hooks, obj, idx_key, Value::Object(obj))?;
-      step_scope.push_root(value)?;
 
-      let mut mapped = value;
-      if mapping {
+      let mapped = if mapping {
         let args = [value, Value::Number(k as f64)];
-        mapped = vm.call_with_host_and_hooks(host, &mut step_scope, hooks, mapfn, this_arg, &args)?;
-      }
-      step_scope.push_root(mapped)?;
-      step_scope.create_data_property_or_throw(out, idx_key, mapped)?;
+        vm.call_with_host_and_hooks(host, &mut step_scope, hooks, mapfn, this_arg, &args)?
+      } else {
+        value
+      };
+
+      step_scope.define_property_or_throw_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        out,
+        idx_key,
+        PropertyDescriptorPatch {
+          value: Some(mapped),
+          writable: Some(true),
+          enumerable: Some(true),
+          configurable: Some(true),
+          ..Default::default()
+        },
+      )?;
     }
 
-    // `Perform ? Set(A, "length", 𝔽(len), true)`.
+    // `Set(A, "length", len, true)`
     let ok = scope.set_with_host_and_hooks(
       vm,
       host,
@@ -2608,6 +2664,89 @@ pub fn array_constructor_from(
 
     Ok(Value::Object(out))
   }
+}
+
+/// `Array.of(...items)` (ECMA-262).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-array.of>
+pub fn array_constructor_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  // `C` is the `this` value (generic factory method).
+  let c = this;
+  scope.push_root(c)?;
+
+  let len = args.len();
+
+  // `A = ? Construct(C, [len])` when `C` is a constructor; otherwise `A = ? ArrayCreate(len)`.
+  let out = if scope.heap().is_constructor(c)? {
+    let len_value = Value::Number(len as f64);
+    let constructed = vm.construct_with_host_and_hooks(host, &mut scope, hooks, c, &[len_value], c)?;
+    match constructed {
+      Value::Object(o) => o,
+      _ => return Err(VmError::InvariantViolation("Array.of Construct(C) returned a non-object")),
+    }
+  } else {
+    let len_u32 =
+      u32::try_from(len).map_err(|_| VmError::RangeError("Invalid array length"))?;
+    create_array_object(vm, &mut scope, len_u32)?
+  };
+  scope.push_root(Value::Object(out))?;
+
+  let length_key = string_key(&mut scope, "length")?;
+
+  for (k, item) in args.iter().copied().enumerate() {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    // Use a nested scope so per-iteration roots do not accumulate.
+    let mut step_scope = scope.reborrow();
+    step_scope.push_root(item)?;
+
+    let idx_s = alloc_string_from_usize(&mut step_scope, k)?;
+    step_scope.push_root(Value::String(idx_s))?;
+    let idx_key = PropertyKey::from_string(idx_s);
+
+    step_scope.define_property_or_throw_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      out,
+      idx_key,
+      PropertyDescriptorPatch {
+        value: Some(item),
+        writable: Some(true),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..Default::default()
+      },
+    )?;
+  }
+
+  // `Set(A, "length", len, true)`
+  let ok = scope.set_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    out,
+    length_key,
+    Value::Number(len as f64),
+    Value::Object(out),
+  )?;
+  if !ok {
+    return Err(VmError::TypeError("Array.of failed to set length"));
+  }
+
+  Ok(Value::Object(out))
 }
 
 pub fn array_constructor_construct(

@@ -1021,6 +1021,7 @@ impl Intrinsics {
     let array_prototype_with = vm.register_native_call(builtins::array_prototype_with)?;
     let array_is_array = vm.register_native_call(builtins::array_is_array)?;
     let array_constructor_from = vm.register_native_call(builtins::array_constructor_from)?;
+    let array_constructor_of = vm.register_native_call(builtins::array_constructor_of)?;
     let array_prototype_keys = vm.register_native_call(builtins::array_prototype_keys)?;
     let array_prototype_entries = vm.register_native_call(builtins::array_prototype_entries)?;
     let array_prototype_values = vm.register_native_call(builtins::array_prototype_values)?;
@@ -2082,6 +2083,47 @@ impl Intrinsics {
         array_constructor,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Array.of
+    {
+      let of_s = scope.alloc_string("of")?;
+      scope.push_root(Value::String(of_s))?;
+      let key = PropertyKey::from_string(of_s);
+      let func = scope.alloc_native_function(array_constructor_of, None, of_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        array_constructor,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Array[@@species]
+    //
+    // Spec: https://tc39.es/ecma262/#sec-get-array-%symbol.species%
+    {
+      let species_name = scope.alloc_string("get [Symbol.species]")?;
+      let species_getter =
+        alloc_rooted_native_function(scope, roots, promise_species_get_call, None, species_name, 0)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(species_getter, Some(function_prototype))?;
+      scope.define_property(
+        array_constructor,
+        PropertyKey::Symbol(well_known_symbols.species),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(species_getter),
+            set: Value::Undefined,
+          },
+        },
       )?;
     }
 
