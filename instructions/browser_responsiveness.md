@@ -81,7 +81,8 @@ timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --summary \
 # Manual run: write perf JSONL directly to a file.
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+    about:test-layout-stress
 
 # Or summarize later (supports --from-ms/--to-ms windowing):
 timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
@@ -90,7 +91,8 @@ timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_l
 # Debug invalidation fast paths for hover/focus/caret interactions (stderr one-line logs):
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_LOG_INTERACTION_INVALIDATION=1 \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+    about:test-layout-stress
 
 # CPU profiling (Linux): reproduce resize/scroll jank, then close the window to finish recording.
 timeout -k 10 600 bash scripts/profile_browser_samply.sh --url about:test-layout-stress
