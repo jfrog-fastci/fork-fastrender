@@ -15,16 +15,16 @@ use super::IpcError;
 pub const IPC_PROTOCOL_VERSION: u32 = 1;
 
 /// Pixel format is currently fixed to premultiplied RGBA8.
-pub const BYTES_PER_PIXEL: usize = 4;
+pub const BYTES_PER_PIXEL: u32 = 4;
 
 /// Hard cap for the number of frame buffers the browser can advertise.
-pub const MAX_FRAME_BUFFERS: usize = 32;
+pub const MAX_FRAME_BUFFERS: u32 = 32;
 
 /// Upper bound for identifiers sent over IPC (shared memory IDs, etc).
-pub const MAX_ID_LEN: usize = 256;
+pub const MAX_ID_LEN: u32 = 256;
 
 /// Upper bound for renderer crash strings.
-pub const MAX_CRASH_REASON_LEN: usize = 1024;
+pub const MAX_CRASH_REASON_LEN: u32 = 1024;
 
 /// Sane bounds for device pixel ratio (DPR).
 ///
@@ -44,7 +44,7 @@ pub struct FrameBufferDesc {
   pub shmem_id: String,
 
   /// Total size (in bytes) of the shared memory segment.
-  pub byte_len: usize,
+  pub byte_len: u32,
 
   /// Maximum width (in pixels) the renderer is allowed to write into this buffer.
   pub max_width_px: u32,
@@ -53,7 +53,7 @@ pub struct FrameBufferDesc {
   pub max_height_px: u32,
 
   /// Bytes between the start of consecutive rows.
-  pub stride_bytes: usize,
+  pub stride_bytes: u32,
 }
 
 impl FrameBufferDesc {
@@ -64,10 +64,10 @@ impl FrameBufferDesc {
     if self.shmem_id.is_empty() {
       return Err(IpcError::EmptyId);
     }
-    if self.shmem_id.len() > MAX_ID_LEN {
+    if self.shmem_id.len() > MAX_ID_LEN as _ {
       return Err(IpcError::IdTooLong {
         len: self.shmem_id.len(),
-        max: MAX_ID_LEN,
+        max: MAX_ID_LEN as _,
       });
     }
     if self.byte_len == 0 {
@@ -80,26 +80,26 @@ impl FrameBufferDesc {
       return Err(IpcError::FrameBufferStrideZero);
     }
 
-    let max_width_usize = usize::try_from(self.max_width_px).map_err(|_| IpcError::ArithmeticOverflow)?;
-    let min_row_bytes = max_width_usize
-      .checked_mul(BYTES_PER_PIXEL)
+    let min_row_bytes = u64::from(self.max_width_px)
+      .checked_mul(u64::from(BYTES_PER_PIXEL))
       .ok_or(IpcError::ArithmeticOverflow)?;
-    if self.stride_bytes < min_row_bytes {
+    let min_row_bytes_u32 = u32::try_from(min_row_bytes).map_err(|_| IpcError::ArithmeticOverflow)?;
+    if self.stride_bytes < min_row_bytes_u32 {
       return Err(IpcError::FrameBufferStrideTooSmall {
-        stride_bytes: self.stride_bytes,
-        min_row_bytes,
+        stride_bytes: self.stride_bytes as _,
+        min_row_bytes: min_row_bytes_u32 as _,
       });
     }
 
-    let max_height_usize = usize::try_from(self.max_height_px).map_err(|_| IpcError::ArithmeticOverflow)?;
-    let required_bytes = self
-      .stride_bytes
-      .checked_mul(max_height_usize)
+    let required_bytes = u64::from(self.stride_bytes)
+      .checked_mul(u64::from(self.max_height_px))
       .ok_or(IpcError::ArithmeticOverflow)?;
-    if required_bytes > self.byte_len {
+    let required_bytes_u32 =
+      u32::try_from(required_bytes).map_err(|_| IpcError::ArithmeticOverflow)?;
+    if required_bytes_u32 > self.byte_len {
       return Err(IpcError::FrameBufferTooSmall {
-        required_bytes,
-        byte_len: self.byte_len,
+        required_bytes: required_bytes_u32 as _,
+        byte_len: self.byte_len as _,
       });
     }
 
@@ -176,10 +176,10 @@ pub struct FrameBufferSet {
 
 impl FrameBufferSet {
   pub fn validate(&self) -> Result<(), IpcError> {
-    if self.buffers.len() > MAX_FRAME_BUFFERS {
+    if self.buffers.len() > MAX_FRAME_BUFFERS as _ {
       return Err(IpcError::TooManyFrameBuffers {
         len: self.buffers.len(),
-        max: MAX_FRAME_BUFFERS,
+        max: MAX_FRAME_BUFFERS as _,
       });
     }
     for (idx, desc) in self.buffers.iter().enumerate() {
@@ -196,8 +196,8 @@ impl FrameBufferSet {
   }
 
   pub fn get(&self, buffer_index: u32) -> Result<&FrameBufferDesc, IpcError> {
-    let idx = usize::try_from(buffer_index).map_err(|_| IpcError::ArithmeticOverflow)?;
-    self.buffers.get(idx).ok_or(IpcError::InvalidBufferIndex {
+    let idx = buffer_index.try_into().map_err(|_| IpcError::ArithmeticOverflow)?;
+    self.buffers.iter().nth(idx).ok_or(IpcError::InvalidBufferIndex {
       buffer_index,
       buffer_count: self.buffers.len(),
     })
@@ -286,26 +286,26 @@ impl RendererToBrowser {
           });
         }
 
-        let width_usize = usize::try_from(*width_px).map_err(|_| IpcError::ArithmeticOverflow)?;
-        let height_usize = usize::try_from(*height_px).map_err(|_| IpcError::ArithmeticOverflow)?;
-        let row_bytes = width_usize
-          .checked_mul(BYTES_PER_PIXEL)
+        let row_bytes = u64::from(*width_px)
+          .checked_mul(u64::from(BYTES_PER_PIXEL))
           .ok_or(IpcError::ArithmeticOverflow)?;
-        if row_bytes > desc.stride_bytes {
+        let row_bytes_u32 = u32::try_from(row_bytes).map_err(|_| IpcError::ArithmeticOverflow)?;
+        if row_bytes_u32 > desc.stride_bytes {
           return Err(IpcError::FrameRowBytesExceedStride {
-            row_bytes,
-            stride_bytes: desc.stride_bytes,
+            row_bytes: row_bytes_u32 as _,
+            stride_bytes: desc.stride_bytes as _,
           });
         }
 
-        let required_bytes = desc
-          .stride_bytes
-          .checked_mul(height_usize)
+        let required_bytes = u64::from(desc.stride_bytes)
+          .checked_mul(u64::from(*height_px))
           .ok_or(IpcError::ArithmeticOverflow)?;
-        if required_bytes > desc.byte_len {
+        let required_bytes_u32 =
+          u32::try_from(required_bytes).map_err(|_| IpcError::ArithmeticOverflow)?;
+        if required_bytes_u32 > desc.byte_len {
           return Err(IpcError::FrameExceedsBufferLen {
-            required_bytes,
-            byte_len: desc.byte_len,
+            required_bytes: required_bytes_u32 as _,
+            byte_len: desc.byte_len as _,
           });
         }
 
@@ -313,10 +313,10 @@ impl RendererToBrowser {
       }
 
       RendererToBrowser::Crashed { reason } => {
-        if reason.len() > MAX_CRASH_REASON_LEN {
+        if reason.len() > MAX_CRASH_REASON_LEN as _ {
           return Err(IpcError::CrashReasonTooLong {
             len: reason.len(),
-            max: MAX_CRASH_REASON_LEN,
+            max: MAX_CRASH_REASON_LEN as _,
           });
         }
         Ok(())
@@ -324,6 +324,40 @@ impl RendererToBrowser {
     }
   }
 }
+
+// Compile-time guard: the IPC protocol module must not mention architecture-dependent pointer-sized
+// integers in the serialized message surface.
+//
+// This is enforced textually so accidental reintroductions are caught immediately.
+const _: () = {
+  const SRC: &[u8] = include_bytes!("protocol.rs");
+  const FORBIDDEN: [u8; 5] = [0x75, 0x73, 0x69, 0x7a, 0x65]; // "u" "s" "i" "z" "e"
+
+  const fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+      return false;
+    }
+    let mut i = 0;
+    while i + needle.len() <= haystack.len() {
+      let mut j = 0;
+      while j < needle.len() {
+        if haystack[i + j] != needle[j] {
+          break;
+        }
+        j += 1;
+      }
+      if j == needle.len() {
+        return true;
+      }
+      i += 1;
+    }
+    false
+  }
+
+  if contains(SRC, &FORBIDDEN) {
+    panic!("ipc protocol contains a forbidden architecture-dependent integer type");
+  }
+};
 
 #[cfg(test)]
 mod tests {

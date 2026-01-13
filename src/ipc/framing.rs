@@ -48,22 +48,35 @@ pub fn read_bincode_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> Resul
   decode_bincode_payload(&payload)
 }
 
+fn validate_frame_len(bytes_len: u32) -> Result<usize, IpcError> {
+  if bytes_len == 0 {
+    return Err(IpcError::ZeroLength);
+  }
+  let max_u32: u32 = MAX_IPC_MESSAGE_BYTES
+    .try_into()
+    .map_err(|_| IpcError::ArithmeticOverflow)?;
+  if bytes_len > max_u32 {
+    return Err(IpcError::FrameTooLarge {
+      len: bytes_len as usize,
+      max: MAX_IPC_MESSAGE_BYTES,
+    });
+  }
+  // Allocate only after validating the declared size.
+  usize::try_from(bytes_len).map_err(|_| IpcError::ArithmeticOverflow)
+}
+
 /// Write a single length-prefixed frame to `writer`.
 ///
 /// Frame format: `u32` little-endian payload length, followed by payload bytes.
 pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> Result<(), IpcError> {
-  if payload.is_empty() {
-    return Err(IpcError::ZeroLength);
-  }
-  if payload.len() > MAX_IPC_MESSAGE_BYTES {
-    return Err(IpcError::FrameTooLarge {
-      len: payload.len(),
-      max: MAX_IPC_MESSAGE_BYTES,
-    });
-  }
+  let bytes_len = u32::try_from(payload.len()).map_err(|_| IpcError::FrameTooLarge {
+    len: payload.len(),
+    max: MAX_IPC_MESSAGE_BYTES,
+  })?;
+  // Validate (and ensure it can be converted to `usize` if needed by downstream code).
+  let _ = validate_frame_len(bytes_len)?;
 
-  // Safe: `MAX_IPC_MESSAGE_BYTES` is far below `u32::MAX`.
-  let len_prefix = (payload.len() as u32).to_le_bytes();
+  let len_prefix = bytes_len.to_le_bytes();
   writer.write_all(&len_prefix)?;
   writer.write_all(payload)?;
   Ok(())
@@ -75,19 +88,9 @@ pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> Result<(), IpcEr
 pub fn read_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
   let mut len_prefix = [0u8; 4];
   reader.read_exact(&mut len_prefix)?;
-  let len = u32::from_le_bytes(len_prefix) as usize;
+  let bytes_len = u32::from_le_bytes(len_prefix);
+  let len = validate_frame_len(bytes_len)?;
 
-  if len == 0 {
-    return Err(IpcError::ZeroLength);
-  }
-  if len > MAX_IPC_MESSAGE_BYTES {
-    return Err(IpcError::FrameTooLarge {
-      len,
-      max: MAX_IPC_MESSAGE_BYTES,
-    });
-  }
-
-  // Allocate only after validating the declared size.
   let mut payload = vec![0u8; len];
   reader.read_exact(&mut payload)?;
   Ok(payload)
@@ -147,6 +150,15 @@ mod tests {
     let mut cursor = Cursor::new(vec![0, 1, 2]); // 3 bytes; incomplete u32 prefix.
     let err = read_frame(&mut cursor).unwrap_err();
     assert!(matches!(err, IpcError::UnexpectedEof));
+  }
+
+  #[test]
+  fn length_at_cap_is_accepted() {
+    let len_u32: u32 = MAX_IPC_MESSAGE_BYTES
+      .try_into()
+      .expect("MAX_IPC_MESSAGE_BYTES should fit in u32 for framing");
+    let ok = validate_frame_len(len_u32).unwrap();
+    assert_eq!(ok, MAX_IPC_MESSAGE_BYTES);
   }
 
   #[test]

@@ -7,17 +7,17 @@
 use serde::{Deserialize, Serialize};
 
 /// Maximum allowed UTF-8 byte length of a WebSocket URL sent over IPC.
-pub const MAX_WEBSOCKET_URL_BYTES: usize = 8 * 1024;
+pub const MAX_WEBSOCKET_URL_BYTES: u32 = 8 * 1024;
 /// Maximum number of subprotocols allowed in a single connect request.
-pub const MAX_WEBSOCKET_PROTOCOLS: usize = 32;
+pub const MAX_WEBSOCKET_PROTOCOLS: u32 = 32;
 /// Maximum allowed UTF-8 byte length of any single subprotocol string.
-pub const MAX_WEBSOCKET_PROTOCOL_BYTES: usize = 1 * 1024;
+pub const MAX_WEBSOCKET_PROTOCOL_BYTES: u32 = 1 * 1024;
 /// Maximum allowed payload size for a single SendText/SendBinary message.
-pub const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_WEBSOCKET_MESSAGE_BYTES: u32 = 4 * 1024 * 1024;
 /// Maximum allowed UTF-8 byte length of a close reason string.
 ///
 /// This matches the WebSocket API limitation (123 bytes).
-pub const MAX_WEBSOCKET_CLOSE_REASON_BYTES: usize = 123;
+pub const MAX_WEBSOCKET_CLOSE_REASON_BYTES: u32 = 123;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WebSocketConnectParams {
@@ -62,21 +62,21 @@ pub enum WebSocketEvent {
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum WebSocketValidationError {
   #[error("websocket url too long (len {len} bytes; max {max} bytes)")]
-  UrlTooLong { len: usize, max: usize },
+  UrlTooLong { len: u32, max: u32 },
   #[error("too many websocket protocols (len {len}; max {max})")]
-  TooManyProtocols { len: usize, max: usize },
+  TooManyProtocols { len: u32, max: u32 },
   #[error("websocket protocol too long (len {len} bytes; max {max} bytes)")]
-  ProtocolTooLong { len: usize, max: usize },
+  ProtocolTooLong { len: u32, max: u32 },
   #[error("websocket message too large (len {len} bytes; max {max} bytes)")]
-  MessageTooLarge { len: usize, max: usize },
+  MessageTooLarge { len: u32, max: u32 },
   #[error("websocket close reason too long (len {len} bytes; max {max} bytes)")]
-  CloseReasonTooLong { len: usize, max: usize },
+  CloseReasonTooLong { len: u32, max: u32 },
 }
 
 impl WebSocketConnectParams {
   /// Validate parameters supplied by the renderer.
   pub fn validate(&self) -> Result<(), WebSocketValidationError> {
-    let url_len = self.url.as_bytes().len();
+    let url_len = u32::try_from(self.url.as_bytes().len()).unwrap_or(u32::MAX);
     if url_len > MAX_WEBSOCKET_URL_BYTES {
       return Err(WebSocketValidationError::UrlTooLong {
         len: url_len,
@@ -84,15 +84,16 @@ impl WebSocketConnectParams {
       });
     }
 
-    if self.protocols.len() > MAX_WEBSOCKET_PROTOCOLS {
+    let proto_count = u32::try_from(self.protocols.len()).unwrap_or(u32::MAX);
+    if proto_count > MAX_WEBSOCKET_PROTOCOLS {
       return Err(WebSocketValidationError::TooManyProtocols {
-        len: self.protocols.len(),
+        len: proto_count,
         max: MAX_WEBSOCKET_PROTOCOLS,
       });
     }
 
     for proto in &self.protocols {
-      let len = proto.as_bytes().len();
+      let len = u32::try_from(proto.as_bytes().len()).unwrap_or(u32::MAX);
       if len > MAX_WEBSOCKET_PROTOCOL_BYTES {
         return Err(WebSocketValidationError::ProtocolTooLong {
           len,
@@ -111,7 +112,7 @@ impl WebSocketCommand {
     match self {
       Self::Connect { params } => params.validate(),
       Self::SendText { text } => {
-        let len = text.as_bytes().len();
+        let len = u32::try_from(text.as_bytes().len()).unwrap_or(u32::MAX);
         if len > MAX_WEBSOCKET_MESSAGE_BYTES {
           return Err(WebSocketValidationError::MessageTooLarge {
             len,
@@ -121,7 +122,7 @@ impl WebSocketCommand {
         Ok(())
       }
       Self::SendBinary { data } => {
-        let len = data.len();
+        let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
         if len > MAX_WEBSOCKET_MESSAGE_BYTES {
           return Err(WebSocketValidationError::MessageTooLarge {
             len,
@@ -132,7 +133,7 @@ impl WebSocketCommand {
       }
       Self::Close { reason, .. } => {
         if let Some(reason) = reason.as_deref() {
-          let len = reason.as_bytes().len();
+          let len = u32::try_from(reason.as_bytes().len()).unwrap_or(u32::MAX);
           if len > MAX_WEBSOCKET_CLOSE_REASON_BYTES {
             return Err(WebSocketValidationError::CloseReasonTooLong {
               len,
@@ -178,6 +179,37 @@ pub fn is_valid_close_code(code: u16) -> bool {
   }
 }
 
+// Compile-time guard: this module must not mention pointer-sized integer tokens.
+const _: () = {
+  const SRC: &[u8] = include_bytes!("websocket.rs");
+  const FORBIDDEN: [u8; 5] = [0x75, 0x73, 0x69, 0x7a, 0x65];
+
+  const fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+      return false;
+    }
+    let mut i = 0;
+    while i + needle.len() <= haystack.len() {
+      let mut j = 0;
+      while j < needle.len() {
+        if haystack[i + j] != needle[j] {
+          break;
+        }
+        j += 1;
+      }
+      if j == needle.len() {
+        return true;
+      }
+      i += 1;
+    }
+    false
+  }
+
+  if contains(SRC, &FORBIDDEN) {
+    panic!("websocket IPC module contains a forbidden integer token");
+  }
+};
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -185,7 +217,7 @@ mod tests {
   #[test]
   fn validate_connect_params_url_len_boundary() {
     let ok = WebSocketConnectParams {
-      url: "a".repeat(MAX_WEBSOCKET_URL_BYTES),
+      url: "a".repeat(MAX_WEBSOCKET_URL_BYTES as _),
       protocols: Vec::new(),
       origin: None,
       document_url: None,
@@ -193,7 +225,7 @@ mod tests {
     assert!(ok.validate().is_ok());
 
     let bad = WebSocketConnectParams {
-      url: "a".repeat(MAX_WEBSOCKET_URL_BYTES + 1),
+      url: "a".repeat((MAX_WEBSOCKET_URL_BYTES + 1) as _),
       protocols: Vec::new(),
       origin: None,
       document_url: None,
@@ -206,7 +238,7 @@ mod tests {
     let proto = "p".to_string();
     let ok = WebSocketConnectParams {
       url: "ws://example.com".to_string(),
-      protocols: vec![proto.clone(); MAX_WEBSOCKET_PROTOCOLS],
+      protocols: vec![proto.clone(); MAX_WEBSOCKET_PROTOCOLS as _],
       origin: None,
       document_url: None,
     };
@@ -214,7 +246,7 @@ mod tests {
 
     let bad = WebSocketConnectParams {
       url: "ws://example.com".to_string(),
-      protocols: vec![proto; MAX_WEBSOCKET_PROTOCOLS + 1],
+      protocols: vec![proto; (MAX_WEBSOCKET_PROTOCOLS + 1) as _],
       origin: None,
       document_url: None,
     };
@@ -225,7 +257,7 @@ mod tests {
   fn validate_connect_params_protocol_len_boundary() {
     let ok = WebSocketConnectParams {
       url: "ws://example.com".to_string(),
-      protocols: vec!["p".repeat(MAX_WEBSOCKET_PROTOCOL_BYTES)],
+      protocols: vec!["p".repeat(MAX_WEBSOCKET_PROTOCOL_BYTES as _)],
       origin: None,
       document_url: None,
     };
@@ -233,7 +265,7 @@ mod tests {
 
     let bad = WebSocketConnectParams {
       url: "ws://example.com".to_string(),
-      protocols: vec!["p".repeat(MAX_WEBSOCKET_PROTOCOL_BYTES + 1)],
+      protocols: vec!["p".repeat((MAX_WEBSOCKET_PROTOCOL_BYTES + 1) as _)],
       origin: None,
       document_url: None,
     };
@@ -243,22 +275,22 @@ mod tests {
   #[test]
   fn validate_command_message_size_boundary() {
     let ok = WebSocketCommand::SendText {
-      text: "a".repeat(MAX_WEBSOCKET_MESSAGE_BYTES),
+      text: "a".repeat(MAX_WEBSOCKET_MESSAGE_BYTES as _),
     };
     assert!(ok.validate().is_ok());
 
     let bad = WebSocketCommand::SendText {
-      text: "a".repeat(MAX_WEBSOCKET_MESSAGE_BYTES + 1),
+      text: "a".repeat((MAX_WEBSOCKET_MESSAGE_BYTES + 1) as _),
     };
     assert!(bad.validate().is_err());
 
     let ok_bin = WebSocketCommand::SendBinary {
-      data: vec![0u8; MAX_WEBSOCKET_MESSAGE_BYTES],
+      data: vec![0u8; MAX_WEBSOCKET_MESSAGE_BYTES as _],
     };
     assert!(ok_bin.validate().is_ok());
 
     let bad_bin = WebSocketCommand::SendBinary {
-      data: vec![0u8; MAX_WEBSOCKET_MESSAGE_BYTES + 1],
+      data: vec![0u8; (MAX_WEBSOCKET_MESSAGE_BYTES + 1) as _],
     };
     assert!(bad_bin.validate().is_err());
   }
@@ -267,13 +299,13 @@ mod tests {
   fn validate_command_close_reason_boundary() {
     let ok = WebSocketCommand::Close {
       code: Some(1000),
-      reason: Some("a".repeat(MAX_WEBSOCKET_CLOSE_REASON_BYTES)),
+      reason: Some("a".repeat(MAX_WEBSOCKET_CLOSE_REASON_BYTES as _)),
     };
     assert!(ok.validate().is_ok());
 
     let bad = WebSocketCommand::Close {
       code: Some(1000),
-      reason: Some("a".repeat(MAX_WEBSOCKET_CLOSE_REASON_BYTES + 1)),
+      reason: Some("a".repeat((MAX_WEBSOCKET_CLOSE_REASON_BYTES + 1) as _)),
     };
     assert!(bad.validate().is_err());
   }
@@ -298,4 +330,3 @@ mod tests {
     assert_eq!(WebSocketCommand::normalized_close_code(Some(5000)), 1000);
   }
 }
-
