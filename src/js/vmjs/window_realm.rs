@@ -32922,6 +32922,96 @@ fn document_write_impl(
   Ok(Value::Undefined)
 }
 
+fn ensure_webidl_html_collection_iterable(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  global: GcObject,
+) -> Result<(), VmError> {
+  let html_collection_key = alloc_key(scope, "HTMLCollection")?;
+  let html_collection_ctor = scope
+    .heap()
+    .object_get_own_data_property_value(global, &html_collection_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(html_collection_ctor) = html_collection_ctor else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(html_collection_ctor))?;
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto_val = scope
+    .heap()
+    .object_get_own_data_property_value(html_collection_ctor, &prototype_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(html_collection_proto) = proto_val else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(html_collection_proto))?;
+
+  let iterator_key = PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().iterator);
+  let values_key = alloc_key(scope, "values")?;
+
+  let own_data_value = |obj: GcObject, key: &PropertyKey| -> Result<Option<Value>, VmError> {
+    match scope.heap().object_get_own_data_property_value(obj, key) {
+      Ok(value) => Ok(value),
+      Err(VmError::PropertyNotData) => Ok(None),
+      Err(err) => Err(err),
+    }
+  };
+
+  let existing_values = own_data_value(html_collection_proto, &values_key)?;
+  let existing_iter = own_data_value(html_collection_proto, &iterator_key)?;
+
+  let select_existing = |candidate: Option<Value>| {
+    candidate.filter(|&value| {
+      matches!(value, Value::Object(_)) && scope.heap().is_callable(value).unwrap_or(false)
+    })
+  };
+
+  let existing_func = select_existing(existing_values).or_else(|| select_existing(existing_iter));
+
+  let func_value = if let Some(func_value) = existing_func {
+    func_value
+  } else {
+    let next_call_id = vm.register_native_call(node_list_iterator_next_native)?;
+    let next_name = scope.alloc_string("next")?;
+    scope.push_root(Value::String(next_name))?;
+    let next_func = scope.alloc_native_function(next_call_id, None, next_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      next_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(next_func))?;
+
+    let values_call_id = vm.register_native_call(node_list_iterator_native)?;
+    let values_name = scope.alloc_string("values")?;
+    scope.push_root(Value::String(values_name))?;
+    let values_func = scope.alloc_native_function_with_slots(
+      values_call_id,
+      None,
+      values_name,
+      0,
+      &[Value::Object(next_func)],
+    )?;
+    scope.heap_mut().object_set_prototype(
+      values_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(values_func))?;
+    Value::Object(values_func)
+  };
+
+  // Ensure HTMLCollection.prototype.values exists and @@iterator aliases it.
+  //
+  // Prefer existing callable values/@@iterator shims (for non-clobbering install), but always ensure
+  // the alias invariant holds for browser-like behavior:
+  //   HTMLCollection.prototype[Symbol.iterator] === HTMLCollection.prototype.values
+  scope.define_property(html_collection_proto, values_key, data_desc(func_value))?;
+  scope.define_property(html_collection_proto, iterator_key, data_desc(func_value))?;
+
+  Ok(())
+}
+
 fn init_window_globals(
   vm: &mut Vm,
   heap: &mut Heap,
@@ -41175,6 +41265,12 @@ fn init_window_globals(
   #[cfg(test)]
   {
     install_test_failure_injection(vm, &mut scope, realm, global)?;
+  }
+
+  // WebIDL bindings generate `HTMLCollection` without an iterator because the WebIDL snapshot does
+  // not declare it `iterable<>`, but real browsers still expose `values()` / @@iterator.
+  if config.dom_bindings_backend == DomBindingsBackend::WebIdl {
+    ensure_webidl_html_collection_iterable(vm, &mut scope, realm, global)?;
   }
 
   // Install WHATWG URL bindings (`URL`/`URLSearchParams`) so real-world scripts can parse and

@@ -1808,6 +1808,39 @@ mod tests {
   }
 
   #[test]
+  fn window_realm_webidl_dom_backend_html_collection_is_iterable() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=a></div><div id=b></div></body></html>",
+    )
+    .expect("parse_html");
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      "https://example.invalid/",
+      Arc::new(HttpFetcher::new()),
+      clock,
+      JsExecutionOptions::default(),
+      DomBindingsBackend::WebIdl,
+    )?;
+
+    let out = host.exec_script_in_event_loop(
+      &mut event_loop,
+      r#"
+      (() => {
+        const children = document.body.children;
+        return [...children].length === children.length
+          && children[Symbol.iterator] === children.values;
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn node_wrappers_do_not_shadow_event_target_prototype_methods() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
