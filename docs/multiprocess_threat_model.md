@@ -4,6 +4,9 @@ This document defines the **security boundary** we are building toward for the m
 Its purpose is to prevent “drift”: future code changes should consistently treat **renderer-originated
 data as untrusted**.
 
+Related:
+- Site isolation process model (process assignment + OOPIF semantics): [`docs/site_isolation.md`](site_isolation.md)
+
 **Status / repo reality (today):**
 
 - The windowed `browser` app currently runs a “renderer” on a dedicated worker thread, not a separate
