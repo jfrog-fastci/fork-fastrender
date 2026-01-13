@@ -437,6 +437,24 @@ impl StreamState {
   }
 
   fn new_from_bytes(bytes: Vec<u8>, high_water_mark: f64) -> Result<Self, VmError> {
+    if bytes.len() > MAX_READABLE_STREAM_QUEUED_BYTES {
+      return Err(VmError::TypeError(READABLE_STREAM_QUEUE_LIMIT_ERROR));
+    }
+    let chunk_count = if bytes.is_empty() {
+      0
+    } else if bytes.len() <= STREAM_CHUNK_BYTES {
+      1
+    } else {
+      bytes
+        .len()
+        .checked_add(STREAM_CHUNK_BYTES - 1)
+        .ok_or(VmError::OutOfMemory)?
+        / STREAM_CHUNK_BYTES
+    };
+    if chunk_count > MAX_READABLE_STREAM_QUEUED_CHUNKS {
+      return Err(VmError::TypeError(READABLE_STREAM_QUEUE_LIMIT_ERROR));
+    }
+
     let (byte_queue, buffered_byte_len) = chunk_bytes(bytes)?;
     Ok(Self {
       locked: false,
@@ -4238,6 +4256,30 @@ fn reader_read_native(
         if let Some(init) = stream_state.init.take() {
           match init() {
             Ok(bytes) => {
+              if bytes.len() > MAX_READABLE_STREAM_QUEUED_BYTES {
+                stream_state.state = StreamLifecycleState::Errored;
+                let msg = READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string();
+                stream_state.error_message = Some(msg.clone());
+                return Ok((ReadOutcome::Error(msg), None));
+              }
+              let chunk_count = if bytes.is_empty() {
+                0
+              } else if bytes.len() <= STREAM_CHUNK_BYTES {
+                1
+              } else {
+                bytes
+                  .len()
+                  .checked_add(STREAM_CHUNK_BYTES - 1)
+                  .ok_or(VmError::OutOfMemory)?
+                  / STREAM_CHUNK_BYTES
+              };
+              if chunk_count > MAX_READABLE_STREAM_QUEUED_CHUNKS {
+                stream_state.state = StreamLifecycleState::Errored;
+                let msg = READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string();
+                stream_state.error_message = Some(msg.clone());
+                return Ok((ReadOutcome::Error(msg), None));
+              }
+
               let (byte_queue, buffered_byte_len) = chunk_bytes(bytes)?;
               stream_state.byte_queue = byte_queue;
               stream_state.buffered_byte_len = buffered_byte_len;
