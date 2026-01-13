@@ -536,6 +536,11 @@ pub trait AudioSink: Send + Sync {
   /// continues advancing and buffered-duration/backpressure statistics remain meaningful. Only
   /// an explicit pause should stop draining.
   fn set_volume(&self, volume: f32);
+
+  /// Notifies the sink that the queued audio stream experienced a discontinuity (seek/flush/etc).
+  ///
+  /// Implementations may apply a short fade to avoid audible clicks when playback resumes.
+  fn notify_discontinuity(&self) {}
 }
 
 struct ThreadLocalConvertState {

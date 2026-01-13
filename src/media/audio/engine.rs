@@ -418,6 +418,10 @@ impl AudioSink for AudioEngineSink {
     self.inner.set_sink_volume(volume);
     self.inner.apply_effective_volume();
   }
+
+  fn notify_discontinuity(&self) {
+    self.inner.backend_sink.notify_discontinuity();
+  }
 }
 
 fn sanitize_volume(volume: f32) -> f32 {

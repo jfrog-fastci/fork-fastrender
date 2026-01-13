@@ -209,6 +209,9 @@ impl AudioStreamFactory for CpalStreamFactory {
 /// wake-up only).
 
 const DEFAULT_GAIN_RAMP_DURATION_MS: u32 = 10;
+const DISC_STATE_NONE: u32 = 0;
+const DISC_STATE_FADE_OUT: u32 = 1;
+const DISC_STATE_WAIT_DATA: u32 = 2;
 
 fn gain_ramp_frames(sample_rate_hz: u32) -> u32 {
   let frames = (u64::from(sample_rate_hz).saturating_mul(u64::from(DEFAULT_GAIN_RAMP_DURATION_MS))
@@ -888,6 +891,7 @@ struct SinkState {
   buffer: AudioRingBuffer,
   activity: IdleStreamHandle<CpalStreamControlBackend>,
   volume_target_bits: AtomicU32,
+  discontinuity_state: AtomicU32,
   ramp_target_bits: AtomicU32,
   ramp_current_bits: AtomicU32,
   ramp_step_bits: AtomicU32,
@@ -912,6 +916,7 @@ impl SinkState {
       buffer: AudioRingBuffer::new(capacity),
       activity,
       volume_target_bits: AtomicU32::new(1.0f32.to_bits()),
+      discontinuity_state: AtomicU32::new(DISC_STATE_NONE),
       ramp_target_bits: AtomicU32::new(1.0f32.to_bits()),
       ramp_current_bits: AtomicU32::new(1.0f32.to_bits()),
       ramp_step_bits: AtomicU32::new(0.0f32.to_bits()),
@@ -956,19 +961,72 @@ impl SinkState {
     }
   }
 
+  fn notify_discontinuity(&self) {
+    // Trigger a short fade-out of any currently queued audio. Once the fade completes, the sink
+    // transitions into a "wait for new data" state where it will fade back in from zero on the
+    // next non-empty buffer.
+    self
+      .discontinuity_state
+      .store(DISC_STATE_FADE_OUT, Ordering::Relaxed);
+
+    // If there's nothing to fade out, immediately arm the fade-in. This handles cases where the
+    // discontinuity occurs while the stream is paused/empty and the mixer would otherwise never
+    // call into `mix_into` (silence fast-path).
+    if !self.buffer.has_data() {
+      self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+      self.force_ramp_to_zero();
+      self.maybe_audible.store(false, Ordering::Relaxed);
+    }
+  }
+
+  #[inline]
+  fn force_ramp_to_zero(&self) {
+    let zero_bits = 0.0f32.to_bits();
+    self.ramp_target_bits.store(zero_bits, Ordering::Relaxed);
+    self.ramp_current_bits.store(zero_bits, Ordering::Relaxed);
+    self.ramp_step_bits.store(0.0f32.to_bits(), Ordering::Relaxed);
+    self.ramp_remaining_frames.store(0, Ordering::Relaxed);
+  }
+
   fn mix_into(&self, dst: &mut [f32]) {
     let channels = usize::from(self.config.channels.max(1));
     if channels == 0 || dst.is_empty() {
       return;
     }
 
+    let mut discontinuity_state = self.discontinuity_state.load(Ordering::Relaxed);
+    if discontinuity_state > DISC_STATE_WAIT_DATA {
+      discontinuity_state = DISC_STATE_NONE;
+    }
+
     // If the buffer is empty, ensure the hint is cleared so the callback can fast-path to silence.
     if !self.buffer.has_data() {
+      if discontinuity_state == DISC_STATE_FADE_OUT {
+        self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+        self.force_ramp_to_zero();
+      }
       self.maybe_audible.store(false, Ordering::Relaxed);
       return;
     }
 
-    let desired_target_bits = self.volume_target_bits.load(Ordering::Relaxed);
+    if discontinuity_state == DISC_STATE_WAIT_DATA {
+      // Fresh data has arrived after a discontinuity; clear the state so the sink ramps back up
+      // from zero (ramp state is forced to 0 when entering WAIT_DATA).
+      self
+        .discontinuity_state
+        .store(DISC_STATE_NONE, Ordering::Relaxed);
+      discontinuity_state = DISC_STATE_NONE;
+    }
+
+    let volume_target_bits = self.volume_target_bits.load(Ordering::Relaxed);
+    let volume_target = f32::from_bits(volume_target_bits);
+    let volume_target = if volume_target.is_finite() { volume_target } else { 0.0 };
+
+    let desired_target_bits = if discontinuity_state == DISC_STATE_FADE_OUT {
+      0.0f32.to_bits()
+    } else {
+      volume_target_bits
+    };
     let mut ramp_target_bits = self.ramp_target_bits.load(Ordering::Relaxed);
 
     let mut current = f32::from_bits(self.ramp_current_bits.load(Ordering::Relaxed));
@@ -1012,9 +1070,31 @@ impl SinkState {
       .ramp_remaining_frames
       .store(ramp.frames_remaining, Ordering::Relaxed);
 
-    let has_data = self.buffer.has_data();
-    let gain_nonzero = (ramp.target_gain.is_finite() && ramp.target_gain > 0.0)
+    let mut has_data = self.buffer.has_data();
+    let mut gain_nonzero = (ramp.target_gain.is_finite() && ramp.target_gain > 0.0)
       || (ramp.current_gain.is_finite() && ramp.current_gain > 0.0);
+
+    // After a discontinuity, fade out to silence, then discard any remaining queued samples so the
+    // next playback segment starts from a clean slate and can fade back in from zero.
+    if discontinuity_state == DISC_STATE_FADE_OUT {
+      let fade_complete =
+        ramp.frames_remaining == 0 && ramp.current_gain == 0.0 && ramp.target_gain == 0.0;
+
+      if fade_complete {
+        self.buffer.pop_discard(usize::MAX);
+        self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+        self.force_ramp_to_zero();
+        has_data = self.buffer.has_data();
+        gain_nonzero = self.gain_nonzero_for_hint(volume_target);
+      } else if !has_data {
+        // Ran out of buffered audio before the fade completed; ensure the next non-empty push
+        // fades in from silence rather than resuming at a partial gain.
+        self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+        self.force_ramp_to_zero();
+        has_data = self.buffer.has_data();
+        gain_nonzero = self.gain_nonzero_for_hint(volume_target);
+      }
+    }
     self
       .maybe_audible
       .store(has_data && gain_nonzero, Ordering::Relaxed);
@@ -1069,6 +1149,10 @@ impl AudioSink for CpalAudioSink {
 
   fn set_volume(&self, volume: f32) {
     self.state.set_volume(volume);
+  }
+
+  fn notify_discontinuity(&self) {
+    self.state.notify_discontinuity();
   }
 }
 

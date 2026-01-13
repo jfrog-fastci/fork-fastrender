@@ -432,4 +432,70 @@ mod tests {
     assert_eq!(&out[..half], &vec![1.0; half][..]);
     assert_eq!(&out[half..], &vec![0.0; half][..]);
   }
+
+  #[test]
+  fn audio_gain_ramp_monotonic() {
+    let channels = 1usize;
+    let ramp_frames = 16u32;
+    let frames_to_mix = ramp_frames as usize + 1;
+
+    let rb = AudioRingBuffer::new(frames_to_mix * channels);
+    assert_eq!(rb.push(&vec![1.0; frames_to_mix * channels]), frames_to_mix);
+
+    let mut ramp = GainRamp {
+      current_gain: 1.0,
+      target_gain: 0.0,
+      step: (0.0 - 1.0) / ramp_frames as f32,
+      frames_remaining: ramp_frames,
+    };
+
+    let mut out = vec![0.0; frames_to_mix];
+    rb.pop_add_into_ramped(&mut out, channels, &mut ramp);
+
+    assert!(out[0] > out[1], "ramp should begin decreasing immediately");
+    for win in out.windows(2) {
+      assert!(
+        win[1] <= win[0] + f32::EPSILON,
+        "ramp output should be monotonically non-increasing ({} -> {})",
+        win[0],
+        win[1]
+      );
+    }
+    assert_eq!(out[frames_to_mix - 1], 0.0);
+  }
+
+  #[test]
+  fn audio_gain_ramp_length_is_respected() {
+    let channels = 1usize;
+    let ramp_frames = 8u32;
+
+    let rb = AudioRingBuffer::new((ramp_frames as usize + 2) * channels);
+    assert_eq!(
+      rb.push(&vec![1.0; (ramp_frames as usize + 1) * channels]),
+      ramp_frames as usize + 1
+    );
+
+    let mut ramp = GainRamp {
+      current_gain: 1.0,
+      target_gain: 0.0,
+      step: (0.0 - 1.0) / ramp_frames as f32,
+      frames_remaining: ramp_frames,
+    };
+
+    // Process exactly `ramp_frames` frames; the ramp should reach the target afterwards, but the
+    // last output sample still uses the pre-advance gain.
+    let mut out = vec![0.0; ramp_frames as usize];
+    rb.pop_add_into_ramped(&mut out, channels, &mut ramp);
+    assert_eq!(ramp.frames_remaining, 0);
+    assert_eq!(ramp.current_gain, 0.0);
+    assert!(
+      out.last().copied().unwrap_or(0.0) > 0.0,
+      "last ramped sample should still be >0 before the post-ramp frame"
+    );
+
+    // The next frame should be fully muted.
+    let mut out2 = vec![0.0; 1];
+    rb.pop_add_into_ramped(&mut out2, channels, &mut ramp);
+    assert_eq!(out2[0], 0.0);
+  }
 }
