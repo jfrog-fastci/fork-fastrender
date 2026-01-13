@@ -2,7 +2,7 @@ use crate::animation::TransitionState;
 use crate::dom::DomNode;
 use crate::dom2::{Document, RendererDomSnapshot};
 use crate::error::{Error, RenderError, RenderStage, Result};
-use crate::geometry::Point;
+use crate::geometry::{Point, Rect};
 use crate::clock::{Clock, RealClock};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
@@ -26,6 +26,8 @@ pub struct BrowserDocument2 {
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
   last_dom_mapping: Option<RendererDomSnapshot>,
+  last_painted_scroll_state: Option<ScrollState>,
+  paint_damage: Option<Rect>,
   animation_clock: Arc<dyn Clock>,
   realtime_animations_enabled: bool,
   animation_timeline_origin: Option<Duration>,
@@ -34,6 +36,8 @@ pub struct BrowserDocument2 {
   style_dirty: bool,
   layout_dirty: bool,
   paint_dirty: bool,
+  #[cfg(test)]
+  paint_into_resize_count: u64,
 }
 
 impl BrowserDocument2 {
@@ -59,12 +63,26 @@ impl BrowserDocument2 {
       renderer.parse_html(html)?
     };
     let dom = Document::from_renderer_dom(&dom);
+    let paint_damage = {
+      let (viewport_w, viewport_h) = options
+        .viewport
+        .unwrap_or((renderer.default_width, renderer.default_height));
+      let scale = options
+        .device_pixel_ratio
+        .unwrap_or(renderer.device_pixel_ratio)
+        .max(f32::EPSILON);
+      let device_w = ((viewport_w as f32) * scale).round().max(1.0);
+      let device_h = ((viewport_h as f32) * scale).round().max(1.0);
+      Some(Rect::from_xywh(0.0, 0.0, device_w, device_h))
+    };
     Ok(Self {
       renderer,
       dom,
       options,
       prepared: None,
       last_dom_mapping: None,
+      last_painted_scroll_state: None,
+      paint_damage,
       animation_clock: Arc::new(RealClock::default()),
       realtime_animations_enabled: false,
       animation_timeline_origin: None,
@@ -74,6 +92,8 @@ impl BrowserDocument2 {
       style_dirty: true,
       layout_dirty: true,
       paint_dirty: true,
+      #[cfg(test)]
+      paint_into_resize_count: 0,
     })
   }
 
@@ -108,9 +128,11 @@ impl BrowserDocument2 {
     self.options = options;
     self.prepared = Some(document);
     self.last_dom_mapping = None;
+    self.last_painted_scroll_state = None;
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = true;
+    self.mark_full_paint_damage();
     self.animation_timeline_origin = None;
     self.last_painted_animation_clock = None;
     self.animation_state_store = crate::animation::AnimationStateStore::default();
@@ -132,6 +154,7 @@ impl BrowserDocument2 {
     self.animation_state_store = crate::animation::AnimationStateStore::default();
     self.last_painted_animation_clock = None;
     self.paint_dirty = true;
+    self.mark_full_paint_damage();
   }
 
   /// Enables/disables real-time sampling of time-based animations.
@@ -147,6 +170,7 @@ impl BrowserDocument2 {
     if enabled != self.realtime_animations_enabled {
       self.paint_dirty = true;
       self.last_painted_animation_clock = None;
+      self.mark_full_paint_damage();
     }
     self.realtime_animations_enabled = enabled;
   }
@@ -193,6 +217,7 @@ impl BrowserDocument2 {
     if sanitized != self.options.animation_time {
       self.options.animation_time = sanitized;
       self.paint_dirty = true;
+      self.mark_full_paint_damage();
     }
   }
 
@@ -239,6 +264,51 @@ impl BrowserDocument2 {
   /// cached layout artifacts.
   pub fn render_frame(&mut self) -> Result<super::Pixmap> {
     Ok(self.render_frame_with_deadlines(None)?.pixmap)
+  }
+
+  /// Renders one frame into a caller-supplied pixmap buffer.
+  ///
+  /// This mirrors [`BrowserDocument2::render_frame`], but writes into `output` so embeddings can
+  /// reuse pixel buffers across frames.
+  pub fn render_frame_into(&mut self, output: &mut Option<super::Pixmap>) -> Result<ScrollState> {
+    self.render_frame_with_deadlines_into(output, None)
+  }
+
+  /// Like [`BrowserDocument2::render_frame_into`], but applies an optional deadline to the paint
+  /// phase.
+  pub fn render_frame_with_deadlines_into(
+    &mut self,
+    output: &mut Option<super::Pixmap>,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<ScrollState> {
+    let frame = self.render_frame_with_deadlines(paint_deadline)?;
+    self.copy_frame_into_pixmap(&frame.pixmap, output)?;
+    Ok(frame.scroll_state)
+  }
+
+  /// Renders a new frame if anything has been invalidated since the last successful frame,
+  /// writing pixels into `output` when a repaint occurs.
+  ///
+  /// Returns `Ok(None)` when no dirty flags are set.
+  pub fn render_if_needed_into(
+    &mut self,
+    output: &mut Option<super::Pixmap>,
+  ) -> Result<Option<ScrollState>> {
+    self.render_if_needed_with_deadlines_into(output, None)
+  }
+
+  /// Like [`BrowserDocument2::render_if_needed_into`], but applies an optional deadline to the
+  /// paint phase.
+  pub fn render_if_needed_with_deadlines_into(
+    &mut self,
+    output: &mut Option<super::Pixmap>,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<Option<ScrollState>> {
+    let Some(frame) = self.render_if_needed_with_deadlines(paint_deadline)? else {
+      return Ok(None);
+    };
+    self.copy_frame_into_pixmap(&frame.pixmap, output)?;
+    Ok(Some(frame.scroll_state))
   }
 
   /// Renders one frame, applying an optional deadline to the *paint* phase.
@@ -325,6 +395,7 @@ impl BrowserDocument2 {
       self.options.device_pixel_ratio = sanitized;
       self.layout_dirty = true;
       self.paint_dirty = true;
+      self.mark_full_paint_damage();
     }
   }
 
@@ -398,6 +469,8 @@ impl BrowserDocument2 {
     self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
     self.options.scroll_delta = frame.scroll_state.viewport_delta;
     self.options.element_scroll_deltas = frame.scroll_state.elements_delta.clone();
+    self.last_painted_scroll_state = Some(frame.scroll_state.clone());
+    self.paint_damage = None;
     self.paint_dirty = false;
     if self.realtime_animations_enabled && self.options.animation_time.is_none() {
       self.last_painted_animation_clock = Some(self.animation_clock.now());
@@ -475,6 +548,8 @@ impl BrowserDocument2 {
     self.style_dirty = true;
     self.layout_dirty = true;
     self.paint_dirty = true;
+    self.last_painted_scroll_state = None;
+    self.mark_full_paint_damage();
   }
 
   #[inline]
@@ -482,11 +557,76 @@ impl BrowserDocument2 {
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = false;
+    self.paint_damage = None;
   }
 
   #[inline]
   fn is_dirty(&self) -> bool {
     self.style_dirty || self.layout_dirty || self.paint_dirty
+  }
+
+  fn mark_full_paint_damage(&mut self) {
+    let (viewport_w, viewport_h) = self
+      .options
+      .viewport
+      .unwrap_or((self.renderer.default_width, self.renderer.default_height));
+    let scale = self
+      .options
+      .device_pixel_ratio
+      .unwrap_or(self.renderer.device_pixel_ratio)
+      .max(f32::EPSILON);
+    let device_w = ((viewport_w as f32) * scale).round().max(1.0);
+    let device_h = ((viewport_h as f32) * scale).round().max(1.0);
+    self.paint_damage = Some(Rect::from_xywh(0.0, 0.0, device_w, device_h));
+  }
+
+  fn copy_frame_into_pixmap(
+    &mut self,
+    source: &super::Pixmap,
+    output: &mut Option<super::Pixmap>,
+  ) -> Result<()> {
+    let expected_w = source.width();
+    let expected_h = source.height();
+
+    let needs_resize = match output.as_ref() {
+      Some(pixmap) => pixmap.width() != expected_w || pixmap.height() != expected_h,
+      None => true,
+    };
+    if needs_resize {
+      #[cfg(test)]
+      {
+        self.paint_into_resize_count = self.paint_into_resize_count.saturating_add(1);
+      }
+
+      *output = Some(
+        crate::paint::pixmap::new_pixmap_with_context(
+          expected_w,
+          expected_h,
+          "BrowserDocument2::render_frame_into",
+        )
+        .map_err(Error::Render)?,
+      );
+    }
+
+    let Some(target) = output.as_mut() else {
+      return Err(Error::Render(RenderError::InvalidParameters {
+        message: "BrowserDocument2::render_frame_into: missing output pixmap".to_string(),
+      }));
+    };
+
+    let src = source.data();
+    let dst = target.data_mut();
+    if src.len() != dst.len() {
+      return Err(Error::Render(RenderError::InvalidParameters {
+        message: format!(
+          "BrowserDocument2::render_frame_into: byte length mismatch (src={} dst={})",
+          src.len(),
+          dst.len()
+        ),
+      }));
+    }
+    dst.copy_from_slice(src);
+    Ok(())
   }
 }
 
@@ -663,6 +803,58 @@ mod tests {
     let pixmap_end = doc.render_frame()?;
     assert_eq!(pixel(&pixmap_end, 0, 0), (255, 0, 0, 255));
 
+    Ok(())
+  }
+
+  fn static_fixture_html() -> &'static str {
+    r#"
+      <style>
+        html, body { margin: 0; background: rgb(0, 0, 0); }
+        #box { width: 1px; height: 1px; background: rgb(255, 0, 0); }
+      </style>
+      <div id="box"></div>
+    "#
+  }
+
+  #[test]
+  fn render_frame_into_matches_render_frame_pixels() -> Result<()> {
+    let options = RenderOptions::new()
+      .with_viewport(2, 2)
+      .with_layout_parallelism(crate::LayoutParallelism::disabled())
+      .with_paint_parallelism(crate::PaintParallelism::disabled());
+    let mut doc = BrowserDocument2::from_html(static_fixture_html(), options)?;
+
+    let expected = doc.render_frame()?;
+    let mut output: Option<super::super::Pixmap> = None;
+    let _ = doc.render_frame_into(&mut output)?;
+    let actual = output.as_ref().expect("render_frame_into output");
+
+    assert_eq!((actual.width(), actual.height()), (expected.width(), expected.height()));
+    assert_eq!(actual.data(), expected.data());
+    Ok(())
+  }
+
+  #[test]
+  fn render_frame_into_reuses_buffer_when_size_is_unchanged() -> Result<()> {
+    let options = RenderOptions::new()
+      .with_viewport(2, 2)
+      .with_layout_parallelism(crate::LayoutParallelism::disabled())
+      .with_paint_parallelism(crate::PaintParallelism::disabled());
+    let mut doc = BrowserDocument2::from_html(static_fixture_html(), options)?;
+
+    let mut output: Option<super::super::Pixmap> = None;
+    let _ = doc.render_frame_into(&mut output)?;
+    let first = output.as_ref().expect("output pixmap");
+    let first_ptr = first.data().as_ptr();
+    let first_resizes = doc.paint_into_resize_count;
+
+    let _ = doc.render_frame_into(&mut output)?;
+    let second = output.as_ref().expect("output pixmap");
+    let second_ptr = second.data().as_ptr();
+    let second_resizes = doc.paint_into_resize_count;
+
+    assert_eq!(first_ptr, second_ptr, "expected output pixmap buffer reuse");
+    assert_eq!(second_resizes, first_resizes, "expected no output resize");
     Ok(())
   }
 }
