@@ -75,3 +75,28 @@ fn parenthesized_identifier_is_valid_postfix_update_target() {
 fn parenthesized_member_is_valid_postfix_update_target() {
   assert_execs_to_number("var o = { x: 0 }; (o.x)++; o.x", 1.0);
 }
+
+#[test]
+fn parenthesized_optional_chain_base_is_valid_assignment_target() {
+  assert_execs_to_number("var o = { x: { y: 0 } }; (o?.x).y = 1; o.x.y", 1.0);
+}
+
+#[test]
+fn parenthesized_optional_chain_base_is_valid_update_target() {
+  assert_execs_to_number("var o = { x: { y: 0 } }; (o?.x).y++; o.x.y", 1.0);
+}
+
+#[test]
+fn parenthesized_optional_chain_base_is_valid_parenthesized_update_target() {
+  assert_execs_to_number("var o = { x: { y: 0 } }; ((o?.x).y)++; o.x.y", 1.0);
+}
+
+#[test]
+fn parenthesized_optional_chain_base_is_valid_for_of_lhs_target() {
+  assert_execs_to_number("var o = { x: { y: 0 } }; for ((o?.x).y of [1]) {} o.x.y", 1.0);
+}
+
+#[test]
+fn unparenthesized_optional_chain_is_invalid_assignment_target() {
+  assert_syntax_error("var o = { x: { y: 0 } }; o?.x.y = 1;");
+}

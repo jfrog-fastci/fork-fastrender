@@ -2694,21 +2694,36 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if member.stx.optional_chaining {
           Some(expr.loc)
         } else {
-          Self::optional_chain_in_assignment_target_expr(&member.stx.left)
+          // Parenthesized expressions break optional-chain propagation:
+          // `(a?.b).c` is a valid assignment/update target even though `a?.b` contains optional
+          // chaining. See `Evaluator::eval_chain_base`.
+          if member.stx.left.assoc.get::<ParenthesizedExpr>().is_some() {
+            None
+          } else {
+            Self::optional_chain_in_assignment_target_expr(&member.stx.left)
+          }
         }
       }
       Expr::ComputedMember(member) => {
         if member.stx.optional_chaining {
           Some(expr.loc)
         } else {
-          Self::optional_chain_in_assignment_target_expr(&member.stx.object)
+          if member.stx.object.assoc.get::<ParenthesizedExpr>().is_some() {
+            None
+          } else {
+            Self::optional_chain_in_assignment_target_expr(&member.stx.object)
+          }
         }
       }
       Expr::Call(call) => {
         if call.stx.optional_chaining {
           Some(expr.loc)
         } else {
-          Self::optional_chain_in_assignment_target_expr(&call.stx.callee)
+          if call.stx.callee.assoc.get::<ParenthesizedExpr>().is_some() {
+            None
+          } else {
+            Self::optional_chain_in_assignment_target_expr(&call.stx.callee)
+          }
         }
       }
       _ => None,
