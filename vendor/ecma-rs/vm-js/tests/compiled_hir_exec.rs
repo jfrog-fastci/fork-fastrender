@@ -182,6 +182,33 @@ fn compiled_for_loop_let_closure_captures_each_iteration_value() -> Result<(), V
 }
 
 #[test]
+fn compiled_for_loop_let_labelled_continue_captures_each_iteration_value() -> Result<(), VmError> {
+  // Labelled `continue` should be consumed by the labelled loop, and the loop must still create
+  // per-iteration environments so closures capture the correct value.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let f0;
+        let f1;
+        let idx = 0;
+        outer: for (let i = 0; i < 2; i = i + 1) {
+          for (let j = 0; j < 2; j = j + 1) {
+            if (idx === 0) f0 = function() { return i; };
+            if (idx === 1) f1 = function() { return i; };
+            idx = idx + 1;
+            continue outer;
+          }
+        }
+        return f0() + f1();
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_for_of_let_creates_per_iteration_envs() -> Result<(), VmError> {
   // `for (let x of ...)` should create a fresh lexical binding each iteration so closures capture
   // the value from the iteration when they were created.
@@ -288,6 +315,31 @@ fn compiled_for_triple_let_restores_lexical_env_on_break() -> Result<(), VmError
 
   let err = rt.exec_compiled_script(script).unwrap_err();
   assert!(matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_loop_let_restores_lexical_env_after_throw() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"for (let i = 0; i < 1; i = i + 1) { throw 1; }"#,
+  )?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  assert!(matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }));
+
+  // If the loop's lexical environment is not restored when the body throws, the loop variable
+  // binding would leak into subsequent script executions.
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", "typeof i")?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "undefined");
   Ok(())
 }
 
