@@ -50810,6 +50810,34 @@ mod tests {
   }
 
   #[test]
+  fn window_local_storage_is_isolated_across_origins() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    let mut realm_a = new_realm(WindowRealmConfig::new("https://a.example/"))?;
+    realm_a.exec_script("localStorage.setItem('k', 'v')")?;
+
+    let mut realm_b = new_realm(WindowRealmConfig::new("https://b.example/"))?;
+    assert_eq!(realm_b.exec_script("localStorage.getItem('k')")?, Value::Null);
+
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
+  fn window_local_storage_is_isolated_across_ports() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    let mut realm_a = new_realm(WindowRealmConfig::new("https://example.com:8443/"))?;
+    realm_a.exec_script("localStorage.setItem('k', 'v')")?;
+
+    let mut realm_b = new_realm(WindowRealmConfig::new("https://example.com:9443/"))?;
+    assert_eq!(realm_b.exec_script("localStorage.getItem('k')")?, Value::Null);
+
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
   fn window_session_storage_persists_across_realms_in_same_namespace() -> Result<(), VmError> {
     crate::js::web_storage::reset_default_web_storage_hub_for_tests();
 
@@ -50836,6 +50864,36 @@ mod tests {
     // A fresh session namespace should not observe data from the shared namespace.
     let mut realm_c = new_realm(WindowRealmConfig::new("https://storage-session.test/c"))?;
     assert_eq!(realm_c.exec_script("sessionStorage.getItem('k')")?, Value::Null);
+
+    drop(tab_guard);
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
+  fn window_session_storage_is_isolated_across_origins_in_same_namespace() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    // Simulate a single tab lifetime by registering the namespace and keeping the guard alive.
+    let session_namespace = 3u64;
+    let tab_guard = crate::js::web_storage::with_default_hub_mut(|hub| {
+      hub.register_window(crate::js::web_storage::SessionNamespaceId(session_namespace))
+    });
+
+    let mut realm_a = new_realm(
+      WindowRealmConfig::new("https://a.example/")
+        .with_session_storage_namespace_id(session_namespace),
+    )?;
+    realm_a.exec_script("sessionStorage.setItem('k', 'v')")?;
+
+    let mut realm_b = new_realm(
+      WindowRealmConfig::new("https://b.example/")
+        .with_session_storage_namespace_id(session_namespace),
+    )?;
+    assert_eq!(
+      realm_b.exec_script("sessionStorage.getItem('k')")?,
+      Value::Null
+    );
 
     drop(tab_guard);
     crate::js::web_storage::reset_default_web_storage_hub_for_tests();
