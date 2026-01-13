@@ -115,7 +115,7 @@ operations = ["item", "namedItem"]
 name = "DOMTokenList"
 constructors = false
 attributes = ["value", "length"]
-operations = ["add", "remove", "toggle", "contains", "replace", "item"]
+operations = ["add", "remove", "toggle", "contains", "replace", "item", "supports"]
 
 [[interface]]
 name = "URL"
