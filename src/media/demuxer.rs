@@ -3,6 +3,7 @@ use super::{
   MediaVideoInfo,
 };
 use super::mp4 as mp4_index;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::Path;
@@ -40,7 +41,7 @@ struct Mp4TrackCursor {
   peeked: Option<MediaPacket>,
 }
 
-/// Simple MP4 packet demuxer that yields H.264 + AAC packets in demux order.
+/// Simple MP4 packet demuxer that yields common video+audio packets in demux order.
 ///
 /// Note: the existing `crate::media::mp4` module focuses on sample tables and efficient seeking,
 /// whereas this type focuses on producing compressed packets with codec metadata for decoding.
@@ -63,12 +64,21 @@ impl Mp4PacketDemuxer<BufReader<File>> {
       _ => None,
     };
 
+    // Best-effort: parse MP4 sample descriptions via mp4parse so we can detect codecs that the `mp4`
+    // crate does not expose via `Mp4Track::media_type()` yet (notably VP9).
+    let vp9_tracks = {
+      file.rewind()?;
+      let map = mp4parse_vp9_tracks(&mut file).unwrap_or_default();
+      file.rewind()?;
+      map
+    };
+
     file.rewind()?;
     let reader = BufReader::new(file);
     let mp4 = mp4::Mp4Reader::read_header(reader, len)
       .map_err(|e| MediaError::Demux(format!("mp4: failed to read header: {e}")))?;
 
-    let mut demuxer = Self::from_reader(mp4)?;
+    let mut demuxer = Self::from_reader_with_vp9_tracks(mp4, vp9_tracks)?;
     demuxer.seek_index = seek_index;
     Ok(demuxer)
   }
@@ -76,19 +86,24 @@ impl Mp4PacketDemuxer<BufReader<File>> {
 
 impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
   pub fn from_reader(mp4: mp4::Mp4Reader<R>) -> MediaResult<Self> {
+    Self::from_reader_with_vp9_tracks(mp4, HashMap::new())
+  }
+
+  fn from_reader_with_vp9_tracks(
+    mp4: mp4::Mp4Reader<R>,
+    vp9_tracks: HashMap<u32, Mp4Vp9TrackMeta>,
+  ) -> MediaResult<Self> {
     let mut tracks = Vec::new();
     let mut cursors = Vec::new();
 
     for (track_id, track) in mp4.tracks().iter() {
-      let media_type = track
-        .media_type()
-        .map_err(|e| MediaError::Demux(format!("mp4: failed to get media type: {e}")))?;
-
       let timescale = track.trak.mdia.mdhd.timescale;
       let sample_count = track.sample_count();
 
+      let media_type = track.media_type().ok();
+
       match media_type {
-        mp4::MediaType::H264 => {
+        Some(mp4::MediaType::H264) => {
           let width = track.width() as u32;
           let height = track.height() as u32;
 
@@ -157,7 +172,7 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
             audio: None,
           });
         }
-        mp4::MediaType::AAC => {
+        Some(mp4::MediaType::AAC) => {
           let (sample_rate, channels) = mp4_track_audio_params(track)
             .map_err(|e| MediaError::Demux(format!("mp4: failed to read audio params: {e}")))?;
           let asc = build_aac_lc_audio_specific_config(sample_rate, channels)?;
@@ -175,10 +190,27 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
             }),
           });
         }
-        _ => {}
+        _ => {
+          if let Some(vp9) = vp9_tracks.get(track_id) {
+            tracks.push(MediaTrackInfo {
+              id: u64::from(*track_id),
+              track_type: MediaTrackType::Video,
+              codec: MediaCodec::Vp9,
+              codec_private: vp9.codec_private.clone(),
+              codec_delay_ns: 0,
+              video: Some(MediaVideoInfo {
+                width: vp9.width,
+                height: vp9.height,
+              }),
+              audio: None,
+            });
+          }
+        }
       }
 
-      if matches!(media_type, mp4::MediaType::H264 | mp4::MediaType::AAC) {
+      let emit_packets = matches!(media_type, Some(mp4::MediaType::H264 | mp4::MediaType::AAC))
+        || vp9_tracks.contains_key(track_id);
+      if emit_packets {
         cursors.push(Mp4TrackCursor {
           id: *track_id,
           timescale,
@@ -198,6 +230,138 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
       cursors,
       seek_index: None,
     })
+  }
+}
+
+#[derive(Debug, Clone)]
+struct Mp4Vp9TrackMeta {
+  width: u32,
+  height: u32,
+  codec_private: Vec<u8>,
+}
+
+fn mp4parse_vp9_tracks<R: Read>(reader: &mut R) -> MediaResult<HashMap<u32, Mp4Vp9TrackMeta>> {
+  let ctx = mp4parse::read_mp4(reader).map_err(|e| MediaError::Demux(format!("mp4parse: {e:?}")))?;
+
+  let mut out = HashMap::new();
+
+  for track in &ctx.tracks {
+    let Some(track_id) = track.track_id else {
+      continue;
+    };
+    if track.track_type != mp4parse::TrackType::Video {
+      continue;
+    }
+
+    let Some(stsd) = track.stsd.as_ref() else {
+      continue;
+    };
+    let Some(stsc) = track.stsc.as_ref() else {
+      continue;
+    };
+
+    let first_desc_idx = stsc
+      .samples
+      .first()
+      .map(|s| s.sample_description_index)
+      .unwrap_or(1);
+    if first_desc_idx == 0 {
+      continue;
+    }
+
+    let sample_entry = stsd
+      .descriptions
+      .get(first_desc_idx as usize - 1)
+      .ok_or_else(|| MediaError::Demux("mp4parse: missing sample entry".into()))?;
+
+    let mp4parse::SampleEntry::Video(video) = sample_entry else {
+      continue;
+    };
+
+    if video.codec_type != mp4parse::CodecType::VP9 {
+      continue;
+    }
+
+    let mp4parse::VideoCodecSpecific::VPxConfig(vpcc) = &video.codec_specific else {
+      return Err(MediaError::Demux(
+        "mp4parse: VP9 sample entry missing VPxConfig (vpcC)".into(),
+      ));
+    };
+
+    // Store a compact subset of VPxConfig that downstream decoders can read without requiring
+    // Matroska-specific fields.
+    //
+    // Layout:
+    //   u8  bit_depth
+    //   u8  colour_primaries
+    //   u8  chroma_subsampling
+    //   u16 codec_init_len (big-endian)
+    //   [codec_init_len] codec_init bytes
+    let codec_init: Vec<u8> = vpcc.codec_init.iter().copied().collect();
+    if codec_init.len() > u16::MAX as usize {
+      return Err(MediaError::Demux("mp4parse: vp9 codec_init too large".into()));
+    }
+
+    let mut codec_private = Vec::with_capacity(3 + 2 + codec_init.len());
+    codec_private.push(vpcc.bit_depth);
+    codec_private.push(vpcc.colour_primaries);
+    codec_private.push(vpcc.chroma_subsampling);
+    codec_private.extend_from_slice(&(codec_init.len() as u16).to_be_bytes());
+    codec_private.extend_from_slice(&codec_init);
+
+    out.insert(
+      track_id,
+      Mp4Vp9TrackMeta {
+        width: u32::from(video.width),
+        height: u32::from(video.height),
+        codec_private,
+      },
+    );
+  }
+
+  Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::Mp4PacketDemuxer;
+  use crate::media::decoder::create_video_decoder;
+  use crate::media::{MediaCodec, MediaTrackType};
+  use std::path::PathBuf;
+
+  #[test]
+  fn mp4_demuxer_detects_vp9_track() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+      .join("tests")
+      .join("fixtures")
+      .join("media")
+      .join("vp9_in_mp4.mp4");
+
+    let mut demuxer = Mp4PacketDemuxer::open(&path).expect("mp4 demuxer should open");
+    let tracks = demuxer.tracks().to_vec();
+
+    let track = tracks
+      .iter()
+      .find(|t| t.track_type == MediaTrackType::Video && t.codec == MediaCodec::Vp9)
+      .expect("expected VP9 video track");
+
+    assert_eq!(track.video.as_ref().map(|v| (v.width, v.height)), Some((16, 16)));
+    assert!(
+      track.codec_private.len() >= 5,
+      "expected VP9 vpcC-derived extradata"
+    );
+
+    let pkt = demuxer
+      .next_packet()
+      .expect("demux should succeed")
+      .expect("expected at least one packet");
+    assert_eq!(pkt.track_id, track.id);
+    assert!(!pkt.as_slice().is_empty());
+
+    let mut decoder = create_video_decoder(track).expect("vp9 decoder should be constructible");
+    let frames = decoder.decode(&pkt).expect("vp9 decode should succeed");
+    assert!(!frames.is_empty());
+    assert_eq!((frames[0].width, frames[0].height), (16, 16));
   }
 }
 

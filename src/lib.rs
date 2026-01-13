@@ -218,6 +218,7 @@ pub mod render_control;
 pub mod scroll;
 pub mod style;
 pub mod text;
+pub mod media;
 mod textarea;
 pub mod tree;
 pub mod security;
