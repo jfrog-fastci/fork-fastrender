@@ -36497,6 +36497,48 @@ mod tests {
   }
 
   #[test]
+  fn generator_yield_path_private_name_member_access() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      class C {
+        static #x = 123;
+        static #m() { return this.#x + 1; }
+
+        static *genField() { return (yield this).#x; }
+        static *genMethod() { return (yield this).#m(); }
+      }
+
+      const it1 = C.genField();
+      const y1 = it1.next();
+      const r1 = it1.next(y1.value);
+      const ok1 =
+        y1.value === C &&
+        y1.done === false &&
+        r1.value === 123 &&
+        r1.done === true;
+
+      const it2 = C.genMethod();
+      const y2 = it2.next();
+      const r2 = it2.next(y2.value);
+      const ok2 =
+        y2.value === C &&
+        y2.done === false &&
+        r2.value === 124 &&
+        r2.done === true;
+
+      ok1 && ok2
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn unimplemented_errors_are_coerced_to_throw_with_stack() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
