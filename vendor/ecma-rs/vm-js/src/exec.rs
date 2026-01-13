@@ -32424,6 +32424,22 @@ fn gen_binary_after_left(
       }
       gen_eval_expr(evaluator, scope, &expr.right)
     }
+    OperatorName::Comma => match gen_eval_expr(evaluator, scope, &expr.right)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => Ok(GenEval::Complete(Completion::normal(v.unwrap_or(Value::Undefined)))),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::BinaryAfterRight {
+            expr: expr as *const BinaryExpr,
+            left: Value::Undefined,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
     OperatorName::Addition => match gen_eval_expr(evaluator, scope, &expr.right)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
@@ -33346,6 +33362,9 @@ fn gen_resume_from_frames(
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
           match expr.operator {
+            OperatorName::Comma => {
+              state = Completion::normal(v.unwrap_or(Value::Undefined));
+            }
             OperatorName::Addition => {
               match evaluator.addition_operator(scope, left, v.unwrap_or(Value::Undefined)) {
                 Ok(v) => state = Completion::normal(v),
@@ -36472,6 +36491,44 @@ mod tests {
       "expected IteratorClose return-result TypeError to override the yield* missing-throw TypeError"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn generator_direct_eval_after_yield_in_args_reads_local_lexical_binding() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      (function () {
+        function* g(){ let x=1; return eval(yield "x"); }
+        const it = g();
+        const first = it.next();
+        return it.next(first.value).value;
+      })()
+    "#,
+    )?;
+    assert_eq!(value, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn generator_direct_eval_after_yield_in_args_writes_local_lexical_binding() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      (function () {
+        function* g(){ let x=1; eval(yield "x=2"); return x; }
+        const it = g();
+        const first = it.next();
+        return it.next(first.value).value;
+      })()
+    "#,
+    )?;
+    assert_eq!(value, Value::Number(2.0));
     Ok(())
   }
 
