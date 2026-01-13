@@ -868,6 +868,48 @@ impl EventListenerRegistry {
     self.opaque_targets.borrow_mut().insert(id, target);
   }
 
+  /// Sweeps dead `EventTargetId::Opaque` targets from the registry.
+  ///
+  /// `opaque_targets` stores weak handles to JS wrapper objects so the registry does not keep
+  /// `EventTarget` wrappers alive. When those wrappers are collected, we must also drop any
+  /// associated listener + parent-chain metadata to avoid unbounded growth in long-running runs
+  /// (e.g. WPT).
+  pub(crate) fn sweep_dead_opaque_targets(&self, heap: &Heap) {
+    let mut dead_ids: Vec<u64> = Vec::new();
+    // Remove dead weak handles and record their IDs so we can clean up related tables.
+    self.opaque_targets.borrow_mut().retain(|&id, weak| {
+      if weak.upgrade(heap).is_some() {
+        true
+      } else {
+        dead_ids.push(id);
+        false
+      }
+    });
+    if dead_ids.is_empty() {
+      return;
+    }
+    let dead: FxHashSet<u64> = dead_ids.iter().copied().collect();
+
+    // Drop listener tables for dead targets.
+    {
+      let mut listeners = self.listeners.borrow_mut();
+      for id in &dead_ids {
+        listeners.remove(&EventTargetId::Opaque(*id));
+      }
+    }
+
+    // Drop parent links for dead targets, and any links whose parent is now dead.
+    self.opaque_parents.borrow_mut().retain(|child, parent| {
+      if dead.contains(child) {
+        return false;
+      }
+      match *parent {
+        EventTargetId::Opaque(parent_id) => !dead.contains(&parent_id),
+        _ => true,
+      }
+    });
+  }
+
   pub(crate) fn opaque_target_object(&self, heap: &Heap, id: u64) -> Option<GcObject> {
     // Best-effort cleanup: if the object is dead, remove the weak handle so the table doesn't grow
     // unboundedly across repeated allocations.
@@ -877,6 +919,9 @@ impl EventListenerRegistry {
       Some(obj) => Some(obj),
       None => {
         map.remove(&id);
+        // Also drop any associated listener + parent metadata so we don't retain dead opaque ids.
+        self.opaque_parents.borrow_mut().remove(&id);
+        self.listeners.borrow_mut().remove(&EventTargetId::Opaque(id));
         None
       }
     }

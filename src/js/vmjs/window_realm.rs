@@ -349,15 +349,16 @@ struct RealmDocumentRegistry {
 }
 
 impl RealmDocumentRegistry {
-  fn sweep_if_needed(&mut self, heap: &Heap) {
+  fn sweep_if_needed(&mut self, heap: &Heap) -> bool {
     let gc_runs = heap.gc_runs();
     if gc_runs == self.last_gc_runs {
-      return;
+      return false;
     }
     self
       .documents
       .retain(|doc_obj, _dom| doc_obj.upgrade(heap).is_some());
     self.last_gc_runs = gc_runs;
+    true
   }
 
   fn register(&mut self, document_obj: GcObject, dom: dom2::Document) {
@@ -6194,6 +6195,7 @@ fn history_state_change_native(
       state_key,
       read_only_data_desc(cloned_state_value),
     )?;
+  }
 
   {
     // Keep `history.length` in sync with the per-realm session history.
@@ -7105,9 +7107,26 @@ pub(crate) fn resolve_document_dom_ptr_for_events(
     ));
   };
 
-  data
-    .realm_document_registry
-    .sweep_if_needed(scope.heap());
+  let did_sweep = data.realm_document_registry.sweep_if_needed(scope.heap());
+  if did_sweep {
+    // GC can collect opaque EventTarget wrappers that have listener + parent-chain metadata stored
+    // in per-document `EventListenerRegistry` tables. Sweep those tables when `gc_runs` advances so
+    // long-running test runs (e.g. WPT) don't retain unbounded stale IDs.
+    //
+    // Sweep both:
+    // - the host DOM's event registry (when available), and
+    // - the realm fallback document used when no host DOM is present.
+    if let Some(host_dom_ptr) = dom_ptr_for_event_registry(host) {
+      // SAFETY: `host_dom_ptr` is derived from the active `VmHost` and only used for this call.
+      unsafe { host_dom_ptr.as_ref() }
+        .events()
+        .sweep_dead_opaque_targets(scope.heap());
+    }
+    data
+      .events_dom_fallback
+      .events()
+      .sweep_dead_opaque_targets(scope.heap());
+  }
 
   if data.document_obj == Some(document_obj) {
     if let Some(dom_ptr) = dom_ptr_for_event_registry(host) {

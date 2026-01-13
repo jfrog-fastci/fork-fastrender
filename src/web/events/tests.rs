@@ -6,12 +6,113 @@ use crate::dom2::{Document, NodeId, NodeKind};
 use crate::web::dom::DomException;
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
+use vm_js::HeapLimits;
 use vm_js::Value as JsValue;
 
 #[test]
 fn listener_id_new_roundtrips_through_get() {
   let id = ListenerId::new(42);
   assert_eq!(id.get(), 42);
+}
+
+#[test]
+fn sweep_dead_opaque_target_clears_listener_and_parent_metadata() {
+  let registry = EventListenerRegistry::new();
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 512 * 1024));
+
+  let target_id: u64;
+  {
+    let mut scope = heap.scope();
+    let obj = scope.alloc_object().unwrap();
+    target_id = (obj.index() as u64) | ((obj.generation() as u64) << 32);
+
+    registry.register_opaque_target(target_id, WeakGcObject::new(obj));
+    registry.set_opaque_parent(target_id, Some(EventTargetId::Window));
+    registry.add_event_listener(
+      EventTargetId::Opaque(target_id),
+      "x",
+      ListenerId::new(1),
+      AddEventListenerOptions::default(),
+    );
+
+    assert!(registry.opaque_targets.borrow().contains_key(&target_id));
+    assert!(registry.opaque_parents.borrow().contains_key(&target_id));
+    assert!(
+      registry
+        .listeners
+        .borrow()
+        .contains_key(&EventTargetId::Opaque(target_id))
+    );
+
+    // Drop all roots and force a GC cycle so the wrapper dies.
+    scope.heap_mut().collect_garbage();
+  }
+
+  registry.sweep_dead_opaque_targets(&heap);
+
+  assert!(!registry.opaque_targets.borrow().contains_key(&target_id));
+  assert!(!registry.opaque_parents.borrow().contains_key(&target_id));
+  assert!(
+    !registry
+      .listeners
+      .borrow()
+      .contains_key(&EventTargetId::Opaque(target_id))
+  );
+}
+
+#[test]
+fn sweep_drops_opaque_parent_links_that_point_to_dead_targets() {
+  let registry = EventListenerRegistry::new();
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 512 * 1024));
+
+  let mut scope = heap.scope();
+  let parent_obj = scope.alloc_object().unwrap();
+  let child_obj = scope.alloc_object().unwrap();
+
+  let parent_id = (parent_obj.index() as u64) | ((parent_obj.generation() as u64) << 32);
+  let child_id = (child_obj.index() as u64) | ((child_obj.generation() as u64) << 32);
+
+  registry.register_opaque_target(parent_id, WeakGcObject::new(parent_obj));
+  registry.register_opaque_target(child_id, WeakGcObject::new(child_obj));
+  registry.set_opaque_parent(child_id, Some(EventTargetId::Opaque(parent_id)));
+
+  registry.add_event_listener(
+    EventTargetId::Opaque(parent_id),
+    "x",
+    ListenerId::new(1),
+    AddEventListenerOptions::default(),
+  );
+  registry.add_event_listener(
+    EventTargetId::Opaque(child_id),
+    "x",
+    ListenerId::new(2),
+    AddEventListenerOptions::default(),
+  );
+
+  // Keep the child wrapper alive; allow the parent to be collected.
+  scope.push_root(JsValue::Object(child_obj)).unwrap();
+  scope.heap_mut().collect_garbage();
+
+  registry.sweep_dead_opaque_targets(scope.heap());
+
+  assert!(!registry.opaque_targets.borrow().contains_key(&parent_id));
+  assert!(registry.opaque_targets.borrow().contains_key(&child_id));
+
+  // The child's parent link should be dropped rather than pointing at a dead opaque id.
+  assert!(!registry.opaque_parents.borrow().contains_key(&child_id));
+
+  assert!(
+    !registry
+      .listeners
+      .borrow()
+      .contains_key(&EventTargetId::Opaque(parent_id))
+  );
+  assert!(
+    registry
+      .listeners
+      .borrow()
+      .contains_key(&EventTargetId::Opaque(child_id))
+  );
 }
 
 fn element(tag_name: &str, children: Vec<DomNode>) -> DomNode {

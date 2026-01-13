@@ -725,7 +725,10 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     }
   }
 
-  fn maybe_sweep(&mut self, heap: &mut vm_js::Heap) {
+  fn maybe_sweep(&mut self, vm: &mut Vm, heap: &mut vm_js::Heap)
+  where
+    Host: DomHost,
+  {
     let gc_runs = heap.gc_runs();
     if gc_runs == self.last_gc_runs {
       return;
@@ -749,6 +752,23 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
         false
       }
     });
+
+    // Also sweep per-document `EventListenerRegistry` tables that track opaque EventTargets via weak
+    // handles. This must run on GC boundaries so the registry doesn't retain dead opaque ids
+    // indefinitely.
+    //
+    // Best effort: this host may not have a DOM (`with_dom_host` will fail); the realm fallback
+    // document is always available when WindowRealm user data is present.
+    let _ = self.with_dom_host(vm, |host| {
+      host.with_dom(|dom| dom.events().sweep_dead_opaque_targets(heap));
+      Ok(())
+    });
+    if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+      data
+        .events_dom_fallback()
+        .events()
+        .sweep_dead_opaque_targets(heap);
+    }
   }
 
   fn require_receiver_object(receiver: Option<Value>) -> Result<GcObject, VmError> {
@@ -1516,7 +1536,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
     overload: usize,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    self.maybe_sweep(scope.heap_mut());
+    self.maybe_sweep(vm, scope.heap_mut());
 
     match (interface, operation, overload) {
       ("Document", "getElementById", 0) => {
@@ -4591,7 +4611,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
     interface: &'static str,
     kind: IterableKind,
   ) -> Result<Vec<BindingValue>, VmError> {
-    self.maybe_sweep(scope.heap_mut());
+    self.maybe_sweep(vm, scope.heap_mut());
 
     match interface {
       "URLSearchParams" => {
