@@ -16,7 +16,18 @@ Code map (repo reality):
     - `Job` (job object wrapper + limits)
     - AppContainer SID helpers (`AppContainerProfile`, `derive_appcontainer_sid`)
     - Mitigation policy builder + verifier (`mitigations::*`)
-    - A separate Windows spawn helper that applies mitigations: `win_sandbox::spawn_sandboxed(...)`
+    - A separate Windows spawn helper that applies **mitigation policies only**:
+      `win_sandbox::spawn_sandboxed(...)`
+      - Note: this helper does **not** currently apply the full renderer sandbox (no AppContainer,
+        no restricted token, no Job, no handle allowlist). It exists for targeted testing/bring-up
+        and should not be treated as a complete sandbox boundary.
+
+Rule of thumb:
+
+- Use `fastrender::sandbox::windows::spawn_sandboxed(...)` when you want the **full renderer spawn
+  sandbox** (AppContainer/restricted token + Job + handle allowlisting).
+- Use `win_sandbox::spawn_sandboxed(...)` when you explicitly want “spawn a process with mitigation
+  policies applied” (primarily tests).
 
 ## Threat model (renderer on Windows)
 
@@ -164,6 +175,9 @@ Notes:
 
 - The Job is owned by the broker. The renderer should never be given a handle to the Job object.
 - The process-count limit is a security boundary, not just “resource management”.
+- **Do not allow breakaway.** The job must not be configured with `JOB_OBJECT_LIMIT_BREAKAWAY_OK` or
+  `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`. The `crates/win-sandbox::Job` wrapper defensively clears
+  these flags when updating extended limits.
 
 ### Important edge case: parent already in a Job
 
