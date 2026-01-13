@@ -1850,6 +1850,7 @@ fn failure_stage_for_resource(kind: ResourceKind) -> Option<RenderStage> {
     ResourceKind::Stylesheet => None,
     ResourceKind::Font => Some(RenderStage::Css),
     ResourceKind::Image => Some(RenderStage::Paint),
+    ResourceKind::Media => None,
     ResourceKind::Other => None,
   }
 }
@@ -2273,6 +2274,7 @@ impl ResourceContext {
       let directive = match kind {
         ResourceKind::Stylesheet => CspDirective::StyleSrcElem,
         ResourceKind::Image => CspDirective::ImgSrc,
+        ResourceKind::Media => CspDirective::MediaSrc,
         ResourceKind::Font => CspDirective::FontSrc,
         ResourceKind::Other => CspDirective::ConnectSrc,
         ResourceKind::Document => CspDirective::FrameSrc,
@@ -2351,6 +2353,8 @@ pub enum ResourceKind {
   Stylesheet,
   /// Image resource
   Image,
+  /// Media resource (e.g. audio/video)
+  Media,
   /// Font resource
   Font,
   /// Other resource types
@@ -2363,8 +2367,9 @@ impl ResourceKind {
       ResourceKind::Document => 0,
       ResourceKind::Stylesheet => 1,
       ResourceKind::Image => 2,
-      ResourceKind::Font => 3,
-      ResourceKind::Other => 4,
+      ResourceKind::Media => 3,
+      ResourceKind::Font => 4,
+      ResourceKind::Other => 5,
     }
   }
 }
@@ -30874,6 +30879,43 @@ mod tests {
           && e.message.contains("Content-Security-Policy")
           && e.message.contains("img-src")),
       "expected CSP violation to be recorded for blocked image"
+    );
+  }
+
+  #[test]
+  fn csp_media_src_none_blocks_media_load() {
+    let document_origin = origin_from_url("https://example.com/").expect("origin");
+    let ctx = ResourceContext {
+      document_url: Some("https://example.com/page.html".to_string()),
+      referrer_policy: Default::default(),
+      policy: ResourceAccessPolicy {
+        document_origin: Some(document_origin),
+        ..ResourceAccessPolicy::default()
+      },
+      csp: Some(
+        CspPolicy::from_values(["default-src 'self'; img-src 'none'; media-src 'none'"])
+          .expect("parse CSP"),
+      ),
+      diagnostics: None,
+      iframe_depth_remaining: None,
+    };
+
+    let err = ctx
+      .check_allowed_with_final(ResourceKind::Media, "https://example.com/a.mp4", None)
+      .expect_err("expected CSP media-src 'none' to block media");
+    assert!(
+      err.reason.contains("Content-Security-Policy (media-src)"),
+      "unexpected message: {}",
+      err.reason
+    );
+
+    let err = ctx
+      .check_allowed_with_final(ResourceKind::Image, "https://example.com/a.png", None)
+      .expect_err("expected CSP img-src 'none' to block images");
+    assert!(
+      err.reason.contains("Content-Security-Policy (img-src)"),
+      "unexpected message: {}",
+      err.reason
     );
   }
 

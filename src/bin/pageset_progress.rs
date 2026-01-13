@@ -2299,6 +2299,7 @@ fn resource_kind_label(kind: ResourceKind) -> &'static str {
     ResourceKind::Document => "doc",
     ResourceKind::Stylesheet => "css",
     ResourceKind::Image => "img",
+    ResourceKind::Media => "media",
     ResourceKind::Font => "font",
     ResourceKind::Other => "other",
   }
@@ -3082,7 +3083,7 @@ fn failure_stage_from_fetch_errors(fetch_errors: &[ResourceFetchError]) -> Optio
     }
     match err.kind {
       ResourceKind::Document => return Some(ProgressStage::DomParse),
-      ResourceKind::Image => return Some(ProgressStage::Paint),
+      ResourceKind::Image | ResourceKind::Media => return Some(ProgressStage::Paint),
       ResourceKind::Stylesheet | ResourceKind::Font | ResourceKind::Other => {}
     }
   }
@@ -3099,7 +3100,7 @@ fn offline_failure_stage_from_fetch_errors(
     match err.kind {
       ResourceKind::Document => return Some(ProgressStage::DomParse),
       ResourceKind::Stylesheet | ResourceKind::Font => return Some(ProgressStage::Css),
-      ResourceKind::Image => return Some(ProgressStage::Paint),
+      ResourceKind::Image | ResourceKind::Media => return Some(ProgressStage::Paint),
       ResourceKind::Other => {}
     }
   }
@@ -3827,6 +3828,7 @@ fn append_fetch_error_summary(log: &mut String, diagnostics: &RenderDiagnostics)
         ResourceKind::Document => "document",
         ResourceKind::Stylesheet => "stylesheet",
         ResourceKind::Image => "image",
+        ResourceKind::Media => "media",
         ResourceKind::Font => "font",
         ResourceKind::Other => "resource",
       };
@@ -6196,6 +6198,7 @@ fn report(args: ReportArgs) -> io::Result<()> {
       ResourceKind::Document,
       ResourceKind::Stylesheet,
       ResourceKind::Image,
+      ResourceKind::Media,
       ResourceKind::Font,
       ResourceKind::Other,
     ] {
@@ -6347,6 +6350,7 @@ fn report(args: ReportArgs) -> io::Result<()> {
       ResourceKind::Document,
       ResourceKind::Stylesheet,
       ResourceKind::Image,
+      ResourceKind::Media,
       ResourceKind::Font,
       ResourceKind::Other,
     ] {

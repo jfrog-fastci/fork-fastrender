@@ -1015,6 +1015,7 @@ pub fn log_diagnostics(diagnostics: &RenderDiagnostics, mut log: impl FnMut(&str
       ResourceKind::Document => "document",
       ResourceKind::Stylesheet => "stylesheet",
       ResourceKind::Image => "image",
+      ResourceKind::Media => "media",
       ResourceKind::Font => "font",
       ResourceKind::Other => "resource",
     };
