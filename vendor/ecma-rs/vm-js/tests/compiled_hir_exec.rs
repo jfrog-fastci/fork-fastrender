@@ -5788,25 +5788,22 @@ fn compiled_try_catch_destructuring_default_observes_tdz() -> Result<(), VmError
 }
 
 #[test]
-fn compiled_try_catch_tdz_shadowing_throws() -> Result<(), VmError> {
+fn compiled_try_catch_tdz_shadowing_is_syntax_error() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
 
-  let script = CompiledScript::compile_script(
+  let err = CompiledScript::compile_script(
     rt.heap_mut(),
     "test.js",
     r#"
       try { throw 1 } catch (e) { e; let e = 2; }
       'no'
     "#,
-  )?;
-
-  let err = rt.exec_compiled_script(script).unwrap_err();
-  match err {
-    VmError::ThrowWithStack { .. } => Ok(()),
-    other => panic!("expected ThrowWithStack, got {other:?}"),
-  }
+  )
+  .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+  Ok(())
 }
 
 #[test]

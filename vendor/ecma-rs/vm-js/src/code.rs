@@ -14,6 +14,13 @@ use crate::Heap;
 use crate::VmError;
 use crate::Vm;
 use diagnostics::FileId;
+use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
+use parse_js::ast::expr::lit::{LitArrElem, LitTemplatePart};
+use parse_js::ast::expr::pat::{ArrPat, ObjPat, Pat};
+use parse_js::ast::expr::Expr;
+use parse_js::ast::node::{Node, ParenthesizedExpr};
+use parse_js::ast::stmt::{ForInOfLhs, ForTripleStmtInit, Stmt};
+use parse_js::operator::OperatorName;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::sync::Arc;
 
@@ -44,6 +51,20 @@ impl CompiledScript {
     }))
     .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a script"))?
     .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+
+    {
+      let mut tick = || Ok(());
+      let strict = detect_use_strict_directive(&parsed.stx.body, &mut tick)?;
+      let has_await = parsed.stx.body.iter().any(stmt_contains_await);
+      crate::early_errors::validate_top_level(
+        &parsed.stx.body,
+        crate::early_errors::EarlyErrorOptions {
+          strict,
+          allow_top_level_await: has_await,
+        },
+        &mut tick,
+      )?;
+    }
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -77,6 +98,23 @@ impl CompiledScript {
     };
 
     let parsed = vm.parse_top_level_with_budget(&source.text, opts)?;
+    let strict = {
+      let mut tick = || vm.tick();
+      detect_use_strict_directive(&parsed.stx.body, &mut tick)?
+    };
+    let has_await = parsed.stx.body.iter().any(stmt_contains_await);
+    {
+      let mut tick = || vm.tick();
+      crate::early_errors::validate_top_level(
+        &parsed.stx.body,
+        crate::early_errors::EarlyErrorOptions {
+          strict,
+          allow_top_level_await: has_await,
+        },
+        &mut tick,
+      )?;
+    }
+
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
@@ -96,4 +134,288 @@ impl CompiledScript {
 pub struct CompiledFunctionRef {
   pub script: Arc<CompiledScript>,
   pub body: hir_js::BodyId,
+}
+
+fn detect_use_strict_directive<F>(stmts: &[Node<Stmt>], tick: &mut F) -> Result<bool, VmError>
+where
+  F: FnMut() -> Result<(), VmError>,
+{
+  const TICK_EVERY: usize = 32;
+  for (i, stmt) in stmts.iter().enumerate() {
+    if i % TICK_EVERY == 0 {
+      tick()?;
+    }
+    let Stmt::Expr(expr_stmt) = &*stmt.stx else {
+      break;
+    };
+    let expr = &expr_stmt.stx.expr;
+    // Parenthesized string literals are not directive prologues.
+    if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+      break;
+    }
+    let Expr::LitStr(lit) = &*expr.stx else {
+      break;
+    };
+    if lit.stx.value == "use strict" {
+      return Ok(true);
+    }
+  }
+  Ok(false)
+}
+
+fn expr_contains_await(expr: &Node<Expr>) -> bool {
+  match &*expr.stx {
+    Expr::Unary(unary) => {
+      matches!(
+        unary.stx.operator,
+        OperatorName::Await | OperatorName::Yield | OperatorName::YieldDelegated
+      ) || expr_contains_await(&unary.stx.argument)
+    }
+    Expr::UnaryPostfix(unary) => expr_contains_await(&unary.stx.argument),
+    Expr::Binary(binary) => expr_contains_await(&binary.stx.left) || expr_contains_await(&binary.stx.right),
+    Expr::Cond(cond) => {
+      expr_contains_await(&cond.stx.test)
+        || expr_contains_await(&cond.stx.consequent)
+        || expr_contains_await(&cond.stx.alternate)
+    }
+    Expr::Member(member) => expr_contains_await(&member.stx.left),
+    Expr::ComputedMember(member) => {
+      expr_contains_await(&member.stx.object) || expr_contains_await(&member.stx.member)
+    }
+    Expr::Call(call) => {
+      expr_contains_await(&call.stx.callee)
+        || call
+          .stx
+          .arguments
+          .iter()
+          .any(|arg| expr_contains_await(&arg.stx.value))
+    }
+    Expr::Import(import) => {
+      expr_contains_await(&import.stx.module)
+        || import
+          .stx
+          .attributes
+          .as_ref()
+          .is_some_and(|attrs| expr_contains_await(attrs))
+    }
+    Expr::TaggedTemplate(tag) => {
+      expr_contains_await(&tag.stx.function)
+        || tag.stx.parts.iter().any(|part| match part {
+          LitTemplatePart::Substitution(expr) => expr_contains_await(expr),
+          LitTemplatePart::String(_) => false,
+        })
+    }
+    Expr::LitArr(arr) => arr.stx.elements.iter().any(|elem| match elem {
+      LitArrElem::Single(expr) | LitArrElem::Rest(expr) => expr_contains_await(expr),
+      LitArrElem::Empty => false,
+    }),
+    Expr::LitObj(obj) => obj.stx.members.iter().any(|member| match &member.stx.typ {
+      ObjMemberType::Valued { key, val } => {
+        let key_has_await = match key {
+          ClassOrObjKey::Direct(_) => false,
+          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        };
+
+        let val_has_await = match val {
+          ClassOrObjVal::Prop(Some(expr)) => expr_contains_await(expr),
+          ClassOrObjVal::Prop(None) => false,
+          // Function-valued members: the function body is not evaluated at object creation time.
+          ClassOrObjVal::Getter(_)
+          | ClassOrObjVal::Setter(_)
+          | ClassOrObjVal::Method(_)
+          | ClassOrObjVal::IndexSignature(_)
+          | ClassOrObjVal::StaticBlock(_) => false,
+        };
+
+        key_has_await || val_has_await
+      }
+      ObjMemberType::Shorthand { .. } => false,
+      ObjMemberType::Rest { val } => expr_contains_await(val),
+    }),
+    Expr::LitTemplate(tpl) => tpl.stx.parts.iter().any(|part| match part {
+      LitTemplatePart::Substitution(expr) => expr_contains_await(expr),
+      LitTemplatePart::String(_) => false,
+    }),
+    Expr::ArrPat(arr) => arr_pat_contains_await(&arr.stx),
+    Expr::ObjPat(obj) => obj_pat_contains_await(&obj.stx),
+
+    // Nested functions are not evaluated when the function value is created.
+    Expr::Func(_) | Expr::ArrowFunc(_) => false,
+
+    Expr::Class(class) => {
+      class.stx.extends.as_ref().is_some_and(expr_contains_await)
+        || class.stx.members.iter().any(|member| match &member.stx.key {
+          ClassOrObjKey::Direct(_) => false,
+          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        })
+    }
+
+    // TypeScript-only nodes: only the wrapped expression is evaluated.
+    Expr::Instantiation(inst) => expr_contains_await(&inst.stx.expression),
+    Expr::TypeAssertion(expr) => expr_contains_await(&expr.stx.expression),
+    Expr::NonNullAssertion(expr) => expr_contains_await(&expr.stx.expression),
+    Expr::SatisfiesExpr(expr) => expr_contains_await(&expr.stx.expression),
+
+    _ => false,
+  }
+}
+
+fn pat_contains_await(pat: &Pat) -> bool {
+  match pat {
+    Pat::Id(_) => false,
+    Pat::Obj(obj) => obj_pat_contains_await(&obj.stx),
+    Pat::Arr(arr) => arr_pat_contains_await(&arr.stx),
+    Pat::AssignTarget(expr) => expr_contains_await(expr),
+  }
+}
+
+fn obj_pat_contains_await(pat: &ObjPat) -> bool {
+  pat
+    .properties
+    .iter()
+    .any(|prop| {
+      let key_has_await = match &prop.stx.key {
+        ClassOrObjKey::Direct(_) => false,
+        ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+      };
+      key_has_await
+        || pat_contains_await(&prop.stx.target.stx)
+        || prop.stx.default_value.as_ref().is_some_and(expr_contains_await)
+    })
+    || pat.rest.as_ref().is_some_and(|rest| pat_contains_await(&rest.stx))
+}
+
+fn arr_pat_contains_await(pat: &ArrPat) -> bool {
+  pat
+    .elements
+    .iter()
+    .any(|elem| match elem {
+      Some(elem) => {
+        pat_contains_await(&elem.target.stx)
+          || elem.default_value.as_ref().is_some_and(expr_contains_await)
+      }
+      None => false,
+    })
+    || pat.rest.as_ref().is_some_and(|rest| pat_contains_await(&rest.stx))
+}
+
+fn for_in_of_lhs_contains_await(lhs: &ForInOfLhs) -> bool {
+  match lhs {
+    ForInOfLhs::Decl((_, pat_decl)) => pat_contains_await(&pat_decl.stx.pat.stx),
+    ForInOfLhs::Assign(pat) => pat_contains_await(&pat.stx),
+  }
+}
+
+fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
+  match &*stmt.stx {
+    Stmt::Empty(_)
+    | Stmt::Debugger(_)
+    | Stmt::Import(_)
+    | Stmt::ExportList(_)
+    | Stmt::FunctionDecl(_)
+    | Stmt::Break(_)
+    | Stmt::Continue(_) => false,
+    Stmt::ExportDefaultExpr(stmt) => expr_contains_await(&stmt.stx.expression),
+    Stmt::ClassDecl(class) => {
+      class.stx.extends.as_ref().is_some_and(expr_contains_await)
+        || class.stx.members.iter().any(|member| match &member.stx.key {
+          ClassOrObjKey::Direct(_) => false,
+          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        })
+    }
+    Stmt::Expr(expr_stmt) => expr_contains_await(&expr_stmt.stx.expr),
+    Stmt::Return(ret) => ret.stx.value.as_ref().is_some_and(expr_contains_await),
+    Stmt::Throw(throw_stmt) => expr_contains_await(&throw_stmt.stx.value),
+    Stmt::VarDecl(decl) => decl
+      .stx
+      .declarators
+      .iter()
+      .any(|d| {
+        d.initializer.as_ref().is_some_and(expr_contains_await)
+          || pat_contains_await(&d.pattern.stx.pat.stx)
+      }),
+    Stmt::Block(block) => block.stx.body.iter().any(stmt_contains_await),
+    Stmt::If(if_stmt) => {
+      expr_contains_await(&if_stmt.stx.test)
+        || stmt_contains_await(&if_stmt.stx.consequent)
+        || if_stmt.stx.alternate.as_ref().is_some_and(stmt_contains_await)
+    }
+    Stmt::Try(try_stmt) => {
+      let catch_has_await = try_stmt.stx.catch.as_ref().is_some_and(|c| {
+        c.stx
+          .parameter
+          .as_ref()
+          .is_some_and(|p| pat_contains_await(&p.stx.pat.stx))
+          || c.stx.body.iter().any(stmt_contains_await)
+      });
+
+      try_stmt.stx.wrapped.stx.body.iter().any(stmt_contains_await)
+        || catch_has_await
+        || try_stmt
+          .stx
+          .finally
+          .as_ref()
+          .is_some_and(|f| f.stx.body.iter().any(stmt_contains_await))
+    }
+    Stmt::With(with_stmt) => {
+      expr_contains_await(&with_stmt.stx.object) || stmt_contains_await(&with_stmt.stx.body)
+    }
+    Stmt::While(while_stmt) => {
+      expr_contains_await(&while_stmt.stx.condition) || stmt_contains_await(&while_stmt.stx.body)
+    }
+    Stmt::DoWhile(do_while) => {
+      expr_contains_await(&do_while.stx.condition) || stmt_contains_await(&do_while.stx.body)
+    }
+    Stmt::ForTriple(for_stmt) => {
+      let init_has_await = match &for_stmt.stx.init {
+        ForTripleStmtInit::None => false,
+        ForTripleStmtInit::Expr(expr) => expr_contains_await(expr),
+        ForTripleStmtInit::Decl(decl) => decl
+          .stx
+          .declarators
+          .iter()
+          .any(|d| {
+            d.initializer.as_ref().is_some_and(expr_contains_await)
+              || pat_contains_await(&d.pattern.stx.pat.stx)
+          }),
+      };
+
+      init_has_await
+        || for_stmt.stx.cond.as_ref().is_some_and(expr_contains_await)
+        || for_stmt.stx.post.as_ref().is_some_and(expr_contains_await)
+        || for_stmt
+          .stx
+          .body
+          .stx
+          .body
+          .iter()
+          .any(stmt_contains_await)
+    }
+    Stmt::ForIn(for_in) => {
+      for_in_of_lhs_contains_await(&for_in.stx.lhs)
+        || expr_contains_await(&for_in.stx.rhs)
+        || for_in.stx.body.stx.body.iter().any(stmt_contains_await)
+    }
+    Stmt::ForOf(for_of) => {
+      for_of.stx.await_
+        || for_in_of_lhs_contains_await(&for_of.stx.lhs)
+        || expr_contains_await(&for_of.stx.rhs)
+        || for_of.stx.body.stx.body.iter().any(stmt_contains_await)
+    }
+    Stmt::Switch(switch_stmt) => {
+      expr_contains_await(&switch_stmt.stx.test)
+        || switch_stmt.stx.branches.iter().any(|branch| {
+          branch
+            .stx
+            .case
+            .as_ref()
+            .is_some_and(expr_contains_await)
+            || branch.stx.body.iter().any(stmt_contains_await)
+        })
+    }
+    Stmt::Label(label) => stmt_contains_await(&label.stx.statement),
+    // Conservatively assume unsupported statement kinds do not contain await so we preserve the
+    // existing synchronous evaluator behaviour for them.
+    _ => false,
+  }
 }
