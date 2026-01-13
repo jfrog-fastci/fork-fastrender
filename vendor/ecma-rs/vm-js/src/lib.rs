@@ -139,6 +139,7 @@ mod env;
 mod early_errors;
 mod error;
 mod error_object;
+mod fallible_alloc;
 mod fallible_format;
 mod exec;
 mod for_in;

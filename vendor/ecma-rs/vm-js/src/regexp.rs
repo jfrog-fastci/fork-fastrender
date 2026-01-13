@@ -13,6 +13,7 @@
 //! Call sites must treat compilation failures as `SyntaxError`.
 
 use crate::tick::{tick_every, DEFAULT_TICK_EVERY};
+use crate::fallible_alloc::box_try_new_vm;
 use crate::{Heap, HeapLimits, VmError};
 use core::alloc::Layout;
 use core::cell::Cell;
@@ -723,26 +724,6 @@ fn is_class_set_reserved_double_punctuator(u: u16) -> bool {
     || u == (b'`' as u16)
     || u == (b'~' as u16)
 }
-
-fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
-  let size = mem::size_of::<T>();
-  if size == 0 {
-    return Ok(Box::new(value));
-  }
-
-  let layout = Layout::new::<T>();
-  // SAFETY: We allocate enough space for `T` and immediately initialise it before converting it
-  // into a `Box<T>`.
-  unsafe {
-    let raw = alloc(layout) as *mut T;
-    if raw.is_null() {
-      return Err(VmError::OutOfMemory);
-    }
-    ptr::write(raw, value);
-    Ok(Box::from_raw(raw))
-  }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RegExpFlags {
   /// The `d` / `hasIndices` flag.

@@ -56,7 +56,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
+    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
   );
   process::exit(2);
 }
@@ -705,6 +705,7 @@ fn main() {
     "eval"
     | "function"
     | "generator"
+    | "generator_invoke"
     | "number"
     | "parseFloat"
     | "regexp_compile"
@@ -715,6 +716,10 @@ fn main() {
         "eval" => "eval(S)",
         "function" => "Function(S, 'return 1;')",
         "generator" => "Object.getPrototypeOf(function*(){}).constructor(S)",
+        // Stress generator *invocation* (creating generator objects / continuations) under
+        // allocator OOM. Previously the continuation boxing was infallible (`Box::new`) and could
+        // abort the process.
+        "generator_invoke" => "const set = new Set(); function* g(){} while(true){ set.add(g()); }",
         "number" => "Number(S)",
         "parseFloat" => "parseFloat(S)",
         "regexp_compile" | "regexp" => "new RegExp(S)",

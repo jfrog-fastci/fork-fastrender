@@ -3,6 +3,7 @@ use crate::error_object::new_error;
 use crate::for_in::ForInEnumerator;
 use crate::heap::{GeneratorContinuation, GeneratorState, Trace, Tracer};
 use crate::iterator;
+use crate::fallible_alloc::box_try_new_vm;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
   EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,
@@ -29596,7 +29597,7 @@ pub(crate) fn run_ecma_function(
     let gen_obj = init_scope.alloc_generator_with_prototype(
       Some(proto_obj),
       GeneratorState::SuspendedStart,
-      Some(Box::new(cont)),
+      Some(box_try_new_vm(cont)?),
     )?;
     return Ok(Value::Object(gen_obj));
   }
