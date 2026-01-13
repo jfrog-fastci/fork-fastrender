@@ -911,7 +911,10 @@ fn subtle_digest_native(
         let end = byte_offset
           .checked_add(byte_len)
           .ok_or(VmError::InvariantViolation("TypedArray byte offset overflow"))?;
-        buf_bytes[byte_offset..end].to_vec()
+        buf_bytes
+          .get(byte_offset..end)
+          .ok_or(VmError::InvariantViolation("TypedArray view out of bounds"))?
+          .to_vec()
       } else if heap.is_data_view_object(obj) {
         let buffer_obj = heap.data_view_buffer(obj)?;
         let byte_offset = heap.data_view_byte_offset(obj)?;
@@ -937,7 +940,7 @@ fn subtle_digest_native(
           .ok_or(VmError::InvariantViolation("DataView byte offset overflow"))?;
         buf_bytes
           .get(byte_offset..end)
-          .unwrap_or_default()
+          .ok_or(VmError::InvariantViolation("DataView view out of bounds"))?
           .to_vec()
       } else {
         let err = new_type_error_object(&mut scope, &intr, "crypto.subtle.digest expects a BufferSource")?;
