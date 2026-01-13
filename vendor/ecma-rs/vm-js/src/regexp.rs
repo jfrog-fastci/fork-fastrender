@@ -2371,3 +2371,41 @@ impl ProgramBuilder {
     Ok(())
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{HeapLimits, JsRuntime, Value, Vm, VmOptions};
+
+  fn eval_bool(rt: &mut JsRuntime, script: &str) -> Result<bool, VmError> {
+    match rt.exec_script(script)? {
+      Value::Bool(b) => Ok(b),
+      _other => Err(VmError::InvariantViolation("expected boolean result from test script")),
+    }
+  }
+
+  #[test]
+  fn regexp_space_escape_matches_ecma_whitespace_and_line_terminators() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // Unicode Space_Separator examples.
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2000"))"#)?);
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u3000"))"#)?);
+
+    // Line terminators.
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2028"))"#)?);
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2029"))"#)?);
+
+    // Negation (\S) is the complement of the `\s` set.
+    assert!(eval_bool(&mut rt, r#"(/\S/.test("a"))"#)?);
+    assert!(!eval_bool(&mut rt, r#"(/\S/.test("\u2000"))"#)?);
+
+    // A common "Unicode whitespace" code point that is *not* in the ECMAScript `\s` set.
+    assert!(!eval_bool(&mut rt, r#"(/\s/.test("\u200B"))"#)?);
+    assert!(eval_bool(&mut rt, r#"(/\S/.test("\u200B"))"#)?);
+
+    Ok(())
+  }
+}
