@@ -2642,6 +2642,24 @@ impl BrowserDocumentDom2 {
       }
     }
 
+    // Track node-level structural changes in addition to parent-level child-list mutations. Hosts
+    // can use these node ids to compute more precise paint damage for inserted/removed/moved
+    // subtrees (e.g. absolutely-positioned descendants that can paint outside their parent's
+    // border box).
+    for node in mutations.nodes_inserted {
+      if self.dom.is_connected_for_scripting(node) {
+        render_affecting = true;
+        self.dirty_structure_nodes.insert(node);
+      }
+    }
+
+    // Removed nodes are recorded before they become disconnected, so treat them as structure-
+    // affecting even though they are no longer connected in the current DOM snapshot.
+    for node in mutations.nodes_removed {
+      render_affecting = true;
+      self.dirty_structure_nodes.insert(node);
+    }
+
     // Form control state changes (e.g. `.value`, `.checked`) are render-affecting but should not be
     // treated as style-affecting attribute mutations. Conservatively mark layout+paint dirty so the
     // next render takes a fresh renderer DOM snapshot and projects live form state into it.
@@ -2718,7 +2736,6 @@ impl BrowserDocumentDom2 {
         self.dirty_structure_nodes.insert(node);
       }
     }
-
     // Upgrade to the minimal set of coarse invalidation flags we can currently satisfy.
     if !self.dirty_structure_nodes.is_empty() || !self.dirty_style_nodes.is_empty() {
       self.style_dirty = true;

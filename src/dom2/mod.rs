@@ -291,6 +291,17 @@ pub(crate) struct MutationLog {
   pub(crate) text_changed: FxHashSet<NodeId>,
   /// Parent nodes whose child list changed (insert/remove/reorder).
   pub(crate) child_list_changed: FxHashSet<NodeId>,
+  /// Nodes that were inserted into a document-connected subtree.
+  ///
+  /// This is used by host-side incremental invalidation to precisely track damage from structural
+  /// changes (for example, absolutely-positioned descendants that can paint outside their parent's
+  /// border box).
+  pub(crate) nodes_inserted: FxHashSet<NodeId>,
+  /// Nodes that were removed from a document-connected subtree.
+  ///
+  /// Note: nodes are recorded before they become disconnected, so hosts can still map them back
+  /// to previously computed layout/paint artifacts.
+  pub(crate) nodes_removed: FxHashSet<NodeId>,
   /// Nodes whose live form control state changed (e.g. `<input>.value`, `<input>.checked`,
   /// `<textarea>.value`, `<option>.selected`).
   ///
@@ -317,6 +328,8 @@ impl MutationLog {
     self.attribute_changed.is_empty()
       && self.text_changed.is_empty()
       && self.child_list_changed.is_empty()
+      && self.nodes_inserted.is_empty()
+      && self.nodes_removed.is_empty()
       && self.form_state_changed.is_empty()
       && self.composed_tree_changed.is_empty()
       && !self.unclassified
@@ -326,6 +339,8 @@ impl MutationLog {
     self.attribute_changed.clear();
     self.text_changed.clear();
     self.child_list_changed.clear();
+    self.nodes_inserted.clear();
+    self.nodes_removed.clear();
     self.form_state_changed.clear();
     self.composed_tree_changed.clear();
     self.unclassified = false;
@@ -1048,6 +1063,20 @@ impl Document {
   #[inline]
   fn record_child_list_mutation(&mut self, parent: NodeId) {
     self.mutations.child_list_changed.insert(parent);
+  }
+
+  #[inline]
+  fn record_node_inserted(&mut self, node: NodeId) {
+    if self.is_connected_for_scripting(node) {
+      self.mutations.nodes_inserted.insert(node);
+    }
+  }
+
+  #[inline]
+  fn record_node_removed(&mut self, node: NodeId) {
+    if self.is_connected_for_scripting(node) {
+      self.mutations.nodes_removed.insert(node);
+    }
   }
 
   #[inline]

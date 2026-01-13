@@ -774,6 +774,7 @@ impl Document {
     self.node_iterator_pre_remove_steps(child);
     self.nodes[old_parent.index()].children.remove(pos);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, old_parent);
+    self.record_node_removed(child);
     self.nodes[child.index()].parent = None;
     self.record_child_list_mutation(old_parent);
     let _ = self.queue_mutation_record_child_list(
@@ -1442,6 +1443,7 @@ impl Document {
 
       for &child in &children_to_move {
         self.nodes[child.index()].parent = Some(parent);
+        self.record_node_inserted(child);
       }
 
       self.nodes[parent.index()]
@@ -1507,6 +1509,7 @@ impl Document {
       .children
       .insert(insertion_idx, new_child);
     self.nodes[new_child.index()].parent = Some(parent);
+    self.record_node_inserted(new_child);
     self.record_child_list_mutation(parent);
     self.bump_mutation_generation_classified();
     let _ = self.queue_mutation_record_child_list(
@@ -1544,6 +1547,7 @@ impl Document {
     self.node_iterator_pre_remove_steps(child);
     self.nodes[parent.index()].children.remove(idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, parent);
+    self.record_node_removed(child);
     self.nodes[child.index()].parent = None;
     self.record_child_list_mutation(parent);
     self.bump_mutation_generation_classified();
@@ -1627,6 +1631,7 @@ impl Document {
       self.node_iterator_pre_remove_steps(old_child);
       self.nodes[parent.index()].children.remove(old_child_idx);
       let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
+      self.record_node_removed(old_child);
       self.nodes[old_child.index()].parent = None;
 
       let moved_children = self.nodes[new_child.index()].children.clone();
@@ -1669,6 +1674,7 @@ impl Document {
 
       for &child in &children_to_move {
         self.nodes[child.index()].parent = Some(parent);
+        self.record_node_inserted(child);
       }
 
       self.nodes[parent.index()]
@@ -1711,6 +1717,7 @@ impl Document {
     self.node_iterator_pre_remove_steps(old_child);
     self.nodes[parent.index()].children.remove(old_child_idx);
     let _ = self.mutation_observer_add_transient_observers_on_remove(old_child, parent);
+    self.record_node_removed(old_child);
     self.nodes[old_child.index()].parent = None;
 
     self.live_mutation.pre_insert(parent, old_child_idx, 1);
@@ -1723,6 +1730,7 @@ impl Document {
       .children
       .insert(old_child_idx, new_child);
     self.nodes[new_child.index()].parent = Some(parent);
+    self.record_node_inserted(new_child);
     self.record_child_list_mutation(parent);
     self.bump_mutation_generation_classified();
     let _ = self.queue_mutation_record_child_list(

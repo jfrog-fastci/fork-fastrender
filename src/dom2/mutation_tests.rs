@@ -196,6 +196,96 @@ fn append_child_sets_parent_and_updates_children() {
 }
 
 #[test]
+fn mutation_log_append_child_records_inserted_node_id() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let child = doc.create_element("div", "");
+  assert!(doc.append_child(root, child).unwrap());
+
+  let mutations = doc.take_mutations();
+  assert!(
+    mutations.nodes_inserted.contains(&child),
+    "append_child() should record inserted node ids"
+  );
+  assert!(
+    mutations.nodes_removed.is_empty(),
+    "append_child() should not record removals"
+  );
+}
+
+#[test]
+fn mutation_log_insert_before_records_inserted_node_id() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let parent = doc.create_element("div", "");
+  let reference = doc.create_element("span", "");
+  assert!(doc.append_child(root, parent).unwrap());
+  assert!(doc.append_child(parent, reference).unwrap());
+
+  // Clear the insertion mutations so we only observe the insert_before() effects.
+  let _ = doc.take_mutations();
+
+  let inserted = doc.create_element("p", "");
+  assert!(doc.insert_before(parent, inserted, Some(reference)).unwrap());
+
+  let mutations = doc.take_mutations();
+  assert!(
+    mutations.nodes_inserted.contains(&inserted),
+    "insert_before() should record inserted node ids"
+  );
+  assert!(
+    mutations.nodes_removed.is_empty(),
+    "insert_before() should not record removals"
+  );
+}
+
+#[test]
+fn mutation_log_remove_child_records_removed_node_id() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let parent = doc.create_element("div", "");
+  let child = doc.create_element("span", "");
+  assert!(doc.append_child(root, parent).unwrap());
+  assert!(doc.append_child(parent, child).unwrap());
+
+  // Clear the insertion mutations so we only observe remove_child() effects.
+  let _ = doc.take_mutations();
+
+  assert!(doc.remove_child(parent, child).unwrap());
+  let mutations = doc.take_mutations();
+  assert!(
+    mutations.nodes_removed.contains(&child),
+    "remove_child() should record removed node ids"
+  );
+  assert!(
+    mutations.nodes_inserted.is_empty(),
+    "remove_child() should not record insertions"
+  );
+}
+
+#[test]
+fn mutation_log_does_not_record_noop_inserts() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let parent = doc.create_element("div", "");
+  let child = doc.create_element("span", "");
+  assert!(doc.append_child(root, parent).unwrap());
+  assert!(doc.append_child(parent, child).unwrap());
+
+  // Clear the insertion mutations so the subsequent no-op doesn't get masked.
+  let _ = doc.take_mutations();
+
+  // Re-appending the last child is a no-op.
+  assert!(!doc.append_child(parent, child).unwrap());
+  let mutations = doc.take_mutations();
+  assert!(mutations.is_empty(), "no-op appendChild must not record mutations");
+}
+
+#[test]
 fn insert_before_reference_not_child_returns_not_found() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
