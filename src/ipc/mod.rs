@@ -41,8 +41,9 @@ pub mod unix_seqpacket;
 pub use connection::IpcConnection;
 pub use error::IpcError;
 pub use framing::{
-  decode_bincode_payload, encode_bincode_payload, read_bincode_frame, read_frame, write_bincode_frame,
-  write_frame, MAX_IPC_MESSAGE_BYTES,
+  decode_bincode_payload, decode_bincode_payload_with_limit, encode_bincode_payload,
+  encode_bincode_payload_with_limit, read_bincode_frame, read_frame, read_frame_with_max,
+  write_bincode_frame, write_frame, write_frame_with_max, MAX_IPC_MESSAGE_BYTES,
 };
 pub use network::{NetworkToRenderer, RendererToNetwork};
 pub use received_frame::{FrameMeta, ReceivedFrame, ShmemSliceView};

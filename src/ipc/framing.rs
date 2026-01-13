@@ -18,17 +18,29 @@ pub const IPC_LENGTH_PREFIX_BYTES: usize = 4;
 /// enforced by the network process once WebSocket traffic is proxied over renderer↔network IPC.
 pub const MAX_IPC_MESSAGE_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 
-fn bincode_options() -> impl Options {
+fn bincode_options_with_limit(limit_bytes: usize) -> impl Options {
   // Use fixed-width integer encoding to keep the wire format predictable and easy to reason about
   // when hand-crafting regression cases.
   bincode::DefaultOptions::new()
     .with_fixint_encoding()
-    .with_limit(MAX_IPC_MESSAGE_BYTES as u64)
+    .with_limit(limit_bytes as u64)
+}
+
+fn bincode_options() -> impl Options {
+  bincode_options_with_limit(MAX_IPC_MESSAGE_BYTES)
 }
 
 /// Serialize `msg` into a payload suitable for [`write_frame`].
 pub fn encode_bincode_payload<T: Serialize>(msg: &T) -> Result<Vec<u8>, IpcError> {
-  Ok(bincode_options().serialize(msg)?)
+  encode_bincode_payload_with_limit(msg, MAX_IPC_MESSAGE_BYTES)
+}
+
+/// Serialize `msg` into a payload with an explicit maximum size.
+pub fn encode_bincode_payload_with_limit<T: Serialize>(
+  msg: &T,
+  limit_bytes: usize,
+) -> Result<Vec<u8>, IpcError> {
+  Ok(bincode_options_with_limit(limit_bytes).serialize(msg)?)
 }
 
 /// Deserialize a message from a [`read_frame`] payload.
@@ -36,7 +48,36 @@ pub fn encode_bincode_payload<T: Serialize>(msg: &T) -> Result<Vec<u8>, IpcError
 /// This uses a hard byte limit to prevent pathological container lengths from triggering large
 /// allocations during deserialization.
 pub fn decode_bincode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, IpcError> {
-  Ok(bincode_options().deserialize(payload)?)
+  decode_bincode_payload_with_limit(payload, MAX_IPC_MESSAGE_BYTES)
+}
+
+/// Deserialize a message from a framed payload using an explicit maximum size.
+///
+/// Note: This is intentionally strict: it rejects payloads larger than `limit_bytes` and also
+/// rejects messages that leave trailing bytes after deserialization.
+pub fn decode_bincode_payload_with_limit<T: DeserializeOwned>(
+  payload: &[u8],
+  limit_bytes: usize,
+) -> Result<T, IpcError> {
+  if payload.len() > limit_bytes {
+    return Err(IpcError::FrameTooLarge {
+      len: payload.len(),
+      max: limit_bytes,
+    });
+  }
+
+  let mut cursor = std::io::Cursor::new(payload);
+  let msg: T = bincode_options_with_limit(limit_bytes).deserialize_from(&mut cursor)?;
+  let consumed = usize::try_from(cursor.position()).map_err(|_| IpcError::ArithmeticOverflow)?;
+  if consumed != payload.len() {
+    return Err(IpcError::ProtocolViolation {
+      message: format!(
+        "trailing bytes after bincode message: {} bytes",
+        payload.len().saturating_sub(consumed)
+      ),
+    });
+  }
+  Ok(msg)
 }
 
 /// Serialize `msg` using `bincode` and write it as a single [`write_frame`] frame.
@@ -72,12 +113,24 @@ fn validate_frame_len(bytes_len: u32) -> Result<usize, IpcError> {
 ///
 /// Frame format: `u32` little-endian payload length, followed by payload bytes.
 pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> Result<(), IpcError> {
+  write_frame_with_max(writer, payload, MAX_IPC_MESSAGE_BYTES)
+}
+
+/// Write a single length-prefixed frame to `writer`, using `max_bytes` as the size cap.
+pub fn write_frame_with_max<W: Write>(
+  writer: &mut W,
+  payload: &[u8],
+  max_bytes: usize,
+) -> Result<(), IpcError> {
   let bytes_len = u32::try_from(payload.len()).map_err(|_| IpcError::FrameTooLarge {
     len: payload.len(),
     max: MAX_IPC_MESSAGE_BYTES,
   })?;
   // Validate (and ensure it can be converted to `usize` if needed by downstream code).
-  let _ = validate_frame_len(bytes_len)?;
+  let len = validate_frame_len(bytes_len)?;
+  if len > max_bytes {
+    return Err(IpcError::FrameTooLarge { len, max: max_bytes });
+  }
 
   let len_prefix = bytes_len.to_le_bytes();
   writer.write_all(&len_prefix)?;
@@ -89,10 +142,22 @@ pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> Result<(), IpcEr
 ///
 /// Returns an error on EOF, invalid lengths, or I/O failure.
 pub fn read_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
+  read_frame_with_max(reader, MAX_IPC_MESSAGE_BYTES)
+}
+
+/// Read a single length-prefixed frame from `reader`, using `max_bytes` as the size cap.
+pub fn read_frame_with_max<R: Read>(reader: &mut R, max_bytes: usize) -> Result<Vec<u8>, IpcError> {
   let mut len_prefix = [0u8; IPC_LENGTH_PREFIX_BYTES];
   reader.read_exact(&mut len_prefix)?;
   let bytes_len = u32::from_le_bytes(len_prefix);
   let len = validate_frame_len(bytes_len)?;
+
+  if len > max_bytes {
+    return Err(IpcError::FrameTooLarge {
+      len,
+      max: max_bytes,
+    });
+  }
 
   let mut payload = Vec::new();
   payload.try_reserve_exact(len).map_err(|err| {
@@ -257,5 +322,20 @@ mod tests {
       }
       other => panic!("unexpected error: {other:?}"),
     }
+  }
+
+  #[test]
+  fn bincode_decode_rejects_trailing_bytes() {
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct TestMsg {
+      a: u32,
+    }
+
+    let msg = TestMsg { a: 7 };
+    let mut payload = encode_bincode_payload(&msg).expect("encode");
+    payload.extend_from_slice(b"junk");
+
+    let err = decode_bincode_payload::<TestMsg>(&payload).expect_err("expected trailing bytes error");
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 }

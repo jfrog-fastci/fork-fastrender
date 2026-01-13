@@ -37,6 +37,12 @@ pub const FILE_INPUT_MAX_NAME_BYTES: usize = 256;
 /// This is defensive: the renderer must still read the actual bytes from the attached FDs until EOF.
 pub const FILE_INPUT_MAX_TOTAL_BYTES_META: u64 = 512 * 1024 * 1024; // 512 MiB
 
+/// Sanity bounds for device pixel ratio values received from the renderer.
+///
+/// Values outside this range are treated as protocol violations.
+pub const MIN_DPR: f32 = 0.1;
+pub const MAX_DPR: f32 = 16.0;
+
 /// Return the canonical bincode options for renderer IPC decoding.
 ///
 /// The transport should use these options (or an equivalent configuration) when decoding messages
@@ -220,6 +226,67 @@ impl SharedFrameDescriptor {
       byte_len,
     }
   }
+
+  pub fn validate(&self) -> Result<(), IpcError> {
+    if self.width_px == 0 || self.height_px == 0 {
+      return Err(IpcError::FrameDimensionsZero {
+        width_px: self.width_px,
+        height_px: self.height_px,
+      });
+    }
+    if self.stride_bytes == 0 {
+      return Err(IpcError::FrameBufferStrideZero);
+    }
+    if self.byte_len == 0 {
+      return Err(IpcError::FrameBufferByteLenZero);
+    }
+
+    // Compute row length in bytes (RGBA8) with checked arithmetic.
+    let row_bytes_u64 = u64::from(self.width_px)
+      .checked_mul(u64::from(Self::BYTES_PER_PIXEL_RGBA8))
+      .ok_or(IpcError::ArithmeticOverflow)?;
+    let stride_u64 = u64::from(self.stride_bytes);
+    if stride_u64 < row_bytes_u64 {
+      let row_bytes = usize::try_from(row_bytes_u64).map_err(|_| IpcError::ArithmeticOverflow)?;
+      let stride_bytes = usize::try_from(stride_u64).map_err(|_| IpcError::ArithmeticOverflow)?;
+      return Err(IpcError::FrameRowBytesExceedStride {
+        row_bytes,
+        stride_bytes,
+      });
+    }
+
+    // Minimum number of bytes required to address `height_px` rows at the given stride.
+    // We do not require the mapping to include padding after the final row.
+    let height_u64 = u64::from(self.height_px);
+    let required_bytes_u64 = height_u64
+      .checked_sub(1)
+      .and_then(|h_minus_1| h_minus_1.checked_mul(stride_u64))
+      .and_then(|prefix| prefix.checked_add(row_bytes_u64))
+      .ok_or(IpcError::ArithmeticOverflow)?;
+
+    if required_bytes_u64 > self.byte_len {
+      let required_bytes =
+        usize::try_from(required_bytes_u64).map_err(|_| IpcError::ArithmeticOverflow)?;
+      let byte_len = usize::try_from(self.byte_len).map_err(|_| IpcError::ArithmeticOverflow)?;
+      return Err(IpcError::FrameExceedsBufferLen {
+        required_bytes,
+        byte_len,
+      });
+    }
+
+    // Cap the overall mapping length to match the in-process pixmap guardrail.
+    let max = crate::paint::pixmap::MAX_PIXMAP_BYTES;
+    if self.byte_len > max {
+      return Err(IpcError::ProtocolViolation {
+        message: format!(
+          "frame buffer byte_len {} exceeds max {}",
+          self.byte_len, max
+        ),
+      });
+    }
+
+    Ok(())
+  }
 }
 
 /// Minimal scroll bounds information for the root scroll container (viewport).
@@ -232,6 +299,26 @@ pub struct ScrollBoundsMinimal {
   pub max_y: f32,
 }
 
+impl ScrollBoundsMinimal {
+  fn validate(&self) -> Result<(), IpcError> {
+    let all_finite = self.min_x.is_finite()
+      && self.min_y.is_finite()
+      && self.max_x.is_finite()
+      && self.max_y.is_finite();
+    if !all_finite {
+      return Err(IpcError::ProtocolViolation {
+        message: "scroll bounds contain non-finite floats".to_string(),
+      });
+    }
+    if self.min_x > self.max_x || self.min_y > self.max_y {
+      return Err(IpcError::ProtocolViolation {
+        message: "scroll bounds min > max".to_string(),
+      });
+    }
+    Ok(())
+  }
+}
+
 /// Minimal scroll state information surfaced to the browser/UI process.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -240,6 +327,25 @@ pub struct ScrollStateMinimal {
   pub viewport_scroll_css: (f32, f32),
   /// Scrollable bounds for the root scroll container in CSS pixels.
   pub bounds_css: ScrollBoundsMinimal,
+}
+
+impl ScrollStateMinimal {
+  fn validate(&self) -> Result<(), IpcError> {
+    let (x, y) = self.viewport_scroll_css;
+    if !x.is_finite() || !y.is_finite() {
+      return Err(IpcError::ProtocolViolation {
+        message: "viewport_scroll_css contains non-finite floats".to_string(),
+      });
+    }
+    self.bounds_css.validate()
+  }
+}
+
+fn validate_dpr(dpr: f32) -> Result<(), IpcError> {
+  if !dpr.is_finite() || dpr < MIN_DPR || dpr > MAX_DPR {
+    return Err(IpcError::InvalidDpr { dpr });
+  }
+  Ok(())
 }
 
 /// Messages sent from the (trusted) browser process to the (sandboxed) renderer process.
@@ -520,6 +626,31 @@ impl FrameInFlightCounter {
 }
 
 impl RendererToBrowser {
+  /// Validate a renderer → browser message.
+  pub fn validate(&self) -> Result<(), IpcError> {
+    match self {
+      RendererToBrowser::HelloAck {} => Ok(()),
+      RendererToBrowser::FrameReady {
+        tab_id: _,
+        frame_seq,
+        frame,
+        viewport_css: _,
+        dpr,
+        wants_ticks: _,
+        scroll_state_minimal,
+      } => {
+        if *frame_seq == 0 {
+          return Err(IpcError::ProtocolViolation {
+            message: "frame_seq must be non-zero".to_string(),
+          });
+        }
+        frame.validate()?;
+        validate_dpr(*dpr)?;
+        scroll_state_minimal.validate()
+      }
+    }
+  }
+
   /// Returns the number of file descriptors that must accompany this message.
   pub fn expected_fds(&self) -> usize {
     match self {
@@ -861,5 +992,103 @@ mod file_inputs {
 
     let err = msg.validate().expect_err("expected validation failure");
     assert!(matches!(err, IpcError::FileNameTooLong { .. }));
+  }
+}
+
+#[cfg(test)]
+mod renderer_to_browser_validation {
+  use super::*;
+
+  fn valid_scroll_state() -> ScrollStateMinimal {
+    ScrollStateMinimal {
+      viewport_scroll_css: (0.0, 0.0),
+      bounds_css: ScrollBoundsMinimal {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 100.0,
+        max_y: 200.0,
+      },
+    }
+  }
+
+  #[test]
+  fn frame_ready_validates() {
+    let msg = RendererToBrowser::FrameReady {
+      tab_id: 1,
+      frame_seq: 1,
+      frame: SharedFrameDescriptor::new_rgba8(16, 8),
+      viewport_css: (800, 600),
+      dpr: 2.0,
+      wants_ticks: false,
+      scroll_state_minimal: valid_scroll_state(),
+    };
+    msg.validate().unwrap();
+  }
+
+  #[test]
+  fn frame_ready_rejects_non_finite_dpr() {
+    let msg = RendererToBrowser::FrameReady {
+      tab_id: 1,
+      frame_seq: 1,
+      frame: SharedFrameDescriptor::new_rgba8(1, 1),
+      viewport_css: (1, 1),
+      dpr: f32::NAN,
+      wants_ticks: false,
+      scroll_state_minimal: valid_scroll_state(),
+    };
+    let err = msg.validate().unwrap_err();
+    assert!(matches!(err, IpcError::InvalidDpr { .. }));
+  }
+
+  #[test]
+  fn frame_ready_rejects_frame_seq_zero() {
+    let msg = RendererToBrowser::FrameReady {
+      tab_id: 1,
+      frame_seq: 0,
+      frame: SharedFrameDescriptor::new_rgba8(1, 1),
+      viewport_css: (1, 1),
+      dpr: 1.0,
+      wants_ticks: false,
+      scroll_state_minimal: valid_scroll_state(),
+    };
+    let err = msg.validate().unwrap_err();
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
+  }
+
+  #[test]
+  fn frame_descriptor_rejects_stride_too_small() {
+    let desc = SharedFrameDescriptor {
+      width_px: 10,
+      height_px: 10,
+      stride_bytes: 1,
+      byte_len: 1,
+    };
+    let err = desc.validate().unwrap_err();
+    assert!(matches!(err, IpcError::FrameRowBytesExceedStride { .. }));
+  }
+
+  #[test]
+  fn frame_descriptor_rejects_byte_len_too_small() {
+    let desc = SharedFrameDescriptor {
+      width_px: 1,
+      height_px: 2,
+      stride_bytes: 4,
+      byte_len: 4,
+    };
+    let err = desc.validate().unwrap_err();
+    assert!(matches!(err, IpcError::FrameExceedsBufferLen { .. }));
+  }
+
+  #[test]
+  fn frame_descriptor_rejects_byte_len_too_large() {
+    let max = crate::paint::pixmap::MAX_PIXMAP_BYTES;
+    let desc = SharedFrameDescriptor {
+      width_px: 1,
+      height_px: 1,
+      stride_bytes: 4,
+      byte_len: max + 1,
+    };
+    let err = desc.validate().unwrap_err();
+    assert!(matches!(err, IpcError::ProtocolViolation { .. }));
   }
 }

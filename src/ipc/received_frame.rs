@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc};
 
 use super::protocol::BrowserToRenderer;
 
-pub type FrameReleaseCallback = Box<dyn FnOnce(u64) + Send + 'static>;
+pub type FrameAckCallback = Box<dyn FnOnce(u64) + Send + 'static>;
 
 /// Metadata describing a rendered frame that lives in a shared frame-buffer pool.
 ///
@@ -82,74 +82,72 @@ impl std::fmt::Debug for ShmemSliceView {
 
 /// An RAII handle for a frame received from the renderer.
 ///
-/// When dropped, this will acknowledge the frame back to the renderer via `on_drop_release`
-/// (unless disarmed or stale).
+/// When dropped, this will acknowledge the underlying frame back to the renderer via
+/// [`BrowserToRenderer::FrameAck`] (unless disarmed or stale).
 pub struct ReceivedFrame {
-  pub generation: u64,
   pub frame_seq: u64,
   pub meta: FrameMeta,
   pub bytes: ShmemSliceView,
-  /// Optional generation tracker used to suppress acks for stale generations.
+  /// Optional epoch tracker used to suppress acknowledgements for stale generations/connections.
   ///
-  /// If `Some`, `Drop` will only invoke the release callback when
-  /// `generation == current_generation.load(...)`.
-  current_generation: Option<Arc<AtomicU64>>,
-  on_drop_release: Option<FrameReleaseCallback>,
+  /// If `Some`, `Drop` will only invoke the acknowledgement callback when
+  /// `epoch == current_epoch.load(...)`.
+  pub epoch: u64,
+  current_epoch: Option<Arc<AtomicU64>>,
+  on_drop_ack: Option<FrameAckCallback>,
 }
 
 impl ReceivedFrame {
   pub fn new(
-    generation: u64,
     frame_seq: u64,
     meta: FrameMeta,
     bytes: ShmemSliceView,
-    current_generation: Option<Arc<AtomicU64>>,
-    on_drop_release: Option<FrameReleaseCallback>,
+    epoch: u64,
+    current_epoch: Option<Arc<AtomicU64>>,
+    on_drop_ack: Option<FrameAckCallback>,
   ) -> Self {
     Self {
-      generation,
       frame_seq,
       meta,
       bytes,
-      current_generation,
-      on_drop_release,
+      epoch,
+      current_epoch,
+      on_drop_ack,
     }
   }
 
-  /// Convenience helper for building a release callback that forwards
+  /// Convenience helper for building an acknowledgement callback that forwards
   /// [`BrowserToRenderer::FrameAck`] onto an IPC sender.
-  pub fn release_callback_to_sender(
-    sender: mpsc::Sender<BrowserToRenderer>,
-  ) -> FrameReleaseCallback {
+  pub fn ack_callback_to_sender(sender: mpsc::Sender<BrowserToRenderer>) -> FrameAckCallback {
     Box::new(move |frame_seq| {
       // Drop must never panic; ignore send failures (renderer gone, channel closed, etc).
       let _ = sender.send(BrowserToRenderer::FrameAck { frame_seq });
     })
   }
 
-  /// Explicitly acknowledge the frame now, preventing a subsequent ack on drop.
-  pub fn release(&mut self) {
-    self.maybe_release();
+  /// Explicitly acknowledge the frame now, preventing a subsequent acknowledgement on drop.
+  pub fn ack(&mut self) {
+    self.maybe_ack();
   }
 
-  /// Prevent any ack action on drop (even for the current generation).
+  /// Prevent any acknowledgement action on drop (even for the current epoch).
   pub fn disarm(&mut self) {
-    self.on_drop_release = None;
+    self.on_drop_ack = None;
   }
 
-  fn generation_is_current(&self) -> bool {
-    match self.current_generation.as_ref() {
-      Some(cur) => cur.load(Ordering::Acquire) == self.generation,
+  fn epoch_is_current(&self) -> bool {
+    match self.current_epoch.as_ref() {
+      Some(cur) => cur.load(Ordering::Acquire) == self.epoch,
       None => true,
     }
   }
 
-  fn maybe_release(&mut self) {
-    let Some(cb) = self.on_drop_release.take() else {
+  fn maybe_ack(&mut self) {
+    let Some(cb) = self.on_drop_ack.take() else {
       return;
     };
 
-    if self.generation_is_current() {
+    if self.epoch_is_current() {
       cb(self.frame_seq);
     }
   }
@@ -157,15 +155,15 @@ impl ReceivedFrame {
 
 impl Drop for ReceivedFrame {
   fn drop(&mut self) {
-    self.maybe_release();
+    self.maybe_ack();
   }
 }
 
 impl std::fmt::Debug for ReceivedFrame {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("ReceivedFrame")
-      .field("generation", &self.generation)
       .field("frame_seq", &self.frame_seq)
+      .field("epoch", &self.epoch)
       .field("meta", &self.meta)
       .field("bytes", &self.bytes)
       .finish_non_exhaustive()
@@ -179,85 +177,73 @@ mod tests {
   use std::sync::mpsc::TryRecvError;
 
   fn make_frame(
-    generation: u64,
     frame_seq: u64,
-    current_generation: Arc<AtomicU64>,
+    epoch: u64,
+    current_epoch: Arc<AtomicU64>,
     sender: mpsc::Sender<BrowserToRenderer>,
   ) -> ReceivedFrame {
     ReceivedFrame::new(
-      generation,
       frame_seq,
       FrameMeta::rgba8(2, 2),
       ShmemSliceView::from_vec(vec![0; 16]),
-      Some(current_generation),
-      Some(ReceivedFrame::release_callback_to_sender(sender)),
+      epoch,
+      Some(current_epoch),
+      Some(ReceivedFrame::ack_callback_to_sender(sender)),
     )
   }
 
   #[test]
   fn dropping_triggers_ack_exactly_once() {
     let (tx, rx) = mpsc::channel();
-    let current_generation = Arc::new(AtomicU64::new(7));
+    let current_epoch = Arc::new(AtomicU64::new(7));
 
-    let frame = make_frame(7, 3, Arc::clone(&current_generation), tx);
+    let frame = make_frame(3, 7, Arc::clone(&current_epoch), tx);
     drop(frame);
 
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 3 }
-    );
+    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 3 });
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
   #[test]
   fn overwriting_in_map_drops_old_frame_and_acks() {
     let (tx, rx) = mpsc::channel();
-    let current_generation = Arc::new(AtomicU64::new(1));
+    let current_epoch = Arc::new(AtomicU64::new(1));
 
     let mut map: HashMap<u64, ReceivedFrame> = HashMap::new();
     map.insert(
       123,
-      make_frame(1, 10, Arc::clone(&current_generation), tx.clone()),
+      make_frame(10, 1, Arc::clone(&current_epoch), tx.clone()),
     );
     // Overwrite the old frame for the same key; this should drop and ack the previous one.
-    map.insert(123, make_frame(1, 11, Arc::clone(&current_generation), tx));
+    map.insert(123, make_frame(11, 1, Arc::clone(&current_epoch), tx));
 
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 10 }
-    );
+    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 10 });
 
     drop(map);
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 11 }
-    );
+    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 11 });
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
   #[test]
-  fn manual_release_prevents_double_release_on_drop() {
+  fn manual_ack_prevents_double_ack_on_drop() {
     let (tx, rx) = mpsc::channel();
-    let current_generation = Arc::new(AtomicU64::new(9));
+    let current_epoch = Arc::new(AtomicU64::new(9));
 
-    let mut frame = make_frame(9, 42, current_generation, tx);
-    frame.release();
+    let mut frame = make_frame(42, 9, current_epoch, tx);
+    frame.ack();
     drop(frame);
 
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 42 }
-    );
+    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 42 });
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
   #[test]
-  fn stale_generation_is_not_acked() {
+  fn stale_epoch_is_not_acked() {
     let (tx, rx) = mpsc::channel();
-    let current_generation = Arc::new(AtomicU64::new(1));
+    let current_epoch = Arc::new(AtomicU64::new(1));
 
-    let frame = make_frame(1, 99, Arc::clone(&current_generation), tx);
-    current_generation.store(2, Ordering::Release);
+    let frame = make_frame(99, 1, Arc::clone(&current_epoch), tx);
+    current_epoch.store(2, Ordering::Release);
     drop(frame);
 
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
