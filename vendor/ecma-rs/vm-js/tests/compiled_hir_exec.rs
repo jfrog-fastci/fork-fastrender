@@ -1880,6 +1880,33 @@ fn compiled_object_literal_accessor_lengths_are_correct() -> Result<(), VmError>
 }
 
 #[test]
+fn compiled_object_literal_accessor_functions_are_not_constructable() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let o = { get x() { return 1; }, set x(v) {} };
+      let d = Object.getOwnPropertyDescriptor(o, 'x');
+
+      let ok =
+        Object.prototype.hasOwnProperty.call(d.get, 'prototype') === false &&
+        Object.prototype.hasOwnProperty.call(d.set, 'prototype') === false;
+
+      try { new d.get(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
+      try { new d.set(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_infers_function_names() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
