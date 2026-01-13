@@ -1280,13 +1280,15 @@ mod disk_cache_main {
     all: &RefCell<BTreeSet<String>>,
     html: &str,
     base_url: &str,
-    out: &mut BTreeSet<String>,
+    image_urls: &mut BTreeSet<String>,
+    cors_image_urls: &mut BTreeMap<String, CrossOriginAttribute>,
     max_total: usize,
   ) {
     const MAX_VIDEO_POSTERS_PER_PAGE: usize = 32;
     static VIDEO_TAG: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
     static VIDEO_POSTER_ATTR: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
     static VIDEO_GNT_GL_PS_ATTR: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    static VIDEO_CROSSORIGIN_ATTR: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
     let video_tag_re = match VIDEO_TAG.get_or_init(|| Regex::new("(?is)<video\\b[^>]*>")) {
       Ok(re) => re,
@@ -1301,6 +1303,14 @@ mod disk_cache_main {
     let video_gnt_gl_ps_attr = match VIDEO_GNT_GL_PS_ATTR
       .get_or_init(|| Regex::new("(?is)\\sgnt-gl-ps\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"))
     {
+      Ok(re) => re,
+      Err(_) => return,
+    };
+    let video_crossorigin_attr = match VIDEO_CROSSORIGIN_ATTR.get_or_init(|| {
+      Regex::new(
+        "(?is)\\scrossorigin(?:\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+)))?",
+      )
+    }) {
       Ok(re) => re,
       Err(_) => return,
     };
@@ -1327,16 +1337,46 @@ mod disk_cache_main {
           .filter(|raw| !raw.is_empty())
       };
 
+      let crossorigin = match video_crossorigin_attr.captures(tag_match.as_str()) {
+        None => CrossOriginAttribute::None,
+        Some(caps) => {
+          let value = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .or_else(|| caps.get(3))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+          let value = trim_ascii_whitespace(value);
+          if value.eq_ignore_ascii_case("use-credentials") {
+            CrossOriginAttribute::UseCredentials
+          } else {
+            // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+            CrossOriginAttribute::Anonymous
+          }
+        }
+      };
+
       let Some(raw) =
         capture_attr(video_poster_attr).or_else(|| capture_attr(video_gnt_gl_ps_attr))
       else {
         continue;
       };
       if let Some(resolved) = resolve_href(base_url, raw) {
-        let before = out.len();
-        record_image_candidate(all, out, &resolved, max_total, max_total);
-        if out.len() > before {
-          inserted += 1;
+        match crossorigin {
+          CrossOriginAttribute::None => {
+            let before = image_urls.len();
+            record_image_candidate(all, image_urls, &resolved, max_total, max_total);
+            if image_urls.len() > before {
+              inserted += 1;
+            }
+          }
+          crossorigin => {
+            let before = cors_image_urls.len();
+            record_cors_image_candidate(all, cors_image_urls, &resolved, crossorigin, max_total, max_total);
+            if cors_image_urls.len() > before {
+              inserted += 1;
+            }
+          }
         }
       }
     }
@@ -1346,16 +1386,20 @@ mod disk_cache_main {
     all: &RefCell<BTreeSet<String>>,
     dom: &DomNode,
     base_url: &str,
-    out: &mut BTreeSet<String>,
+    image_urls: &mut BTreeSet<String>,
+    cors_image_urls: &mut BTreeMap<String, CrossOriginAttribute>,
     max_total: usize,
   ) {
     // Keep worst-case work bounded for pages that ship many <video> tags.
     const MAX_VIDEO_POSTERS_PER_PAGE: usize = 32;
 
-    let mut stack: Vec<&DomNode> = vec![dom];
+    // Some sites (e.g. Webflow background videos) store the poster on an ancestor `data-poster-url`,
+    // then rely on JS to populate the descendant `<video poster>`. Carry the wrapper poster through
+    // the traversal so we can still prefetch it when normal image discovery is capped.
+    let mut stack: Vec<(&DomNode, Option<&str>)> = vec![(dom, None)];
     let mut inserted = 0usize;
 
-    while let Some(node) = stack.pop() {
+    while let Some((node, inherited_wrapper_poster)) = stack.pop() {
       if max_total != 0 && all.borrow().len() >= max_total {
         break;
       }
@@ -1363,7 +1407,15 @@ mod disk_cache_main {
         break;
       }
 
+      let mut wrapper_poster = inherited_wrapper_poster;
       if let Some(tag) = node.tag_name() {
+        if !tag.eq_ignore_ascii_case("video") {
+          wrapper_poster = node
+            .get_attribute_ref("data-poster-url")
+            .filter(|value| !trim_ascii_whitespace(value).is_empty())
+            .or(wrapper_poster);
+        }
+
         if tag.eq_ignore_ascii_case("video") {
           let poster = node
             .get_attribute_ref("poster")
@@ -1372,13 +1424,44 @@ mod disk_cache_main {
               node
                 .get_attribute_ref("gnt-gl-ps")
                 .filter(|value| !trim_ascii_whitespace(value).is_empty())
-            });
+            })
+            .or(wrapper_poster);
           if let Some(poster) = poster {
             if let Some(resolved) = resolve_href(base_url, poster) {
-              let before = out.len();
-              record_image_candidate(all, out, &resolved, max_total, max_total);
-              if out.len() > before {
-                inserted += 1;
+              let crossorigin = match node.get_attribute_ref("crossorigin") {
+                None => CrossOriginAttribute::None,
+                Some(value) => {
+                  let value = trim_ascii_whitespace(value);
+                  if value.eq_ignore_ascii_case("use-credentials") {
+                    CrossOriginAttribute::UseCredentials
+                  } else {
+                    // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+                    CrossOriginAttribute::Anonymous
+                  }
+                }
+              };
+              match crossorigin {
+                CrossOriginAttribute::None => {
+                  let before = image_urls.len();
+                  record_image_candidate(all, image_urls, &resolved, max_total, max_total);
+                  if image_urls.len() > before {
+                    inserted += 1;
+                  }
+                }
+                crossorigin => {
+                  let before = cors_image_urls.len();
+                  record_cors_image_candidate(
+                    all,
+                    cors_image_urls,
+                    &resolved,
+                    crossorigin,
+                    max_total,
+                    max_total,
+                  );
+                  if cors_image_urls.len() > before {
+                    inserted += 1;
+                  }
+                }
               }
             }
           }
@@ -1389,7 +1472,7 @@ mod disk_cache_main {
         continue;
       }
       for child in node.children.iter().rev() {
-        stack.push(child);
+        stack.push((child, wrapper_poster));
       }
     }
   }
@@ -2431,6 +2514,7 @@ mod disk_cache_main {
           dom,
           base_url,
           &mut image_urls,
+          &mut cors_image_urls,
           opts.max_discovered_assets_per_page,
         );
       } else {
@@ -2439,6 +2523,7 @@ mod disk_cache_main {
           html,
           base_url,
           &mut image_urls,
+          &mut cors_image_urls,
           opts.max_discovered_assets_per_page,
         );
       }
@@ -4592,6 +4677,184 @@ mod disk_cache_main {
           .unwrap()
           .contains(&"https://example.com/poster2.png".to_string()),
         "gnt-gl-ps should be recognized as a video poster candidate",
+      );
+    }
+
+    #[test]
+    fn crossorigin_video_poster_is_prefetched_with_image_cors_destination() {
+      use fastrender::resource::FetchContextKind;
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<(String, FetchDestination)>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("image prefetch should use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self
+            .calls
+            .lock()
+            .unwrap()
+            .push((req.url.to_string(), req.destination));
+          Ok(FetchedResource::new(
+            b"img".to_vec(),
+            Some("image/png".to_string()),
+          ))
+        }
+
+        fn fetch_partial_with_context(
+          &self,
+          _kind: FetchContextKind,
+          _url: &str,
+          _max_bytes: usize,
+        ) -> fastrender::Result<FetchedResource> {
+          Ok(FetchedResource::new(
+            Vec::new(),
+            Some("image/png".to_string()),
+          ))
+        }
+      }
+
+      let html = r#"<!doctype html><html><body>
+        <video poster="/poster.png" crossorigin></video>
+      </body></html>"#;
+
+      let document_url = "https://example.com/page";
+      let base_url = "https://example.com/";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: false,
+        prefetch_images: false,
+        prefetch_scripts: false,
+        prefetch_icons: false,
+        prefetch_video_posters: true,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+        dry_run: false,
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      prefetch_assets_for_html(
+        "test",
+        document_url,
+        html,
+        document_url,
+        base_url,
+        ReferrerPolicy::default(),
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      let calls = fetcher_impl.calls.lock().unwrap().clone();
+      assert!(
+        calls.iter().any(|(url, dest)| {
+          url == "https://example.com/poster.png" && *dest == FetchDestination::ImageCors
+        }),
+        "expected crossorigin video poster to be prefetched via ImageCors, got: {calls:?}"
+      );
+    }
+
+    #[test]
+    fn wrapper_video_poster_is_still_fetched_when_image_cap_is_exceeded() {
+      use fastrender::resource::FetchContextKind;
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<(String, FetchDestination)>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("image prefetch should use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self
+            .calls
+            .lock()
+            .unwrap()
+            .push((req.url.to_string(), req.destination));
+          Ok(FetchedResource::new(
+            b"img".to_vec(),
+            Some("image/png".to_string()),
+          ))
+        }
+
+        fn fetch_partial_with_context(
+          &self,
+          _kind: FetchContextKind,
+          _url: &str,
+          _max_bytes: usize,
+        ) -> fastrender::Result<FetchedResource> {
+          Ok(FetchedResource::new(
+            Vec::new(),
+            Some("image/png".to_string()),
+          ))
+        }
+      }
+
+      let n = 1usize;
+      let mut html = "<!doctype html><html><body>".to_string();
+      for idx in 0..(n + 2) {
+        html.push_str(&format!("<img src=\"/img{idx}.png\">"));
+      }
+      html.push_str("<div data-poster-url=\"/wrapper.png\"><video crossorigin></video></div>");
+      html.push_str("</body></html>");
+
+      let document_url = "https://example.com/page";
+      let base_url = "https://example.com/";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: false,
+        prefetch_images: true,
+        prefetch_scripts: false,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: n,
+          max_urls_per_element: 2,
+        },
+        dry_run: false,
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      prefetch_assets_for_html(
+        "test",
+        document_url,
+        &html,
+        document_url,
+        base_url,
+        ReferrerPolicy::default(),
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      let calls = fetcher_impl.calls.lock().unwrap().clone();
+      assert!(
+        calls.iter().any(|(url, dest)| {
+          url == "https://example.com/wrapper.png" && *dest == FetchDestination::ImageCors
+        }),
+        "expected wrapper poster URL to be prefetched via ImageCors even when image discovery cap is hit, got: {calls:?}"
       );
     }
 
