@@ -20,3 +20,10 @@ icu_casemap = { version = "2.1.1", features = ["compiled_data"] }
 
 [dev-dependencies]
 libc = { workspace = true }
+
+[features]
+# Enables GC invariant validation in non-debug (release) builds.
+#
+# This is intended for fuzzing and production-like reproductions where debug builds are too slow.
+# By default, these checks run only when `debug_assertions` are enabled.
+gc_validate = []

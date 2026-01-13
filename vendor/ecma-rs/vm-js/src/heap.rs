@@ -711,7 +711,7 @@ impl Heap {
   ///   surface `VmError::InvalidHandle` at unrelated call sites.
   ///
   /// Running this after GC helps catch corruption early and with useful context.
-  #[cfg(debug_assertions)]
+  #[cfg(any(debug_assertions, feature = "gc_validate"))]
   fn debug_validate_no_stale_internal_handles(&self) {
     for (owner_idx, owner_slot) in self.slots.iter().enumerate() {
       let Some(owner_obj) = owner_slot.value.as_ref() else {
@@ -1284,7 +1284,7 @@ impl Heap {
     }
   }
 
-  #[cfg(debug_assertions)]
+  #[cfg(any(debug_assertions, feature = "gc_validate"))]
   fn debug_validate_heap_id_expected(
     &self,
     owner_kind: core::fmt::Arguments<'_>,
@@ -1324,7 +1324,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     );
   }
 
-  #[cfg(debug_assertions)]
+  #[cfg(any(debug_assertions, feature = "gc_validate"))]
   fn debug_validate_value(
     &self,
     owner_kind: core::fmt::Arguments<'_>,
@@ -1672,10 +1672,10 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     self.finalization_registry_cleanup_jobs_pending = any_pending_cleanup;
 
     #[cfg(debug_assertions)]
-    {
-      self.debug_assert_used_bytes_is_correct();
-      self.debug_validate_no_stale_internal_handles();
-    }
+    self.debug_assert_used_bytes_is_correct();
+
+    #[cfg(any(debug_assertions, feature = "gc_validate"))]
+    self.debug_validate_no_stale_internal_handles();
   }
 
   /// Enqueues `FinalizationRegistry` cleanup jobs into a host job queue.
@@ -10830,7 +10830,7 @@ impl Trace for HeapObject {
 }
 
 impl HeapObject {
-  #[cfg(debug_assertions)]
+  #[cfg(any(debug_assertions, feature = "gc_validate"))]
   fn debug_kind(&self) -> &'static str {
     match self {
       HeapObject::String(_) => "String",
@@ -10875,7 +10875,7 @@ impl HeapObject {
   }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "gc_validate"))]
 fn debug_expected_is_object(obj: &HeapObject) -> bool {
   matches!(
     obj,
@@ -10898,32 +10898,32 @@ fn debug_expected_is_object(obj: &HeapObject) -> bool {
   )
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "gc_validate"))]
 fn debug_expected_is_array_buffer(obj: &HeapObject) -> bool {
   matches!(obj, HeapObject::ArrayBuffer(_))
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "gc_validate"))]
 fn debug_expected_is_string(obj: &HeapObject) -> bool {
   matches!(obj, HeapObject::String(_))
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "gc_validate"))]
 fn debug_expected_is_symbol(obj: &HeapObject) -> bool {
   matches!(obj, HeapObject::Symbol(_))
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "gc_validate"))]
 fn debug_expected_is_bigint(obj: &HeapObject) -> bool {
   matches!(obj, HeapObject::BigInt(_))
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "gc_validate"))]
 fn debug_expected_is_env(obj: &HeapObject) -> bool {
   matches!(obj, HeapObject::Env(_))
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "gc_validate"))]
 fn debug_expected_is_module_namespace_exports(obj: &HeapObject) -> bool {
   matches!(obj, HeapObject::ModuleNamespaceExports(_))
 }
@@ -12059,11 +12059,17 @@ impl<'a> Tracer<'a> {
     let idx = id.index() as usize;
     let slot = self.slots.get(idx)?;
     if slot.generation != id.generation() {
-      debug_assert!(false, "stale handle during GC: {id:?}");
+      // `Tracer::validate` is on the hot path; keep the default release behaviour (ignore invalid
+      // edges) unless debug assertions are enabled or `gc_validate` is explicitly requested.
+      if cfg!(any(debug_assertions, feature = "gc_validate")) {
+        panic!("stale handle during GC: {id:?}");
+      }
       return None;
     }
     if slot.value.is_none() {
-      debug_assert!(false, "handle points at a free slot during GC: {id:?}");
+      if cfg!(any(debug_assertions, feature = "gc_validate")) {
+        panic!("handle points at a free slot during GC: {id:?}");
+      }
       return None;
     }
     Some(idx)
