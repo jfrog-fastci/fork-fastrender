@@ -4238,7 +4238,7 @@ mod tests {
   }
 
   fn accesskit_node_selected(node: &accesskit::Node) -> bool {
-    node.is_selected()
+    node.is_selected().unwrap_or(false)
   }
 
   fn apply_close_tab_actions_for_test(
