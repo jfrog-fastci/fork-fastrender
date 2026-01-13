@@ -6994,4 +6994,51 @@ mod tests {
     assert_eq!(ran, Value::Number(1.0));
     Ok(())
   }
+
+  #[test]
+  fn compiled_try_catches_internal_not_callable() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ try { (0)(); return 0; } catch(e) { return 1; } } f();",
+    )?;
+    assert_eq!(v, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_try_catch_binds_destructuring_param() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ try { throw {a: 1}; } catch({a}) { return a; } } f();",
+    )?;
+    assert_eq!(v, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_finally_overrides_throw() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ try { throw 1; } finally { return 2; } } f();",
+    )?;
+    assert_eq!(v, Value::Number(2.0));
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_finally_throw_overrides_return() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let res = exec_compiled(
+      &mut rt,
+      "function f(){ try { return 1; } finally { throw 2; } } f();",
+    );
+    let Err(err) = res else {
+      return Err(VmError::InvariantViolation("expected throw from finally"));
+    };
+    assert_eq!(err.thrown_value(), Some(Value::Number(2.0)));
+    Ok(())
+  }
 }
