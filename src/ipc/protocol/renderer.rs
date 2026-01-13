@@ -4,6 +4,7 @@
 //! so messages can cross a process boundary safely. Large payloads like pixel buffers must be sent
 //! out-of-band via file descriptor (FD) attachments (e.g. shared memory).
 
+use crate::ipc::protocol::cancel::CancelGensSnapshot;
 use bincode::Options;
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
@@ -188,6 +189,12 @@ pub enum BrowserToRenderer {
     reason: u8,
   },
 
+  /// Update the cooperative cancellation generations for a tab.
+  ///
+  /// The browser should send this when it bumps its local gens (e.g. before sending a new
+  /// navigation or repaint request) so in-flight renderer work can cancel cooperatively.
+  CancelUpdate { tab_id: u64, gens: CancelGensSnapshot },
+
   ViewportChanged {
     tab_id: u64,
     viewport_css: (u32, u32),
@@ -301,6 +308,12 @@ mod tests {
       reason: 1,
     };
     assert_eq!(msg, roundtrip(&msg));
+
+    let msg = BrowserToRenderer::CancelUpdate {
+      tab_id: 42,
+      gens: CancelGensSnapshot { nav: 1, paint: 2 },
+    };
+    assert_eq!(msg, roundtrip(&msg));
   }
 
   #[test]
@@ -344,6 +357,10 @@ mod tests {
         tab_id: 1,
         url: url.clone(),
         reason: 0,
+      },
+      BrowserToRenderer::CancelUpdate {
+        tab_id: 1,
+        gens: CancelGensSnapshot { nav: 1, paint: 1 },
       },
       BrowserToRenderer::ViewportChanged {
         tab_id: 1,

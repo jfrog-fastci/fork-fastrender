@@ -10,6 +10,7 @@
 //! allocates SHM slots once, subsequent messages are control-only" transport.
 
 pub mod ancillary;
+pub mod cancel;
 pub mod connection;
 pub mod error;
 #[cfg(unix)]
