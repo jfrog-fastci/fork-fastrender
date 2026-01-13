@@ -267,23 +267,6 @@ pub enum SiteLock {
 }
 
 impl SiteLock {
-  fn registrable_domain_fallback(host: &str) -> String {
-    // Fallback for hosts not covered by the public suffix list (e.g. `*.test`) and for
-    // non-DNS hosts like `localhost`.
-    let host = host.to_ascii_lowercase();
-    let mut labels = host.split('.').filter(|part| !part.is_empty());
-    let mut last = None::<&str>;
-    let mut second_last = None::<&str>;
-    for label in labels.by_ref() {
-      second_last = last;
-      last = Some(label);
-    }
-    match (second_last, last) {
-      (Some(a), Some(b)) => format!("{a}.{b}"),
-      _ => host,
-    }
-  }
-
   fn registrable_domain(host: &str) -> String {
     static PSL: OnceLock<List> = OnceLock::new();
     let list = PSL.get_or_init(List::default);
@@ -294,10 +277,46 @@ impl SiteLock {
     if host.parse::<std::net::IpAddr>().is_ok() {
       return host;
     }
-    match list.domain(host.as_bytes()) {
-      Some(domain) => String::from_utf8_lossy(domain.as_bytes()).into_owned(),
-      None => Self::registrable_domain_fallback(&host),
+
+    let Some(suffix) = list.suffix(host.as_bytes()) else {
+      // If we cannot derive a public suffix, fall back to host-level isolation. This may create more
+      // processes than necessary, but avoids over-grouping unrelated sites.
+      return host;
+    };
+    let Ok(suffix_str) = std::str::from_utf8(suffix.as_bytes()) else {
+      return host;
+    };
+    let mut suffix_labels = suffix_str.split('.').filter(|part| !part.is_empty()).count();
+    let host_labels: Vec<&str> = host.split('.').filter(|part| !part.is_empty()).collect();
+    if host_labels.len() <= suffix_labels {
+      return host;
     }
+
+    // The bundled public suffix list used by `publicsuffix::List::default()` is intentionally
+    // lightweight and does not include all multi-level public suffix rules. To avoid over-grouping
+    // common ccTLD registries (e.g. `example.co.uk` vs `other.co.uk`) we apply a conservative
+    // heuristic:
+    //
+    // - When the computed suffix is a 2-letter ccTLD (e.g. `uk`, `au`), and the label immediately
+    //   preceding it is a common second-level registry bucket (`co`, `com`, `net`, ...), treat the
+    //   *pair* as the effective public suffix (e.g. `co.uk`).
+    //
+    // This can only make the derived site *more specific* (less sharing), which is safe for site
+    // isolation. It may increase process churn in some edge cases but avoids grouping unrelated
+    // sites under one ccTLD bucket.
+    if suffix_labels == 1 && suffix_str.len() == 2 && host_labels.len() >= 3 {
+      let second_last = host_labels[host_labels.len() - 2];
+      if matches!(
+        second_last,
+        "ac" | "co" | "com" | "edu" | "gov" | "net" | "org"
+      ) {
+        suffix_labels = 2;
+      }
+    }
+
+    // Registered domain (eTLD+1) = public suffix + one additional label.
+    let start = host_labels.len().saturating_sub(suffix_labels + 1);
+    host_labels[start..].join(".")
   }
 
   /// Derive a renderer `SiteLock` from the browser-assigned [`SiteKey`].
@@ -693,6 +712,18 @@ mod tests {
     let other_v6 = site_key_for_navigation("https://[2001:db8::2]/", None);
     assert!(!lock_v6.matches_url("https://[2001:db8::2]/", &other_v6));
     assert!(lock_v6.matches_url("https://[2001:db8::1]/", &lock_v6_site));
+  }
+
+  #[test]
+  fn schemeful_site_lock_handles_multi_level_public_suffix() {
+    let lock_site = site_key_for_navigation("https://a.b.example.co.uk/", None);
+    let lock = SiteLock::from_site_key(&lock_site, SiteIsolationMode::PerSite);
+
+    let same_registrable = site_key_for_navigation("https://c.example.co.uk/", None);
+    assert!(lock.matches_url("https://c.example.co.uk/path", &same_registrable));
+
+    let other_registrable = site_key_for_navigation("https://other.co.uk/", None);
+    assert!(!lock.matches_url("https://other.co.uk/", &other_registrable));
   }
 }
 
