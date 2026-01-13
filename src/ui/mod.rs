@@ -41,6 +41,7 @@ pub mod protocol_limits;
 pub mod untrusted;
 pub mod process_assignment;
 pub mod render_worker;
+pub mod renderer_process_id;
 pub mod scrollbars;
 pub mod shortcuts;
 pub mod find_in_page;
@@ -139,6 +140,7 @@ pub use messages::{
   BrowserMediaPreferences, CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton,
   PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WakeReason, WorkerToUi,
 };
+pub use renderer_process_id::RendererProcessId;
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the
 // `browser_ui` feature gate.
