@@ -33,6 +33,7 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
+use crate::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE;
 
 #[derive(Debug, Clone, Default)]
 pub struct AboutPageSnapshot {
@@ -175,6 +176,14 @@ const ABOUT_SHARED_CSS: &str = r#"/* FASTR_ABOUT_SHARED_CSS */
   color-scheme: light dark;
   --about-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
+  --about-surface: rgba(127,127,127,0.06);
+  --about-surface-strong: rgba(127,127,127,0.08);
+  --about-surface-hover: rgba(127,127,127,0.12);
+  --about-border: rgba(127,127,127,0.25);
+  --about-border-strong: rgba(127,127,127,0.35);
+  --about-focus: rgba(10, 132, 255, 0.65);
+  --about-accent-border: rgba(10, 132, 255, 0.55);
+  --about-accent-bg: rgba(10, 132, 255, 0.18);
 }
 body {
   margin: 0;
@@ -223,8 +232,8 @@ button {
   display: inline-block;
   padding: 8px 12px;
   border-radius: 999px;
-  border: 1px solid rgba(127,127,127,0.25);
-  background: rgba(127,127,127,0.08);
+  border: 1px solid var(--about-border);
+  background: var(--about-surface-strong);
   color: inherit;
   text-decoration: none;
   font: inherit;
@@ -232,17 +241,17 @@ button {
 .about-nav a:hover,
 .about-button:hover,
 button:hover {
-  background: rgba(127,127,127,0.12);
+  background: var(--about-surface-hover);
 }
 .about-nav a:focus,
 .about-button:focus,
 button:focus {
-  outline: 3px solid rgba(10, 132, 255, 0.65);
+  outline: 3px solid var(--about-focus);
   outline-offset: 2px;
 }
 .about-button.primary {
-  border-color: rgba(10, 132, 255, 0.55);
-  background: rgba(10, 132, 255, 0.18);
+  border-color: var(--about-accent-border);
+  background: var(--about-accent-bg);
 }
 .about-nav a[aria-current="page"] {
   border-color: rgba(127,127,127,0.42);
@@ -252,7 +261,7 @@ button:focus {
 .about-card {
   border: 1px solid rgba(127,127,127,0.18);
   border-radius: 16px;
-  background: rgba(127,127,127,0.06);
+  background: var(--about-surface);
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.12);
   padding: 20px;
 }
@@ -288,8 +297,8 @@ a.about-tile {
   display: block;
   text-decoration: none;
   color: inherit;
-  border: 1px solid rgba(127,127,127,0.25);
-  background: rgba(127,127,127,0.06);
+  border: 1px solid var(--about-border);
+  background: var(--about-surface);
   border-radius: 12px;
   padding: 12px 14px;
 }
@@ -473,11 +482,69 @@ fn blank_html() -> &'static str {
   "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
 }
 
+#[derive(Debug, Clone)]
+struct SearchFormConfig {
+  action: String,
+  query_param: String,
+  hidden_inputs: Vec<(String, String)>,
+}
+
+fn search_form_config_from_template(template: &str) -> Option<SearchFormConfig> {
+  const QUERY_PLACEHOLDER: &str = "FASTR_QUERY_PLACEHOLDER";
+  if !template.contains("{query}") {
+    return None;
+  }
+
+  let replaced = template.replace("{query}", QUERY_PLACEHOLDER);
+  let mut url = url::Url::parse(&replaced).ok()?;
+  let mut query_param = None;
+  let mut hidden_inputs = Vec::new();
+
+  for (key, value) in url.query_pairs() {
+    if value == QUERY_PLACEHOLDER {
+      if query_param.is_none() {
+        query_param = Some(key.into_owned());
+      }
+    } else {
+      hidden_inputs.push((key.into_owned(), value.into_owned()));
+    }
+  }
+
+  let query_param = query_param?;
+  url.set_query(None);
+  url.set_fragment(None);
+
+  Some(SearchFormConfig {
+    action: url.to_string(),
+    query_param,
+    hidden_inputs,
+  })
+}
+
 fn newtab_html() -> String {
   const MAX_BOOKMARKS: usize = 12;
   const MAX_HISTORY: usize = 12;
 
   let snapshot = about_page_snapshot();
+  let search_form = search_form_config_from_template(DEFAULT_SEARCH_ENGINE_TEMPLATE).unwrap_or(
+    SearchFormConfig {
+      action: "https://duckduckgo.com/".to_string(),
+      query_param: "q".to_string(),
+      hidden_inputs: Vec::new(),
+    },
+  );
+  let safe_search_action = escape_html(&search_form.action);
+  let safe_search_param = escape_html(&search_form.query_param);
+  let mut hidden_inputs_html = String::new();
+  for (key, value) in search_form.hidden_inputs.into_iter() {
+    let safe_key = escape_html(&key);
+    let safe_value = escape_html(&value);
+    use std::fmt::Write;
+    let _ = write!(
+      hidden_inputs_html,
+      r#"<input type="hidden" name="{safe_key}" value="{safe_value}">"#
+    );
+  }
   use std::fmt::Write;
 
   let mut bookmark_tiles = String::new();
@@ -613,6 +680,12 @@ fn newtab_html() -> String {
         browsing history.
       </p>
 
+      <form class="about-search" method="get" action="{safe_search_action}" role="search">
+        {hidden_inputs_html}
+        <input type="search" name="{safe_search_param}" placeholder="Search the web" aria-label="Search the web">
+        <button class="about-button primary" type="submit">Search</button>
+      </form>
+
       <div class="about-hint" role="note">
         <span class="about-kbd">Ctrl</span>
         <span class="about-kbd">L</span>
@@ -654,13 +727,39 @@ fn newtab_html() -> String {
       {history_body}
 
       <div class="about-tip">
-        Tip: You can also open local files by typing a path like <code>/tmp/a.html</code> or
+       Tip: You can also open local files by typing a path like <code>/tmp/a.html</code> or
         <code>C:\path\to\file.html</code>.
       </div>"#,
       bookmarks_body = bookmarks_body,
-      history_body = history_body
+      history_body = history_body,
+      safe_search_action = safe_search_action,
+      safe_search_param = safe_search_param,
+      hidden_inputs_html = hidden_inputs_html
     ),
-    "",
+    r#"
+.about-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 18px 0 18px;
+}
+.about-search input[type="search"] {
+  flex: 1;
+  min-width: min(420px, 100%);
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--about-border-strong);
+  background: var(--about-surface);
+  color: inherit;
+  font: inherit;
+}
+.about-search input[type="search"]:focus {
+  outline: 3px solid var(--about-focus);
+  outline-offset: 2px;
+}
+.about-search button { cursor: pointer; }
+"#,
   )
 }
 
@@ -1352,6 +1451,41 @@ mod tests {
         "expected about:newtab HTML to link to {url}"
       );
     }
+  }
+
+  #[test]
+  fn newtab_html_includes_search_form_for_default_engine() {
+    use url::Url;
+
+    let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
+    assert!(html.contains("<form"), "expected about:newtab to include a <form>");
+
+    const NEEDLE: &str = "fastrender_test_query";
+    let replaced = DEFAULT_SEARCH_ENGINE_TEMPLATE.replace("{query}", NEEDLE);
+    let mut url = Url::parse(&replaced).expect("default search engine template must parse");
+
+    let mut query_param = None;
+    for (k, v) in url.query_pairs() {
+      if v == NEEDLE {
+        query_param = Some(k.into_owned());
+        break;
+      }
+    }
+    let query_param = query_param.expect("expected search template to include {query} as a query param value");
+
+    url.set_query(None);
+    url.set_fragment(None);
+    let action = url.to_string();
+    let safe_action = escape_html(&action);
+
+    assert!(
+      html.contains(&format!("action=\"{safe_action}\"")),
+      "expected about:newtab HTML to submit to {action}, got: {html}"
+    );
+    assert!(
+      html.contains(&format!("name=\"{query_param}\"")),
+      "expected about:newtab HTML to include an <input> with name={query_param:?}, got: {html}"
+    );
   }
 
   #[test]
