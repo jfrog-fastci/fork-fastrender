@@ -61,6 +61,9 @@ impl Default for TabStripScrollClampAnim {
 const DRAG_AUTOSCROLL_EDGE_ZONE_PX: f32 = 36.0;
 const DRAG_AUTOSCROLL_MAX_SPEED_PX_PER_S: f32 = 1200.0;
 
+// Treat very small collapse factors as fully collapsed to avoid leaving 1px slivers.
+const GROUP_COLLAPSE_HIDE_EPS: f32 = 0.001;
+
 fn drag_autoscroll_delta_x(pointer_pos: Pos2, viewport_rect: Rect, dt: f32) -> f32 {
   if dt <= 0.0 || !dt.is_finite() || viewport_rect.width() <= 0.0 {
     return 0.0;
@@ -887,7 +890,7 @@ fn group_chip_ui(
     ui.ctx(),
     id.with("expanded"),
     !collapsed,
-    motion.durations.tab_underline,
+    motion.durations.tab_group_collapse,
   );
   let angle = expanded_t * std::f32::consts::FRAC_PI_2;
 
@@ -1589,7 +1592,10 @@ pub(super) fn tab_strip_ui(
         motion.durations.tab_group_collapse,
       );
       let target = if collapsed { 0.0 } else { 1.0 };
-      if motion.enabled && ui.ctx().style().animation_time > 0.0 && (t - target).abs() > 0.001 {
+      if motion.enabled
+        && ui.ctx().style().animation_time > 0.0
+        && (t - target).abs() > GROUP_COLLAPSE_HIDE_EPS
+      {
         group_animating = true;
       }
       group_expand_t.insert(group_id, t);
@@ -1664,7 +1670,7 @@ pub(super) fn tab_strip_ui(
         .unwrap_or(if group.collapsed { 0.0 } else { 1.0 })
         .clamp(0.0, 1.0);
 
-      if group.collapsed && group_t <= 0.001 {
+      if group.collapsed && group_t <= GROUP_COLLAPSE_HIDE_EPS {
         while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
           idx += 1;
         }
@@ -2013,7 +2019,7 @@ pub(super) fn tab_strip_ui(
                   .copied()
                   .unwrap_or(1.0)
                   .clamp(0.0, 1.0);
-                if collapsed && group_t <= 0.001 {
+                if collapsed && group_t <= GROUP_COLLAPSE_HIDE_EPS {
                   // Fully collapsed: hide all member tabs (but keep the chip visible).
                   while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
                     idx += 1;
