@@ -200,9 +200,33 @@ body {
   padding: 32px 18px;
   font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
   background:
-    radial-gradient(900px circle at 20% 0%, rgba(37, 99, 235, 0.12), transparent 45%),
-    radial-gradient(900px circle at 80% 20%, rgba(16, 185, 129, 0.10), transparent 45%),
+    radial-gradient(900px circle at 20% 0%, var(--about-accent-bg), transparent 45%),
+    radial-gradient(900px circle at 80% 20%, rgba(127,127,127,0.10), transparent 45%),
     rgba(127,127,127,0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --about-surface: rgba(255,255,255,0.06);
+    --about-surface-strong: rgba(255,255,255,0.08);
+    --about-surface-hover: rgba(255,255,255,0.12);
+    --about-border: rgba(255,255,255,0.20);
+    --about-border-strong: rgba(255,255,255,0.30);
+  }
+  body {
+    color: rgba(255,255,255,0.92);
+    background:
+      radial-gradient(900px circle at 20% 0%, var(--about-accent-bg), transparent 45%),
+      radial-gradient(900px circle at 80% 20%, rgba(255,255,255,0.06), transparent 45%),
+      rgba(0,0,0,0.88);
+  }
+  code, kbd {
+    background: rgba(255,255,255,0.16);
+  }
+  .about-card {
+    border-color: rgba(255,255,255,0.14);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
+  }
 }
 h1 { font-size: 20px; margin: 0 0 12px; letter-spacing: -0.01em; }
 h2 { font-size: 16px; margin: 18px 0 8px; }
@@ -1732,6 +1756,8 @@ mod tests {
       "--about-focus: rgba(255, 0, 255, 0.65);",
       "--about-accent-border: rgba(255, 0, 255, 0.55);",
       "--about-accent-bg: rgba(255, 0, 255, 0.18);",
+      "radial-gradient(900px circle at 20% 0%, var(--about-accent-bg)",
+      "@media (prefers-color-scheme: dark)",
     ] {
       assert!(
         html.contains(needle),
