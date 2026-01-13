@@ -20,7 +20,9 @@ fn renderer_sandbox_profiles_enforce_policy() {
 
   for mode in ["pure", "relaxed"] {
     let exe = std::env::current_exe().expect("test exe path");
-    let test_name = "macos_renderer_sandbox::renderer_sandbox_profiles_enforce_policy";
+    // Note: libtest `--exact` matches against the *function* name (integration test crate names are
+    // not included in the reported test names), so pass just the function identifier here.
+    let test_name = stringify!(renderer_sandbox_profiles_enforce_policy);
 
     let output = Command::new(&exe)
       .env(CHILD_ENV, "1")

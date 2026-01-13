@@ -17,8 +17,7 @@ const PORT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_LOCALHOST_PORT";
 const READ_PATH_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_READ_PATH";
 const WRITE_PATH_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_EXEC_WRITE_PATH";
 
-// Passed to `--exact` when spawning the sandboxed child process.
-const TEST_NAME: &str = concat!(module_path!(), "::sandbox_exec_wrapper_enforces_sandbox");
+const TEST_NAME: &str = stringify!(sandbox_exec_wrapper_enforces_sandbox);
 
 fn sandbox_exec_path() -> &'static Path {
   Path::new("/usr/bin/sandbox-exec")

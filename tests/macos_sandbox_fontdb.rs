@@ -7,9 +7,7 @@ use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode};
 #[test]
 fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
   const CHILD_ENV: &str = "FASTR_TEST_MACOS_RELAXED_SANDBOX_FONTDB_CHILD";
-  // Keep this in sync with the module + fn name below; it's passed to `--exact`.
-  const TEST_NAME: &str =
-    "macos_sandbox_fontdb::relaxed_sandbox_allows_fontdb_system_font_discovery";
+  const TEST_NAME: &str = stringify!(relaxed_sandbox_allows_fontdb_system_font_discovery);
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
