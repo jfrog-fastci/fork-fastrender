@@ -6,6 +6,9 @@ This document is a **manual regression checklist** for the windowed `browser` UI
 Goal: contributors can validate chrome UX changes on **Linux/macOS/Windows** without guessing the
 expected behaviour.
 
+If you only need a quick shortcut/UX parity smoke pass, see the shorter
+[chrome_test_matrix.md](chrome_test_matrix.md).
+
 Scope note: today the rendered page is a pixmap; **page content accessibility and DOM interaction
 parity are out of scope here** (see `instructions/browser_interaction.md`). This matrix is for the
 **browser shell**.
