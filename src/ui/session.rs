@@ -781,6 +781,7 @@ mod tests {
         },
       ],
       active_tab_index: 0,
+      show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }
     .sanitized();
@@ -822,6 +823,7 @@ mod tests {
         collapsed: true,
       }],
       active_tab_index: 1,
+      show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }
     .sanitized();

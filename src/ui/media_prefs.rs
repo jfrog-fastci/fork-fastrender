@@ -131,14 +131,14 @@ mod tests {
       }
     );
 
-    let mut dark = base;
+    let mut dark = base.clone();
     dark.theme = BrowserTheme::Dark;
     assert_eq!(
       media_prefs_from_appearance(&dark, SystemTheme::Light).prefers_color_scheme,
       ColorScheme::Dark
     );
 
-    let mut sys = base;
+    let mut sys = base.clone();
     sys.theme = BrowserTheme::System;
     assert_eq!(
       media_prefs_from_appearance(&sys, SystemTheme::Dark).prefers_color_scheme,
@@ -149,7 +149,7 @@ mod tests {
       ColorScheme::Light
     );
 
-    let mut hc = base;
+    let mut hc = base.clone();
     hc.high_contrast = true;
     assert_eq!(
       media_prefs_from_appearance(&hc, SystemTheme::Light).prefers_contrast,
@@ -202,4 +202,3 @@ mod tests {
     assert_eq!(derived.config().media.prefers_reduced_motion, Some(true));
   }
 }
-
