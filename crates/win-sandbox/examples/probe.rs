@@ -245,14 +245,17 @@ mod windows {
 
     // Always relocate the image to a temp dir that we can ACL for the AppContainer SID; this avoids
     // common `ERROR_ACCESS_DENIED` failures when running from a dev checkout.
-    let (temp_dir, relocated_exe) = relocate_exe_for_appcontainer(exe, profile.sid().as_ptr())?;
+    let appcontainer_sid = profile
+      .sid()
+      .expect("AppContainerProfile should be enabled after ensure()");
+    let (temp_dir, relocated_exe) = relocate_exe_for_appcontainer(exe, appcontainer_sid.as_ptr())?;
 
     let current_dir_w = wide_from_os(temp_dir.path.as_os_str());
     let current_dir_ptr = current_dir_w.as_ptr();
 
     let (pi, used_breakaway) = spawn_with_optional_breakaway(parent_in_job, |flags| {
       spawn_with_attributes(
-        Some(profile.sid().as_ptr()),
+        Some(appcontainer_sid.as_ptr()),
         None,
         &relocated_exe,
         args,
