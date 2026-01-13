@@ -33,6 +33,30 @@ const DRAG_PREVIEW_SCALE: f32 = 1.02;
 const DRAG_GAP_PULSE_EXTRA_ALPHA: f32 = 0.22;
 const DRAG_GAP_BASE_ALPHA: f32 = 0.10;
 
+const TAB_STRIP_SCROLL_CLAMP_DURATION: f32 = 0.16;
+
+#[derive(Debug, Clone, Copy)]
+struct TabStripScrollClampAnim {
+  /// Whether the clamp animation is currently running.
+  active: bool,
+  start_offset_x: f32,
+  target_offset_x: f32,
+  start_time: f64,
+  duration: f32,
+}
+
+impl Default for TabStripScrollClampAnim {
+  fn default() -> Self {
+    Self {
+      active: false,
+      start_offset_x: 0.0,
+      target_offset_x: 0.0,
+      start_time: 0.0,
+      duration: TAB_STRIP_SCROLL_CLAMP_DURATION,
+    }
+  }
+}
+
 // Tab-strip drag auto-scroll parameters (when the unpinned segment overflows).
 const DRAG_AUTOSCROLL_EDGE_ZONE_PX: f32 = 36.0;
 const DRAG_AUTOSCROLL_MAX_SPEED_PX_PER_S: f32 = 1200.0;
@@ -208,6 +232,11 @@ fn paint_scroll_edge_fades(
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
   a + (b - a) * t
+}
+
+fn ease_out_quad(t: f32) -> f32 {
+  let t = t.clamp(0.0, 1.0);
+  1.0 - (1.0 - t) * (1.0 - t)
 }
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
@@ -1783,6 +1812,11 @@ pub(super) fn tab_strip_ui(
       );
       unpinned_ui.set_clip_rect(unpinned_viewport_rect);
 
+      let scroll_clamp_id = unpinned_ui.make_persistent_id("tab_strip_scroll_clamp");
+      let desired_scroll_id = scroll_clamp_id.with("desired_scroll_offset_x");
+      let clamp_anim_id = scroll_clamp_id.with("scroll_clamp_anim");
+      let scroll_state_id_key = scroll_clamp_id.with("scroll_state_id");
+
       let mut restore_scroll_deltas: Option<(Vec2, Vec2)> = None;
       // Browser-like ergonomics: treat vertical wheel scrolling as horizontal scrolling when the
       // pointer is over the tab strip (so users don't need a trackpad horizontal gesture).
@@ -1802,6 +1836,93 @@ pub(super) fn tab_strip_ui(
               Vec2::new(i.smooth_scroll_delta.x + i.smooth_scroll_delta.y, 0.0);
           });
         }
+      }
+
+      // Base max scroll (without any temporary clamp spacer). `sizing` already accounts for group
+      // chip widths (Task 17), so this stays accurate when groups are present.
+      unpinned_max_scroll_x = (sizing.total_content_width - unpinned_viewport_width).max(0.0);
+
+      // Smoothly clamp the scroll offset when content shrinks (e.g. closing tabs at the right
+      // end). If we're beyond the new max, animating prevents a noticeable snap.
+      let mut end_spacer_x = 0.0_f32;
+      let now = unpinned_ui.input(|i| i.time);
+      let stored_scroll_state_id = unpinned_ui
+        .ctx()
+        .data(|d| d.get_temp::<egui::Id>(scroll_state_id_key));
+      let mut current_offset_x = stored_scroll_state_id
+        .map(|id| egui::scroll_area::ScrollAreaState::load(unpinned_ui.ctx(), id).offset.x)
+        .unwrap_or(0.0);
+      if !current_offset_x.is_finite() {
+        current_offset_x = 0.0;
+      }
+
+      let mut desired_scroll_offset_x = unpinned_ui
+        .ctx()
+        .data(|d| d.get_temp::<f32>(desired_scroll_id))
+        .unwrap_or(current_offset_x);
+      if !desired_scroll_offset_x.is_finite() {
+        desired_scroll_offset_x = current_offset_x;
+      }
+
+      // Detect out-of-range offset after sizing is recomputed.
+      if desired_scroll_offset_x > unpinned_max_scroll_x + 0.5 {
+        if motion.enabled {
+          let mut anim = unpinned_ui
+            .ctx()
+            .data(|d| d.get_temp::<TabStripScrollClampAnim>(clamp_anim_id))
+            .unwrap_or_default();
+
+          if !anim.active || (anim.target_offset_x - unpinned_max_scroll_x).abs() > 0.5 {
+            anim = TabStripScrollClampAnim {
+              active: true,
+              start_offset_x: desired_scroll_offset_x,
+              target_offset_x: unpinned_max_scroll_x,
+              start_time: now,
+              duration: TAB_STRIP_SCROLL_CLAMP_DURATION,
+            };
+          }
+
+          let t = if anim.duration <= 0.0 {
+            1.0
+          } else {
+            ((now - anim.start_time) as f32 / anim.duration).clamp(0.0, 1.0)
+          };
+          let t = ease_out_quad(t);
+          desired_scroll_offset_x = lerp(anim.start_offset_x, anim.target_offset_x, t);
+
+          // Keep repainting until the scroll clamp finishes.
+          if t < 1.0 - 1e-4 {
+            unpinned_ui.ctx().request_repaint();
+          } else {
+            anim.active = false;
+          }
+
+          unpinned_ui.ctx().data_mut(|d| d.insert_temp(clamp_anim_id, anim));
+        } else {
+          // Reduced motion: snap immediately (no continuous repaint).
+          desired_scroll_offset_x = unpinned_max_scroll_x;
+          unpinned_ui
+            .ctx()
+            .data_mut(|d| d.insert_temp(clamp_anim_id, TabStripScrollClampAnim::default()));
+        }
+
+        // Ensure the ScrollArea accepts offsets beyond the new max by extending the content width
+        // with a temporary spacer. As the desired offset animates down, the spacer shrinks so the
+        // strip slides back smoothly instead of snapping.
+        end_spacer_x = (desired_scroll_offset_x - unpinned_max_scroll_x).max(0.0);
+
+        // Programmatically set the scroll offset for this frame.
+        if let Some(scroll_state_id) = stored_scroll_state_id {
+          let mut scroll_state =
+            egui::scroll_area::ScrollAreaState::load(unpinned_ui.ctx(), scroll_state_id);
+          scroll_state.offset.x = desired_scroll_offset_x;
+          scroll_state.store(unpinned_ui.ctx(), scroll_state_id);
+        }
+      } else {
+        // Not clamping: ensure any previous clamp animation is inactive.
+        unpinned_ui
+          .ctx()
+          .data_mut(|d| d.insert_temp(clamp_anim_id, TabStripScrollClampAnim::default()));
       }
 
       let scroll_output = egui::ScrollArea::horizontal()
@@ -1987,6 +2108,10 @@ pub(super) fn tab_strip_ui(
 
               idx += 1;
             }
+
+            if end_spacer_x > 0.0 {
+              ui.add_space(end_spacer_x);
+            }
           });
         });
       let mut scroll_state = scroll_output.state;
@@ -2002,8 +2127,19 @@ pub(super) fn tab_strip_ui(
         });
       }
 
+      // Keep our "desired scroll" state in sync with egui's actual scroll offset so we don't fight
+      // user scrolling (we only override when clamping due to content shrink).
+      unpinned_ui
+        .ctx()
+        .data_mut(|d| d.insert_temp(desired_scroll_id, scroll_offset_x));
+
       // Use the scroll area's actual widget id for programmatic state updates, rather than
       // assuming how `id_source` is transformed internally by egui.
+      // Store it so we can update the scroll offset *before* the next frame's `ScrollArea::show`
+      // when animating the clamp.
+      unpinned_ui
+        .ctx()
+        .data_mut(|d| d.insert_temp(scroll_state_id_key, scroll_output.id));
       let scroll_state_id = scroll_output.id;
 
       // While dragging an unpinned tab, auto-scroll the overflowing scroll area when the pointer is
