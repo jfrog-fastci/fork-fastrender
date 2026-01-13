@@ -17,6 +17,9 @@ use std::time::Duration;
 /// invalidate the cached style/layout/paint results, and the next call to
 /// [`BrowserDocument2::render_if_needed`] recomputes the pipeline once, coalescing all intermediate
 /// changes.
+///
+/// This type does **not** execute JavaScript and does not include an HTML event loop. For a
+/// JS-capable runtime, use [`super::BrowserTab`].
 pub struct BrowserDocument2 {
   renderer: super::FastRender,
   dom: Document,

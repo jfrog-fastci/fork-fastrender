@@ -437,6 +437,11 @@ enum OrderedModuleQueueKind {
   PostParse,
 }
 
+/// Host state for [`BrowserTab`]'s HTML event loop.
+///
+/// The [`crate::js::EventLoop`] is parameterized by a host type, and tasks are executed with
+/// `&mut BrowserTabHost`. Most embedders should use [`BrowserTab`] directly instead of manipulating
+/// the host state.
 pub struct BrowserTabHost {
   trace: TraceHandle,
   document: Box<BrowserDocumentDom2>,
@@ -4058,6 +4063,19 @@ impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost 
   }
 }
 
+/// JS-capable "tab" runtime (DOM + event loop + script scheduling + rendering).
+///
+/// `BrowserTab` couples:
+/// - a live `dom2` document + render caching ([`BrowserDocumentDom2`]),
+/// - an HTML-shaped [`EventLoop`] (tasks + microtasks + timers),
+/// - HTML `<script>` scheduling integrated with streaming parsing,
+/// - navigation + history state.
+///
+/// Scripts are executed through a pluggable [`BrowserTabJsExecutor`] (for example
+/// [`super::VmJsBrowserTabExecutor`]).
+///
+/// For a map of which public containers include JavaScript + an event loop, see
+/// `docs/runtime_stacks.md`.
 pub struct BrowserTab {
   trace: TraceHandle,
   trace_output: Option<PathBuf>,

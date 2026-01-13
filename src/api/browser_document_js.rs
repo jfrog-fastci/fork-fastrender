@@ -39,6 +39,10 @@ pub enum RunUntilStableOutcome {
 ///
 /// The primary API is [`BrowserDocumentJs::run_until_stable`], which drives the JS event loop and
 /// conditionally re-renders when DOM mutations invalidate layout/paint.
+///
+/// This type does **not** implement the HTML `<script>` processing model (parser-inserted scripts,
+/// `async`/`defer` scheduling) and does not provide `BrowserTab`'s navigation/history behavior.
+/// For JS-enabled page loading + script scheduling, prefer [`super::BrowserTab`].
 pub struct BrowserDocumentJs {
   document: BrowserDocumentDom2,
   js_runtime: VmJsRuntime,

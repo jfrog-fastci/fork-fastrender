@@ -35,6 +35,9 @@ pub struct BrowserNavigationReport {
 /// `BrowserDocument` owns a [`super::FastRender`] instance and a live DOM tree. DOM mutations
 /// invalidate the cached style/layout/paint results, and the next call to [`BrowserDocument::render_if_needed`]
 /// recomputes the pipeline once, coalescing all intermediate changes.
+///
+/// This type does **not** execute JavaScript and does not include an HTML event loop.
+/// For a JS-capable runtime (scripts + event loop + navigation), use [`super::BrowserTab`].
 pub struct BrowserDocument {
   renderer: super::FastRender,
   dom: DomNode,

@@ -41,6 +41,9 @@ pub struct BrowserDocumentDom2InvalidationCounters {
 /// [`crate::dom2::Document`] as the authoritative DOM (e.g. for JavaScript). The renderer only
 /// snapshots the `dom2` document into the renderer's immutable [`crate::dom::DomNode`] form when a
 /// layout recomputation is needed.
+///
+/// This type does **not** execute JavaScript or run an HTML event loop by itself. JavaScript
+/// execution is hosted by [`super::BrowserTab`] (or by a custom embedder built on top of `dom2`).
 pub struct BrowserDocumentDom2 {
   renderer: super::FastRender,
   dom: Box<crate::dom2::Document>,
