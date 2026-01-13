@@ -3,7 +3,7 @@ use crate::dom::DomNode;
 use crate::dom2::{Document, RendererDomSnapshot};
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::Point;
-use crate::js::clock::{Clock, RealClock};
+use crate::clock::{Clock, RealClock};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 
@@ -493,7 +493,7 @@ impl crate::js::DomHost for BrowserDocument2 {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
 
   fn pixel(pixmap: &super::super::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
     let px = pixmap.pixel(x, y).unwrap();

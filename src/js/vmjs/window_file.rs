@@ -553,7 +553,7 @@ pub fn teardown_window_file_bindings_for_realm(realm_id: RealmId) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::WebTime;
   use std::sync::Arc;

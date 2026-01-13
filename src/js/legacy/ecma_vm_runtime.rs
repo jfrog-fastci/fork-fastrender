@@ -1362,7 +1362,7 @@ impl Env {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
   use crate::js::event_loop::{RunLimits, RunUntilIdleOutcome};
   use crate::js::ScriptType;
   use std::sync::Arc;

@@ -187,6 +187,7 @@ extern crate self as fastrender;
 
 pub mod animation;
 pub mod api;
+pub mod clock;
 pub mod compat;
 pub mod error;
 pub mod geometry;

@@ -4,7 +4,7 @@ use crate::geometry::Rect;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::chrome_api::{validate_chrome_navigation_url, MAX_CHROME_NAVIGATION_URL_CODE_UNITS};
-use crate::js::clock::{Clock, RealClock};
+use crate::clock::{Clock, RealClock};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::document_write::{
   current_document_write_state_mut, DOCUMENT_WRITE_IGNORED_NO_PARSER_WARNING,
@@ -43288,7 +43288,7 @@ fn test_unimplemented_native(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
   use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
   use crate::js::RunLimits;

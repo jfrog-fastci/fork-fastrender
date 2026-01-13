@@ -1238,7 +1238,7 @@ pub(crate) fn clone_form_data_entries_for_fetch(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::WebTime;
   use std::sync::Arc;

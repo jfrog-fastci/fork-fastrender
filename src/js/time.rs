@@ -1,4 +1,4 @@
-use super::clock::Clock;
+use crate::clock::Clock;
 use super::event_loop::EventLoop;
 use std::time::Duration;
 use std::{
@@ -157,7 +157,7 @@ struct PerformanceEntry {
 /// Installs `Date.now()` and `performance.now()` into a `vm-js` realm.
 ///
 /// ## Determinism
-/// The returned values are derived solely from `clock.now()`. Tests can pass a [`crate::js::VirtualClock`]
+/// The returned values are derived solely from `clock.now()`. Tests can pass a [`crate::clock::VirtualClock`]
 /// (via `Arc<dyn Clock>`) to ensure these APIs do not observe wall-clock time.
 pub fn install_time_bindings(
   vm: &mut Vm,
@@ -1659,7 +1659,7 @@ fn duration_to_millis_i64(duration: Duration) -> i64 {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
   use std::sync::Arc;
 
   fn get_global_property(heap: &mut Heap, realm: &Realm, name: &str) -> Value {

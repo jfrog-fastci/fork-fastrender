@@ -337,7 +337,7 @@ pub fn install_window_animation_frame_bindings<Host: WindowRealmHost + 'static>(
 mod tests {
   use super::*;
   use crate::error::{Error, Result as RenderResult};
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
   use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::JsExecutionOptions;

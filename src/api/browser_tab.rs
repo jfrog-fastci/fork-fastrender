@@ -6704,7 +6704,7 @@ mod tests {
   #[test]
   fn deferred_module_scripts_with_top_level_await_execute_in_order_and_block_lifecycle_events(
   ) -> Result<()> {
-    use crate::js::clock::VirtualClock;
+    use crate::clock::VirtualClock;
     use std::time::Duration;
 
     let html = r#"<!doctype html>

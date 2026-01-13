@@ -8720,7 +8720,7 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
   use crate::js::event_loop::{
     EventLoop, RunLimits, RunNextTaskLimitedOutcome, RunUntilIdleOutcome, RunUntilIdleStopReason,
   };

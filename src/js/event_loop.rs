@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::clock::{Clock, RealClock};
+use crate::clock::{Clock, RealClock};
 use super::time::duration_to_ms_f64;
 use vm_js::PromiseHandle;
 

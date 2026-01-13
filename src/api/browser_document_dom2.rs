@@ -2,7 +2,7 @@ use crate::animation::TransitionState;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Rect, Size};
 use crate::interaction::InteractionState;
-use crate::js::clock::{Clock, RealClock};
+use crate::clock::{Clock, RealClock};
 use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
 use crate::js::CurrentScriptStateHandle;
 use crate::resource::ReferrerPolicy;
@@ -3176,7 +3176,7 @@ mod tests {
     let mut doc =
       BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
 
-    let clock = Arc::new(crate::js::clock::VirtualClock::new());
+    let clock = Arc::new(crate::clock::VirtualClock::new());
     doc.set_animation_clock(clock.clone());
     doc.set_realtime_animations_enabled(true);
 
@@ -3241,7 +3241,7 @@ mod tests {
     let mut doc =
       BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(2, 2))?;
 
-    let clock = Arc::new(crate::js::clock::VirtualClock::new());
+    let clock = Arc::new(crate::clock::VirtualClock::new());
     doc.set_animation_clock(clock.clone());
     doc.set_realtime_animations_enabled(true);
 
