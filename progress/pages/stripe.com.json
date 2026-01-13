@@ -14,7 +14,7 @@
     "layout": 749.1415662044005,
     "paint": 196.0370453618992
   },
-  "notes": "Visually good. Above-the-fold Stripe homepage content (nav, hero copy/CTAs, product graphics) renders with the expected structure. The very high pixel diff vs Chrome is dominated by background/hero artwork rendering: large multi-stop gradients + subtle alpha/compositing differences (and CSS masking like `mask-image`/`-webkit-mask-image` and `mix-blend-mode` used for fades/tinted images) flip many pixels while remaining low-perceptual. Repro: `bash scripts/cargo_agent.sh xtask page-loop --fixture stripe.com --viewport 1200x800 --chrome --overlay`.",
+  "notes": "Visually good. Above-the-fold Stripe homepage content (nav, hero copy/CTAs, product graphics) renders with the expected structure. The very high pixel diff vs Chrome is dominated by background/hero artwork rendering: large multi-stop gradients + subtle alpha/compositing differences (and CSS masking like `mask-image`/`-webkit-mask-image` and `mix-blend-mode` used for fades/tinted images) flip many pixels while remaining low-perceptual; most mismatching pixels are only off by 1-2 in RGB (alpha matches), so the strict diff% is inflated. Repro: `bash scripts/cargo_agent.sh xtask page-loop --fixture stripe.com --viewport 1200x800 --chrome --overlay`.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 495390,
