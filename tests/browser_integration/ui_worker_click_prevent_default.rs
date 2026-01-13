@@ -390,3 +390,106 @@ fn ui_worker_enter_on_focused_link_respects_click_prevent_default_without_id() {
   drop(ui_tx);
   join.join().expect("worker join");
 }
+
+#[test]
+fn ui_worker_click_prevent_default_without_id_handles_wbr_preorder_shift() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let next_url = site.write(
+    "next.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>html, body { margin: 0; padding: 0; background: rgb(0, 255, 0); }</style>
+        </head>
+        <body>next</body>
+      </html>"#,
+  );
+
+  // Insert many `<wbr>` elements before the link. The renderer injects a synthetic ZWSP text child
+  // for each `<wbr>`, which shifts renderer preorder ids relative to dom2 node indices. The UI
+  // worker should still dispatch the click event to the correct dom2 `NodeId` so JS `preventDefault`
+  // suppresses navigation even without stable `id` attributes.
+  let wbrs = "<wbr>".repeat(32);
+  let index_html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body {{ margin: 0; padding: 0; }}
+            /* Give the link a predictable hit target so pointer events land on the <a>. */
+            a {{ position: absolute; left: 0; top: 0; width: 120px; height: 40px; display: block; background: rgb(255, 0, 0); }}
+          </style>
+        </head>
+        <body>
+          <div style="display:none">{wbrs}</div>
+          <a href="next.html">next</a>
+          <script>
+            document.querySelector("a").addEventListener("click", function (ev) {{
+              ev.preventDefault();
+            }});
+          </script>
+        </body>
+      </html>"#
+  );
+  let index_url = site.write("index.html", &index_html);
+
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-click-prevent-default-wbr-preorder-shift",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId::new();
+
+  ui_tx
+    .send(support::create_tab_msg(tab_id, Some(index_url.clone())))
+    .expect("create tab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (200, 100), 1.0))
+    .expect("viewport");
+
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {index_url}"));
+
+  // Drain any follow-up messages from the initial navigation to keep assertions scoped to the click.
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
+
+  ui_tx
+    .send(support::pointer_down(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
+    .expect("pointer down");
+  ui_tx
+    .send(support::pointer_up(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
+    .expect("pointer up");
+
+  let msgs = support::drain_for(&ui_rx, Duration::from_millis(500));
+  assert!(
+    !msgs.iter().any(|msg| {
+      matches!(
+        msg,
+        WorkerToUi::NavigationStarted { .. }
+          | WorkerToUi::NavigationCommitted { .. }
+          | WorkerToUi::NavigationFailed { .. }
+          | WorkerToUi::RequestOpenInNewTab { .. }
+          | WorkerToUi::RequestOpenInNewTabRequest { .. }
+      )
+    }),
+    "expected click preventDefault (without element ids) to suppress navigation to {next_url}; got:\n{}",
+    support::format_messages(&msgs)
+  );
+
+  drop(ui_tx);
+  join.join().expect("worker join");
+}
