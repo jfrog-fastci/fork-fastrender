@@ -336,6 +336,7 @@ mod mdn_text_orientation_upright;
 mod multicol;
 mod multicol_forced_page_breaks;
 mod multicol_writing_modes;
+mod mdn_writing_mode_live_sample;
 mod nested_absolute;
 mod nested_list_user_agent_margins;
 mod noscript_layout;
