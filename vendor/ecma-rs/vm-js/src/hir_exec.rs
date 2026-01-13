@@ -413,6 +413,76 @@ impl<'vm> HirEvaluator<'vm> {
       .ok_or(VmError::InvariantViolation("hir pat id out of bounds"))
   }
 
+  fn next_non_trivia_byte_from_source(&mut self, offset: u32) -> Result<Option<u8>, VmError> {
+    let bytes = self.script.source.text.as_bytes();
+    let len = bytes.len();
+    let mut idx = (offset as usize).min(len);
+    const TICK_EVERY: usize = 256;
+    let mut scanned: usize = 0;
+
+    while idx < len {
+      if scanned % TICK_EVERY == 0 {
+        self.vm.tick()?;
+      }
+      scanned += 1;
+
+      let b = bytes[idx];
+
+      if b.is_ascii_whitespace() {
+        idx += 1;
+        continue;
+      }
+
+      // Skip JS comments.
+      if b == b'/' && idx + 1 < len {
+        let b1 = bytes[idx + 1];
+        if b1 == b'/' {
+          // Line comment.
+          idx += 2;
+          while idx < len && bytes[idx] != b'\n' {
+            if scanned % TICK_EVERY == 0 {
+              self.vm.tick()?;
+            }
+            scanned += 1;
+            idx += 1;
+          }
+          continue;
+        }
+        if b1 == b'*' {
+          // Block comment.
+          idx += 2;
+          while idx + 1 < len {
+            if scanned % TICK_EVERY == 0 {
+              self.vm.tick()?;
+            }
+            scanned += 1;
+
+            if bytes[idx] == b'*' && bytes[idx + 1] == b'/' {
+              idx += 2;
+              break;
+            }
+            idx += 1;
+          }
+          // Unterminated block comment reaches EOF.
+          continue;
+        }
+      }
+
+      return Ok(Some(b));
+    }
+
+    Ok(None)
+  }
+
+  fn expr_is_parenthesized(&mut self, expr: &hir_js::Expr) -> Result<bool, VmError> {
+    // HIR does not preserve parenthesization metadata. Use a best-effort heuristic based on the
+    // expression span and scanning the original source text for parentheses.
+    Ok(
+      self.next_non_trivia_byte_from_source(expr.span.start)? == Some(b'(')
+        || self.next_non_trivia_byte_from_source(expr.span.end)? == Some(b')'),
+    )
+  }
+
   fn detect_use_strict_directive(&mut self, body: &hir_js::Body) -> Result<bool, VmError> {
     const TICK_EVERY: usize = 32;
     for (i, stmt_id) in body.root_stmts.iter().enumerate() {
@@ -427,9 +497,13 @@ impl<'vm> HirEvaluator<'vm> {
       let hir_js::ExprKind::Literal(hir_js::Literal::String(s)) = &expr.kind else {
         break;
       };
+      if self.expr_is_parenthesized(expr)? {
+        // Parenthesized string literals are not directive prologues; the directive prologue ends
+        // immediately once we see a non-directive statement.
+        break;
+      }
       if s.lossy == "use strict" {
-        // Treat as strict; HIR does not currently preserve parenthesization metadata for directive
-        // prologues (unlike the parse-js AST), so this is best-effort.
+        // Treat as strict.
         return Ok(true);
       }
     }
@@ -6505,7 +6579,8 @@ impl<'vm> HirEvaluator<'vm> {
         &callee_expr.kind,
         hir_js::ExprKind::Ident(name_id)
           if self.hir().names.resolve(*name_id) == Some("eval")
-      );
+      )
+      && !self.expr_is_parenthesized(callee_expr)?;
 
     let mut scope = scope.reborrow();
 
