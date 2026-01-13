@@ -2926,6 +2926,12 @@ const NODE_FIRST_CHILD_GET_KEY: &str = "__fastrender_node_first_child_get";
 const NODE_PREVIOUS_SIBLING_GET_KEY: &str = "__fastrender_node_previous_sibling_get";
 const NODE_NEXT_SIBLING_GET_KEY: &str = "__fastrender_node_next_sibling_get";
 const NODE_REMOVE_KEY: &str = "__fastrender_node_remove";
+const PARENT_NODE_PREPEND_KEY: &str = "__fastrender_parent_node_prepend";
+const PARENT_NODE_APPEND_KEY: &str = "__fastrender_parent_node_append";
+const PARENT_NODE_REPLACE_CHILDREN_KEY: &str = "__fastrender_parent_node_replace_children";
+const CHILD_NODE_BEFORE_KEY: &str = "__fastrender_child_node_before";
+const CHILD_NODE_AFTER_KEY: &str = "__fastrender_child_node_after";
+const CHILD_NODE_REPLACE_WITH_KEY: &str = "__fastrender_child_node_replace_with";
 const NODE_TEXT_CONTENT_GET_KEY: &str = "__fastrender_node_text_content_get";
 const NODE_TEXT_CONTENT_SET_KEY: &str = "__fastrender_node_text_content_set";
 const NODE_CHILD_NODES_KEY: &str = "__fastrender_node_child_nodes";
@@ -3034,6 +3040,13 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   NODE_REMOVE_CHILD_KEY,
   NODE_REPLACE_CHILD_KEY,
   NODE_CLONE_NODE_KEY,
+  // ParentNode/ChildNode mutation conveniences.
+  PARENT_NODE_PREPEND_KEY,
+  PARENT_NODE_APPEND_KEY,
+  PARENT_NODE_REPLACE_CHILDREN_KEY,
+  CHILD_NODE_BEFORE_KEY,
+  CHILD_NODE_AFTER_KEY,
+  CHILD_NODE_REPLACE_WITH_KEY,
   // Node traversal helpers.
   NODE_PARENT_NODE_GET_KEY,
   NODE_FIRST_CHILD_GET_KEY,
@@ -8513,6 +8526,30 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, NODE_CLONE_NODE_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
+  let parent_node_prepend = {
+    let key = alloc_key(scope, PARENT_NODE_PREPEND_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
+  let parent_node_append = {
+    let key = alloc_key(scope, PARENT_NODE_APPEND_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
+  let parent_node_replace_children = {
+    let key = alloc_key(scope, PARENT_NODE_REPLACE_CHILDREN_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
+  let child_node_before = {
+    let key = alloc_key(scope, CHILD_NODE_BEFORE_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
+  let child_node_after = {
+    let key = alloc_key(scope, CHILD_NODE_AFTER_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
+  let child_node_replace_with = {
+    let key = alloc_key(scope, CHILD_NODE_REPLACE_WITH_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
   let parent_node_get = {
     let key = alloc_key(scope, NODE_PARENT_NODE_GET_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
@@ -9859,6 +9896,48 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = clone_node {
     let key = alloc_key(scope, "cloneNode")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  if let Some(Value::Object(func)) = parent_node_prepend {
+    let key = alloc_key(scope, "prepend")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  if let Some(Value::Object(func)) = parent_node_append {
+    let key = alloc_key(scope, "append")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  if let Some(Value::Object(func)) = parent_node_replace_children {
+    let key = alloc_key(scope, "replaceChildren")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  if let Some(Value::Object(func)) = child_node_before {
+    let key = alloc_key(scope, "before")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  if let Some(Value::Object(func)) = child_node_after {
+    let key = alloc_key(scope, "after")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  if let Some(Value::Object(func)) = child_node_replace_with {
+    let key = alloc_key(scope, "replaceWith")?;
     if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
       scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
     }
@@ -28724,6 +28803,596 @@ fn node_remove_native(
   Ok(Value::Undefined)
 }
 
+fn convert_nodes_into_node(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  document_obj: GcObject,
+  document_id: DocumentId,
+  nodes: &[Value],
+  error_message: &'static str,
+) -> Result<Value, VmError> {
+  // Require DOM-backed node wrappers for Node-vs-string detection.
+  if dom_platform_mut(vm).is_none() {
+    return Err(VmError::TypeError(error_message));
+  }
+
+  // Root the document wrapper while allocating keys / node wrappers: string allocation can trigger GC.
+  scope.push_root(Value::Object(document_obj))?;
+
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+    "operation requires a DOM-backed document",
+  ))?;
+
+  let mut converted: Vec<Value> = Vec::with_capacity(nodes.len());
+  for &value in nodes {
+    if let Value::Object(obj) = value {
+      let is_node = dom_platform_mut(vm)
+        .and_then(|platform| platform.require_node_handle(scope.heap(), Value::Object(obj)).ok())
+        .is_some();
+      if is_node {
+        converted.push(Value::Object(obj));
+        continue;
+      }
+    }
+
+    let s = scope.heap_mut().to_string(value)?;
+    let data = scope
+      .heap()
+      .get_string(s)
+      .map(|s| s.to_utf8_lossy())
+      .unwrap_or_default();
+    let node_id = unsafe { dom_ptr.as_mut() }.create_text(&data);
+    let dom = unsafe { dom_ptr.as_ref() };
+    let text_value = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?;
+    if let Value::Object(obj) = text_value {
+      scope.push_root(Value::Object(obj))?;
+    }
+    converted.push(text_value);
+  }
+
+  if converted.len() == 1 {
+    return Ok(converted[0]);
+  }
+
+  let fragment_id = unsafe { dom_ptr.as_mut() }.create_document_fragment();
+  let dom = unsafe { dom_ptr.as_ref() };
+  let fragment_value = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), fragment_id)?;
+  let Value::Object(fragment_obj) = fragment_value else {
+    return Ok(fragment_value);
+  };
+  scope.push_root(Value::Object(fragment_obj))?;
+
+  for node_value in converted {
+    let _ = node_append_child_native(
+      vm,
+      scope,
+      host,
+      hooks,
+      callee,
+      Value::Object(fragment_obj),
+      &[node_value],
+    )?;
+  }
+
+  Ok(Value::Object(fragment_obj))
+}
+
+fn parent_node_append_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "ParentNode.append must be called on a node object",
+    ));
+  };
+
+  let handle = node_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "ParentNode.append must be called on a node object",
+  )?;
+
+  let node_value = convert_nodes_into_node(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    handle.document_obj,
+    handle.document_id,
+    args,
+    "ParentNode.append must be called on a node object",
+  )?;
+  if let Value::Object(obj) = node_value {
+    scope.push_root(Value::Object(obj))?;
+  }
+
+  let _ = node_append_child_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(wrapper_obj),
+    &[node_value],
+  )?;
+  Ok(Value::Undefined)
+}
+
+fn parent_node_prepend_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "ParentNode.prepend must be called on a node object",
+    ));
+  };
+
+  let handle = node_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "ParentNode.prepend must be called on a node object",
+  )?;
+
+  let node_value = convert_nodes_into_node(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    handle.document_obj,
+    handle.document_id,
+    args,
+    "ParentNode.prepend must be called on a node object",
+  )?;
+  if let Value::Object(obj) = node_value {
+    scope.push_root(Value::Object(obj))?;
+  }
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(
+    VmError::TypeError("ParentNode.prepend must be called on a DOM-backed node"),
+  )?;
+  let dom = unsafe { dom_ptr.as_ref() };
+  let reference_id = node_first_child_for_traversal(dom, handle.node_id);
+  let reference_value = match reference_id {
+    Some(id) => {
+      let v = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), id)?;
+      if let Value::Object(obj) = v {
+        scope.push_root(Value::Object(obj))?;
+      }
+      v
+    }
+    None => Value::Null,
+  };
+
+  let _ = node_insert_before_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(wrapper_obj),
+    &[node_value, reference_value],
+  )?;
+
+  Ok(Value::Undefined)
+}
+
+fn parent_node_replace_children_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "ParentNode.replaceChildren must be called on a node object",
+    ));
+  };
+
+  let handle = node_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "ParentNode.replaceChildren must be called on a node object",
+  )?;
+
+  // Spec: convert nodes into a node first (can move nodes out of `this`).
+  let node_value = convert_nodes_into_node(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    handle.document_obj,
+    handle.document_id,
+    args,
+    "ParentNode.replaceChildren must be called on a node object",
+  )?;
+  if let Value::Object(obj) = node_value {
+    scope.push_root(Value::Object(obj))?;
+  }
+
+  // Collect the light DOM children (skip internal ShadowRoot nodes).
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(
+    VmError::TypeError("ParentNode.replaceChildren must be called on a DOM-backed node"),
+  )?;
+  let dom = unsafe { dom_ptr.as_ref() };
+  let mut to_remove: Vec<NodeId> = Vec::new();
+  let mut child = node_first_child_for_traversal(dom, handle.node_id);
+  while let Some(child_id) = child {
+    to_remove.push(child_id);
+    child = node_next_sibling_for_traversal(dom, child_id);
+  }
+
+  for child_id in to_remove {
+    let v = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), child_id)?;
+    if let Value::Object(obj) = v {
+      scope.push_root(Value::Object(obj))?;
+    }
+    let _ = node_remove_child_native(
+      vm,
+      scope,
+      host,
+      hooks,
+      callee,
+      Value::Object(wrapper_obj),
+      &[v],
+    )?;
+  }
+
+  let _ = node_append_child_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(wrapper_obj),
+    &[node_value],
+  )?;
+
+  Ok(Value::Undefined)
+}
+
+fn nodes_in_same_dom_as(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  dom_ptr: NonNull<dom2::Document>,
+  nodes: &[Value],
+) -> Result<HashSet<NodeId>, VmError> {
+  if dom_platform_mut(vm).is_none() {
+    return Ok(HashSet::new());
+  }
+  let mut ids: HashSet<NodeId> = HashSet::new();
+  for &value in nodes {
+    let Value::Object(obj) = value else {
+      continue;
+    };
+    let Some(handle) = dom_platform_mut(vm)
+      .and_then(|platform| platform.require_node_handle(scope.heap(), Value::Object(obj)).ok())
+    else {
+      continue;
+    };
+    let Some(node_dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
+      continue;
+    };
+    if node_dom_ptr == dom_ptr {
+      ids.insert(handle.node_id);
+    }
+  }
+  Ok(ids)
+}
+
+fn child_node_before_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "ChildNode.before must be called on a node object",
+    ));
+  };
+
+  let handle = node_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "ChildNode.before must be called on a node object",
+  )?;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(
+    VmError::TypeError("ChildNode.before must be called on a DOM-backed node"),
+  )?;
+  let dom = unsafe { dom_ptr.as_ref() };
+  let Some(parent_id) = node_parent_node_for_traversal(dom, handle.node_id) else {
+    return Ok(Value::Undefined);
+  };
+
+  let excluded = nodes_in_same_dom_as(vm, scope, host, dom_ptr, args)?;
+
+  let mut viable_prev = node_previous_sibling_for_traversal(dom, handle.node_id);
+  while let Some(prev_id) = viable_prev {
+    if excluded.contains(&prev_id) {
+      viable_prev = node_previous_sibling_for_traversal(dom, prev_id);
+    } else {
+      break;
+    }
+  }
+
+  let node_value = convert_nodes_into_node(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    handle.document_obj,
+    handle.document_id,
+    args,
+    "ChildNode.before must be called on a node object",
+  )?;
+  if let Value::Object(obj) = node_value {
+    scope.push_root(Value::Object(obj))?;
+  }
+
+  // Recompute reference after conversion.
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(
+    VmError::TypeError("ChildNode.before must be called on a DOM-backed node"),
+  )?;
+  let dom = unsafe { dom_ptr.as_ref() };
+  let reference_id = match viable_prev {
+    None => node_first_child_for_traversal(dom, parent_id),
+    Some(prev) => node_next_sibling_for_traversal(dom, prev),
+  };
+
+  let parent_value = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), parent_id)?;
+  let Value::Object(parent_obj) = parent_value else {
+    return Ok(Value::Undefined);
+  };
+  scope.push_root(Value::Object(parent_obj))?;
+
+  let reference_value = match reference_id {
+    Some(id) => {
+      let v = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), id)?;
+      if let Value::Object(obj) = v {
+        scope.push_root(Value::Object(obj))?;
+      }
+      v
+    }
+    None => Value::Null,
+  };
+
+  let _ = node_insert_before_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(parent_obj),
+    &[node_value, reference_value],
+  )?;
+  Ok(Value::Undefined)
+}
+
+fn child_node_after_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "ChildNode.after must be called on a node object",
+    ));
+  };
+
+  let handle = node_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "ChildNode.after must be called on a node object",
+  )?;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(
+    VmError::TypeError("ChildNode.after must be called on a DOM-backed node"),
+  )?;
+  let dom = unsafe { dom_ptr.as_ref() };
+  let Some(parent_id) = node_parent_node_for_traversal(dom, handle.node_id) else {
+    return Ok(Value::Undefined);
+  };
+
+  let excluded = nodes_in_same_dom_as(vm, scope, host, dom_ptr, args)?;
+
+  let mut viable_next = node_next_sibling_for_traversal(dom, handle.node_id);
+  while let Some(next_id) = viable_next {
+    if excluded.contains(&next_id) {
+      viable_next = node_next_sibling_for_traversal(dom, next_id);
+    } else {
+      break;
+    }
+  }
+
+  let node_value = convert_nodes_into_node(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    handle.document_obj,
+    handle.document_id,
+    args,
+    "ChildNode.after must be called on a node object",
+  )?;
+  if let Value::Object(obj) = node_value {
+    scope.push_root(Value::Object(obj))?;
+  }
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(
+    VmError::TypeError("ChildNode.after must be called on a DOM-backed node"),
+  )?;
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let parent_value = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), parent_id)?;
+  let Value::Object(parent_obj) = parent_value else {
+    return Ok(Value::Undefined);
+  };
+  scope.push_root(Value::Object(parent_obj))?;
+
+  let reference_value = match viable_next {
+    Some(id) => {
+      let v = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), id)?;
+      if let Value::Object(obj) = v {
+        scope.push_root(Value::Object(obj))?;
+      }
+      v
+    }
+    None => Value::Null,
+  };
+
+  let _ = node_insert_before_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(parent_obj),
+    &[node_value, reference_value],
+  )?;
+  Ok(Value::Undefined)
+}
+
+fn child_node_replace_with_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "ChildNode.replaceWith must be called on a node object",
+    ));
+  };
+
+  let handle = node_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "ChildNode.replaceWith must be called on a node object",
+  )?;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(
+    VmError::TypeError("ChildNode.replaceWith must be called on a DOM-backed node"),
+  )?;
+  let dom = unsafe { dom_ptr.as_ref() };
+  let Some(parent_id) = node_parent_node_for_traversal(dom, handle.node_id) else {
+    return Ok(Value::Undefined);
+  };
+
+  let excluded = nodes_in_same_dom_as(vm, scope, host, dom_ptr, args)?;
+
+  let mut viable_next = node_next_sibling_for_traversal(dom, handle.node_id);
+  while let Some(next_id) = viable_next {
+    if excluded.contains(&next_id) {
+      viable_next = node_next_sibling_for_traversal(dom, next_id);
+    } else {
+      break;
+    }
+  }
+
+  let node_value = convert_nodes_into_node(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    handle.document_obj,
+    handle.document_id,
+    args,
+    "ChildNode.replaceWith must be called on a node object",
+  )?;
+  if let Value::Object(obj) = node_value {
+    scope.push_root(Value::Object(obj))?;
+  }
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(
+    VmError::TypeError("ChildNode.replaceWith must be called on a DOM-backed node"),
+  )?;
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let parent_value = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), parent_id)?;
+  let Value::Object(parent_obj) = parent_value else {
+    return Ok(Value::Undefined);
+  };
+  scope.push_root(Value::Object(parent_obj))?;
+
+  let current_parent = node_parent_node_for_traversal(dom, handle.node_id);
+  if current_parent == Some(parent_id) {
+    let _ = node_replace_child_native(
+      vm,
+      scope,
+      host,
+      hooks,
+      callee,
+      Value::Object(parent_obj),
+      &[node_value, Value::Object(wrapper_obj)],
+    )?;
+    return Ok(Value::Undefined);
+  }
+
+  let reference_value = match viable_next {
+    Some(id) => {
+      let v = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), id)?;
+      if let Value::Object(obj) = v {
+        scope.push_root(Value::Object(obj))?;
+      }
+      v
+    }
+    None => Value::Null,
+  };
+
+  let _ = node_insert_before_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(parent_obj),
+    &[node_value, reference_value],
+  )?;
+  Ok(Value::Undefined)
+}
+
 fn node_text_content_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -44241,6 +44910,137 @@ fn init_window_globals(
     document_obj,
     node_remove_key,
     data_desc(Value::Object(node_remove_func)),
+  )?;
+
+  // Store shared ParentNode/ChildNode mutation convenience methods on `document` so wrappers can
+  // reuse them.
+  let parent_node_prepend_call_id = vm.register_native_call(parent_node_prepend_native)?;
+  let parent_node_prepend_name = scope.alloc_string("prepend")?;
+  scope.push_root(Value::String(parent_node_prepend_name))?;
+  let parent_node_prepend_func =
+    scope.alloc_native_function(parent_node_prepend_call_id, None, parent_node_prepend_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    parent_node_prepend_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(parent_node_prepend_func))?;
+  let parent_node_prepend_key = alloc_key(&mut scope, PARENT_NODE_PREPEND_KEY)?;
+  scope.define_property(
+    document_obj,
+    parent_node_prepend_key,
+    data_desc(Value::Object(parent_node_prepend_func)),
+  )?;
+  let parent_node_prepend_public_key = alloc_key(&mut scope, "prepend")?;
+  scope.define_property(
+    document_obj,
+    parent_node_prepend_public_key,
+    data_desc(Value::Object(parent_node_prepend_func)),
+  )?;
+
+  let parent_node_append_call_id = vm.register_native_call(parent_node_append_native)?;
+  let parent_node_append_name = scope.alloc_string("append")?;
+  scope.push_root(Value::String(parent_node_append_name))?;
+  let parent_node_append_func =
+    scope.alloc_native_function(parent_node_append_call_id, None, parent_node_append_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    parent_node_append_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(parent_node_append_func))?;
+  let parent_node_append_key = alloc_key(&mut scope, PARENT_NODE_APPEND_KEY)?;
+  scope.define_property(
+    document_obj,
+    parent_node_append_key,
+    data_desc(Value::Object(parent_node_append_func)),
+  )?;
+  let parent_node_append_public_key = alloc_key(&mut scope, "append")?;
+  scope.define_property(
+    document_obj,
+    parent_node_append_public_key,
+    data_desc(Value::Object(parent_node_append_func)),
+  )?;
+
+  let parent_node_replace_children_call_id =
+    vm.register_native_call(parent_node_replace_children_native)?;
+  let parent_node_replace_children_name = scope.alloc_string("replaceChildren")?;
+  scope.push_root(Value::String(parent_node_replace_children_name))?;
+  let parent_node_replace_children_func = scope.alloc_native_function(
+    parent_node_replace_children_call_id,
+    None,
+    parent_node_replace_children_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    parent_node_replace_children_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(parent_node_replace_children_func))?;
+  let parent_node_replace_children_key = alloc_key(&mut scope, PARENT_NODE_REPLACE_CHILDREN_KEY)?;
+  scope.define_property(
+    document_obj,
+    parent_node_replace_children_key,
+    data_desc(Value::Object(parent_node_replace_children_func)),
+  )?;
+  let parent_node_replace_children_public_key = alloc_key(&mut scope, "replaceChildren")?;
+  scope.define_property(
+    document_obj,
+    parent_node_replace_children_public_key,
+    data_desc(Value::Object(parent_node_replace_children_func)),
+  )?;
+
+  let child_node_before_call_id = vm.register_native_call(child_node_before_native)?;
+  let child_node_before_name = scope.alloc_string("before")?;
+  scope.push_root(Value::String(child_node_before_name))?;
+  let child_node_before_func =
+    scope.alloc_native_function(child_node_before_call_id, None, child_node_before_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    child_node_before_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(child_node_before_func))?;
+  let child_node_before_key = alloc_key(&mut scope, CHILD_NODE_BEFORE_KEY)?;
+  scope.define_property(
+    document_obj,
+    child_node_before_key,
+    data_desc(Value::Object(child_node_before_func)),
+  )?;
+
+  let child_node_after_call_id = vm.register_native_call(child_node_after_native)?;
+  let child_node_after_name = scope.alloc_string("after")?;
+  scope.push_root(Value::String(child_node_after_name))?;
+  let child_node_after_func =
+    scope.alloc_native_function(child_node_after_call_id, None, child_node_after_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    child_node_after_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(child_node_after_func))?;
+  let child_node_after_key = alloc_key(&mut scope, CHILD_NODE_AFTER_KEY)?;
+  scope.define_property(
+    document_obj,
+    child_node_after_key,
+    data_desc(Value::Object(child_node_after_func)),
+  )?;
+
+  let child_node_replace_with_call_id = vm.register_native_call(child_node_replace_with_native)?;
+  let child_node_replace_with_name = scope.alloc_string("replaceWith")?;
+  scope.push_root(Value::String(child_node_replace_with_name))?;
+  let child_node_replace_with_func = scope.alloc_native_function(
+    child_node_replace_with_call_id,
+    None,
+    child_node_replace_with_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    child_node_replace_with_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(child_node_replace_with_func))?;
+  let child_node_replace_with_key = alloc_key(&mut scope, CHILD_NODE_REPLACE_WITH_KEY)?;
+  scope.define_property(
+    document_obj,
+    child_node_replace_with_key,
+    data_desc(Value::Object(child_node_replace_with_func)),
   )?;
 
   // Store shared Element selector traversal APIs on `document` so wrappers can reuse them.
