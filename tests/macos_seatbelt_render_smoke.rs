@@ -2,45 +2,11 @@
 
 use fastrender::api::{FastRender, FastRenderConfig};
 use fastrender::resource::{FetchedResource, ResourceFetcher};
+use fastrender::sandbox;
 use fastrender::text::font_db::FontConfig;
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use fastrender::Rgba;
 use std::process::Command;
 use std::sync::Arc;
-
-#[link(name = "sandbox")]
-extern "C" {
-  fn sandbox_init(profile: *const c_char, flags: u64, errorbuf: *mut *mut c_char) -> i32;
-  fn sandbox_free_error(errorbuf: *mut c_char);
-}
-
-const SEATBELT_PROFILE_PURE_COMPUTATION: &str = "pure-computation";
-const SANDBOX_NAMED: u64 = 1;
-
-fn apply_seatbelt_named_profile(profile_name: &str) {
-  let profile_c = CString::new(profile_name).expect("profile name should not contain NUL bytes");
-  let mut error_buf: *mut c_char = std::ptr::null_mut();
-  // SAFETY: Calls into Apple Seatbelt (`libsandbox`). `sandbox_init` populates `error_buf` on
-  // failure and returns non-zero.
-  let rc = unsafe { sandbox_init(profile_c.as_ptr(), SANDBOX_NAMED, &mut error_buf) };
-  if rc == 0 {
-    return;
-  }
-
-  // SAFETY: `sandbox_init` returns an allocated C string when `error_buf` is non-null.
-  let err = unsafe {
-    let message = if error_buf.is_null() {
-      format!("sandbox_init failed with rc={rc}")
-    } else {
-      CStr::from_ptr(error_buf).to_string_lossy().into_owned()
-    };
-    if !error_buf.is_null() {
-      sandbox_free_error(error_buf);
-    }
-    message
-  };
-  panic!("failed to enable Seatbelt profile {profile_name:?}: {err}");
-}
 
 #[derive(Debug)]
 struct NoNetworkFetcher;
@@ -58,9 +24,10 @@ fn sandboxed_render_smoke_seatbelt_profile() {
   if is_child {
     // Apply the strictest built-in profile (`pure-computation`) so this smoke test fails if the
     // renderer starts depending on filesystem/network access inside the sandbox.
-    apply_seatbelt_named_profile(SEATBELT_PROFILE_PURE_COMPUTATION);
+    sandbox::apply_pure_computation_sandbox().expect("apply Seatbelt pure-computation sandbox");
 
     let mut config = FastRenderConfig::new();
+    config.background_color = Rgba::WHITE;
     config.font_config = FontConfig::bundled_only();
     // Avoid any optional caches even when `--all-features` enables disk_cache.
     config.resource_cache = None;
@@ -70,17 +37,30 @@ fn sandboxed_render_smoke_seatbelt_profile() {
         .expect("build FastRender under Seatbelt");
 
     let pixmap = renderer
-      .render_html("<html><body>Hello</body></html>", 32, 32)
+      .render_html(
+        "<html><body style=\"margin:0\">Hello</body></html>",
+        64,
+        32,
+      )
       .expect("render HTML under Seatbelt");
 
+    let data = pixmap.data();
+    assert!(!data.is_empty(), "expected non-empty image buffer");
     assert!(
-      !pixmap.data().is_empty(),
-      "expected non-empty image buffer"
-    );
-    assert!(
-      pixmap.data().iter().any(|b| *b != 0),
+      data.iter().any(|b| *b != 0),
       "expected rendered image to contain non-zero bytes"
     );
+
+    // Background defaults to white; ensure some non-white pixels were painted so we know text
+    // rendering executed inside the sandbox.
+    let mut has_non_white = false;
+    for px in data.chunks_exact(4) {
+      if px[0] != 255 || px[1] != 255 || px[2] != 255 {
+        has_non_white = true;
+        break;
+      }
+    }
+    assert!(has_non_white, "expected rendered output to contain some non-white pixels");
     return;
   }
 
@@ -102,4 +82,3 @@ fn sandboxed_render_smoke_seatbelt_profile() {
     String::from_utf8_lossy(&output.stderr)
   );
 }
-
