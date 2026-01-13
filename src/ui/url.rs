@@ -329,22 +329,7 @@ pub(crate) fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
-/// Heuristic for deciding whether a user-typed omnibox string should be treated as a URL
-/// (navigate) or a search query (search fallback).
-///
-/// The input is first trimmed of ASCII whitespace (space, tab, newlines). After trimming:
-///
-/// - If input contains any ASCII whitespace → Search
-/// - If input contains `://` → URL
-/// - If input begins with `about:` (case-insensitive) → URL
-/// - If input looks like a filesystem path → URL
-/// - If input is `localhost` (case-insensitive) → URL
-/// - If input parses as an IPv4/IPv6 literal → URL
-/// - If input looks like `host:port` (without scheme) → URL
-/// - If input contains a dot (`.`) → URL
-/// - Otherwise → Search
-pub fn omnibox_input_looks_like_url(input: &str) -> bool {
-  let input = trim_ascii_whitespace(input);
+fn omnibox_input_looks_like_url_trimmed(input: &str) -> bool {
   if input.is_empty() {
     return false;
   }
@@ -377,6 +362,24 @@ pub fn omnibox_input_looks_like_url(input: &str) -> bool {
   input.contains('.')
 }
 
+/// Heuristic for deciding whether a user-typed omnibox string should be treated as a URL
+/// (navigate) or a search query (search fallback).
+///
+/// The input is first trimmed of ASCII whitespace (space, tab, newlines). After trimming:
+///
+/// - If input contains any ASCII whitespace → Search
+/// - If input contains `://` → URL
+/// - If input begins with `about:` (case-insensitive) → URL
+/// - If input looks like a filesystem path → URL
+/// - If input is `localhost` (case-insensitive) → URL
+/// - If input parses as an IPv4/IPv6 literal → URL
+/// - If input looks like `host:port` (without scheme) → URL
+/// - If input contains a dot (`.`) → URL
+/// - Otherwise → Search
+pub fn omnibox_input_looks_like_url(input: &str) -> bool {
+  omnibox_input_looks_like_url_trimmed(trim_ascii_whitespace(input))
+}
+
 pub fn resolve_omnibox_input(input: &str) -> Result<OmniboxInputResolution, String> {
   resolve_omnibox_input_with_search_template(input, DEFAULT_SEARCH_ENGINE_TEMPLATE)
 }
@@ -400,7 +403,7 @@ pub fn resolve_omnibox_search_query(input: &str) -> Option<&str> {
     return None;
   }
 
-  if omnibox_input_looks_like_url(input) {
+  if omnibox_input_looks_like_url_trimmed(input) {
     return None;
   }
 
