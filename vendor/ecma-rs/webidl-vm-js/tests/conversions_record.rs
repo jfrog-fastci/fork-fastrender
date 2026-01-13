@@ -67,6 +67,9 @@ thread_local! {
 
   static GET_OWN_PROPERTY_DESCRIPTOR_CALLS: Cell<u32> = const { Cell::new(0) };
   static GET_OWN_PROPERTY_DESCRIPTOR_EXPECTED_THIS: Cell<Option<GcObject>> = const { Cell::new(None) };
+
+  static GET_CALLS: Cell<u32> = const { Cell::new(0) };
+  static GET_EXPECTED_THIS: Cell<Option<GcObject>> = const { Cell::new(None) };
 }
 
 fn own_keys_trap(
@@ -159,6 +162,37 @@ fn get_own_property_descriptor_trap(
   )?;
 
   Ok(Value::Object(desc))
+}
+
+fn get_trap(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  GET_CALLS.with(|c| c.set(c.get() + 1));
+
+  let expected = GET_EXPECTED_THIS
+    .with(|t| t.get())
+    .expect("GET_EXPECTED_THIS should be set");
+  assert_eq!(this, Value::Object(expected));
+
+  // Args: [target, propertyKeyValue, receiver]
+  assert_eq!(args.len(), 3);
+  let Value::String(key_s) = args[1] else {
+    return Err(VmError::TypeError("expected get trap key arg to be a string"));
+  };
+  assert_eq!(scope.heap().get_string(key_s)?.to_utf8_lossy(), "a");
+
+  // Stress rooting of the caller across user code.
+  scope.heap_mut().collect_garbage();
+
+  // Return a value different from the target's own value to ensure record conversion uses `Get`
+  // (and therefore the Proxy get trap), not a heap-level direct property table read.
+  Ok(Value::Number(2.0))
 }
 
 #[test]
@@ -710,6 +744,79 @@ fn record_conversion_invokes_proxy_get_own_property_trap() -> Result<(), VmError
   rt.scope.push_root(Value::Object(out_obj))?;
   let keys = rt.scope.ordinary_own_property_keys(out_obj)?;
   assert_eq!(keys.len(), 1);
+
+  drop(rt);
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn record_conversion_invokes_proxy_get_trap() -> Result<(), VmError> {
+  GET_CALLS.with(|c| c.set(0));
+  GET_EXPECTED_THIS.with(|t| t.set(None));
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let mut dummy_host = ();
+  let mut hooks = DummyHooks;
+  let mut rt = BindingsRuntime::from_scope(&mut vm, scope.reborrow());
+
+  let target = rt.alloc_object()?;
+  let a_key = rt.property_key("a")?;
+  rt.define_data_property(
+    target,
+    a_key,
+    Value::Number(1.0),
+    DataPropertyAttributes::new(true, true, true),
+  )?;
+
+  let get_id = rt.vm.register_native_call(get_trap)?;
+  let get_name = rt.scope.alloc_string("get")?;
+  rt.scope.push_root(Value::String(get_name))?;
+  let get_fn = rt.scope.alloc_native_function(get_id, None, get_name, 3)?;
+  rt.scope.push_root(Value::Object(get_fn))?;
+
+  let handler = rt.alloc_object()?;
+  GET_EXPECTED_THIS.with(|t| t.set(Some(handler)));
+
+  let get_key = rt.property_key("get")?;
+  rt.define_data_property(
+    handler,
+    get_key,
+    Value::Object(get_fn),
+    DataPropertyAttributes::new(true, true, true),
+  )?;
+
+  let proxy = rt.scope.alloc_proxy(Some(target), Some(handler))?;
+
+  let out = conversions::to_record(
+    &mut rt,
+    &mut dummy_host,
+    &mut hooks,
+    Value::Object(proxy),
+    "expected object for record",
+    |_rt, _host, _hooks, v| Ok(v),
+  )?;
+
+  assert_eq!(GET_CALLS.with(|c| c.get()), 1);
+
+  let Value::Object(out_obj) = out else {
+    return Err(VmError::TypeError("expected object from record conversion"));
+  };
+  rt.scope.push_root(Value::Object(out_obj))?;
+
+  let keys = rt.scope.ordinary_own_property_keys(out_obj)?;
+  assert_eq!(keys.len(), 1);
+  let v = rt
+    .scope
+    .heap()
+    .object_get_own_data_property_value(out_obj, &keys[0])?
+    .unwrap_or(Value::Undefined);
+  assert_eq!(v, Value::Number(2.0));
 
   drop(rt);
   drop(scope);
