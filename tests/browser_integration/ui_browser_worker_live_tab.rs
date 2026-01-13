@@ -511,3 +511,169 @@ fn tick_burst_coalesces_to_single_frame() {
 
   handle.join().expect("worker join");
 }
+
+#[test]
+fn tick_stops_after_finite_css_animation_completes() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; background: rgb(0, 0, 0); }
+            #box {
+              width: 64px;
+              height: 64px;
+              background: rgb(255, 0, 0);
+              animation: fade 50ms linear 1 forwards;
+            }
+            @keyframes fade {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>"#,
+  );
+
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-tick-finite-animation",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let tab_id = TabId::new();
+  handle
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, Some(url)))
+    .expect("create tab");
+  handle
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .expect("viewport");
+
+  let mut frame = next_frame(&handle.ui_rx, tab_id);
+  assert!(
+    frame.next_tick.is_some(),
+    "expected finite animation fixture page to request periodic ticks initially"
+  );
+  while handle.ui_rx.try_recv().is_ok() {}
+
+  for _ in 0..10 {
+    if frame.next_tick.is_none() {
+      break;
+    }
+    handle
+      .ui_tx
+      .send(UiToWorker::Tick {
+        tab_id,
+        delta: Duration::from_millis(16),
+      })
+      .expect("tick");
+    frame = next_frame(&handle.ui_rx, tab_id);
+  }
+
+  assert!(
+    frame.next_tick.is_none(),
+    "expected finite animation to stop requesting ticks within a few frames"
+  );
+
+  while handle.ui_rx.try_recv().is_ok() {}
+  handle
+    .ui_tx
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
+    .expect("tick after completion");
+  let msgs = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
+  assert!(
+    !msgs
+      .iter()
+      .any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
+    "expected no FrameReady after tick once finite animation completed, got:\n{}",
+    support::format_messages(&msgs)
+  );
+
+  handle.join().expect("worker join");
+}
+
+#[test]
+fn scroll_driven_animation_does_not_request_periodic_ticks() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            body { height: 200vh; background: rgb(0, 0, 0); }
+            #box {
+              width: 64px;
+              height: 64px;
+              background: rgb(255, 0, 0);
+              animation: fade 1s linear 1 both;
+              animation-timeline: scroll(root);
+            }
+            @keyframes fade {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>"#,
+  );
+
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-scroll-driven-animation",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let tab_id = TabId::new();
+  handle
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, Some(url)))
+    .expect("create tab");
+  handle
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .expect("viewport");
+
+  let initial = next_frame(&handle.ui_rx, tab_id);
+  assert!(
+    initial.next_tick.is_none(),
+    "expected scroll-driven animation page to not request periodic ticks when idle"
+  );
+  while handle.ui_rx.try_recv().is_ok() {}
+
+  handle
+    .ui_tx
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
+    .expect("tick");
+  let msgs = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
+  assert!(
+    !msgs
+      .iter()
+      .any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
+    "expected no FrameReady after tick on scroll-driven animation tab, got:\n{}",
+    support::format_messages(&msgs)
+  );
+
+  handle.join().expect("worker join");
+}

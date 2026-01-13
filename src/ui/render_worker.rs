@@ -2137,14 +2137,32 @@ fn find_replaced_image_for_styled_node<'a>(
   None
 }
 
-/// Returns `true` when the renderer DOM contains CSS time-based effects that require periodic
-/// sampling (keyframe animations or transitions).
-///
-/// Note: this is a CSS-only helper. The UI protocol's `RenderedFrame.next_tick` hint may also be
-/// `Some(...)` for other time-based effects (e.g. JS timers/rAF, animated images) depending on which
-/// subsystems are enabled for the tab.
-fn document_wants_ticks(doc: &BrowserDocument) -> bool {
-  crate::ui::document_ticks::browser_document_wants_ticks(doc)
+fn duration_to_ms_f32(duration: Duration) -> f32 {
+  let time_ms = duration.as_secs_f64() * 1000.0;
+  if time_ms.is_finite() {
+    (time_ms.min(f32::MAX as f64)) as f32
+  } else {
+    f32::MAX
+  }
+}
+
+fn document_next_tick(doc: &mut BrowserDocument, timeline_time_ms: f32) -> Option<Duration> {
+  let schedule = doc.animation_tick_schedule(timeline_time_ms);
+  let has_transitions = doc
+    .prepared()
+    .is_some_and(|prepared| prepared.fragment_tree().transition_state.is_some());
+  if !schedule.has_active_time_based_animations && !has_transitions {
+    return None;
+  }
+  let mut next = DEFAULT_TICK_INTERVAL;
+  if let Some(deadline) = schedule.next_deadline {
+    next = next.min(deadline);
+  }
+  Some(next)
+}
+
+fn document_wants_ticks(doc: &mut BrowserDocument, timeline_time_ms: f32) -> bool {
+  document_next_tick(doc, timeline_time_ms).is_some()
 }
 
 fn normalize_url_without_fragment(mut url: url::Url) -> url::Url {
@@ -11711,6 +11729,20 @@ impl BrowserRuntime {
           Self::apply_find_highlight(tab, actual_dpr, &mut pixmap);
         }
 
+        let scroll_metrics =
+          compute_scroll_metrics(tab.document.as_ref(), viewport_css, &tab.scroll_state);
+        let animation_time_ms = duration_to_ms_f32(tab.tick_time);
+        let css_next_tick = tab
+          .document
+          .as_mut()
+          .and_then(|doc| document_next_tick(doc, animation_time_ms));
+        let next_tick = match (css_next_tick, tab.js_tab.is_some()) {
+          (Some(css), true) => Some(css.min(DEFAULT_TICK_INTERVAL)),
+          (Some(css), false) => Some(css),
+          (None, true) => Some(DEFAULT_TICK_INTERVAL),
+          (None, false) => None,
+        };
+
         msgs.push(WorkerToUi::FrameReady {
           tab_id,
           frame: RenderedFrame {
@@ -11718,13 +11750,8 @@ impl BrowserRuntime {
             viewport_css,
             dpr: actual_dpr,
             scroll_state: tab.scroll_state.clone(),
-            scroll_metrics: compute_scroll_metrics(
-              tab.document.as_ref(),
-              viewport_css,
-              &tab.scroll_state,
-            ),
-            next_tick: (tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some())
-              .then_some(DEFAULT_TICK_INTERVAL),
+            scroll_metrics,
+            next_tick,
           },
         });
         if let Some(doc) = tab.document.as_ref() {
@@ -11999,10 +12026,31 @@ impl BrowserRuntime {
     tab.pending_history_entry = false;
     tab.history.mark_committed();
 
-    let page_accessibility = tab
+    let page_accessibility = tab.document.as_ref().and_then(|doc| {
+      compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
+    });
+
+    let actual_dpr = tab
       .document
       .as_ref()
-      .and_then(|doc| compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state));
+      .and_then(|d| d.prepared())
+      .map(|p| p.device_pixel_ratio())
+      .unwrap_or(tab.dpr);
+    let scroll_metrics =
+      compute_scroll_metrics(tab.document.as_ref(), tab.viewport_css, &tab.scroll_state);
+
+    let animation_time_ms = duration_to_ms_f32(tab.tick_time);
+    let css_next_tick = tab
+      .document
+      .as_mut()
+      .and_then(|doc| document_next_tick(doc, animation_time_ms));
+    let next_tick = match (css_next_tick, tab.js_tab.is_some()) {
+      (Some(css), true) => Some(css.min(DEFAULT_TICK_INTERVAL)),
+      (Some(css), false) => Some(css),
+      (None, true) => Some(DEFAULT_TICK_INTERVAL),
+      (None, false) => None,
+    };
+
     let mut msgs = Vec::new();
     msgs.push(WorkerToUi::NavigationFailed {
       tab_id,
@@ -12016,20 +12064,10 @@ impl BrowserRuntime {
       frame: RenderedFrame {
         pixmap: painted.pixmap,
         viewport_css: tab.viewport_css,
-        dpr: tab
-          .document
-          .as_ref()
-          .and_then(|d| d.prepared())
-          .map(|p| p.device_pixel_ratio())
-          .unwrap_or(tab.dpr),
+        dpr: actual_dpr,
         scroll_state: tab.scroll_state.clone(),
-        scroll_metrics: compute_scroll_metrics(
-          tab.document.as_ref(),
-          tab.viewport_css,
-          &tab.scroll_state,
-        ),
-        next_tick: (tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some())
-          .then_some(DEFAULT_TICK_INTERVAL),
+        scroll_metrics,
+        next_tick,
       },
     });
     if let Some((tree, bounds_css)) = page_accessibility {
@@ -12254,6 +12292,20 @@ impl BrowserRuntime {
         Self::apply_find_highlight(tab, actual_dpr, &mut pixmap);
       }
 
+      let scroll_metrics =
+        compute_scroll_metrics(tab.document.as_ref(), tab.viewport_css, &tab.scroll_state);
+      let animation_time_ms = duration_to_ms_f32(tab.tick_time);
+      let css_next_tick = tab
+        .document
+        .as_mut()
+        .and_then(|doc| document_next_tick(doc, animation_time_ms));
+      let next_tick = match (css_next_tick, tab.js_tab.is_some()) {
+        (Some(css), true) => Some(css.min(DEFAULT_TICK_INTERVAL)),
+        (Some(css), false) => Some(css),
+        (None, true) => Some(DEFAULT_TICK_INTERVAL),
+        (None, false) => None,
+      };
+
       msgs.push(WorkerToUi::FrameReady {
         tab_id,
         frame: RenderedFrame {
@@ -12261,13 +12313,8 @@ impl BrowserRuntime {
           viewport_css: tab.viewport_css,
           dpr: actual_dpr,
           scroll_state: tab.scroll_state.clone(),
-          scroll_metrics: compute_scroll_metrics(
-            tab.document.as_ref(),
-            tab.viewport_css,
-            &tab.scroll_state,
-          ),
-          next_tick: (tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some())
-            .then_some(DEFAULT_TICK_INTERVAL),
+          scroll_metrics,
+          next_tick,
         },
       });
       if let Some(doc) = tab.document.as_ref() {

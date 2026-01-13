@@ -1,4 +1,4 @@
-use crate::animation::TransitionState;
+use crate::animation::{AnimationTickSchedule, TransitionState};
 use crate::clock::{Clock, RealClock};
 use crate::debug::runtime::RuntimeToggles;
 use crate::dom::DomNode;
@@ -750,6 +750,17 @@ impl BrowserDocument {
   /// Returns a mutable reference to the cached prepared document, if available.
   pub fn prepared_mut(&mut self) -> Option<&mut PreparedDocument> {
     self.prepared.as_mut()
+  }
+
+  pub(crate) fn animation_tick_schedule(&mut self, timeline_time_ms: f32) -> AnimationTickSchedule {
+    let Some(prepared) = self.prepared.as_ref() else {
+      return AnimationTickSchedule::default();
+    };
+    crate::animation::compute_animation_tick_schedule(
+      prepared.fragment_tree(),
+      timeline_time_ms,
+      Some(&mut self.animation_state_store),
+    )
   }
 
   /// Returns the shared image cache used by this document's renderer.

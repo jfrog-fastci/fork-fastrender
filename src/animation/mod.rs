@@ -6,12 +6,14 @@
 //! wiring a full animation engine.
 
 mod state_store;
+mod tick_schedule;
 pub mod timing;
 
 #[cfg(test)]
 mod clip_path_shape_radius_keywords_test;
 
 pub use state_store::AnimationStateStore;
+pub use tick_schedule::{compute_animation_tick_schedule, AnimationTickSchedule};
 
 use self::timing as wa_timing;
 
