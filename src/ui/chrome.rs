@@ -6233,6 +6233,21 @@ mod tests {
     ]
   }
 
+  fn nav_row_tab_order_compact(ctx: &egui::Context) -> Vec<egui::Id> {
+    vec![
+      expect_temp_id(ctx, "chrome_back_button_id"),
+      expect_temp_id(ctx, "chrome_forward_button_id"),
+      expect_temp_id(ctx, "chrome_reload_stop_button_id"),
+      expect_temp_id(ctx, "chrome_home_button_id"),
+      // Compact mode omits zoom out/in controls (and only conditionally shows a zoom reset pill).
+      expect_temp_id(ctx, "chrome_address_bar_text_edit_id"),
+      expect_temp_id(ctx, "chrome_downloads_button_id"),
+      expect_temp_id(ctx, "chrome_bookmark_star_id"),
+      expect_temp_id(ctx, "chrome_menu_button_id"),
+      expect_temp_id(ctx, "chrome_appearance_button_id"),
+    ]
+  }
+
   #[test]
   fn tab_focus_traversal_in_nav_row_is_left_to_right() {
     // Expected focus traversal order matches the visual left-to-right order of the main toolbar
@@ -6328,6 +6343,113 @@ mod tests {
     // Subsequent frames: press Shift+Tab and ensure focus moves in reverse order.
     for (idx, expected) in reverse.iter().enumerate().skip(1) {
       begin_frame(&ctx, vec![shift_tab_press()]);
+      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+      let _ = ctx.end_frame();
+
+      let focused = order
+        .iter()
+        .copied()
+        .find(|id| ctx.memory(|mem| mem.has_focus(*id)));
+      assert_eq!(
+        focused,
+        Some(*expected),
+        "unexpected focus after Shift+Tab step {idx}; expected {expected:?}, got {focused:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn tab_focus_traversal_in_nav_row_is_left_to_right_in_compact_mode() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
+    tab.can_go_back = true;
+    tab.can_go_forward = true;
+    app.push_tab(tab, true);
+    let bookmarks = BookmarkStore::default();
+    let ctx = egui::Context::default();
+
+    let screen_size = egui::vec2(500.0, 600.0);
+
+    // Frame 0: render once to capture the widget ids from `store_test_id`.
+    begin_frame_with_screen_size(&ctx, screen_size, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+
+    let order = nav_row_tab_order_compact(&ctx);
+
+    // Frame 1: focus the first widget (back button).
+    ctx.memory_mut(|mem| mem.request_focus(order[0]));
+    begin_frame_with_screen_size(&ctx, screen_size, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(order[0])),
+      "expected initial focus on back button"
+    );
+
+    for (idx, expected) in order.iter().enumerate().skip(1) {
+      begin_frame_with_screen_size(&ctx, screen_size, vec![key_press(egui::Key::Tab)]);
+      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+      let _ = ctx.end_frame();
+
+      let focused = order
+        .iter()
+        .copied()
+        .find(|id| ctx.memory(|mem| mem.has_focus(*id)));
+      assert_eq!(
+        focused,
+        Some(*expected),
+        "unexpected focus after Tab step {idx}; expected {expected:?}, got {focused:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn shift_tab_focus_traversal_in_nav_row_is_right_to_left_in_compact_mode() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
+    tab.can_go_back = true;
+    tab.can_go_forward = true;
+    app.push_tab(tab, true);
+    let bookmarks = BookmarkStore::default();
+    let ctx = egui::Context::default();
+
+    let screen_size = egui::vec2(500.0, 600.0);
+
+    // Frame 0: render once to capture the widget ids from `store_test_id`.
+    begin_frame_with_screen_size(&ctx, screen_size, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+
+    let order = nav_row_tab_order_compact(&ctx);
+    let reverse: Vec<_> = order.iter().rev().copied().collect();
+
+    // Frame 1: focus the last widget (appearance button).
+    ctx.memory_mut(|mem| mem.request_focus(reverse[0]));
+    begin_frame_with_screen_size(&ctx, screen_size, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(reverse[0])),
+      "expected initial focus on appearance button"
+    );
+
+    fn shift_tab_press() -> egui::Event {
+      egui::Event::Key {
+        key: egui::Key::Tab,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers {
+          shift: true,
+          ..Default::default()
+        },
+      }
+    }
+
+    for (idx, expected) in reverse.iter().enumerate().skip(1) {
+      begin_frame_with_screen_size(&ctx, screen_size, vec![shift_tab_press()]);
       let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
       let _ = ctx.end_frame();
 
