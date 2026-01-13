@@ -4466,8 +4466,14 @@ fn caret_index_for_text_control_point(
       );
     }
 
+    let mut scroll_x = scroll.element_offset(box_id).x;
+    if !scroll_x.is_finite() {
+      scroll_x = 0.0;
+    }
+    scroll_x = scroll_x.max(0.0);
+
     let (caret, affinity) =
-      caret_position_for_x_in_text(&display_text, &value, style, rect, page_point.x);
+      caret_position_for_x_in_text(&display_text, &value, style, rect, page_point.x + scroll_x);
     let total_chars = value.chars().count();
     return Some((caret.min(total_chars), affinity));
   }

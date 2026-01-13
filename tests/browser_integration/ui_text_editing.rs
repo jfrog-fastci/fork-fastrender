@@ -116,6 +116,95 @@ fn click_to_place_caret_then_text_input_inserts_at_caret() -> Result<()> {
 }
 
 #[test]
+fn appearance_none_text_input_auto_scrolls_and_click_to_place_accounts_for_scroll() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let long_text = "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 120px;
+            height: 40px;
+            appearance: none;
+            padding: 0;
+            border: 0;
+            font-family: "Noto Sans Mono";
+            font-size: 20px;
+          }
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the input.
+  let click = (5.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Type enough text to overflow the input width. Paint should auto-scroll horizontally so the
+  // caret remains visible.
+  let _ = controller.handle_message(support::text_input(tab_id, long_text))?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+  assert!(
+    controller
+      .scroll_state()
+      .elements
+      .values()
+      .any(|offset| offset.x > 0.0),
+    "expected appearance:none input to auto-scroll horizontally; got {:?}",
+    controller.scroll_state().elements
+  );
+
+  // Click near the left edge of the visible text and insert a character. The click-to-place caret
+  // mapping should account for the scroll offset, so insertion happens in the latter portion of the
+  // long value (not at the start).
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  let value = input
+    .get_attribute_ref("value")
+    .expect("expected input value after insertion");
+  let x_pos = value
+    .chars()
+    .position(|ch| ch == 'X')
+    .expect("expected inserted character to appear in input value");
+  let base_len = long_text.chars().count();
+  assert!(
+    x_pos > base_len / 2,
+    "expected click-to-place to account for horizontal scroll (inserted X at {x_pos}, len={base_len})"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn arrow_left_moves_caret_and_typing_inserts_before_last_char() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();

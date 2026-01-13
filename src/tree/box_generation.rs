@@ -5344,13 +5344,30 @@ fn generate_boxes_for_styled_into(
           continue;
         }
 
-        let base_style = if force_position_relative && styled.styles.position == Position::Static {
+        let mut base_style = if force_position_relative && styled.styles.position == Position::Static {
           let mut patched = styled.styles.as_ref().clone();
           patched.position = Position::Relative;
           Arc::new(patched)
         } else {
           Arc::clone(&styled.styles)
         };
+
+        if let Some(control) = form_control.as_deref() {
+          // `appearance: none` text inputs are laid out as normal boxes (not replaced form controls),
+          // so their value text is represented by child fragments. Make these boxes behave like
+          // native single-line inputs:
+          // - disable wrapping so long values stay on one line,
+          // - enable horizontal programmatic scrolling (used to keep the caret visible),
+          // - clip overflow so scrolled text doesn't bleed outside the control.
+          if matches!(control.control, FormControlKind::Text { .. }) {
+            let mut patched = base_style.as_ref().clone();
+            patched.white_space = WhiteSpace::Nowrap;
+            patched.text_wrap = crate::style::types::TextWrap::NoWrap;
+            patched.overflow_x = crate::style::types::Overflow::Hidden;
+            patched.overflow_y = crate::style::types::Overflow::Hidden;
+            base_style = Arc::new(patched);
+          }
+        }
 
         // HTML fieldset/legend rendering model:
         // - Separate the first `<legend>` element child (if any) so it can be positioned on the
@@ -6193,8 +6210,19 @@ fn build_appearance_none_form_control_fallback(
         .ime_preedit
         .as_ref()
         .filter(|state| !state.text.is_empty());
+      let patch_single_line_text_style = |style: Arc<ComputedStyle>| -> Arc<ComputedStyle> {
+        if matches!(style.white_space, WhiteSpace::Nowrap)
+          && matches!(style.text_wrap, crate::style::types::TextWrap::NoWrap)
+        {
+          return style;
+        }
+        let mut owned = style.as_ref().clone();
+        owned.white_space = WhiteSpace::Nowrap;
+        owned.text_wrap = crate::style::types::TextWrap::NoWrap;
+        Arc::new(owned)
+      };
       let mut text: Option<String> = None;
-      let mut style = Arc::clone(&styled.styles);
+      let mut style = patch_single_line_text_style(Arc::clone(&styled.styles));
       let mut pseudo = None;
 
       if !value.is_empty() {
@@ -6206,7 +6234,7 @@ fn build_appearance_none_form_control_fallback(
             .as_ref()
             .or(form_control.placeholder_style.as_ref())
           {
-            style = Arc::clone(ph_style);
+            style = patch_single_line_text_style(Arc::clone(ph_style));
             pseudo = Some(GeneratedPseudoElement::Placeholder);
           }
         }
@@ -6230,7 +6258,7 @@ fn build_appearance_none_form_control_fallback(
           let mask_len = total_len.clamp(3, 50);
           push_text(
             &mut children,
-            Arc::clone(&styled.styles),
+            Arc::clone(&style),
             "•".repeat(mask_len),
             None,
           );
@@ -6239,9 +6267,12 @@ fn build_appearance_none_form_control_fallback(
             .as_ref()
             .or(form_control.placeholder_style.as_ref())
           {
-            (Arc::clone(ph_style), Some(GeneratedPseudoElement::Placeholder))
+            (
+              patch_single_line_text_style(Arc::clone(ph_style)),
+              Some(GeneratedPseudoElement::Placeholder),
+            )
           } else {
-            (Arc::clone(&styled.styles), None)
+            (Arc::clone(&style), None)
           };
           push_text(&mut children, style, ph.clone(), pseudo);
         }
@@ -6265,7 +6296,7 @@ fn build_appearance_none_form_control_fallback(
             pseudo,
           );
         }
-        let mut underline_style = (*styled.styles).clone();
+        let mut underline_style = (*style).clone();
         underline_style
           .text_decoration
           .lines
