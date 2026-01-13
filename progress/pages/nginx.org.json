@@ -16,7 +16,7 @@
     "layout": 7.039264836065573,
     "paint": 32.17949639344262
   },
-  "notes": "",
+  "notes": "Visually good. Remaining diffs are dominated by text rasterization differences (font hinting/AA causing slightly different glyph edge pixels and line wraps) plus minor blur falloff differences in the header's `box-shadow`.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 145118,
