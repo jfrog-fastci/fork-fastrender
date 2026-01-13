@@ -45,9 +45,16 @@ pub struct CompiledScript {
   pub contains_async_functions: bool,
   /// True if the compiled (HIR) execution path must fall back to the AST interpreter.
   ///
-  /// The HIR executor does not currently support async / generator / async-generator function
-  /// bodies (`await`, `yield`, `yield*`), so any script containing them must be re-run from source
-  /// to avoid mid-execution `VmError::Unimplemented` failures.
+  /// This is used by high-level entry points like [`crate::JsRuntime::exec_compiled_script`] to
+  /// conservatively fall back to the AST interpreter when the compiled executor cannot model the
+  /// script body.
+  ///
+  /// Notes:
+  /// - Generator bodies (`yield` / `yield*`) are not supported in the compiled executor.
+  /// - Classic scripts using top-level `await` require async script evaluation (also not yet
+  ///   supported in the compiled executor).
+  /// - Async function bodies execute via the AST interpreter at call-time (see
+  ///   [`crate::Vm::call_user_function`]).
   pub requires_ast_fallback: bool,
   /// Whether this script/module contains a top-level `await` (or `for await..of`) that requires
   /// async evaluation.
@@ -110,28 +117,30 @@ impl CompiledScript {
       }
     };
 
-    let contains_top_level_await = {
+    let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
+    {
       let mut tick = || Ok(());
       let strict = detect_use_strict_directive(&parsed.stx.body, &mut tick)?;
-      let has_await = parsed.stx.body.iter().any(stmt_contains_await);
       crate::early_errors::validate_top_level(
         &parsed.stx.body,
         crate::early_errors::EarlyErrorOptions {
           strict,
-          allow_top_level_await: has_await,
+          allow_top_level_await: contains_top_level_await,
           is_module: false,
           allow_super_call: false,
         },
         &mut tick,
       )?;
-      has_await
-    };
+    }
 
     let feature_flags = ast_feature_flags(&parsed);
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_async_functions;
+    // The compiled (HIR) executor does not yet support generator bodies or async classic script
+    // evaluation (top-level `await` / `for await..of`), so fall back to the AST interpreter for
+    // those cases.
+    let requires_ast_fallback = contains_generators || contains_top_level_await;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -173,7 +182,6 @@ impl CompiledScript {
     .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
 
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
-
     {
       let mut tick = || Ok(());
       crate::early_errors::validate_top_level(
@@ -188,7 +196,7 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_async_functions;
+    let requires_ast_fallback = contains_generators || contains_top_level_await;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -275,7 +283,7 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_async_functions;
+    let requires_ast_fallback = contains_generators || has_top_level_await;
 
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
@@ -322,7 +330,7 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_async_functions;
+    let requires_ast_fallback = contains_generators || contains_top_level_await;
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;

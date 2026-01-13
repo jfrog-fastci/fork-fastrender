@@ -8546,16 +8546,15 @@ impl<'vm> HirEvaluator<'vm> {
         };
         if let Some(body_id) = *body {
           // Allocate the compiled function object for the constructor body.
-           let body_func =
-             self.alloc_user_function_object(
-               scope,
-               body_id,
-               "constructor",
-               /* is_arrow */ false,
-               /* is_constructable */ true,
-              /* name_binding */ None,
-              EcmaFunctionKind::ClassMember,
-            )?;
+          let body_func = self.alloc_user_function_object(
+            scope,
+            body_id,
+            "constructor",
+            /* is_arrow */ false,
+            /* is_constructable */ true,
+            /* name_binding */ None,
+            EcmaFunctionKind::ClassMember,
+          )?;
           ctor_body_inner_func = Some(body_func);
           ctor_length = scope.heap().get_function(body_func)?.length;
 
@@ -8604,13 +8603,13 @@ impl<'vm> HirEvaluator<'vm> {
         } else {
           None
         }
-       } else {
-         None
-       };
+      } else {
+        None
+      };
 
-        let func_obj = self.create_class_constructor_object(
-          scope,
-          func_name,
+      let func_obj = self.create_class_constructor_object(
+        scope,
+        func_name,
           ctor_length,
           ctor_body_func,
           super_value,
@@ -10795,17 +10794,16 @@ fn instantiate_compiled_module_decls_inner(
 
 #[cfg(test)]
 mod async_function_ast_fallback_tests {
-  use crate::function::CallHandler;
-  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
-  use std::sync::Arc;
+  use crate::function::{CallHandler, FunctionData};
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
 
   #[test]
-  fn compiled_script_with_async_function_falls_back_to_ast_executor() -> Result<(), VmError> {
+  fn compiled_script_async_function_uses_call_time_ast_fallback() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    let mut script = CompiledScript::compile_script(
+    let script = CompiledScript::compile_script(
       &mut rt.heap,
       "<inline>",
       r#"
@@ -10813,20 +10811,13 @@ mod async_function_ast_fallback_tests {
         f;
       "#,
     )?;
-    // The compiled (HIR) execution path does not yet support executing async function bodies, so
-    // `CompiledScript` conservatively opts into AST fallback when it sees `async function` syntax.
-    // For this unit test we only care about *allocation* of the async function object during HIR
-    // execution, so force the compiled path.
-    Arc::get_mut(&mut script)
-      .expect("compiled script Arc should be uniquely owned in this unit test")
-      .requires_ast_fallback = false;
 
     assert!(script.contains_async_functions);
     assert!(!script.contains_generators);
     assert!(!script.contains_async_generators);
     assert!(
-      script.requires_ast_fallback,
-      "async function bodies are not yet supported by the compiled (HIR) executor, so compiled scripts must fall back to the AST interpreter"
+      !script.requires_ast_fallback,
+      "compiled scripts should only require full AST fallback for generators or top-level await"
     );
 
     let result = rt.exec_compiled_script(script)?;
@@ -10836,9 +10827,36 @@ mod async_function_ast_fallback_tests {
 
     let call_handler = rt.heap.get_function_call_handler(func_obj)?;
     assert!(
-      matches!(call_handler, CallHandler::Ecma(_)),
-      "expected async function to be allocated as an interpreter-backed ECMAScript function when falling back from compiled scripts, got {call_handler:?}"
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
     );
+
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::EcmaFallback { .. }),
+      "expected async function to carry FunctionData::EcmaFallback metadata, got {func_data:?}"
+    );
+
+    // Calling the async function should execute via the AST interpreter and produce a resolved
+    // Promise.
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      rt.heap.promise_result(promise_obj)?,
+      Some(Value::Number(1.0))
+    );
+    rt.heap.remove_root(promise_root);
     Ok(())
   }
 }

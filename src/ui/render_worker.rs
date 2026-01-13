@@ -5782,8 +5782,10 @@ impl BrowserRuntime {
     let scroll_snapshot = tab.scroll_state.clone();
     // Note: treat out-of-bounds coordinates like the (-1,-1) sentinel and feed them through
     // `viewport_point_for_pos_css` so they translate to a negative page-point (clearing hover).
-    let viewport_point =
-      viewport_point_for_pos_css(&scroll_snapshot, if pointer_in_page { pos_css } else { (-1.0, -1.0) });
+    let viewport_point = viewport_point_for_pos_css(
+      &scroll_snapshot,
+      if pointer_in_page { pos_css } else { (-1.0, -1.0) },
+    );
     let base_url = base_url_for_links(tab);
 
     // ---------------------------------------------------------------------------

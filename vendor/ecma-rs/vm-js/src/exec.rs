@@ -2010,9 +2010,11 @@ impl JsRuntime {
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
     if script.requires_ast_fallback || script.contains_top_level_await {
-      // Some constructs are not yet supported by the compiled (HIR) execution path:
-      // - async/generator function bodies (`async function`, `function*`, `async function*`), and
-      // - classic-script top-level await (`await` / `for await..of` in the root statement list).
+      // Some script bodies are not yet supported by the compiled (HIR) executor (for example,
+      // classic scripts using top-level `await`, and generator bodies).
+      //
+      // Async function bodies execute via the AST interpreter at call-time (see
+      // `Vm::call_user_function`).
       //
       // Fall back to the AST interpreter path using the original `SourceText`. This ensures scripts
       // can still execute correctly without partially executing any HIR code (which could introduce
@@ -2224,9 +2226,8 @@ impl JsRuntime {
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
     if script.requires_ast_fallback || script.contains_top_level_await {
-      // See `exec_compiled_script_with_host`: async/generator function bodies are not yet supported
-      // by the compiled (HIR) executor, and classic-script top-level await requires async
-      // evaluation.
+      // See `exec_compiled_script_with_host`: some script bodies are not yet supported in the
+      // compiled (HIR) executor.
       let source = script.source.clone();
       return self.exec_script_source_with_host_and_hooks(host, hooks, source);
     }
@@ -16100,9 +16101,8 @@ fn async_handle_body_result(
         hooks,
         await_value,
       );
-      let resolve_res = resolve_res.map_err(|err| {
-        coerce_error_to_throw_for_async(vm, &mut await_scope, err)
-      });
+      let resolve_res =
+        resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
 
       let awaited_promise = match resolve_res {
         Ok(p) => p,
