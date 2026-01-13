@@ -148,6 +148,7 @@ pub enum DragDropKind {
 pub struct InteractionEngine {
   state: InteractionState,
   pointer_down_target: Option<usize>,
+  link_drag: Option<LinkDragState>,
   range_drag: Option<RangeDragState>,
   number_spin: Option<NumberSpinState>,
   text_drag: Option<TextDragState>,
@@ -186,6 +187,13 @@ struct FormDefaultSnapshot {
 struct RangeDragState {
   node_id: usize,
   box_id: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LinkDragState {
+  node_id: usize,
+  down_point: Point,
+  active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4503,6 +4511,7 @@ impl InteractionEngine {
     Self {
       state: InteractionState::default(),
       pointer_down_target: None,
+      link_drag: None,
       range_drag: None,
       number_spin: None,
       text_drag: None,
@@ -4599,6 +4608,9 @@ impl InteractionEngine {
 
     if let Some(id) = self.pointer_down_target {
       check_node_id("pointer_down_target", id);
+    }
+    if let Some(state) = self.link_drag {
+      check_node_id("link_drag", state.node_id);
     }
     if let Some(state) = self.range_drag {
       check_node_id("range_drag", state.node_id);
@@ -5347,6 +5359,7 @@ impl InteractionEngine {
       self.text_drag_drop = None;
       self.document_drag = None;
       self.document_selection_drag_drop = None;
+      self.link_drag = None;
       // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
       self.state.document_selection = None;
     }
@@ -5587,6 +5600,7 @@ impl InteractionEngine {
     self.state.hover_chain.clear();
     self.state.active_chain.clear();
     self.pointer_down_target = None;
+    self.link_drag = None;
     self.range_drag = None;
     self.number_spin = None;
     self.text_drag = None;
@@ -5600,6 +5614,7 @@ impl InteractionEngine {
     self.state.hover_chain.clear();
     self.state.active_chain.clear();
     self.pointer_down_target = None;
+    self.link_drag = None;
     self.range_drag = None;
     self.number_spin = None;
     self.text_drag = None;
@@ -5625,6 +5640,21 @@ impl InteractionEngine {
     let page_point = viewport_point.translate(scroll.viewport);
     let mut index = DomIndexMut::new(dom);
     let mut dom_changed = false;
+
+    // Link drag suppression: native browsers suppress click navigation when the pointer moves past a
+    // small threshold while holding the primary button down on a link.
+    const LINK_DRAG_THRESHOLD_PX: f32 = 5.0;
+    if let Some(state) = self.link_drag.as_mut() {
+      if !state.active
+        && page_point.x.is_finite()
+        && page_point.y.is_finite()
+        && page_point.x >= 0.0
+        && page_point.y >= 0.0
+        && state.down_point.distance_to(page_point) >= LINK_DRAG_THRESHOLD_PX
+      {
+        state.active = true;
+      }
+    }
 
     // Text-control drag-and-drop: promote a candidate drag when the pointer moves past a small
     // threshold, mirroring browser behavior where a plain click inside selection doesn't collapse
@@ -6011,12 +6041,24 @@ impl InteractionEngine {
     self.text_drag_drop = None;
     self.document_drag = None;
     self.document_selection_drag_drop = None;
+    self.link_drag = None;
     let prev_doc_selection = self.state.document_selection.clone();
 
     let page_point = viewport_point.translate(scroll.viewport);
 
     let down_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let down_target = down_hit.as_ref().map(|hit| hit.dom_node_id);
+
+    if matches!(button, PointerButton::Primary) {
+      if let Some(hit) = down_hit.as_ref().filter(|hit| hit.kind == HitTestKind::Link) {
+        self.link_drag = Some(LinkDragState {
+          node_id: hit.dom_node_id,
+          down_point: page_point,
+          active: false,
+        });
+      }
+    }
+
     let mut index = DomIndexMut::new(dom);
     let new_chain = down_target
       .map(|target| collect_element_chain_with_label_associated_controls(&index, target))
@@ -6609,6 +6651,18 @@ impl InteractionEngine {
     remap_opt(&mut self.pointer_down_target, old_index, new_ids);
     remap_opt(&mut self.last_click_target, old_index, new_ids);
     remap_opt(&mut self.last_form_submitter, old_index, new_ids);
+    if let Some(state) = &mut self.link_drag {
+      let new_node_id = old_index
+        .id_to_node
+        .get(state.node_id)
+        .copied()
+        .filter(|ptr| !ptr.is_null())
+        .and_then(|ptr| new_ids.get(&(ptr as *const DomNode)).copied());
+      match new_node_id {
+        Some(id) => state.node_id = id,
+        None => self.link_drag = None,
+      }
+    }
     if let Some(state) = &mut self.range_drag {
       let new_node_id = old_index
         .id_to_node
@@ -6803,6 +6857,7 @@ impl InteractionEngine {
     self.last_click_target = None;
     self.last_form_submitter = None;
 
+    let link_drag = self.link_drag.take();
     let range_drag = self.range_drag.take();
     let number_spin = self.number_spin.take();
     let text_drag = self.text_drag.take();
@@ -6818,7 +6873,7 @@ impl InteractionEngine {
         TextDragDropState::Active(active) => drag_drop_active = Some(active),
       }
     }
-    let suppress_click = (document_drag.is_some()
+    let mut suppress_click = (document_drag.is_some()
       && self
         .state
         .document_selection
@@ -6844,6 +6899,24 @@ impl InteractionEngine {
       });
 
     let page_point = viewport_point.translate(scroll.viewport);
+
+    // Link drag suppression: if the pointer moves beyond a small threshold while holding down on a
+    // link, do not treat the gesture as a click (mirrors native browsers).
+    const LINK_DRAG_THRESHOLD_PX: f32 = 5.0;
+    if link_drag.as_ref().is_some_and(|state| {
+      if state.active {
+        return true;
+      }
+      // Ignore sentinel/out-of-page points (the UI sends negative coordinates when leaving the
+      // page image).
+      page_point.x.is_finite()
+        && page_point.y.is_finite()
+        && page_point.x >= 0.0
+        && page_point.y >= 0.0
+        && state.down_point.distance_to(page_point) >= LINK_DRAG_THRESHOLD_PX
+    }) {
+      suppress_click = true;
+    }
 
     let up_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let up_semantic = up_hit.as_ref().map(|hit| hit.dom_node_id);
