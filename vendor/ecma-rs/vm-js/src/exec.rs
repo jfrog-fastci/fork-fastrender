@@ -15532,12 +15532,18 @@ pub(crate) enum GenFrame {
     expr: *const BinaryExpr,
     base: Option<Value>,
     key: Option<Value>,
+    /// Receiver (`this` value) for `super` property references.
+    ///
+    /// When present, `base`/`key` represent the super base + property key, and `receiver` is used as
+    /// the `this` binding / setter receiver for `super.x` / `super[expr]`.
+    receiver: Option<Value>,
   },
   /// Continue an `+=` assignment after evaluating the RHS.
   AssignAddAfterRhs {
     expr: *const BinaryExpr,
     base: Option<Value>,
     key: Option<Value>,
+    receiver: Option<Value>,
     left: Value,
   },
 
@@ -15611,20 +15617,37 @@ impl Trace for GenFrame {
       | GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
       GenFrame::BinaryAfterRight { left, .. } => tracer.trace_value(*left),
       GenFrame::AssignComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
-      GenFrame::AssignAfterRhs { base, key, .. } => {
+      GenFrame::AssignAfterRhs {
+        base,
+        key,
+        receiver,
+        ..
+      } => {
         if let Some(b) = base {
           tracer.trace_value(*b);
         }
         if let Some(k) = key {
           tracer.trace_value(*k);
+        }
+        if let Some(r) = receiver {
+          tracer.trace_value(*r);
         }
       }
-      GenFrame::AssignAddAfterRhs { base, key, left, .. } => {
+      GenFrame::AssignAddAfterRhs {
+        base,
+        key,
+        receiver,
+        left,
+        ..
+      } => {
         if let Some(b) = base {
           tracer.trace_value(*b);
         }
         if let Some(k) = key {
           tracer.trace_value(*k);
+        }
+        if let Some(r) = receiver {
+          tracer.trace_value(*r);
         }
         tracer.trace_value(*left);
       }
@@ -35053,21 +35076,27 @@ fn gen_eval_assignment_apply_reference(
           abrupt => Ok(GenEval::Complete(abrupt)),
         },
         GenEval::Suspend(mut suspend) => {
-          let (base, key) = match reference {
-            Reference::Binding(_) => (None, None),
-            Reference::Property { base, key } => {
+          let (base, key, receiver) = match reference {
+            Reference::Binding(_) => (None, None, None),
+             Reference::Property { base, key } => {
+               let key_value = match key {
+                 PropertyKey::String(s) => Value::String(s),
+                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
+               };
+               (Some(base), Some(key_value), None)
+             }
+            Reference::SuperProperty {
+              base,
+              key,
+              receiver,
+            } => {
               let key_value = match key {
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
               };
-              (Some(base), Some(key_value))
+              (Some(base), Some(key_value), Some(receiver))
             }
-            Reference::SuperProperty { .. } => {
-              return Err(VmError::Unimplemented(
-                "super property assignment that yields (generator evaluator)",
-              ));
-            }
-            Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym))),
+            Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym)), None),
           };
 
           // Root the reference components so they survive until the next yield boundary.
@@ -35078,6 +35107,9 @@ fn gen_eval_assignment_apply_reference(
           if let Some(k) = key {
             scope.push_root(k)?;
           }
+          if let Some(r) = receiver {
+            scope.push_root(r)?;
+          }
 
           gen_frames_push(
             &mut suspend.frames,
@@ -35085,6 +35117,7 @@ fn gen_eval_assignment_apply_reference(
               expr: expr as *const BinaryExpr,
               base,
               key,
+              receiver,
             },
           )?;
           Ok(GenEval::Suspend(suspend))
@@ -35118,21 +35151,27 @@ fn gen_eval_assignment_apply_reference(
           abrupt => Ok(GenEval::Complete(abrupt)),
         },
         GenEval::Suspend(mut suspend) => {
-          let (base, key) = match reference {
-            Reference::Binding(_) => (None, None),
+          let (base, key, receiver) = match reference {
+            Reference::Binding(_) => (None, None, None),
             Reference::Property { base, key } => {
               let key_value = match key {
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
               };
-              (Some(base), Some(key_value))
+              (Some(base), Some(key_value), None)
             }
-            Reference::SuperProperty { .. } => {
-              return Err(VmError::Unimplemented(
-                "super property assignment that yields (generator evaluator)",
-              ));
+            Reference::SuperProperty {
+              base,
+              key,
+              receiver,
+            } => {
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(sym) => Value::Symbol(sym),
+              };
+              (Some(base), Some(key_value), Some(receiver))
             }
-            Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym))),
+            Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym)), None),
           };
 
           // Root the reference components (and the saved left value) so they survive until the next
@@ -35144,6 +35183,9 @@ fn gen_eval_assignment_apply_reference(
           if let Some(k) = key {
             scope.push_root(k)?;
           }
+          if let Some(r) = receiver {
+            scope.push_root(r)?;
+          }
           scope.push_root(left)?;
 
           gen_frames_push(
@@ -35152,6 +35194,7 @@ fn gen_eval_assignment_apply_reference(
               expr: expr as *const BinaryExpr,
               base,
               key,
+              receiver,
               left,
             },
           )?;
@@ -37490,7 +37533,12 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
-      GenFrame::AssignAfterRhs { expr, base, key } => match state {
+      GenFrame::AssignAfterRhs {
+        expr,
+        base,
+        key,
+        receiver,
+      } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
           let value = v.unwrap_or(Value::Undefined);
@@ -37498,8 +37546,8 @@ fn gen_resume_from_frames(
           let assign_res = (|| -> Result<(), VmError> {
             let mut assign_scope = scope.reborrow();
             assign_scope.push_root(value)?;
-            let reference = match (base, key) {
-              (None, None) => match &*expr.left.stx {
+            let reference = match (base, key, receiver) {
+              (None, None, None) => match &*expr.left.stx {
                 Expr::Id(id) => Reference::Binding(&id.stx.name),
                 Expr::IdPat(id) => Reference::Binding(&id.stx.name),
                 _ => {
@@ -37508,7 +37556,7 @@ fn gen_resume_from_frames(
                   ))
                 }
               },
-              (Some(base), Some(key_value)) => {
+              (Some(base), Some(key_value), None) => {
                 assign_scope.push_roots(&[base, key_value])?;
                 let key = match key_value {
                   Value::String(s) => PropertyKey::from_string(s),
@@ -37521,9 +37569,26 @@ fn gen_resume_from_frames(
                 };
                 Reference::Property { base, key }
               }
+              (Some(base), Some(key_value), Some(receiver)) => {
+                assign_scope.push_roots(&[base, key_value, receiver])?;
+                let key = match key_value {
+                  Value::String(s) => PropertyKey::from_string(s),
+                  Value::Symbol(s) => PropertyKey::from_symbol(s),
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "assignment key should be a string or symbol",
+                    ))
+                  }
+                };
+                Reference::SuperProperty {
+                  base,
+                  key,
+                  receiver,
+                }
+              }
               _ => {
                 return Err(VmError::InvariantViolation(
-                  "AssignAfterRhs has mismatched base/key",
+                  "AssignAfterRhs has mismatched stored reference components",
                 ))
               }
             };
@@ -37545,14 +37610,20 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
-      GenFrame::AssignAddAfterRhs { expr, base, key, left } => match state {
+      GenFrame::AssignAddAfterRhs {
+        expr,
+        base,
+        key,
+        receiver,
+        left,
+      } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
           let right = v.unwrap_or(Value::Undefined);
 
           let assign_res = (|| -> Result<Value, VmError> {
-            let reference = match (base, key) {
-              (None, None) => match &*expr.left.stx {
+            let reference = match (base, key, receiver) {
+              (None, None, None) => match &*expr.left.stx {
                 Expr::Id(id) => Reference::Binding(&id.stx.name),
                 Expr::IdPat(id) => Reference::Binding(&id.stx.name),
                 _ => {
@@ -37561,7 +37632,7 @@ fn gen_resume_from_frames(
                   ))
                 }
               },
-              (Some(base), Some(key_value)) => {
+              (Some(base), Some(key_value), None) => {
                 let key = match key_value {
                   Value::String(s) => PropertyKey::from_string(s),
                   Value::Symbol(s) => PropertyKey::from_symbol(s),
@@ -37573,19 +37644,42 @@ fn gen_resume_from_frames(
                 };
                 Reference::Property { base, key }
               }
+              (Some(base), Some(key_value), Some(receiver)) => {
+                let key = match key_value {
+                  Value::String(s) => PropertyKey::from_string(s),
+                  Value::Symbol(s) => PropertyKey::from_symbol(s),
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "assignment key should be a string or symbol",
+                    ))
+                  }
+                };
+                Reference::SuperProperty {
+                  base,
+                  key,
+                  receiver,
+                }
+              }
               _ => {
                 return Err(VmError::InvariantViolation(
-                  "AssignAddAfterRhs has mismatched base/key",
+                  "AssignAddAfterRhs has mismatched stored reference components",
                 ))
               }
             };
 
             let mut add_scope = scope.reborrow();
-            if let (Some(base), Some(key_value)) = (base, key) {
-              add_scope.push_roots(&[base, key_value, left, right])?;
-            } else {
-              add_scope.push_roots(&[left, right])?;
-            }
+            match (base, key, receiver) {
+              (Some(base), Some(key_value), Some(receiver)) => {
+                add_scope.push_roots(&[base, key_value, receiver, left, right])?
+              }
+              (Some(base), Some(key_value), None) => add_scope.push_roots(&[base, key_value, left, right])?,
+              (None, None, None) => add_scope.push_roots(&[left, right])?,
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "AssignAddAfterRhs has mismatched stored reference components",
+                ))
+              }
+            };
             let value = evaluator
               .addition_operator(&mut add_scope, left, right)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
