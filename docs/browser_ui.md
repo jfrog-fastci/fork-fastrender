@@ -481,6 +481,9 @@ Manual verification checklist:
     - The current windowed UI handles both; when `SelectDropdownOpened` is available it uses
       `anchor_css` to position the popup relative to the rendered frame (instead of anchoring to the
       cursor).
+  - Renders a date/time picker popup for `<input type=date|time|datetime-local|month|week>`.
+    - Workers request this via `WorkerToUi::{DateTimePickerOpened,DateTimePickerClosed}`; the UI
+      responds with `UiToWorker::{DateTimePickerChoose,DateTimePickerCancel}`.
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
     [env-vars.md](env-vars.md)).
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
@@ -569,6 +572,10 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - `SelectDropdownChoose { tab_id, select_node_id, option_node_id }` — user selected an option from
   a dropdown popup (sent after `WorkerToUi::SelectDropdownOpened`)
 - `SelectDropdownCancel { tab_id }` — user dismissed a dropdown popup (Escape/click-away)
+- `ContextMenuRequest { tab_id, pos_css }` — request hit-test/context for a page context menu
+  invocation; the worker responds with `WorkerToUi::ContextMenu`.
+- `DateTimePickerChoose { tab_id, input_node_id, value }` / `DateTimePickerCancel { tab_id }` —
+  user interaction with a date/time picker popup for `<input type=date|time|datetime-local|month|week>`.
 
 Coordinate convention: `pos_css` / `pointer_css` fields are **viewport-relative CSS pixels** (origin
 at the top-left of the viewport). They must **not** include the current scroll offset; worker loops
@@ -587,11 +594,17 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
   dropdown popup for a `<select>` control, with an explicit `anchor_css` in **viewport-local CSS
   pixels** so the popup can be positioned relative to the rendered frame.
 - `SelectDropdownClosed { tab_id }` — close/dismiss any open dropdown popup for the tab
+- `DateTimePickerOpened { tab_id, input_node_id, kind, value, anchor_css }` /
+  `DateTimePickerClosed { tab_id }` — open/close a date/time picker popup for an `<input>` control.
+- `ContextMenu { ... }` — response to `UiToWorker::ContextMenuRequest` (link/image under cursor +
+  copy/cut/paste/select-all affordances + whether the page prevented the default menu).
 - `NavigationStarted/Committed/Failed { ... }` — URL/title/back-forward state updates
 - `Stage { tab_id, stage }` — coarse progress heartbeats forwarded from the renderer
   (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
   - Can be surfaced by chrome UIs while loading (e.g. [`src/ui/chrome.rs`](../src/ui/chrome.rs)).
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
+- Downloads: `DownloadStarted` / `DownloadProgress` / `DownloadFinished` (used to drive the downloads
+  panel UI).
 
 Note: not all worker implementations emit every message variant. For example, the windowed `browser`
 app's worker thread (`spawn_browser_worker` via `spawn_browser_ui_worker`) emits `FrameReady`, select
