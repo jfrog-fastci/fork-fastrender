@@ -137,6 +137,65 @@ fn compiled_for_loop_let_creates_per_iteration_envs() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_for_of_let_creates_per_iteration_envs() -> Result<(), VmError> {
+  // `for (let x of ...)` should create a fresh lexical binding each iteration so closures capture
+  // the value from the iteration when they were created.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        let a;
+        for (let i of [0, 1, 2]) {
+          if (i < 1) a = function() { return i; };
+        }
+        return a();
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_in_let_creates_per_iteration_envs() -> Result<(), VmError> {
+  // `for (let k in obj)` should create a fresh lexical binding each iteration so closures capture
+  // the key from the iteration when they were created.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        let a;
+        for (let k in ({a: 1, b: 2})) {
+          if (k === 'a') a = function() { return k; };
+        }
+        return a();
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "a");
+  Ok(())
+}
+
+#[test]
 fn compiled_bigint_literal_executes() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
