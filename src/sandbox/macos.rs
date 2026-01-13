@@ -99,6 +99,61 @@ const RENDERER_SYSTEM_FONTS_PROFILE: &str = r#"(version 1)
 (allow file-read* (subpath "/usr/lib"))
 "#;
 
+fn sbpl_quote(value: &str) -> String {
+  let mut out = String::with_capacity(value.len() + 2);
+  out.push('"');
+  for ch in value.chars() {
+    match ch {
+      '\\' => out.push_str("\\\\"),
+      '"' => out.push_str("\\\""),
+      _ => out.push(ch),
+    }
+  }
+  out.push('"');
+  out
+}
+
+/// Builds the renderer sandbox SBPL profile source, allowing only the supplied POSIX shared memory
+/// names (`shm_open`) in addition to the baseline renderer policy.
+///
+/// Seatbelt's POSIX shared memory names can be represented with or without a leading `/` depending
+/// on the API layer, so this helper allowlists both forms for each name.
+pub fn build_renderer_sbpl(allowed_posix_shm_names: &[&str]) -> String {
+  use std::collections::BTreeSet;
+
+  let mut allowed = BTreeSet::<String>::new();
+  for &name in allowed_posix_shm_names {
+    if name.is_empty() {
+      continue;
+    }
+    allowed.insert(name.to_string());
+    if let Some(without_slash) = name.strip_prefix('/') {
+      if !without_slash.is_empty() {
+        allowed.insert(without_slash.to_string());
+      }
+    } else {
+      allowed.insert(format!("/{name}"));
+    }
+  }
+
+  let mut sbpl = String::from(RENDERER_SYSTEM_FONTS_PROFILE);
+  if !sbpl.ends_with('\n') {
+    sbpl.push('\n');
+  }
+
+  if allowed.is_empty() {
+    return sbpl;
+  }
+
+  sbpl.push_str("\n;; Allow POSIX shared memory IPC for pixel buffers (restricted by name).\n");
+  for name in allowed {
+    sbpl.push_str("(allow ipc-posix-shm (ipc-posix-name ");
+    sbpl.push_str(&sbpl_quote(&name));
+    sbpl.push_str("))\n");
+  }
+  sbpl
+}
+
 // Minimal embedded fallback for the strict `pure-computation` sandbox.
 //
 // Requirements:
@@ -343,6 +398,7 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
   #[cfg(test)]
   mod tests {
   use super::*;
+  use std::ffi::CString;
   use std::io::{self, Write};
   use std::net::{TcpListener, TcpStream, UdpSocket};
   use std::process::Command;
@@ -351,6 +407,56 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
 
   const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_CHILD";
   const PORT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_PORT";
+  const SHM_ALLOWED_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_SHM_ALLOWED";
+  const SHM_DENIED_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_SHM_DENIED";
+
+  fn shm_name(label: &str) -> String {
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+      .duration_since(SystemTime::UNIX_EPOCH)
+      .unwrap_or_default()
+      .as_nanos();
+    // POSIX `shm_open` names must begin with `/` and contain no additional slashes.
+    format!("/fastr_sbpl_{label}_{pid}_{nanos}")
+  }
+
+  fn shm_unlink_best_effort(name: &str) {
+    let Ok(c_name) = CString::new(name) else {
+      return;
+    };
+    // SAFETY: `c_name` is a valid C string.
+    let rc = unsafe { libc::shm_unlink(c_name.as_ptr()) };
+    if rc == 0 {
+      return;
+    }
+    let _ = std::io::Error::last_os_error();
+  }
+
+  fn shm_open_create(name: &str) -> Result<libc::c_int, std::io::Error> {
+    let c_name = CString::new(name).expect("shm name contains NUL byte");
+    // SAFETY: `c_name` is a valid C string. `shm_open` returns an owned fd on success.
+    let fd = unsafe {
+      libc::shm_open(
+        c_name.as_ptr(),
+        libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+        0o600,
+      )
+    };
+    if fd == -1 {
+      return Err(std::io::Error::last_os_error());
+    }
+    Ok(fd)
+  }
+
+  fn close_fd_best_effort(fd: libc::c_int) {
+    if fd < 0 {
+      return;
+    }
+    // SAFETY: `fd` came from `shm_open`.
+    unsafe {
+      libc::close(fd);
+    }
+  }
 
   fn is_permission_error(err: &io::Error) -> bool {
     if err.kind() == io::ErrorKind::PermissionDenied {
@@ -879,43 +985,57 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
   }
 
   #[test]
-  fn pure_computation_sandbox_allows_inherited_stdout_pipe() {
-    const SENTINEL: &[u8] = b"fastrender-seatbelt-stdout-ok";
-
+  fn renderer_sbpl_ipc_posix_shm_allowlist() {
     let is_child = std::env::var_os(CHILD_ENV).is_some();
     if is_child {
-      apply_pure_computation_sandbox().expect("apply Seatbelt pure-computation sandbox");
-      std::io::stdout()
-        .write_all(SENTINEL)
-        .and_then(|_| std::io::stdout().flush())
-        .expect("write sentinel to stdout after sandbox");
-      std::process::exit(0);
+      let allowed =
+        std::env::var(SHM_ALLOWED_ENV).expect("child process missing allowed shm name");
+      let denied = std::env::var(SHM_DENIED_ENV).expect("child process missing denied shm name");
+
+      let sbpl = build_renderer_sbpl(&[allowed.as_str()]);
+      apply_profile_source_with_home_param(&sbpl).expect("apply renderer SBPL profile");
+
+      let fd = shm_open_create(&allowed).unwrap_or_else(|err| {
+        panic!("shm_open({allowed}) should succeed in sandbox: {err} (sbpl={sbpl:?})");
+      });
+
+      let denied_err = shm_open_create(&denied).expect_err("expected sandbox to deny shm_open");
+      assert!(
+        is_permission_error(&denied_err),
+        "expected denied shm_open to fail with permission error, got {denied_err:?}"
+      );
+
+      // Best-effort cleanup. The parent process also unlinks after the child returns to avoid
+      // leaving segments behind if the child crashes mid-test.
+      shm_unlink_best_effort(&allowed);
+      close_fd_best_effort(fd);
+      return;
     }
 
-    // Run in a child process so the parent test runner is unaffected by the sandbox.
+    let allowed = shm_name("allowed");
+    let denied = shm_name("denied");
+    shm_unlink_best_effort(&allowed);
+    shm_unlink_best_effort(&denied);
+
     let exe = std::env::current_exe().expect("current test exe path");
-    let test_name = "sandbox::macos::tests::pure_computation_sandbox_allows_inherited_stdout_pipe";
+    let test_name = "sandbox::macos::tests::renderer_sbpl_ipc_posix_shm_allowlist";
     let output = Command::new(exe)
       .env(CHILD_ENV, "1")
+      .env(SHM_ALLOWED_ENV, &allowed)
+      .env(SHM_DENIED_ENV, &denied)
       .arg("--exact")
       .arg(test_name)
       .arg("--nocapture")
       .output()
-      .expect("spawn sandbox child process");
+      .expect("spawn child test process");
+
+    // Clean up even if the child failed before unlinking.
+    shm_unlink_best_effort(&allowed);
+    shm_unlink_best_effort(&denied);
 
     assert!(
       output.status.success(),
-      "sandbox child should exit 0 (stdout={}, stderr={})",
-      String::from_utf8_lossy(&output.stdout),
-      String::from_utf8_lossy(&output.stderr)
-    );
-
-    assert!(
-      output
-        .stdout
-        .windows(SENTINEL.len())
-        .any(|window| window == SENTINEL),
-      "expected sandbox child to write sentinel to stdout; got stdout={}, stderr={}",
+      "child process should exit successfully (stdout={}, stderr={})",
       String::from_utf8_lossy(&output.stdout),
       String::from_utf8_lossy(&output.stderr)
     );
