@@ -115,7 +115,6 @@ fn compiled_constructor_body_construct(
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
 
-<<<<<<< HEAD
     let result = run_compiled_function(
       vm,
       &mut scope,
@@ -127,23 +126,9 @@ fn compiled_constructor_body_construct(
       Value::Object(this_obj),
       /* this_initialized */ true,
       new_target,
+      home_object,
       args,
     );
-=======
-  let result = run_compiled_function(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    &mut env,
-    func_ref,
-    is_strict,
-    Value::Object(this_obj),
-    new_target,
-    home_object,
-    args,
-  );
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
 
     env.teardown(scope.heap_mut());
 
@@ -172,6 +157,7 @@ fn compiled_constructor_body_construct(
       Value::Undefined,
       /* this_initialized */ false,
       new_target,
+      home_object,
       args,
     );
 
@@ -7514,12 +7500,8 @@ impl<'vm> HirEvaluator<'vm> {
 
       // Allocate the optional hidden constructable constructor body.
       let mut ctor_length: u32 = 0;
-<<<<<<< HEAD
-       let ctor_body_func = if let Some(member) = ctor_member {
-=======
       let mut ctor_body_inner_func: Option<GcObject> = None;
       let ctor_body_func = if let Some(member) = ctor_member {
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
         let hir_js::ClassMemberKind::Constructor { body, .. } = &member.kind else {
           unreachable!();
         };
@@ -7655,12 +7637,6 @@ impl<'vm> HirEvaluator<'vm> {
        };
        class_scope.push_root(Value::Object(prototype_obj))?;
 
-<<<<<<< HEAD
-       // Per ECMAScript, class constructors have a non-writable `prototype` property.
-       class_scope.define_property_or_throw(
-         func_obj,
-         prototype_key,
-=======
       if let Some(body_func) = ctor_body_inner_func {
         class_scope
           .heap_mut()
@@ -7671,7 +7647,6 @@ impl<'vm> HirEvaluator<'vm> {
       class_scope.define_property_or_throw(
         func_obj,
         prototype_key,
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
         PropertyDescriptorPatch {
           writable: Some(false),
           ..Default::default()
