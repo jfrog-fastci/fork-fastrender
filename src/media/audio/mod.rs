@@ -36,6 +36,7 @@ pub mod limits;
 mod mixer_decision;
 mod null_backend;
 mod restart;
+pub mod remix;
 mod ring_buffer;
 #[cfg(feature = "audio_cpal")]
 mod thread_priority;
@@ -65,6 +66,7 @@ pub use config::{
 #[cfg(feature = "audio_cpal")]
 pub use cpal_backend::{list_output_devices, CpalAudioBackend};
 pub use convert::convert_to_f32_interleaved;
+pub use remix::{remix_interleaved_f32, RemixError};
 pub use latency::{
   duration_to_frames_ceil, duration_to_frames_floor, frames_to_duration, latency_from_timestamps,
 };
@@ -781,6 +783,7 @@ impl PcmF32QueueProducer {
     Ok(())
   }
 }
+<<<<<<< HEAD
 
 #[cfg(all(test, feature = "audio_cpal"))]
 mod audio_cpal_compile_tests {
@@ -796,3 +799,5 @@ mod audio_cpal_compile_tests {
     assert_send_sync::<CpalAudioBackend>();
   }
 }
+=======
+>>>>>>> 4429ac38 (feat(audio): add deterministic channel remix helpers)
