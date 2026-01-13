@@ -27,6 +27,8 @@ fn main() {
     //
     // We intentionally build libvpx without yasm/nasm assembly by default to keep builds
     // portable/CI-friendly.
+    let is_msvc_target = target_os == "windows" && target_arch == "x86_64" && target_env == "msvc";
+
     let libvpx_toolchain = match (target_os.as_str(), target_arch.as_str(), target_env.as_str()) {
         ("linux", "x86_64", "gnu") => "generic-gnu".to_string(),
         ("linux", "x86_64", other) => unsupported(
@@ -65,20 +67,21 @@ Got env={other:?}. musl targets are not supported by the bundled libvpx build ye
         }
         ("windows", "x86_64", "gnu") => "x86_64-win64-gcc".to_string(),
         ("windows", "x86_64", "msvc") => {
-            unsupported(
-                &target,
-                &host,
-                "Windows MSVC targets are not supported by the bundled libvpx build yet. \
-Try using the MinGW target (`--target x86_64-pc-windows-gnu`) with an MSYS2/Cygwin environment. \
-If you want to experiment with MSVC, libvpx supports VS toolchains like `--target=x86_64-win64-vs16`, \
-but this crate's build script does not currently invoke that flow. \
-Alternatively, link against a system-provided libvpx.",
-            );
+            if !host.contains("windows") {
+                unsupported(
+                    &target,
+                    &host,
+                    "Windows MSVC target requested but build host is not Windows. \
+Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows or link against a system libvpx.",
+                );
+            }
+            let vs_ver = detect_visual_studio_major().unwrap_or(16);
+            format!("x86_64-win64-vs{vs_ver}")
         }
         _ => unsupported(
             &target,
             &host,
-            "unsupported target for bundled libvpx build. Supported targets: linux x86_64, macOS x86_64/aarch64, Windows x86_64-gnu (MinGW).",
+            "unsupported target for bundled libvpx build. Supported targets: linux x86_64-gnu, macOS x86_64/aarch64, Windows x86_64-gnu (MinGW), Windows x86_64-msvc (best-effort).",
         ),
     };
 
@@ -92,7 +95,13 @@ Alternatively, link against a system-provided libvpx.",
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let build_dir = out_dir.join("libvpx-build");
-    let lib_path = build_dir.join("libvpx.a");
+    // For MSVC we copy the produced `.lib` output to a stable location (`vpx.lib`) so downstream
+    // linking can always use `-lvpx`.
+    let lib_path = if is_msvc_target {
+        build_dir.join("vpx.lib")
+    } else {
+        build_dir.join("libvpx.a")
+    };
     let build_stamp_path = build_dir.join("build.stamp");
 
     // If `build.rs` or any other input changes, Cargo will re-run this script. However, that does
@@ -102,6 +111,11 @@ Alternatively, link against a system-provided libvpx.",
     // (expensive) configure+make steps when we're sure the existing `libvpx.a` matches.
     let mut configure_args = Vec::<String>::new();
     configure_args.push(format!("--target={libvpx_toolchain}"));
+    // Visual Studio builds go through libvpx's generated `.sln` + `msbuild` flow.
+    // Force external_build so configure doesn't require a GCC-like toolchain for probing.
+    if is_msvc_target {
+        configure_args.push("--enable-external-build".to_string());
+    }
     for arg in disable_yasm_nasm_by_default(target_arch.as_str()) {
         configure_args.push(arg.to_string());
     }
@@ -239,13 +253,37 @@ Alternatively, link against a system-provided libvpx.",
         run(configure_cmd, "libvpx configure");
 
         let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".to_string());
-        let mut make_cmd = Command::new("make");
-        make_cmd
-            .current_dir(&build_dir)
-            .arg(format!("-j{jobs}"))
-            // Only build the primary static library we link against.
-            .arg("libvpx.a");
-        run(make_cmd, "libvpx make");
+        if is_msvc_target {
+            // MSVC builds: libvpx's makefiles generate Visual Studio projects and (if `msbuild.exe`
+            // is in PATH) build them. We then copy the produced `.lib` to `vpx.lib` for linking.
+            let mut make_cmd = Command::new("make");
+            make_cmd.current_dir(&build_dir).arg(format!("-j{jobs}"));
+            run(make_cmd, "libvpx make (msvc)");
+
+            let produced = find_msvc_static_lib(&build_dir)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "libvpx MSVC build finished, but no static .lib was found under {}. \
+Ensure MSYS2/Cygwin `make` is installed and `msbuild.exe` is available in PATH (Visual Studio Build Tools / Developer Command Prompt).",
+                        build_dir.display()
+                    )
+                });
+            fs::copy(&produced, &lib_path).unwrap_or_else(|e| {
+                panic!(
+                    "failed to copy built libvpx MSVC library from {} to {}: {e}",
+                    produced.display(),
+                    lib_path.display()
+                )
+            });
+        } else {
+            let mut make_cmd = Command::new("make");
+            make_cmd
+                .current_dir(&build_dir)
+                .arg(format!("-j{jobs}"))
+                // Only build the primary static library we link against.
+                .arg("libvpx.a");
+            run(make_cmd, "libvpx make");
+        }
 
         if !lib_path.exists() {
             panic!(
@@ -387,6 +425,64 @@ fn detect_darwin_major() -> Option<u32> {
         );
     }
     Some(clamped)
+}
+
+fn detect_visual_studio_major() -> Option<u32> {
+    // On a VS Developer Command Prompt this is typically set to e.g. `17.0`.
+    let ver = env::var("VisualStudioVersion").ok()?;
+    let major = ver.split('.').next()?.parse::<u32>().ok()?;
+    if (14..=17).contains(&major) {
+        Some(major)
+    } else {
+        None
+    }
+}
+
+fn find_msvc_static_lib(build_dir: &Path) -> Option<PathBuf> {
+    // Prefer the common MSVC static lib names produced by libvpx.
+    // vpxmd.lib: dynamic CRT, vpxmt.lib: static CRT.
+    let preferred_names = ["vpxmd.lib", "vpxmt.lib", "vpx.lib"];
+
+    let mut files = Vec::new();
+    collect_files(build_dir, build_dir, &mut files);
+
+    let mut best: Option<(i32, PathBuf)> = None;
+    for rel in files {
+        let file_name = rel.file_name()?.to_string_lossy();
+        if !preferred_names.iter().any(|n| *n == file_name) {
+            continue;
+        }
+
+        // Score paths: prefer x64/Release over Debug/Win32, etc.
+        let mut score = 0;
+        for comp in rel.components() {
+            let comp = comp.as_os_str().to_string_lossy();
+            match comp.as_ref() {
+                "x64" | "amd64" => score += 20,
+                "Release" => score += 10,
+                "Win32" => score -= 10,
+                "Debug" => score -= 5,
+                _ => {}
+            }
+        }
+        if score <= 0 {
+            // Still accept it, but prefer release-ish outputs.
+            score += 1;
+        }
+
+        let abs = build_dir.join(&rel);
+        match &mut best {
+            Some((best_score, best_path)) => {
+                if score > *best_score {
+                    *best_score = score;
+                    *best_path = abs;
+                }
+            }
+            None => best = Some((score, abs)),
+        }
+    }
+
+    best.map(|(_, p)| p)
 }
 
 fn tool_in_path(tool: &str) -> bool {

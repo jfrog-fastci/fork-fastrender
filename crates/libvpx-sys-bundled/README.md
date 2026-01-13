@@ -32,6 +32,7 @@ Target selection:
   libvpx release's known Darwin toolchains)
 - macOS aarch64 (Apple Silicon): `--target=arm64-darwinXX-gcc`
 - Windows x86_64-gnu (MinGW): `--target=x86_64-win64-gcc`
+- Windows x86_64-msvc: `--target=x86_64-win64-vsNN` (NN is detected from the host, defaulting to 16)
 
 Common flags:
 
@@ -54,10 +55,10 @@ Supported (best-effort; CI coverage may vary):
 - `x86_64-apple-darwin` (native builds only; cross-compiling the bundled libvpx is not supported)
 - `aarch64-apple-darwin` (native builds only; cross-compiling the bundled libvpx is not supported)
 - `x86_64-pc-windows-gnu` (MinGW; may require `CROSS` / a MinGW-w64 toolchain when cross-compiling)
+- `x86_64-pc-windows-msvc` (MSVC; requires MSYS2/Cygwin + `msbuild.exe` in PATH)
 
 Unsupported:
 
-- `x86_64-pc-windows-msvc` (MSVC)
 - Linux `musl` targets (use a GNU target or a system libvpx)
 
 Other targets will emit a clear build error (`cargo:warning` + panic) with guidance.
@@ -68,6 +69,9 @@ Notes for Windows:
   vendored `configure` script via `sh`/`bash`, so a POSIX shell must be in `PATH`.
 - When cross-compiling to MinGW from a non-Windows host, you may need to set `CROSS=` or a
   target-scoped `CC_*` toolchain prefix.
+- For MSVC targets, the build uses libvpx's generated Visual Studio solution and runs `msbuild.exe`
+  via the vendored makefiles. Ensure you are running under a VS Developer Command Prompt (or
+  otherwise have `msbuild.exe` available in PATH).
 
 ## ABI helpers
 
