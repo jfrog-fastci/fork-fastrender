@@ -592,7 +592,6 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   }
   tab.js_dom_mapping_generation = generation;
   tab.js_dom_mapping = Some(mapping);
-  tab.js_dom_mapping_miss_log_last.clear();
   tab.js_dom_dirty = false;
   tab.js_dom_mutation_generation = generation;
 }
