@@ -57,6 +57,21 @@ pub enum ShmError {
     source: io::Error,
   },
   #[cfg(target_os = "linux")]
+  #[error("shm_open failed")]
+  ShmOpenFailed {
+    #[source]
+    source: io::Error,
+  },
+  #[cfg(target_os = "linux")]
+  #[error("shm_unlink failed")]
+  ShmUnlinkFailed {
+    #[source]
+    source: io::Error,
+  },
+  #[cfg(target_os = "linux")]
+  #[error("failed to allocate shm_open buffer after {attempts} attempts")]
+  ShmNameCollision { attempts: usize },
+  #[cfg(target_os = "linux")]
   #[error("ftruncate failed for size {size}")]
   TruncateFailed {
     size: usize,
@@ -115,9 +130,12 @@ fn validate_size(size: usize) -> Result<(), ShmError> {
 mod linux {
   use super::{validate_size, SealStatus, ShmError, MAX_SHM_SIZE};
   use crate::ipc::sync;
+  use std::ffi::CString;
   use std::io;
   use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
   use std::ptr::NonNull;
+  use std::sync::atomic::{AtomicU64, Ordering};
+  use std::time::{SystemTime, UNIX_EPOCH};
 
   /// A mapped memory region created from a file descriptor.
   ///
@@ -195,6 +213,196 @@ mod linux {
     }
   }
 
+  // ============================================================================
+  // Shared-memory fd creation
+  // ============================================================================
+
+  static SHM_OPEN_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+  fn generate_shm_open_name() -> String {
+    let pid = std::process::id();
+    let counter = SHM_OPEN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let now = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap_or_else(|e| e.duration());
+    // POSIX requires the name to start with `/` and contain no other `/` characters.
+    format!("/fastrender-{pid}-{counter}-{}", now.as_nanos())
+  }
+
+  fn set_cloexec(fd: RawFd) -> io::Result<()> {
+    // SAFETY: `fcntl` is an OS syscall.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+      return Err(io::Error::last_os_error());
+    }
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+    if rc != 0 {
+      return Err(io::Error::last_os_error());
+    }
+    Ok(())
+  }
+
+  fn create_shm_open_fd_with_name() -> Result<(RawFd, String), ShmError> {
+    const MAX_ATTEMPTS: usize = 128;
+    for _ in 0..MAX_ATTEMPTS {
+      let name = generate_shm_open_name();
+      let c_name = CString::new(name.as_str()).map_err(|_| ShmError::ShmOpenFailed {
+        source: io::Error::new(io::ErrorKind::InvalidInput, "shm name contains NUL"),
+      })?;
+
+      // Use O_EXCL to guarantee we never collide with another process. O_CLOEXEC keeps the fd from
+      // leaking into child processes; if unsupported, retry without it and set FD_CLOEXEC manually.
+      let mut flags = libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_CLOEXEC;
+      let mut fd = unsafe { libc::shm_open(c_name.as_ptr(), flags, 0o600) };
+      let mut used_cloexec = true;
+      if fd < 0 {
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+          Some(libc::EEXIST) => continue,
+          Some(libc::EINVAL) => {
+            flags &= !libc::O_CLOEXEC;
+            used_cloexec = false;
+            fd = unsafe { libc::shm_open(c_name.as_ptr(), flags, 0o600) };
+            if fd < 0 {
+              let err = io::Error::last_os_error();
+              if err.raw_os_error() == Some(libc::EEXIST) {
+                continue;
+              }
+              return Err(ShmError::ShmOpenFailed { source: err });
+            }
+          }
+          _ => return Err(ShmError::ShmOpenFailed { source: err }),
+        }
+      }
+
+      // Immediately unlink the name so the object disappears from `/dev/shm` even if we crash later.
+      // SAFETY: `shm_unlink` is an OS syscall. We pass the same null-terminated name used for
+      // `shm_open`.
+      let unlink_rc = unsafe { libc::shm_unlink(c_name.as_ptr()) };
+      if unlink_rc != 0 {
+        let err = io::Error::last_os_error();
+        unsafe {
+          libc::close(fd);
+        }
+        return Err(ShmError::ShmUnlinkFailed { source: err });
+      }
+
+      if !used_cloexec {
+        if let Err(err) = set_cloexec(fd) {
+          unsafe {
+            libc::close(fd);
+          }
+          return Err(ShmError::ShmOpenFailed { source: err });
+        }
+      }
+
+      return Ok((fd, name));
+    }
+
+    Err(ShmError::ShmNameCollision {
+      attempts: MAX_ATTEMPTS,
+    })
+  }
+
+  fn create_shm_open_fd() -> Result<RawFd, ShmError> {
+    let (fd, _name) = create_shm_open_fd_with_name()?;
+    Ok(fd)
+  }
+
+  fn create_memfd_fd() -> Result<RawFd, io::Error> {
+    // We use a fixed name; it is only visible in `/proc/<pid>/fd` and for debugging.
+    let name = b"fastrender-shm\0";
+    let name_ptr = name.as_ptr().cast::<libc::c_char>();
+
+    let mut fd = unsafe { libc::memfd_create(name_ptr, libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
+    if fd < 0 {
+      let err = io::Error::last_os_error();
+      // Older kernels may reject `MFD_ALLOW_SEALING`. Fall back to an unsealable memfd so the
+      // caller can still use shared memory (sealing will report `Unsupported`).
+      if err.raw_os_error() == Some(libc::EINVAL) {
+        fd = unsafe { libc::memfd_create(name_ptr, libc::MFD_CLOEXEC) };
+      }
+      if fd < 0 {
+        return Err(io::Error::last_os_error());
+      }
+    }
+    Ok(fd)
+  }
+
+  fn create_backing_fd() -> Result<RawFd, ShmError> {
+    match create_memfd_fd() {
+      Ok(fd) => Ok(fd),
+      Err(err) => {
+        if matches!(
+          err.raw_os_error(),
+          Some(libc::ENOSYS) | Some(libc::EINVAL)
+        ) {
+          return create_shm_open_fd();
+        }
+        Err(ShmError::MemfdCreateFailed { source: err })
+      }
+    }
+  }
+
+  fn init_owned_from_fd(fd: RawFd, size: usize) -> Result<OwnedShm, ShmError> {
+    let off: libc::off_t = size
+      .try_into()
+      .map_err(|_| ShmError::TooLarge { size, max: MAX_SHM_SIZE })?;
+
+    // SAFETY: `fd` is freshly returned by the kernel; we own it.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+
+    // SAFETY: `ftruncate` uses the provided fd and length.
+    let rc = unsafe { libc::ftruncate(fd.as_raw_fd(), off) };
+    if rc != 0 {
+      return Err(ShmError::TruncateFailed {
+        size,
+        source: io::Error::last_os_error(),
+      });
+    }
+
+    let region = MappedRegion::map(fd.as_raw_fd(), size, libc::PROT_READ | libc::PROT_WRITE)?;
+    Ok(OwnedShm {
+      fd,
+      region,
+      sealed: false,
+    })
+  }
+
+  // ============================================================================
+  // Test hooks
+  // ============================================================================
+
+  #[cfg(test)]
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub(super) enum Backend {
+    Memfd,
+    ShmOpen,
+  }
+
+  #[cfg(test)]
+  pub(super) fn generate_shm_open_name_for_test() -> String {
+    generate_shm_open_name()
+  }
+
+  #[cfg(test)]
+  pub(super) fn create_owned_shm_with_backend(
+    size: usize,
+    backend: Backend,
+  ) -> Result<(OwnedShm, Option<String>), ShmError> {
+    validate_size(size)?;
+    match backend {
+      Backend::Memfd => {
+        let fd = create_memfd_fd().map_err(|source| ShmError::MemfdCreateFailed { source })?;
+        Ok((init_owned_from_fd(fd, size)?, None))
+      }
+      Backend::ShmOpen => {
+        let (fd, name) = create_shm_open_fd_with_name()?;
+        Ok((init_owned_from_fd(fd, size)?, Some(name)))
+      }
+    }
+  }
+
   /// Producer-side shared-memory buffer backed by Linux `memfd`.
   ///
   /// The mapping starts read-write; after calling [`OwnedShm::seal_readonly`] the object becomes
@@ -208,59 +416,14 @@ mod linux {
   impl OwnedShm {
     pub fn new(size: usize) -> Result<Self, ShmError> {
       validate_size(size)?;
-
-      let off: libc::off_t = size
-        .try_into()
-        .map_err(|_| ShmError::TooLarge { size, max: MAX_SHM_SIZE })?;
-
-      // We use a fixed name; it is only visible in `/proc/<pid>/fd` and for debugging.
-      let name = b"fastrender-shm\0";
-
-      let mut fd = unsafe {
-        libc::memfd_create(
-          name.as_ptr().cast::<libc::c_char>(),
-          libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-      };
-      if fd < 0 {
-        let err = io::Error::last_os_error();
-        // Older kernels may reject `MFD_ALLOW_SEALING`. Fall back to an unsealable memfd so the
-        // caller can still use shared memory (sealing will report `Unsupported`).
-        if err.raw_os_error() == Some(libc::EINVAL) {
-          fd = unsafe {
-            libc::memfd_create(name.as_ptr().cast::<libc::c_char>(), libc::MFD_CLOEXEC)
-          };
-        }
-        if fd < 0 {
-          return Err(ShmError::MemfdCreateFailed {
-            source: io::Error::last_os_error(),
-          });
-        }
-      }
-
-      // SAFETY: `fd` is freshly returned by the kernel; we own it.
-      let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-
-      // SAFETY: `ftruncate` uses the provided fd and length.
-      let rc = unsafe { libc::ftruncate(fd.as_raw_fd(), off) };
-      if rc != 0 {
-        return Err(ShmError::TruncateFailed {
-          size,
-          source: io::Error::last_os_error(),
-        });
-      }
-
-      let mut region = MappedRegion::map(fd.as_raw_fd(), size, libc::PROT_READ | libc::PROT_WRITE)?;
+      let fd = create_backing_fd()?;
+      let mut shm = init_owned_from_fd(fd, size)?;
       // Security: make the invariant explicit that freshly-created shared-memory mappings start
       // zeroed. While kernels typically provide zeroed pages for new allocations, explicitly
       // clearing the mapping avoids leaking previous-process memory (or stale shared-memory
       // contents) to an untrusted renderer if a name/fd is ever reused accidentally.
-      region.as_mut_slice().fill(0);
-      Ok(Self {
-        fd,
-        region,
-        sealed: false,
-      })
+      shm.region.as_mut_slice().fill(0);
+      Ok(shm)
     }
 
     pub fn size(&self) -> usize {
@@ -507,6 +670,9 @@ mod tests {
   use super::*;
   use crate::ipc::ancillary::{recv_fd, send_fd};
   use crate::ipc::sync;
+  use std::collections::HashSet;
+  use std::ffi::CString;
+  use std::io;
   use std::os::unix::net::UnixStream;
 
   #[test]
@@ -565,5 +731,45 @@ mod tests {
       shm.as_slice().iter().all(|b| *b == 0),
       "newly created shared-memory mappings should be zero-initialized"
     );
+  }
+
+  #[test]
+  fn shm_open_fallback_name_generation_is_collision_resistant() {
+    let mut names = HashSet::new();
+    for _ in 0..1000 {
+      let name = linux::generate_shm_open_name_for_test();
+      assert!(name.starts_with("/fastrender-"));
+      assert!(
+        !name[1..].contains('/'),
+        "shm_open names must not contain additional '/' characters"
+      );
+      assert!(names.insert(name), "expected shm_open names to be unique");
+    }
+  }
+
+  #[test]
+  fn shm_open_fallback_shm_open_backend_maps_and_unlinks() {
+    let (mut shm, name) =
+      linux::create_owned_shm_with_backend(4096, linux::Backend::ShmOpen).expect("create shm_open buffer");
+    let name = name.expect("shm_open backend should return name");
+
+    let buf = shm.as_mut_slice().expect("mutable slice");
+    buf[0..5].copy_from_slice(b"hello");
+    assert_eq!(&buf[0..5], b"hello");
+
+    // Best-effort: the name should have been unlinked immediately after `shm_open`, so attempts to
+    // re-open should fail with ENOENT.
+    let c_name = CString::new(name.as_str()).expect("name contains no NUL bytes");
+    let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0o600) };
+    assert!(fd < 0, "expected shm_open to fail for unlinked name");
+    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ENOENT));
+
+    let dev_shm = std::path::Path::new("/dev/shm");
+    if dev_shm.exists() {
+      assert!(
+        !dev_shm.join(name.trim_start_matches('/')).exists(),
+        "expected shm_open buffer name to be absent from /dev/shm"
+      );
+    }
   }
 }
