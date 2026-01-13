@@ -23,6 +23,7 @@
 //! We only depend on the `"phrase"` field and ignore everything else.
 
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, SystemTime};
@@ -142,18 +143,20 @@ impl SearchSuggestService {
   /// Request suggestions for `query`.
   ///
   /// This call is non-blocking: it only enqueues work for the background thread.
-  pub fn request(&mut self, query: &str) {
+  pub fn request<'a>(&mut self, query: impl Into<Cow<'a, str>>) {
     let Some(tx) = self.request_tx.as_ref() else {
       return;
     };
 
+    let query = query.into();
+
     // Avoid spamming the worker when we get redraws without input changes.
-    if self.last_requested_query == query {
+    if self.last_requested_query == query.as_ref() {
       return;
     }
     // Keep the allocation for the cached query around. This runs on a hot path (omnibox typing).
     self.last_requested_query.clear();
-    self.last_requested_query.push_str(&query);
+    self.last_requested_query.push_str(query.as_ref());
 
     // `request` takes `&mut self`, so we can keep a non-atomic counter on the UI thread and only
     // publish the latest generation to the worker via an atomic store (cheaper than an RMW
@@ -161,10 +164,11 @@ impl SearchSuggestService {
     self.next_gen = self.next_gen.wrapping_add(1);
     let gen = self.next_gen;
     self.latest_gen.store(gen, Ordering::Release);
-    let _ = tx.send(SearchSuggestRequest {
-      gen,
-      query: query.to_string(),
-    });
+    let query = match query {
+      Cow::Borrowed(value) => value.to_string(),
+      Cow::Owned(value) => value,
+    };
+    let _ = tx.send(SearchSuggestRequest { gen, query });
   }
 
   /// Non-blocking poll for updates from the worker.
