@@ -16232,7 +16232,9 @@ fn async_eval_throw_stmt(
   stmt: &Node<ThrowStmt>,
 ) -> Result<AsyncEval<Completion>, VmError> {
   match async_eval_expr(evaluator, scope, &stmt.stx.value) {
-    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(evaluator, scope, stmt, v))),
+    Ok(AsyncEval::Complete(v)) => {
+      Ok(AsyncEval::Complete(async_throw_completion(evaluator, scope, stmt, v)))
+    }
     Ok(AsyncEval::Suspend(mut suspend)) => {
       async_frames_push(
         &mut suspend.frames,
@@ -17578,7 +17580,6 @@ fn async_eval_class_after_super(
       .saturating_sub(evaluator.env.prefix_len());
     let span_start = evaluator.env.base_offset().saturating_add(rel_start);
     let span_end = evaluator.env.base_offset().saturating_add(rel_end);
-
     let code = evaluator.vm.register_ecma_function(
       evaluator.env.source(),
       span_start,
