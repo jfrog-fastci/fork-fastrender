@@ -48,7 +48,7 @@ mod windows {
   };
   use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-    TokenIsAppContainer, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSID, SECURITY_CAPABILITIES,
+    TokenIsAppContainer, DACL_SECURITY_INFORMATION, PSID, SECURITY_CAPABILITIES,
     TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
@@ -326,6 +326,17 @@ mod windows {
       .set_renderer_limits(job_memory_limit_bytes_from_env()?)
       .map_err(win_err)?;
 
+    // If `lpCurrentDirectory` is NULL, Windows inherits the parent's current directory. For a
+    // low-integrity restricted token that directory may be inaccessible, causing
+    // `CreateProcessAsUserW` to fail with `ERROR_ACCESS_DENIED`.
+    //
+    // Prefer the executable's parent directory; fall back to a conservative system directory.
+    let cwd = exe
+      .parent()
+      .unwrap_or_else(|| Path::new(r"C:\Windows\System32"));
+    let cwd_w = wide_from_os(cwd.as_os_str());
+    let cwd_ptr = cwd_w.as_ptr();
+
     let (pi, used_breakaway) = spawn_with_optional_breakaway(parent_in_job, |flags| {
       spawn_with_attributes(
         None,
@@ -335,7 +346,7 @@ mod windows {
         inherit_handles,
         mitigation_policy,
         flags,
-        None,
+        Some(cwd_ptr),
       )
     })?;
 
