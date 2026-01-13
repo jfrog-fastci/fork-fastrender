@@ -8,6 +8,7 @@
 use crate::clock::Clock;
 use crate::debug::runtime::runtime_toggles;
 use parking_lot::Mutex;
+use crate::debug::trace::TraceHandle;
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, Seek, SeekFrom, Write};
@@ -937,13 +938,20 @@ pub trait AudioBackend: Send + Sync {
 #[derive(Debug)]
 pub struct NullAudioBackend {
   mixer: AudioMixer,
+  trace: TraceHandle,
 }
 
 impl NullAudioBackend {
   #[must_use]
   pub fn new(sample_rate_hz: u32, channels: usize) -> Self {
+    Self::new_with_trace(sample_rate_hz, channels, TraceHandle::default())
+  }
+
+  #[must_use]
+  pub fn new_with_trace(sample_rate_hz: u32, channels: usize, trace: TraceHandle) -> Self {
     Self {
       mixer: AudioMixer::new(sample_rate_hz, channels),
+      trace,
     }
   }
 
@@ -959,7 +967,17 @@ impl NullAudioBackend {
 
   #[must_use]
   pub fn render(&self, frames: usize) -> Vec<f32> {
-    self.mixer.mix(frames)
+    if !self.trace.is_enabled() {
+      return self.mixer.mix(frames);
+    }
+
+    let mut callback_span = self.trace.span("audio.callback", "audio");
+    callback_span.arg_u64("frames", frames as u64);
+    let out = {
+      let _mix_span = self.trace.span("audio.mix", "audio");
+      self.mixer.mix(frames)
+    };
+    out
   }
 
   /// Test helper: render the number of frames implied by a clock delta.
@@ -1165,6 +1183,7 @@ pub fn audio_backend_from_env(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::trace::TraceHandle;
   use std::sync::Arc;
   use std::thread;
 
@@ -1459,5 +1478,57 @@ mod tests {
     let mut out = vec![1.0; 240];
     mixer.mix_into(&mut out);
     assert!(all_samples_eq(&out, 0.0));
+  }
+
+  #[test]
+  fn trace_audio_mix_records_events_and_respects_cap() {
+    let max_events = 12;
+    let trace = TraceHandle::enabled_with_max_events(max_events);
+
+    let backend = NullAudioBackend::new_with_trace(48_000, 2, trace.clone());
+    let stream = backend.create_stream();
+    stream.play();
+    // Ensure there's some queued audio to mix so the hot path executes.
+    stream
+      .enqueue_samples(vec![1.0; 48_000 * 2])
+      .expect("enqueue");
+
+    let callbacks = 32usize;
+    for _ in 0..callbacks {
+      let _ = backend.render(240);
+    }
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("trace.json");
+    trace.write_chrome_trace(&path).expect("write trace");
+
+    let json = std::fs::read_to_string(&path).expect("read trace");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
+
+    let trace_events = value["traceEvents"]
+      .as_array()
+      .expect("traceEvents array");
+    assert_eq!(trace_events.len(), max_events);
+
+    let names: Vec<&str> = trace_events
+      .iter()
+      .filter_map(|event| event["name"].as_str())
+      .collect();
+    assert!(
+      names.iter().any(|name| *name == "audio.callback"),
+      "expected audio.callback span in trace"
+    );
+    assert!(
+      names.iter().any(|name| *name == "audio.mix"),
+      "expected audio.mix span in trace"
+    );
+
+    let generated_events = callbacks * 2;
+    assert_eq!(
+      value["fastrenderTraceDroppedEvents"]
+        .as_u64()
+        .expect("dropped events metadata"),
+      (generated_events - max_events) as u64
+    );
   }
 }

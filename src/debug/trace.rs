@@ -63,6 +63,14 @@ pub struct TraceHandle {
   inner: Option<Arc<TraceState>>,
 }
 
+impl std::fmt::Debug for TraceHandle {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("TraceHandle")
+      .field("enabled", &self.is_enabled())
+      .finish()
+  }
+}
+
 impl TraceHandle {
   pub fn enabled() -> Self {
     let max_events = max_trace_events_from_env().unwrap_or(DEFAULT_MAX_TRACE_EVENTS);

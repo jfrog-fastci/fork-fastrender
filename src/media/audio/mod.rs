@@ -25,6 +25,7 @@ use thiserror::Error;
 
 use super::clock::MediaClock;
 use super::DecodedAudioChunk;
+use crate::debug::trace::TraceHandle;
 use crate::media::audio_clock::InterpolatedAudioClock;
 
 mod config;
@@ -649,19 +650,34 @@ impl dyn AudioBackend {
   /// headless/CI runs stable.
   #[must_use]
   pub fn new_best_effort() -> Box<dyn AudioBackend> {
-    Self::new_best_effort_with_config(&audio_engine_config())
+    Self::new_best_effort_with_config_and_trace(&audio_engine_config(), TraceHandle::default())
   }
 
   /// Like [`Self::new_best_effort`], but uses the provided configuration instead of reading
   /// process-wide defaults.
   #[must_use]
   pub fn new_best_effort_with_config(cfg: &AudioEngineConfig) -> Box<dyn AudioBackend> {
+    Self::new_best_effort_with_config_and_trace(cfg, TraceHandle::default())
+  }
+
+  /// Like [`Self::new_best_effort`], but wires up audio tracing spans into the provided handle.
+  #[must_use]
+  pub fn new_best_effort_with_trace(trace: TraceHandle) -> Box<dyn AudioBackend> {
+    Self::new_best_effort_with_config_and_trace(&audio_engine_config(), trace)
+  }
+
+  /// Construct a backend using the provided configuration + trace handle.
+  #[must_use]
+  pub fn new_best_effort_with_config_and_trace(
+    cfg: &AudioEngineConfig,
+    _trace: TraceHandle,
+  ) -> Box<dyn AudioBackend> {
     #[cfg(feature = "audio_cpal")]
     {
       use std::sync::Once;
       static WARN_ONCE: Once = Once::new();
 
-      match CpalAudioBackend::new_with_config(cfg) {
+      match CpalAudioBackend::new_with_config_and_trace(cfg, _trace.clone()) {
         Ok(backend) => return Box::new(backend),
         Err(err) => {
           WARN_ONCE.call_once(|| {

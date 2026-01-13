@@ -11,6 +11,7 @@ use super::{
   AudioEngineConfig, AudioError, AudioOutputInfo, AudioSink, AudioStreamConfig, DeviceSelector,
 };
 use super::convert::sanitize_sample;
+use crate::debug::trace::TraceHandle;
 use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
 use super::restart::{AudioStreamFactory, ResilientStreamManager, RestartPolicy, RestartState};
@@ -108,6 +109,7 @@ struct CpalStreamFactory {
   clock: Arc<InterpolatedAudioClock>,
   diagnostics: Arc<CpalStreamDiagnostics>,
   errors: Arc<StreamErrorState>,
+  trace: TraceHandle,
 }
 
 impl AudioStreamFactory for CpalStreamFactory {
@@ -157,6 +159,7 @@ impl AudioStreamFactory for CpalStreamFactory {
       self.estimated_latency_nanos.clone(),
       self.errors.clone(),
       self.diagnostics.clone(),
+      self.trace.clone(),
     )?;
     stream
       .play()
@@ -207,16 +210,32 @@ impl CpalAudioBackend {
   }
 
   pub fn new_with_device(selector: DeviceSelector) -> Result<Self, AudioError> {
-    Self::new_with_config_and_device(&super::audio_engine_config(), selector)
+    Self::new_with_config_and_device_and_trace(
+      &super::audio_engine_config(),
+      selector,
+      TraceHandle::default(),
+    )
   }
 
   pub fn new_with_config(engine_cfg: &AudioEngineConfig) -> Result<Self, AudioError> {
-    Self::new_with_config_and_device(engine_cfg, DeviceSelector::Default)
+    Self::new_with_config_and_device_and_trace(
+      engine_cfg,
+      DeviceSelector::Default,
+      TraceHandle::default(),
+    )
   }
 
-  fn new_with_config_and_device(
+  pub(crate) fn new_with_config_and_trace(
+    engine_cfg: &AudioEngineConfig,
+    trace: TraceHandle,
+  ) -> Result<Self, AudioError> {
+    Self::new_with_config_and_device_and_trace(engine_cfg, DeviceSelector::Default, trace)
+  }
+
+  fn new_with_config_and_device_and_trace(
     engine_cfg: &AudioEngineConfig,
     selector: DeviceSelector,
+    trace: TraceHandle,
   ) -> Result<Self, AudioError> {
     // This comes from process-wide configuration (env vars), so clamp it defensively. The queue and
     // sink buffers must never be able to allocate unbounded memory.
@@ -282,6 +301,7 @@ impl CpalAudioBackend {
           estimated_latency_nanos.clone(),
           errors.clone(),
           diagnostics_thread.clone(),
+          trace.clone(),
         )?;
         stream
           .play()
@@ -330,6 +350,7 @@ impl CpalAudioBackend {
         clock,
         diagnostics: diagnostics_thread,
         errors: errors.clone(),
+        trace,
       };
       let mut manager = ResilientStreamManager::new_running(factory, policy, stream);
 
@@ -606,6 +627,13 @@ struct MixerState {
   sinks: RwLock<Vec<Weak<SinkState>>>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct MixStats {
+  streams: u64,
+  buffered_frames: u64,
+  underruns: u64,
+}
+
 impl MixerState {
   fn new(config: AudioStreamConfig) -> Self {
     Self {
@@ -687,6 +715,36 @@ impl MixerState {
 
       sink.mix_into(dst);
     }
+  }
+
+  fn stats_for_output_len(&self, output_samples_len: usize) -> MixStats {
+    let channels = self.channels_usize();
+    let mut stats = MixStats {
+      streams: 0,
+      buffered_frames: u64::MAX,
+      underruns: 0,
+    };
+
+    let sinks = self.sinks.read();
+    for weak in sinks.iter() {
+      let Some(sink) = weak.upgrade() else {
+        continue;
+      };
+      stats.streams = stats.streams.saturating_add(1);
+
+      let available_samples = sink.buffer.buffered_samples();
+      let buffered_frames = (available_samples / channels) as u64;
+      stats.buffered_frames = stats.buffered_frames.min(buffered_frames);
+      if available_samples < output_samples_len {
+        stats.underruns = stats.underruns.saturating_add(1);
+      }
+    }
+
+    if stats.streams == 0 || stats.buffered_frames == u64::MAX {
+      stats.buffered_frames = 0;
+    }
+
+    stats
   }
 
   fn channels_usize(&self) -> usize {
@@ -1051,6 +1109,7 @@ fn build_stream(
   estimated_latency_nanos: Arc<AtomicU64>,
   errors: Arc<StreamErrorState>,
   diagnostics: Arc<CpalStreamDiagnostics>,
+  trace: TraceHandle,
 ) -> Result<cpal::Stream, AudioError> {
   match sample_format {
     cpal::SampleFormat::F32 => build_stream_typed::<f32>(
@@ -1061,8 +1120,9 @@ fn build_stream(
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
-      errors,
-      diagnostics,
+      errors.clone(),
+      diagnostics.clone(),
+      trace.clone(),
     ),
     cpal::SampleFormat::I16 => build_stream_typed::<i16>(
       device,
@@ -1072,8 +1132,9 @@ fn build_stream(
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
-      errors,
-      diagnostics,
+      errors.clone(),
+      diagnostics.clone(),
+      trace.clone(),
     ),
     cpal::SampleFormat::U16 => build_stream_typed::<u16>(
       device,
@@ -1085,6 +1146,7 @@ fn build_stream(
       estimated_latency_nanos,
       errors,
       diagnostics,
+      trace,
     ),
     other => Err(AudioError::UnsupportedSampleFormat(format!("{other:?}"))),
   }
@@ -1100,6 +1162,7 @@ fn build_stream_typed<T>(
   estimated_latency_nanos: Arc<AtomicU64>,
   errors: Arc<StreamErrorState>,
   diagnostics: Arc<CpalStreamDiagnostics>,
+  trace: TraceHandle,
 ) -> Result<cpal::Stream, AudioError>
 where
   T: OutputSample + cpal::SizedSample,
@@ -1112,6 +1175,7 @@ where
   let mut playback_origin = None;
   let mut playback_origin_offset = Duration::ZERO;
   let sample_rate_hz = mixer.config.sample_rate_hz;
+  let trace_enabled = trace.is_enabled();
 
   let err_cb = {
     let diagnostics = diagnostics.clone();
@@ -1129,6 +1193,19 @@ where
       config,
       move |output: &mut [T], info| {
         super::thread_priority::promote_current_thread_for_audio();
+        let frames = if channels == 0 {
+          0u64
+        } else {
+          (output.len() / channels) as u64
+        };
+
+        let mut callback_span = if trace_enabled {
+          let mut span = trace.span("audio.callback", "audio");
+          span.arg_u64("frames", frames);
+          Some(span)
+        } else {
+          None
+        };
 
         // If we've already panicked once, keep outputting silence to avoid repeated unwinds from
         // unpredictable RT callback state. Still advance the clock/counters so A/V sync doesn't
@@ -1136,7 +1213,6 @@ where
         if diagnostics.panic_in_callback.load(Ordering::Relaxed) {
           output.fill(T::from_mixed_f32(0.0));
           if channels != 0 {
-            let frames = (output.len() / channels) as u64;
             let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
             last_callback_frames.store(frames_u32, Ordering::Relaxed);
             clock.on_callback_end_at(Instant::now(), frames_u32, None);
@@ -1148,6 +1224,13 @@ where
           return;
         }
 
+        if let Some(span) = callback_span.as_mut() {
+          let stats = mixer.stats_for_output_len(output.len());
+          span.arg_u64("streams", stats.streams);
+          span.arg_u64("underruns", stats.underruns);
+          span.arg_u64("buffered_frames", stats.buffered_frames);
+        }
+
         let res = catch_unwind(AssertUnwindSafe(|| {
           let ts = info.timestamp();
           let latency = ts.playback.duration_since(&ts.callback);
@@ -1157,6 +1240,12 @@ where
               // CPAL can (rarely) provide variable callback buffer sizes. Never resize or allocate
               // in the callback; instead, process in bounded chunks using the preallocated mix
               // buffer.
+              let mix_span = if trace_enabled {
+                Some(trace.span("audio.mix", "audio"))
+              } else {
+                None
+              };
+
               for out_chunk in output.chunks_mut(mix_buf.len()) {
                 let mix = &mut mix_buf[..out_chunk.len()];
                 mix.fill(0.0);
@@ -1165,6 +1254,7 @@ where
                   *out = T::from_mixed_f32(*sample);
                 }
               }
+              drop(mix_span);
             }
             MixerCallbackAction::Silence | MixerCallbackAction::SilenceAndDrain => {
               // Fill output with silence without doing any per-sample mixing work.
@@ -1173,7 +1263,6 @@ where
           }
 
           if channels != 0 {
-            let frames = (output.len() / channels) as u64;
             let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
             last_callback_frames.store(frames_u32, Ordering::Relaxed);
             let callback_end = Instant::now();
@@ -1228,7 +1317,6 @@ where
           output.fill(T::from_mixed_f32(0.0));
 
           if channels != 0 {
-            let frames = (output.len() / channels) as u64;
             let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
             last_callback_frames.store(frames_u32, Ordering::Relaxed);
             clock.on_callback_end_at(Instant::now(), frames_u32, None);

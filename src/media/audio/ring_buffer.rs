@@ -60,6 +60,20 @@ impl AudioRingBuffer {
     self.push_locked(samples)
   }
 
+  /// Returns the number of samples currently buffered.
+  ///
+  /// This is safe to call from the real-time consumer thread (no locks, no allocation).
+  pub fn buffered_samples(&self) -> usize {
+    let read = self.read.load(Ordering::Relaxed);
+    let write = self.write.load(Ordering::Acquire);
+    let available = write.wrapping_sub(read);
+    if available > self.capacity {
+      0
+    } else {
+      available
+    }
+  }
+
   fn push_locked(&self, samples: &[f32]) -> usize {
     let read = self.read.load(Ordering::Acquire);
     let write = self.write.load(Ordering::Relaxed);
