@@ -3936,6 +3936,7 @@ impl App {
       | UiToWorker::FindStop { tab_id }
       | UiToWorker::RequestRepaint { tab_id, .. }
       | UiToWorker::StartDownload { tab_id, .. }
+      | UiToWorker::DropFiles { tab_id, .. }
       | UiToWorker::CancelDownload { tab_id, .. } => Some(*tab_id),
     };
 
@@ -6361,11 +6362,13 @@ impl App {
     let request_initial_focus = self.downloads_panel_request_focus && !ctx.wants_keyboard_input();
     self.downloads_panel_request_focus = false;
 
-    let output = fastrender::ui::downloads_panel::downloads_panel_ui(
+    let output = fastrender::ui::panels::downloads_panel_ui(
       ctx,
-      &self.browser_state.downloads.downloads,
-      &self.theme,
-      request_initial_focus,
+      fastrender::ui::panels::DownloadsPanelInput {
+        downloads: &self.browser_state.downloads.downloads,
+        theme: &self.theme,
+        request_initial_focus,
+      },
     );
 
     if output.close_requested {
@@ -9861,11 +9864,13 @@ impl App {
         }
       }
     } else if self.history_panel_open && !close_history_panel {
-      let output = fastrender::ui::history_panel::history_panel_ui(
+      let output = fastrender::ui::panels::history_panel_ui(
         &ctx,
-        &self.browser_state.history,
-        &mut self.browser_state.chrome.history_search_text,
-        &mut self.history_panel_request_focus_search,
+        fastrender::ui::panels::HistoryPanelInput {
+          history: &self.browser_state.history,
+          search_text: &mut self.browser_state.chrome.history_search_text,
+          request_focus_search: &mut self.history_panel_request_focus_search,
+        },
       );
       if output.close_requested {
         close_history_panel = true;
@@ -9907,10 +9912,12 @@ impl App {
     }
 
     if self.clear_browsing_data_dialog_open {
-      let output = fastrender::ui::clear_browsing_data_dialog::clear_browsing_data_dialog_ui(
+      let output = fastrender::ui::panels::clear_browsing_data_dialog_ui(
         &ctx,
-        &mut self.clear_browsing_data_dialog_open,
-        &mut self.clear_browsing_data_range,
+        fastrender::ui::panels::ClearBrowsingDataDialogInput {
+          open: &mut self.clear_browsing_data_dialog_open,
+          range: &mut self.clear_browsing_data_range,
+        },
       );
       if output.clear_now {
         self.clear_browsing_data(self.clear_browsing_data_range);
