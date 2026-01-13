@@ -1356,18 +1356,15 @@ reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property d
 
 [[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-79.js"
-status = "xfail"
-reason = "vm-js does not yet implement String.prototype.toLocaleLowerCase (descriptor is undefined)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-80.js"
-status = "xfail"
-reason = "vm-js does not yet implement String.prototype.toLocaleUpperCase (descriptor is undefined)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-81.js"
-status = "xfail"
-reason = "vm-js does not yet implement String.prototype.localeCompare (descriptor is undefined)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptor/primitive-string.js"

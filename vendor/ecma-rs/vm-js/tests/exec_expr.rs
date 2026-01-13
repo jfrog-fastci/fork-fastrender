@@ -758,6 +758,27 @@ fn string_prototype_last_index_of_is_generic_and_coerces_position() {
 }
 
 #[test]
+fn string_prototype_to_locale_lower_case_and_to_locale_upper_case_work() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#""AbÇ".toLocaleLowerCase() === "abç" && "abç".toLocaleUpperCase() === "ABÇ""#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_locale_compare_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""a".localeCompare("b") < 0 && "b".localeCompare("a") > 0 && "a".localeCompare("a") === 0 &&
+         String.prototype.localeCompare.call({toString:function(){return "a";}}, {toString:function(){return "b";}}) < 0"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_prototype_includes_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt

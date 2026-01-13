@@ -1054,6 +1054,12 @@ impl Intrinsics {
       vm.register_native_call(builtins::string_prototype_to_lower_case)?;
     let string_prototype_to_upper_case =
       vm.register_native_call(builtins::string_prototype_to_upper_case)?;
+    let string_prototype_to_locale_lower_case =
+      vm.register_native_call(builtins::string_prototype_to_locale_lower_case)?;
+    let string_prototype_to_locale_upper_case =
+      vm.register_native_call(builtins::string_prototype_to_locale_upper_case)?;
+    let string_prototype_locale_compare =
+      vm.register_native_call(builtins::string_prototype_locale_compare)?;
     let string_prototype_slice = vm.register_native_call(builtins::string_prototype_slice)?;
     let string_prototype_index_of = vm.register_native_call(builtins::string_prototype_index_of)?;
     let string_prototype_last_index_of =
@@ -3130,12 +3136,66 @@ impl Intrinsics {
         )?;
       }
 
+      // String.prototype.toLocaleLowerCase
+      {
+        let to_locale_lower_s = scope.alloc_string("toLocaleLowerCase")?;
+        scope.push_root(Value::String(to_locale_lower_s))?;
+        let key = PropertyKey::from_string(to_locale_lower_s);
+        let func =
+          scope.alloc_native_function(string_prototype_to_locale_lower_case, None, to_locale_lower_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
       // String.prototype.toUpperCase
       {
         let to_upper_s = scope.alloc_string("toUpperCase")?;
         scope.push_root(Value::String(to_upper_s))?;
         let key = PropertyKey::from_string(to_upper_s);
         let func = scope.alloc_native_function(string_prototype_to_upper_case, None, to_upper_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.toLocaleUpperCase
+      {
+        let to_locale_upper_s = scope.alloc_string("toLocaleUpperCase")?;
+        scope.push_root(Value::String(to_locale_upper_s))?;
+        let key = PropertyKey::from_string(to_locale_upper_s);
+        let func =
+          scope.alloc_native_function(string_prototype_to_locale_upper_case, None, to_locale_upper_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.localeCompare
+      {
+        let locale_compare_s = scope.alloc_string("localeCompare")?;
+        scope.push_root(Value::String(locale_compare_s))?;
+        let key = PropertyKey::from_string(locale_compare_s);
+        let func =
+          scope.alloc_native_function(string_prototype_locale_compare, None, locale_compare_s, 1)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()
