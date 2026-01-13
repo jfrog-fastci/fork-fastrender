@@ -3,7 +3,8 @@ use std::io::{Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
-use crate::ipc::{read_frame, write_frame, IpcError, MAX_IPC_MESSAGE_BYTES};
+use crate::ipc::framing::{read_frame, write_frame, MAX_IPC_MESSAGE_BYTES};
+use crate::ipc::IpcError;
 
 pub type RequestId = u64;
 
@@ -600,7 +601,7 @@ impl<R: Read> ConnectionReader<R> {
     let Some(inner) = self.inner.as_mut() else {
       return Err(TransportError::Closed);
     };
-    let payload = match read_frame(inner) {
+    let payload: Vec<u8> = match read_frame(inner) {
       Ok(payload) => payload,
       Err(err) => {
         self.close();
