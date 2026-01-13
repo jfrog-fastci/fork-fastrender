@@ -192,6 +192,9 @@ Complete the transition.
 
 ### Chrome JS
 
+For the canonical JS API surface and trust boundary, see
+[`docs/chrome_js_bridge.md`](../docs/chrome_js_bridge.md).
+
 ```javascript
 // chrome://scripts/chrome.js
 document.querySelector('.nav-back').onclick = () => {
