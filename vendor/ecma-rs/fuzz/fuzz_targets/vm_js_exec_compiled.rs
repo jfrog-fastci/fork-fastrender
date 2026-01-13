@@ -39,7 +39,15 @@ fn panic_on_vm_bug(err: VmError) {
 }
 
 fn js_string_literal(s: &str) -> String {
-  let mut out = String::with_capacity(s.len().saturating_add(2));
+  // Avoid `String::with_capacity` so the fuzz harness doesn't abort the process on allocator OOM.
+  // This is best-effort: if we can't reserve, fall back to a tiny empty-string literal.
+  let mut out = String::new();
+  if out
+    .try_reserve_exact(2usize.saturating_add(6usize.saturating_mul(s.len())))
+    .is_err()
+  {
+    return "\"\"".to_string();
+  }
   out.push('"');
   for c in s.chars() {
     match c {
@@ -70,6 +78,13 @@ fn wrapper_script(input: &str) -> String {
   // budget termination is not JS-catchable and would prevent earlier builtins from being exercised.
   let quoted = js_string_literal(input);
   let mut s = String::new();
+  if s
+    .try_reserve(256usize.saturating_add(quoted.len()))
+    .is_err()
+  {
+    // Best-effort: if we can't allocate the wrapper, still return a valid script.
+    return "0;".to_string();
+  }
   s.push_str("(function(){\n");
   s.push_str("  const src = ");
   s.push_str(&quoted);
