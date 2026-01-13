@@ -4122,10 +4122,11 @@ mod tests {
       y_advance: 0.0,
     }];
 
-    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
-      "FASTR_TEXT_SUBPIXEL_AA".to_string(),
-      "1".to_string(),
-    )])));
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string()),
+      // Ensure glyph positions remain fractional so the LCD/subpixel AA path would normally kick in.
+      ("FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(), "0".to_string()),
+    ])));
     runtime::with_runtime_toggles(toggles, || {
       let mut rasterizer = TextRasterizer::new();
       assert!(rasterizer.subpixel_aa_enabled);
