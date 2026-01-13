@@ -36,7 +36,7 @@ fn module_namespace_is_cached_and_spec_shaped() -> Result<(), VmError> {
   let module = graph.add_module(record);
 
   // Module namespaces are backed by module environments; link before requesting the namespace.
-  graph.link(&mut vm, &mut heap, realm.global_object(), module)?;
+  graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), module)?;
 
   let mut scope = heap.scope();
   let intrinsics = vm.intrinsics().expect("realm should initialize intrinsics");

@@ -56,7 +56,7 @@ fn module_graph_teardown_unregisters_persistent_roots() -> Result<(), VmError> {
   )?);
 
   // Module namespaces are backed by module environments; link before requesting the namespace.
-  graph.link(&mut vm, &mut heap, realm.global_object(), module)?;
+  graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), module)?;
 
   let mut hooks = MicrotaskQueue::new();
   let mut host = ();

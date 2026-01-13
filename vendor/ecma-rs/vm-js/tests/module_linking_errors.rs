@@ -40,7 +40,7 @@ fn missing_export_throws_syntax_error_during_link() -> Result<(), VmError> {
   graph.link_all_by_specifier();
 
   let err = graph
-    .link(&mut vm, &mut heap, realm.global_object(), b)
+    .link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)
     .expect_err("expected link to throw a SyntaxError");
   let thrown = match err {
     VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => value,
@@ -79,7 +79,7 @@ fn ambiguous_export_throws_syntax_error_during_link() -> Result<(), VmError> {
   graph.link_all_by_specifier();
 
   let err = graph
-    .link(&mut vm, &mut heap, realm.global_object(), d)
+    .link(&mut vm, &mut heap, realm.global_object(), realm.id(), d)
     .expect_err("expected link to throw a SyntaxError");
   let thrown = match err {
     VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => value,

@@ -1,4 +1,4 @@
-use crate::execution_context::ModuleId;
+use crate::execution_context::{ExecutionContext, ModuleId, ScriptOrModule};
 use crate::exec::{
   instantiate_module_decls,
   run_module,
@@ -1292,11 +1292,12 @@ impl ModuleGraph {
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     global_object: GcObject,
+    realm_id: RealmId,
     module: ModuleId,
   ) -> Result<(), VmError> {
     // Use a nested scope so any temporary stack roots are popped before returning to the caller.
     let mut link_scope = scope.reborrow();
-    self.link_inner(vm, &mut link_scope, global_object, module)
+    self.link_inner(vm, &mut link_scope, global_object, realm_id, module)
   }
 
   pub fn link(
@@ -1304,10 +1305,11 @@ impl ModuleGraph {
     vm: &mut Vm,
     heap: &mut Heap,
     global_object: GcObject,
+    realm_id: RealmId,
     module: ModuleId,
   ) -> Result<(), VmError> {
     let mut scope = heap.scope();
-    self.link_with_scope(vm, &mut scope, global_object, module)
+    self.link_with_scope(vm, &mut scope, global_object, realm_id, module)
   }
 
   fn link_inner(
@@ -1315,6 +1317,7 @@ impl ModuleGraph {
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     global_object: GcObject,
+    realm_id: RealmId,
     module: ModuleId,
   ) -> Result<(), VmError> {
     let idx = module_index(module);
@@ -1377,7 +1380,7 @@ impl ModuleGraph {
         let imported = self
           .get_imported_module(module, &request)
           .ok_or(VmError::Unimplemented("unlinked module request"))?;
-        self.link_inner(vm, scope, global_object, imported)?;
+        self.link_inner(vm, scope, global_object, realm_id, imported)?;
       }
 
       // Validate `[[IndirectExportEntries]]` (re-exports).
@@ -1530,7 +1533,20 @@ impl ModuleGraph {
       }
 
       // Instantiate local declarations (creates bindings + hoists function objects).
-      instantiate_module_decls(vm, scope, global_object, module_env, source, &ast.stx.body)?;
+      //
+      // Per ECMA-262, function/class objects created during ModuleDeclarationInstantiation capture:
+      // - `[[JobRealm]]` (current realm at creation time), and
+      // - `[[ScriptOrModule]]` (active module record).
+      //
+      // Linking can run outside of an execution context stack in common embeddings/tests, so
+      // establish a minimal execution context for this module instantiation so exported declarations
+      // have the correct metadata when later called from host code.
+      let exec_ctx = ExecutionContext {
+        realm: realm_id,
+        script_or_module: Some(ScriptOrModule::Module(module)),
+      };
+      let mut vm_ctx = vm.execution_context_guard(exec_ctx);
+      instantiate_module_decls(&mut *vm_ctx, scope, global_object, module_env, source, &ast.stx.body)?;
       Ok(())
     })();
 
@@ -1618,7 +1634,7 @@ impl ModuleGraph {
 
       // Link before evaluating. If linking fails (including the module already being in an errored
       // state), reject the evaluation promise with the thrown/cached value.
-      if let Err(err) = self.link_with_scope(vm, &mut eval_scope, global_object, module) {
+      if let Err(err) = self.link_with_scope(vm, &mut eval_scope, global_object, realm_id, module) {
         let reason = if let Some(thrown) = err.thrown_value() {
           thrown
         } else {
@@ -2459,7 +2475,7 @@ impl ModuleGraph {
     vm.set_module_graph(self);
 
     let result = (|| -> Result<(), VmError> {
-      self.link_with_scope(vm, scope, global_object, module)?;
+      self.link_with_scope(vm, scope, global_object, realm_id, module)?;
 
       // `evaluate_sync_with_scope` is intended for embeddings that do not support async module
       // evaluation / top-level await. Reject any graph that contains TLA *before* executing any

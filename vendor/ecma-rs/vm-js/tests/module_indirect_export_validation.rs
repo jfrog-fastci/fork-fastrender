@@ -32,7 +32,7 @@ fn module_link_throws_syntax_error_for_unresolvable_indirect_exports() -> Result
   graph.link_all_by_specifier();
 
   let err = graph
-    .link(&mut vm, &mut heap, realm.global_object(), reexport)
+    .link(&mut vm, &mut heap, realm.global_object(), realm.id(), reexport)
     .expect_err("expected broken indirect export to throw during linking");
 
   let thrown = err.thrown_value().expect("expected a thrown value");

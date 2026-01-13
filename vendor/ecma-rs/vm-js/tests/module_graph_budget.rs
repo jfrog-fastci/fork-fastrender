@@ -31,7 +31,7 @@ fn module_graph_link_respects_fuel_budget_even_for_empty_modules() -> Result<(),
   let module = graph.add_module(record);
 
   let err = graph
-    .link(&mut vm, &mut heap, realm.global_object(), module)
+    .link(&mut vm, &mut heap, realm.global_object(), realm.id(), module)
     .unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 

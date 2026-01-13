@@ -36,7 +36,7 @@ fn evaluate_rejects_with_cached_error_for_errored_modules() -> Result<(), VmErro
     SourceTextModuleRecord::parse(&mut heap, "export const x = 1; throw 7;")?,
   );
   graph.link_all_by_specifier();
-  graph.link(&mut vm, &mut heap, realm.global_object(), m)?;
+  graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), m)?;
 
   let p1 = graph.evaluate(
     &mut vm,
@@ -102,7 +102,7 @@ fn link_rethrows_cached_error_for_errored_modules() -> Result<(), VmError> {
   graph.link_all_by_specifier();
 
   let err1 = graph
-    .link(&mut vm, &mut heap, realm.global_object(), b)
+    .link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)
     .expect_err("expected link to throw a SyntaxError");
   let thrown1 = match err1 {
     VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => value,
@@ -111,7 +111,7 @@ fn link_rethrows_cached_error_for_errored_modules() -> Result<(), VmError> {
   assert_error_name(&mut heap, thrown1, "SyntaxError")?;
 
   let err2 = graph
-    .link(&mut vm, &mut heap, realm.global_object(), b)
+    .link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)
     .expect_err("expected cached SyntaxError during second link");
   let thrown2 = match err2 {
     VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => value,
