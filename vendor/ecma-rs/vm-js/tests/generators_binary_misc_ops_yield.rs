@@ -29,6 +29,26 @@ fn bitwise_or_with_yield_in_both_operands() {
 }
 
 #[test]
+fn bigint_bitwise_or_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1n) | (yield 2n); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(1n);
+        var r3 = it.next(2n);
+        r1.value === 1n && r1.done === false &&
+        r2.value === 2n && r2.done === false &&
+        r3.done === true && r3.value === 3n
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn bitwise_and_with_yield_in_both_operands() {
   let mut rt = new_runtime();
   let value = rt
@@ -62,6 +82,24 @@ fn bitwise_xor_with_yield_in_both_operands() {
         r1.value === 1 && r1.done === false &&
         r2.value === 2 && r2.done === false &&
         r3.done === true && r3.value === 4
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn bigint_left_shift_with_yield_in_rhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return 1n << (yield 1n); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(2n);
+        r1.value === 1n && r1.done === false &&
+        r2.done === true && r2.value === 4n
       "#,
     )
     .unwrap();
@@ -256,6 +294,27 @@ fn instanceof_operator_rhs_non_object_throws_type_error_under_yield() {
         var it = g();
         var r1 = it.next();
         var r2 = it.next(null);
+        r1.value === 0 && r1.done === false &&
+        r2.done === true && r2.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn bigint_bitwise_or_mixing_error_is_catchable_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){
+          try { return 1n | (yield 0); }
+          catch (e) { return e && e.name === "TypeError"; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(1);
         r1.value === 0 && r1.done === false &&
         r2.done === true && r2.value === true
       "#,
