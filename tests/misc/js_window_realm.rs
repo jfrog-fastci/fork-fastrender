@@ -2,9 +2,10 @@ use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
-  DocumentHostState, DomHost, EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome,
-  ScriptBlockExecutor, ScriptOrchestrator, ScriptType, TaskSource, VirtualClock, WindowFetchEnv,
-  WindowHost, WindowHostState, WindowRealm, WindowRealmConfig, WindowRealmHost,
+  DocumentHostState, DomHost, EventLoop, JsExecutionOptions, QueueLimits, RunLimits,
+  RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator, ScriptType, TaskSource,
+  VirtualClock, WindowFetchEnv, WindowHost, WindowHostState, WindowRealm, WindowRealmConfig,
+  WindowRealmHost,
 };
 use fastrender::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use fastrender::js::window_realm::DomBindingsBackend;
@@ -3105,6 +3106,52 @@ setTimeout(() => { p.catch(() => {}); }, 0);
     host.dom().get_element_by_id("rh").is_some(),
     "expected rejectionhandled event listener to mutate the host DOM"
   );
+  Ok(())
+}
+
+#[test]
+fn promise_rejection_event_task_roots_are_cleaned_up_when_queue_limits_reject_enqueue() -> Result<()>
+{
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  // Allow promise rejection tracking, but ensure the event loop cannot enqueue an additional task
+  // when the unhandledrejection notification is requested.
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  event_loop.set_queue_limits(QueueLimits {
+    max_pending_tasks: 1,
+    ..QueueLimits::default()
+  });
+
+  // Fill the task queue to the cap so the unhandledrejection task enqueue fails deterministically.
+  event_loop.queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    // Keep the rejected promise alive so the host reaches the event-task enqueue path.
+    "globalThis.__ur = Promise.reject('boom');",
+  )?;
+
+  let roots_before = host.window().heap().persistent_root_count();
+
+  let err = event_loop
+    .perform_microtask_checkpoint(&mut host)
+    .expect_err("expected microtask checkpoint to fail when queue limits reject task enqueue");
+  match &err {
+    Error::Other(msg) => assert!(
+      msg.contains("max pending tasks"),
+      "expected enqueue failure to be due to max pending tasks, got: {msg}"
+    ),
+    other => panic!("expected Error::Other, got {other:?}"),
+  }
+
+  let roots_after = host.window().heap().persistent_root_count();
+  assert_eq!(
+    roots_before, roots_after,
+    "promise rejection event-task enqueue failure leaked persistent roots"
+  );
+
   Ok(())
 }
 
