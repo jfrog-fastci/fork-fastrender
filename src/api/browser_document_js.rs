@@ -6,6 +6,7 @@ use crate::js::{
   ScriptExecutionLog, ScriptOrchestrator,
 };
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions};
 
@@ -115,6 +116,51 @@ impl BrowserDocumentJs {
     self.document.render_if_needed()
   }
 
+  /// Execute at most one animation frame turn (`requestAnimationFrame`) and return a freshly
+  /// rendered frame when the document becomes dirty.
+  ///
+  /// If callbacks ran, this also performs the post-rAF microtask checkpoint ("perform a microtask
+  /// checkpoint" in HTML terms), draining any microtasks queued during the frame without running
+  /// additional tasks.
+  pub fn tick_animation_frame(&mut self) -> Result<Option<Pixmap>> {
+    let Some(mut event_loop) = self.event_loop.take() else {
+      return Err(Error::Other(
+        "BrowserDocumentJs event loop is unavailable (likely inside run_until_stable); use the EventLoop passed to the task callback"
+          .to_string(),
+      ));
+    };
+
+    let run_limits = self.js_execution_options.event_loop_run_limits;
+    let step_result = (|| -> Result<()> {
+      let raf_outcome = event_loop.run_animation_frame(self)?;
+      if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
+        // HTML: microtask checkpoint after rAF callbacks.
+        //
+        // Drain microtasks only (do not run tasks/timers until the next turn).
+        let microtask_limits = RunLimits {
+          max_tasks: 0,
+          max_microtasks: run_limits.max_microtasks,
+          max_wall_time: run_limits.max_wall_time,
+        };
+        match event_loop.run_until_idle(self, microtask_limits) {
+          Ok(RunUntilIdleOutcome::Idle)
+          | Ok(RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. })) => Ok(()),
+          Ok(RunUntilIdleOutcome::Stopped(reason)) => Err(crate::error::Error::Other(format!(
+            "BrowserDocumentJs::tick_animation_frame microtask checkpoint stopped: {reason:?}"
+          ))),
+          Err(err) => Err(err),
+        }?;
+      }
+
+      Ok(())
+    })();
+
+    // Always restore the event loop, even when JS execution returns an error.
+    self.event_loop = Some(event_loop);
+    step_result?;
+    self.render_if_needed()
+  }
+
   /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
   /// rendered frame when the document becomes dirty.
   pub fn tick_frame(&mut self) -> Result<Option<Pixmap>> {
@@ -211,6 +257,55 @@ impl BrowserDocumentJs {
       self.event_loop = Some(event_loop);
     }
     self.render_if_needed()
+  }
+
+  /// Returns `true` if the event loop has any scheduled timers (including timers due in the
+  /// future).
+  pub fn has_pending_timers(&mut self) -> Result<bool> {
+    Ok(self.next_timer_due_time()?.is_some())
+  }
+
+  /// Returns the due time of the next scheduled timer, if any.
+  pub fn next_timer_due_time(&mut self) -> Result<Option<Duration>> {
+    let event_loop = self.event_loop_mut()?;
+    Ok(event_loop.next_timer_due_time())
+  }
+
+  /// Returns the duration until the next scheduled timer becomes due, if any.
+  ///
+  /// If a timer is already due, this returns `Some(Duration::ZERO)`.
+  pub fn next_timer_due_in(&mut self) -> Result<Option<Duration>> {
+    let event_loop = self.event_loop.as_mut().ok_or_else(|| {
+      Error::Other(
+        "BrowserDocumentJs event loop is unavailable (likely inside run_until_stable); use the EventLoop passed to the task callback"
+          .to_string(),
+      )
+    })?;
+    let now = event_loop.now();
+    Ok(event_loop.next_timer_due_time().map(|due| due.saturating_sub(now)))
+  }
+
+  pub fn has_pending_animation_frame_callbacks(&self) -> Result<bool> {
+    let event_loop = self.event_loop.as_ref().ok_or_else(|| {
+      Error::Other(
+        "BrowserDocumentJs event loop is unavailable (likely inside run_until_stable); use the EventLoop passed to the task callback"
+          .to_string(),
+      )
+    })?;
+    Ok(event_loop.has_pending_animation_frame_callbacks())
+  }
+
+  /// Whether there is any runnable work (tasks or microtasks) queued.
+  ///
+  /// This does *not* consider future timers that are not yet due.
+  pub fn event_loop_is_idle(&self) -> Result<bool> {
+    let event_loop = self.event_loop.as_ref().ok_or_else(|| {
+      Error::Other(
+        "BrowserDocumentJs event loop is unavailable (likely inside run_until_stable); use the EventLoop passed to the task callback"
+          .to_string(),
+      )
+    })?;
+    Ok(event_loop.is_idle())
   }
 
   pub fn js_runtime(&self) -> &VmJsRuntime {
@@ -421,7 +516,7 @@ mod tests {
   use crate::dom2::NodeKind;
   use crate::dom2::{Document as Dom2Document, NodeId};
   use crate::js::{
-    Clock, CurrentScriptHost, JsExecutionOptions, RunLimits, RunUntilIdleStopReason,
+    Clock, CurrentScriptHost, JsExecutionOptions, RunLimits, RunUntilIdleStopReason, VirtualClock,
     ScriptBlockExecutor, ScriptExecutionLogEntry, ScriptSourceSnapshot, ScriptType, TaskSource,
   };
   use std::cell::RefCell;
@@ -903,6 +998,84 @@ mod tests {
       ]
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn tick_animation_frame_runs_callbacks_and_rerenders() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut js_options = JsExecutionOptions::default();
+    js_options.event_loop_run_limits = RunLimits::unbounded();
+    let mut runtime = BrowserDocumentJs::with_js_execution_options(
+      BrowserDocumentDom2::new(
+        renderer,
+        "<!doctype html><html><body><div>Hello</div></body></html>",
+        super::super::RenderOptions::new().with_viewport(32, 32),
+      )?,
+      js_options,
+    );
+
+    runtime.document_mut().render_frame()?;
+
+    let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+    let log_for_raf = Rc::clone(&log);
+
+    runtime
+      .event_loop_mut()?
+      .request_animation_frame(move |host, event_loop, _ts| {
+        log_for_raf.borrow_mut().push("raf");
+        set_first_text(host.document.dom_mut(), "raf");
+
+        let log_for_microtask = Rc::clone(&log_for_raf);
+        event_loop.queue_microtask(move |host, _event_loop| {
+          log_for_microtask.borrow_mut().push("microtask");
+          set_first_text(host.document.dom_mut(), "microtask");
+          Ok(())
+        })?;
+
+        Ok(())
+      })?;
+
+    assert!(
+      runtime.tick_animation_frame()?.is_some(),
+      "expected render after rAF"
+    );
+    assert_eq!(&*log.borrow(), &["raf", "microtask"]);
+    let id = first_text_node_id(runtime.document().dom()).expect("text node");
+    let NodeKind::Text { content } = &runtime.document().dom().node(id).kind else {
+      panic!("expected text node");
+    };
+    assert_eq!(content, "microtask");
+    assert!(!runtime.document().is_dirty());
+    Ok(())
+  }
+
+  #[test]
+  fn timer_query_helpers_expose_next_due_in() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let document = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body></body></html>",
+      super::super::RenderOptions::new().with_viewport(32, 32),
+    )?;
+
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::<BrowserDocumentJs>::with_clock(clock.clone());
+    let mut runtime = BrowserDocumentJs::with_event_loop(document, event_loop);
+
+    assert!(!runtime.has_pending_timers()?);
+    assert!(runtime.next_timer_due_in()?.is_none());
+
+    runtime
+      .event_loop_mut()?
+      .set_timeout(Duration::from_millis(10), |_host, _event_loop| Ok(()))?;
+
+    assert!(runtime.has_pending_timers()?);
+    assert_eq!(runtime.next_timer_due_time()?, Some(Duration::from_millis(10)));
+    assert_eq!(runtime.next_timer_due_in()?, Some(Duration::from_millis(10)));
+
+    clock.advance(Duration::from_millis(6));
+    assert_eq!(runtime.next_timer_due_in()?, Some(Duration::from_millis(4)));
     Ok(())
   }
 }
