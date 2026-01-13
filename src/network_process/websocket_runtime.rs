@@ -35,7 +35,6 @@ use tokio::time::timeout;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::protocol::{CloseFrame, Message};
 
-const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -43,6 +42,11 @@ const WS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 // threads. These defaults are conservative; this module is primarily I/O bound.
 const WS_IO_WORKER_THREADS: usize = 4;
 const WS_IO_MAX_BLOCKING_THREADS: usize = 4;
+
+#[cfg(not(test))]
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Matches `window_websocket.rs`'s `MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET`.
 const MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET: usize = 1024;
@@ -805,16 +809,50 @@ async fn connect_socket(
   let (socket, response) = tokio_tungstenite::connect_async(req)
     .await
     .map_err(|e| e.to_string())?;
-  let selected_protocol = response
-    .headers()
-    .get("Sec-WebSocket-Protocol")
-    .and_then(|h| h.to_str().ok())
-    .unwrap_or("")
-    .to_string();
+  let selected_protocol =
+    validate_ws_subprotocol_handshake_response(&params.protocols, response.headers())?;
 
   Ok((socket, selected_protocol))
 }
 
+fn validate_ws_subprotocol_handshake_response(
+  requested_protocols: &[String],
+  response_headers: &http::HeaderMap,
+) -> Result<String, String> {
+  let mut values = response_headers.get_all("Sec-WebSocket-Protocol").iter();
+  let Some(value) = values.next() else {
+    // No protocol selected.
+    return Ok(String::new());
+  };
+
+  // Multiple protocol headers are invalid for WebSocket subprotocol negotiation.
+  if values.next().is_some() {
+    return Err("invalid websocket subprotocol".to_string());
+  }
+
+  let value = value
+    .to_str()
+    .map_err(|_| "invalid websocket subprotocol".to_string())?;
+  if value.is_empty() {
+    return Err("invalid websocket subprotocol".to_string());
+  }
+
+  // The server's Sec-WebSocket-Protocol must be a single token (no commas/whitespace).
+  if value.bytes().any(|b| b == b',' || b.is_ascii_whitespace()) {
+    return Err("invalid websocket subprotocol".to_string());
+  }
+
+  if requested_protocols.is_empty() {
+    // If no subprotocols were requested, the server must not select one.
+    return Err("invalid websocket subprotocol".to_string());
+  }
+
+  if !requested_protocols.iter().any(|p| p == value) {
+    return Err("invalid websocket subprotocol".to_string());
+  }
+
+  Ok(value.to_string())
+}
 #[cfg(all(test, feature = "direct_websocket"))]
 mod tests {
   use super::*;
@@ -1163,6 +1201,77 @@ mod tests {
     assert!(
       metrics_after.pending_event_bytes <= metrics_before.pending_event_bytes,
       "expected pending_event_bytes to return to baseline: before={metrics_before:?}, after={metrics_after:?}"
+    );
+  }
+
+  #[test]
+  fn websocket_connect_timeout_does_not_hang_teardown() {
+    let _net_guard = net_test_lock();
+    // Use a reserved TEST-NET address that should not be reachable in CI. Without an explicit
+    // connect timeout, some OS/network combinations can hang in `connect()` for a long time.
+    let target = "ws://192.0.2.1:9/";
+
+    // Phase 1: ensure the failed connection surfaces `error` + `close` events.
+    let net = WebSocketNetworkProcess::spawn();
+    let conn_id = 42u64;
+    net
+      .send(RendererToNetwork::WebSocket {
+        conn_id,
+        cmd: WebSocketCommand::Connect {
+          params: WebSocketConnectParams {
+            url: target.to_string(),
+            protocols: Vec::new(),
+            origin: None,
+            document_url: None,
+          },
+        },
+      })
+      .unwrap();
+
+    let mut got_error = false;
+    let mut got_close = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !(got_error && got_close) {
+      match net.recv_timeout(Duration::from_millis(50)) {
+        Ok(NetworkToRenderer::WebSocket { conn_id: id, event }) => {
+          assert_eq!(id, conn_id);
+          match event {
+            WebSocketEvent::Error { .. } => got_error = true,
+            WebSocketEvent::Close { .. } => got_close = true,
+            _ => {}
+          }
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        Err(err) => panic!("network recv error: {err:?}"),
+      }
+    }
+
+    assert!(got_error, "timed out waiting for Error event");
+    assert!(got_close, "timed out waiting for Close event");
+    net.shutdown();
+
+    // Phase 2: ensure dropping the network process handle cannot hang joining a websocket thread
+    // that is blocked in its connect path.
+    let net = WebSocketNetworkProcess::spawn();
+    net
+      .send(RendererToNetwork::WebSocket {
+        conn_id,
+        cmd: WebSocketCommand::Connect {
+          params: WebSocketConnectParams {
+            url: target.to_string(),
+            protocols: Vec::new(),
+            origin: None,
+            document_url: None,
+          },
+        },
+      })
+      .unwrap();
+
+    let drop_start = Instant::now();
+    drop(net);
+    assert!(
+      drop_start.elapsed() < Duration::from_secs(5),
+      "network process teardown took too long (connect timeout not enforced?)",
     );
   }
 
