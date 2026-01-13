@@ -4699,6 +4699,45 @@ fn compiled_with_restores_outer_env_on_throw() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_with_restores_outer_env_on_return_in_finally() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var o_global;
+      var final_x;
+      function f() {
+        let x = 10;
+        let o = { x: 2 };
+        o_global = o;
+        try {
+          with (o) { return x; }
+        } finally {
+          // The `finally` must run in the outer lexical environment, not the `with` environment.
+          // If the `with` env is not restored on `return`, this would assign to `o.x` instead.
+          x = 30;
+          final_x = x;
+        }
+      }
+      var r = f();
+      String(o_global.x) + ':' + String(final_x) + ':' + String(r)
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(result)?;
+  let expected = scope.alloc_string("2:30:2")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
 fn compiled_try_catch_binds_exception_value() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
