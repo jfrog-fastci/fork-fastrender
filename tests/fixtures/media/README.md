@@ -37,7 +37,9 @@ ffmpeg -y -hide_banner -loglevel error \
   -map "[v]" -map 2:a \
   -t 2 \
   -c:v libx264 -pix_fmt yuv420p -profile:v baseline -level 3.0 -crf 35 -preset veryslow -threads 1 \
+  -g 1 -keyint_min 1 -sc_threshold 0 \
   -c:a aac -b:a 32k -ac 2 -ar 48000 \
+  -movflags +faststart -map_metadata -1 -fflags +bitexact -flags:v +bitexact -flags:a +bitexact \
   tests/fixtures/media/test_h264_aac.mp4
 
 # VP9 + Opus in WebM.
@@ -48,8 +50,9 @@ ffmpeg -y -hide_banner -loglevel error \
   -filter_complex "[0:v][1:v]concat=n=2:v=1:a=0,format=yuv420p[v]" \
   -map "[v]" -map 2:a \
   -t 2 \
-  -c:v libvpx-vp9 -b:v 0 -crf 40 -g 1 -threads 1 \
+  -c:v libvpx-vp9 -b:v 0 -crf 40 -g 1 -threads 1 -row-mt 0 \
   -c:a libopus -b:a 32k -ac 2 -ar 48000 \
+  -map_metadata -1 -fflags +bitexact -flags:v +bitexact -flags:a +bitexact \
   tests/fixtures/media/test_vp9_opus.webm
 ```
 
@@ -57,4 +60,3 @@ ffmpeg -y -hide_banner -loglevel error \
 
 These files are generated from synthetic sources (solid colors + silence) and contain no
 third‑party content. They are dedicated to the public domain under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
-

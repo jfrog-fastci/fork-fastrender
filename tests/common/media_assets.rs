@@ -4,22 +4,22 @@
 //! and without pulling large binaries into the repository.
 //!
 //! Source-of-truth fixture files live under:
-//! - `tests/pages/fixtures/media_mp4_basic/test_h264_aac.mp4`
-//! - `tests/pages/fixtures/media_webm_basic/test_vp9_opus.webm`
+//! - `tests/fixtures/media/test_h264_aac.mp4`
+//! - `tests/fixtures/media/test_vp9_opus.webm`
 //!
 //! Licensing: the assets are generated from synthetic FFmpeg sources and are dedicated to the
-//! public domain (CC0-1.0). See the per-fixture `README.md` files for generation commands.
+//! public domain (CC0-1.0). See `tests/fixtures/media/README.md` for generation commands.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
 /// Tiny MP4 (H.264 + AAC) test asset bytes.
 pub(crate) const TEST_H264_AAC_MP4: &[u8] =
-  include_bytes!("../pages/fixtures/media_mp4_basic/test_h264_aac.mp4");
+  include_bytes!("../fixtures/media/test_h264_aac.mp4");
 
 /// Tiny WebM (VP9 + Opus) test asset bytes.
 pub(crate) const TEST_VP9_OPUS_WEBM: &[u8] =
-  include_bytes!("../pages/fixtures/media_webm_basic/test_vp9_opus.webm");
+  include_bytes!("../fixtures/media/test_vp9_opus.webm");
 
 #[derive(Debug, Clone)]
 pub(crate) struct MediaAssetPaths {
@@ -56,4 +56,3 @@ fn write_asset(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
   });
   path
 }
-
