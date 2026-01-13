@@ -517,14 +517,12 @@ fn dom_is_textarea(node: &crate::dom::DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
 }
 
-fn dom_is_editable_text_drop_target(node: &crate::dom::DomNode) -> bool {
-  // Align with the interaction engine's drop-target checks:
-  // - only text-like `<input>` / `<textarea>`
-  // - not disabled/readonly/inert (best-effort; some disabledness can be inherited from ancestors)
-  (dom_is_text_input(node) || dom_is_textarea(node))
-    && node.get_attribute_ref("disabled").is_none()
-    && node.get_attribute_ref("readonly").is_none()
-    && node.get_attribute_ref("inert").is_none()
+fn dom_is_editable_text_drop_target_candidate(node: &crate::dom::DomNode) -> bool {
+  // Fast pre-check for whether this element could accept a dragged text payload.
+  //
+  // Disabled/inert/hidden state can be inherited from ancestors (e.g. `<fieldset disabled>`), so the
+  // full "is this actually editable?" decision must consult `effective_disabled` via a DOM index.
+  (dom_is_text_input(node) || dom_is_textarea(node)) && node.get_attribute_ref("readonly").is_none()
 }
 
 fn dom_is_select(node: &crate::dom::DomNode) -> bool {
@@ -3364,6 +3362,7 @@ impl BrowserRuntime {
           (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
         let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
         let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
+        let drag_drop_active = engine.drag_drop_active_kind().is_some();
         let (hovered_url, mut cursor, hovered_dom_node_id, hovered_dom_element_id, hover_is_drop_target) =
           if !pointer_in_page {
             (None, CursorKind::Default, None, None, false)
@@ -3371,18 +3370,31 @@ impl BrowserRuntime {
             let page_point = viewport_point.translate(scroll.viewport);
             match hit_test_dom(dom, box_tree, fragment_tree, page_point) {
               Some(hit) => {
-                let (element_id, is_drop_target, form_control_cursor) =
+                let (element_id, drop_candidate, form_control_cursor) =
                   match crate::dom::find_node_mut_by_preorder_id(dom, hit.dom_node_id) {
                     Some(node) => {
                       let element_id = node.get_attribute_ref("id").map(|id| id.to_string());
                       (
                         element_id,
-                        dom_is_editable_text_drop_target(node),
+                        dom_is_editable_text_drop_target_candidate(node),
                         cursor_for_form_control(node),
                       )
                     }
                     None => (None, false, CursorKind::Default),
                   };
+                let is_drop_target = if drag_drop_active && drop_candidate {
+                  let node_id = hit.dom_node_id;
+                  let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
+                  let disabled =
+                    crate::interaction::effective_disabled::is_effectively_disabled(node_id, &dom_index);
+                  let inert_or_hidden = crate::interaction::effective_disabled::is_effectively_inert_or_hidden(
+                    node_id,
+                    &dom_index,
+                  );
+                  !(disabled || inert_or_hidden)
+                } else {
+                  false
+                };
 
                  // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
                  // behaviour matches the platform. Only fall back to legacy heuristics when the computed
@@ -3429,7 +3441,7 @@ impl BrowserRuntime {
              }
            };
 
-        if pointer_in_page && engine.drag_drop_active_kind().is_some() {
+        if pointer_in_page && drag_drop_active {
           cursor = if hover_is_drop_target {
             CursorKind::Grabbing
           } else {
