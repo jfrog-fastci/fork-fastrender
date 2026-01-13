@@ -68,8 +68,8 @@ Startup note:
 FastRender also has a small DOM interaction layer intended to support basic “no-JS” browsing:
 
 - hit-testing + link activation (`<a href=...>`, including same-document `#fragment` scrolling)
-- basic form interactions (text inputs, checkboxes, radios, select controls; limited keyboard
-  activation via `Enter`/`Space`)
+- basic form interactions (text inputs, checkboxes, radios, select controls, file inputs, date/time
+  inputs; limited keyboard activation via `Enter`/`Space`)
 - built-in `about:*` pages (`about:newtab`, `about:blank`, `about:error`)
 
 These interactions are exercised by the headless UI worker integration tests; the windowed `browser`
