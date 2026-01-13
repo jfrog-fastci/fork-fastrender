@@ -1617,12 +1617,15 @@ fn distribute_item_space_to_base_size(
     track_limit: impl Fn(&GridTrack) -> f32,
     intrinsic_contribution_type: IntrinsicContributionType,
   ) {
-    // Skip this distribution if there is either
-    //   - no space to distribute
-    //   - no affected tracks to distribute space to
-    if space == 0.0 || !tracks.iter().any(&track_is_affected) {
+    // Skip this distribution if there is no space to distribute.
+    //
+    // Note: the intrinsic track sizing pipeline pre-checks whether an item spans any affected
+    // tracks before calling into distribution. We keep a debug assertion to ensure this invariant
+    // remains true without paying for an extra scan in release builds.
+    if space == 0.0 {
       return;
     }
+    debug_assert!(tracks.iter().any(&track_is_affected));
 
     // Define get_base_size function. This is passed to the distribute_space_up_to_limits helper function
     // to indicate that it is the base size that is being distributed to.
@@ -1711,18 +1714,15 @@ fn distribute_item_space_to_growth_limit(
   track_is_affected: impl Fn(&GridTrack) -> bool,
   axis_inner_node_size: Option<f32>,
 ) {
-  // Skip this distribution if there is either
-  //   - no space to distribute
-  //   - no affected tracks to distribute space to
-  if space == 0.0
-    || tracks
-      .iter()
-      .filter(|track| track_is_affected(track))
-      .count()
-      == 0
-  {
+  // Skip this distribution if there is no space to distribute.
+  //
+  // As with base-size distribution, the intrinsic track sizing pipeline pre-checks whether an
+  // item spans any affected tracks before calling into distribution. Keep a debug assertion to
+  // catch invariant violations without paying for an extra scan in release builds.
+  if space == 0.0 {
     return;
   }
+  debug_assert!(tracks.iter().any(|track| track_is_affected(track)));
 
   // 1. Find the space to distribute
   let track_sizes: f32 = tracks
