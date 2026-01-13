@@ -563,7 +563,13 @@ pub(crate) fn dynamic_import_eval_on_fulfilled(
   };
 
   // Ensure Promise reaction jobs observe budgets/interrupt state even for tiny callbacks.
-  vm.tick()?;
+  if let Err(err) = vm.tick() {
+    // The continuation has already been removed from `pending_dynamic_import_evaluations`, so if we
+    // abort before settling the dynamic import promise we must manually release its capability
+    // roots.
+    state.teardown_roots(scope.heap_mut());
+    return Err(err);
+  }
 
   let ns = match graph.get_module_namespace(module, vm, scope) {
     Ok(ns) => ns,
@@ -610,7 +616,10 @@ pub(crate) fn dynamic_import_eval_on_rejected(
     return Ok(Value::Undefined);
   };
 
-  vm.tick()?;
+  if let Err(err) = vm.tick() {
+    state.teardown_roots(scope.heap_mut());
+    return Err(err);
+  }
 
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
   state.reject(vm, scope, host_ctx, hooks, reason)?;
@@ -1129,48 +1138,64 @@ pub fn finish_loading_imported_module_with_host_and_hooks(
   payload: ModuleLoadPayload,
   result: ModuleCompletion,
 ) -> Result<(), VmError> {
-  vm.tick()?;
+  if let Err(err) = vm.tick() {
+    // `payload` may hold persistent roots (graph loading promise capability / dynamic import
+    // promise capability). If we abort before handing the payload off to its continuation, ensure
+    // those roots are not leaked.
+    payload.teardown_roots(scope.heap_mut());
+    return Err(err);
+  }
 
   // 1. `FinishLoadingImportedModule` caching invariant:
   //    If a `(referrer, moduleRequest)` pair resolves normally more than once, it must resolve to
   //    the same Module Record each time.
-  let result = match result {
-    Ok(loaded) => {
-      if let ModuleReferrer::Module(referrer) = referrer {
-        if let Some(referrer_module) = modules.get_module_mut(referrer) {
-          if let Some(existing) = referrer_module
-            .loaded_modules
-            .iter()
-            .find(|record| record.request.spec_equal(&module_request))
-          {
-            if existing.module != loaded {
-              Err(VmError::InvariantViolation(
-                "FinishLoadingImportedModule invariant violation: module request resolved to different modules",
-              ))
+  let result = match (|| -> Result<ModuleCompletion, VmError> {
+    Ok(match result {
+      Ok(loaded) => {
+        if let ModuleReferrer::Module(referrer) = referrer {
+          if let Some(referrer_module) = modules.get_module_mut(referrer) {
+            if let Some(existing) = referrer_module
+              .loaded_modules
+              .iter()
+              .find(|record| record.request.spec_equal(&module_request))
+            {
+              if existing.module != loaded {
+                Err(VmError::InvariantViolation(
+                  "FinishLoadingImportedModule invariant violation: module request resolved to different modules",
+                ))
+              } else {
+                Ok(loaded)
+              }
             } else {
+              referrer_module
+                .loaded_modules
+                .try_reserve(1)
+                .map_err(|_| VmError::OutOfMemory)?;
+              referrer_module
+                .loaded_modules
+                .push(LoadedModuleRequest::new(module_request, loaded));
+              // `[[LoadedModules]]` edges affect SCC membership and therefore module evaluation order;
+              // invalidate cached SCC structure when new edges are added during host-driven loading.
+              modules.mark_scc_dirty();
               Ok(loaded)
             }
           } else {
-            referrer_module
-              .loaded_modules
-              .try_reserve(1)
-              .map_err(|_| VmError::OutOfMemory)?;
-            referrer_module
-              .loaded_modules
-              .push(LoadedModuleRequest::new(module_request, loaded));
-            // `[[LoadedModules]]` edges affect SCC membership and therefore module evaluation order;
-            // invalidate cached SCC structure when new edges are added during host-driven loading.
-            modules.mark_scc_dirty();
             Ok(loaded)
           }
         } else {
           Ok(loaded)
         }
-      } else {
-        Ok(loaded)
       }
+      Err(e) => Err(e),
+    })
+  })() {
+    Ok(result) => result,
+    Err(err) => {
+      // We failed before the payload was handed off to the module loading continuation. Avoid
+      // leaking any persistent roots held by the payload.
+      payload.teardown_roots(scope.heap_mut());
+      return Err(err);
     }
-    Err(e) => Err(e),
   };
 
   match payload.0 {
@@ -1284,11 +1309,19 @@ pub fn continue_module_loading_with_host_and_hooks(
   payload: ModuleLoadPayload,
   result: ModuleCompletion,
 ) -> Result<(), VmError> {
-  vm.tick()?;
-  let ModuleLoadPayloadInner::GraphLoadingState(state) = payload.0 else {
-    return Err(VmError::InvariantViolation(
-      "ContinueModuleLoading called with non-GraphLoadingState payload",
-    ));
+  if let Err(err) = vm.tick() {
+    payload.teardown_roots(scope.heap_mut());
+    return Err(err);
+  }
+  let state = match payload.0 {
+    ModuleLoadPayloadInner::GraphLoadingState(state) => state,
+    ModuleLoadPayloadInner::PromiseCapability(state) => {
+      // Called with the wrong payload kind; avoid leaking its persistent roots.
+      state.teardown_roots(scope.heap_mut());
+      return Err(VmError::InvariantViolation(
+        "ContinueModuleLoading called with non-GraphLoadingState payload",
+      ));
+    }
   };
 
   if !state.is_loading() {
@@ -1899,10 +1932,15 @@ pub fn continue_dynamic_import_with_host_and_hooks(
   payload: ModuleLoadPayload,
   module_completion: ModuleCompletion,
 ) -> Result<(), VmError> {
-  let ModuleLoadPayloadInner::PromiseCapability(state) = payload.0 else {
-    return Err(VmError::InvariantViolation(
-      "ContinueDynamicImport called with non-PromiseCapability payload",
-    ));
+  let state = match payload.0 {
+    ModuleLoadPayloadInner::PromiseCapability(state) => state,
+    ModuleLoadPayloadInner::GraphLoadingState(state) => {
+      // Called with the wrong payload kind; avoid leaking its persistent roots.
+      state.teardown_roots(scope.heap_mut());
+      return Err(VmError::InvariantViolation(
+        "ContinueDynamicImport called with non-PromiseCapability payload",
+      ));
+    }
   };
 
   match module_completion {
@@ -2188,6 +2226,199 @@ mod tests {
     )
     .unwrap_err();
     assert!(matches!(err, VmError::InvariantViolation(_)));
+  }
+
+  #[test]
+  fn finish_loading_imported_module_tears_down_graph_payload_roots_on_tick_termination() {
+    // Regression test: if `FinishLoadingImportedModule` returns early due to `vm.tick()` (fuel
+    // exhaustion / interrupts), any persistent roots held by the payload must be released.
+    //
+    // Without this, dropping the payload can trigger `GraphLoadingStateInner`'s debug-assert root
+    // leak check.
+    struct Host {
+      captured: Option<(ModuleReferrer, ModuleRequest, ModuleLoadPayload)>,
+    }
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+
+      fn host_load_imported_module(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _modules: &mut ModuleGraph,
+        referrer: ModuleReferrer,
+        module_request: ModuleRequest,
+        _host_defined: HostDefined,
+        payload: ModuleLoadPayload,
+      ) -> Result<(), VmError> {
+        assert!(self.captured.is_none(), "expected a single load request");
+        self.captured = Some((referrer, module_request, payload));
+        Ok(())
+      }
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut host = Host { captured: None };
+      let mut scope = heap.scope();
+      let mut modules = ModuleGraph::new();
+
+      let baseline_root = scope.heap_mut().add_root(Value::Undefined).unwrap();
+      let baseline_idx = baseline_root.index();
+      scope.heap_mut().remove_root(baseline_root);
+
+      let root = modules
+        .add_module(crate::module_record::SourceTextModuleRecord {
+          requested_modules: vec![ModuleRequest::new("dep", Vec::new())],
+          status: ModuleStatus::New,
+          ..Default::default()
+        })
+        .unwrap();
+
+      let _promise =
+        load_requested_modules(&mut vm, &mut scope, &mut modules, &mut host, root, HostDefined::default())
+          .unwrap();
+
+      let (referrer, module_request, payload) = host.captured.take().expect("expected payload");
+      assert_eq!(payload.kind(), ModuleLoadPayloadKind::GraphLoadingState);
+
+      vm.set_budget(Budget {
+        fuel: Some(0),
+        deadline: None,
+        check_time_every: 1,
+      });
+
+      let err = finish_loading_imported_module(
+        &mut vm,
+        &mut scope,
+        &mut modules,
+        &mut host,
+        referrer,
+        module_request,
+        payload,
+        Ok(ModuleId::from_raw(1)),
+      )
+      .unwrap_err();
+      assert!(matches!(err, VmError::Termination(_)));
+
+      // Ensure the payload's capability roots were actually released.
+      let after_root = scope.heap_mut().add_root(Value::Undefined).unwrap();
+      let after_idx = after_root.index();
+      scope.heap_mut().remove_root(after_root);
+      assert!(
+        (after_idx as u64) < (baseline_idx as u64 + 3),
+        "expected root id reuse after FinishLoadingImportedModule termination"
+      );
+    }));
+
+    realm.teardown(&mut heap);
+    if let Err(panic) = result {
+      std::panic::resume_unwind(panic);
+    }
+  }
+
+  #[test]
+  fn finish_loading_imported_module_tears_down_dynamic_import_payload_roots_on_tick_termination() {
+    // Regression test: `FinishLoadingImportedModule` must tear down DynamicImportState roots if it
+    // returns early due to `vm.tick()` termination.
+    struct Host {
+      captured: Option<(ModuleReferrer, ModuleRequest, ModuleLoadPayload)>,
+    }
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+
+      fn host_load_imported_module(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _modules: &mut ModuleGraph,
+        referrer: ModuleReferrer,
+        module_request: ModuleRequest,
+        _host_defined: HostDefined,
+        payload: ModuleLoadPayload,
+      ) -> Result<(), VmError> {
+        assert!(self.captured.is_none(), "expected a single dynamic import load request");
+        self.captured = Some((referrer, module_request, payload));
+        Ok(())
+      }
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut host = Host { captured: None };
+      let mut host_ctx = ();
+      let mut scope = heap.scope();
+      let mut modules = ModuleGraph::new();
+
+      let baseline_root = scope.heap_mut().add_root(Value::Undefined).unwrap();
+      let baseline_idx = baseline_root.index();
+      scope.heap_mut().remove_root(baseline_root);
+
+      // Ensure dynamic import sees an active Realm.
+      let mut ctx_guard = vm
+        .execution_context_guard(ExecutionContext {
+          realm: realm.id(),
+          script_or_module: None,
+        })
+        .unwrap();
+
+      let global_object = realm.global_object();
+      let specifier = scope.alloc_string("dep").unwrap();
+
+      let _promise = start_dynamic_import_with_host_and_hooks(
+        &mut ctx_guard,
+        &mut scope,
+        &mut modules,
+        &mut host_ctx,
+        &mut host,
+        global_object,
+        Value::String(specifier),
+        Value::Undefined,
+      )
+      .unwrap();
+
+      let (referrer, module_request, payload) = host.captured.take().expect("expected payload");
+      assert_eq!(payload.kind(), ModuleLoadPayloadKind::PromiseCapability);
+
+      ctx_guard.set_budget(Budget {
+        fuel: Some(0),
+        deadline: None,
+        check_time_every: 1,
+      });
+
+      let err = finish_loading_imported_module(
+        &mut ctx_guard,
+        &mut scope,
+        &mut modules,
+        &mut host,
+        referrer,
+        module_request,
+        payload,
+        Ok(ModuleId::from_raw(1)),
+      )
+      .unwrap_err();
+      assert!(matches!(err, VmError::Termination(_)));
+
+      // Ensure the payload's capability roots were actually released.
+      let after_root = scope.heap_mut().add_root(Value::Undefined).unwrap();
+      let after_idx = after_root.index();
+      scope.heap_mut().remove_root(after_root);
+      assert!(
+        (after_idx as u64) < (baseline_idx as u64 + 3),
+        "expected root id reuse after FinishLoadingImportedModule termination"
+      );
+    }));
+
+    realm.teardown(&mut heap);
+    if let Err(panic) = result {
+      std::panic::resume_unwind(panic);
+    }
   }
 
   #[test]
