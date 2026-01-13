@@ -813,7 +813,7 @@ fn create_async_from_sync_iterator(
   if let Some(intr) = vm.intrinsics() {
     scope
       .heap_mut()
-      .object_set_prototype(wrapper, Some(intr.object_prototype()))?;
+      .object_set_prototype(wrapper, Some(intr.async_iterator_prototype()))?;
   }
 
   let next_call_id = vm.async_from_sync_iterator_next_call_id()?;
