@@ -148,6 +148,270 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
 }
 
 #[test]
+fn oopif_parent_csp_default_src_none_blocks_iframe_creation() {
+  let _net_guard = net_test_lock();
+
+  let Some(child_server) = TestServer::start(
+    "oopif_parent_csp_default_src_none_child",
+    |path| match path {
+      "/frame.html" => Some((b"<!doctype html><p>child</p>".to_vec(), "text/html")),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+  let child_url = child_server.url("frame.html");
+
+  let child_url_for_parent = child_url.clone();
+  let Some(parent_server) = TestServer::start(
+    "oopif_parent_csp_default_src_none_parent",
+    move |path| match path {
+      "/index.html" => Some((
+        format!(
+          "<!doctype html><html><head>\
+           <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'\">\
+           </head><body>\
+           <iframe src=\"{child_url_for_parent}\"></iframe>\
+           </body></html>"
+        )
+        .into_bytes(),
+        "text/html",
+      )),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+  let parent_url = parent_server.url("index.html");
+
+  let site_keys = SiteKeyFactory::new_with_seed(1);
+  let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
+
+  let mut parent_renderer = RendererProc::spawn();
+  let parent_frame = FrameId(1);
+  parent_renderer.send(&BrowserToRenderer::CreateFrame {
+    frame_id: parent_frame,
+  });
+  parent_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: parent_frame,
+    width: 2,
+    height: 2,
+    dpr: 1.0,
+  });
+  parent_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: parent_frame,
+    url: parent_url.clone(),
+    context: NavigationContext {
+      referrer_url: None,
+      referrer_policy: ReferrerPolicy::default(),
+      site_key: parent_site_key,
+      ..Default::default()
+    },
+  });
+  parent_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: parent_frame,
+  });
+
+  let ready = parent_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(
+    ready.frame_id, parent_frame,
+    "expected FrameReady for parent (err={:?})",
+    ready.last_error
+  );
+  assert!(
+    !ready.subframes.is_empty(),
+    "expected at least one discovered subframe (err={:?})",
+    ready.last_error
+  );
+
+  let (committed_url, csp_values) = ready
+    .last_committed
+    .clone()
+    .expect("expected NavigationCommitted before FrameReady");
+  assert!(
+    csp_values
+      .iter()
+      .any(|v| v.contains("default-src") && v.contains("'none'")),
+    "expected renderer to report CSP values via NavigationCommitted, got {csp_values:?}"
+  );
+
+  let mut node = FrameNode::new(parent_frame);
+  node.navigation_committed(committed_url, csp_values);
+
+  let iframe = &ready.subframes[0];
+  let child_src = iframe
+    .src
+    .as_deref()
+    .expect("expected iframe src to be reported in SubframeInfo");
+
+  let diag = node
+    .check_frame_src(child_src)
+    .expect_err("expected default-src 'none' to block iframe via frame-src fallback");
+  assert_eq!(
+    diag,
+    format!("Blocked by Content-Security-Policy (frame-src) for requested URL: {child_url}")
+  );
+
+  let composed = composite_subframes(
+    ready.buffer.clone(),
+    std::iter::empty::<(
+      &fastrender_ipc::SubframeInfo,
+      &fastrender_ipc::FrameBuffer,
+    )>(),
+  )
+  .expect("composite should succeed");
+  assert_eq!(
+    composed.rgba8, ready.buffer.rgba8,
+    "expected blocked iframe to composite as transparent/placeholder"
+  );
+
+  let child_captured = child_server.shutdown_and_join();
+  assert!(
+    child_captured.is_empty(),
+    "expected no network requests to child frame when blocked, got {child_captured:?}"
+  );
+
+  parent_renderer.shutdown();
+  let _ = parent_server.shutdown_and_join();
+}
+
+#[test]
+fn oopif_parent_csp_multiple_policies_intersect_to_block_iframe() {
+  let _net_guard = net_test_lock();
+
+  let Some(child_server) = TestServer::start(
+    "oopif_parent_csp_multiple_policies_child",
+    |path| match path {
+      "/frame.html" => Some((b"<!doctype html><p>child</p>".to_vec(), "text/html")),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+  let child_url = child_server.url("frame.html");
+
+  let child_url_for_parent = child_url.clone();
+  let Some(parent_server) = TestServer::start_with(
+    "oopif_parent_csp_multiple_policies_parent",
+    move |path| match path {
+      "/index.html" => Some(TestResponse {
+        status: 200,
+        headers: vec![("Content-Security-Policy".to_string(), "frame-src *".to_string())],
+        body: format!(
+          "<!doctype html><html><head>\
+           <meta http-equiv=\"Content-Security-Policy\" content=\"frame-src 'none'\">\
+           </head><body>\
+           <iframe src=\"{child_url_for_parent}\"></iframe>\
+           </body></html>"
+        )
+        .into_bytes(),
+        content_type: "text/html",
+      }),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+  let parent_url = parent_server.url("index.html");
+
+  let site_keys = SiteKeyFactory::new_with_seed(1);
+  let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
+
+  let mut parent_renderer = RendererProc::spawn();
+  let parent_frame = FrameId(1);
+  parent_renderer.send(&BrowserToRenderer::CreateFrame {
+    frame_id: parent_frame,
+  });
+  parent_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: parent_frame,
+    width: 2,
+    height: 2,
+    dpr: 1.0,
+  });
+  parent_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: parent_frame,
+    url: parent_url.clone(),
+    context: NavigationContext {
+      referrer_url: None,
+      referrer_policy: ReferrerPolicy::default(),
+      site_key: parent_site_key,
+      ..Default::default()
+    },
+  });
+  parent_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: parent_frame,
+  });
+
+  let ready = parent_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(
+    ready.frame_id, parent_frame,
+    "expected FrameReady for parent (err={:?})",
+    ready.last_error
+  );
+  assert!(
+    !ready.subframes.is_empty(),
+    "expected at least one discovered subframe (err={:?})",
+    ready.last_error
+  );
+
+  let (committed_url, csp_values) = ready
+    .last_committed
+    .clone()
+    .expect("expected NavigationCommitted before FrameReady");
+  assert!(
+    csp_values.iter().any(|v| v.contains("frame-src") && v.contains("*")),
+    "expected CSP header value to be reported, got {csp_values:?}"
+  );
+  assert!(
+    csp_values
+      .iter()
+      .any(|v| v.contains("frame-src") && v.contains("'none'")),
+    "expected CSP meta value to be reported, got {csp_values:?}"
+  );
+
+  let mut node = FrameNode::new(parent_frame);
+  node.navigation_committed(committed_url, csp_values);
+
+  let iframe = &ready.subframes[0];
+  let child_src = iframe
+    .src
+    .as_deref()
+    .expect("expected iframe src to be reported in SubframeInfo");
+
+  // Multiple CSP directive sets combine by intersection: `frame-src *` AND `frame-src 'none'` must
+  // both allow the navigation (so the iframe should be blocked).
+  let diag = node
+    .check_frame_src(child_src)
+    .expect_err("expected CSP intersection to block iframe");
+  assert_eq!(
+    diag,
+    format!("Blocked by Content-Security-Policy (frame-src) for requested URL: {child_url}")
+  );
+
+  let composed = composite_subframes(
+    ready.buffer.clone(),
+    std::iter::empty::<(
+      &fastrender_ipc::SubframeInfo,
+      &fastrender_ipc::FrameBuffer,
+    )>(),
+  )
+  .expect("composite should succeed");
+  assert_eq!(
+    composed.rgba8, ready.buffer.rgba8,
+    "expected blocked iframe to composite as transparent/placeholder"
+  );
+
+  let child_captured = child_server.shutdown_and_join();
+  assert!(
+    child_captured.is_empty(),
+    "expected no network requests to child frame when blocked, got {child_captured:?}"
+  );
+
+  parent_renderer.shutdown();
+  let _ = parent_server.shutdown_and_join();
+}
+
+#[test]
 fn oopif_parent_csp_frame_src_checked_against_final_redirect_url() {
   let _net_guard = net_test_lock();
 
