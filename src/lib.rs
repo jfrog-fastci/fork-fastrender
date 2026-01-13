@@ -215,6 +215,7 @@ pub mod ipc;
 pub(crate) mod testing;
 pub mod js;
 pub mod memory;
+pub mod multiprocess;
 pub mod pageset;
 pub mod process_limits;
 pub mod sandbox;
