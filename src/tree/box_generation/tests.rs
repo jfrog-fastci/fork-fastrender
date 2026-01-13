@@ -221,6 +221,26 @@ fn marker_leading_decimal(marker: &str) -> i32 {
 }
 
 #[test]
+fn inline_svg_serialization_preserves_svg_template_children() {
+  let html =
+    "<!doctype html><html><body><svg><template><g id=hit></g></template></svg></body></html>";
+  let content = serialized_inline_svg_content_from_html(html, 800.0, 600.0);
+  let Some(content) = content else {
+    panic!("expected inline SVG to produce SvgContent");
+  };
+  assert!(
+    content.svg.contains("id=\"hit\""),
+    "expected serialized SVG to preserve <template> descendants, got: {}",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("<g"),
+    "expected serialized SVG to contain <g element, got: {}",
+    content.svg
+  );
+}
+
+#[test]
 fn svg_serialization_clears_invalid_var_in_style_attribute() {
   use crate::style::color::Rgba;
   use crate::style::types::{ColorOrNone, FillRule};
