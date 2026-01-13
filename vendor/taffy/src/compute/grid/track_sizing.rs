@@ -1716,42 +1716,55 @@ fn distribute_space_up_to_limits(
   let mut space_to_distribute = space_to_distribute;
   while space_to_distribute > THRESHOLD {
     check_layout_abort();
-    let track_distribution_proportion_sum: f32 = tracks
-      .iter()
-      .filter(|track| {
-        track_affected_property(track) + track.item_incurred_increase < track_limit(track)
-      })
-      .filter(|track| track_is_affected(track))
-      .map(&track_distribution_proportion)
-      .sum();
+    // Compute (in one pass) both:
+    // - The sum of distribution proportions of all affected tracks that are still growable
+    // - The smallest per-track increase limit, taking into account already-allocated increases
+    //
+    // This avoids multiple full scans over `tracks` per distribution iteration, which is a hot
+    // path for large grids and spanning item processing.
+    let mut track_distribution_proportion_sum = 0.0;
+    let mut min_increase_limit: Option<f32> = None;
+    for track in tracks.iter() {
+      // Preserve the original evaluation order:
+      // 1) check whether the track is still below its limit (cheap arithmetic)
+      // 2) only then check whether the track is affected (potentially more expensive closure)
+      let used_space = track_affected_property(track) + track.item_incurred_increase;
+      let limit = track_limit(track);
+      if used_space < limit && track_is_affected(track) {
+        let proportion = track_distribution_proportion(track);
+        track_distribution_proportion_sum += proportion;
+
+        let remaining = limit - used_space;
+        let increase_limit = remaining / proportion;
+        min_increase_limit = Some(match min_increase_limit {
+          Some(current) => {
+            if increase_limit.total_cmp(&current) == Ordering::Less {
+              increase_limit
+            } else {
+              current
+            }
+          }
+          None => increase_limit,
+        });
+      }
+    }
 
     if track_distribution_proportion_sum == 0.0 {
       break;
     }
 
     // Compute item-incurred increase for this iteration
-    let min_increase_limit = tracks
-      .iter()
-      .filter(|track| {
-        track_affected_property(track) + track.item_incurred_increase < track_limit(track)
-      })
-      .filter(|track| track_is_affected(track))
-      .map(|track| {
-        // When distributing space in multiple iterations we must take into account the amount of
-        // space already allocated to a track in prior iterations. Failing to do so can cause tracks
-        // to grow past their limit (and steal space from other tracks), which then cascades into
-        // incorrect grid layouts (e.g. wrapped tracks when there is enough space for max-content).
-        (track_limit(track) - (track_affected_property(track) + track.item_incurred_increase))
-          / track_distribution_proportion(track)
-      })
-      .min_by(|a, b| a.total_cmp(b))
-      .unwrap(); // We will never pass an empty track list to this function
+    let min_increase_limit = min_increase_limit.unwrap(); // Safe: `track_distribution_proportion_sum != 0.0`
     let iteration_item_incurred_increase = f32_min(
       min_increase_limit,
       space_to_distribute / track_distribution_proportion_sum,
     );
 
-    for track in tracks.iter_mut().filter(|track| track_is_affected(track)) {
+    for track in tracks.iter_mut() {
+      if !track_is_affected(track) {
+        continue;
+      }
+
       let increase = iteration_item_incurred_increase * track_distribution_proportion(track);
       if increase > 0.0
         && track_affected_property(track) + track.item_incurred_increase + increase
