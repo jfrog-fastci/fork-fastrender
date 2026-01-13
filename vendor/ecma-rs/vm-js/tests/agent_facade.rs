@@ -159,6 +159,36 @@ fn agent_facade_value_to_error_string_formats_native_error_objects() {
 }
 
 #[test]
+fn agent_facade_format_vm_error_does_not_invoke_error_name_getters() {
+  let mut agent = new_agent();
+
+  // Install an accessor on `%TypeError.prototype%.name` that would mutate global state if invoked.
+  // Host-side error formatting must not run arbitrary JS (no getters / no Proxy traps).
+  let err = agent
+    .run_script(
+      "error_name_getter.js",
+      r#"
+var called = 0;
+Object.defineProperty(TypeError.prototype, "name", {
+  get: function () { called++; return "TypeError"; }
+});
+throw new TypeError("boom");
+"#,
+      Budget::unlimited(1),
+      None,
+    )
+    .unwrap_err();
+
+  // Format the error on the host. This must not invoke the getter above.
+  let _ = agent.format_vm_error(&err);
+
+  let called = agent
+    .run_script("called.js", "called", Budget::unlimited(1), None)
+    .expect("script should run");
+  assert_eq!(called, Value::Number(0.0));
+}
+
+#[test]
 fn agent_facade_format_vm_error_formats_thrown_string_values() {
   let mut agent = new_agent();
 
