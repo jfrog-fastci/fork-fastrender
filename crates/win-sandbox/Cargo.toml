@@ -23,7 +23,4 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [target.'cfg(windows)'.dev-dependencies]
-# Reuse the production Windows renderer sandbox spawner (`fastrender::sandbox::windows`) so this
-# crate's regression tests catch accidental capability additions (e.g. `internetClient`).
-fastrender = { path = "../..", default-features = false }
 tempfile = "3"
