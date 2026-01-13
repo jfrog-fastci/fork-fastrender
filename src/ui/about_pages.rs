@@ -979,7 +979,7 @@ fn settings_html(_full_url: &str) -> String {
          <li><code>{safe_env_high_contrast}</code> — enable high-contrast UI</li>
        </ul>
  
-       <h2>Paths</h2>
+       <h2>Runtime paths</h2>
        <table class="settings-table">
          {path_rows}
        </table>
