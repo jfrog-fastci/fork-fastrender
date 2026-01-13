@@ -413,6 +413,7 @@ fn deterministic_engine_fuzz_invariants() {
               viewport_point,
               button,
               modifiers,
+              true,
               "https://example.com/doc",
               "https://example.com/base/",
             );

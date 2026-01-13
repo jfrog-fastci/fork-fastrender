@@ -855,6 +855,7 @@ impl BrowserTabController {
         viewport_point,
         button,
         modifiers,
+        true,
         &self.current_url,
         &self.base_url,
       );

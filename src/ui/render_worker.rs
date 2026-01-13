@@ -4193,6 +4193,7 @@ impl BrowserRuntime {
           viewport_point,
           button,
           modifiers,
+          true,
           document_url,
           base_url,
         );

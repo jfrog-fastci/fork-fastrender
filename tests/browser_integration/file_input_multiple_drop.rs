@@ -137,6 +137,7 @@ fn dropping_multiple_files_sets_summary_label_and_submits_all_files_multipart() 
       submit_point,
       PointerButton::Primary,
       PointerModifiers::NONE,
+      true,
       "https://example.invalid/page.html",
       "https://example.invalid/page.html",
     );

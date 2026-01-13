@@ -106,6 +106,7 @@ fn select_dropdown_arrow_keys_skip_hidden_options_when_box_tree_is_available() -
         click_viewport_point,
         PointerButton::Primary,
         PointerModifiers::NONE,
+        true,
         "",
         "",
       );

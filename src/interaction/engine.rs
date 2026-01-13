@@ -5678,6 +5678,78 @@ impl InteractionEngine {
   pub fn take_last_form_submitter(&mut self) -> Option<usize> {
     self.last_form_submitter.take()
   }
+
+  /// Returns the plain-text payload of the currently active drag-and-drop gesture, if any.
+  ///
+  /// This is intended as a UI-layer integration hook so higher-level code can construct a native
+  /// drag session / JS `DataTransfer` using the interaction engine's current drag state.
+  ///
+  /// This returns `Some` only when a drag-drop gesture is *active* (i.e. after crossing the drag
+  /// threshold), not when a drag candidate is pending.
+  pub fn active_drag_text_payload(&self) -> Option<String> {
+    if let Some(TextDragDropState::Active(active)) = self.text_drag_drop.as_ref() {
+      return Some(active.text.clone());
+    }
+    self
+      .document_selection_drag_drop
+      .as_ref()
+      .and_then(|state| state.payload.clone())
+  }
+
+  /// Returns the semantic pre-order DOM node id that initiated the active drag-and-drop gesture, if
+  /// any.
+  pub fn active_drag_source_node_id(&self) -> Option<usize> {
+    if let Some(TextDragDropState::Active(active)) = self.text_drag_drop.as_ref() {
+      return Some(active.node_id);
+    }
+    if self
+      .document_selection_drag_drop
+      .as_ref()
+      .is_some_and(|state| state.payload.is_some())
+    {
+      // Document-selection drags can span multiple DOM nodes. Use the semantic target from the
+      // pointer-down that began the drag candidate.
+      return self.pointer_down_target;
+    }
+    None
+  }
+
+  /// Overrides the plain-text payload for the active drag-and-drop gesture.
+  ///
+  /// This is primarily intended for JS `DataTransfer.setData("text/plain", ...)` integration: UI
+  /// layers can update the engine's stored payload so any subsequent default drop insertion uses the
+  /// new text.
+  ///
+  /// Returns `true` when an active drag session was updated.
+  pub fn override_active_drag_text_payload(&mut self, text: String) -> bool {
+    let mut updated = false;
+
+    if let Some(TextDragDropState::Active(active)) = self.text_drag_drop.as_mut() {
+      active.text = text.clone();
+      updated = true;
+    }
+    if self
+      .document_selection_drag_drop
+      .as_ref()
+      .is_some_and(|state| state.payload.is_some())
+    {
+      if let Some(state) = self.document_selection_drag_drop.as_mut() {
+        state.payload = Some(text);
+        updated = true;
+      }
+    }
+
+    updated
+  }
+
+  /// Cancels any in-progress drag-and-drop gesture.
+  ///
+  /// This is a UI-layer hook used when JS cancels the `"dragstart"` default action.
+  pub fn cancel_active_drag_drop(&mut self) {
+    self.text_drag_drop = None;
+    self.document_selection_drag_drop = None;
+  }
+
   fn set_focus(
     &mut self,
     index: &mut DomIndexMut,
@@ -7237,6 +7309,7 @@ impl InteractionEngine {
     viewport_point: Point,
     button: PointerButton,
     modifiers: PointerModifiers,
+    allow_default_drop: bool,
     document_url: &str,
     base_url: &str,
   ) -> (bool, InteractionAction, Option<HitTestResult>) {
@@ -7347,7 +7420,7 @@ impl InteractionEngine {
       self.pending_text_drop_move = None;
       let mut pending_drop: Option<(usize, String)> = None;
 
-      if matches!(button, PointerButton::Primary) {
+      if allow_default_drop && matches!(button, PointerButton::Primary) {
         if let Some(hit) = up_hit.as_ref() {
           let target_id = hit.dom_node_id;
           if index
@@ -7426,53 +7499,34 @@ impl InteractionEngine {
       match drag_drop.payload {
         Some(payload) => {
           // Active drag-drop: dropping selected document text into a text control.
-          if let Some(hit) = up_hit.as_ref() {
-            let target_id = hit.dom_node_id;
-            let is_text_control = index
-              .node(target_id)
-              .is_some_and(|node| is_text_input(node) || is_textarea(node));
-            if is_text_control
-              && !node_or_ancestor_is_inert(&index, target_id)
-              && !node_is_disabled(&index, target_id)
-              && !node_is_readonly(&index, target_id)
-            {
-              if let Some((caret, affinity)) = caret_index_for_text_control_point(
-                &index,
-                box_tree,
-                fragment_tree,
-                scroll,
-                target_id,
-                hit.box_id,
-                page_point,
-              ) {
-                let preserved_selection = self.state.document_selection.clone();
+          if allow_default_drop {
+            if let Some(hit) = up_hit.as_ref() {
+              let target_id = hit.dom_node_id;
+              let is_text_control = index
+                .node(target_id)
+                .is_some_and(|node| is_text_input(node) || is_textarea(node));
+              if is_text_control
+                && !node_or_ancestor_is_inert(&index, target_id)
+                && !node_is_disabled(&index, target_id)
+                && !node_is_readonly(&index, target_id)
+              {
+                if let Some((caret, affinity)) = caret_index_for_text_control_point(
+                  &index,
+                  box_tree,
+                  fragment_tree,
+                  scroll,
+                  target_id,
+                  hit.box_id,
+                  page_point,
+                ) {
+                  let preserved_selection = self.state.document_selection.clone();
 
-                // Focus the drop target (pointer-driven focus, so `focus_visible=false`).
-                if is_focusable_interactive_element(&index, target_id) {
-                  dom_changed |= self.set_focus(&mut index, Some(target_id), false);
-                  // Restore the document selection for copy semantics.
-                  self.state.document_selection = preserved_selection.clone();
-                }
-
-                if self.state.focused == Some(target_id) {
-                  match self.text_edit.as_mut().filter(|edit| edit.node_id == target_id) {
-                    Some(edit) => {
-                      edit.caret = caret;
-                      edit.caret_affinity = affinity;
-                      edit.selection_anchor = None;
-                      edit.preferred_x = None;
-                    }
-                    None => {
-                      self.text_edit = Some(TextEditState {
-                        node_id: target_id,
-                        caret,
-                        caret_affinity: affinity,
-                        selection_anchor: None,
-                        preferred_x: None,
-                      });
-                    }
+                  // Focus the drop target (pointer-driven focus, so `focus_visible=false`).
+                  if is_focusable_interactive_element(&index, target_id) {
+                    dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+                    // Restore the document selection for copy semantics.
+                    self.state.document_selection = preserved_selection.clone();
                   }
-                  dom_changed |= self.sync_text_edit_paint_state();
 
                   // Defer default insertion until `apply_text_drop` is called.
                   let action = InteractionAction::TextDrop {
@@ -7994,6 +8048,7 @@ impl InteractionEngine {
     viewport_point: Point,
     button: PointerButton,
     modifiers: PointerModifiers,
+    allow_default_drop: bool,
     document_url: &str,
     base_url: &str,
   ) -> (bool, InteractionAction) {
@@ -8005,6 +8060,7 @@ impl InteractionEngine {
       viewport_point,
       button,
       modifiers,
+      allow_default_drop,
       document_url,
       base_url,
     );
@@ -8024,6 +8080,7 @@ impl InteractionEngine {
     viewport_point: Point,
     button: PointerButton,
     modifiers: PointerModifiers,
+    allow_default_drop: bool,
     document_url: &str,
     base_url: &str,
   ) -> (bool, InteractionAction) {
@@ -8035,6 +8092,7 @@ impl InteractionEngine {
       viewport_point,
       button,
       modifiers,
+      allow_default_drop,
       document_url,
       base_url,
     )

@@ -172,6 +172,7 @@ fn form_reset_clears_file_input_selection() -> Result<()> {
       reset_point,
       PointerButton::Primary,
       PointerModifiers::NONE,
+      true,
       "https://example.invalid/page.html",
       "https://example.invalid/page.html",
     );

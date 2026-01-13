@@ -121,6 +121,7 @@ fn select_listbox_hidden_option_click_selects_first_visible_option_and_marks_use
       click_viewport_point,
       PointerButton::Primary,
       PointerModifiers::NONE,
+      true,
       "",
       "",
     );

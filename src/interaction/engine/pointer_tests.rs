@@ -278,6 +278,7 @@ fn details_summary_click_on_descendant_sets_click_target_and_toggles_open() {
     Point::new(190.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -391,6 +392,7 @@ fn radio_click_is_scoped_to_nearest_form() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -588,6 +590,7 @@ fn active_chain_sets_on_down_and_clears_on_up() {
     Point::new(15.0, 15.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -652,6 +655,7 @@ fn link_click_emits_navigation_with_resolved_url() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -713,6 +717,7 @@ fn link_middle_click_opens_in_new_tab() {
     Point::new(10.0, 10.0),
     PointerButton::Middle,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -788,6 +793,7 @@ fn link_command_click_opens_in_new_tab() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     modifiers,
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -851,6 +857,7 @@ fn link_target_blank_opens_in_new_tab() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -914,6 +921,7 @@ fn checkbox_secondary_click_does_not_toggle_or_focus() {
     Point::new(10.0, 10.0),
     PointerButton::Secondary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -1000,6 +1008,7 @@ fn img_usemap_area_click_emits_navigation_and_sets_area_visited() {
     Point::new(65.0, 65.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -1067,6 +1076,7 @@ fn anchor_activation_appends_ismap_coordinates() {
     Point::new(75.0, 95.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -1131,6 +1141,7 @@ fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -1193,6 +1204,7 @@ fn link_click_with_non_ascii_href_does_not_panic() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -1258,6 +1270,7 @@ fn checkbox_click_toggles_checked_attribute() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -1362,6 +1375,7 @@ fn range_drag_ignores_sentinel_pointer_positions() {
     Point::new(-1.0, -1.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/",
     "https://example.com/",
   );
@@ -1431,6 +1445,7 @@ fn cancelled_click_does_not_blur_focused_control() {
     Point::new(150.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/",
     "https://example.com/",
   );
@@ -1490,6 +1505,7 @@ fn space_key_toggles_focused_checkbox() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -1578,6 +1594,7 @@ fn space_key_activates_focused_radio() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -1650,6 +1667,7 @@ fn enter_key_on_focused_link_emits_navigation() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -1728,6 +1746,7 @@ fn label_click_activates_associated_checkbox() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -1799,6 +1818,7 @@ fn label_for_ignores_non_form_control_target() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -1874,6 +1894,7 @@ fn label_for_does_not_cross_shadow_root_boundary() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -1931,6 +1952,7 @@ fn radio_click_checks_and_focuses() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -2009,6 +2031,7 @@ fn clicking_outside_focusable_blurs_current_focus() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -2033,6 +2056,7 @@ fn clicking_outside_focusable_blurs_current_focus() {
     Point::new(5.0, 60.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -2103,6 +2127,7 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -2191,6 +2216,7 @@ fn arrow_left_uses_box_tree_direction_for_text_controls() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -2275,6 +2301,7 @@ fn dir_auto_input_value_infers_rtl_direction_for_caret_movement() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -2366,6 +2393,7 @@ fn submit_click_navigates_and_marks_user_validity() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -2480,6 +2508,7 @@ fn submit_button_click_submits_get_form_with_query_and_submitter() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/",
   );
@@ -2562,6 +2591,7 @@ fn submit_click_navigates_with_get_query_and_encodes_space_as_plus() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2663,6 +2693,7 @@ fn submit_click_sanitizes_input_values() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/",
   );
@@ -2734,6 +2765,7 @@ fn submit_click_strips_action_fragment() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/",
   );
@@ -2809,6 +2841,7 @@ fn submit_click_uses_form_attr_idref_owner() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2888,6 +2921,7 @@ fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -2986,6 +3020,7 @@ fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -3091,6 +3126,7 @@ fn submit_click_includes_selected_select_option_in_query() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -3173,6 +3209,7 @@ fn submit_click_single_select_prefers_last_selected_option_in_tree_order() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -3249,6 +3286,7 @@ fn submit_click_includes_form_associated_control_outside_form_in_query() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -3327,6 +3365,7 @@ fn submit_click_prefers_select_option_value_attribute_over_text_content() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -3398,6 +3437,7 @@ fn submit_click_defaults_action_to_document_url_when_action_is_missing() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/doc",
     "https://example.com/base/",
   );
@@ -3521,6 +3561,7 @@ fn select_listbox_click_marks_user_validity() {
     Point::new(5.0, 25.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -3626,6 +3667,7 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/",
     "https://example.com/",
   );
@@ -3705,6 +3747,7 @@ fn form_submit_get_builds_expected_url() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/page1",
     "https://example.com/base/",
   );
@@ -3795,6 +3838,7 @@ fn form_submit_get_skips_unchecked_checkbox() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/page1",
     "https://example.com/base/",
   );
@@ -3886,6 +3930,7 @@ fn form_submit_get_includes_checked_checkbox() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/page1",
     "https://example.com/base/",
   );
@@ -4042,6 +4087,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -4110,6 +4156,7 @@ fn inert_link_does_not_navigate() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/",
     "https://example.com/",
   );
@@ -4169,6 +4216,7 @@ fn disabled_checkbox_does_not_toggle_checked() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -4235,6 +4283,7 @@ fn checkbox_toggle_clears_indeterminate_and_aria_checked_mixed() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -4328,6 +4377,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -4351,6 +4401,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     Point::new(5.0, 45.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -4734,6 +4785,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     Point::new(5.0, 15.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -4781,6 +4833,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     Point::new(5.0, 25.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -4907,6 +4960,7 @@ fn listbox_select_click_uses_painted_row_list_not_dom_options() {
     Point::new(5.0, 15.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -5049,6 +5103,7 @@ fn listbox_select_click_in_blank_area_is_noop() {
     Point::new(5.0, 35.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -5191,6 +5246,7 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
     Point::new(5.0, 15.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -5220,6 +5276,7 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
     Point::new(5.0, 15.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -5424,6 +5481,7 @@ fn listbox_select_click_accounts_for_element_scroll_offset() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -5883,6 +5941,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
     Point::new(0.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -5904,6 +5963,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
     Point::new(56.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -5925,6 +5985,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
     Point::new(100.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -6267,6 +6328,7 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
     Point::new(100.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -6305,6 +6367,7 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
     Point::new(100.0, 50.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -6378,6 +6441,7 @@ fn range_click_focuses_input() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -6448,6 +6512,7 @@ fn tabindex_zero_element_click_focuses_without_focus_visible() {
     Point::new(10.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -6528,6 +6593,7 @@ fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_t
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -6767,6 +6833,7 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
     Point::new(5.0, 5.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://x/",
     "https://x/",
   );
@@ -6973,6 +7040,7 @@ fn document_selection_drag_creates_range_and_suppresses_click() {
     Point::new(199.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    true,
     "https://example.com/base/",
     "https://example.com/base/",
   );

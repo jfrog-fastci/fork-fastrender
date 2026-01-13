@@ -188,6 +188,7 @@ fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
       click_viewport_point,
       PointerButton::Primary,
       PointerModifiers::NONE,
+      true,
       "",
       "",
     );
