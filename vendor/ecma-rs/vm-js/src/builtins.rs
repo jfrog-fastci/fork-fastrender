@@ -14770,6 +14770,271 @@ pub fn regexp_constructor_construct(
   regexp_constructor_impl(vm, scope, host, hooks, pattern, flags, new_target, false)
 }
 
+/// `RegExp.escape(string)` (ECMA-262).
+pub fn regexp_escape(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-regexp.escape
+  //
+  // Unlike many other built-ins, this does **not** apply `ToString` and instead requires the input
+  // to be a String value.
+  let s_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::String(s) = s_val else {
+    return Err(VmError::TypeError("RegExp.escape requires a string"));
+  };
+
+  struct RegExpEscapeBuilder {
+    buf: Vec<u16>,
+    max_bytes: usize,
+  }
+
+  impl RegExpEscapeBuilder {
+    fn new(max_bytes: usize) -> Self {
+      Self {
+        buf: Vec::new(),
+        max_bytes,
+      }
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+      self.buf.is_empty()
+    }
+
+    #[inline]
+    fn check_grow(&self, additional_units: usize) -> Result<(), VmError> {
+      let new_len = self
+        .buf
+        .len()
+        .checked_add(additional_units)
+        .ok_or(VmError::OutOfMemory)?;
+      if JsString::heap_size_bytes_for_len(new_len) > self.max_bytes {
+        return Err(VmError::OutOfMemory);
+      }
+      Ok(())
+    }
+
+    fn push_unit(&mut self, unit: u16) -> Result<(), VmError> {
+      self.check_grow(1)?;
+      vec_try_push(&mut self.buf, unit)
+    }
+
+    fn push_ascii(&mut self, s: &[u8]) -> Result<(), VmError> {
+      self.check_grow(s.len())?;
+      for &b in s {
+        vec_try_push(&mut self.buf, b as u16)?;
+      }
+      Ok(())
+    }
+
+    fn push_utf16_encode_code_point(&mut self, cp: u32) -> Result<(), VmError> {
+      if cp <= 0xFFFF {
+        return self.push_unit(cp as u16);
+      }
+      let c = cp - 0x10000;
+      let high = 0xD800 + ((c >> 10) as u16);
+      let low = 0xDC00 + ((c & 0x3FF) as u16);
+      self.push_unit(high)?;
+      self.push_unit(low)?;
+      Ok(())
+    }
+
+    fn push_x_escape(&mut self, byte: u8) -> Result<(), VmError> {
+      #[inline]
+      fn hex_digit(n: u8) -> u16 {
+        match n {
+          0..=9 => (b'0' + n) as u16,
+          10..=15 => (b'a' + (n - 10)) as u16,
+          _ => b'0' as u16,
+        }
+      }
+
+      self.check_grow(4)?;
+      self.push_ascii(b"\\x")?;
+      self.push_unit(hex_digit(byte >> 4))?;
+      self.push_unit(hex_digit(byte & 0xF))?;
+      Ok(())
+    }
+
+    fn push_unicode_escape(&mut self, unit: u16) -> Result<(), VmError> {
+      self.check_grow(6)?;
+      self.push_ascii(b"\\u")?;
+
+      let mut n = unit;
+      let mut digits = [0u16; 4];
+      for d in digits.iter_mut().rev() {
+        let nibble = (n & 0xF) as u8;
+        *d = match nibble {
+          0..=9 => (b'0' + nibble) as u16,
+          10..=15 => (b'a' + (nibble - 10)) as u16,
+          _ => b'0' as u16,
+        };
+        n >>= 4;
+      }
+
+      for d in digits {
+        self.push_unit(d)?;
+      }
+      Ok(())
+    }
+  }
+
+  #[inline]
+  fn is_decimal_digit(cp: u32) -> bool {
+    (b'0' as u32..=b'9' as u32).contains(&cp)
+  }
+
+  #[inline]
+  fn is_ascii_letter(cp: u32) -> bool {
+    (b'a' as u32..=b'z' as u32).contains(&cp) || (b'A' as u32..=b'Z' as u32).contains(&cp)
+  }
+
+  #[inline]
+  fn is_syntax_character(cp: u32) -> bool {
+    matches!(
+      cp,
+      0x005E // ^
+        | 0x0024 // $
+        | 0x005C // \
+        | 0x002E // .
+        | 0x002A // *
+        | 0x002B // +
+        | 0x003F // ?
+        | 0x0028 // (
+        | 0x0029 // )
+        | 0x005B // [
+        | 0x005D // ]
+        | 0x007B // {
+        | 0x007D // }
+        | 0x007C // |
+    )
+  }
+
+  #[inline]
+  fn is_other_punctuator(cp: u32) -> bool {
+    matches!(
+      cp,
+      0x002C // ,
+        | 0x002D // -
+        | 0x003D // =
+        | 0x003C // <
+        | 0x003E // >
+        | 0x0023 // #
+        | 0x0026 // &
+        | 0x0021 // !
+        | 0x0025 // %
+        | 0x003A // :
+        | 0x003B // ;
+        | 0x0040 // @
+        | 0x007E // ~
+        | 0x0027 // '
+        | 0x0060 // `
+        | 0x0022 // "
+    )
+  }
+
+  #[inline]
+  fn is_whitespace_or_line_terminator(cp: u32) -> bool {
+    if cp > 0xFFFF {
+      return false;
+    }
+    is_trim_whitespace_unit(cp as u16)
+  }
+
+  #[inline]
+  fn is_surrogate_code_point(cp: u32) -> bool {
+    (0xD800..=0xDFFF).contains(&cp)
+  }
+
+  fn encode_for_regexp_escape(out: &mut RegExpEscapeBuilder, cp: u32) -> Result<(), VmError> {
+    // 1. If c is matched by SyntaxCharacter or c is U+002F (SOLIDUS), then return "\" +
+    // UTF16EncodeCodePoint(c).
+    if is_syntax_character(cp) || cp == (b'/' as u32) {
+      out.push_unit(b'\\' as u16)?;
+      out.push_utf16_encode_code_point(cp)?;
+      return Ok(());
+    }
+
+    // 2. If c is listed in RegExp control escapes (ECMA-262 Table 64), return "\" + ControlEscape.
+    match cp {
+      0x0009 => return out.push_ascii(b"\\t"),
+      0x000A => return out.push_ascii(b"\\n"),
+      0x000B => return out.push_ascii(b"\\v"),
+      0x000C => return out.push_ascii(b"\\f"),
+      0x000D => return out.push_ascii(b"\\r"),
+      _ => {}
+    }
+
+    // 5. Escape "other punctuators", WhiteSpace/LineTerminator, and lone surrogate code points.
+    if is_other_punctuator(cp) || is_whitespace_or_line_terminator(cp) || is_surrogate_code_point(cp) {
+      if cp <= 0xFF {
+        return out.push_x_escape(cp as u8);
+      }
+      // Encode as `\uXXXX` for each UTF-16 code unit of the code point.
+      if cp <= 0xFFFF {
+        return out.push_unicode_escape(cp as u16);
+      }
+      let c = cp - 0x10000;
+      let high = 0xD800 + ((c >> 10) as u16);
+      let low = 0xDC00 + ((c & 0x3FF) as u16);
+      out.push_unicode_escape(high)?;
+      out.push_unicode_escape(low)?;
+      return Ok(());
+    }
+
+    // 6. Return UTF16EncodeCodePoint(c).
+    out.push_utf16_encode_code_point(cp)
+  }
+
+  let max_bytes = scope.heap().limits().max_bytes;
+  let mut out = RegExpEscapeBuilder::new(max_bytes);
+
+  // `StringToCodePoints` over UTF-16 code units.
+  {
+    let units = scope.heap().get_string(s)?.as_code_units();
+    let mut i = 0usize;
+    while i < units.len() {
+      if i % 1024 == 0 {
+        vm.tick()?;
+      }
+
+      let u = units[i];
+      let (cp, consumed) = if (0xD800..=0xDBFF).contains(&u) {
+        if let Some(&u2) = units.get(i + 1) {
+          if (0xDC00..=0xDFFF).contains(&u2) {
+            let high = (u as u32) - 0xD800;
+            let low = (u2 as u32) - 0xDC00;
+            (0x10000 + ((high << 10) | low), 2)
+          } else {
+            (u as u32, 1)
+          }
+        } else {
+          (u as u32, 1)
+        }
+      } else {
+        (u as u32, 1)
+      };
+
+      // Leading ASCII digits/letters use the special `\xHH` escape form.
+      if out.is_empty() && (is_decimal_digit(cp) || is_ascii_letter(cp)) {
+        out.push_x_escape(cp as u8)?;
+      } else {
+        encode_for_regexp_escape(&mut out, cp)?;
+      }
+
+      i = i.saturating_add(consumed);
+    }
+  }
+
+  Ok(Value::String(scope.alloc_string_from_u16_vec(out.buf)?))
+}
+
 /// `RegExp.prototype.exec(string)` (ECMA-262) (partial).
 pub fn regexp_prototype_exec(
   vm: &mut Vm,

@@ -1078,6 +1078,7 @@ impl Intrinsics {
     let regexp_prototype_exec = vm.register_native_call(builtins::regexp_prototype_exec)?;
     let regexp_prototype_test = vm.register_native_call(builtins::regexp_prototype_test)?;
     let regexp_prototype_to_string = vm.register_native_call(builtins::regexp_prototype_to_string)?;
+    let regexp_escape = vm.register_native_call(builtins::regexp_escape)?;
     let regexp_prototype_source_get =
       vm.register_native_call(builtins::regexp_prototype_source_get)?;
     let regexp_prototype_flags_get = vm.register_native_call(builtins::regexp_prototype_flags_get)?;
@@ -3558,6 +3559,23 @@ impl Intrinsics {
             set: Value::Undefined,
           },
         },
+      )?;
+    }
+
+    // RegExp.escape
+    {
+      let escape_s = scope.alloc_string("escape")?;
+      scope.push_root(Value::String(escape_s))?;
+      let key = PropertyKey::from_string(escape_s);
+      let func = scope.alloc_native_function(regexp_escape, None, escape_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        regexp_constructor,
+        key,
+        data_desc(Value::Object(func), true, false, true),
       )?;
     }
 

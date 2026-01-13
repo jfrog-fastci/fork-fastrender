@@ -1336,6 +1336,15 @@ id = "staging/sm/RegExp/unicode-class-range.js"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/RegExp/escape/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/escape/cross-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
+
+[[expectations]]
 glob = "built-ins/String/prototype/match/**"
 status = "pass"
 
