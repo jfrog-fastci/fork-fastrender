@@ -79,6 +79,7 @@ mod ui_cancellation;
 mod ui_clipboard;
 mod ui_clipboard_size_limit;
 mod ui_datalist_disabled_option_choose;
+mod ui_datalist_template_inert;
 mod ui_document_drag_drop;
 mod ui_document_selection_clipboard;
 mod ui_document_selection_multi_range;
