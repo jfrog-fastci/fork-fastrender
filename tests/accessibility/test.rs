@@ -435,6 +435,23 @@ fn accessibility_presentational_role_disallowed_when_focusable_is_exposed() {
 }
 
 #[test]
+fn accessibility_form_landmark_role_is_exposed_with_title_name() {
+  let html = r##"
+    <html>
+      <body>
+        <form id="f" title="FormTitle">
+          <input />
+        </form>
+      </body>
+    </html>
+  "##;
+  let tree = render_accessibility_json(html);
+  let node = find_json_node(&tree, "f").expect("form is present");
+  assert_eq!(node.get("role").and_then(|v| v.as_str()), Some("form"));
+  assert_eq!(node.get("name").and_then(|v| v.as_str()), Some("FormTitle"));
+}
+
+#[test]
 fn accessibility_summary_role_presentation_disallowed_falls_back_to_button() {
   let html = r##"
     <html>

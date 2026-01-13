@@ -940,11 +940,27 @@ impl<'a, 'state> BuildContext<'a, 'state> {
                 // The text alternative engine recomputes presentational state without the DOM
                 // ancestor chain, so it cannot always see conditions that cause `role="none"` /
                 // `role="presentation"` to be honored (e.g. form controls disabled via ancestor
-                // `<fieldset disabled>`). `compute_name` passes `allow_name_from_content =
-                // Some(false)` when the caller has already determined the presentational role is
-                // honored; use that signal to suppress all fallback name sources (placeholder/title,
-                // etc.) so the element cannot leak a name and get exposed as a generic node.
-                if frame.allow_name_from_content == Some(false) {
+                // `<fieldset disabled>`).
+                //
+                // `compute_name` passes `allow_name_from_content = Some(false)` when the caller has
+                // already determined the presentational role is honored. Use that signal to
+                // suppress all fallback name sources (placeholder/title, etc.) so the element cannot
+                // leak a name and get exposed as a generic node.
+                //
+                // Note: `allow_name_from_content = Some(false)` is also used for other callers
+                // (e.g. determining whether `section`/`form` should expose implicit landmark roles),
+                // so only apply this suppression when the element actually declares a
+                // presentational role token.
+                let has_presentational_role_attr = node
+                  .node
+                  .get_attribute_ref("role")
+                  .is_some_and(|raw| {
+                    raw.split_ascii_whitespace().any(|token| {
+                      token.eq_ignore_ascii_case("none")
+                        || token.eq_ignore_ascii_case("presentation")
+                    })
+                  });
+                if frame.allow_name_from_content == Some(false) && has_presentational_role_attr {
                   pending = Some(None);
                 } else {
                   frame.step = NodeStep::Element(ElementStep::LabelAssociation);
