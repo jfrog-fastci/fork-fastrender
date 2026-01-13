@@ -90,8 +90,9 @@ prevent the syscalls needed to set up earlier layers.
 
 1. **rlimits**
 2. **close/lock down file descriptors**
-3. **Landlock (filesystem, optional defense-in-depth)**
-4. **seccomp-bpf (syscall filter)**
+3. **Linux namespaces (best-effort hardening; if used, must be before seccomp)**
+4. **Landlock (filesystem, optional defense-in-depth)**
+5. **seccomp-bpf (syscall filter)**
 
 Repo reality:
 
