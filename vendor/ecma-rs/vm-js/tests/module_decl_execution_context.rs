@@ -213,11 +213,11 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
         export function g() { return import('dep.js'); }
       "#,
     )?,
-  );
+  )?;
   let dep = modules.add_module_with_specifier(
     "dep.js",
     SourceTextModuleRecord::parse(heap, "export const x = 1;")?,
-  );
+  )?;
 
   let mut hooks = TestHostHooks::new(META_URL);
   hooks.register_module("dep.js", dep);

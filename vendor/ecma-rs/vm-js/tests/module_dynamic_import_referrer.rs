@@ -206,18 +206,18 @@ fn dynamic_import_inside_imported_function_uses_callee_module_as_referrer() -> R
       &mut heap,
       "export function doImport() { return import('dep.js'); }",
     )?,
-  );
+  )?;
   let b = modules.add_module_with_specifier(
     "b.js",
     SourceTextModuleRecord::parse(
       &mut heap,
       "import { doImport } from 'a.js'; export const p = doImport();",
     )?,
-  );
+  )?;
   let dep = modules.add_module_with_specifier(
     "dep.js",
     SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
-  );
+  )?;
   modules.link_all_by_specifier();
 
   let mut host_hooks = ReferrerRecordingHostHooks::new();
