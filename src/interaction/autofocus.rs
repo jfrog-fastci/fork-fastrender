@@ -212,7 +212,6 @@ pub fn autofocus_target_node_id(dom: &DomNode) -> Option<usize> {
 // -----------------------------------------------------------------------------
 // dom2 variants (stable NodeId)
 // -----------------------------------------------------------------------------
-
 /// Returns the [`dom2::NodeId`] of the first eligible `[autofocus]` element in a live `dom2`
 /// document.
 ///

@@ -458,7 +458,7 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
     //
     // Use the curated `renderer_minimal` feature set (includes AVIF decoding) rather than enabling
     // `avif` on top of the default feature set.
-    build_cmd.args(["--no-default-features", "--features", "renderer_minimal"]);
+    build_cmd.args(["--no-default-features", "--features", "renderer_minimal,avif"]);
     if !args.no_fastrender {
       build_cmd.args(["--bin", "render_fixtures"]);
     }

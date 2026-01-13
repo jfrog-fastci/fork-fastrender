@@ -381,6 +381,96 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn abstract_range_get_attribute_collapsed<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "AbstractRange", "collapsed")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_get_attribute_end_container<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "AbstractRange", "endContainer")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_get_attribute_end_offset<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "AbstractRange", "endOffset")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_get_attribute_start_container<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "AbstractRange", "startContainer")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_get_attribute_start_offset<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "AbstractRange", "startOffset")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn custom_event_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1258,6 +1348,49 @@ pub mod window {
       Some(this),
       "Document",
       "createNodeIterator",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn document_create_range<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Document",
+      "createRange",
       overload_index,
       converted_binding_args,
     )?;
@@ -3874,7 +4007,7 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn fast_render_navigation_back<Host, R>(
+  fn fast_render_navigation_go_back<Host, R>(
     rt: &mut R,
     host: &mut Host,
     this: RtJsValue<Host, R>,
@@ -3909,7 +4042,7 @@ pub mod window {
       rt,
       Some(this),
       "FastRenderNavigation",
-      "back",
+      "goBack",
       overload_index,
       converted_binding_args,
     )?;
@@ -3917,7 +4050,7 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn fast_render_navigation_forward<Host, R>(
+  fn fast_render_navigation_go_forward<Host, R>(
     rt: &mut R,
     host: &mut Host,
     this: RtJsValue<Host, R>,
@@ -3952,7 +4085,7 @@ pub mod window {
       rt,
       Some(this),
       "FastRenderNavigation",
-      "forward",
+      "goForward",
       overload_index,
       converted_binding_args,
     )?;
@@ -4047,6 +4180,49 @@ pub mod window {
       Some(this),
       "FastRenderNavigation",
       "reload",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_stop<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "FastRenderNavigation",
+      "stop",
       overload_index,
       converted_binding_args,
     )?;
@@ -4156,7 +4332,7 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn fast_render_tabs_list<Host, R>(
+  fn fast_render_tabs_get_all<Host, R>(
     rt: &mut R,
     host: &mut Host,
     this: RtJsValue<Host, R>,
@@ -4191,7 +4367,7 @@ pub mod window {
       rt,
       Some(this),
       "FastRenderTabs",
-      "list",
+      "getAll",
       overload_index,
       converted_binding_args,
     )?;
@@ -5409,6 +5585,632 @@ pub mod window {
       return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
     let result = host.get_attribute(rt, Some(this), "NodeList", "length")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_clone_contents<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "cloneContents",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_compare_point<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "node",
+          ty: IdlType::Named(NamedType {
+            name: "Node".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "offset",
+          ty: IdlType::Numeric(NumericType::UnsignedLong),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "comparePoint",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_delete_contents<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "deleteContents",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_detach<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "detach",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_extract_contents<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "extractContents",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_insert_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "node",
+        ty: IdlType::Named(NamedType {
+          name: "Node".to_string(),
+          kind: NamedTypeKind::Interface,
+        }),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "insertNode",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_intersects_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "node",
+        ty: IdlType::Named(NamedType {
+          name: "Node".to_string(),
+          kind: NamedTypeKind::Interface,
+        }),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "intersectsNode",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_is_point_in_range<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "node",
+          ty: IdlType::Named(NamedType {
+            name: "Node".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "offset",
+          ty: IdlType::Numeric(NumericType::UnsignedLong),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "isPointInRange",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_set_end<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "node",
+          ty: IdlType::Named(NamedType {
+            name: "Node".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "offset",
+          ty: IdlType::Numeric(NumericType::UnsignedLong),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "setEnd",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_set_start<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "node",
+          ty: IdlType::Named(NamedType {
+            name: "Node".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "offset",
+          ty: IdlType::Numeric(NumericType::UnsignedLong),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "setStart",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_surround_contents<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "newParent",
+        ty: IdlType::Named(NamedType {
+          name: "Node".to_string(),
+          kind: NamedTypeKind::Interface,
+        }),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Range",
+      "surroundContents",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn range_constructor<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    _this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      None,
+      "Range",
+      "constructor",
+      overload_index,
+      converted_binding_args,
+    )?;
     binding_value_to_js::<Host, R>(rt, result)
   }
 
@@ -7145,6 +7947,7 @@ pub mod window {
     Host: WebHostBindings<R>,
   {
     let global = rt.global_object()?;
+    let proto_abstract_range = rt.create_object()?;
     let proto_character_data = rt.create_object()?;
     let proto_custom_event = rt.create_object()?;
     let proto_d_o_m_token_list = rt.create_object()?;
@@ -7161,6 +7964,7 @@ pub mod window {
     let proto_node_filter = rt.create_object()?;
     let proto_node_iterator = rt.create_object()?;
     let proto_node_list = rt.create_object()?;
+    let proto_range = rt.create_object()?;
     let proto_text = rt.create_object()?;
     let proto_tree_walker = rt.create_object()?;
     let proto_u_r_l = rt.create_object()?;
@@ -7171,7 +7975,43 @@ pub mod window {
     rt.set_prototype(proto_document_fragment, Some(proto_node))?;
     rt.set_prototype(proto_element, Some(proto_node))?;
     rt.set_prototype(proto_node, Some(proto_event_target))?;
+    rt.set_prototype(proto_range, Some(proto_abstract_range))?;
     rt.set_prototype(proto_text, Some(proto_character_data))?;
+    let get = rt.create_function(
+      "get collapsed",
+      0,
+      abstract_range_get_attribute_collapsed::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_abstract_range, "collapsed", get, set)?;
+    let get = rt.create_function(
+      "get endContainer",
+      0,
+      abstract_range_get_attribute_end_container::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_abstract_range, "endContainer", get, set)?;
+    let get = rt.create_function(
+      "get endOffset",
+      0,
+      abstract_range_get_attribute_end_offset::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_abstract_range, "endOffset", get, set)?;
+    let get = rt.create_function(
+      "get startContainer",
+      0,
+      abstract_range_get_attribute_start_container::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_abstract_range, "startContainer", get, set)?;
+    let get = rt.create_function(
+      "get startOffset",
+      0,
+      abstract_range_get_attribute_start_offset::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_abstract_range, "startOffset", get, set)?;
     let ctor_custom_event = rt.create_constructor(
       "CustomEvent",
       1,
@@ -7241,6 +8081,8 @@ pub mod window {
       document_create_node_iterator::<Host, R>,
     )?;
     rt.define_method(proto_document, "createNodeIterator", func)?;
+    let func = rt.create_function("createRange", 0, document_create_range::<Host, R>)?;
+    rt.define_method(proto_document, "createRange", func)?;
     let func = rt.create_function("createTextNode", 1, document_create_text_node::<Host, R>)?;
     rt.define_method(proto_document, "createTextNode", func)?;
     let func = rt.create_function(
@@ -7591,20 +8433,22 @@ pub mod window {
     )?;
     let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_fast_render_chrome, "tabs", get, set)?;
-    let func = rt.create_function("back", 0, fast_render_navigation_back::<Host, R>)?;
-    rt.define_method(proto_fast_render_navigation, "back", func)?;
-    let func = rt.create_function("forward", 0, fast_render_navigation_forward::<Host, R>)?;
-    rt.define_method(proto_fast_render_navigation, "forward", func)?;
+    let func = rt.create_function("goBack", 0, fast_render_navigation_go_back::<Host, R>)?;
+    rt.define_method(proto_fast_render_navigation, "goBack", func)?;
+    let func = rt.create_function("goForward", 0, fast_render_navigation_go_forward::<Host, R>)?;
+    rt.define_method(proto_fast_render_navigation, "goForward", func)?;
     let func = rt.create_function("navigate", 1, fast_render_navigation_navigate::<Host, R>)?;
     rt.define_method(proto_fast_render_navigation, "navigate", func)?;
     let func = rt.create_function("reload", 0, fast_render_navigation_reload::<Host, R>)?;
     rt.define_method(proto_fast_render_navigation, "reload", func)?;
+    let func = rt.create_function("stop", 0, fast_render_navigation_stop::<Host, R>)?;
+    rt.define_method(proto_fast_render_navigation, "stop", func)?;
     let func = rt.create_function("activateTab", 1, fast_render_tabs_activate_tab::<Host, R>)?;
     rt.define_method(proto_fast_render_tabs, "activateTab", func)?;
     let func = rt.create_function("closeTab", 1, fast_render_tabs_close_tab::<Host, R>)?;
     rt.define_method(proto_fast_render_tabs, "closeTab", func)?;
-    let func = rt.create_function("list", 0, fast_render_tabs_list::<Host, R>)?;
-    rt.define_method(proto_fast_render_tabs, "list", func)?;
+    let func = rt.create_function("getAll", 0, fast_render_tabs_get_all::<Host, R>)?;
+    rt.define_method(proto_fast_render_tabs, "getAll", func)?;
     let func = rt.create_function("newTab", 0, fast_render_tabs_new_tab::<Host, R>)?;
     rt.define_method(proto_fast_render_tabs, "newTab", func)?;
     let func = rt.create_function("item", 1, h_t_m_l_collection_item::<Host, R>)?;
@@ -8068,6 +8912,59 @@ pub mod window {
     let get = rt.create_function("get length", 0, node_list_get_attribute_length::<Host, R>)?;
     let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_node_list, "length", get, set)?;
+    let func = rt.create_function("cloneContents", 0, range_clone_contents::<Host, R>)?;
+    rt.define_method(proto_range, "cloneContents", func)?;
+    let func = rt.create_function("comparePoint", 2, range_compare_point::<Host, R>)?;
+    rt.define_method(proto_range, "comparePoint", func)?;
+    let func = rt.create_function("deleteContents", 0, range_delete_contents::<Host, R>)?;
+    rt.define_method(proto_range, "deleteContents", func)?;
+    let func = rt.create_function("detach", 0, range_detach::<Host, R>)?;
+    rt.define_method(proto_range, "detach", func)?;
+    let func = rt.create_function("extractContents", 0, range_extract_contents::<Host, R>)?;
+    rt.define_method(proto_range, "extractContents", func)?;
+    let func = rt.create_function("insertNode", 1, range_insert_node::<Host, R>)?;
+    rt.define_method(proto_range, "insertNode", func)?;
+    let func = rt.create_function("intersectsNode", 1, range_intersects_node::<Host, R>)?;
+    rt.define_method(proto_range, "intersectsNode", func)?;
+    let func = rt.create_function("isPointInRange", 2, range_is_point_in_range::<Host, R>)?;
+    rt.define_method(proto_range, "isPointInRange", func)?;
+    let func = rt.create_function("setEnd", 2, range_set_end::<Host, R>)?;
+    rt.define_method(proto_range, "setEnd", func)?;
+    let func = rt.create_function("setStart", 2, range_set_start::<Host, R>)?;
+    rt.define_method(proto_range, "setStart", func)?;
+    let func = rt.create_function("surroundContents", 1, range_surround_contents::<Host, R>)?;
+    rt.define_method(proto_range, "surroundContents", func)?;
+    let ctor_range = rt.create_constructor(
+      "Range",
+      0,
+      illegal_constructor::<Host, R>,
+      range_constructor::<Host, R>,
+    )?;
+    rt.define_constructor(global, "Range", ctor_range, proto_range)?;
+    rt.define_constant(ctor_range, "END_TO_END", rt_js_number::<Host, R>(rt, 2.0))?;
+    rt.define_constant(proto_range, "END_TO_END", rt_js_number::<Host, R>(rt, 2.0))?;
+    rt.define_constant(ctor_range, "END_TO_START", rt_js_number::<Host, R>(rt, 3.0))?;
+    rt.define_constant(
+      proto_range,
+      "END_TO_START",
+      rt_js_number::<Host, R>(rt, 3.0),
+    )?;
+    rt.define_constant(ctor_range, "START_TO_END", rt_js_number::<Host, R>(rt, 1.0))?;
+    rt.define_constant(
+      proto_range,
+      "START_TO_END",
+      rt_js_number::<Host, R>(rt, 1.0),
+    )?;
+    rt.define_constant(
+      ctor_range,
+      "START_TO_START",
+      rt_js_number::<Host, R>(rt, 0.0),
+    )?;
+    rt.define_constant(
+      proto_range,
+      "START_TO_START",
+      rt_js_number::<Host, R>(rt, 0.0),
+    )?;
     let func = rt.create_function("firstChild", 0, tree_walker_first_child::<Host, R>)?;
     rt.define_method(proto_tree_walker, "firstChild", func)?;
     let func = rt.create_function("lastChild", 0, tree_walker_last_child::<Host, R>)?;

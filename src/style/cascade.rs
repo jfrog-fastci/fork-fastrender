@@ -481,7 +481,7 @@ fn fullscreen_top_layer(
     return None;
   }
   let state = interaction_state?;
-  if state.fullscreen_element == Some(node_id) {
+  if state.fullscreen_element() == Some(node_id) {
     Some(TopLayerKind::Fullscreen)
   } else {
     None

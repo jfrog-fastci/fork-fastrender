@@ -1,5 +1,5 @@
 use fastrender::{FastRender, RenderOptions};
-use fastrender::resource::HttpFetcher;
+use fastrender::resource::{HttpFetcher, ResourcePolicy};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
@@ -94,9 +94,12 @@ fn imports_bundle_into_fixture() {
   let base_url = Url::from_directory_path(&fixture_dir)
     .expect("file:// base")
     .to_string();
+  // Rendering a fixture should not require in-process HTTP networking. Use a fetcher that supports
+  // `file://` (and rejects `http(s)://`) so the test stays deterministic.
+  let fetcher = HttpFetcher::new().with_policy(ResourcePolicy::new().allow_http(false).allow_https(false));
   let mut renderer = FastRender::builder()
     .base_url(base_url)
-    .fetcher(Arc::new(HttpFetcher::new()))
+    .fetcher(Arc::new(fetcher))
     .build()
     .expect("build renderer");
   let pixmap = renderer

@@ -297,7 +297,8 @@ codesign -d --entitlements :- FastRender.app/Contents/MacOS/renderer
 ### Why we can’t rely on App Sandbox for dev/CI builds
 
 App Sandbox requires **codesigning** and `.app`-style packaging. Typical development runs (and many
-CI harnesses) execute unsigned binaries, so entitlements are not available.
+CI harnesses) execute unsigned binaries (for example via `bash scripts/cargo_agent.sh build` /
+`bash scripts/cargo_agent.sh run`), so entitlements are not available and App Sandbox is not applied.
 
 Additionally, FastRender is not yet shipped as a real `.app` bundle with a separate renderer helper
 executable to sign; the in-tree desktop `browser` binary still runs the “renderer” on a worker thread.
