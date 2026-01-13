@@ -1994,17 +1994,25 @@ impl<Host: 'static> EventLoop<Host> {
       return Ok(false);
     }
 
-    let Some(id) = self.idle_callback_queue.pop_front() else {
-      return Ok(false);
-    };
-    let Some(state) = self.idle_callbacks.get(&id) else {
-      return Ok(false);
-    };
-    let schedule_seq = state.schedule_seq;
-    self.queue_task(TaskSource::IdleCallback, move |host, event_loop| {
-      event_loop.fire_idle_callback(host, id, schedule_seq)
-    })?;
-    Ok(true)
+    loop {
+      let Some(id) = self.idle_callback_queue.front().copied() else {
+        return Ok(false);
+      };
+      let Some(state) = self.idle_callbacks.get(&id) else {
+        // Stale ID: callback was cancelled/cleared.
+        let _ = self.idle_callback_queue.pop_front();
+        continue;
+      };
+
+      let schedule_seq = state.schedule_seq;
+      // Only remove the ID once the task has been successfully queued so that enqueue failures do
+      // not leak the callback.
+      self.queue_task(TaskSource::IdleCallback, move |host, event_loop| {
+        event_loop.fire_idle_callback(host, id, schedule_seq)
+      })?;
+      let _ = self.idle_callback_queue.pop_front();
+      return Ok(true);
+    }
   }
 
   fn fire_idle_callback(
@@ -3455,6 +3463,71 @@ mod tests {
       max_pending_idle_callbacks: usize::MAX,
     });
     event_loop.queue_due_idle_callbacks()?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.fired, 1);
+    assert!(!event_loop.idle_callbacks.contains_key(&id));
+    Ok(())
+  }
+
+  #[test]
+  fn queue_next_idle_callback_if_idle_failure_does_not_leak_callback() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      fired: usize,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_tasks: 0,
+      max_pending_microtasks: usize::MAX,
+      max_pending_timers: usize::MAX,
+      max_pending_animation_frame_callbacks: usize::MAX,
+      max_pending_idle_callbacks: usize::MAX,
+    });
+
+    let id = event_loop.request_idle_callback(None, |host, _event_loop, did_timeout, _| {
+      assert!(!did_timeout);
+      host.fired += 1;
+      Ok(())
+    })?;
+
+    let err = event_loop
+      .queue_next_idle_callback_if_idle()
+      .expect_err("expected idle callback enqueue to fail");
+    assert!(
+      matches!(err, Error::Other(ref msg) if msg.contains("max pending tasks")),
+      "unexpected error: {err:?}"
+    );
+
+    assert!(
+      event_loop.idle_callbacks.contains_key(&id),
+      "idle callback should remain stored"
+    );
+    assert!(
+      event_loop.idle_callback_queue.contains(&id),
+      "idle callback ID should remain queued for later execution"
+    );
+
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_tasks: 1,
+      max_pending_microtasks: usize::MAX,
+      max_pending_timers: usize::MAX,
+      max_pending_animation_frame_callbacks: usize::MAX,
+      max_pending_idle_callbacks: usize::MAX,
+    });
+
+    assert!(
+      event_loop.queue_next_idle_callback_if_idle()?,
+      "idle callback should be queued once capacity is available"
+    );
 
     let mut host = Host::default();
     assert_eq!(
