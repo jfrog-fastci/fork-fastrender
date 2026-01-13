@@ -149,12 +149,15 @@ extern "system" {
   fn LoadLibraryExW(name: *const u16, hfile: *mut c_void, flags: u32) -> HMODULE;
   fn GetProcAddress(module: HMODULE, proc_name: *const i8) -> *mut c_void;
   fn FreeLibrary(module: HMODULE) -> i32;
+  fn GetLastError() -> u32;
+  fn SetLastError(dwErrCode: u32);
 }
 
 // Force DLL resolution from `%SystemRoot%\\System32` to avoid search-order hijacking.
 //
 // Value is stable ABI: https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw
 const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+const ERROR_PROC_NOT_FOUND: u32 = 127;
 
 unsafe fn load_userenv() -> Result<HMODULE, AppContainerApiLoadError> {
   let wide = "userenv.dll"
@@ -175,11 +178,19 @@ unsafe fn get_userenv_proc<T>(
   symbol: &'static str,
   symbol_bytes_with_nul: &'static [u8],
 ) -> Result<T, AppContainerApiLoadError> {
+  // Avoid returning a stale `GetLastError()` if `GetProcAddress` doesn't set it
+  // for some unexpected reason. The expected error for missing exports is
+  // `ERROR_PROC_NOT_FOUND` (127).
+  SetLastError(0);
   let proc = GetProcAddress(module, symbol_bytes_with_nul.as_ptr() as *const i8);
   if proc.is_null() {
+    let mut err = GetLastError();
+    if err == 0 {
+      err = ERROR_PROC_NOT_FOUND;
+    }
     return Err(AppContainerApiLoadError::MissingSymbol {
       symbol,
-      source: io::Error::new(io::ErrorKind::NotFound, "GetProcAddress returned NULL"),
+      source: io::Error::from_raw_os_error(err as i32),
     });
   }
 
