@@ -510,6 +510,62 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(false)
   }
 
+  fn eval_for_in_of_rhs_with_tdz_env(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    left: &hir_js::ForHead,
+    right: hir_js::ExprId,
+  ) -> Result<Value, VmError> {
+    let hir_js::ForHead::Var(var_decl) = left else {
+      return self.eval_expr(scope, body, right);
+    };
+    if !matches!(
+      var_decl.kind,
+      hir_js::VarDeclKind::Let
+        | hir_js::VarDeclKind::Const
+        | hir_js::VarDeclKind::Using
+        | hir_js::VarDeclKind::AwaitUsing
+    ) {
+      return self.eval_expr(scope, body, right);
+    }
+
+    // ECMA-262 `ForIn/OfHeadEvaluation`:
+    // If the loop uses a lexical `ForDeclaration` (`let`/`const`/`using`/`await using`), create a
+    // TDZ lexical environment for the bound names while evaluating the RHS expression.
+    //
+    // Closures created during RHS evaluation must capture this TDZ environment (not the loop body
+    // envs).
+    let old_lex = self.env.lexical_env();
+    let tdz_env = scope.env_create(Some(old_lex))?;
+
+    // Create uninitialized bindings for `BoundNames(ForDeclaration)`.
+    for declarator in &var_decl.declarators {
+      self.vm.tick()?;
+      let mut names: Vec<hir_js::NameId> = Vec::new();
+      self.collect_pat_idents(body, declarator.pat, &mut names)?;
+      for name_id in names {
+        let name = self.resolve_name(name_id)?;
+        if scope.heap().env_has_binding(tdz_env, name.as_str())? {
+          continue;
+        }
+        match var_decl.kind {
+          hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(tdz_env, name.as_str())?,
+          hir_js::VarDeclKind::Const
+          | hir_js::VarDeclKind::Using
+          | hir_js::VarDeclKind::AwaitUsing => scope.env_create_immutable_binding(tdz_env, name.as_str())?,
+          _ => unreachable!("checked by lexical kind guard"),
+        }
+      }
+    }
+
+    self.env.set_lexical_env(scope.heap_mut(), tdz_env);
+    let rhs_res = self.eval_expr(scope, body, right);
+    // Always restore the caller's lexical environment, even on abrupt completion.
+    self.env.set_lexical_env(scope.heap_mut(), old_lex);
+    rhs_res
+  }
+
   fn alloc_user_function_object(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1786,7 +1842,7 @@ impl<'vm> HirEvaluator<'vm> {
 
         if *is_for_of {
           // --- for..of ---
-          let iterable = self.eval_expr(scope, body, *right)?;
+          let iterable = self.eval_for_in_of_rhs_with_tdz_env(scope, body, left, *right)?;
 
           // Root the iterable + iterator record while evaluating the loop body.
           let mut iter_scope = scope.reborrow();
@@ -1998,7 +2054,7 @@ impl<'vm> HirEvaluator<'vm> {
           Ok(Flow::Normal(Some(v)))
         } else {
           // --- for..in ---
-          let rhs_value = self.eval_expr(scope, body, *right)?;
+          let rhs_value = self.eval_for_in_of_rhs_with_tdz_env(scope, body, left, *right)?;
 
           // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
           // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw) and the

@@ -6793,6 +6793,27 @@ fn compiled_for_let_tdz_shadowing_throws() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_for_of_head_let_tdz_shadowing_throws() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let x = 1;
+      for (let x of [x]) {}
+      'no'
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  assert_thrown_is_reference_error(&rt, err)?;
+  Ok(())
+}
+
+#[test]
 fn compiled_class_tdz_shadowing_throws() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
