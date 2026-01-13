@@ -359,7 +359,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Ctrl/Cmd+Click link | Open link in new tab |
 | Middle-click link | Open link in new tab |
 | Mouse Back / Mouse Forward (buttons 4/5 on Windows/macOS, 8/9 on X11) | Back / Forward |
-| Shift+F10; Apps/Menu key (page focus, Win/Linux) | Open page context menu |
+| Shift+F10 (page focus); Apps/Menu key (page focus, Win/Linux) | Open page context menu |
 | PageUp (page focus) | Scroll up |
 | PageDown (page focus) | Scroll down |
 | ArrowUp (page focus, no element focused) | Scroll up |
