@@ -18059,7 +18059,9 @@ fn async_eval_throw_stmt(
   stmt: &Node<ThrowStmt>,
 ) -> Result<AsyncEval<Completion>, VmError> {
   match async_eval_expr(evaluator, scope, &stmt.stx.value) {
-    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(evaluator, scope, stmt, v))),
+    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(
+      evaluator, scope, stmt, v,
+    ))),
     Ok(AsyncEval::Suspend(mut suspend)) => {
       async_frames_push(
         &mut suspend.frames,
@@ -19450,6 +19452,7 @@ fn async_eval_class_after_super(
   let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
   for member in members {
     evaluator.tick()?;
+
     if !member.stx.decorators.is_empty() {
       return Err(VmError::Unimplemented("class member decorators"));
     }
@@ -19599,9 +19602,6 @@ fn async_eval_class_after_super(
     ClassBinding::Immutable(name) => Some(name),
   } {
     let init_res = (|| -> Result<(), VmError> {
-      // Root the class constructor object during initialization so if the operation grows the root
-      // stack (and triggers GC) we don't collect the class constructor before it becomes reachable
-      // from its binding.
       let mut init_scope = class_scope.reborrow();
       init_scope.push_root(Value::Object(func_obj))?;
       init_scope
@@ -19703,7 +19703,6 @@ fn async_eval_class_after_super(
       Value::Null => class_scope.heap_mut().object_set_prototype(prototype_obj, None),
       Value::Object(super_ctor) => {
         let proto_parent: Option<GcObject> = {
-          // `Get(superCtor, "prototype")` (Proxy-aware / accessor-aware).
           let mut proto_scope = class_scope.reborrow();
           proto_scope.push_root(Value::Object(super_ctor))?;
           let proto_key_s = proto_scope.alloc_string("prototype")?;
