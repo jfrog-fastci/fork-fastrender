@@ -253,19 +253,34 @@ if [[ "${has_manifest_path}" -eq 0 ]]; then
       if [[ "${argv[$i]}" == "--" ]]; then
         break
       fi
-       case "${argv[$i]}" in
-         -p|--package)
-           pkg="${argv[$((i + 1))]:-}"
-           ;;
-         --package=*)
-           pkg="${argv[$i]#--package=}"
-           ;;
-       esac
+        case "${argv[$i]}" in
+          -p|--package)
+            pkg="${argv[$((i + 1))]:-}"
+            ;;
+          --package=*)
+            pkg="${argv[$i]#--package=}"
+            ;;
+        esac
 
-       # `cargo-fuzz` generates a standalone workspace under `fuzz/` (package name:
-       # `fastrender-fuzz`). Our CI/agent docs frequently refer to it as `-p fuzz`, so accept that
-       # as a convenient alias and automatically scope the invocation to `fuzz/Cargo.toml`.
-       if [[ "${pkg}" == "fuzz" ]]; then
+        # Convenience alias: the vendored legacy WebIDL runtime package lives at
+        # `vendor/ecma-rs/webidl-runtime/` but its Cargo package name is `webidl-js-runtime`.
+        # Accept `-p webidl-runtime` (directory name) as an alias so CI/docs can use either form.
+        if [[ "${pkg}" == "webidl-runtime" ]]; then
+          case "${argv[$i]}" in
+            -p|--package)
+              argv[$((i + 1))]="webidl-js-runtime"
+              ;;
+            --package=*)
+              argv[$i]="--package=webidl-js-runtime"
+              ;;
+          esac
+          pkg="webidl-js-runtime"
+        fi
+
+        # `cargo-fuzz` generates a standalone workspace under `fuzz/` (package name:
+        # `fastrender-fuzz`). Our CI/agent docs frequently refer to it as `-p fuzz`, so accept that
+        # as a convenient alias and automatically scope the invocation to `fuzz/Cargo.toml`.
+        if [[ "${pkg}" == "fuzz" ]]; then
          case "${argv[$i]}" in
            -p|--package)
              argv[$((i + 1))]="fastrender-fuzz"
