@@ -190,8 +190,10 @@ In code, the contract surface is:
 The audio backend should provide:
 
 * A **sample rate** (`Hz`) and channel configuration for the output stream.
-* A monotonically increasing **playhead counter**: “how many output frames have been presented to the
-  device since stream start”.
+* A monotonically increasing **playhead counter**: “how many output frames have been written/committed
+  to the output backend since stream start”.
+  * Depending on the backend this may mean “frames produced in the output callback”, which can be
+    ahead of “time heard” by roughly the output latency.
 * An estimate of **output latency** (“how long after we hand frames to the backend they become
   audible”).
 * A way to query **audio device time in timeline units**, i.e.:
