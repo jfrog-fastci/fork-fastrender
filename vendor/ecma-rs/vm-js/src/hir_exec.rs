@@ -2243,6 +2243,7 @@ impl<'vm> HirEvaluator<'vm> {
     match head {
       hir_js::ForHead::Pat(pat_id) => {
         // Reuse `assign_to_pat` so assignment targets like `for (obj.x of iterable) {}` work.
+        // This also supports destructuring patterns via `assign_pattern`.
         self.assign_to_pat(scope, body, *pat_id, value)
       }
       hir_js::ForHead::Var(var_decl) => {
@@ -5297,6 +5298,8 @@ impl<'vm> HirEvaluator<'vm> {
     pat: &hir_js::ObjectPat,
     value: Value,
   ) -> Result<(), VmError> {
+    let names = self.hir().names.clone();
+
     // Root the original RHS value across boxing: `ToObject` can allocate and therefore trigger GC.
     let src_value = scope.push_root(value)?;
     let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, src_value)?;
@@ -5320,24 +5323,82 @@ impl<'vm> HirEvaluator<'vm> {
       let mut prop_scope = scope.reborrow();
       root_property_key(&mut prop_scope, key)?;
 
-      // Best-effort assignment target evaluation order: if the LHS is a member target, evaluate it
-      // before reading the source property value.
-      enum PropTarget {
-        PreResolvedMember { base: Value, key: PropertyKey },
+      // --- Assignment target evaluation order (ECMA-262 `KeyedDestructuringAssignmentEvaluation`) ---
+      //
+      // For destructuring *assignment* (not binding), the spec evaluates assignment targets
+      // (including `ResolveBinding` and property-reference base + key expressions) before calling
+      // `GetV(value, propertyKey)`.
+      //
+      // Additionally, for computed member targets (`obj[expr]`), the `ToPropertyKey` conversion is
+      // delayed until `PutValue`, after `GetV` / default evaluation.
+      enum PropTarget<'a> {
+        Binding(ResolvedBinding<'a>),
+        Member { base: Value, key: PropertyKey },
+        ComputedMember { base: Value, key_value: Value },
         Pat(hir_js::PatId),
       }
       let mut target = PropTarget::Pat(prop.value);
       {
         let value_pat = self.get_pat(body, prop.value)?;
-        if let hir_js::PatKind::AssignTarget(expr_id) = value_pat.kind {
-          let target_expr = self.get_expr(body, expr_id)?;
-          if let hir_js::ExprKind::Member(member) = &target_expr.kind {
-            let base = self.eval_expr(&mut prop_scope, body, member.object)?;
-            let base = prop_scope.push_root(base)?;
-            let member_key = self.eval_object_key(&mut prop_scope, body, &member.property)?;
-            root_property_key(&mut prop_scope, member_key)?;
-            target = PropTarget::PreResolvedMember { base, key: member_key };
+        match value_pat.kind {
+          hir_js::PatKind::Ident(name_id) => {
+            let name = names
+              .resolve(name_id)
+              .ok_or(VmError::InvariantViolation(
+                "hir name id missing from interner",
+              ))?;
+            let binding = self.env.resolve_binding_reference(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut prop_scope,
+              name,
+            )?;
+            target = PropTarget::Binding(binding);
           }
+          hir_js::PatKind::AssignTarget(expr_id) => {
+            let target_expr = self.get_expr(body, expr_id)?;
+            match &target_expr.kind {
+              hir_js::ExprKind::Ident(name_id) => {
+                let name = names
+                  .resolve(*name_id)
+                  .ok_or(VmError::InvariantViolation(
+                    "hir name id missing from interner",
+                  ))?;
+                let binding = self.env.resolve_binding_reference(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut prop_scope,
+                  name,
+                )?;
+                target = PropTarget::Binding(binding);
+              }
+              hir_js::ExprKind::Member(member) => {
+                if member.optional {
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in assignment target",
+                  ));
+                }
+                let base = self.eval_expr(&mut prop_scope, body, member.object)?;
+                let base = prop_scope.push_root(base)?;
+                match &member.property {
+                  hir_js::ObjectKey::Computed(expr_id) => {
+                    let key_value = self.eval_expr(&mut prop_scope, body, *expr_id)?;
+                    let key_value = prop_scope.push_root(key_value)?;
+                    target = PropTarget::ComputedMember { base, key_value };
+                  }
+                  other => {
+                    let member_key = self.eval_object_key(&mut prop_scope, body, other)?;
+                    root_property_key(&mut prop_scope, member_key)?;
+                    target = PropTarget::Member { base, key: member_key };
+                  }
+                }
+              }
+              _ => {}
+            }
+          }
+          _ => {}
         }
       }
 
@@ -5349,12 +5410,34 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
 
+      // Root the extracted value across any allocations while constructing keys and performing
+      // assignments. `GetV` / defaults may produce freshly-allocated objects that are otherwise
+      // unreachable.
+      let prop_value = prop_scope.push_root(prop_value)?;
+
       match target {
-        PropTarget::PreResolvedMember { base, key } => {
+        PropTarget::Binding(binding) => {
+          maybe_set_anonymous_function_name(&mut prop_scope, prop_value, binding.name())?;
+          self.env.set_resolved_binding(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut prop_scope,
+            binding,
+            prop_value,
+            self.strict,
+          )?;
+        }
+        PropTarget::Member { base, key } => {
+          self.assign_to_property_key(&mut prop_scope, base, key, prop_value)?
+        }
+        PropTarget::ComputedMember { base, key_value } => {
+          let key = prop_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
+          root_property_key(&mut prop_scope, key)?;
           self.assign_to_property_key(&mut prop_scope, base, key, prop_value)?
         }
         PropTarget::Pat(pat_id) => self.assign_to_pat(&mut prop_scope, body, pat_id, prop_value)?,
-      }
+      };
     }
 
     let Some(rest_pat_id) = pat.rest else {
@@ -5362,22 +5445,74 @@ impl<'vm> HirEvaluator<'vm> {
     };
 
     // Rest property assignment should evaluate the LHS before copying properties.
-    enum RestTarget {
-      PreResolvedMember { base: Value, key: PropertyKey },
+    enum RestTarget<'a> {
+      Binding(ResolvedBinding<'a>),
+      Member { base: Value, key: PropertyKey },
+      ComputedMember { base: Value, key_value: Value },
       Pat(hir_js::PatId),
     }
     let mut rest_target = RestTarget::Pat(rest_pat_id);
     {
       let rest_pat = self.get_pat(body, rest_pat_id)?;
-      if let hir_js::PatKind::AssignTarget(expr_id) = rest_pat.kind {
-        let target_expr = self.get_expr(body, expr_id)?;
-        if let hir_js::ExprKind::Member(member) = &target_expr.kind {
-          let base = self.eval_expr(scope, body, member.object)?;
-          let base = scope.push_root(base)?;
-          let member_key = self.eval_object_key(scope, body, &member.property)?;
-          root_property_key(scope, member_key)?;
-          rest_target = RestTarget::PreResolvedMember { base, key: member_key };
+      match rest_pat.kind {
+        hir_js::PatKind::Ident(name_id) => {
+          let name = names
+            .resolve(name_id)
+            .ok_or(VmError::InvariantViolation(
+              "hir name id missing from interner",
+            ))?;
+          let binding = self.env.resolve_binding_reference(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            scope,
+            name,
+          )?;
+          rest_target = RestTarget::Binding(binding);
         }
+        hir_js::PatKind::AssignTarget(expr_id) => {
+          let target_expr = self.get_expr(body, expr_id)?;
+          match &target_expr.kind {
+            hir_js::ExprKind::Ident(name_id) => {
+              let name = names
+                .resolve(*name_id)
+                .ok_or(VmError::InvariantViolation(
+                  "hir name id missing from interner",
+                ))?;
+              let binding = self.env.resolve_binding_reference(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                scope,
+                name,
+              )?;
+              rest_target = RestTarget::Binding(binding);
+            }
+            hir_js::ExprKind::Member(member) => {
+              if member.optional {
+                return Err(VmError::InvariantViolation(
+                  "optional chaining used in assignment target",
+                ));
+              }
+              let base = self.eval_expr(scope, body, member.object)?;
+              let base = scope.push_root(base)?;
+              match &member.property {
+                hir_js::ObjectKey::Computed(expr_id) => {
+                  let key_value = self.eval_expr(scope, body, *expr_id)?;
+                  let key_value = scope.push_root(key_value)?;
+                  rest_target = RestTarget::ComputedMember { base, key_value };
+                }
+                other => {
+                  let member_key = self.eval_object_key(scope, body, other)?;
+                  root_property_key(scope, member_key)?;
+                  rest_target = RestTarget::Member { base, key: member_key };
+                }
+              }
+            }
+            _ => {}
+          }
+        }
+        _ => {}
       }
     }
 
@@ -5400,7 +5535,25 @@ impl<'vm> HirEvaluator<'vm> {
     )?;
 
     match rest_target {
-      RestTarget::PreResolvedMember { base, key } => {
+      RestTarget::Binding(binding) => {
+        let rest_value = Value::Object(rest_obj);
+        maybe_set_anonymous_function_name(scope, rest_value, binding.name())?;
+        self.env.set_resolved_binding(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          scope,
+          binding,
+          rest_value,
+          self.strict,
+        )
+      }
+      RestTarget::Member { base, key } => {
+        self.assign_to_property_key(scope, base, key, Value::Object(rest_obj))
+      }
+      RestTarget::ComputedMember { base, key_value } => {
+        let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
+        root_property_key(scope, key)?;
         self.assign_to_property_key(scope, base, key, Value::Object(rest_obj))
       }
       RestTarget::Pat(pat_id) => self.assign_to_pat(scope, body, pat_id, Value::Object(rest_obj)),
@@ -5414,6 +5567,8 @@ impl<'vm> HirEvaluator<'vm> {
     pat: &hir_js::ArrayPat,
     value: Value,
   ) -> Result<(), VmError> {
+    let names = self.hir().names.clone();
+
     if matches!(value, Value::Undefined | Value::Null) {
       return Err(VmError::TypeError("array destructuring requires object coercible"));
     }
@@ -5442,24 +5597,81 @@ impl<'vm> HirEvaluator<'vm> {
         continue;
       };
 
-      // Best-effort assignment target evaluation order: evaluate member targets before consuming
-      // the iterator.
-      enum ElemTarget {
-        PreResolvedMember { base: Value, key: PropertyKey },
+      // --- Assignment target evaluation order (ECMA-262 `IteratorDestructuringAssignmentEvaluation`) ---
+      //
+      // For destructuring assignment, the spec evaluates assignment targets (binding resolution /
+      // member base + key expression) before consuming iterator values.
+      //
+      // For computed member targets (`obj[expr]`), `ToPropertyKey` conversion is delayed until
+      // `PutValue`, after `IteratorValue` / default evaluation.
+      enum ElemTarget<'a> {
+        Binding(ResolvedBinding<'a>),
+        Member { base: Value, key: PropertyKey },
+        ComputedMember { base: Value, key_value: Value },
         Pat(hir_js::PatId),
       }
       let mut target = ElemTarget::Pat(elem.pat);
       {
         let elem_pat = self.get_pat(body, elem.pat)?;
-        if let hir_js::PatKind::AssignTarget(expr_id) = elem_pat.kind {
-          let target_expr = self.get_expr(body, expr_id)?;
-          if let hir_js::ExprKind::Member(member) = &target_expr.kind {
-            let base = self.eval_expr(&mut elem_scope, body, member.object)?;
-            let base = elem_scope.push_root(base)?;
-            let member_key = self.eval_object_key(&mut elem_scope, body, &member.property)?;
-            root_property_key(&mut elem_scope, member_key)?;
-            target = ElemTarget::PreResolvedMember { base, key: member_key };
+        match elem_pat.kind {
+          hir_js::PatKind::Ident(name_id) => {
+            let name = names
+              .resolve(name_id)
+              .ok_or(VmError::InvariantViolation(
+                "hir name id missing from interner",
+              ))?;
+            let binding = self.env.resolve_binding_reference(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut elem_scope,
+              name,
+            )?;
+            target = ElemTarget::Binding(binding);
           }
+          hir_js::PatKind::AssignTarget(expr_id) => {
+            let target_expr = self.get_expr(body, expr_id)?;
+            match &target_expr.kind {
+              hir_js::ExprKind::Ident(name_id) => {
+                let name = names
+                  .resolve(*name_id)
+                  .ok_or(VmError::InvariantViolation(
+                    "hir name id missing from interner",
+                  ))?;
+                let binding = self.env.resolve_binding_reference(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut elem_scope,
+                  name,
+                )?;
+                target = ElemTarget::Binding(binding);
+              }
+              hir_js::ExprKind::Member(member) => {
+                if member.optional {
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in assignment target",
+                  ));
+                }
+                let base = self.eval_expr(&mut elem_scope, body, member.object)?;
+                let base = elem_scope.push_root(base)?;
+                match &member.property {
+                  hir_js::ObjectKey::Computed(expr_id) => {
+                    let key_value = self.eval_expr(&mut elem_scope, body, *expr_id)?;
+                    let key_value = elem_scope.push_root(key_value)?;
+                    target = ElemTarget::ComputedMember { base, key_value };
+                  }
+                  other => {
+                    let member_key = self.eval_object_key(&mut elem_scope, body, other)?;
+                    root_property_key(&mut elem_scope, member_key)?;
+                    target = ElemTarget::Member { base, key: member_key };
+                  }
+                }
+              }
+              _ => {}
+            }
+          }
+          _ => {}
         }
       }
 
@@ -5484,8 +5696,37 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
 
+      // Root the extracted value across key conversion + assignment. Iterator values can be
+      // freshly-allocated objects unreachable from the heap except for this local binding.
+      let item = match elem_scope.push_root(item) {
+        Ok(v) => v,
+        Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+      };
+
       let res = match target {
-        ElemTarget::PreResolvedMember { base, key } => self.assign_to_property_key(&mut elem_scope, base, key, item),
+        ElemTarget::Binding(binding) => {
+          maybe_set_anonymous_function_name(&mut elem_scope, item, binding.name())?;
+          self.env.set_resolved_binding(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut elem_scope,
+            binding,
+            item,
+            self.strict,
+          )
+        }
+        ElemTarget::Member { base, key } => self.assign_to_property_key(&mut elem_scope, base, key, item),
+        ElemTarget::ComputedMember { base, key_value } => {
+          let key = match elem_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value) {
+            Ok(key) => key,
+            Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+          };
+          if let Err(err) = root_property_key(&mut elem_scope, key) {
+            return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err);
+          }
+          self.assign_to_property_key(&mut elem_scope, base, key, item)
+        }
         ElemTarget::Pat(pat_id) => self.assign_to_pat(&mut elem_scope, body, pat_id, item),
       };
       if let Err(err) = res {
@@ -5508,22 +5749,74 @@ impl<'vm> HirEvaluator<'vm> {
     };
 
     // Rest element assignment must evaluate the LHS target before consuming the iterator.
-    enum RestTarget {
-      PreResolvedMember { base: Value, key: PropertyKey },
+    enum RestTarget<'a> {
+      Binding(ResolvedBinding<'a>),
+      Member { base: Value, key: PropertyKey },
+      ComputedMember { base: Value, key_value: Value },
       Pat(hir_js::PatId),
     }
     let mut rest_target = RestTarget::Pat(rest_pat_id);
     {
       let rest_pat = self.get_pat(body, rest_pat_id)?;
-      if let hir_js::PatKind::AssignTarget(expr_id) = rest_pat.kind {
-        let target_expr = self.get_expr(body, expr_id)?;
-        if let hir_js::ExprKind::Member(member) = &target_expr.kind {
-          let base = self.eval_expr(scope, body, member.object)?;
-          let base = scope.push_root(base)?;
-          let member_key = self.eval_object_key(scope, body, &member.property)?;
-          root_property_key(scope, member_key)?;
-          rest_target = RestTarget::PreResolvedMember { base, key: member_key };
+      match rest_pat.kind {
+        hir_js::PatKind::Ident(name_id) => {
+          let name = names
+            .resolve(name_id)
+            .ok_or(VmError::InvariantViolation(
+              "hir name id missing from interner",
+            ))?;
+          let binding = self.env.resolve_binding_reference(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            scope,
+            name,
+          )?;
+          rest_target = RestTarget::Binding(binding);
         }
+        hir_js::PatKind::AssignTarget(expr_id) => {
+          let target_expr = self.get_expr(body, expr_id)?;
+          match &target_expr.kind {
+            hir_js::ExprKind::Ident(name_id) => {
+              let name = names
+                .resolve(*name_id)
+                .ok_or(VmError::InvariantViolation(
+                  "hir name id missing from interner",
+                ))?;
+              let binding = self.env.resolve_binding_reference(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                scope,
+                name,
+              )?;
+              rest_target = RestTarget::Binding(binding);
+            }
+            hir_js::ExprKind::Member(member) => {
+              if member.optional {
+                return Err(VmError::InvariantViolation(
+                  "optional chaining used in assignment target",
+                ));
+              }
+              let base = self.eval_expr(scope, body, member.object)?;
+              let base = scope.push_root(base)?;
+              match &member.property {
+                hir_js::ObjectKey::Computed(expr_id) => {
+                  let key_value = self.eval_expr(scope, body, *expr_id)?;
+                  let key_value = scope.push_root(key_value)?;
+                  rest_target = RestTarget::ComputedMember { base, key_value };
+                }
+                other => {
+                  let member_key = self.eval_object_key(scope, body, other)?;
+                  root_property_key(scope, member_key)?;
+                  rest_target = RestTarget::Member { base, key: member_key };
+                }
+              }
+            }
+            _ => {}
+          }
+        }
+        _ => {}
       }
     }
 
@@ -5581,7 +5874,28 @@ impl<'vm> HirEvaluator<'vm> {
     }
 
     let assign_res = match rest_target {
-      RestTarget::PreResolvedMember { base, key } => {
+      RestTarget::Binding(binding) => {
+        let rest_value = Value::Object(rest_arr);
+        maybe_set_anonymous_function_name(scope, rest_value, binding.name())?;
+        self.env.set_resolved_binding(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          scope,
+          binding,
+          rest_value,
+          self.strict,
+        )
+      }
+      RestTarget::Member { base, key } => self.assign_to_property_key(scope, base, key, Value::Object(rest_arr)),
+      RestTarget::ComputedMember { base, key_value } => {
+        let key = match scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value) {
+          Ok(k) => k,
+          Err(err) => return self.iterator_close_on_err(scope, &iterator_record, err),
+        };
+        if let Err(err) = root_property_key(scope, key) {
+          return self.iterator_close_on_err(scope, &iterator_record, err);
+        }
         self.assign_to_property_key(scope, base, key, Value::Object(rest_arr))
       }
       RestTarget::Pat(pat_id) => self.assign_to_pat(scope, body, pat_id, Value::Object(rest_arr)),
